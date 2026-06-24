@@ -73,6 +73,22 @@ impl PublishingEventStore {
     pub fn publisher(&self) -> BroadcastEventPublisher {
         BroadcastEventPublisher::new(self.events.clone())
     }
+
+    /// Broadcast each committed event into the live-tail channel, in slice order.
+    ///
+    /// Shared by [`Self::append`] and [`Self::append_with_outbox`] so both the
+    /// event-only and durable-outbox commit paths publish identically. A send
+    /// with no live subscribers is a non-event (the events are observed through
+    /// history reads), matching the `append` contract.
+    fn publish_committed(&self, events: &[Event]) {
+        for event in events {
+            if self.events.receiver_count() == 0 {
+                continue;
+            }
+            let delivery = self.events.send(event.clone());
+            drop(delivery);
+        }
+    }
 }
 
 #[async_trait]
@@ -95,21 +111,45 @@ impl WritableEventStore for PublishingEventStore {
         self.inner
             .append(token, workflow_id, events, expected_seq)
             .await?;
-        for event in events {
-            // A send with no receivers would early-return without buffering,
-            // so skipping it (and the payload deep clone) is behavior-
-            // identical; checked per event because a subscriber may attach
-            // mid-batch.
-            if self.events.receiver_count() == 0 {
-                continue;
-            }
-            // A broadcast send only errs when no subscriber is attached;
-            // publication is a live tail, so that is a non-event, not a
-            // swallowed failure.
-            let delivery = self.events.send(event.clone());
-            drop(delivery);
-        }
+        // A subscriber may attach mid-batch; `publish_committed` re-checks the
+        // receiver count per event. A broadcast send only errs when no
+        // subscriber is attached — a non-event for a live tail, not a swallowed
+        // failure.
+        self.publish_committed(events);
         Ok(())
+    }
+
+    /// Append the atomic durable-outbox batch through the wrapped store, then
+    /// broadcast the committed events exactly as [`Self::append`] does.
+    ///
+    /// Without this override the refusing default [`WritableEventStore::append_with_outbox`]
+    /// would reject every fan-out batch routed through the streaming wrapper, so
+    /// an `outbox.enabled` engine with event streaming on (the production server
+    /// build) could never stage a fan-out member. The same cancellation caveat
+    /// as [`Self::append`] applies: dropping this future between the inner
+    /// commit and the broadcast would leave events committed but unpublished.
+    async fn append_with_outbox(
+        &self,
+        token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+        outbox_rows: &[aion_store::OutboxRow],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .append_with_outbox(token, workflow_id, events, expected_seq, outbox_rows)
+            .await?;
+        self.publish_committed(events);
+        Ok(())
+    }
+
+    /// Forward the crash-recovery outbox re-arm to the wrapped store.
+    ///
+    /// Re-arm writes no history events, so there is nothing to publish; the
+    /// override exists only so the refusing default does not strand a recovered
+    /// fan-out member routed through the streaming wrapper.
+    async fn rearm_outbox_pending(&self, rows: &[aion_store::OutboxRow]) -> Result<(), StoreError> {
+        self.inner.rearm_outbox_pending(rows).await
     }
 }
 

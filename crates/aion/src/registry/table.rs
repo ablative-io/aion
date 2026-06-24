@@ -12,10 +12,30 @@ use super::handle::{Residency, WorkflowHandle};
 type RegistryKey = (WorkflowId, RunId);
 type HandleMap = HashMap<RegistryKey, WorkflowHandle>;
 
+/// Secondary index mapping a workflow to its single live run.
+///
+/// Values are `(RunId, pid)`, not a bare pid: the [`RunId`] lets [`remove`]
+/// compare-and-delete so a stale run's removal never evicts a newer run that
+/// already overwrote the entry during the continue-as-new window.
+///
+/// [`remove`]: Registry::remove
+type LivePidIndex = HashMap<WorkflowId, (RunId, u64)>;
+
 /// Concurrency-safe registry of live workflow process handles.
+///
+/// The `index` is a `WorkflowId -> (RunId, pid)` secondary index maintained
+/// alongside `handles` so the unmatched outbox-completion path can resolve a
+/// workflow id to its live pid in O(1) without scanning the handle map.
+///
+/// # Lock ordering
+///
+/// `handles` is always locked before `index`; never the reverse. The
+/// read-only [`Registry::live_pid`] lookup locks `index` alone. This fixed
+/// order rules out lock-order inversion between the two mutexes.
 #[derive(Debug, Default)]
 pub struct Registry {
     handles: Mutex<HandleMap>,
+    index: Mutex<LivePidIndex>,
 }
 
 impl Registry {
@@ -31,8 +51,14 @@ impl Registry {
         key: (WorkflowId, RunId),
         handle: WorkflowHandle,
     ) -> Result<Option<WorkflowHandle>, EngineError> {
+        // Lock ordering: handles first, then index. Never the reverse.
         let mut handles = self.handles()?;
-        Ok(handles.insert(key, handle))
+        let pid = handle.pid();
+        let previous = handles.insert(key.clone(), handle);
+        // Upsert the live-pid index: the newest run for a workflow id wins,
+        // so a continue-as-new replacement points at the new run immediately.
+        self.index()?.insert(key.0, (key.1, pid));
+        Ok(previous)
     }
 
     /// Looks up a live workflow run handle.
@@ -55,8 +81,19 @@ impl Registry {
         id: &WorkflowId,
         run: &RunId,
     ) -> Result<Option<WorkflowHandle>, EngineError> {
+        // Lock ordering: handles first, then index. Never the reverse.
         let mut handles = self.handles()?;
-        Ok(handles.remove(&(id.clone(), run.clone())))
+        let removed = handles.remove(&(id.clone(), run.clone()));
+        // Compare-and-delete: only drop the index entry when it still points
+        // at the run being removed. During continue-as-new a newer run already
+        // overwrote the entry, and that newer run must survive this removal.
+        let mut index = self.index()?;
+        if let std::collections::hash_map::Entry::Occupied(entry) = index.entry(id.clone()) {
+            if entry.get().0 == *run {
+                entry.remove();
+            }
+        }
+        Ok(removed)
     }
 
     /// Returns a snapshot of all live handles without holding the registry lock.
@@ -116,10 +153,29 @@ impl Registry {
         Ok(Some(handle.clone()))
     }
 
+    /// Resolves a workflow id to the pid of its single live run, if any.
+    ///
+    /// Reads only the secondary index, so it never contends the handle map.
+    /// Returns `Ok(None)` when no run for the workflow is currently live — the
+    /// expected stale-completion case after a crash or eviction, before
+    /// recovery re-arms the run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegistryPoisoned`] if the index lock was poisoned.
+    pub fn live_pid(&self, workflow_id: &WorkflowId) -> Result<Option<u64>, EngineError> {
+        let index = self.index()?;
+        Ok(index.get(workflow_id).map(|(_, pid)| *pid))
+    }
+
     fn handles(&self) -> Result<MutexGuard<'_, HandleMap>, EngineError> {
         self.handles
             .lock()
             .map_err(|_| EngineError::RegistryPoisoned)
+    }
+
+    fn index(&self) -> Result<MutexGuard<'_, LivePidIndex>, EngineError> {
+        self.index.lock().map_err(|_| EngineError::RegistryPoisoned)
     }
 }
 
@@ -280,6 +336,40 @@ mod tests {
         assert_eq!(registry.remove(&workflow_id, &first_run)?, Some(first));
         assert_eq!(registry.get(&workflow_id, &first_run)?, None);
         assert_eq!(registry.get(&workflow_id, &second_run)?, Some(second));
+        Ok(())
+    }
+
+    #[test]
+    fn live_pid_tracks_newest_run_across_continue_as_new() -> Result<(), EngineError> {
+        let registry = Registry::default();
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let first_run = aion_core::RunId::new_v4();
+        let second_run = aion_core::RunId::new_v4();
+
+        // An unknown workflow has no live pid.
+        assert_eq!(registry.live_pid(&workflow_id)?, None);
+
+        // Insert resolves the workflow to its run's pid.
+        registry.insert(
+            (workflow_id.clone(), first_run.clone()),
+            handle(1, 1, WorkflowStatus::Running),
+        )?;
+        assert_eq!(registry.live_pid(&workflow_id)?, Some(1));
+
+        // Continue-as-new inserts the new run, then removes the old one. The
+        // index must track the newest run, and the stale removal must not
+        // evict it (compare-and-delete on RunId).
+        registry.insert(
+            (workflow_id.clone(), second_run.clone()),
+            handle(2, 2, WorkflowStatus::Running),
+        )?;
+        assert_eq!(registry.live_pid(&workflow_id)?, Some(2));
+        registry.remove(&workflow_id, &first_run)?;
+        assert_eq!(registry.live_pid(&workflow_id)?, Some(2));
+
+        // Removing the live run clears the index entry.
+        registry.remove(&workflow_id, &second_run)?;
+        assert_eq!(registry.live_pid(&workflow_id)?, None);
         Ok(())
     }
 

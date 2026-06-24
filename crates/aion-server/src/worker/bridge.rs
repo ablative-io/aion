@@ -46,7 +46,7 @@
 //! `timeout_seconds` and by worker liveness — never by an engine constant.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use aion::{ActivityDispatch, ActivityDispatcher};
@@ -83,6 +83,46 @@ type SyncReceiver = std::sync::mpsc::Receiver<Result<String, String>>;
 /// can widen this key with the wire attempt later — no protocol change needed.
 type PendingActivityKey = (WorkflowId, ActivityId);
 
+/// Routes an unmatched durable-outbox completion into the live workflow.
+///
+/// When the outbox is ON a worker completion can arrive at the sink with no
+/// pending oneshot (the dispatch was non-blocking fan-out, or the original
+/// waiter was lost). Rather than dropping it, [`PendingActivities::complete`]
+/// hands it to this callback, which resolves the workflow to its live engine
+/// process and delivers the terminal into its mailbox. The callback is only
+/// installed when the outbox is enabled, so flag-off the unmatched branch
+/// stays a silent drop.
+pub trait OutboxDeliveryCallback: Send + Sync {
+    /// Deliver a successful completion to the live workflow.
+    ///
+    /// Returns `Ok(true)` when delivered to a live workflow and `Ok(false)`
+    /// when no run is currently live (the expected stale-completion case that
+    /// recovery re-arms).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the engine rejects the delivery.
+    fn deliver_completion(
+        &self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        result: String,
+    ) -> Result<bool, ServerError>;
+
+    /// Deliver a failure to the live workflow. Same `bool`/error contract as
+    /// [`Self::deliver_completion`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the engine rejects the delivery.
+    fn deliver_failure(
+        &self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        reason: String,
+    ) -> Result<bool, ServerError>;
+}
+
 /// Tracks in-flight activity dispatches waiting for worker results.
 ///
 /// When the server's worker stream handler receives an `ActivityResult`, it
@@ -90,9 +130,27 @@ type PendingActivityKey = (WorkflowId, ActivityId);
 /// deliver the result to the blocked NIF thread. Entries are keyed by
 /// [`PendingActivityKey`] so a stale result from a previous server life can
 /// never be matched to a different execution (#59).
-#[derive(Clone, Debug, Default)]
+///
+/// Clones share both the pending map and the outbox-delivery callback through
+/// `Arc`, so [`set_outbox_delivery`](Self::set_outbox_delivery) called once on
+/// any clone after construction is visible to the clone the dispatcher holds.
+#[derive(Clone, Default)]
 pub struct PendingActivities {
     pending: Arc<DashMap<PendingActivityKey, SyncSender>>,
+    outbox_delivery: Arc<OnceLock<Arc<dyn OutboxDeliveryCallback>>>,
+}
+
+impl std::fmt::Debug for PendingActivities {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingActivities")
+            .field("pending", &self.pending.len())
+            .field(
+                "outbox_delivery_installed",
+                &self.outbox_delivery.get().is_some(),
+            )
+            .finish()
+    }
 }
 
 impl PendingActivities {
@@ -102,11 +160,67 @@ impl PendingActivities {
         rx
     }
 
-    fn complete(&self, key: &PendingActivityKey, result: Result<String, String>) -> bool {
-        if let Some((_, sender)) = self.pending.remove(key) {
-            sender.send(result).is_ok()
-        } else {
-            false
+    /// Install the unmatched-completion delivery callback (idempotent).
+    ///
+    /// Set once, after construction, when the durable outbox is enabled. A
+    /// second set is ignored and logged: the callback is process-wide and must
+    /// not silently change identity.
+    pub fn set_outbox_delivery(&self, callback: Arc<dyn OutboxDeliveryCallback>) {
+        if self.outbox_delivery.set(callback).is_err() {
+            tracing::warn!("outbox delivery callback already installed; ignoring duplicate set");
+        }
+    }
+
+    /// Complete a pending dispatch, or route an unmatched completion to the
+    /// outbox delivery callback when one is installed.
+    ///
+    /// A matched entry delivers to its waiting oneshot exactly as before. An
+    /// unmatched completion is dropped silently when no callback is installed
+    /// (outbox OFF — byte-identical to the prior behaviour); with a callback
+    /// installed (outbox ON) it is routed into the live workflow's mailbox.
+    fn complete(
+        &self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        result: Result<String, String>,
+    ) -> bool {
+        // Take and drop the DashMap guard before any callback runs: the engine
+        // delivery the callback invokes must never execute under a shard lock.
+        let matched = self
+            .pending
+            .remove(&(workflow_id.clone(), activity_id.clone()));
+        if let Some((_, sender)) = matched {
+            return sender.send(result).is_ok();
+        }
+        let Some(callback) = self.outbox_delivery.get() else {
+            // Outbox OFF: silent drop, byte-identical to the prior behaviour.
+            return false;
+        };
+        let outcome = match result {
+            Ok(payload) => callback.deliver_completion(workflow_id, activity_id, payload),
+            Err(reason) => callback.deliver_failure(workflow_id, activity_id, reason),
+        };
+        match outcome {
+            Ok(true) => true,
+            Ok(false) => {
+                // Not live: the expected stale-completion case recovery re-arms.
+                tracing::debug!(
+                    workflow_id = %workflow_id,
+                    activity_id = %activity_id,
+                    "unmatched outbox completion for a workflow that is not currently live; \
+                     recovery will re-arm it"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(
+                    workflow_id = %workflow_id,
+                    activity_id = %activity_id,
+                    %error,
+                    "failed to deliver unmatched outbox completion to the live workflow"
+                );
+                false
+            }
         }
     }
 }
@@ -145,7 +259,7 @@ impl ActivityCompletionSink for PendingActivities {
                 Err(format!("{prefix}:{}", error.message))
             }
         };
-        self.complete(&(completion.workflow_id, completion.activity_id), result);
+        self.complete(&completion.workflow_id, &completion.activity_id, result);
         Ok(())
     }
 }
@@ -653,6 +767,8 @@ fn log_worker_error(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use aion_core::{ActivityError, ActivityErrorKind, ContentType, Payload};
 
     use super::*;
@@ -668,7 +784,7 @@ mod tests {
         let id = activity_id(1);
         let rx = pending.insert(workflow_id.clone(), id.clone());
 
-        assert!(pending.complete(&(workflow_id, id), Ok("done".to_owned())));
+        assert!(pending.complete(&workflow_id, &id, Ok("done".to_owned())));
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(50)),
             Ok(Ok("done".to_owned()))
@@ -679,9 +795,130 @@ mod tests {
     fn pending_complete_unknown_returns_false() {
         let pending = PendingActivities::default();
         assert!(!pending.complete(
-            &(WorkflowId::new_v4(), activity_id(99)),
+            &WorkflowId::new_v4(),
+            &activity_id(99),
             Ok("orphan".to_owned())
         ));
+    }
+
+    #[derive(Default)]
+    struct RecordingOutboxCallback {
+        completions: Mutex<Vec<(WorkflowId, ActivityId, String)>>,
+        failures: Mutex<Vec<(WorkflowId, ActivityId, String)>>,
+        live: bool,
+    }
+
+    impl OutboxDeliveryCallback for RecordingOutboxCallback {
+        fn deliver_completion(
+            &self,
+            workflow_id: &WorkflowId,
+            activity_id: &ActivityId,
+            result: String,
+        ) -> Result<bool, ServerError> {
+            self.completions
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
+                .push((workflow_id.clone(), activity_id.clone(), result));
+            Ok(self.live)
+        }
+
+        fn deliver_failure(
+            &self,
+            workflow_id: &WorkflowId,
+            activity_id: &ActivityId,
+            reason: String,
+        ) -> Result<bool, ServerError> {
+            self.failures
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
+                .push((workflow_id.clone(), activity_id.clone(), reason));
+            Ok(self.live)
+        }
+    }
+
+    #[test]
+    fn unmatched_completion_routes_to_outbox_callback_when_installed() -> Result<(), ServerError> {
+        let pending = PendingActivities::default();
+        let callback = Arc::new(RecordingOutboxCallback {
+            live: true,
+            ..RecordingOutboxCallback::default()
+        });
+        // Install on one clone; the wiring must be visible to every clone.
+        pending.clone().set_outbox_delivery(callback.clone());
+
+        let workflow_id = WorkflowId::new_v4();
+        let id = activity_id(7);
+
+        // No pending entry: the completion is unmatched and must route to the
+        // callback rather than being dropped. A live workflow reports true.
+        assert!(pending.complete(&workflow_id, &id, Ok("done".to_owned())));
+        let completions = callback
+            .completions
+            .lock()
+            .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?;
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].0, workflow_id);
+        assert_eq!(completions[0].1, id);
+        assert_eq!(completions[0].2, "done");
+        Ok(())
+    }
+
+    #[test]
+    fn unmatched_failure_routes_to_outbox_callback_and_not_live_reports_false()
+    -> Result<(), ServerError> {
+        let pending = PendingActivities::default();
+        // live = false models the expected stale-completion case.
+        let callback = Arc::new(RecordingOutboxCallback::default());
+        pending.set_outbox_delivery(callback.clone());
+
+        let workflow_id = WorkflowId::new_v4();
+        let id = activity_id(8);
+
+        assert!(!pending.complete(&workflow_id, &id, Err("retryable:boom".to_owned())));
+        let failures = callback
+            .failures
+            .lock()
+            .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?;
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].2, "retryable:boom");
+        Ok(())
+    }
+
+    #[test]
+    fn unmatched_completion_is_silent_drop_when_no_callback_installed() {
+        // Flag-off byte-identical behaviour: no callback, unmatched returns
+        // false (silent drop) exactly as before.
+        let pending = PendingActivities::default();
+        assert!(!pending.complete(&WorkflowId::new_v4(), &activity_id(9), Ok("x".to_owned())));
+    }
+
+    #[test]
+    fn matched_completion_never_reaches_outbox_callback() -> Result<(), ServerError> {
+        let pending = PendingActivities::default();
+        let callback = Arc::new(RecordingOutboxCallback {
+            live: true,
+            ..RecordingOutboxCallback::default()
+        });
+        pending.set_outbox_delivery(callback.clone());
+
+        let workflow_id = WorkflowId::new_v4();
+        let id = activity_id(10);
+        let rx = pending.insert(workflow_id.clone(), id.clone());
+
+        assert!(pending.complete(&workflow_id, &id, Ok("matched".to_owned())));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(50)),
+            Ok(Ok("matched".to_owned()))
+        );
+        assert!(
+            callback
+                .completions
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
+                .is_empty(),
+            "a matched completion must deliver to its waiter, not the outbox callback"
+        );
+        Ok(())
     }
 
     #[test]

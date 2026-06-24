@@ -31,6 +31,7 @@ use chrono::Utc;
 use serde::Deserialize;
 
 use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
+use crate::durability::{FanOutCompletionResult, FanOutItem, FanOutOutcome};
 use crate::registry::Registry;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::nif_activity_dispatch::{FIRST_DELIVERY_ATTEMPT, spawn_completion_task};
@@ -247,22 +248,54 @@ fn dispatch_unscheduled(
         }
         return Ok(());
     };
-    // Record the whole batch first so the Scheduled range stays contiguous,
-    // then dispatch; completions land in the runtime maps keyed by ordinal.
-    for (ordinal, spec) in &fresh {
-        let input = payload_from_json_text(&spec.input, label)?;
-        context
-            .record_activity_scheduled_started(
-                Utc::now(),
-                ActivityId::from_sequence_position(*ordinal),
-                spec.name.clone(),
-                input,
-            )
-            .map_err(|error| error.error_reason())?;
+    // With the outbox flag ON, fresh members route to the durable outbox: one
+    // atomic `record_fan_out_dispatch` stages their Scheduled/Started events and
+    // outbox rows, and the OutboxDispatcher (not a completion task) drives them.
+    // Stale members keep today's path — their recovery is a later increment.
+    // Flag OFF: today's behaviour exactly (per-item record + spawn for fresh∪stale).
+    let outbox_enabled = deps.runtime.outbox_enabled();
+    if outbox_enabled {
+        if !fresh.is_empty() {
+            let items = fan_out_items(&fresh, label)?;
+            context
+                .record_fan_out_dispatch(Utc::now(), &items)
+                .map_err(|error| error.error_reason())?;
+        }
+        // STALE recovery under the flag: the in-flight dispatch that died with the previous
+        // engine process is re-staged by flipping each ordinal's durable outbox row back to
+        // claimable `Pending`, so the OutboxDispatcher re-dispatches it. This replaces — does
+        // not supplement — the in-process `spawn_completion_task` path (excluded below). The
+        // completion dedup makes the redelivery at-least-once-safe.
+        if !stale.is_empty() {
+            let items = fan_out_items(&stale, label)?;
+            context
+                .rearm_outbox_pending(Utc::now(), &items)
+                .map_err(|error| error.error_reason())?;
+        }
+    } else {
+        // Record the whole batch first so the Scheduled range stays contiguous,
+        // then dispatch; completions land in the runtime maps keyed by ordinal.
+        for (ordinal, spec) in &fresh {
+            let input = payload_from_json_text(&spec.input, label)?;
+            context
+                .record_activity_scheduled_started(
+                    Utc::now(),
+                    ActivityId::from_sequence_position(*ordinal),
+                    spec.name.clone(),
+                    input,
+                )
+                .map_err(|error| error.error_reason())?;
+        }
     }
     let namespace = context.workflow_handle().namespace().to_owned();
     let workflow_id = context.workflow_id().clone();
-    for (ordinal, spec) in fresh.iter().chain(stale.iter()) {
+    // Flag ON drives BOTH fresh (via record_fan_out_dispatch) and stale (via the
+    // rearm_outbox_pending re-stage above) through the OutboxDispatcher, so spawn
+    // neither here. Flag OFF spawns the whole fresh∪stale batch as today.
+    let empty: &[(u64, &ActivitySpec)] = &[];
+    let spawn_fresh: &[(u64, &ActivitySpec)] = if outbox_enabled { empty } else { &fresh };
+    let spawn_stale: &[(u64, &ActivitySpec)] = if outbox_enabled { empty } else { &stale };
+    for (ordinal, spec) in spawn_fresh.iter().chain(spawn_stale.iter()) {
         spawn_completion_task(
             &deps.tokio_handle,
             Arc::clone(&deps.runtime),
@@ -282,6 +315,24 @@ fn dispatch_unscheduled(
         );
     }
     Ok(())
+}
+
+/// Map a slice of `(ordinal, spec)` pairs to the durable-outbox [`FanOutItem`]s the recorder stages.
+///
+/// Shared by the flag-ON fresh dispatch ([`NifContext::record_fan_out_dispatch`]) and stale
+/// re-arm ([`NifContext::rearm_outbox_pending`]) paths so both derive identical
+/// `(ordinal, activity_type, input)` items.
+fn fan_out_items(members: &[(u64, &ActivitySpec)], label: &str) -> Result<Vec<FanOutItem>, String> {
+    members
+        .iter()
+        .map(|(ordinal, spec)| {
+            Ok(FanOutItem {
+                ordinal: *ordinal,
+                activity_type: spec.name.clone(),
+                input: payload_from_json_text(&spec.input, label)?,
+            })
+        })
+        .collect()
 }
 
 /// `collect_all`/`collect_map` settlement over one sweep of the range.
@@ -464,19 +515,63 @@ fn take_and_record(
     ordinal: u64,
 ) -> Result<OrdinalState, String> {
     let activity_id = ActivityId::from_sequence_position(ordinal);
+    // Flag ON records terminals through the store-backed dedup primitive; the
+    // returned OrdinalState is the same either way — the terminal for this
+    // ordinal is in history whether this call Recorded it or found it Dropped.
+    let outbox_enabled = deps.runtime.outbox_enabled();
     if let Some(payload) = deps.runtime.take_activity_result(pid, ordinal) {
-        context
-            .record_activity_completed(Utc::now(), activity_id, payload.clone())
-            .map_err(|error| error.error_reason())?;
+        if outbox_enabled {
+            let result = context
+                .record_fan_out_completion(
+                    Utc::now(),
+                    ordinal,
+                    FanOutOutcome::Completed(payload.clone()),
+                )
+                .map_err(|error| error.error_reason())?;
+            log_unexpected_drop(result, ordinal);
+        } else {
+            context
+                .record_activity_completed(Utc::now(), activity_id, payload.clone())
+                .map_err(|error| error.error_reason())?;
+        }
         return Ok(OrdinalState::Completed(payload_text(&payload)?));
     }
     if let Some(error) = deps.runtime.take_activity_error(pid, ordinal) {
-        context
-            .record_activity_failed(Utc::now(), activity_id, terminal_error(&error.message), 1)
-            .map_err(|inner| inner.error_reason())?;
+        if outbox_enabled {
+            let result = context
+                .record_fan_out_completion(
+                    Utc::now(),
+                    ordinal,
+                    FanOutOutcome::Failed {
+                        error: terminal_error(&error.message),
+                        attempt: 1,
+                    },
+                )
+                .map_err(|inner| inner.error_reason())?;
+            log_unexpected_drop(result, ordinal);
+        } else {
+            context
+                .record_activity_failed(Utc::now(), activity_id, terminal_error(&error.message), 1)
+                .map_err(|inner| inner.error_reason())?;
+        }
         return Ok(OrdinalState::Failed(error.message));
     }
     Ok(OrdinalState::Pending)
+}
+
+/// Log a fan-out completion that the dedup primitive Dropped.
+///
+/// `settle_all`/`settle_race` short-circuit via `recorded_terminal` before
+/// reaching `take_and_record`, so within one single-writer turn the result is
+/// always `Recorded`. A `Dropped` here is unexpected on a single node — log it,
+/// but the caller still maps to the correct terminal `OrdinalState` regardless.
+fn log_unexpected_drop(result: FanOutCompletionResult, ordinal: u64) {
+    if result == FanOutCompletionResult::Dropped {
+        tracing::warn!(
+            ordinal,
+            "fan-out completion dropped as duplicate within a single-writer turn (unexpected single-node)"
+        );
+    }
 }
 
 fn record_cancelled(context: &NifContext, ordinal: u64) -> Result<(), String> {

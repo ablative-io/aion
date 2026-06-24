@@ -135,6 +135,50 @@ impl Recorder {
         self.sequence.mark_append_success(events.len())
     }
 
+    /// Re-arms the durable outbox rows for `items` back to claimable `Pending` (crash-recovery
+    /// re-stage).
+    ///
+    /// On first arrival after a restart, an activity whose `ActivityScheduled` is recorded but which
+    /// has no terminal event lost its in-flight dispatch when the previous engine process died. This
+    /// re-stages that dispatch by flipping each ordinal's outbox row back to `Pending` so the
+    /// `OutboxDispatcher` re-dispatches it, instead of driving an in-process completion task.
+    ///
+    /// Each [`FanOutItem`] maps to a fresh [`OutboxRow::pending`] exactly as
+    /// [`Recorder::record_fan_out_dispatch`] does (same `dispatch_key = "{workflow_id}:{ordinal}"`),
+    /// so the re-arm targets the row the original dispatch staged. This is a **pure outbox-table op**:
+    /// it writes no history events and does NOT touch the sequence head — re-dispatch is at-least-once
+    /// and the completion dedup ([`Recorder::record_fan_out_completion`]) absorbs any redelivery. An
+    /// empty `items` slice is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the store rejects the re-arm (including an outbox-unaware
+    /// backend refusing a non-empty re-arm).
+    pub async fn rearm_outbox_pending(
+        &self,
+        recorded_at: DateTime<Utc>,
+        items: &[FanOutItem],
+    ) -> Result<(), DurabilityError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let rows: Vec<OutboxRow> = items
+            .iter()
+            .map(|item| {
+                OutboxRow::pending(
+                    self.workflow_id.clone(),
+                    item.ordinal,
+                    item.activity_type.clone(),
+                    item.input.clone(),
+                    recorded_at,
+                )
+            })
+            .collect();
+        self.store.rearm_outbox_pending(&rows).await?;
+        Ok(())
+    }
+
     /// Store-backed completion dedup for one fan-out ordinal: the cross-node completion chokepoint.
     ///
     /// Determines whether [`ActivityId::from_sequence_position(ordinal)`](ActivityId::from_sequence_position)

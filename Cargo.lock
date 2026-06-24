@@ -167,6 +167,7 @@ dependencies = [
  "aion-core",
  "aion-package",
  "aion-store",
+ "aion-store-libsql",
  "async-trait",
  "beamr",
  "chrono",

@@ -14,6 +14,12 @@ INSERT OR IGNORE INTO outbox
     (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
 
+const REARM_OUTBOX_SQL: &str = "
+INSERT INTO outbox
+    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+ON CONFLICT(dispatch_key) DO UPDATE SET status = 'pending', visible_after = ?8";
+
 const SELECT_CLAIMABLE_SQL: &str = "
 SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after
 FROM outbox
@@ -94,6 +100,66 @@ pub(crate) async fn append_outbox_batch(
     tx.commit()
         .await
         .map_err(|error| crate::error::libsql_error(&error))
+}
+
+/// Re-arm `rows` to claimable `pending` under one `IMMEDIATE` transaction (crash-recovery re-stage).
+///
+/// Each row is upserted: a brand-new `dispatch_key` is inserted as `pending` with the row's
+/// `attempt` (zero for a fresh [`OutboxRow::pending`]); an existing `dispatch_key` is flipped back to
+/// `status = 'pending'` with `visible_after` reset to the row's instant so it is immediately
+/// claimable. The UPDATE branch deliberately does NOT touch `attempt`, preserving the dispatch retry
+/// budget so a workflow that reliably crashes the server still eventually dead-letters.
+///
+/// # Errors
+///
+/// Returns `StoreError::Serialization` when a row cannot be encoded and `StoreError::Backend` for
+/// libSQL boundary failures.
+pub(crate) async fn rearm_outbox_pending(
+    conn: &Connection,
+    rows: &[OutboxRow],
+) -> Result<(), StoreError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    for row in rows {
+        if let Err(error) = rearm_outbox_row(&tx, row).await {
+            rollback(tx).await?;
+            return Err(error);
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))
+}
+
+async fn rearm_outbox_row(tx: &Transaction, row: &OutboxRow) -> Result<(), StoreError> {
+    let input = encode_payload(&row.input)?;
+    tx.execute(
+        REARM_OUTBOX_SQL,
+        params![
+            row.dispatch_key.clone(),
+            row.workflow_id.to_string(),
+            i64::try_from(row.ordinal).map_err(|_| StoreError::Backend(format!(
+                "outbox ordinal overflow: {}",
+                row.ordinal
+            )))?,
+            row.activity_type.clone(),
+            input,
+            OutboxStatus::Pending.as_str(),
+            i64::from(row.attempt),
+            encode_instant(row.visible_after)
+        ],
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| crate::error::libsql_error(&error))
 }
 
 /// Claim up to `limit` due pending rows, flipping them to `claimed` in one `IMMEDIATE` transaction.
@@ -433,6 +499,56 @@ mod tests {
             Some(String::from("failed"))
         );
         assert!(store.claim_outbox_rows(10).await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rearm_outbox_pending_revives_a_done_row_and_inserts_a_fresh_one()
+    -> Result<(), StoreError> {
+        use aion_store::WritableEventStore;
+
+        let store = open_test_store("rearm").await?;
+        let workflow_id = WorkflowId::new_v4();
+
+        // Stage one row, drive it through claim -> done so it has left the claimable set.
+        let original = pending_row(&workflow_id, 0, "charge", instant(1)?);
+        store
+            .append_outbox_batch(std::slice::from_ref(&original))
+            .await?;
+        let claimed = store.claim_outbox_rows(10).await?;
+        assert_eq!(claimed.len(), 1);
+        store.complete_outbox_row(&original.dispatch_key).await?;
+        assert_eq!(
+            status_of(store.connection(), &original.dispatch_key).await?,
+            Some(String::from("done"))
+        );
+        assert!(store.claim_outbox_rows(10).await?.is_empty());
+
+        // Re-arm the SAME dispatch_key (UPDATE branch) plus a brand-new ordinal (INSERT branch).
+        let revived = pending_row(&workflow_id, 0, "charge", Utc::now());
+        let fresh = pending_row(&workflow_id, 1, "settle", Utc::now());
+        store
+            .rearm_outbox_pending(&[revived.clone(), fresh.clone()])
+            .await?;
+
+        // The previously-done row is back to pending...
+        assert_eq!(
+            status_of(store.connection(), &revived.dispatch_key).await?,
+            Some(String::from("pending"))
+        );
+        // ...and the brand-new dispatch_key was inserted as pending.
+        assert_eq!(
+            status_of(store.connection(), &fresh.dispatch_key).await?,
+            Some(String::from("pending"))
+        );
+
+        // Both are now claimable again.
+        let reclaimed = store.claim_outbox_rows(10).await?;
+        let mut keys: Vec<String> = reclaimed.into_iter().map(|row| row.dispatch_key).collect();
+        keys.sort();
+        let mut expected = vec![revived.dispatch_key.clone(), fresh.dispatch_key.clone()];
+        expected.sort();
+        assert_eq!(keys, expected);
         Ok(())
     }
 

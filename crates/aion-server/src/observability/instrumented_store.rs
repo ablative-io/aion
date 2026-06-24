@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{
-    EventStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
-    StoreError, TimerEntry, WritableEventStore, WriteToken,
+    EventStore, OutboxRow, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
+    RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -102,6 +102,47 @@ impl WritableEventStore for InstrumentedEventStore {
         if result.is_ok() {
             self.record_events(events);
         }
+        result
+    }
+
+    /// Forward the atomic durable-outbox append to the inner store.
+    ///
+    /// The default trait method REFUSES a non-empty `outbox_rows` slice (to stop
+    /// an outbox-unaware backend silently dropping fan-out rows). Without this
+    /// override the engine — which writes through this decorator — would never
+    /// reach the inner libSQL store's outbox-capable append, so a commissioned
+    /// (`outbox.enabled`) server could not stage a single fan-out member. We
+    /// delegate to the inner store so its atomicity guarantee (events + rows
+    /// commit together) holds, and observe the same `append` latency bucket and
+    /// lifecycle metrics as a plain append.
+    async fn append_with_outbox(
+        &self,
+        token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+        outbox_rows: &[OutboxRow],
+    ) -> Result<(), StoreError> {
+        let started = Instant::now();
+        let result = self
+            .inner
+            .append_with_outbox(token, workflow_id, events, expected_seq, outbox_rows)
+            .await;
+        self.observe_since("append", started);
+        if result.is_ok() {
+            self.record_events(events);
+        }
+        result
+    }
+
+    /// Forward the crash-recovery outbox re-arm to the inner store.
+    ///
+    /// As with [`Self::append_with_outbox`], the refusing default would strand a
+    /// recovered fan-out member because the engine re-arms through this decorator.
+    async fn rearm_outbox_pending(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        let started = Instant::now();
+        let result = self.inner.rearm_outbox_pending(rows).await;
+        self.observe_since("append", started);
         result
     }
 }

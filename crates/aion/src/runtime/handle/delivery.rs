@@ -4,11 +4,12 @@
 //! Markers are pure wakes — durable state lives in recorded history or the
 //! retained completion maps, never in the marker itself.
 
-use aion_core::{ActivityError, ActivityErrorKind, ContentType, Payload};
+use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId};
 use beamr::atom::Atom;
 use beamr::process::ExitReason;
 
 use crate::error::EngineError;
+use crate::registry::Registry;
 
 use super::{Pid, RuntimeHandle, runtime_error};
 use crate::runtime::payload::term_to_payload;
@@ -184,6 +185,64 @@ impl RuntimeHandle {
             .insert((workflow_pid, activity_id), activity_failure(reason));
         let marker = self.atom_table.intern("activity_failed");
         self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+    }
+
+    /// Route an unmatched durable-outbox activity completion into the live
+    /// workflow's mailbox.
+    ///
+    /// Resolves `workflow_id` to its live pid through `registry` (the
+    /// [`RuntimeHandle`] does not hold the registry) and delegates to
+    /// [`Self::deliver_activity_completion_message`], whose retained payload
+    /// the engine's `take_and_record` later records as the terminal.
+    ///
+    /// Returns `Ok(true)` when delivered to a live workflow and `Ok(false)`
+    /// when no run for the workflow is currently live — the expected
+    /// stale-completion case after a crash or eviction, which recovery
+    /// re-arms. A `false` is not an error: the caller logs it at debug.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegistryPoisoned`] if the registry index lock was
+    /// poisoned, or [`EngineError::Runtime`] if the resolved process is not
+    /// live or the mailbox marker cannot be queued.
+    pub fn deliver_outbox_completion(
+        &self,
+        registry: &Registry,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        result: String,
+    ) -> Result<bool, EngineError> {
+        let Some(pid) = registry.live_pid(workflow_id)? else {
+            return Ok(false);
+        };
+        self.deliver_activity_completion_message(pid, &activity_id.to_string(), result)?;
+        Ok(true)
+    }
+
+    /// Route an unmatched durable-outbox activity failure into the live
+    /// workflow's mailbox.
+    ///
+    /// Failure twin of [`Self::deliver_outbox_completion`]: same registry
+    /// resolution and the same not-live `Ok(false)` outcome, delegating to
+    /// [`Self::deliver_activity_failure_message`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegistryPoisoned`] if the registry index lock was
+    /// poisoned, or [`EngineError::Runtime`] if the resolved process is not
+    /// live or the mailbox marker cannot be queued.
+    pub fn deliver_outbox_failure(
+        &self,
+        registry: &Registry,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        reason: String,
+    ) -> Result<bool, EngineError> {
+        let Some(pid) = registry.live_pid(workflow_id)? else {
+            return Ok(false);
+        };
+        self.deliver_activity_failure_message(pid, &activity_id.to_string(), reason)?;
+        Ok(true)
     }
 
     /// Deliver a successful activity result payload to the workflow mailbox surface.
@@ -524,5 +583,82 @@ async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
         tokio::task::yield_now().await;
     } else {
         tokio::time::sleep(duration).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use aion_core::{ActivityId, RunId, WorkflowId, WorkflowStatus};
+    use aion_package::ContentHash;
+
+    use crate::registry::Registry;
+    use crate::registry::handle::{
+        CompletionNotifier, HandleResidency, WorkflowHandle, WorkflowHandleParts,
+    };
+    use crate::runtime::config::RuntimeConfig;
+
+    use super::RuntimeHandle;
+
+    fn live_handle(workflow_id: &WorkflowId, run_id: &RunId, pid: u64) -> WorkflowHandle {
+        let store = Arc::new(aion_store::InMemoryStore::default());
+        let recorder = crate::durability::Recorder::new(workflow_id.clone(), store);
+        WorkflowHandle::new(WorkflowHandleParts {
+            workflow_id: workflow_id.clone(),
+            run_id: run_id.clone(),
+            pid,
+            workflow_type: "checkout".to_owned(),
+            namespace: String::from("default"),
+            loaded_version: ContentHash::from_bytes([1; 32]),
+            cached_status: WorkflowStatus::Running,
+            residency: HandleResidency::Resident,
+            recorder,
+            completion: CompletionNotifier::new(),
+        })
+    }
+
+    #[test]
+    fn outbox_completion_lands_where_take_reads_it() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let registry = Registry::default();
+        let workflow_id = WorkflowId::new_v4();
+        let run_id = RunId::new_v4();
+        // A live test process supplies the pid the registry resolves to.
+        let pid = runtime.spawn_test_process()?;
+        registry.insert(
+            (workflow_id.clone(), run_id.clone()),
+            live_handle(&workflow_id, &run_id, pid),
+        )?;
+
+        let ordinal = 3;
+        let activity_id = ActivityId::from_sequence_position(ordinal);
+        let delivered = runtime.deliver_outbox_completion(
+            &registry,
+            &workflow_id,
+            &activity_id,
+            r#"{"ok":true}"#.to_owned(),
+        )?;
+
+        assert!(delivered, "delivery to a live workflow must report true");
+        let payload = runtime
+            .take_activity_result(pid, ordinal)
+            .ok_or("completion was not retained where take_activity_result reads it")?;
+        assert_eq!(payload.bytes(), br#"{"ok":true}"#);
+
+        // An unknown workflow id is the not-live outcome, never an error.
+        let unknown = runtime.deliver_outbox_completion(
+            &registry,
+            &WorkflowId::new_v4(),
+            &activity_id,
+            "{}".to_owned(),
+        )?;
+        assert!(
+            !unknown,
+            "an unknown workflow must report not-live, not error"
+        );
+
+        runtime.shutdown()?;
+        Ok(())
     }
 }
