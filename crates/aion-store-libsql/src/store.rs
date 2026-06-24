@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 
 use aion_store::{
-    Event, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
-    StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
-    WritableEventStore, WriteToken,
+    Event, OutboxRow, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
+    ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
+    WorkflowSummary, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -79,6 +79,36 @@ impl LibSqlStore {
             .map_err(|error| crate::error::libsql_error(&error))
     }
 
+    /// Atomically append `events` and, when `outbox_rows` is `Some`, the outbox rows in the same
+    /// `IMMEDIATE` transaction, under the expected-head sequence guard.
+    ///
+    /// This is the durable fan-out write: the scheduling events and their outbox rows commit
+    /// together or not at all. Passing `None` is equivalent to
+    /// [`WritableEventStore::append`](aion_store::WritableEventStore::append).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::SequenceConflict` when the stored head differs from `expected_seq`,
+    /// `StoreError::Serialization` when an event or outbox payload cannot be serialized, and
+    /// `StoreError::Backend` for libSQL boundary failures.
+    pub async fn append_with_outbox(
+        &self,
+        _token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+        outbox_rows: Option<&[OutboxRow]>,
+    ) -> Result<(), StoreError> {
+        crate::append::append_with_outbox(
+            self.connection(),
+            workflow_id,
+            events,
+            expected_seq,
+            outbox_rows,
+        )
+        .await
+    }
+
     /// Borrow the shared libSQL connection used by append, read, and timer modules.
     pub(crate) fn connection(&self) -> &libsql::Connection {
         &self.conn
@@ -126,6 +156,40 @@ impl WritableEventStore for LibSqlStore {
         expected_seq: u64,
     ) -> Result<(), StoreError> {
         crate::append::append(self.connection(), workflow_id, events, expected_seq).await
+    }
+}
+
+#[async_trait]
+impl OutboxStore for LibSqlStore {
+    async fn append_outbox_batch(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        crate::outbox::append_outbox_batch(self.connection(), rows).await
+    }
+
+    async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
+        crate::outbox::claim_outbox_rows(self.connection(), limit).await
+    }
+
+    async fn complete_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        crate::outbox::complete_outbox_row(self.connection(), dispatch_key).await
+    }
+
+    async fn retry_outbox_row(
+        &self,
+        dispatch_key: &str,
+        next_attempt: u32,
+        visible_after: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        crate::outbox::retry_outbox_row(
+            self.connection(),
+            dispatch_key,
+            next_attempt,
+            visible_after,
+        )
+        .await
+    }
+
+    async fn fail_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        crate::outbox::fail_outbox_row(self.connection(), dispatch_key).await
     }
 }
 

@@ -84,7 +84,34 @@ pub const CREATE_VISIBILITY_CLOSE_TIME_INDEX: &str = "
 CREATE INDEX IF NOT EXISTS idx_visibility_close_time
 ON visibility (close_time)";
 
-const DDL_STATEMENTS: [&str; 11] = [
+/// Durable fan-out dispatch outbox.
+///
+/// `dispatch_key` (`"{workflow_id}:{ordinal}"`) is `UNIQUE`: it is the database-level idempotency
+/// guard, so a re-issued append of the same fan-out batch silently ignores the duplicate rows via
+/// `INSERT OR IGNORE`. `status` is one of `pending`/`claimed`/`done`/`failed`; `visible_after`
+/// fences retry backoff so a row is not re-claimed before its delay elapses.
+pub const CREATE_OUTBOX_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS outbox (
+    dispatch_key TEXT NOT NULL UNIQUE,
+    workflow_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    activity_type TEXT NOT NULL,
+    input BLOB NOT NULL,
+    status TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    visible_after TEXT NOT NULL,
+    PRIMARY KEY (dispatch_key)
+)";
+
+/// Partial index over claimable rows, supporting the dispatcher's `status='pending'` claim scan
+/// ordered by `visible_after`. Restricting the index to pending rows keeps it small as completed
+/// rows accumulate.
+pub const CREATE_OUTBOX_PENDING_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_outbox_pending
+ON outbox (status, visible_after)
+WHERE status = 'pending'";
+
+const DDL_STATEMENTS: [&str; 13] = [
     CREATE_EVENTS_TABLE,
     CREATE_EVENTS_PROJECTION_INDEX,
     CREATE_TIMERS_TABLE,
@@ -96,6 +123,8 @@ const DDL_STATEMENTS: [&str; 11] = [
     CREATE_VISIBILITY_STATUS_INDEX,
     CREATE_VISIBILITY_START_TIME_INDEX,
     CREATE_VISIBILITY_CLOSE_TIME_INDEX,
+    CREATE_OUTBOX_TABLE,
+    CREATE_OUTBOX_PENDING_INDEX,
 ];
 
 /// Ensure the libSQL schema exists on a fresh or previously-created database.
@@ -156,6 +185,8 @@ mod tests {
         assert_schema_object(&conn, "index", "idx_visibility_status").await?;
         assert_schema_object(&conn, "index", "idx_visibility_start_time").await?;
         assert_schema_object(&conn, "index", "idx_visibility_close_time").await?;
+        assert_schema_object(&conn, "table", "outbox").await?;
+        assert_schema_object(&conn, "index", "idx_outbox_pending").await?;
 
         Ok(())
     }
