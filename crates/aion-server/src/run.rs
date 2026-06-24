@@ -16,12 +16,9 @@ use tracing::{error, info};
 
 use std::sync::Arc;
 
-use aion_store::OutboxStore;
-use aion_store_libsql::LibSqlStore;
-
 use crate::{
     ServerConfig, ServerError, ServerState, api,
-    config::{CliOverrides, NamespaceMode, OutboxConfig, StoreBackend, StoreConfig},
+    config::{CliOverrides, NamespaceMode, OutboxConfig, StoreBackend},
     observability,
     shutdown::{self, ShutdownOutcome},
     worker::{ActivityDispatcher, OutboxDispatcher, OutboxDispatcherConfig, WorkerOutboxDispatch},
@@ -55,10 +52,11 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     let config = ServerConfig::load(&cli)?;
     reject_auth_without_feature(&config)?;
     let store_backend = config.store.backend;
-    // Capture the outbox and store settings before `build` consumes `config`,
-    // so the (default-off) outbox dispatcher can be wired after state is up.
+    // Capture the outbox settings before `build` consumes `config`, so the
+    // (default-off) outbox dispatcher can be wired after state is up. The
+    // dispatcher shares the engine's already-opened libSQL store (one
+    // connection) via `state.outbox_store()`, so no store settings are needed.
     let outbox_config = config.outbox.clone();
-    let store_config = config.store.clone();
     let state = ServerState::build(config).await?;
     reject_tls_until_supported(&state)?;
 
@@ -88,7 +86,7 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // Dormant by default: only when `outbox.enabled` is set does the
     // non-replayed outbox dispatcher task start. With the flag off (the
     // default) nothing here runs and server behaviour is unchanged.
-    maybe_spawn_outbox_dispatcher(&state, &outbox_config, &store_config, &shutdown_rx).await?;
+    maybe_spawn_outbox_dispatcher(&state, &outbox_config, &shutdown_rx)?;
     let mut grpc = tokio::spawn(serve_grpc(state.clone(), grpc_address, shutdown_rx.clone()));
     let mut http = tokio::spawn(serve_http(state.clone(), http_address, shutdown_rx));
 
@@ -221,26 +219,39 @@ fn reject_auth_without_feature(config: &ServerConfig) -> Result<(), ServerError>
 /// operator commissioned it (`outbox.enabled = true`).
 ///
 /// This is the single gate that keeps Phase 2 dormant: with the flag off (the
-/// default) the function returns immediately without constructing a store
-/// handle or spawning a task, so default server behaviour — and the live
-/// workflow dispatch path — is entirely unchanged. The dispatcher shares the
-/// server's shutdown watch, so it drains on the same signal as the transports.
+/// default) the function returns immediately without spawning a task, so
+/// default server behaviour — and the live workflow dispatch path — is entirely
+/// unchanged. When commissioned, the dispatcher claims rows through the engine's
+/// own shared `Arc<LibSqlStore>` (one `libsql::Connection`), so its writes
+/// serialize with the engine's rather than contending across a second
+/// connection. The dispatcher shares the server's shutdown watch, so it drains
+/// on the same signal as the transports.
 ///
 /// NOTE (Phase boundary): the spawned dispatcher dispatches claimed rows and
 /// records each row's terminal outbox state (done / retry / failed). Routing the
 /// worker completion back into workflow history through the Recorder is Phase 3
 /// and is not wired here.
-async fn maybe_spawn_outbox_dispatcher(
+fn maybe_spawn_outbox_dispatcher(
     state: &ServerState,
     outbox_config: &OutboxConfig,
-    store_config: &StoreConfig,
     shutdown_rx: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), ServerError> {
     if !outbox_config.enabled {
         return Ok(());
     }
     let dispatcher_config = resolve_outbox_config(outbox_config)?;
-    let outbox_store = open_outbox_store(store_config).await?;
+    // Share the engine's already-opened libSQL store: one `Arc<LibSqlStore>`,
+    // one `libsql::Connection`. The dispatcher's `claim_outbox_rows` writes then
+    // serialize against the engine's `append_with_outbox` on that single
+    // connection instead of contending across a second one (no `SQLITE_BUSY`).
+    // The in-memory backend has no outbox table, so `outbox_store()` is `None`
+    // and commissioning the dispatcher against it is a configuration error.
+    let outbox_store = state.outbox_store().ok_or_else(|| ServerError::Config {
+        message: "outbox.enabled=true requires store.backend=libsql: the durable outbox \
+                  dispatcher claims rows from the libSQL outbox table, which the in-memory \
+                  store does not provide"
+            .to_owned(),
+    })?;
     let push_dispatcher = ActivityDispatcher::new(state.worker_registry().clone())
         .with_drain_state(state.drain_state().clone());
     let row_dispatch = Arc::new(WorkerOutboxDispatch::new(
@@ -287,33 +298,6 @@ fn resolve_outbox_config(outbox: &OutboxConfig) -> Result<OutboxDispatcherConfig
         backoff_multiplier,
         backoff_max: std::time::Duration::from_millis(backoff_max_ms),
     })
-}
-
-/// Open the outbox store the dispatcher claims rows from.
-///
-/// The durable outbox is a libSQL feature; the in-memory store has no outbox
-/// table, so commissioning the dispatcher against it is a configuration error
-/// the operator must resolve by selecting the libSQL backend.
-async fn open_outbox_store(
-    store_config: &StoreConfig,
-) -> Result<Arc<dyn OutboxStore>, ServerError> {
-    match store_config.backend {
-        StoreBackend::LibSql => {
-            let Some(url) = store_config.url.clone() else {
-                return Err(ServerError::Config {
-                    message: "store.url must not be empty when store.backend is libsql".to_owned(),
-                });
-            };
-            let store = LibSqlStore::open(url).await.map_err(ServerError::from)?;
-            Ok(Arc::new(store))
-        }
-        StoreBackend::Memory => Err(ServerError::Config {
-            message: "outbox.enabled=true requires store.backend=libsql: the durable outbox \
-                      dispatcher claims rows from the libSQL outbox table, which the in-memory \
-                      store does not provide"
-                .to_owned(),
-        }),
-    }
 }
 
 fn reject_tls_until_supported(state: &ServerState) -> Result<(), ServerError> {

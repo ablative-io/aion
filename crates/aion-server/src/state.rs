@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use aion::{
     ActivityDispatcher, EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter,
 };
-use aion_store::EventStore;
+use aion_store::{EventStore, OutboxStore};
 use aion_store_libsql::LibSqlStore;
 
 use crate::dev_ui::{ActivityMockRegistry, DevMockingDispatcher};
@@ -44,6 +44,10 @@ struct ServerStateInner {
     /// Shared per-run activity-mock registry. Present only when the dev surface
     /// is commissioned; the engine's dispatcher consults this exact instance.
     activity_mock_registry: Option<ActivityMockRegistry>,
+    /// The leaf libSQL store cast as an [`OutboxStore`], shared with the engine's
+    /// `EventStore` so the outbox dispatcher writes through the same single
+    /// `libsql::Connection`. `None` for the in-memory backend (no outbox table).
+    outbox_store: Option<Arc<dyn OutboxStore>>,
     #[cfg(feature = "auth")]
     jwks_cache: Option<JwksCache>,
 }
@@ -57,8 +61,8 @@ impl ServerState {
     /// be constructed.
     pub async fn build(config: ServerConfig) -> Result<Self, ServerError> {
         let (store_config, runtime) = config.into_parts();
-        let store = connect_store(store_config).await?;
-        Self::build_with_store_arc(store, runtime).await
+        let (store, outbox_store) = connect_store(store_config).await?;
+        Self::build_with_store_arc(store, outbox_store, runtime).await
     }
 
     /// Build shared state from an already-constructed store.
@@ -70,11 +74,12 @@ impl ServerState {
     where
         S: EventStore,
     {
-        Self::build_with_store_arc(Arc::new(store), runtime).await
+        Self::build_with_store_arc(Arc::new(store), None, runtime).await
     }
 
     async fn build_with_store_arc(
         store: Arc<dyn EventStore>,
+        outbox_store: Option<Arc<dyn OutboxStore>>,
         runtime: RuntimeConfig,
     ) -> Result<Self, ServerError> {
         // The server unconditionally mounts /events/stream, so the engine's
@@ -181,6 +186,7 @@ impl ServerState {
                 metrics: exported_metrics,
                 health: Some(HealthState::new(instrumented_store, true)),
                 activity_mock_registry,
+                outbox_store,
                 #[cfg(feature = "auth")]
                 jwks_cache,
             }),
@@ -202,6 +208,7 @@ impl ServerState {
                 metrics: None,
                 health: None,
                 activity_mock_registry: None,
+                outbox_store: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -232,6 +239,7 @@ impl ServerState {
                 metrics: None,
                 health: None,
                 activity_mock_registry: None,
+                outbox_store: None,
                 jwks_cache: Some(jwks_cache),
             }),
         }
@@ -256,6 +264,7 @@ impl ServerState {
                 metrics: None,
                 health: None,
                 activity_mock_registry: None,
+                outbox_store: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -325,6 +334,16 @@ impl ServerState {
         self.inner.activity_mock_registry.as_ref()
     }
 
+    /// Borrow the outbox store the dispatcher claims rows from, when the durable
+    /// (libSQL) backend is in use. This is the SAME leaf `Arc<LibSqlStore>` the
+    /// engine writes through, so the dispatcher shares its single
+    /// `libsql::Connection` rather than opening a second contending one. Returns
+    /// [`None`] for the in-memory backend, which has no outbox table.
+    #[must_use]
+    pub fn outbox_store(&self) -> Option<Arc<dyn OutboxStore>> {
+        self.inner.outbox_store.clone()
+    }
+
     /// Borrow the shared JWKS cache when authentication is enabled.
     #[cfg(feature = "auth")]
     #[must_use]
@@ -368,9 +387,20 @@ fn metrics_config_error(error: &MetricsError) -> ServerError {
     }
 }
 
-async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, ServerError> {
+/// Connect the durable store, yielding the engine's [`EventStore`] handle and,
+/// for the libSQL backend, the SAME leaf store cast as an [`OutboxStore`].
+///
+/// Both handles are clones of one `Arc<LibSqlStore>`, which holds a single
+/// `libsql::Connection`. Sharing that connection with the outbox dispatcher
+/// serializes the engine's `append_with_outbox` and the dispatcher's
+/// `claim_outbox_rows` writes, so the two never contend across separate
+/// connections and never raise `SQLITE_BUSY`. The in-memory backend has no
+/// outbox table, so it yields `None`.
+async fn connect_store(
+    config: StoreConfig,
+) -> Result<(Arc<dyn EventStore>, Option<Arc<dyn OutboxStore>>), ServerError> {
     match config.backend {
-        StoreBackend::Memory => Ok(Arc::new(aion_store::InMemoryStore::default())),
+        StoreBackend::Memory => Ok((Arc::new(aion_store::InMemoryStore::default()), None)),
         StoreBackend::LibSql => {
             let Some(url) = config.url else {
                 return Err(ServerError::Config {
@@ -391,7 +421,10 @@ async fn connect_store(config: StoreConfig) -> Result<Arc<dyn EventStore>, Serve
                     },
                     other => ServerError::from(other),
                 })?;
-            Ok(Arc::new(store))
+            let leaf = Arc::new(store);
+            let event_store: Arc<dyn EventStore> = leaf.clone();
+            let outbox_store: Arc<dyn OutboxStore> = leaf;
+            Ok((event_store, Some(outbox_store)))
         }
     }
 }
