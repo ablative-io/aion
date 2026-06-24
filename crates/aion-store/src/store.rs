@@ -6,7 +6,7 @@ use aion_core::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::{StoreError, TimerEntry};
+use crate::{OutboxRow, StoreError, TimerEntry};
 
 mod write_capability {
     /// Capability required to append workflow events.
@@ -139,6 +139,48 @@ pub trait WritableEventStore: Send + Sync + 'static {
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError>;
+
+    /// Atomically appends `events` and the durable-outbox `outbox_rows` for `workflow_id` in a
+    /// single transaction, under the same expected-head sequence guard as [`Self::append`].
+    ///
+    /// This is the durable fan-out write: the `ActivityScheduled`/`ActivityStarted` scheduling
+    /// events and their matching outbox rows commit together or not at all. Atomicity is
+    /// load-bearing — a committed fan-out batch always carries both, or neither — so the out-of-band
+    /// dispatcher can never observe an outbox row whose scheduling events were rolled back, and a
+    /// re-issued append cannot leave events without their dispatch rows.
+    ///
+    /// # Default implementation (safe for outbox-unaware backends)
+    ///
+    /// The default delegates to [`Self::append`] when `outbox_rows` is empty (byte-for-byte
+    /// equivalent to an event-only append), and otherwise returns [`StoreError::Backend`] **rather
+    /// than silently dropping the outbox rows**. Dropping them would be the dangerous failure mode:
+    /// the events would commit, the workflow would believe its fan-out is durably staged, and the
+    /// rows would never be dispatched. A hard error forces a backend to opt in to durable-outbox
+    /// support by overriding this method (as the libSQL store does) before any caller can route a
+    /// fan-out batch through it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::SequenceConflict`] when the stored head differs from `expected_seq`,
+    /// [`StoreError::Serialization`] when an event or outbox payload cannot be serialized, and
+    /// [`StoreError::Backend`] for backend boundary failures or when an outbox-unaware backend is
+    /// asked to persist a non-empty `outbox_rows` slice.
+    async fn append_with_outbox(
+        &self,
+        token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+        outbox_rows: &[OutboxRow],
+    ) -> Result<(), StoreError> {
+        if outbox_rows.is_empty() {
+            return self.append(token, workflow_id, events, expected_seq).await;
+        }
+        Err(StoreError::Backend(String::from(
+            "this event store does not support durable-outbox appends; \
+             refusing to drop outbox rows (override WritableEventStore::append_with_outbox)",
+        )))
+    }
 }
 
 /// Convenience trait for concrete stores that support reads/timers, recorder

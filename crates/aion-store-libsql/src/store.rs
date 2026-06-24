@@ -157,6 +157,24 @@ impl WritableEventStore for LibSqlStore {
     ) -> Result<(), StoreError> {
         crate::append::append(self.connection(), workflow_id, events, expected_seq).await
     }
+
+    async fn append_with_outbox(
+        &self,
+        _token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+        outbox_rows: &[OutboxRow],
+    ) -> Result<(), StoreError> {
+        crate::append::append_with_outbox(
+            self.connection(),
+            workflow_id,
+            events,
+            expected_seq,
+            Some(outbox_rows),
+        )
+        .await
+    }
 }
 
 #[async_trait]

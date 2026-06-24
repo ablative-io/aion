@@ -14,6 +14,13 @@ use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
 
+/// Durable fan-out dispatch: the additive atomic events + outbox-rows append.
+mod fan_out;
+#[cfg(test)]
+mod fan_out_tests;
+
+pub use fan_out::FanOutItem;
+
 /// Identity fields recorded on a `WorkflowStarted` event.
 #[derive(Clone, Debug)]
 pub struct WorkflowStartRecord {
