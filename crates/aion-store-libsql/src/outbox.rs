@@ -210,6 +210,63 @@ pub(crate) async fn fail_outbox_row(
         .map_err(|error| crate::error::libsql_error(&error))
 }
 
+/// Out-of-band snapshot of one outbox row's lifecycle bookkeeping.
+///
+/// Read by [`LibSqlStore::outbox_row_state`](crate::LibSqlStore::outbox_row_state)
+/// for tests and operator inspection. It carries only the mutable
+/// dispatch-state columns — status, attempt count, and the retry-backoff fence —
+/// not the full row payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboxRowState {
+    /// Current lifecycle state of the row.
+    pub status: OutboxStatus,
+    /// Dispatch attempt count recorded on the row.
+    pub attempt: u32,
+    /// Earliest instant at which the row becomes claimable again.
+    pub visible_after: DateTime<Utc>,
+}
+
+const SELECT_ROW_STATE_SQL: &str = "
+SELECT status, attempt, visible_after FROM outbox WHERE dispatch_key = ?1";
+
+/// Read the `(status, attempt, visible_after)` bookkeeping for one row, or `None` when absent.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when
+/// the stored status token or timestamp cannot be decoded.
+pub(crate) async fn outbox_row_state(
+    conn: &Connection,
+    dispatch_key: &str,
+) -> Result<Option<OutboxRowState>, StoreError> {
+    let mut rows = conn
+        .query(SELECT_ROW_STATE_SQL, params![dispatch_key.to_string()])
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    else {
+        return Ok(None);
+    };
+    let status: String = row
+        .get(0)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let attempt: i64 = row
+        .get(1)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let visible_after: String = row
+        .get(2)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    Ok(Some(OutboxRowState {
+        status: OutboxStatus::parse_token(&status)?,
+        attempt: u32::try_from(attempt)
+            .map_err(|_| StoreError::Backend(format!("outbox attempt out of range: {attempt}")))?,
+        visible_after: decode_instant(&visible_after)?,
+    }))
+}
+
 fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {
     let dispatch_key: String = row
         .get(0)

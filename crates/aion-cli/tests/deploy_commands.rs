@@ -104,6 +104,7 @@ fn runtime_config() -> RuntimeConfig {
         },
         authoring: AuthoringConfig::default(),
         dev: aion_server::config::DevConfig::default(),
+        outbox: aion_server::config::OutboxConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: "default".to_owned(),
