@@ -157,6 +157,16 @@ impl ServerState {
             .build()
             .await?;
         let engine = Arc::new(engine);
+        // Outbox ON: route unmatched worker completions arriving at the sink
+        // into the live workflow's mailbox. Flag-off this callback is never
+        // installed, so the sink's unmatched branch stays a silent drop. The
+        // dispatcher is not rebuilt — it shares this exact pending tracker.
+        if runtime.outbox.enabled {
+            let callback = Arc::new(crate::worker::ServerOutboxDeliveryCallback::new(
+                Arc::clone(&engine),
+            ));
+            pending_activities.set_outbox_delivery(callback);
+        }
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
         #[cfg(feature = "auth")]
         let jwks_cache = build_jwks_cache(&runtime).await?;

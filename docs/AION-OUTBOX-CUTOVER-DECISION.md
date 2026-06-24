@@ -116,12 +116,23 @@ All gated on `outbox.enabled` (default `false` — server behaviour unchanged wh
 
 ## Open edges (flag, don't block the MVP)
 
-- **`workflow_id`→pid resolution** for the completion handler is the one genuinely
-  new lookup; verify the server can reach a live-pid registry off the NIF path.
+- **`workflow_id`→pid resolution.** Resolved: the registry is keyed
+  `(WorkflowId, RunId)` but the one-live-run-per-workflow invariant holds
+  (continue-as-new inserts the new run, then removes the old; distinct RunIds), so a
+  secondary `WorkflowId → (RunId, pid)` index gives an unambiguous live pid. Index
+  value carries `RunId` so removal is a compare-and-delete (a newer run that already
+  overwrote the entry survives the old run's removal).
+- **Continue-as-new window (known interim limitation).** The worker completion
+  carries no `RunId`, so a completion arriving *during* the brief window where both
+  the old and new run of a `WorkflowId` are live routes to the current (new) run. The
+  recovery re-arm backstops this: a misrouted/ignored completion leaves the ordinal
+  `scheduled-no-terminal`, so it is re-dispatched. The cross-node/haematite version
+  threads run identity properly and removes this edge.
 - **Workflow eviction.** `deliver_activity_completion_message` requires the PID live
   (`ensure_live_pid`). A workflow actively awaiting a `collect_*` is live; eviction
-  *while* awaiting activities is a separate concern (the recovery re-arm covers it —
-  the completion just routes through replay instead).
+  *while* awaiting activities routes through the not-live delivery outcome (logged at
+  debug) and is covered by the recovery re-arm (the completion routes through replay
+  instead).
 
 ## Test plan (Phase 4 end-to-end, model on `concurrency_e2e.rs` gate harness)
 
