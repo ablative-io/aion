@@ -19,7 +19,7 @@ mod fan_out;
 #[cfg(test)]
 mod fan_out_tests;
 
-pub use fan_out::FanOutItem;
+pub use fan_out::{FanOutCompletionResult, FanOutItem, FanOutOutcome};
 
 /// Identity fields recorded on a `WorkflowStarted` event.
 #[derive(Clone, Debug)]
