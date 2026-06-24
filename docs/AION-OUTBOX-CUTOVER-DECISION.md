@@ -128,11 +128,23 @@ All gated on `outbox.enabled` (default `false` — server behaviour unchanged wh
   recovery re-arm backstops this: a misrouted/ignored completion leaves the ordinal
   `scheduled-no-terminal`, so it is re-dispatched. The cross-node/haematite version
   threads run identity properly and removes this edge.
-- **Workflow eviction.** `deliver_activity_completion_message` requires the PID live
-  (`ensure_live_pid`). A workflow actively awaiting a `collect_*` is live; eviction
-  *while* awaiting activities routes through the not-live delivery outcome (logged at
-  debug) and is covered by the recovery re-arm (the completion routes through replay
-  instead).
+- **Workflow eviction — RESOLVED: SAFE.** A `collect`-parked workflow is NOT evicted:
+  `Residency` is only `{Resident, Suspended}`; a handle is removed from the registry
+  (and the live-pid index) ONLY on a terminal transition (complete/fail/cancel/
+  continue-as-new); there is no idle-eviction, sweep, or hibernation; and a parked
+  workflow's beamr process stays parked (not unloaded). So `live_pid` always resolves
+  a parked workflow and `deliver_outbox_completion` delivers — demonstrated by the
+  e2e tests (a parked workflow receives its completion and wakes). The `Ok(false)`
+  not-live branch is therefore reached only for a genuinely-departed run (terminal /
+  continue-as-new'd), where dropping the late completion is correct.
+- **Residual liveness risk (inherent, documented).** The real loss path is
+  OutboxDispatcher reliability, not the registry: a row that exhausts its retry
+  budget (e.g. all workers for the activity type down past `max_attempts`)
+  dead-letters to `failed` and is only re-armed on the next engine restart (the
+  re-arm UPSERT flips any prior status back to `pending`). This is the standard
+  at-least-once + retry-budget tradeoff, not a cutover-specific defect. A periodic
+  reconciliation sweep over `failed`/`done`-without-terminal rows would close it
+  without a restart — a future hardening, not a blocker.
 
 ## Test plan (Phase 4 end-to-end, model on `concurrency_e2e.rs` gate harness)
 
