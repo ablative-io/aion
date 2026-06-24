@@ -154,3 +154,43 @@ All gated on `outbox.enabled` (default `false` — server behaviour unchanged wh
 - **Duplicate completion** for an already-recorded ordinal → ignored (no second
   terminal, no double-wake effect); outbox row stays `done`.
 - **Out-of-order completions** → settle correctly regardless of arrival order.
+
+## Remaining work — REQUIRED, nothing optional
+
+The cutover landed (flag default-off) is correct and crash-safe for the tested paths,
+but the following are REQUIRED before the flag is turned ON in production. None is
+"optional hardening" — they are tracked work, listed roughly in priority order.
+
+1. **Live reconciliation sweep (no-restart re-arm).** A periodic sweep that re-arms
+   outbox rows that are `failed` (dead-lettered past `max_attempts`) or
+   `done`-without-a-terminal-in-history back to `pending` in a LIVE server, so a
+   worker outage does not strand an activity until the next engine restart. This is
+   the one residual that is a real liveness gap, not an inherent tradeoff.
+2. **Cancel/settle outbox rows when collect cancels an ordinal.** On fail-fast /
+   scope-expiry / collect_race loser cancellation, mark the ordinal's outbox row
+   terminal so the dispatcher does NOT push a dead activity to a worker (today
+   cancelled siblings' rows stay live and get dispatched; the late completion is
+   dropped, but the worker still executes — wasted work).
+3. **Thread `RunId` on the wire (close the continue-as-new window).** Carry `RunId`
+   outbox row → `ScheduledActivity` → worker echo → sink, so the completion resolves
+   `(WorkflowId, RunId)`→pid exactly instead of routing to the current live run.
+   Removes the continue-as-new misroute edge (today only backstopped by recovery).
+4. **Full `run_server` bootstrap integration test.** The real-transport e2e
+   constructs the `OutboxDispatcher` manually; nothing exercises
+   `run.rs::maybe_spawn_outbox_dispatcher` wiring `state.outbox_store()` → the spawned
+   dispatcher in a real boot. (A `connect_store` unit test covers the leaf-store
+   wiring point; the full boot path still needs an integration test.)
+5. **Liminal cross-node swap.** Replace the OutboxDispatcher's local
+   `registry.dispatch` with a liminal cross-node send; `dispatch_key` → liminal
+   per-channel idempotency key. No outbox schema change needed. This is what makes the
+   interim actually cross-node (today: single workflow-node + remote workers).
+
+## Next major track (the interim is the stepping stone to this)
+
+**Active-active haematite foundation.** Draft + review the synchronous write-ack
+replication design (WriteProposal/WriteAck `SyncMessage` + correlation +
+durable-apply-then-ack + writer ack collector + liveness membership) BEFORE the
+multi-week build (~2–4 weeks net-new per the spike); then union event-merge, the H2
+monotonic fencing token (true cross-node single-writer), and the storage swap
+libsql → haematite. `record_fan_out_completion` is already the cross-node-correct
+dedup primitive on the path for that swap.

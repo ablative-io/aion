@@ -492,6 +492,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_store_shares_outbox_store_only_for_libsql()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::config::{StoreBackend, StoreConfig};
+
+        // Memory backend: no durable outbox table, so no outbox store handle —
+        // and `outbox.enabled` over memory is rejected at dispatcher commission.
+        let (_event_store, outbox) = super::connect_store(StoreConfig {
+            backend: StoreBackend::Memory,
+            url: None,
+        })
+        .await?;
+        assert!(
+            outbox.is_none(),
+            "the in-memory backend exposes no outbox store"
+        );
+
+        // LibSql backend: the leaf Arc<LibSqlStore> is shared as BOTH the engine's
+        // EventStore and the dispatcher's OutboxStore (one libsql::Connection), so
+        // the dispatcher reuses the engine's connection rather than opening a
+        // second contending one (the inc-8 contention fix).
+        let path = std::env::temp_dir().join(format!(
+            "aion-connect-store-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ));
+        let (_event_store, outbox) = super::connect_store(StoreConfig {
+            backend: StoreBackend::LibSql,
+            url: Some(path.to_string_lossy().into_owned()),
+        })
+        .await?;
+        assert!(
+            outbox.is_some(),
+            "the libSQL backend shares its leaf store as the dispatcher's outbox store"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn state_build_fails_without_event_broadcast_capacity()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut runtime = runtime_config();
