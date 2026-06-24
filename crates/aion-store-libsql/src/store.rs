@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::config::{LibSqlConfig, LibSqlMode};
+use crate::outbox::OutboxRowState;
 
 /// Durable `EventStore` backed by a shared libSQL connection.
 #[derive(Clone)]
@@ -107,6 +108,27 @@ impl LibSqlStore {
             outbox_rows,
         )
         .await
+    }
+
+    /// Read the persisted lifecycle state of one outbox row by its dispatch key.
+    ///
+    /// Returns the `(status, attempt, visible_after)` triple, or `None` when no
+    /// row carries `dispatch_key` (the dedup guard may have ignored it). This is
+    /// an out-of-band inspection helper — the [`OutboxStore`] dispatch contract
+    /// itself keys terminal transitions off `dispatch_key` and never needs to
+    /// read a row back — used by the dispatcher's tests and by operators auditing
+    /// dead-lettered (`failed`) rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Backend` for libSQL boundary failures and
+    /// `StoreError::Serialization` when the stored status token or timestamp
+    /// cannot be decoded.
+    pub async fn outbox_row_state(
+        &self,
+        dispatch_key: &str,
+    ) -> Result<Option<OutboxRowState>, StoreError> {
+        crate::outbox::outbox_row_state(self.connection(), dispatch_key).await
     }
 
     /// Borrow the shared libSQL connection used by append, read, and timer modules.

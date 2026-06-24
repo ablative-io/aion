@@ -394,8 +394,8 @@ mod tests {
     use super::ServerState;
     use crate::config::{
         AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-        DevConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
-        WebSocketConfig, WorkerConfig,
+        DevConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, OutboxConfig,
+        RuntimeConfig, WebSocketConfig, WorkerConfig,
     };
 
     fn runtime_config() -> RuntimeConfig {
@@ -427,6 +427,7 @@ mod tests {
             deploy: DeployConfig::default(),
             authoring: AuthoringConfig::default(),
             dev: DevConfig::default(),
+            outbox: OutboxConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

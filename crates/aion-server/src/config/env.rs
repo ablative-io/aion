@@ -95,8 +95,42 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
                 }
                 config.namespaces.default = value;
             }
-            _ => {}
+            other => overlay_outbox(config, other, &value)?,
         }
+    }
+    Ok(())
+}
+
+/// Apply the `AION_OUTBOX_*` overrides for the durable-outbox dispatcher.
+///
+/// Split out of [`overlay`] so the durable-outbox knobs (default-off and inert
+/// unless `outbox.enabled` is set) live beside one another and `overlay` stays
+/// within the per-function line budget. Unknown names are ignored, exactly as
+/// the `overlay` fallthrough does for every non-`AION_` variable.
+fn overlay_outbox(config: &mut ServerConfig, name: &str, value: &str) -> Result<(), ServerError> {
+    match name {
+        "AION_OUTBOX_ENABLED" => {
+            config.outbox.enabled = parse_bool(name, value)?;
+        }
+        "AION_OUTBOX_POLL_INTERVAL_MS" => {
+            config.outbox.poll_interval_ms = Some(parse_positive_u64(name, value)?);
+        }
+        "AION_OUTBOX_BATCH_SIZE" => {
+            config.outbox.batch_size = Some(parse_positive_u32(name, value)?);
+        }
+        "AION_OUTBOX_MAX_ATTEMPTS" => {
+            config.outbox.max_attempts = Some(parse_positive_u32(name, value)?);
+        }
+        "AION_OUTBOX_BACKOFF_BASE_MS" => {
+            config.outbox.backoff_base_ms = Some(parse_positive_u64(name, value)?);
+        }
+        "AION_OUTBOX_BACKOFF_MULTIPLIER" => {
+            config.outbox.backoff_multiplier = Some(parse_positive_u32(name, value)?);
+        }
+        "AION_OUTBOX_BACKOFF_MAX_MS" => {
+            config.outbox.backoff_max_ms = Some(parse_positive_u64(name, value)?);
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -121,6 +155,16 @@ fn parse_positive_usize(name: &str, value: &str) -> Result<usize, ServerError> {
         .map_err(|source| ServerError::Config {
             message: format!("{name} must be a positive integer: {source}"),
         })?;
+    if parsed == 0 {
+        return config_error(format!("{name} must be a positive integer"));
+    }
+    Ok(parsed)
+}
+
+fn parse_positive_u32(name: &str, value: &str) -> Result<u32, ServerError> {
+    let parsed = value.parse::<u32>().map_err(|source| ServerError::Config {
+        message: format!("{name} must be a positive integer: {source}"),
+    })?;
     if parsed == 0 {
         return config_error(format!("{name} must be a positive integer"));
     }

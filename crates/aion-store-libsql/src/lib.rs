@@ -34,4 +34,5 @@ mod timer;
 mod visibility;
 
 pub use config::{LibSqlConfig, LibSqlMode};
+pub use outbox::OutboxRowState;
 pub use store::LibSqlStore;

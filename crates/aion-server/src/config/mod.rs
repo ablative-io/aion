@@ -83,6 +83,8 @@ pub struct ServerConfig {
     pub authoring: AuthoringConfig,
     /// Local dev-server surface settings.
     pub dev: DevConfig,
+    /// Durable-outbox fan-out dispatcher settings.
+    pub outbox: OutboxConfig,
 }
 
 /// Public transport listener addresses from `[server]`.
@@ -298,6 +300,70 @@ pub struct DevConfig {
     pub enabled: bool,
 }
 
+/// Durable-outbox fan-out dispatcher settings from `[outbox]`.
+///
+/// The outbox dispatcher is dark by default, gated on `enabled`: with it false
+/// (the section absent or `enabled = false`) the non-replayed background task
+/// that claims pending outbox rows and dispatches them to connected workers is
+/// never spawned, so default server behaviour is unchanged and the live
+/// workflow dispatch path is the only dispatch path. Setting `enabled = true`
+/// commissions the dispatcher and makes every operational knob below REQUIRED —
+/// poll interval, claim batch size, retry budget, and the backoff curve all
+/// come from explicit operator decisions (ADR-001: no assumed defaults).
+///
+/// Scope: this Phase-2 dispatcher dispatches claimed rows and marks each row's
+/// terminal outbox state (done / retry / failed). Routing the worker completion
+/// back into workflow history through the Recorder is Phase 3 and is not wired
+/// here; with the flag off there is no behavioural difference at all.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutboxConfig {
+    /// Whether the outbox dispatcher background task is spawned. Defaults to
+    /// false, leaving the dispatcher dark and server behaviour unchanged.
+    pub enabled: bool,
+    /// Interval between successive claim sweeps, in milliseconds. REQUIRED when
+    /// `enabled = true`; no default (house rule) — the operator sizes the poll
+    /// cadence for their fan-out volume and latency budget.
+    pub poll_interval_ms: Option<u64>,
+    /// Maximum number of pending rows claimed per sweep. REQUIRED when
+    /// `enabled = true`; no default (house rule).
+    pub batch_size: Option<u32>,
+    /// Dispatch attempts before a row is dead-lettered to `failed`. REQUIRED
+    /// when `enabled = true`; no default (house rule). Must be at least one.
+    pub max_attempts: Option<u32>,
+    /// Base retry backoff applied to the first retry, in milliseconds. REQUIRED
+    /// when `enabled = true`; no default (house rule). Successive retries
+    /// multiply this by `backoff_multiplier` raised to the prior-attempt count,
+    /// capped at `backoff_max_ms`.
+    pub backoff_base_ms: Option<u64>,
+    /// Geometric growth factor applied to the backoff per prior attempt.
+    /// REQUIRED when `enabled = true`; no default (house rule). Must be at
+    /// least one so backoff never shrinks.
+    pub backoff_multiplier: Option<u32>,
+    /// Upper bound on a single retry's backoff, in milliseconds. REQUIRED when
+    /// `enabled = true`; no default (house rule). Must be at least
+    /// `backoff_base_ms`.
+    pub backoff_max_ms: Option<u64>,
+}
+
+/// Operator-facing message for an absent or zero `outbox.poll_interval_ms`.
+pub(crate) const OUTBOX_POLL_INTERVAL_REQUIRED: &str = "outbox.poll_interval_ms is required and has no default when outbox.enabled is true: the dispatcher claim cadence must be an explicit operator decision sized for fan-out volume and latency; set outbox.poll_interval_ms (or AION_OUTBOX_POLL_INTERVAL_MS) to a positive number of milliseconds";
+
+/// Operator-facing message for an absent or zero `outbox.batch_size`.
+pub(crate) const OUTBOX_BATCH_SIZE_REQUIRED: &str = "outbox.batch_size is required and has no default when outbox.enabled is true: the per-sweep claim ceiling must be an explicit operator decision; set outbox.batch_size (or AION_OUTBOX_BATCH_SIZE) to a positive integer";
+
+/// Operator-facing message for an absent or zero `outbox.max_attempts`.
+pub(crate) const OUTBOX_MAX_ATTEMPTS_REQUIRED: &str = "outbox.max_attempts is required and has no default when outbox.enabled is true: the dispatch retry budget before dead-lettering must be an explicit operator decision; set outbox.max_attempts (or AION_OUTBOX_MAX_ATTEMPTS) to a positive integer";
+
+/// Operator-facing message for an absent or zero `outbox.backoff_base_ms`.
+pub(crate) const OUTBOX_BACKOFF_BASE_REQUIRED: &str = "outbox.backoff_base_ms is required and has no default when outbox.enabled is true: the first-retry backoff must be an explicit operator decision; set outbox.backoff_base_ms (or AION_OUTBOX_BACKOFF_BASE_MS) to a positive number of milliseconds";
+
+/// Operator-facing message for an absent or zero `outbox.backoff_multiplier`.
+pub(crate) const OUTBOX_BACKOFF_MULTIPLIER_REQUIRED: &str = "outbox.backoff_multiplier is required and has no default when outbox.enabled is true: the geometric backoff growth factor must be an explicit operator decision and must be at least one so backoff never shrinks; set outbox.backoff_multiplier (or AION_OUTBOX_BACKOFF_MULTIPLIER) to a positive integer";
+
+/// Operator-facing message for an absent or undersized `outbox.backoff_max_ms`.
+pub(crate) const OUTBOX_BACKOFF_MAX_REQUIRED: &str = "outbox.backoff_max_ms is required and has no default when outbox.enabled is true and must be at least outbox.backoff_base_ms: the per-retry backoff ceiling must be an explicit operator decision; set outbox.backoff_max_ms (or AION_OUTBOX_BACKOFF_MAX_MS) to a positive number of milliseconds no smaller than outbox.backoff_base_ms";
+
 /// Server-side Gleam authoring API settings from `[authoring]`.
 ///
 /// The authoring surface is dark by default, gated on `gleam_path`: with no
@@ -354,6 +420,8 @@ pub struct RuntimeConfig {
     pub authoring: AuthoringConfig,
     /// Local dev-server surface settings.
     pub dev: DevConfig,
+    /// Durable-outbox fan-out dispatcher settings.
+    pub outbox: OutboxConfig,
     /// Engine scheduler thread count.
     pub scheduler_threads: usize,
     /// Engine reply deadline for workflow queries. REQUIRED — carried as an
@@ -439,6 +507,7 @@ impl ServerConfig {
             deploy: self.deploy,
             authoring: self.authoring,
             dev: self.dev,
+            outbox: self.outbox,
             scheduler_threads: self.runtime.scheduler_threads,
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
@@ -559,6 +628,45 @@ impl ServerConfig {
                 Some(root) if !root.as_os_str().is_empty() => {}
                 _ => return config_error(AUTHORING_PROJECT_ROOT_REQUIRED),
             }
+        }
+        self.validate_outbox()?;
+        Ok(())
+    }
+
+    /// Validate the durable-outbox dispatcher knobs.
+    ///
+    /// All knobs are inert while `outbox.enabled` is false (the dispatcher is
+    /// never spawned), so they are only required — and only checked — once the
+    /// operator commissions the dispatcher. This mirrors the dark-by-default
+    /// `deploy` surface: the on/off gate carries no defaults, and every
+    /// operational value behind it is an explicit operator decision.
+    fn validate_outbox(&self) -> Result<(), ServerError> {
+        if !self.outbox.enabled {
+            return Ok(());
+        }
+        match self.outbox.poll_interval_ms {
+            None | Some(0) => return config_error(OUTBOX_POLL_INTERVAL_REQUIRED),
+            Some(_) => {}
+        }
+        match self.outbox.batch_size {
+            None | Some(0) => return config_error(OUTBOX_BATCH_SIZE_REQUIRED),
+            Some(_) => {}
+        }
+        match self.outbox.max_attempts {
+            None | Some(0) => return config_error(OUTBOX_MAX_ATTEMPTS_REQUIRED),
+            Some(_) => {}
+        }
+        let backoff_base_ms = match self.outbox.backoff_base_ms {
+            None | Some(0) => return config_error(OUTBOX_BACKOFF_BASE_REQUIRED),
+            Some(value) => value,
+        };
+        match self.outbox.backoff_multiplier {
+            None | Some(0) => return config_error(OUTBOX_BACKOFF_MULTIPLIER_REQUIRED),
+            Some(_) => {}
+        }
+        match self.outbox.backoff_max_ms {
+            Some(max) if max >= backoff_base_ms => {}
+            _ => return config_error(OUTBOX_BACKOFF_MAX_REQUIRED),
         }
         Ok(())
     }
@@ -1327,6 +1435,94 @@ mod tests {
         config.websocket.event_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
         config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_is_disabled_by_default_and_needs_no_knobs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut config = ServerConfig::default();
+        config.websocket.event_broadcast_capacity = Some(64);
+        config.runtime.query_timeout_ms = Some(10_000);
+
+        // The dispatcher is dark by default and its operational knobs are all
+        // absent — yet validation passes, because a disabled dispatcher never
+        // reads them (no assumed defaults behind the gate).
+        assert!(!config.outbox.enabled);
+        assert_eq!(config.outbox.poll_interval_ms, None);
+        assert_eq!(config.outbox.batch_size, None);
+        assert_eq!(config.outbox.max_attempts, None);
+        assert_eq!(config.outbox.backoff_base_ms, None);
+        assert_eq!(config.outbox.backoff_multiplier, None);
+        assert_eq!(config.outbox.backoff_max_ms, None);
+        config.validate()?;
+        Ok(())
+    }
+
+    fn outbox_enabled_base() -> ServerConfig {
+        let mut config = ServerConfig::default();
+        config.websocket.event_broadcast_capacity = Some(64);
+        config.runtime.query_timeout_ms = Some(10_000);
+        config.outbox.enabled = true;
+        config.outbox.poll_interval_ms = Some(250);
+        config.outbox.batch_size = Some(64);
+        config.outbox.max_attempts = Some(5);
+        config.outbox.backoff_base_ms = Some(100);
+        config.outbox.backoff_multiplier = Some(2);
+        config.outbox.backoff_max_ms = Some(30_000);
+        config
+    }
+
+    #[test]
+    fn outbox_enabled_with_all_knobs_validates() -> Result<(), Box<dyn std::error::Error>> {
+        outbox_enabled_base().validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_enabled_without_poll_interval_is_rejected() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut config = outbox_enabled_base();
+        config.outbox.poll_interval_ms = None;
+        let error = config
+            .validate()
+            .err()
+            .ok_or("enabled outbox without poll interval must fail")?;
+        assert!(
+            error.to_string().contains("outbox.poll_interval_ms"),
+            "error must name the missing key: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_enabled_without_max_attempts_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = outbox_enabled_base();
+        config.outbox.max_attempts = None;
+        let error = config
+            .validate()
+            .err()
+            .ok_or("enabled outbox without max attempts must fail")?;
+        assert!(
+            error.to_string().contains("outbox.max_attempts"),
+            "error must name the missing key: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_backoff_max_below_base_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = outbox_enabled_base();
+        config.outbox.backoff_base_ms = Some(1_000);
+        config.outbox.backoff_max_ms = Some(500);
+        let error = config
+            .validate()
+            .err()
+            .ok_or("backoff_max below backoff_base must fail")?;
+        assert!(
+            error.to_string().contains("outbox.backoff_max_ms"),
+            "error must name the offending key: {error}"
+        );
         Ok(())
     }
 
