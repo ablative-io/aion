@@ -23,6 +23,7 @@ pub mod config;
 pub mod connection;
 /// Error conversion helpers for libSQL-backed storage.
 pub mod error;
+mod outbox;
 mod package;
 mod read;
 /// Idempotent schema creation for the libSQL event store.

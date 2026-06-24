@@ -24,6 +24,8 @@ pub mod conformance;
 pub mod error;
 /// In-memory reference implementation of the store contracts.
 pub mod memory;
+/// Durable outbox contract for store-backed fan-out dispatch.
+pub mod outbox;
 /// Deployed-package persistence records and contract.
 pub mod package;
 /// Run-chain summaries used for workflow execution lineage.
@@ -41,6 +43,7 @@ pub use aion_core::{
 };
 pub use error::StoreError;
 pub use memory::InMemoryStore;
+pub use outbox::{OutboxRow, OutboxStatus, OutboxStore};
 pub use package::{PackageRecord, PackageRouteRecord, PackageStore};
 pub use store::{EventStore, ReadableEventStore, RunSummary, WritableEventStore, WriteToken};
 pub use timer::TimerEntry;
