@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use aion_worker::{ActivityContext, ActivityFailure, HandlerFuture, Worker, WorkerConfig};
 use anyhow::{Context, bail};
-use stacked_dev_worker::handlers;
-use stacked_dev_worker::shell::Shell;
-use stacked_dev_worker::types::ReviewRequest;
+use stacked_dev_worker_norn::handlers;
+use stacked_dev_worker_norn::shell::Shell;
+use stacked_dev_worker_norn::types::ReviewRequest;
 
 /// Parsed CLI arguments.
 struct Args {
@@ -48,9 +48,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 endpoint = Some(value);
             }
             "--concurrency" => {
-                let value = args
-                    .next()
-                    .context("--concurrency requires a number")?;
+                let value = args.next().context("--concurrency requires a number")?;
                 concurrency = Some(
                     value
                         .parse::<usize>()
