@@ -149,12 +149,20 @@ the default Eventual-60s consistency. Split:
    divergent event streams; **local cas is insufficient — active-active needs quorum on the epoch
    record + union event-merge** (see findings above).
 2. **haematite foundation (NEW — surfaced by the spike; the real prerequisite for active-active):**
-   2a. Wire `wait_for_quorum` / `StrongConsistency` to the actual write path (today it only counts
-       the local ack). Quorum-acked writes must be enforceable end-to-end, with `total_nodes` fed
-       from live membership.
+   2a. ✅ **Spike DONE + verified in code:** wiring quorum to the write path is **NET-NEW, ~2–4
+       weeks**, not wire-up. The quorum *math* exists and the write path's `mpsc` ack-receiver seam
+       is already shaped to accept remote acks — but `wait_for_consistency` (api/kv.rs) feeds it a
+       dropped local channel, and **no synchronous write-ack transport exists**: `SyncMessage`
+       (sync/protocol/wire.rs) has only 6 pull-based anti-entropy variants, NO write/ack; membership
+       is a static config list with no liveness. Build required: new `SyncMessage::WriteProposal` +
+       `WriteAck` variants + wire codec; request→ack correlation over the beamr connection manager;
+       durable-apply-then-ack on receivers; a writer-side ack collector feeding the existing
+       receiver seam; a membership/liveness source feeding `total_nodes` (must be FULL membership,
+       else a minority self-quorums). This is a real synchronous-replication path. Quorum math
+       wire-up = days; the transport = weeks.
    2b. Add a non-LWW, collision-free event-stream merge: node-id in the event key + a `Custom`
-       union `ConflictPolicy` for run-history streams (forbid LWW on that keyspace). Each likely
-       wants its own validating spike before building.
+       union `ConflictPolicy` for run-history streams (forbid LWW on that keyspace). Its own spike
+       before building.
 3. Control-plane: quorum-backed CAS-versioned shard→node map + epoch fence + `AcquireShard`
    (on the quorum domain from 2a, NOT per-node cas).
 4. Data-plane: Strong/quorum-acked run-history writes over the union keyspace from 2b.
