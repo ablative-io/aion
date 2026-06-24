@@ -256,18 +256,20 @@ fn dispatch_unscheduled(
     let outbox_enabled = deps.runtime.outbox_enabled();
     if outbox_enabled {
         if !fresh.is_empty() {
-            let items: Vec<FanOutItem> = fresh
-                .iter()
-                .map(|(ordinal, spec)| {
-                    Ok(FanOutItem {
-                        ordinal: *ordinal,
-                        activity_type: spec.name.clone(),
-                        input: payload_from_json_text(&spec.input, label)?,
-                    })
-                })
-                .collect::<Result<_, String>>()?;
+            let items = fan_out_items(&fresh, label)?;
             context
                 .record_fan_out_dispatch(Utc::now(), &items)
+                .map_err(|error| error.error_reason())?;
+        }
+        // STALE recovery under the flag: the in-flight dispatch that died with the previous
+        // engine process is re-staged by flipping each ordinal's durable outbox row back to
+        // claimable `Pending`, so the OutboxDispatcher re-dispatches it. This replaces — does
+        // not supplement — the in-process `spawn_completion_task` path (excluded below). The
+        // completion dedup makes the redelivery at-least-once-safe.
+        if !stale.is_empty() {
+            let items = fan_out_items(&stale, label)?;
+            context
+                .rearm_outbox_pending(Utc::now(), &items)
                 .map_err(|error| error.error_reason())?;
         }
     } else {
@@ -287,10 +289,13 @@ fn dispatch_unscheduled(
     }
     let namespace = context.workflow_handle().namespace().to_owned();
     let workflow_id = context.workflow_id().clone();
-    // Flag ON drives fresh members via the OutboxDispatcher, so spawn only the
-    // stale ones here; flag OFF spawns the whole fresh∪stale batch as today.
-    let spawn_fresh: &[(u64, &ActivitySpec)] = if outbox_enabled { &[] } else { &fresh };
-    for (ordinal, spec) in spawn_fresh.iter().chain(stale.iter()) {
+    // Flag ON drives BOTH fresh (via record_fan_out_dispatch) and stale (via the
+    // rearm_outbox_pending re-stage above) through the OutboxDispatcher, so spawn
+    // neither here. Flag OFF spawns the whole fresh∪stale batch as today.
+    let empty: &[(u64, &ActivitySpec)] = &[];
+    let spawn_fresh: &[(u64, &ActivitySpec)] = if outbox_enabled { empty } else { &fresh };
+    let spawn_stale: &[(u64, &ActivitySpec)] = if outbox_enabled { empty } else { &stale };
+    for (ordinal, spec) in spawn_fresh.iter().chain(spawn_stale.iter()) {
         spawn_completion_task(
             &deps.tokio_handle,
             Arc::clone(&deps.runtime),
@@ -310,6 +315,24 @@ fn dispatch_unscheduled(
         );
     }
     Ok(())
+}
+
+/// Map a slice of `(ordinal, spec)` pairs to the durable-outbox [`FanOutItem`]s the recorder stages.
+///
+/// Shared by the flag-ON fresh dispatch ([`NifContext::record_fan_out_dispatch`]) and stale
+/// re-arm ([`NifContext::rearm_outbox_pending`]) paths so both derive identical
+/// `(ordinal, activity_type, input)` items.
+fn fan_out_items(members: &[(u64, &ActivitySpec)], label: &str) -> Result<Vec<FanOutItem>, String> {
+    members
+        .iter()
+        .map(|(ordinal, spec)| {
+            Ok(FanOutItem {
+                ordinal: *ordinal,
+                activity_type: spec.name.clone(),
+                input: payload_from_json_text(&spec.input, label)?,
+            })
+        })
+        .collect()
 }
 
 /// `collect_all`/`collect_map` settlement over one sweep of the range.

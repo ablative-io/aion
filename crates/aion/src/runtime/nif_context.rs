@@ -363,6 +363,25 @@ impl NifContext {
             .map_err(Into::into)
     }
 
+    /// Re-arms the durable outbox rows for a fan-out batch back to claimable `Pending` through the
+    /// workflow's single-writer recorder (crash-recovery re-stage).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn rearm_outbox_pending(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        items: &[FanOutItem],
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let recorder = self.recorder.lock().await;
+                recorder.rearm_outbox_pending(recorded_at, items).await
+            })
+            .map_err(Into::into)
+    }
+
     /// Records one fan-out completion through the workflow's single-writer recorder.
     ///
     /// # Errors

@@ -197,6 +197,10 @@ impl WritableEventStore for LibSqlStore {
         )
         .await
     }
+
+    async fn rearm_outbox_pending(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        crate::outbox::rearm_outbox_pending(self.connection(), rows).await
+    }
 }
 
 #[async_trait]

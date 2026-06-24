@@ -181,6 +181,45 @@ pub trait WritableEventStore: Send + Sync + 'static {
              refusing to drop outbox rows (override WritableEventStore::append_with_outbox)",
         )))
     }
+
+    /// Returns the outbox rows for `rows`' `dispatch_key`s to `Pending`, re-staging them for the
+    /// out-of-band dispatcher.
+    ///
+    /// This is the crash-recovery re-arm: on first arrival after a restart, an activity whose
+    /// `ActivityScheduled` is recorded but which has no terminal event lost its in-flight dispatch
+    /// when the previous engine process died. Under the durable-outbox model the recovering workflow
+    /// re-stages the dispatch by flipping its outbox row back to claimable `Pending` (an UPSERT — a
+    /// brand-new `dispatch_key` with no prior row is inserted as `Pending`) instead of driving an
+    /// in-process completion task. Redelivery is safe: the completion dedup
+    /// (`record_fan_out_completion`) ignores a terminal for an already-resolved ordinal, so re-arm is
+    /// at-least-once.
+    ///
+    /// The dispatch retry budget is preserved across re-arm: a backend must NOT reset an existing
+    /// row's `attempt` to zero, so a workflow that reliably crashes the server still eventually
+    /// dead-letters rather than re-dispatching forever.
+    ///
+    /// # Default implementation (safe for outbox-unaware backends)
+    ///
+    /// An empty `rows` slice is `Ok(())`. A non-empty slice returns [`StoreError::Backend`] **rather
+    /// than silently no-op'ing the re-arm**: a store without durable-outbox support cannot re-stage a
+    /// dispatch, and silently dropping the request would strand the recovered activity. A hard error
+    /// forces a backend to opt in (as the libSQL store does) before any caller can route a re-arm
+    /// through it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Serialization`] when an outbox payload cannot be serialized, and
+    /// [`StoreError::Backend`] for backend boundary failures or when an outbox-unaware backend is
+    /// asked to re-arm a non-empty `rows` slice.
+    async fn rearm_outbox_pending(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        Err(StoreError::Backend(String::from(
+            "this event store does not support durable-outbox re-arm; \
+             refusing to drop a non-empty re-arm (override WritableEventStore::rearm_outbox_pending)",
+        )))
+    }
 }
 
 /// Convenience trait for concrete stores that support reads/timers, recorder
