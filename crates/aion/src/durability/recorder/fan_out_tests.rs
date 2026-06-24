@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
-use super::{FanOutItem, Recorder};
+use super::{FanOutCompletionResult, FanOutItem, FanOutOutcome, Recorder};
 use crate::durability::DurabilityError;
 
 /// Outbox-aware test store: delegates reads/timers/packages/event-only appends to an inner
@@ -416,5 +416,281 @@ async fn fan_out_dispatch_empty_items_is_a_no_op() -> Result<(), Box<dyn std::er
     assert_eq!(recorder.current_head(), 0);
     assert!(store.read_history(&workflow_id).await?.is_empty());
     assert!(store.outbox_rows()?.is_empty());
+    Ok(())
+}
+
+fn activity_failure(message: &str) -> aion_core::ActivityError {
+    aion_core::ActivityError {
+        kind: aion_core::ActivityErrorKind::Terminal,
+        message: String::from(message),
+        details: None,
+    }
+}
+
+/// Count the terminal events (`ActivityCompleted` + `ActivityFailed`) for `ordinal` in `history`.
+fn terminal_count(history: &[Event], ordinal: u64) -> usize {
+    let target = aion_core::ActivityId::from_sequence_position(ordinal);
+    history
+        .iter()
+        .filter(|event| match event {
+            Event::ActivityCompleted { activity_id, .. }
+            | Event::ActivityFailed { activity_id, .. } => *activity_id == target,
+            _ => false,
+        })
+        .count()
+}
+
+/// (a) First completion for an un-resolved ordinal records the terminal and advances the head by 1.
+#[tokio::test]
+async fn fan_out_completion_records_first_terminal_for_unresolved_ordinal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow_id = workflow_id(20);
+    let store = Arc::new(OutboxTestStore::new());
+    let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+    let result = recorder
+        .record_fan_out_completion(
+            recorded_at(1),
+            0,
+            FanOutOutcome::Completed(payload("done")?),
+        )
+        .await?;
+
+    assert_eq!(result, FanOutCompletionResult::Recorded);
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(history.len(), 1, "exactly one terminal event recorded");
+    assert_eq!(history[0].seq(), 1);
+    match &history[0] {
+        Event::ActivityCompleted {
+            activity_id,
+            result,
+            ..
+        } => {
+            assert_eq!(
+                activity_id,
+                &aion_core::ActivityId::from_sequence_position(0)
+            );
+            assert_eq!(result, &payload("done")?);
+        }
+        other => return Err(format!("expected ActivityCompleted, got {other:?}").into()),
+    }
+    assert_eq!(recorder.current_head(), 1, "head advances by exactly 1");
+    Ok(())
+}
+
+/// (b) The core dedup invariant: a duplicate completion for an already-resolved ordinal returns
+/// `Dropped`, writes NO second terminal, and leaves the head unchanged.
+#[tokio::test]
+async fn fan_out_completion_drops_duplicate_for_resolved_ordinal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow_id = workflow_id(21);
+    let store = Arc::new(OutboxTestStore::new());
+    let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+    let first = recorder
+        .record_fan_out_completion(
+            recorded_at(1),
+            7,
+            FanOutOutcome::Completed(payload("first")?),
+        )
+        .await?;
+    assert_eq!(first, FanOutCompletionResult::Recorded);
+    let head_after_first = recorder.current_head();
+
+    // A redelivered duplicate completion for the same ordinal must be dropped.
+    let duplicate = recorder
+        .record_fan_out_completion(
+            recorded_at(2),
+            7,
+            FanOutOutcome::Completed(payload("second")?),
+        )
+        .await?;
+
+    assert_eq!(duplicate, FanOutCompletionResult::Dropped);
+    assert_eq!(
+        recorder.current_head(),
+        head_after_first,
+        "a dropped duplicate must not advance the head"
+    );
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        terminal_count(&history, 7),
+        1,
+        "no second terminal may be written for an already-resolved ordinal"
+    );
+    Ok(())
+}
+
+/// (b2) A late completion for an ALREADY-CANCELLED ordinal must be dropped, not recorded over the
+/// cancellation — `ActivityCancelled` is a terminal in `recorded_terminal`, so the dedup predicate
+/// must treat it as resolved.
+#[tokio::test]
+async fn fan_out_completion_drops_for_cancelled_ordinal() -> Result<(), Box<dyn std::error::Error>>
+{
+    let workflow_id = workflow_id(22);
+    let store = Arc::new(OutboxTestStore::new());
+    let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+    recorder
+        .record_activity_cancelled(
+            recorded_at(1),
+            aion_core::ActivityId::from_sequence_position(3),
+        )
+        .await?;
+    let head_after_cancel = recorder.current_head();
+
+    let result = recorder
+        .record_fan_out_completion(
+            recorded_at(2),
+            3,
+            FanOutOutcome::Completed(payload("late")?),
+        )
+        .await?;
+
+    assert_eq!(result, FanOutCompletionResult::Dropped);
+    assert_eq!(
+        recorder.current_head(),
+        head_after_cancel,
+        "a dropped completion must not advance the head past the cancellation"
+    );
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        terminal_count(&history, 3),
+        0,
+        "no completion terminal may be written over an already-cancelled ordinal"
+    );
+    Ok(())
+}
+
+/// (c) A `Failed` outcome records an `ActivityFailed` terminal carrying the error and attempt.
+#[tokio::test]
+async fn fan_out_completion_records_failed_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    let workflow_id = workflow_id(22);
+    let store = Arc::new(OutboxTestStore::new());
+    let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+    let result = recorder
+        .record_fan_out_completion(
+            recorded_at(1),
+            3,
+            FanOutOutcome::Failed {
+                error: activity_failure("boom"),
+                attempt: 2,
+            },
+        )
+        .await?;
+
+    assert_eq!(result, FanOutCompletionResult::Recorded);
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(history.len(), 1);
+    match &history[0] {
+        Event::ActivityFailed {
+            activity_id,
+            error,
+            attempt,
+            ..
+        } => {
+            assert_eq!(
+                activity_id,
+                &aion_core::ActivityId::from_sequence_position(3)
+            );
+            assert_eq!(error, &activity_failure("boom"));
+            assert_eq!(*attempt, 2);
+        }
+        other => return Err(format!("expected ActivityFailed, got {other:?}").into()),
+    }
+    assert_eq!(recorder.current_head(), 1);
+    Ok(())
+}
+
+/// (d) Out-of-order: an ordinal that is `Scheduled`+`Started` but not yet terminal is NOT resolved,
+/// so its completion records normally.
+#[tokio::test]
+async fn fan_out_completion_records_for_scheduled_but_not_terminal_ordinal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow_id = workflow_id(23);
+    let store = Arc::new(OutboxTestStore::new());
+    let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+
+    // Stage the dispatch: ordinal 0 is Scheduled+Started (seqs 1,2) but has no terminal yet.
+    recorder
+        .record_fan_out_dispatch(recorded_at(1), &fan_out_items(0, 1)?)
+        .await?;
+    assert_eq!(recorder.current_head(), 2);
+
+    let result = recorder
+        .record_fan_out_completion(
+            recorded_at(2),
+            0,
+            FanOutOutcome::Completed(payload("done")?),
+        )
+        .await?;
+
+    assert_eq!(
+        result,
+        FanOutCompletionResult::Recorded,
+        "a scheduled+started-but-not-terminal ordinal is not resolved"
+    );
+    let history = store.read_history(&workflow_id).await?;
+    assert_eq!(history.len(), 3, "Scheduled, Started, then Completed");
+    assert_eq!(history[2].seq(), 3, "terminal lands at head+1");
+    assert!(matches!(history[2], Event::ActivityCompleted { .. }));
+    assert_eq!(recorder.current_head(), 3);
+    Ok(())
+}
+
+/// (e) A sequence conflict surfaces as a hard error WITHOUT advancing the head (mirrors the
+/// dispatch-path conflict behaviour). A rogue writer advances the real head behind the recorder.
+#[tokio::test]
+async fn fan_out_completion_sequence_conflict_surfaces_without_advancing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let workflow_id = workflow_id(24);
+    let store = Arc::new(OutboxTestStore::new());
+    // Rogue writer advances the real head to 1; the recorder still expects 0.
+    let rogue = Event::WorkflowStarted {
+        envelope: aion_core::EventEnvelope {
+            seq: 1,
+            recorded_at: recorded_at(1),
+            workflow_id: workflow_id.clone(),
+        },
+        workflow_type: String::from("checkout"),
+        input: payload("rogue")?,
+        run_id: RunId::new(uuid::Uuid::from_u128(1)),
+        parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("a".repeat(64)),
+    };
+    store
+        .append(WriteToken::recorder(), &workflow_id, &[rogue], 0)
+        .await?;
+
+    let mut recorder = Recorder::new(workflow_id.clone(), store.clone());
+    // The rogue WorkflowStarted is not a terminal for ordinal 0, so dedup passes and the append is
+    // attempted with expected_seq 0 against a real head of 1 -> SequenceConflict.
+    let result = recorder
+        .record_fan_out_completion(
+            recorded_at(2),
+            0,
+            FanOutOutcome::Completed(payload("done")?),
+        )
+        .await;
+
+    match result {
+        Err(DurabilityError::Store(StoreError::SequenceConflict { expected, found })) => {
+            assert_eq!(expected, 0);
+            assert_eq!(found, 1);
+        }
+        Err(other) => return Err(format!("expected sequence conflict, got {other:?}").into()),
+        Ok(value) => return Err(format!("expected sequence conflict, got Ok({value:?})").into()),
+    }
+    assert_eq!(
+        recorder.current_head(),
+        0,
+        "conflict must not advance the head"
+    );
+    assert_eq!(
+        store.read_history(&workflow_id).await?.len(),
+        1,
+        "only the rogue event remains; no terminal was written"
+    );
     Ok(())
 }
