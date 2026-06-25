@@ -4,6 +4,7 @@ members = [
     "crates/aion-core",
     "crates/aion-store",
     "crates/aion-store-libsql",
+    "crates/aion-store-haematite",
     "crates/aion-package",
     "crates/aion-toolchain",
     "crates/aion",
