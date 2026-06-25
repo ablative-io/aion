@@ -176,6 +176,18 @@ impl From<String> for WorkflowPackageSource {
     }
 }
 
+/// Tracks which optional engine seams the caller explicitly overrode, so
+/// `build()` can detect mutually-exclusive configuration (e.g. an event
+/// publisher set both directly and via event streaming). Grouped so the builder
+/// keeps its boolean configuration flags few and named.
+#[derive(Default)]
+struct SeamOverrides {
+    /// The caller installed an explicit event-publisher seam.
+    event_publisher: bool,
+    /// The caller installed an explicit query-service seam.
+    query_service: bool,
+}
+
 /// Builder for the embedded, transport-agnostic workflow engine.
 pub struct EngineBuilder {
     store: Option<Arc<dyn EventStore>>,
@@ -183,6 +195,7 @@ pub struct EngineBuilder {
     scheduler_threads: Option<usize>,
     signal_delivery: SignalDeliveryConfig,
     outbox_enabled: bool,
+    bootstrap_schedule_coordinator: bool,
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
     recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
@@ -193,9 +206,8 @@ pub struct EngineBuilder {
     visibility_reconciliation_interval: Option<Duration>,
     search_attribute_schema: SearchAttributeSchema,
     event_streaming_capacity: Option<NonZeroUsize>,
-    event_publisher_overridden: bool,
     query_timeout: Option<Duration>,
-    query_service_overridden: bool,
+    seam_overrides: SeamOverrides,
 }
 
 impl Default for EngineBuilder {
@@ -215,6 +227,10 @@ impl EngineBuilder {
             scheduler_threads: None,
             signal_delivery: SignalDeliveryConfig::default(),
             outbox_enabled: false,
+            // The only field that defaults true: single-node engines seed the
+            // schedule coordinator. A multi-node deployment disables it on nodes
+            // that do not own the coordinator's shard (see the builder method).
+            bootstrap_schedule_coordinator: true,
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
             recovery: None,
@@ -225,9 +241,8 @@ impl EngineBuilder {
             visibility_reconciliation_interval: None,
             search_attribute_schema: SearchAttributeSchema::new(),
             event_streaming_capacity: None,
-            event_publisher_overridden: false,
             query_timeout: None,
-            query_service_overridden: false,
+            seam_overrides: SeamOverrides::default(),
         }
     }
 
@@ -353,6 +368,19 @@ impl EngineBuilder {
         self
     }
 
+    /// Control whether `build()` seeds the schedule-coordinator history.
+    ///
+    /// Default `true` (single-node). Under multi-shard active-active the
+    /// coordinator stream is owned by exactly ONE shard; a deployment sets this
+    /// `false` on every node that does NOT own that shard, so only the owner
+    /// seeds (and serves) it — a non-owner would otherwise try to write the
+    /// coordinator stream and race or fence the real owner.
+    #[must_use]
+    pub const fn bootstrap_schedule_coordinator(mut self, enabled: bool) -> Self {
+        self.bootstrap_schedule_coordinator = enabled;
+        self
+    }
+
     /// Add one workflow package source to load during `build()`.
     #[must_use]
     pub fn load_workflows(mut self, source: impl Into<WorkflowPackageSource>) -> Self {
@@ -424,7 +452,7 @@ impl EngineBuilder {
     /// [`Self::query_timeout`] would otherwise install during `build()`.
     #[must_use]
     pub fn query_service(mut self, query_service: Arc<dyn QueryService>) -> Self {
-        self.query_service_overridden = true;
+        self.seam_overrides.query_service = true;
         self.delegated = DelegatedSeams::new(
             self.delegated.signal_router_arc(),
             query_service,
@@ -439,7 +467,7 @@ impl EngineBuilder {
     /// broadcast publisher itself; configuring both fails `build()`.
     #[must_use]
     pub fn event_publisher(mut self, event_publisher: Arc<dyn EventPublisher>) -> Self {
-        self.event_publisher_overridden = true;
+        self.seam_overrides.event_publisher = true;
         self.delegated = DelegatedSeams::new(
             self.delegated.signal_router_arc(),
             self.delegated.query_service_arc(),
@@ -501,7 +529,7 @@ impl EngineBuilder {
         let (store, streaming_publisher) = wrap_event_streaming(
             self.store.ok_or(EngineError::MissingStore)?,
             self.event_streaming_capacity,
-            self.event_publisher_overridden,
+            self.seam_overrides.event_publisher,
         )?;
         let visibility_store = self
             .visibility_store
@@ -544,7 +572,7 @@ impl EngineBuilder {
             streaming_publisher,
             query_mailbox_engine,
             query_timeout: self.query_timeout,
-            query_service_overridden: self.query_service_overridden,
+            query_service_overridden: self.seam_overrides.query_service,
         });
 
         install_signal_nif_bridge(
@@ -584,6 +612,7 @@ impl EngineBuilder {
             supervision: Arc::clone(&supervision),
             recovery: self.recovery,
             search_attribute_schema: Arc::clone(&search_attribute_schema),
+            bootstrap_schedule_coordinator: self.bootstrap_schedule_coordinator,
         })
         .await?;
         recover_timers_on_startup(&nif_state, Arc::clone(&store)).await?;
