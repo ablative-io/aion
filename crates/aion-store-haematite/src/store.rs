@@ -40,6 +40,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use aion_core::{
     Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
@@ -50,16 +51,46 @@ use aion_store::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
-use haematite::{Database, DatabaseConfig};
+use haematite::sync::membership::WriteMembership;
+use haematite::{Database, DatabaseConfig, DatabaseError};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{api_error, database_error, join_error, serde_error};
 use crate::keyspace;
 
-/// A single-node durable Aion event store backed by haematite.
+/// Quorum-replication routing for a distributed [`HaematiteStore`].
+///
+/// When present, event appends route through [`Database::replicate_append`] and
+/// the workflow-id index entry through [`Database::replicate_write`] to this
+/// `membership` quorum, INSTEAD of the local single-node `append_batch`/`put`
+/// path. The byte-level event/stream-key encoding is identical to the single-node
+/// path (haematite's `replicate_append` lays events out exactly as the local
+/// `append_batch` does), so `read_history` decodes a replicated stream the same
+/// way it decodes a locally-appended one.
+#[derive(Clone)]
+struct DistributedRouting {
+    /// The quorum membership (denominator + reachable send targets) for writes.
+    membership: WriteMembership,
+    /// Per-operation quorum timeout passed to `replicate_append`/`replicate_write`.
+    timeout: Duration,
+}
+
+/// A durable Aion event store backed by haematite.
+///
+/// Runs in one of two modes:
+///
+/// * **Single-node** ([`create`](HaematiteStore::create) /
+///   [`open`](HaematiteStore::open)): every write is a local haematite commit.
+/// * **Distributed** ([`with_distribution`](HaematiteStore::with_distribution)):
+///   event appends and the workflow-id index are quorum-REPLICATED to a cluster
+///   membership, so a workflow's durable history survives the owner node's death
+///   and is readable on the survivor after it becomes the shard owner. The outbox
+///   stays Design-B local (rebuilt from replicated history on the survivor).
 #[derive(Clone)]
 pub struct HaematiteStore {
     inner: Arc<haematite::EventStore>,
+    /// `Some` in distributed mode; `None` in single-node mode (B1, unchanged).
+    distribution: Option<DistributedRouting>,
 }
 
 impl std::fmt::Debug for HaematiteStore {
@@ -98,9 +129,50 @@ impl HaematiteStore {
         Ok(Self::from_database(database))
     }
 
+    /// Build a DISTRIBUTED store over an already-distribution-attached `database`.
+    ///
+    /// The caller is responsible for opening `database` with
+    /// [`Database::with_distribution`] and for making this node the live shard
+    /// owner (via [`Database::acquire_shard_and_serve`]) before issuing appends —
+    /// `replicate_append` draws its commit stamp from the live owner state. Event
+    /// appends ([`WritableEventStore::append`] / `append_with_outbox`) and the
+    /// workflow-id index entry route through `replicate_append` / `replicate_write`
+    /// to `membership`'s quorum; reads, timers, packages, routes, and the outbox
+    /// stay local (Design B: the survivor rebuilds the outbox from replicated
+    /// history).
+    ///
+    /// `timeout` bounds each quorum write.
+    #[must_use]
+    pub fn with_distribution(
+        database: Database,
+        membership: WriteMembership,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            inner: Arc::new(haematite::EventStore::new(database)),
+            distribution: Some(DistributedRouting {
+                membership,
+                timeout,
+            }),
+        }
+    }
+
+    /// Borrow the shared [`haematite::EventStore`] this store routes through.
+    ///
+    /// Exposes the underlying handle so a distributed deployment can drive the
+    /// cluster lifecycle on the SAME `Database` the store writes to —
+    /// `event_store().database().acquire_shard_and_serve(..)` to take ownership,
+    /// or `Arc::clone(event_store())` for a background inbound-write responder. The
+    /// store never elects or serves on its own; that is the deployment's job.
+    #[must_use]
+    pub fn event_store(&self) -> &Arc<haematite::EventStore> {
+        &self.inner
+    }
+
     fn from_database(database: Database) -> Self {
         Self {
             inner: Arc::new(haematite::EventStore::new(database)),
+            distribution: None,
         }
     }
 
@@ -274,12 +346,18 @@ fn read_events_from(
 
 /// Append `events` for `workflow_id` and, when `outbox_rows` is `Some`, the
 /// outbox rows. Shared by `append` and `append_with_outbox`.
+///
+/// When `routing` is `Some` the event batch and the workflow-id index entry are
+/// quorum-REPLICATED through haematite's `replicate_append` / `replicate_write`
+/// to the configured membership; the outbox rows ALWAYS stay local (Design B).
+/// When `routing` is `None` this is the unchanged single-node B1 path.
 fn append_blocking(
     store: &haematite::EventStore,
     workflow_id: &WorkflowId,
     events: &[Event],
     expected_seq: u64,
     outbox_rows: Option<&[OutboxRow]>,
+    routing: Option<&DistributedRouting>,
 ) -> Result<(), StoreError> {
     let has_outbox = outbox_rows.is_some_and(|rows| !rows.is_empty());
 
@@ -317,25 +395,42 @@ fn append_blocking(
             .iter()
             .map(|event| serde_json::to_vec(event).map_err(|error| serde_error(&error)))
             .collect::<Result<_, _>>()?;
-        let payload_refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
 
-        match store.append_batch(&stream_key, &payload_refs, expected_seq) {
-            Ok(_) => {}
-            Err(haematite::ApiError::SequenceConflict(conflict)) => {
-                return Err(StoreError::SequenceConflict {
-                    expected: expected_seq,
-                    found: conflict.actual,
-                });
+        if let Some(routing) = routing {
+            // DISTRIBUTED: replicate the whole batch to a quorum. The event/stream
+            // key + value encoding is byte-identical to the local `append_batch`
+            // path (haematite shares the encoding between `append` and
+            // `replicate_append`), so `read_history` decodes a replicated stream
+            // exactly as it decodes a locally-appended one.
+            replicate_events(store, &stream_key, payloads, expected_seq, routing)?;
+            // The workflow-id index entry is durable state needed to enumerate
+            // workflows on the survivor; replicate it too. It is written
+            // create-if-absent only on the first event of the stream
+            // (`expected_seq == 0`), when the index key is guaranteed absent.
+            if expected_seq == 0 {
+                replicate_index_entry(store, workflow_id, routing)?;
             }
-            Err(error) => return Err(api_error(&error)),
-        }
+        } else {
+            // SINGLE-NODE (B1, unchanged): local optimistic-concurrency append.
+            let payload_refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+            match store.append_batch(&stream_key, &payload_refs, expected_seq) {
+                Ok(_) => {}
+                Err(haematite::ApiError::SequenceConflict(conflict)) => {
+                    return Err(StoreError::SequenceConflict {
+                        expected: expected_seq,
+                        found: conflict.actual,
+                    });
+                }
+                Err(error) => return Err(api_error(&error)),
+            }
 
-        // Record the workflow-id index entry (idempotent) so list/query enumerate it.
-        let database = store.database();
-        database
-            .put(keyspace::workflow_index_key(workflow_id), Vec::new())
-            .map_err(|error| database_error(&error))?;
-        database.commit().map_err(|error| database_error(&error))?;
+            // Record the workflow-id index entry (idempotent) so list/query enumerate it.
+            let database = store.database();
+            database
+                .put(keyspace::workflow_index_key(workflow_id), Vec::new())
+                .map_err(|error| database_error(&error))?;
+            database.commit().map_err(|error| database_error(&error))?;
+        }
     }
 
     if let Some(rows) = outbox_rows {
@@ -343,6 +438,88 @@ fn append_blocking(
     }
 
     Ok(())
+}
+
+/// Run `work` on a FRESH OS thread that has NO entered tokio runtime, returning its
+/// result.
+///
+/// haematite's distribution coordinator (`replicate_append`, `replicate_write`,
+/// their quorum waits and catch-up rounds) BLOCKS and explicitly refuses to run
+/// from a thread with an entered tokio runtime (`Handle::try_current().is_ok()` →
+/// `TransportBlockingFromAsync`). The adapter executes its haematite work inside
+/// `tokio::task::spawn_blocking`, whose blocking-pool threads STILL carry the
+/// runtime context, so a direct call would be rejected. A brand-new `std::thread`
+/// (here via `std::thread::scope`, so it can borrow) carries no runtime context, so
+/// the coordinator runs there; it drives the endpoint's OWN internal runtime
+/// internally, which is unaffected.
+fn run_off_runtime<F, T>(work: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    std::thread::scope(|scope| {
+        match scope.spawn(work).join() {
+            Ok(value) => value,
+            // Propagate a panic from the replication thread unchanged rather than
+            // swallowing it into a fabricated value.
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    })
+}
+
+/// Replicate one event batch to the routing quorum via `replicate_append`,
+/// mapping a quorum sequence-conflict back to Aion's [`StoreError::SequenceConflict`].
+fn replicate_events(
+    store: &haematite::EventStore,
+    stream_key: &[u8],
+    payloads: Vec<Vec<u8>>,
+    expected_seq: u64,
+    routing: &DistributedRouting,
+) -> Result<(), StoreError> {
+    let database = store.database();
+    let result = run_off_runtime(|| {
+        database.replicate_append(
+            stream_key.to_vec(),
+            payloads,
+            expected_seq,
+            &routing.membership,
+            routing.timeout,
+        )
+    });
+    match result {
+        Ok(_) => Ok(()),
+        Err(DatabaseError::SequenceConflict { actual, .. }) => Err(StoreError::SequenceConflict {
+            expected: expected_seq,
+            found: actual,
+        }),
+        Err(error) => Err(database_error(&error)),
+    }
+}
+
+/// Replicate the workflow-id index entry to the routing quorum via
+/// `replicate_write` (create-if-absent). Only ever called for the first event of a
+/// stream (`expected_seq == 0`), so the index key is absent on the quorum and the
+/// create-if-absent CAS succeeds; a fence/timeout surfaces as a backend error.
+fn replicate_index_entry(
+    store: &haematite::EventStore,
+    workflow_id: &WorkflowId,
+    routing: &DistributedRouting,
+) -> Result<(), StoreError> {
+    let database = store.database();
+    let result = run_off_runtime(|| {
+        database.replicate_write(
+            keyspace::workflow_index_key(workflow_id),
+            None,
+            Vec::new(),
+            None,
+            &routing.membership,
+            routing.timeout,
+        )
+    });
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) => Err(database_error(&error)),
+    }
 }
 
 /// The current stored head (event count) for `workflow_id`.
@@ -385,8 +562,9 @@ impl WritableEventStore for HaematiteStore {
     ) -> Result<(), StoreError> {
         let workflow_id = workflow_id.clone();
         let events = events.to_vec();
+        let routing = self.distribution.clone();
         self.blocking(move |store| {
-            append_blocking(store, &workflow_id, &events, expected_seq, None)
+            append_blocking(store, &workflow_id, &events, expected_seq, None, routing.as_ref())
         })
         .await
     }
@@ -402,8 +580,16 @@ impl WritableEventStore for HaematiteStore {
         let workflow_id = workflow_id.clone();
         let events = events.to_vec();
         let outbox_rows = outbox_rows.to_vec();
+        let routing = self.distribution.clone();
         self.blocking(move |store| {
-            append_blocking(store, &workflow_id, &events, expected_seq, Some(&outbox_rows))
+            append_blocking(
+                store,
+                &workflow_id,
+                &events,
+                expected_seq,
+                Some(&outbox_rows),
+                routing.as_ref(),
+            )
         })
         .await
     }

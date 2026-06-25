@@ -6,10 +6,15 @@
 //! the in-memory and libSQL stores satisfy. See [`store`] for the design and the
 //! event/KV key-encoding scheme.
 //!
-//! Replication and multi-node failover are intentionally out of scope for this
-//! increment (B1): the store runs haematite with a single shard and no
-//! distribution. A later increment builds the cluster failover path on the
-//! replicated haematite substrate.
+//! [`HaematiteStore`] runs in one of two modes. In **single-node** mode
+//! ([`HaematiteStore::create`]/[`HaematiteStore::open`]) every write is a local
+//! haematite commit (B1). In **distributed** mode
+//! ([`HaematiteStore::with_distribution`]) event appends and the workflow-id index
+//! are quorum-REPLICATED to a cluster membership over haematite's
+//! `replicate_append`/`replicate_write`, so a workflow's durable history survives
+//! the owner node's death and is readable on the survivor once it becomes the
+//! shard owner (B2). The outbox stays Design-B local and is rebuilt from the
+//! replicated history on the survivor.
 //!
 //! # Example
 //!
