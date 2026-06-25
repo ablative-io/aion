@@ -93,6 +93,16 @@ pub struct HaematiteStore {
     inner: Arc<haematite::EventStore>,
     /// `Some` in distributed mode; `None` in single-node mode (B1, unchanged).
     distribution: Option<DistributedRouting>,
+    /// Which shards this store owns for ENUMERATION purposes.
+    ///
+    /// `None` (the default) = own ALL shards: enumeration scans every shard,
+    /// byte-for-byte identical to single-node behavior. `Some(set)` = own only
+    /// those shard ids: per-workflow enumeration (workflows, timers, outbox) is
+    /// scoped to those shards, so a multi-node deployment that owns shards
+    /// `{0, 2}` enumerates only the work co-located there. The set is wrapped in
+    /// an `Arc<RwLock<..>>` shared across `Clone`s, so a deployment that sets it
+    /// on one handle affects every clone that routes through the same inner store.
+    owned_shards: std::sync::Arc<std::sync::RwLock<Option<std::collections::BTreeSet<usize>>>>,
 }
 
 impl std::fmt::Debug for HaematiteStore {
@@ -172,6 +182,7 @@ impl HaematiteStore {
                 membership,
                 timeout,
             }),
+            owned_shards: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -191,7 +202,43 @@ impl HaematiteStore {
         Self {
             inner: Arc::new(haematite::EventStore::new(database)),
             distribution: None,
+            owned_shards: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Restrict enumeration to these shard ids (multi-node: the shards this node
+    /// owns). Pass the shards acquired via `acquire_shard_and_serve`. Idempotent.
+    ///
+    /// Affects every per-workflow enumeration path (workflows, timers, outbox);
+    /// package/route listing stays cluster-wide and is unaffected. Shared across
+    /// `Clone`s through the inner `Arc<RwLock<..>>`.
+    pub fn set_owned_shards(&self, shards: impl IntoIterator<Item = usize>) {
+        let set: std::collections::BTreeSet<usize> = shards.into_iter().collect();
+        // A poisoned store lock is unrecoverable (consistent with the rest of the
+        // crate's blocking commit paths): unwrap rather than mask the corruption.
+        *self.owned_shards.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(set);
+    }
+
+    /// Revert to owning all shards (single-node default).
+    pub fn own_all_shards(&self) {
+        *self.owned_shards.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// Snapshot the current owned set (`None` = all shards). For tests/diagnostics.
+    #[must_use]
+    pub fn owned_shards(&self) -> Option<Vec<usize>> {
+        self.owned_shards
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|set| set.iter().copied().collect())
+    }
+
+    /// Snapshot the owned-shard scope as an owned `Option<Vec<usize>>` suitable
+    /// for moving into a `self.blocking` closure (which only borrows the
+    /// `EventStore`, not `self`). `None` = all shards.
+    fn owned_shard_scope(&self) -> Option<Vec<usize>> {
+        self.owned_shards()
     }
 
     /// Run a blocking haematite closure on the blocking pool, sharing the
@@ -336,6 +383,60 @@ where
             .map_err(|error| database_error(&error))?;
         for (key, value) in &entries {
             decoded.push(decode(key, value)?);
+        }
+    }
+    Ok(decoded)
+}
+
+/// Scan every value under `prefix`, restricted to an owned-shard `scope`.
+///
+/// * `scope == None` → iterate `0..database.shard_count()`, identical to
+///   [`scan_prefix`] (the single-node / own-all default).
+/// * `scope == Some(ids)` → iterate ONLY those shard ids, skipping any id
+///   `>= shard_count` defensively. Because AA-4-3a co-located each workflow's
+///   timers/outbox on its event stream's shard, scanning shard `S`'s `t:`/`o:`
+///   region yields exactly the timers/outbox of the workflows on shard `S`.
+///
+/// The cross-shard concatenation order is arbitrary; every caller re-sorts.
+fn scan_prefix_scoped<T, D>(
+    store: &haematite::EventStore,
+    prefix: &[u8],
+    scope: Option<&[usize]>,
+    mut decode: D,
+) -> Result<Vec<T>, StoreError>
+where
+    D: FnMut(&[u8], &[u8]) -> Result<T, StoreError>,
+{
+    let database = store.database();
+    let shard_count = database.shard_count();
+    let Some(upper) = keyspace::prefix_upper_bound(prefix) else {
+        return Ok(Vec::new());
+    };
+    let mut decoded = Vec::new();
+    let mut scan = |shard: usize| -> Result<(), StoreError> {
+        let entries = database
+            .range_per_shard(shard, prefix, &upper)
+            .map_err(|error| database_error(&error))?;
+        for (key, value) in &entries {
+            decoded.push(decode(key, value)?);
+        }
+        Ok(())
+    };
+    match scope {
+        None => {
+            for shard in 0..shard_count {
+                scan(shard)?;
+            }
+        }
+        Some(ids) => {
+            for &shard in ids {
+                // Skip out-of-range ids defensively; an owned-shard set is
+                // sourced from acquisition and should already be valid, but a
+                // stale id must not abort the whole scan.
+                if shard < shard_count {
+                    scan(shard)?;
+                }
+            }
         }
     }
     Ok(decoded)
@@ -648,11 +749,13 @@ impl OutboxStore for HaematiteStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let scope = self.owned_shard_scope();
         self.blocking(move |store| {
             let now = Utc::now();
-            let mut claimable: Vec<OutboxRow> = scan_prefix(
+            let mut claimable: Vec<OutboxRow> = scan_prefix_scoped(
                 store,
                 keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
                 |_, value| decode_outbox(value),
             )?
             .into_iter()
@@ -801,8 +904,11 @@ impl ReadableEventStore for HaematiteStore {
     }
 
     async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
-        self.blocking(|store| {
-            let mut ids = workflow_stream_ids(store)?;
+        // Snapshot the owned-shard scope BEFORE `blocking` (the closure only
+        // borrows the EventStore, not `self`).
+        let scope = self.owned_shard_scope();
+        self.blocking(move |store| {
+            let mut ids = workflow_stream_ids(store, scope.as_deref())?;
             ids.sort_by_key(ToString::to_string);
             Ok(ids)
         })
@@ -810,8 +916,9 @@ impl ReadableEventStore for HaematiteStore {
     }
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
-        self.blocking(|store| {
-            let workflow_ids = workflow_stream_ids(store)?;
+        let scope = self.owned_shard_scope();
+        self.blocking(move |store| {
+            let workflow_ids = workflow_stream_ids(store, scope.as_deref())?;
             let mut active = Vec::new();
             for workflow_id in workflow_ids {
                 let history = read_events(store, &workflow_id)?;
@@ -827,8 +934,9 @@ impl ReadableEventStore for HaematiteStore {
 
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         let filter = filter.clone();
+        let scope = self.owned_shard_scope();
         self.blocking(move |store| {
-            let workflow_ids = workflow_stream_ids(store)?;
+            let workflow_ids = workflow_stream_ids(store, scope.as_deref())?;
             let mut summaries = Vec::new();
             for workflow_id in workflow_ids {
                 let history = read_events(store, &workflow_id)?;
@@ -883,12 +991,17 @@ impl ReadableEventStore for HaematiteStore {
     }
 
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
+        let scope = self.owned_shard_scope();
         self.blocking(move |store| {
-            let mut timers: Vec<TimerEntry> =
-                scan_prefix(store, keyspace::TIMER_PREFIX, |_, value| decode_timer(value))?
-                    .into_iter()
-                    .filter(|entry| entry.fire_at <= as_of)
-                    .collect();
+            let mut timers: Vec<TimerEntry> = scan_prefix_scoped(
+                store,
+                keyspace::TIMER_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_timer(value),
+            )?
+            .into_iter()
+            .filter(|entry| entry.fire_at <= as_of)
+            .collect();
             timers.sort_by(|left, right| {
                 left.fire_at
                     .cmp(&right.fire_at)
@@ -1012,11 +1125,21 @@ impl PackageStore for HaematiteStore {
 /// the workflow ids — no separate workflow-id index is kept. Non-`E` keys are
 /// skipped defensively (the scan only ever returns event-stream sequence keys, so
 /// this is belt-and-braces).
-fn workflow_stream_ids(store: &haematite::EventStore) -> Result<Vec<WorkflowId>, StoreError> {
-    let streams = store
-        .database()
-        .scan_sequence_keys()
-        .map_err(|error| database_error(&error))?;
+fn workflow_stream_ids(
+    store: &haematite::EventStore,
+    scope: Option<&[usize]>,
+) -> Result<Vec<WorkflowId>, StoreError> {
+    let database = store.database();
+    let streams = match scope {
+        // Own all shards: enumerate every stream (single-node default).
+        None => database
+            .scan_sequence_keys()
+            .map_err(|error| database_error(&error))?,
+        // Own a subset: enumerate only the streams on the owned shards.
+        Some(ids) => database
+            .scan_sequence_keys_for_shards(ids)
+            .map_err(|error| database_error(&error))?,
+    };
     Ok(streams
         .into_iter()
         .filter_map(|(stream_key, _next_seq)| {
