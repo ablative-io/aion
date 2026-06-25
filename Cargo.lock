@@ -146,18 +146,29 @@ name = "aion-proto"
 version = "0.6.2"
 dependencies = [
  "aion-core",
+ "aion-proto-generated",
  "aion-store",
  "chrono",
  "prost 0.14.3",
- "protoc-bin-vendored",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tonic 0.14.6",
+ "tonic-prost",
+ "uuid",
+]
+
+[[package]]
+name = "aion-proto-generated"
+version = "0.6.2"
+dependencies = [
+ "prost 0.14.3",
+ "protoc-bin-vendored",
+ "serde",
+ "tonic 0.14.6",
  "tonic-build",
  "tonic-prost",
  "tonic-prost-build",
- "uuid",
 ]
 
 [[package]]

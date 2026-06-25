@@ -10,6 +10,7 @@ members = [
     "crates/aion",
     "crates/aion-nif",
     "crates/aion-proto",
+    "crates/aion-proto-generated",
     "crates/aion-server",
     "crates/aion-worker",
     "crates/aion-client",
