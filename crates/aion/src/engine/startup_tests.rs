@@ -231,6 +231,7 @@ fn recovery_context(
         supervision: Arc::new(SupervisionTree::new()),
         recovery: None,
         search_attribute_schema: Arc::new(SearchAttributeSchema::new()),
+        bootstrap_schedule_coordinator: true,
     }
 }
 

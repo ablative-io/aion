@@ -53,12 +53,17 @@ pub(super) struct StartupRecoveryContext {
     pub(super) supervision: Arc<SupervisionTree>,
     pub(super) recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
     pub(super) search_attribute_schema: Arc<SearchAttributeSchema>,
+    /// When false, skip seeding the schedule-coordinator history at startup
+    /// (multi-node: only the coordinator-shard owner seeds it). Default true.
+    pub(super) bootstrap_schedule_coordinator: bool,
 }
 
 pub(super) async fn recover_active_workflows_on_startup(
     context: StartupRecoveryContext,
 ) -> Result<(), EngineError> {
-    bootstrap_schedule_coordinator(Arc::clone(&context.store)).await?;
+    if context.bootstrap_schedule_coordinator {
+        seed_schedule_coordinator_history(Arc::clone(&context.store)).await?;
+    }
     crate::lifecycle::visibility::reconcile_visibility(
         Arc::clone(&context.store),
         Arc::clone(&context.visibility_store),
@@ -73,7 +78,7 @@ pub(super) async fn recover_active_workflows_on_startup(
     sweep_continued_as_new_replacements(&context).await
 }
 
-async fn bootstrap_schedule_coordinator(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
+async fn seed_schedule_coordinator_history(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
     let workflow_id = schedule_coordinator_workflow_id();
     let history = store.as_ref().read_history(&workflow_id).await?;
     if !history.is_empty() {
