@@ -1,0 +1,31 @@
+[package]
+name = "aion-store-haematite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Single-node haematite-backed event store implementation for Aion workflows."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-store-haematite"
+keywords = ["aion", "workflow", "durable-execution", "haematite", "event-store"]
+categories = ["asynchronous", "database"]
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-store = { version = "0.6.1", path = "../aion-store" }
+aion-core = { version = "0.6.1", path = "../aion-core" }
+haematite = { path = "../../../haematite/crates/haematite" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
