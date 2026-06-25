@@ -1,0 +1,29 @@
+[package]
+name = "aion-proto-generated"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Machine-generated tonic/prost gRPC stubs for Aion, isolated from the hand-written aion-proto crate so its relaxed lint policy lives in Cargo.toml [lints] rather than in-source #![allow]."
+
+[lints.clippy]
+all = { level = "allow", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+
+[lints.rust]
+missing_docs = "allow"
+unreachable_pub = "allow"
+unused_qualifications = "allow"
+
+[dependencies]
+tonic = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tonic-prost = "=0.14.5"
+
+[build-dependencies]
+protoc-bin-vendored = "3.2.0"
+tonic-build = { workspace = true }
+tonic-prost-build = "=0.14.5"

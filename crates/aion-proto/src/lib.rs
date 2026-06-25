@@ -33,8 +33,10 @@ pub mod worker;
 pub mod workflow;
 
 #[cfg(feature = "generated")]
-/// Generated tonic service definitions compiled from Aion protobuf files.
-pub mod generated;
+/// Generated tonic service definitions, re-exported from the isolated
+/// `aion-proto-generated` crate (kept separate so its relaxed lint posture
+/// does not affect hand-written code here).
+pub use aion_proto_generated as generated;
 
 pub use convert::{
     ProtoActivityId, ProtoPayload, ProtoRunId, ProtoScheduleId, ProtoTimerId, ProtoWorkflowId,
