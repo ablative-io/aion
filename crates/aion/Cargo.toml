@@ -42,6 +42,8 @@ saffron.workspace = true
 [dev-dependencies]
 aion-package = { version = "0.6.1", path = "../aion-package", features = ["test-support"] }
 aion-store-libsql = { version = "0.6.1", path = "../aion-store-libsql" }
+aion-store-haematite = { version = "0.6.1", path = "../aion-store-haematite" }
 beamr = { workspace = true, features = ["test-support"] }
 fs4.workspace = true
+tempfile = "3"
 tracing-subscriber.workspace = true
