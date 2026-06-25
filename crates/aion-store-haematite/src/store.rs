@@ -60,18 +60,20 @@ use crate::keyspace;
 
 /// Quorum-replication routing for a distributed [`HaematiteStore`].
 ///
-/// When present, event appends route through [`Database::replicate_append`] and
-/// the workflow-id index entry through [`Database::replicate_write`] to this
-/// `membership` quorum, INSTEAD of the local single-node `append_batch`/`put`
-/// path. The byte-level event/stream-key encoding is identical to the single-node
-/// path (haematite's `replicate_append` lays events out exactly as the local
-/// `append_batch` does), so `read_history` decodes a replicated stream the same
-/// way it decodes a locally-appended one.
+/// When present, event appends route through [`Database::replicate_append`] to
+/// this `membership` quorum, INSTEAD of the local single-node `append_batch`
+/// path. Only event history is replicated — workflows are enumerated from the
+/// replicated event streams themselves (see
+/// [`keyspace::workflow_id_from_event_stream_key`]), so there is no separate
+/// workflow-id index to replicate. The byte-level event/stream-key encoding is
+/// identical to the single-node path (haematite's `replicate_append` lays events
+/// out exactly as the local `append_batch` does), so `read_history` decodes a
+/// replicated stream the same way it decodes a locally-appended one.
 #[derive(Clone)]
 struct DistributedRouting {
     /// The quorum membership (denominator + reachable send targets) for writes.
     membership: WriteMembership,
-    /// Per-operation quorum timeout passed to `replicate_append`/`replicate_write`.
+    /// Per-operation quorum timeout passed to `replicate_append`.
     timeout: Duration,
 }
 
@@ -82,9 +84,9 @@ struct DistributedRouting {
 /// * **Single-node** ([`create`](HaematiteStore::create) /
 ///   [`open`](HaematiteStore::open)): every write is a local haematite commit.
 /// * **Distributed** ([`with_distribution`](HaematiteStore::with_distribution)):
-///   event appends and the workflow-id index are quorum-REPLICATED to a cluster
-///   membership, so a workflow's durable history survives the owner node's death
-///   and is readable on the survivor after it becomes the shard owner. The outbox
+///   event appends are quorum-REPLICATED to a cluster membership, so a workflow's
+///   durable history survives the owner node's death and is readable (and
+///   enumerable) on the survivor after it becomes the shard owner. The outbox
 ///   stays Design-B local (rebuilt from replicated history on the survivor).
 #[derive(Clone)]
 pub struct HaematiteStore {
@@ -151,11 +153,11 @@ impl HaematiteStore {
     /// [`Database::with_distribution`] and for making this node the live shard
     /// owner (via [`Database::acquire_shard_and_serve`]) before issuing appends —
     /// `replicate_append` draws its commit stamp from the live owner state. Event
-    /// appends ([`WritableEventStore::append`] / `append_with_outbox`) and the
-    /// workflow-id index entry route through `replicate_append` / `replicate_write`
-    /// to `membership`'s quorum; reads, timers, packages, routes, and the outbox
-    /// stay local (Design B: the survivor rebuilds the outbox from replicated
-    /// history).
+    /// appends ([`WritableEventStore::append`] / `append_with_outbox`) route
+    /// through `replicate_append` to `membership`'s quorum; reads, timers,
+    /// packages, routes, and the outbox stay local (Design B: the survivor
+    /// rebuilds the outbox from replicated history, and enumerates workflows from
+    /// the replicated event streams).
     ///
     /// `timeout` bounds each quorum write.
     #[must_use]
@@ -373,10 +375,11 @@ fn read_events_from(
 /// Append `events` for `workflow_id` and, when `outbox_rows` is `Some`, the
 /// outbox rows. Shared by `append` and `append_with_outbox`.
 ///
-/// When `routing` is `Some` the event batch and the workflow-id index entry are
-/// quorum-REPLICATED through haematite's `replicate_append` / `replicate_write`
-/// to the configured membership; the outbox rows ALWAYS stay local (Design B).
-/// When `routing` is `None` this is the unchanged single-node B1 path.
+/// When `routing` is `Some` the event batch is quorum-REPLICATED through
+/// haematite's `replicate_append` to the configured membership; the outbox rows
+/// ALWAYS stay local (Design B). When `routing` is `None` this is the unchanged
+/// single-node B1 path. Per-workflow KV records (timers, outbox) co-locate on the
+/// workflow's shard by routing on its event-stream key.
 fn append_blocking(
     store: &haematite::EventStore,
     workflow_id: &WorkflowId,
@@ -427,17 +430,15 @@ fn append_blocking(
             // key + value encoding is byte-identical to the local `append_batch`
             // path (haematite shares the encoding between `append` and
             // `replicate_append`), so `read_history` decodes a replicated stream
-            // exactly as it decodes a locally-appended one.
+            // exactly as it decodes a locally-appended one. Workflows are
+            // enumerated from these replicated streams, so there is no separate
+            // workflow-id index to replicate.
             replicate_events(store, &stream_key, payloads, expected_seq, routing)?;
-            // The workflow-id index entry is durable state needed to enumerate
-            // workflows on the survivor; replicate it too. It is written
-            // create-if-absent only on the first event of the stream
-            // (`expected_seq == 0`), when the index key is guaranteed absent.
-            if expected_seq == 0 {
-                replicate_index_entry(store, workflow_id, routing)?;
-            }
         } else {
             // SINGLE-NODE (B1, unchanged): local optimistic-concurrency append.
+            // `append_batch` self-commits, and workflows are enumerated from the
+            // event streams themselves, so no separate index write/commit is
+            // needed here.
             let payload_refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
             match store.append_batch(&stream_key, &payload_refs, expected_seq) {
                 Ok(_) => {}
@@ -449,13 +450,6 @@ fn append_blocking(
                 }
                 Err(error) => return Err(api_error(&error)),
             }
-
-            // Record the workflow-id index entry (idempotent) so list/query enumerate it.
-            let database = store.database();
-            database
-                .put(keyspace::workflow_index_key(workflow_id), Vec::new())
-                .map_err(|error| database_error(&error))?;
-            database.commit().map_err(|error| database_error(&error))?;
         }
     }
 
@@ -522,32 +516,6 @@ fn replicate_events(
     }
 }
 
-/// Replicate the workflow-id index entry to the routing quorum via
-/// `replicate_write` (create-if-absent). Only ever called for the first event of a
-/// stream (`expected_seq == 0`), so the index key is absent on the quorum and the
-/// create-if-absent CAS succeeds; a fence/timeout surfaces as a backend error.
-fn replicate_index_entry(
-    store: &haematite::EventStore,
-    workflow_id: &WorkflowId,
-    routing: &DistributedRouting,
-) -> Result<(), StoreError> {
-    let database = store.database();
-    let result = run_off_runtime(|| {
-        database.replicate_write(
-            keyspace::workflow_index_key(workflow_id),
-            None,
-            Vec::new(),
-            None,
-            &routing.membership,
-            routing.timeout,
-        )
-    });
-    match result {
-        Ok(_) => Ok(()),
-        Err(error) => Err(database_error(&error)),
-    }
-}
-
 /// The current stored head (event count) for `workflow_id`.
 fn stream_head(store: &haematite::EventStore, workflow_id: &WorkflowId) -> Result<u64, StoreError> {
     let events = read_events(store, workflow_id)?;
@@ -562,14 +530,17 @@ fn insert_outbox_rows(
 ) -> Result<(), StoreError> {
     let database = store.database();
     for row in rows {
+        // Co-locate the outbox row on the workflow's shard by routing on the
+        // workflow's event-stream key.
+        let route_key = keyspace::event_stream_key(&row.workflow_id);
         let key = keyspace::outbox_key(&row.dispatch_key);
         if database
-            .get(&key)
+            .get_routed(&route_key, &key)
             .map_err(|error| database_error(&error))?
             .is_none()
         {
             database
-                .put(key, encode_outbox(row)?)
+                .put_routed(&route_key, key, encode_outbox(row)?)
                 .map_err(|error| database_error(&error))?;
         }
     }
@@ -628,11 +599,14 @@ impl WritableEventStore for HaematiteStore {
         self.blocking(move |store| {
             let database = store.database();
             for row in &rows {
+                // Co-locate on the workflow's shard by routing on its event-stream
+                // key, matching the original insert.
+                let route_key = keyspace::event_stream_key(&row.workflow_id);
                 let key = keyspace::outbox_key(&row.dispatch_key);
                 // Read-modify-write: preserve the existing `attempt` budget when a
                 // row already exists; insert a fresh Pending row otherwise.
                 let merged = match database
-                    .get(&key)
+                    .get_routed(&route_key, &key)
                     .map_err(|error| database_error(&error))?
                 {
                     Some(existing) => {
@@ -650,7 +624,7 @@ impl WritableEventStore for HaematiteStore {
                     },
                 };
                 database
-                    .put(key, encode_outbox(&merged)?)
+                    .put_routed(&route_key, key, encode_outbox(&merged)?)
                     .map_err(|error| database_error(&error))?;
             }
             database.commit().map_err(|error| database_error(&error))?;
@@ -700,8 +674,12 @@ impl OutboxStore for HaematiteStore {
                     status: OutboxStatus::Claimed,
                     ..row
                 };
+                // Rewrite in place on the row's own shard (co-located by the
+                // workflow's event-stream key).
+                let route_key = keyspace::event_stream_key(&updated.workflow_id);
                 database
-                    .put(
+                    .put_routed(
+                        &route_key,
                         keyspace::outbox_key(&updated.dispatch_key),
                         encode_outbox(&updated)?,
                     )
@@ -759,16 +737,30 @@ impl HaematiteStore {
         let dispatch_key = dispatch_key.to_owned();
         self.blocking(move |store| {
             let database = store.database();
+            // The outbox row is co-located on its workflow's shard. The
+            // dispatch_key is canonically "{workflow_id}:{ordinal}" and UUIDs
+            // contain no ':', so derive the workflow id (and thus the route key)
+            // by splitting off the trailing ordinal. A dispatch_key that has no
+            // ':' or whose prefix is not a workflow id is a hard error — silently
+            // falling back to a non-routed key would split the record from its
+            // workflow's shard.
+            let (workflow_text, _ordinal) = dispatch_key.rsplit_once(':').ok_or_else(|| {
+                StoreError::Backend(format!(
+                    "outbox dispatch_key missing ':' separator: {dispatch_key}"
+                ))
+            })?;
+            let workflow_id = parse_workflow_id(workflow_text)?;
+            let route_key = keyspace::event_stream_key(&workflow_id);
             let key = keyspace::outbox_key(&dispatch_key);
             let Some(existing) = database
-                .get(&key)
+                .get_routed(&route_key, &key)
                 .map_err(|error| database_error(&error))?
             else {
                 return Ok(());
             };
             let updated = transition(decode_outbox(&existing)?);
             database
-                .put(key, encode_outbox(&updated)?)
+                .put_routed(&route_key, key, encode_outbox(&updated)?)
                 .map_err(|error| database_error(&error))?;
             database.commit().map_err(|error| database_error(&error))?;
             Ok(())
@@ -810,13 +802,7 @@ impl ReadableEventStore for HaematiteStore {
 
     async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
         self.blocking(|store| {
-            let mut ids = scan_prefix(store, keyspace::WORKFLOW_INDEX_PREFIX, |key, _| {
-                keyspace::workflow_id_from_index_key(key)
-                    .ok_or_else(|| {
-                        StoreError::Backend(String::from("malformed workflow-id index key"))
-                    })
-                    .and_then(|text| parse_workflow_id(&text))
-            })?;
+            let mut ids = workflow_stream_ids(store)?;
             ids.sort_by_key(ToString::to_string);
             Ok(ids)
         })
@@ -825,7 +811,7 @@ impl ReadableEventStore for HaematiteStore {
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         self.blocking(|store| {
-            let workflow_ids = workflow_index_ids(store)?;
+            let workflow_ids = workflow_stream_ids(store)?;
             let mut active = Vec::new();
             for workflow_id in workflow_ids {
                 let history = read_events(store, &workflow_id)?;
@@ -842,7 +828,7 @@ impl ReadableEventStore for HaematiteStore {
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         let filter = filter.clone();
         self.blocking(move |store| {
-            let workflow_ids = workflow_index_ids(store)?;
+            let workflow_ids = workflow_stream_ids(store)?;
             let mut summaries = Vec::new();
             for workflow_id in workflow_ids {
                 let history = read_events(store, &workflow_id)?;
@@ -880,8 +866,15 @@ impl ReadableEventStore for HaematiteStore {
                 fire_at,
             };
             let database = store.database();
+            // Co-locate the timer on the workflow's shard by routing on its
+            // event-stream key (the same key the event stream routes by).
+            let route_key = keyspace::event_stream_key(&workflow_id);
             database
-                .put(keyspace::timer_key(&workflow_id, &token), encode_timer(&entry)?)
+                .put_routed(
+                    &route_key,
+                    keyspace::timer_key(&workflow_id, &token),
+                    encode_timer(&entry)?,
+                )
                 .map_err(|error| database_error(&error))?;
             database.commit().map_err(|error| database_error(&error))?;
             Ok(())
@@ -1010,13 +1003,26 @@ impl PackageStore for HaematiteStore {
     }
 }
 
-/// Enumerate the workflow ids recorded in the index region.
-fn workflow_index_ids(store: &haematite::EventStore) -> Result<Vec<WorkflowId>, StoreError> {
-    scan_prefix(store, keyspace::WORKFLOW_INDEX_PREFIX, |key, _| {
-        keyspace::workflow_id_from_index_key(key)
-            .ok_or_else(|| StoreError::Backend(String::from("malformed workflow-id index key")))
-            .and_then(|text| parse_workflow_id(&text))
-    })
+/// Enumerate every workflow id by reading the co-located event streams.
+///
+/// Each workflow's history lives in one haematite event stream keyed by
+/// [`keyspace::event_stream_key`]; `scan_sequence_keys` returns the
+/// `(stream_key, next_seq)` pair for every stream across all shards. Mapping each
+/// stream key back through [`keyspace::workflow_id_from_event_stream_key`] yields
+/// the workflow ids — no separate workflow-id index is kept. Non-`E` keys are
+/// skipped defensively (the scan only ever returns event-stream sequence keys, so
+/// this is belt-and-braces).
+fn workflow_stream_ids(store: &haematite::EventStore) -> Result<Vec<WorkflowId>, StoreError> {
+    let streams = store
+        .database()
+        .scan_sequence_keys()
+        .map_err(|error| database_error(&error))?;
+    Ok(streams
+        .into_iter()
+        .filter_map(|(stream_key, _next_seq)| {
+            keyspace::workflow_id_from_event_stream_key(&stream_key)
+        })
+        .collect())
 }
 
 fn parse_workflow_id(text: &str) -> Result<WorkflowId, StoreError> {

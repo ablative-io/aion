@@ -1,19 +1,20 @@
 //! Key-encoding scheme for the single-node haematite-backed store.
 //!
 //! The store keeps workflow-history events in haematite's native event-stream
-//! keyspace and every other durable record (the workflow-id index, timers,
-//! packages, routes, and outbox rows) in the general KV keyspace. The two
-//! keyspaces are disjoint by construction: event streams are addressed through
-//! [`haematite::EventStore`] (which encodes `stream_key || 0x00 || seq`), while
-//! the KV records here all carry a single-byte region tag that is never `0x00`
-//! and never collides with an event stream key.
+//! keyspace and every other durable record (timers, packages, routes, and
+//! outbox rows) in the general KV keyspace. The two keyspaces are disjoint by
+//! construction: event streams are addressed through [`haematite::EventStore`]
+//! (which encodes `stream_key || 0x00 || seq`), while the KV records here all
+//! carry a single-byte region tag that is never `0x00` and never collides with
+//! an event stream key. Workflows are enumerated directly from the event
+//! streams (see [`workflow_id_from_event_stream_key`]), so there is no separate
+//! workflow-id index.
 //!
 //! # Region tags
 //!
 //! | tag  | region                | key layout                                  |
 //! |------|-----------------------|---------------------------------------------|
 //! | `E`  | event stream          | `E || workflow_uuid_bytes` (16 bytes)       |
-//! | `w`  | workflow-id index     | `w: || workflow_id_text`                    |
 //! | `t`  | durable timers        | `t: || workflow_id_text || 0x1f || timer`   |
 //! | `p`  | deployed packages     | `p: || type || 0x1f || content_hash`        |
 //! | `r`  | package routes        | `r: || workflow_type`                       |
@@ -25,6 +26,7 @@
 //! globally complete (haematite's `range` is shard-local, routed from `from`).
 
 use aion_core::WorkflowId;
+use uuid::Uuid;
 
 /// Field separator inside composite KV keys (ASCII unit separator).
 ///
@@ -46,18 +48,18 @@ pub(crate) fn event_stream_key(workflow_id: &WorkflowId) -> Vec<u8> {
     key
 }
 
-/// Prefix for the workflow-id index region.
-pub(crate) const WORKFLOW_INDEX_PREFIX: &[u8] = b"w:";
-
-/// Index key recording that `workflow_id` has at least one event.
-pub(crate) fn workflow_index_key(workflow_id: &WorkflowId) -> Vec<u8> {
-    composite(WORKFLOW_INDEX_PREFIX, &[workflow_id.to_string().as_bytes()])
-}
-
-/// Decode a workflow-id index key back into its textual UUID.
-pub(crate) fn workflow_id_from_index_key(key: &[u8]) -> Option<String> {
-    let suffix = key.strip_prefix(WORKFLOW_INDEX_PREFIX)?;
-    String::from_utf8(suffix.to_vec()).ok()
+/// Recover the [`WorkflowId`] from an event-stream key, if `key` is one.
+///
+/// The inverse of [`event_stream_key`]: a stream key is the tag byte `E`
+/// followed by the raw 16-byte UUID, so a valid key is exactly 17 bytes long
+/// and starts with `E`. Returns `None` for any other key (e.g. a KV-region key
+/// or a malformed stream key), so callers enumerating workflows from the event
+/// streams can defensively skip non-stream keys.
+pub(crate) fn workflow_id_from_event_stream_key(key: &[u8]) -> Option<WorkflowId> {
+    if key.len() != 17 || key[0] != b'E' {
+        return None;
+    }
+    Uuid::from_slice(&key[1..17]).ok().map(WorkflowId::new)
 }
 
 /// Prefix for the durable-timer region.
@@ -141,13 +143,26 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn workflow_index_key_round_trips() {
+    fn workflow_id_from_event_stream_key_round_trips() {
         let workflow_id = WorkflowId::new(Uuid::from_u128(42));
-        let key = workflow_index_key(&workflow_id);
+        let key = event_stream_key(&workflow_id);
         assert_eq!(
-            workflow_id_from_index_key(&key).as_deref(),
-            Some(workflow_id.to_string().as_str())
+            workflow_id_from_event_stream_key(&key),
+            Some(workflow_id)
         );
+    }
+
+    #[test]
+    fn workflow_id_from_event_stream_key_rejects_non_stream_keys() {
+        // A KV-region key (wrong tag / wrong length) is not a stream key.
+        assert_eq!(workflow_id_from_event_stream_key(timer_key(
+            &WorkflowId::new(Uuid::from_u128(1)),
+            "t"
+        ).as_slice()), None);
+        // A 17-byte key with the wrong tag byte is rejected.
+        let mut wrong_tag = vec![b'X'];
+        wrong_tag.extend_from_slice(Uuid::from_u128(2).as_bytes());
+        assert_eq!(workflow_id_from_event_stream_key(&wrong_tag), None);
     }
 
     #[test]
@@ -158,7 +173,7 @@ mod tests {
 
     #[test]
     fn prefix_upper_bound_increments_last_byte() {
-        assert_eq!(prefix_upper_bound(b"w:"), Some(b"w;".to_vec()));
+        assert_eq!(prefix_upper_bound(b"t:"), Some(b"t;".to_vec()));
     }
 
     #[test]
@@ -171,6 +186,7 @@ mod tests {
         let workflow_id = WorkflowId::new(Uuid::from_u128(7));
         let key = event_stream_key(&workflow_id);
         assert_eq!(key[0], b'E');
-        assert_ne!(&key[..2], WORKFLOW_INDEX_PREFIX);
+        assert_ne!(&key[..2], TIMER_PREFIX);
+        assert_ne!(&key[..2], OUTBOX_PREFIX);
     }
 }

@@ -9,12 +9,13 @@
 //! [`HaematiteStore`] runs in one of two modes. In **single-node** mode
 //! ([`HaematiteStore::create`]/[`HaematiteStore::open`]) every write is a local
 //! haematite commit (B1). In **distributed** mode
-//! ([`HaematiteStore::with_distribution`]) event appends and the workflow-id index
-//! are quorum-REPLICATED to a cluster membership over haematite's
-//! `replicate_append`/`replicate_write`, so a workflow's durable history survives
-//! the owner node's death and is readable on the survivor once it becomes the
-//! shard owner (B2). The outbox stays Design-B local and is rebuilt from the
-//! replicated history on the survivor.
+//! ([`HaematiteStore::with_distribution`]) event appends are quorum-REPLICATED to
+//! a cluster membership over haematite's `replicate_append`, so a workflow's
+//! durable history survives the owner node's death and is readable on the
+//! survivor once it becomes the shard owner (B2). Workflows are enumerated from
+//! the replicated event streams themselves, so there is no separate workflow-id
+//! index. The outbox stays Design-B local and is rebuilt from the replicated
+//! history on the survivor.
 //!
 //! # Example
 //!
