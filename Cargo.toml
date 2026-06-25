@@ -22,7 +22,7 @@ members = [
 version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/tomWhiting/aion"
 authors = ["Tom Whiting <tom@ablative.com.au>"]
 

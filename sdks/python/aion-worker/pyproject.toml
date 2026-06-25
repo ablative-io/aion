@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 description = "The Python remote-worker SDK for out-of-process Aion activities."
 readme = "README.md"
-license = { text = "MIT OR Apache-2.0" }
+license = { text = "AGPL-3.0-only" }
 authors = [{ name = "Aion Contributors" }]
 keywords = ["aion", "workflow", "worker", "activities", "sdk"]
 classifiers = [

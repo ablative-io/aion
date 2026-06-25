@@ -2,7 +2,7 @@ name = "aion_flow"
 version = "0.4.0"
 target = "erlang"
 description = "Typed durable workflow authoring SDK for Aion."
-licences = ["MIT", "Apache-2.0"]
+licences = ["AGPL-3.0-only"]
 repository = { type = "github", user = "tomWhiting", repo = "aion" }
 
 [dependencies]

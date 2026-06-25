@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "The TypeScript caller SDK for starting, signalling, querying, cancelling, listing, describing, and subscribing to Aion workflows.",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ablative-io/aion.git",
