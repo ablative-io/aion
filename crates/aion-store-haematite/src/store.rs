@@ -534,7 +534,7 @@ fn append_blocking(
             // exactly as it decodes a locally-appended one. Workflows are
             // enumerated from these replicated streams, so there is no separate
             // workflow-id index to replicate.
-            replicate_events(store, &stream_key, payloads, expected_seq, routing)?;
+            replicate_events(store, &stream_key, &payloads, expected_seq, routing)?;
         } else {
             // SINGLE-NODE (B1, unchanged): local optimistic-concurrency append.
             // `append_batch` self-commits, and workflows are enumerated from the
@@ -593,14 +593,14 @@ where
 fn replicate_events(
     store: &haematite::EventStore,
     stream_key: &[u8],
-    payloads: Vec<Vec<u8>>,
+    payloads: &[Vec<u8>],
     expected_seq: u64,
     routing: &DistributedRouting,
 ) -> Result<(), StoreError> {
     let database = store.database();
     let result = run_off_runtime(|| {
         database.replicate_append(
-            stream_key.to_vec(),
+            stream_key,
             payloads,
             expected_seq,
             &routing.membership,
