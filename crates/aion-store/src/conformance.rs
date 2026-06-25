@@ -39,10 +39,13 @@ where
     range_read::from_seq_at_head_returns_only_head_event(make_store().await).await?;
     multi_batch_append_advances_sequence(make_store().await).await?;
     stale_expected_sequence_writes_nothing(make_store().await).await?;
+    concurrent_appends_on_same_expected_sequence_has_one_winner(make_store().await).await?;
+    large_history_round_trip(make_store().await).await?;
     list_active_reflects_projected_status(make_store().await).await?;
     reopen_returns_failed_workflow_to_active(make_store().await).await?;
     list_workflow_ids_includes_running_and_terminal_histories(make_store().await).await?;
     query_applies_all_filters(make_store().await).await?;
+    continued_as_new_query_returns_correct_status_and_ended_at(make_store().await).await?;
     read_run_chain_orders_continuations(make_store().await).await?;
     read_run_chain_single_and_multi_continuations(make_store().await).await?;
     expired_timers_include_due_boundary_and_exclude_future(make_store().await).await?;
@@ -191,6 +194,114 @@ async fn stale_expected_sequence_writes_nothing(
         store.read_history(&workflow_id).await?,
         vec![first],
         "SequenceConflict should leave history unchanged with no partial write",
+    )
+}
+
+async fn concurrent_appends_on_same_expected_sequence_has_one_winner(
+    store: Arc<dyn EventStore>,
+) -> Result<(), StoreError> {
+    let workflow_id = workflow_id();
+    let first_batch = vec![workflow_started(1, &workflow_id, "checkout")?];
+    let second_batch = vec![workflow_started(1, &workflow_id, "billing")?];
+
+    let first_append = store.append(
+        crate::store::conformance_write_token(),
+        &workflow_id,
+        &first_batch,
+        0,
+    );
+    let second_append = store.append(
+        crate::store::conformance_write_token(),
+        &workflow_id,
+        &second_batch,
+        0,
+    );
+    let (first_result, second_result) = futures::future::join(first_append, second_append).await;
+
+    let success_count = [&first_result, &second_result]
+        .into_iter()
+        .filter(|result| result.is_ok())
+        .count();
+    expect_eq(
+        success_count,
+        1,
+        "concurrent appends with the same expected_seq should have exactly one winner",
+    )?;
+
+    let conflict_count = [&first_result, &second_result]
+        .into_iter()
+        .filter(|result| {
+            matches!(
+                result,
+                Err(StoreError::SequenceConflict {
+                    expected: 0,
+                    found: 1,
+                })
+            )
+        })
+        .count();
+    expect_eq(
+        conflict_count,
+        1,
+        "losing concurrent append should return SequenceConflict for the winning head",
+    )?;
+
+    let expected_history = if first_result.is_ok() {
+        first_batch
+    } else {
+        second_batch
+    };
+    expect_eq(
+        store.read_history(&workflow_id).await?,
+        expected_history,
+        "history should contain only the winning concurrent append batch",
+    )
+}
+
+async fn large_history_round_trip(store: Arc<dyn EventStore>) -> Result<(), StoreError> {
+    let workflow_id = workflow_id();
+    let batch_size = 25_u64;
+    let batch_count = 5_u64;
+    let mut expected = Vec::new();
+
+    for batch_index in 0..batch_count {
+        let batch_start = batch_index * batch_size + 1;
+        let mut batch = Vec::new();
+        for seq in batch_start..batch_start + batch_size {
+            let event = if seq == 1 {
+                workflow_started(seq, &workflow_id, "large-history")?
+            } else {
+                activity_scheduled(seq, &workflow_id, &format!("activity-{seq}"))?
+            };
+            batch.push(event);
+        }
+
+        store
+            .append(
+                crate::store::conformance_write_token(),
+                &workflow_id,
+                &batch,
+                batch_start.saturating_sub(1),
+            )
+            .await?;
+        expected.extend(batch);
+    }
+
+    let history = store.read_history(&workflow_id).await?;
+    expect_eq(
+        history.len(),
+        expected.len(),
+        "large history read should return the full appended event count",
+    )?;
+    expect_eq(
+        event_sequences(&history),
+        (1..=batch_size * batch_count).collect::<Vec<_>>(),
+        "large history read should return events in ascending sequence order",
+    )?;
+    expect_eq(
+        history,
+        expected,
+        "large history read should round-trip all appended batches",
     )
 }
 
@@ -418,6 +529,77 @@ async fn query_applies_all_filters(store: Arc<dyn EventStore>) -> Result<(), Sto
     expect_empty(
         store.query(&parent_filter).await?,
         "parent filters should return no workflows when no summary carries that parent",
+    )
+}
+
+async fn continued_as_new_query_returns_correct_status_and_ended_at(
+    store: Arc<dyn EventStore>,
+) -> Result<(), StoreError> {
+    let workflow_id = workflow_id();
+    store
+        .append(
+            crate::store::conformance_write_token(),
+            &workflow_id,
+            &[
+                workflow_started_at(1, &workflow_id, "checkout", 10)?,
+                workflow_continued_as_new_at(2, &workflow_id, 12)?,
+            ],
+            0,
+        )
+        .await?;
+
+    let summaries = store.query(&WorkflowFilter::default()).await?;
+    expect_eq(
+        summaries.len(),
+        1,
+        "default query filter should return the continued-as-new workflow",
+    )?;
+    let summary = summaries
+        .first()
+        .ok_or_else(|| contract_error("query should return the continued-as-new summary"))?;
+    expect_eq(
+        summary.workflow_id.clone(),
+        workflow_id.clone(),
+        "default query filter should include the continued-as-new workflow id",
+    )?;
+    expect_eq(
+        summary.status,
+        WorkflowStatus::ContinuedAsNew,
+        "query summary should project ContinuedAsNew status from WorkflowContinuedAsNew",
+    )?;
+    expect_eq(
+        summary.ended_at,
+        Some(recorded_at(12)?),
+        "query summary ended_at should use the WorkflowContinuedAsNew recorded_at timestamp",
+    )?;
+
+    let continued_filter = WorkflowFilter {
+        status: Some(WorkflowStatus::ContinuedAsNew),
+        ..WorkflowFilter::default()
+    };
+    let summaries = store.query(&continued_filter).await?;
+    expect_eq(
+        summaries.len(),
+        1,
+        "ContinuedAsNew status query should match the continued-as-new workflow",
+    )?;
+    let summary = summaries.first().ok_or_else(|| {
+        contract_error("status-filtered query should return the continued-as-new summary")
+    })?;
+    expect_eq(
+        summary.workflow_id.clone(),
+        workflow_id,
+        "ContinuedAsNew status query should return the matching workflow id",
+    )?;
+    expect_eq(
+        summary.status,
+        WorkflowStatus::ContinuedAsNew,
+        "ContinuedAsNew status query should preserve the projected status",
+    )?;
+    expect_eq(
+        summary.ended_at,
+        Some(recorded_at(12)?),
+        "ContinuedAsNew status query should preserve the continued event timestamp as ended_at",
     )
 }
 
@@ -773,6 +955,23 @@ fn workflow_reopened(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreE
 
 fn workflow_continued_as_new(seq: u64, workflow_id: &WorkflowId) -> Result<Event, StoreError> {
     workflow_continued_as_new_with_parent(seq, workflow_id, &run_id(42))
+}
+
+fn workflow_continued_as_new_at(
+    seq: u64,
+    workflow_id: &WorkflowId,
+    offset_seconds: i64,
+) -> Result<Event, StoreError> {
+    Ok(Event::WorkflowContinuedAsNew {
+        envelope: envelope_at(seq, workflow_id, offset_seconds)?,
+        input: payload("continued-input")?,
+        workflow_type: Some(String::from("continued-workflow")),
+        parent_run_id: run_id(42),
+    })
+}
+
+fn event_sequences(events: &[Event]) -> Vec<u64> {
+    events.iter().map(Event::seq).collect()
 }
 
 fn workflow_continued_as_new_with_parent(
