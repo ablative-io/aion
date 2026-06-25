@@ -109,9 +109,25 @@ impl HaematiteStore {
     ///
     /// Returns [`StoreError::Backend`] when haematite cannot create the database.
     pub fn create(data_dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        Self::create_with_shard_count(data_dir, 1)
+    }
+
+    /// Create a fresh single-node store with `shard_count` haematite shards.
+    ///
+    /// `shard_count == 1` is the default [`create`](HaematiteStore::create)
+    /// behavior; `> 1` exercises the cross-shard fan-out scan path
+    /// ([`scan_prefix`]). Cluster/distribution is unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] when haematite cannot create the database.
+    pub fn create_with_shard_count(
+        data_dir: impl Into<PathBuf>,
+        shard_count: usize,
+    ) -> Result<Self, StoreError> {
         let database = Database::create(DatabaseConfig {
             data_dir: data_dir.into(),
-            shard_count: 1,
+            shard_count,
             sweep_interval: None,
             distributed: None,
         })
@@ -300,15 +316,25 @@ where
     D: FnMut(&[u8], &[u8]) -> Result<T, StoreError>,
 {
     let database = store.database();
-    let entries = match keyspace::prefix_upper_bound(prefix) {
-        Some(upper) => database
-            .range(prefix, &upper)
-            .map_err(|error| database_error(&error))?,
-        None => Vec::new(),
+    // Fan the prefix scan out across EVERY shard and concatenate the per-shard
+    // results. `Database::range` is shard-local (routed from the lower bound), so
+    // it only returns the keys that happen to live in the lower bound's shard;
+    // for a globally-complete enumeration we must visit each shard directly via
+    // `range_per_shard`. At `shard_count == 1` this is exactly one
+    // `range_per_shard(0, ..)` call, byte-for-byte equivalent to the old
+    // `range(..)`. The cross-shard concatenation order is arbitrary, but every
+    // caller of `scan_prefix` re-sorts its results, so this is correct.
+    let Some(upper) = keyspace::prefix_upper_bound(prefix) else {
+        return Ok(Vec::new());
     };
-    let mut decoded = Vec::with_capacity(entries.len());
-    for (key, value) in &entries {
-        decoded.push(decode(key, value)?);
+    let mut decoded = Vec::new();
+    for shard in 0..database.shard_count() {
+        let entries = database
+            .range_per_shard(shard, prefix, &upper)
+            .map_err(|error| database_error(&error))?;
+        for (key, value) in &entries {
+            decoded.push(decode(key, value)?);
+        }
     }
     Ok(decoded)
 }
