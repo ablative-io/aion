@@ -58,11 +58,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// so the runtime context is not entered on the test thread when the next
 /// (blocking) haematite election runs.
 fn block_on<F: Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("build runtime")
-        .block_on(future)
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => panic!("build runtime: {error}"),
+    };
+    runtime.block_on(future)
 }
 
 const NODE_A: &str = "node-a@127.0.0.1";

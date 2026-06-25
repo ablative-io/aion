@@ -1162,7 +1162,8 @@ mod tests {
 
     use aion_core::{ContentType, Payload, WorkflowId};
     use aion_store::{
-        OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, WritableEventStore, WriteToken,
+        OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, StoreError, WritableEventStore,
+        WriteToken,
     };
     use chrono::{Duration, Utc};
 
@@ -1181,8 +1182,8 @@ mod tests {
         ))
     }
 
-    fn store(name: &str) -> HaematiteStore {
-        HaematiteStore::create(unique_dir(name)).expect("create store")
+    fn store(name: &str) -> Result<HaematiteStore, StoreError> {
+        HaematiteStore::create(unique_dir(name))
     }
 
     fn pending_row(
@@ -1200,7 +1201,10 @@ mod tests {
         )
     }
 
-    async fn status_of(store: &HaematiteStore, dispatch_key: &str) -> Option<OutboxStatus> {
+    async fn status_of(
+        store: &HaematiteStore,
+        dispatch_key: &str,
+    ) -> Result<Option<OutboxStatus>, StoreError> {
         // A claim returns the row only when Pending+due, so probe lifecycle by
         // reading the keyed value directly through the public claim/scan surface.
         let key = dispatch_key.to_owned();
@@ -1209,16 +1213,18 @@ mod tests {
                 let bytes = inner
                     .database()
                     .get(&keyspace::outbox_key(&key))
-                    .expect("get outbox row");
-                Ok(bytes.map(|value| super::decode_outbox(&value).expect("decode").status))
+                    .map_err(|error| super::database_error(&error))?;
+                bytes
+                    .map(|value| super::decode_outbox(&value).map(|row| row.status))
+                    .transpose()
             })
             .await
-            .expect("status probe")
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn outbox_claim_complete_retry_fail_round_trip() {
-        let store = store("outbox-round-trip");
+    async fn outbox_claim_complete_retry_fail_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store("outbox-round-trip")?;
         let workflow_id = WorkflowId::new_v4();
         let past = Utc::now() - Duration::hours(1);
         let row_a = pending_row(&workflow_id, 0, "a", past);
@@ -1226,10 +1232,9 @@ mod tests {
 
         store
             .append_outbox_batch(&[row_a.clone(), row_b.clone()])
-            .await
-            .expect("append batch");
+            .await?;
 
-        let claimed = store.claim_outbox_rows(10).await.expect("claim");
+        let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 2);
         assert!(claimed.iter().all(|row| row.status == OutboxStatus::Claimed));
         // Claim order is visible_after ASC then dispatch_key ASC.
@@ -1237,14 +1242,11 @@ mod tests {
         assert_eq!(claimed[1].ordinal, 1);
 
         // Claimed rows are no longer claimable.
-        assert!(store.claim_outbox_rows(10).await.expect("reclaim").is_empty());
+        assert!(store.claim_outbox_rows(10).await?.is_empty());
 
-        store
-            .complete_outbox_row(&row_a.dispatch_key)
-            .await
-            .expect("complete");
+        store.complete_outbox_row(&row_a.dispatch_key).await?;
         assert_eq!(
-            status_of(&store, &row_a.dispatch_key).await,
+            status_of(&store, &row_a.dispatch_key).await?,
             Some(OutboxStatus::Done)
         );
 
@@ -1252,60 +1254,51 @@ mod tests {
         let future = Utc::now() + Duration::hours(1);
         store
             .retry_outbox_row(&row_b.dispatch_key, 1, future)
-            .await
-            .expect("retry future");
+            .await?;
         assert_eq!(
-            status_of(&store, &row_b.dispatch_key).await,
+            status_of(&store, &row_b.dispatch_key).await?,
             Some(OutboxStatus::Pending)
         );
-        assert!(store.claim_outbox_rows(10).await.expect("claim none").is_empty());
+        assert!(store.claim_outbox_rows(10).await?.is_empty());
 
         // Retry into the past: claimable again with the bumped attempt.
-        store
-            .retry_outbox_row(&row_b.dispatch_key, 2, past)
-            .await
-            .expect("retry past");
-        let reclaimed = store.claim_outbox_rows(10).await.expect("reclaim past");
+        store.retry_outbox_row(&row_b.dispatch_key, 2, past).await?;
+        let reclaimed = store.claim_outbox_rows(10).await?;
         assert_eq!(reclaimed.len(), 1);
         assert_eq!(reclaimed[0].dispatch_key, row_b.dispatch_key);
         assert_eq!(reclaimed[0].attempt, 2);
 
-        store
-            .fail_outbox_row(&row_b.dispatch_key)
-            .await
-            .expect("fail");
+        store.fail_outbox_row(&row_b.dispatch_key).await?;
         assert_eq!(
-            status_of(&store, &row_b.dispatch_key).await,
+            status_of(&store, &row_b.dispatch_key).await?,
             Some(OutboxStatus::Failed)
         );
-        assert!(store.claim_outbox_rows(10).await.expect("no claim").is_empty());
+        assert!(store.claim_outbox_rows(10).await?.is_empty());
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn append_outbox_batch_ignores_duplicate_dispatch_key() {
-        let store = store("outbox-dup");
+    async fn append_outbox_batch_ignores_duplicate_dispatch_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store("outbox-dup")?;
         let workflow_id = WorkflowId::new_v4();
         let past = Utc::now() - Duration::hours(1);
         let first = pending_row(&workflow_id, 0, "charge", past);
         let duplicate = pending_row(&workflow_id, 0, "different-activity", past);
 
-        store
-            .append_outbox_batch(std::slice::from_ref(&first))
-            .await
-            .expect("first");
-        store
-            .append_outbox_batch(&[duplicate])
-            .await
-            .expect("duplicate ignored");
+        store.append_outbox_batch(std::slice::from_ref(&first)).await?;
+        store.append_outbox_batch(&[duplicate]).await?;
 
-        let claimed = store.claim_outbox_rows(10).await.expect("claim");
+        let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].activity_type, "charge");
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn rearm_preserves_attempt_and_inserts_fresh_rows() {
-        let store = store("outbox-rearm");
+    async fn rearm_preserves_attempt_and_inserts_fresh_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store("outbox-rearm")?;
         let workflow_id = WorkflowId::new_v4();
         let past = Utc::now() - Duration::hours(1);
 
@@ -1313,24 +1306,20 @@ mod tests {
         let original = pending_row(&workflow_id, 0, "charge", past);
         store
             .append_outbox_batch(std::slice::from_ref(&original))
-            .await
-            .expect("append");
-        let _ = store.claim_outbox_rows(10).await.expect("claim");
+            .await?;
+        let _ = store.claim_outbox_rows(10).await?;
         store
             .retry_outbox_row(&original.dispatch_key, 3, past)
-            .await
-            .expect("retry to attempt 3");
+            .await?;
 
         // Re-arm the SAME dispatch_key with a FRESH OutboxRow whose attempt is 0:
         // the re-arm must NOT reset the budget — it preserves the stored attempt=3.
         let revived = pending_row(&workflow_id, 0, "charge", Utc::now());
         assert_eq!(revived.attempt, 0);
         let fresh = pending_row(&workflow_id, 1, "settle", Utc::now());
-        WritableEventStore::rearm_outbox_pending(&store, &[revived.clone(), fresh.clone()])
-            .await
-            .expect("rearm");
+        WritableEventStore::rearm_outbox_pending(&store, &[revived.clone(), fresh.clone()]).await?;
 
-        let mut reclaimed = store.claim_outbox_rows(10).await.expect("reclaim");
+        let mut reclaimed = store.claim_outbox_rows(10).await?;
         reclaimed.sort_by_key(|row| row.ordinal);
         assert_eq!(reclaimed.len(), 2);
         // Existing row's attempt budget was preserved across re-arm.
@@ -1339,11 +1328,13 @@ mod tests {
         // Brand-new dispatch_key inserted as Pending with its own attempt (0).
         assert_eq!(reclaimed[1].dispatch_key, fresh.dispatch_key);
         assert_eq!(reclaimed[1].attempt, 0);
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn append_with_outbox_persists_events_and_rows() {
-        let store = store("outbox-atomic");
+    async fn append_with_outbox_persists_events_and_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store("outbox-atomic")?;
         let workflow_id = WorkflowId::new_v4();
         let event = aion_core::Event::WorkflowStarted {
             envelope: aion_core::EventEnvelope {
@@ -1367,17 +1358,17 @@ mod tests {
                 0,
                 std::slice::from_ref(&row),
             )
-            .await
-            .expect("append_with_outbox");
+            .await?;
 
-        assert_eq!(store.read_history(&workflow_id).await.expect("history").len(), 1);
-        let claimed = store.claim_outbox_rows(10).await.expect("claim");
+        assert_eq!(store.read_history(&workflow_id).await?.len(), 1);
+        let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].dispatch_key, row.dispatch_key);
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn durable_state_survives_close_and_reopen() {
+    async fn durable_state_survives_close_and_reopen() -> Result<(), Box<dyn std::error::Error>> {
         use aion_store::{PackageRecord, PackageStore, TimerId};
 
         let dir = unique_dir("reopen");
@@ -1386,7 +1377,7 @@ mod tests {
         let fire_at = Utc::now();
 
         {
-            let store = HaematiteStore::create(&dir).expect("create");
+            let store = HaematiteStore::create(&dir)?;
             let event = aion_core::Event::WorkflowStarted {
                 envelope: aion_core::EventEnvelope {
                     seq: 1,
@@ -1401,12 +1392,8 @@ mod tests {
             };
             store
                 .append(WriteToken::recorder(), &workflow_id, &[event], 0)
-                .await
-                .expect("append");
-            store
-                .schedule_timer(&workflow_id, &timer_id, fire_at)
-                .await
-                .expect("timer");
+                .await?;
+            store.schedule_timer(&workflow_id, &timer_id, fire_at).await?;
             store
                 .put_package(PackageRecord {
                     workflow_type: String::from("checkout"),
@@ -1414,41 +1401,41 @@ mod tests {
                     archive: b"archive".to_vec(),
                     deployed_at: Utc::now(),
                 })
-                .await
-                .expect("package");
+                .await?;
             // Drop closes the store; haematite committed each write durably.
         }
 
-        let reopened = HaematiteStore::open(&dir).expect("reopen");
+        let reopened = HaematiteStore::open(&dir)?;
         assert_eq!(
-            reopened.read_history(&workflow_id).await.expect("history").len(),
+            reopened.read_history(&workflow_id).await?.len(),
             1,
             "event history survives reopen"
         );
         assert_eq!(
-            reopened.list_workflow_ids().await.expect("ids"),
+            reopened.list_workflow_ids().await?,
             vec![workflow_id.clone()],
             "workflow index survives reopen"
         );
         assert_eq!(
-            reopened.list_active().await.expect("active"),
+            reopened.list_active().await?,
             vec![workflow_id],
             "projected status survives reopen"
         );
         assert_eq!(
-            reopened.expired_timers(fire_at).await.expect("timers").len(),
+            reopened.expired_timers(fire_at).await?.len(),
             1,
             "durable timer survives reopen"
         );
         assert_eq!(
-            reopened.list_packages().await.expect("packages").len(),
+            reopened.list_packages().await?.len(),
             1,
             "deployed package survives reopen"
         );
         assert_eq!(
-            reopened.list_package_routes().await.expect("routes").len(),
+            reopened.list_package_routes().await?.len(),
             1,
             "package route survives reopen"
         );
+        Ok(())
     }
 }
