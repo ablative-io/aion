@@ -16,23 +16,23 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion = { package = "aion-rs", version = "0.6.1", path = "../aion" }
-aion-proto = { version = "0.6.1", path = "../aion-proto", features = ["generated"] }
-aion-store-libsql = { version = "0.6.1", path = "../aion-store-libsql" }
-aion-store = { version = "0.6.1", path = "../aion-store" }
-aion-package = { version = "0.6.1", path = "../aion-package" }
+aion = { package = "aion-rs", version = "0.7.0", path = "../aion" }
+aion-proto = { version = "0.7.0", path = "../aion-proto", features = ["generated"] }
+aion-store-libsql = { version = "0.7.0", path = "../aion-store-libsql" }
+aion-store = { version = "0.7.0", path = "../aion-store" }
+aion-package = { version = "0.7.0", path = "../aion-package" }
 # Server-side authoring toolchain. It embeds NO Gleam compiler — it only
 # spawns the external `gleam` binary — so depending on it adds no compiler to
 # aion-server (CN7/C15). The authoring endpoints stay dark unless
 # `[authoring].gleam_path` is configured.
-aion-toolchain = { version = "0.6.1", path = "../aion-toolchain" }
+aion-toolchain = { version = "0.7.0", path = "../aion-toolchain" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-aion-core = { version = "0.6.1", path = "../aion-core" }
+aion-core = { version = "0.7.0", path = "../aion-core" }
 dashmap = { workspace = true }
 uuid.workspace = true
 futures.workspace = true

@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -69,4 +69,4 @@ dashmap = "6.2"
 fs4 = "1.1"
 notify = "8.2"
 saffron = { version = "0.1", features = ["std"] }
-beamr = { version = "0.8.1", features = ["json"] }
+beamr = { version = "0.9.0", features = ["json"] }
