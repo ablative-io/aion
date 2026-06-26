@@ -21,7 +21,10 @@ use crate::{
     config::{CliOverrides, NamespaceMode, OutboxConfig, StoreBackend},
     observability,
     shutdown::{self, ShutdownOutcome},
-    worker::{ActivityDispatcher, OutboxDispatcher, OutboxDispatcherConfig, WorkerOutboxDispatch},
+    worker::{
+        ActivityDispatcher, OutboxDispatcher, OutboxDispatcherConfig, OutboxReconciler,
+        OutboxReconcilerConfig, WorkerOutboxDispatch,
+    },
 };
 
 /// Run the Aion workflow server until it shuts down, returning the process
@@ -258,10 +261,15 @@ fn maybe_spawn_outbox_dispatcher(
         push_dispatcher,
         state.runtime_config().default_namespace.clone(),
     ));
-    let dispatcher = OutboxDispatcher::new(outbox_store, row_dispatch, dispatcher_config);
-    let shutdown_rx = shutdown_rx.clone();
-    tokio::spawn(dispatcher.run(shutdown_rx));
+    let dispatcher =
+        OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config);
+    tokio::spawn(dispatcher.run(shutdown_rx.clone()));
     info!("outbox dispatcher commissioned");
+    if let Some(reconciler_config) = resolve_outbox_reconciler_config(outbox_config)? {
+        let reconciler = OutboxReconciler::new(outbox_store, reconciler_config);
+        tokio::spawn(reconciler.run(shutdown_rx.clone()));
+        info!("outbox reconciler commissioned");
+    }
     Ok(())
 }
 
@@ -298,6 +306,25 @@ fn resolve_outbox_config(outbox: &OutboxConfig) -> Result<OutboxDispatcherConfig
         backoff_multiplier,
         backoff_max: std::time::Duration::from_millis(backoff_max_ms),
     })
+}
+
+fn resolve_outbox_reconciler_config(
+    outbox: &OutboxConfig,
+) -> Result<Option<OutboxReconcilerConfig>, ServerError> {
+    let (Some(interval_ms), Some(stale_after_ms)) = (
+        outbox.reconcile_interval_ms,
+        outbox.reconcile_stale_after_ms,
+    ) else {
+        return Ok(None);
+    };
+    let batch_size = outbox.batch_size.ok_or_else(|| ServerError::Config {
+        message: crate::config::OUTBOX_BATCH_SIZE_REQUIRED.to_owned(),
+    })?;
+    Ok(Some(OutboxReconcilerConfig {
+        interval: std::time::Duration::from_millis(interval_ms),
+        stale_after: std::time::Duration::from_millis(stale_after_ms),
+        batch_size,
+    }))
 }
 
 fn reject_tls_until_supported(state: &ServerState) -> Result<(), ServerError> {

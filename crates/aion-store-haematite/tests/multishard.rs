@@ -131,7 +131,11 @@ async fn enumerations_fan_out_across_shards() {
 
     for workflow_id in &workflows {
         assert_eq!(
-            store.read_history(workflow_id).await.expect("history").len(),
+            store
+                .read_history(workflow_id)
+                .await
+                .expect("history")
+                .len(),
             1,
             "each workflow's stream is readable on its own shard"
         );
@@ -242,7 +246,11 @@ async fn outbox_claims_fan_out_across_shards() {
         workflows.len(),
         "claim_outbox_rows must claim rows from every shard"
     );
-    assert!(claimed.iter().all(|row| row.status == OutboxStatus::Claimed));
+    assert!(
+        claimed
+            .iter()
+            .all(|row| row.status == OutboxStatus::Claimed)
+    );
 
     store
         .complete_outbox_row(&claimed[0].dispatch_key)
@@ -264,8 +272,8 @@ async fn outbox_claims_fan_out_across_shards() {
 /// `list_packages` returns all of them.
 #[tokio::test(flavor = "multi_thread")]
 async fn list_packages_fans_out_across_shards() {
-    let store =
-        HaematiteStore::create_with_shard_count(unique_dir("packages"), SHARD_COUNT).expect("create");
+    let store = HaematiteStore::create_with_shard_count(unique_dir("packages"), SHARD_COUNT)
+        .expect("create");
     let database = store.event_store().database();
 
     let mut package_shards: BTreeSet<usize> = BTreeSet::new();

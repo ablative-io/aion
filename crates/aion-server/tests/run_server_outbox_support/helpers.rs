@@ -351,9 +351,18 @@ pub async fn run_server_harness(
     db_path: &Path,
     package_path: &Path,
 ) -> Result<(ServerProcess, SocketAddr, SocketAddr), TestError> {
+    run_server_harness_with_reconciliation(dir, db_path, package_path, None).await
+}
+
+pub async fn run_server_harness_with_reconciliation(
+    dir: &Path,
+    db_path: &Path,
+    package_path: &Path,
+    reconciliation: Option<(u64, u64)>,
+) -> Result<(ServerProcess, SocketAddr, SocketAddr), TestError> {
     let http = reserve_loopback_addr()?;
     let grpc = reserve_loopback_addr()?;
-    let config = write_server_config(dir, db_path, package_path, http, grpc)?;
+    let config = write_server_config(dir, db_path, package_path, http, grpc, reconciliation)?;
     let mut server = ServerProcess::spawn(&config)?;
     server.wait_ready(http).await?;
     Ok((server, http, grpc))
@@ -372,7 +381,11 @@ fn write_server_config(
     package_path: &Path,
     http: SocketAddr,
     grpc: SocketAddr,
+    reconciliation: Option<(u64, u64)>,
 ) -> Result<PathBuf, TestError> {
+    let reconciliation = reconciliation.map_or_else(String::new, |(interval, stale_after)| {
+        format!("reconcile_interval_ms = {interval}\nreconcile_stale_after_ms = {stale_after}\n")
+    });
     let config = format!(
         r#"workflow_packages = [{package}]
 
@@ -409,6 +422,7 @@ max_attempts = 5
 backoff_base_ms = 50
 backoff_multiplier = 2
 backoff_max_ms = 1000
+{reconciliation}
 "#,
         package = toml_string(&package_path.display().to_string())?,
         db = toml_string(&db_path.display().to_string())?,

@@ -344,6 +344,14 @@ pub struct OutboxConfig {
     /// `enabled = true`; no default (house rule). Must be at least
     /// `backoff_base_ms`.
     pub backoff_max_ms: Option<u64>,
+    /// Interval between live stale-claim reconciliation sweeps, in milliseconds. When both
+    /// reconciliation knobs are absent the live sweep remains dark; setting either knob opts into
+    /// reconciliation and requires both values to be positive.
+    pub reconcile_interval_ms: Option<u64>,
+    /// Age after which a durable `claimed` outbox row is considered stranded, in milliseconds. The
+    /// reconciler re-arms only rows with `claimed_at` older than this threshold, preserving their
+    /// attempt count.
+    pub reconcile_stale_after_ms: Option<u64>,
 }
 
 /// Operator-facing message for an absent or zero `outbox.poll_interval_ms`.
@@ -363,6 +371,12 @@ pub(crate) const OUTBOX_BACKOFF_MULTIPLIER_REQUIRED: &str = "outbox.backoff_mult
 
 /// Operator-facing message for an absent or undersized `outbox.backoff_max_ms`.
 pub(crate) const OUTBOX_BACKOFF_MAX_REQUIRED: &str = "outbox.backoff_max_ms is required and has no default when outbox.enabled is true and must be at least outbox.backoff_base_ms: the per-retry backoff ceiling must be an explicit operator decision; set outbox.backoff_max_ms (or AION_OUTBOX_BACKOFF_MAX_MS) to a positive number of milliseconds no smaller than outbox.backoff_base_ms";
+
+/// Operator-facing message for an absent or zero `outbox.reconcile_interval_ms`.
+pub(crate) const OUTBOX_RECONCILE_INTERVAL_REQUIRED: &str = "outbox.reconcile_interval_ms is required and has no default when live outbox reconciliation is enabled: set both outbox.reconcile_interval_ms and outbox.reconcile_stale_after_ms (or AION_OUTBOX_RECONCILE_INTERVAL_MS / AION_OUTBOX_RECONCILE_STALE_AFTER_MS) to positive millisecond values, or omit both to leave reconciliation disabled";
+
+/// Operator-facing message for an absent or zero `outbox.reconcile_stale_after_ms`.
+pub(crate) const OUTBOX_RECONCILE_STALE_AFTER_REQUIRED: &str = "outbox.reconcile_stale_after_ms is required and has no default when live outbox reconciliation is enabled: set both outbox.reconcile_interval_ms and outbox.reconcile_stale_after_ms (or AION_OUTBOX_RECONCILE_INTERVAL_MS / AION_OUTBOX_RECONCILE_STALE_AFTER_MS) to positive millisecond values, or omit both to leave reconciliation disabled";
 
 /// Server-side Gleam authoring API settings from `[authoring]`.
 ///
@@ -667,6 +681,15 @@ impl ServerConfig {
         match self.outbox.backoff_max_ms {
             Some(max) if max >= backoff_base_ms => {}
             _ => return config_error(OUTBOX_BACKOFF_MAX_REQUIRED),
+        }
+        match (
+            self.outbox.reconcile_interval_ms,
+            self.outbox.reconcile_stale_after_ms,
+        ) {
+            (None, None) => {}
+            (None | Some(0), _) => return config_error(OUTBOX_RECONCILE_INTERVAL_REQUIRED),
+            (_, None | Some(0)) => return config_error(OUTBOX_RECONCILE_STALE_AFTER_REQUIRED),
+            (Some(_), Some(_)) => {}
         }
         Ok(())
     }
@@ -1455,6 +1478,8 @@ mod tests {
         assert_eq!(config.outbox.backoff_base_ms, None);
         assert_eq!(config.outbox.backoff_multiplier, None);
         assert_eq!(config.outbox.backoff_max_ms, None);
+        assert_eq!(config.outbox.reconcile_interval_ms, None);
+        assert_eq!(config.outbox.reconcile_stale_after_ms, None);
         config.validate()?;
         Ok(())
     }
@@ -1470,6 +1495,8 @@ mod tests {
         config.outbox.backoff_base_ms = Some(100);
         config.outbox.backoff_multiplier = Some(2);
         config.outbox.backoff_max_ms = Some(30_000);
+        config.outbox.reconcile_interval_ms = Some(1_000);
+        config.outbox.reconcile_stale_after_ms = Some(60_000);
         config
     }
 
@@ -1522,6 +1549,45 @@ mod tests {
         assert!(
             error.to_string().contains("outbox.backoff_max_ms"),
             "error must name the offending key: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_enabled_can_leave_reconciliation_dark() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = outbox_enabled_base();
+        config.outbox.reconcile_interval_ms = None;
+        config.outbox.reconcile_stale_after_ms = None;
+        config.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_reconciliation_requires_interval_when_partially_enabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = outbox_enabled_base();
+        config.outbox.reconcile_interval_ms = None;
+        let error = config
+            .validate()
+            .err()
+            .ok_or("reconciliation without interval must fail")?;
+        assert!(error.to_string().contains("outbox.reconcile_interval_ms"));
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_reconciliation_requires_stale_threshold_when_partially_enabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = outbox_enabled_base();
+        config.outbox.reconcile_stale_after_ms = None;
+        let error = config
+            .validate()
+            .err()
+            .ok_or("reconciliation without stale threshold must fail")?;
+        assert!(
+            error
+                .to_string()
+                .contains("outbox.reconcile_stale_after_ms")
         );
         Ok(())
     }

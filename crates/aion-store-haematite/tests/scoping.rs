@@ -206,9 +206,16 @@ async fn enumeration_scopes_to_owned_shards() {
     assert_eq!(store.owned_shards(), None, "default owns ALL shards");
 
     let active_all = store.list_active().await.expect("list_active all");
-    assert_eq!(id_strings(&active_all), all_strings, "own-all list_active sees every workflow");
+    assert_eq!(
+        id_strings(&active_all),
+        all_strings,
+        "own-all list_active sees every workflow"
+    );
 
-    let ids_all = store.list_workflow_ids().await.expect("list_workflow_ids all");
+    let ids_all = store
+        .list_workflow_ids()
+        .await
+        .expect("list_workflow_ids all");
     assert_eq!(
         id_strings(&ids_all),
         all_strings,
@@ -223,11 +230,19 @@ async fn enumeration_scopes_to_owned_shards() {
     );
 
     let packages_all = store.list_packages().await.expect("packages all");
-    assert_eq!(packages_all.len(), 2, "own-all list_packages sees both packages");
+    assert_eq!(
+        packages_all.len(),
+        2,
+        "own-all list_packages sees both packages"
+    );
 
     // --- set_owned_shards([0]): only the shard-0 subset is visible ------------
     store.set_owned_shards([0]);
-    assert_eq!(store.owned_shards(), Some(vec![0]), "owned_shards snapshots the set");
+    assert_eq!(
+        store.owned_shards(),
+        Some(vec![0]),
+        "owned_shards snapshots the set"
+    );
 
     let active_scoped = store.list_active().await.expect("list_active scoped");
     // PROPER subset: strictly smaller AND exactly the shard-0 group.
@@ -251,16 +266,24 @@ async fn enumeration_scopes_to_owned_shards() {
         );
     }
 
-    let ids_scoped = store.list_workflow_ids().await.expect("list_workflow_ids scoped");
+    let ids_scoped = store
+        .list_workflow_ids()
+        .await
+        .expect("list_workflow_ids scoped");
     assert_eq!(
         id_strings(&ids_scoped),
         shard0_strings,
         "scoped list_workflow_ids returns ONLY the shard-0 workflows"
     );
 
-    let timers_scoped = store.expired_timers(Utc::now()).await.expect("timers scoped");
-    let timer_id_refs: Vec<&WorkflowId> =
-        timers_scoped.iter().map(|entry| &entry.workflow_id).collect();
+    let timers_scoped = store
+        .expired_timers(Utc::now())
+        .await
+        .expect("timers scoped");
+    let timer_id_refs: Vec<&WorkflowId> = timers_scoped
+        .iter()
+        .map(|entry| &entry.workflow_id)
+        .collect();
     assert_eq!(
         id_strings(timer_id_refs),
         shard0_strings,
@@ -284,11 +307,15 @@ async fn enumeration_scopes_to_owned_shards() {
     // the last claim assertion on this store handle).
     let claimed_scoped = store.claim_outbox_rows(100).await.expect("claim scoped");
     assert!(
-        claimed_scoped.iter().all(|row| row.status == OutboxStatus::Claimed),
+        claimed_scoped
+            .iter()
+            .all(|row| row.status == OutboxStatus::Claimed),
         "claimed rows are marked Claimed"
     );
-    let claimed_dispatch: BTreeSet<String> =
-        claimed_scoped.iter().map(|row| row.dispatch_key.clone()).collect();
+    let claimed_dispatch: BTreeSet<String> = claimed_scoped
+        .iter()
+        .map(|row| row.dispatch_key.clone())
+        .collect();
     assert_eq!(
         claimed_dispatch, shard0_dispatch,
         "scoped claim_outbox_rows claims ONLY the shard-0 outbox rows"
@@ -304,7 +331,10 @@ async fn enumeration_scopes_to_owned_shards() {
         all_strings,
         "own_all_shards restores the full workflow enumeration"
     );
-    let timers_restored = store.expired_timers(Utc::now()).await.expect("timers restored");
+    let timers_restored = store
+        .expired_timers(Utc::now())
+        .await
+        .expect("timers restored");
     assert_eq!(
         timers_restored.len(),
         WORKFLOWS,

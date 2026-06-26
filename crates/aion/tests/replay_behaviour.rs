@@ -860,7 +860,9 @@ async fn record_realistic_history(
     recorder
         .record_timer_started(timestamp(50)?, timer_id.clone(), timestamp(100)?)
         .await?;
-    recorder.record_timer_fired(timestamp(60)?, timer_id).await?;
+    recorder
+        .record_timer_fired(timestamp(60)?, timer_id)
+        .await?;
     recorder
         .record_child_workflow_started(
             timestamp(70)?,

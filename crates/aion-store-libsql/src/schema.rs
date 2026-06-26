@@ -89,7 +89,8 @@ ON visibility (close_time)";
 /// `dispatch_key` (`"{workflow_id}:{ordinal}"`) is `UNIQUE`: it is the database-level idempotency
 /// guard, so a re-issued append of the same fan-out batch silently ignores the duplicate rows via
 /// `INSERT OR IGNORE`. `status` is one of `pending`/`claimed`/`done`/`failed`; `visible_after`
-/// fences retry backoff so a row is not re-claimed before its delay elapses.
+/// fences retry backoff so a row is not re-claimed before its delay elapses; nullable
+/// `claimed_at` records the durable claim instant for live stale-claim reconciliation.
 pub const CREATE_OUTBOX_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS outbox (
     dispatch_key TEXT NOT NULL UNIQUE,
@@ -100,6 +101,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     status TEXT NOT NULL,
     attempt INTEGER NOT NULL,
     visible_after TEXT NOT NULL,
+    claimed_at TEXT,
     PRIMARY KEY (dispatch_key)
 )";
 
@@ -110,6 +112,12 @@ pub const CREATE_OUTBOX_PENDING_INDEX: &str = "
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
 ON outbox (status, visible_after)
 WHERE status = 'pending'";
+
+/// Partial index over stale-claim reconciliation candidates.
+pub const CREATE_OUTBOX_CLAIMED_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_outbox_claimed_at
+ON outbox (status, claimed_at)
+WHERE status = 'claimed' AND claimed_at IS NOT NULL";
 
 const DDL_STATEMENTS: [&str; 13] = [
     CREATE_EVENTS_TABLE,
@@ -139,7 +147,48 @@ pub async fn ensure_schema(conn: &libsql::Connection) -> Result<(), StoreError> 
             .map_err(|error| crate::error::libsql_error(&error))?;
     }
 
+    ensure_outbox_claimed_at_column(conn).await?;
+    conn.execute(CREATE_OUTBOX_CLAIMED_INDEX, ())
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
     Ok(())
+}
+
+async fn ensure_outbox_claimed_at_column(conn: &libsql::Connection) -> Result<(), StoreError> {
+    if outbox_column_exists(conn, "claimed_at").await? {
+        return Ok(());
+    }
+
+    conn.execute("ALTER TABLE outbox ADD COLUMN claimed_at TEXT", ())
+        .await
+        .map(|_| ())
+        .map_err(|error| crate::error::libsql_error(&error))
+}
+
+async fn outbox_column_exists(
+    conn: &libsql::Connection,
+    column_name: &str,
+) -> Result<bool, StoreError> {
+    let mut rows = conn
+        .query("PRAGMA table_info(outbox)", ())
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        if name == column_name {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -187,6 +236,7 @@ mod tests {
         assert_schema_object(&conn, "index", "idx_visibility_close_time").await?;
         assert_schema_object(&conn, "table", "outbox").await?;
         assert_schema_object(&conn, "index", "idx_outbox_pending").await?;
+        assert_schema_object(&conn, "index", "idx_outbox_claimed_at").await?;
 
         Ok(())
     }

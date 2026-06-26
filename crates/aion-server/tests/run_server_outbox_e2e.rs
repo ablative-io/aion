@@ -16,12 +16,14 @@ use std::process::ExitCode;
 
 use aion_core::Event;
 use aion_server::config::CliOverrides;
-use aion_store::{OutboxStatus, ReadableEventStore};
+use aion_store::{OutboxRow, OutboxStatus, ReadableEventStore};
 use aion_store_libsql::LibSqlStore;
+use chrono::{SecondsFormat, Utc};
 use helpers::{
     FAN_OUT, TestError, assert_fan_out_settled, assert_task_set, count_completed,
-    count_completed_for, count_kind, run_server_harness, start_over_http, task_ordinal, test_error,
-    unique_temp_dir, wait_for_history, wait_for_rows, worker_result, write_package_archive,
+    count_completed_for, count_kind, run_server_harness, run_server_harness_with_reconciliation,
+    start_over_http, task_ordinal, test_error, unique_temp_dir, wait_for_history, wait_for_rows,
+    worker_result, write_package_archive,
 };
 use worker::WorkerSession;
 
@@ -152,6 +154,67 @@ async fn run_server_outbox_restart_rearms_stranded_rows() -> Result<(), TestErro
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_server_outbox_live_reconciliation_rearms_stranded_claims_once() -> Result<(), TestError>
+{
+    let dir = unique_temp_dir("live-reconcile")?;
+    let db_path = dir.path().join("aion.db");
+    let package_path = write_package_archive(dir.path())?;
+    let (server, http, grpc) = run_server_harness_with_reconciliation(
+        dir.path(),
+        &db_path,
+        &package_path,
+        Some((50, 100)),
+    )
+    .await?;
+    let reader = LibSqlStore::open(db_path.clone()).await?;
+    let mut worker = WorkerSession::connect(grpc).await?;
+
+    let (workflow_id, run_id) = start_over_http(http).await?;
+    let mut tasks = Vec::with_capacity(FAN_OUT);
+    for _ in 0..FAN_OUT {
+        tasks.push(worker.next_task().await?);
+    }
+    tasks.sort_by_key(|task| task_ordinal(task).unwrap_or(u64::MAX));
+    assert_task_set(&tasks, &[0, 1, 2, 3])?;
+    wait_for_rows(
+        &reader,
+        &workflow_id,
+        &[0, 1, 2, 3],
+        "initial rows done before simulated stale claim",
+        |statuses| statuses.iter().all(|status| *status == OutboxStatus::Done),
+    )
+    .await?;
+
+    complete_recorded_prefix(&worker, &tasks).await?;
+    wait_for_history(
+        &reader,
+        &workflow_id,
+        "ordinals 0 and 1 recorded before live reconciliation",
+        |events| count_completed_for(events, 0) == 1 && count_completed_for(events, 1) == 1,
+    )
+    .await?;
+
+    force_rows_to_stale_claimed(&db_path, &workflow_id, &[2, 3]).await?;
+
+    let revived = collect_revived_tasks(&mut worker).await?;
+    complete_with_duplicate_first(&worker, &revived).await?;
+    complete_original_late(&worker, &tasks[2..]).await?;
+
+    let history = assert_fan_out_settled(&reader, &workflow_id).await?;
+    assert_eq!(count_completed(&history), FAN_OUT);
+    assert_eq!(
+        count_kind(&history, |event| matches!(
+            event,
+            Event::WorkflowCompleted { .. }
+        )),
+        1
+    );
+    std::hint::black_box(run_id);
+    server.stop()?;
+    Ok(())
+}
+
 async fn complete_recorded_prefix(
     worker: &WorkerSession,
     tasks: &[aion_proto::generated::ActivityTask],
@@ -198,6 +261,40 @@ async fn complete_with_duplicate_first(
     worker
         .complete(second, worker_result(second_ordinal).as_bytes())
         .await?;
+    Ok(())
+}
+
+async fn complete_original_late(
+    worker: &WorkerSession,
+    tasks: &[aion_proto::generated::ActivityTask],
+) -> Result<(), TestError> {
+    for task in tasks {
+        let ordinal = task_ordinal(task)?;
+        worker
+            .complete(task, worker_result(ordinal).as_bytes())
+            .await?;
+    }
+    Ok(())
+}
+
+async fn force_rows_to_stale_claimed(
+    db_path: &std::path::Path,
+    workflow_id: &aion_core::WorkflowId,
+    ordinals: &[u64],
+) -> Result<(), TestError> {
+    let database = libsql::Builder::new_local(db_path).build().await?;
+    let connection = database.connect()?;
+    let claimed_at =
+        (Utc::now() - chrono::Duration::seconds(60)).to_rfc3339_opts(SecondsFormat::Nanos, true);
+    for ordinal in ordinals {
+        let dispatch_key = OutboxRow::dispatch_key_for(workflow_id, *ordinal);
+        connection
+            .execute(
+                "UPDATE outbox SET status = 'claimed', claimed_at = ?2 WHERE dispatch_key = ?1",
+                libsql::params![dispatch_key, claimed_at.clone()],
+            )
+            .await?;
+    }
     Ok(())
 }
 

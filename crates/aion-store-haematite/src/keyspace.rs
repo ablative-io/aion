@@ -69,7 +69,10 @@ pub(crate) const TIMER_PREFIX: &[u8] = b"t:";
 pub(crate) fn timer_key(workflow_id: &WorkflowId, timer_id_token: &str) -> Vec<u8> {
     composite(
         TIMER_PREFIX,
-        &[workflow_id.to_string().as_bytes(), timer_id_token.as_bytes()],
+        &[
+            workflow_id.to_string().as_bytes(),
+            timer_id_token.as_bytes(),
+        ],
     )
 }
 
@@ -146,19 +149,18 @@ mod tests {
     fn workflow_id_from_event_stream_key_round_trips() {
         let workflow_id = WorkflowId::new(Uuid::from_u128(42));
         let key = event_stream_key(&workflow_id);
-        assert_eq!(
-            workflow_id_from_event_stream_key(&key),
-            Some(workflow_id)
-        );
+        assert_eq!(workflow_id_from_event_stream_key(&key), Some(workflow_id));
     }
 
     #[test]
     fn workflow_id_from_event_stream_key_rejects_non_stream_keys() {
         // A KV-region key (wrong tag / wrong length) is not a stream key.
-        assert_eq!(workflow_id_from_event_stream_key(timer_key(
-            &WorkflowId::new(Uuid::from_u128(1)),
-            "t"
-        ).as_slice()), None);
+        assert_eq!(
+            workflow_id_from_event_stream_key(
+                timer_key(&WorkflowId::new(Uuid::from_u128(1)), "t").as_slice()
+            ),
+            None
+        );
         // A 17-byte key with the wrong tag byte is rejected.
         let mut wrong_tag = vec![b'X'];
         wrong_tag.extend_from_slice(Uuid::from_u128(2).as_bytes());
@@ -168,7 +170,10 @@ mod tests {
     #[test]
     fn route_key_round_trips() {
         let key = route_key("checkout");
-        assert_eq!(workflow_type_from_route_key(&key).as_deref(), Some("checkout"));
+        assert_eq!(
+            workflow_type_from_route_key(&key).as_deref(),
+            Some("checkout")
+        );
     }
 
     #[test]

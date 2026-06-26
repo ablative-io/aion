@@ -69,7 +69,9 @@ impl OutboxStatus {
 /// The row carries everything the out-of-band dispatcher needs to send the activity without
 /// reading workflow history: the originating workflow, the pinned `ordinal` within its fan-out
 /// range, the derived `dispatch_key` idempotency guard, the activity type, and the input payload.
-/// `attempt`, `visible_after`, and `status` track retry/backoff state.
+/// `attempt`, `visible_after`, `claimed_at`, and `status` track retry/backoff and claim state.
+/// `claimed_at` is set only while a row is [`OutboxStatus::Claimed`]; pending and terminal rows
+/// keep it `None` so stale-claim reconciliation only considers durable claimed rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboxRow {
     /// Database-level idempotency key, canonically `"{workflow_id}:{ordinal}"`.
@@ -88,6 +90,8 @@ pub struct OutboxRow {
     pub attempt: u32,
     /// Earliest instant at which this row becomes claimable (retry backoff fence).
     pub visible_after: DateTime<Utc>,
+    /// Durable instant at which the row was claimed; absent unless `status` is `Claimed`.
+    pub claimed_at: Option<DateTime<Utc>>,
 }
 
 impl OutboxRow {
@@ -122,6 +126,7 @@ impl OutboxRow {
             status: OutboxStatus::Pending,
             attempt: 0,
             visible_after: now,
+            claimed_at: None,
         }
     }
 }
@@ -157,6 +162,28 @@ pub trait OutboxStore: Send + Sync + 'static {
     /// Returns [`StoreError::Backend`] for backend boundary failures and
     /// [`StoreError::Serialization`] when a stored row cannot be decoded.
     async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError>;
+
+    /// Re-arms stale claimed rows so a live dispatcher can claim them again without restart.
+    ///
+    /// Implementations atomically select up to `limit` rows whose `status` is
+    /// [`OutboxStatus::Claimed`] and whose durable `claimed_at` timestamp is older than
+    /// `older_than`, then transition only those rows back to [`OutboxStatus::Pending`] with
+    /// `visible_after` set to the supplied instant. The existing `attempt` value is preserved and
+    /// `claimed_at` is cleared. Rows in `Done` or `Failed` are terminal and must never be touched.
+    ///
+    /// Claimed rows without a durable `claimed_at` value are deliberately ignored: the caller asked
+    /// for rows older than a supplied instant, and `NULL` cannot satisfy that predicate safely.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn rearm_stale_claimed_outbox_rows(
+        &self,
+        older_than: DateTime<Utc>,
+        visible_after: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError>;
 
     /// Marks the row identified by `dispatch_key` as [`OutboxStatus::Done`].
     ///

@@ -222,6 +222,7 @@ dependencies = [
  "futures",
  "http-body-util",
  "jsonwebtoken",
+ "libsql",
  "prometheus",
  "prost 0.14.3",
  "reqwest",

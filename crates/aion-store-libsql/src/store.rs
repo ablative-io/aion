@@ -1,6 +1,6 @@
 //! `LibSqlStore` struct and `EventStore` implementation wiring.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use aion_store::{
     Event, OutboxRow, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
@@ -9,6 +9,7 @@ use aion_store::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex;
 
 use crate::config::{LibSqlConfig, LibSqlMode};
 use crate::outbox::OutboxRowState;
@@ -17,7 +18,8 @@ use crate::outbox::OutboxRowState;
 #[derive(Clone)]
 pub struct LibSqlStore {
     conn: libsql::Connection,
-    db: std::sync::Arc<libsql::Database>,
+    db: Arc<libsql::Database>,
+    transaction_lock: Arc<Mutex<()>>,
 }
 
 impl LibSqlStore {
@@ -34,7 +36,8 @@ impl LibSqlStore {
 
         Ok(Self {
             conn,
-            db: std::sync::Arc::new(opened.database),
+            db: Arc::new(opened.database),
+            transaction_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -100,6 +103,7 @@ impl LibSqlStore {
         expected_seq: u64,
         outbox_rows: Option<&[OutboxRow]>,
     ) -> Result<(), StoreError> {
+        let _guard = self.transaction_lock.lock().await;
         crate::append::append_with_outbox(
             self.connection(),
             workflow_id,
@@ -177,6 +181,7 @@ impl WritableEventStore for LibSqlStore {
         events: &[Event],
         expected_seq: u64,
     ) -> Result<(), StoreError> {
+        let _guard = self.transaction_lock.lock().await;
         crate::append::append(self.connection(), workflow_id, events, expected_seq).await
     }
 
@@ -188,6 +193,7 @@ impl WritableEventStore for LibSqlStore {
         expected_seq: u64,
         outbox_rows: &[OutboxRow],
     ) -> Result<(), StoreError> {
+        let _guard = self.transaction_lock.lock().await;
         crate::append::append_with_outbox(
             self.connection(),
             workflow_id,
@@ -199,6 +205,7 @@ impl WritableEventStore for LibSqlStore {
     }
 
     async fn rearm_outbox_pending(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        let _guard = self.transaction_lock.lock().await;
         crate::outbox::rearm_outbox_pending(self.connection(), rows).await
     }
 }
@@ -206,11 +213,29 @@ impl WritableEventStore for LibSqlStore {
 #[async_trait]
 impl OutboxStore for LibSqlStore {
     async fn append_outbox_batch(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        let _guard = self.transaction_lock.lock().await;
         crate::outbox::append_outbox_batch(self.connection(), rows).await
     }
 
     async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
         crate::outbox::claim_outbox_rows(self.connection(), limit).await
+    }
+
+    async fn rearm_stale_claimed_outbox_rows(
+        &self,
+        older_than: DateTime<Utc>,
+        visible_after: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::rearm_stale_claimed_outbox_rows(
+            self.connection(),
+            older_than,
+            visible_after,
+            limit,
+        )
+        .await
     }
 
     async fn complete_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {

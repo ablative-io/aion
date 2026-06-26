@@ -13,8 +13,8 @@ use aion::EngineBuilder;
 use aion_store::{EventStore, InMemoryStore};
 
 #[tokio::test]
-async fn bootstrap_flag_gates_schedule_coordinator_seeding() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn bootstrap_flag_gates_schedule_coordinator_seeding()
+-> Result<(), Box<dyn std::error::Error>> {
     // Default (true): the coordinator history is seeded at build.
     let seeded: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let _seeded_engine = EngineBuilder::new()

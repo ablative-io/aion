@@ -130,6 +130,12 @@ fn overlay_outbox(config: &mut ServerConfig, name: &str, value: &str) -> Result<
         "AION_OUTBOX_BACKOFF_MAX_MS" => {
             config.outbox.backoff_max_ms = Some(parse_positive_u64(name, value)?);
         }
+        "AION_OUTBOX_RECONCILE_INTERVAL_MS" => {
+            config.outbox.reconcile_interval_ms = Some(parse_positive_u64(name, value)?);
+        }
+        "AION_OUTBOX_RECONCILE_STALE_AFTER_MS" => {
+            config.outbox.reconcile_stale_after_ms = Some(parse_positive_u64(name, value)?);
+        }
         _ => {}
     }
     Ok(())

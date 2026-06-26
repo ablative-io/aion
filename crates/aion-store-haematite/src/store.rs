@@ -107,7 +107,9 @@ pub struct HaematiteStore {
 
 impl std::fmt::Debug for HaematiteStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("HaematiteStore").finish_non_exhaustive()
+        formatter
+            .debug_struct("HaematiteStore")
+            .finish_non_exhaustive()
     }
 }
 
@@ -216,12 +218,18 @@ impl HaematiteStore {
         let set: std::collections::BTreeSet<usize> = shards.into_iter().collect();
         // A poisoned store lock is unrecoverable (consistent with the rest of the
         // crate's blocking commit paths): unwrap rather than mask the corruption.
-        *self.owned_shards.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(set);
+        *self
+            .owned_shards
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(set);
     }
 
     /// Revert to owning all shards (single-node default).
     pub fn own_all_shards(&self) {
-        *self.owned_shards.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .owned_shards
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Snapshot the current owned set (`None` = all shards). For tests/diagnostics.
@@ -287,7 +295,8 @@ fn encode_package(record: &PackageRecord) -> Result<Vec<u8>, StoreError> {
 }
 
 fn decode_package(bytes: &[u8]) -> Result<PackageRecord, StoreError> {
-    let stored: StoredPackage = serde_json::from_slice(bytes).map_err(|error| serde_error(&error))?;
+    let stored: StoredPackage =
+        serde_json::from_slice(bytes).map_err(|error| serde_error(&error))?;
     Ok(PackageRecord {
         workflow_type: stored.workflow_type,
         content_hash: stored.content_hash,
@@ -308,6 +317,8 @@ struct StoredOutboxRow {
     status: String,
     attempt: u32,
     visible_after: String,
+    #[serde(default)]
+    claimed_at: Option<String>,
 }
 
 fn encode_outbox(row: &OutboxRow) -> Result<Vec<u8>, StoreError> {
@@ -320,6 +331,7 @@ fn encode_outbox(row: &OutboxRow) -> Result<Vec<u8>, StoreError> {
         status: row.status.as_str().to_owned(),
         attempt: row.attempt,
         visible_after: encode_instant(row.visible_after),
+        claimed_at: row.claimed_at.map(encode_instant),
     };
     serde_json::to_vec(&stored).map_err(|error| serde_error(&error))
 }
@@ -336,6 +348,11 @@ fn decode_outbox(bytes: &[u8]) -> Result<OutboxRow, StoreError> {
         status: OutboxStatus::parse_token(&stored.status)?,
         attempt: stored.attempt,
         visible_after: decode_instant(&stored.visible_after)?,
+        claimed_at: stored
+            .claimed_at
+            .as_deref()
+            .map(decode_instant)
+            .transpose()?,
     })
 }
 
@@ -625,10 +642,7 @@ fn stream_head(store: &haematite::EventStore, workflow_id: &WorkflowId) -> Resul
 
 /// Insert `rows` into the outbox, ignoring any whose `dispatch_key` already
 /// exists (at-most-once dispatch). Commits before returning.
-fn insert_outbox_rows(
-    store: &haematite::EventStore,
-    rows: &[OutboxRow],
-) -> Result<(), StoreError> {
+fn insert_outbox_rows(store: &haematite::EventStore, rows: &[OutboxRow]) -> Result<(), StoreError> {
     let database = store.database();
     for row in rows {
         // Co-locate the outbox row on the workflow's shard by routing on the
@@ -662,7 +676,14 @@ impl WritableEventStore for HaematiteStore {
         let events = events.to_vec();
         let routing = self.distribution.clone();
         self.blocking(move |store| {
-            append_blocking(store, &workflow_id, &events, expected_seq, None, routing.as_ref())
+            append_blocking(
+                store,
+                &workflow_id,
+                &events,
+                expected_seq,
+                None,
+                routing.as_ref(),
+            )
         })
         .await
     }
@@ -716,11 +737,13 @@ impl WritableEventStore for HaematiteStore {
                             status: OutboxStatus::Pending,
                             attempt: prior.attempt,
                             visible_after: row.visible_after,
+                            claimed_at: None,
                             ..prior
                         }
                     }
                     None => OutboxRow {
                         status: OutboxStatus::Pending,
+                        claimed_at: None,
                         ..row.clone()
                     },
                 };
@@ -742,7 +765,8 @@ impl OutboxStore for HaematiteStore {
             return Ok(());
         }
         let rows = rows.to_vec();
-        self.blocking(move |store| insert_outbox_rows(store, &rows)).await
+        self.blocking(move |store| insert_outbox_rows(store, &rows))
+            .await
     }
 
     async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
@@ -775,6 +799,7 @@ impl OutboxStore for HaematiteStore {
             for row in claimable {
                 let updated = OutboxRow {
                     status: OutboxStatus::Claimed,
+                    claimed_at: Some(now),
                     ..row
                 };
                 // Rewrite in place on the row's own shard (co-located by the
@@ -795,9 +820,68 @@ impl OutboxStore for HaematiteStore {
         .await
     }
 
+    async fn rearm_stale_claimed_outbox_rows(
+        &self,
+        older_than: DateTime<Utc>,
+        visible_after: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let scope = self.owned_shard_scope();
+        self.blocking(move |store| {
+            let mut stale: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?
+            .into_iter()
+            .filter(|row| {
+                row.status == OutboxStatus::Claimed
+                    && row
+                        .claimed_at
+                        .is_some_and(|claimed_at| claimed_at < older_than)
+            })
+            .collect();
+            stale.sort_by(|left, right| {
+                left.claimed_at
+                    .cmp(&right.claimed_at)
+                    .then_with(|| left.dispatch_key.cmp(&right.dispatch_key))
+            });
+            let take = usize::try_from(limit).map_or(usize::MAX, |value| value);
+            stale.truncate(take);
+
+            let database = store.database();
+            let mut rearmed = Vec::with_capacity(stale.len());
+            for row in stale {
+                let updated = OutboxRow {
+                    status: OutboxStatus::Pending,
+                    visible_after,
+                    claimed_at: None,
+                    ..row
+                };
+                let route_key = keyspace::event_stream_key(&updated.workflow_id);
+                database
+                    .put_routed(
+                        &route_key,
+                        keyspace::outbox_key(&updated.dispatch_key),
+                        encode_outbox(&updated)?,
+                    )
+                    .map_err(|error| database_error(&error))?;
+                rearmed.push(updated);
+            }
+            database.commit().map_err(|error| database_error(&error))?;
+            Ok(rearmed)
+        })
+        .await
+    }
+
     async fn complete_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {
         self.transition_outbox(dispatch_key, |row| OutboxRow {
             status: OutboxStatus::Done,
+            claimed_at: None,
             ..row
         })
         .await
@@ -813,6 +897,7 @@ impl OutboxStore for HaematiteStore {
             status: OutboxStatus::Pending,
             attempt: next_attempt,
             visible_after,
+            claimed_at: None,
             ..row
         })
         .await
@@ -821,6 +906,7 @@ impl OutboxStore for HaematiteStore {
     async fn fail_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {
         self.transition_outbox(dispatch_key, |row| OutboxRow {
             status: OutboxStatus::Failed,
+            claimed_at: None,
             ..row
         })
         .await
@@ -876,7 +962,8 @@ impl HaematiteStore {
 impl ReadableEventStore for HaematiteStore {
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let workflow_id = workflow_id.clone();
-        self.blocking(move |store| read_events(store, &workflow_id)).await
+        self.blocking(move |store| read_events(store, &workflow_id))
+            .await
     }
 
     async fn read_history_from(
@@ -885,7 +972,8 @@ impl ReadableEventStore for HaematiteStore {
         from_seq: u64,
     ) -> Result<Vec<Event>, StoreError> {
         let workflow_id = workflow_id.clone();
-        self.blocking(move |store| read_events_from(store, &workflow_id, from_seq)).await
+        self.blocking(move |store| read_events_from(store, &workflow_id, from_seq))
+            .await
     }
 
     async fn read_run_chain(
@@ -1045,7 +1133,9 @@ impl PackageStore for HaematiteStore {
     async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
         self.blocking(|store| {
             let mut records: Vec<PackageRecord> =
-                scan_prefix(store, keyspace::PACKAGE_PREFIX, |_, value| decode_package(value))?;
+                scan_prefix(store, keyspace::PACKAGE_PREFIX, |_, value| {
+                    decode_package(value)
+                })?;
             records.sort_by(|left, right| {
                 left.deployed_at
                     .cmp(&right.deployed_at)
@@ -1085,7 +1175,10 @@ impl PackageStore for HaematiteStore {
         self.blocking(move |store| {
             let database = store.database();
             database
-                .put(keyspace::route_key(&workflow_type), content_hash.into_bytes())
+                .put(
+                    keyspace::route_key(&workflow_type),
+                    content_hash.into_bytes(),
+                )
                 .map_err(|error| database_error(&error))?;
             database.commit().map_err(|error| database_error(&error))?;
             Ok(())
@@ -1097,8 +1190,8 @@ impl PackageStore for HaematiteStore {
         self.blocking(|store| {
             let mut routes: Vec<PackageRouteRecord> =
                 scan_prefix(store, keyspace::ROUTE_PREFIX, |key, value| {
-                    let workflow_type = keyspace::workflow_type_from_route_key(key)
-                        .ok_or_else(|| {
+                    let workflow_type =
+                        keyspace::workflow_type_from_route_key(key).ok_or_else(|| {
                             StoreError::Backend(String::from("malformed package-route key"))
                         })?;
                     let content_hash = String::from_utf8(value.to_vec()).map_err(|error| {
@@ -1222,8 +1315,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn outbox_claim_complete_retry_fail_round_trip()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn outbox_claim_complete_retry_fail_round_trip() -> Result<(), Box<dyn std::error::Error>>
+    {
         let store = store("outbox-round-trip")?;
         let workflow_id = WorkflowId::new_v4();
         let past = Utc::now() - Duration::hours(1);
@@ -1236,7 +1329,11 @@ mod tests {
 
         let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 2);
-        assert!(claimed.iter().all(|row| row.status == OutboxStatus::Claimed));
+        assert!(
+            claimed
+                .iter()
+                .all(|row| row.status == OutboxStatus::Claimed)
+        );
         // Claim order is visible_after ASC then dispatch_key ASC.
         assert_eq!(claimed[0].ordinal, 0);
         assert_eq!(claimed[1].ordinal, 1);
@@ -1286,7 +1383,9 @@ mod tests {
         let first = pending_row(&workflow_id, 0, "charge", past);
         let duplicate = pending_row(&workflow_id, 0, "different-activity", past);
 
-        store.append_outbox_batch(std::slice::from_ref(&first)).await?;
+        store
+            .append_outbox_batch(std::slice::from_ref(&first))
+            .await?;
         store.append_outbox_batch(&[duplicate]).await?;
 
         let claimed = store.claim_outbox_rows(10).await?;
@@ -1332,8 +1431,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn append_with_outbox_persists_events_and_rows()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn append_with_outbox_persists_events_and_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
         let store = store("outbox-atomic")?;
         let workflow_id = WorkflowId::new_v4();
         let event = aion_core::Event::WorkflowStarted {
@@ -1393,7 +1492,9 @@ mod tests {
             store
                 .append(WriteToken::recorder(), &workflow_id, &[event], 0)
                 .await?;
-            store.schedule_timer(&workflow_id, &timer_id, fire_at).await?;
+            store
+                .schedule_timer(&workflow_id, &timer_id, fire_at)
+                .await?;
             store
                 .put_package(PackageRecord {
                     workflow_type: String::from("checkout"),

@@ -205,7 +205,10 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
 fn membership(total_nodes: usize, send_targets: &[&str]) -> WriteMembership {
     WriteMembership {
         total_nodes,
-        send_targets: send_targets.iter().map(|name| SyncNodeId::from(*name)).collect(),
+        send_targets: send_targets
+            .iter()
+            .map(|name| SyncNodeId::from(*name))
+            .collect(),
     }
 }
 
@@ -381,7 +384,9 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
         .enable_all()
         .build()?;
 
-    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir()).collect::<Result<_, _>>()?;
+    let dirs: Vec<_> = (0..3)
+        .map(|_| tempfile::tempdir())
+        .collect::<Result<_, _>>()?;
 
     println!("\n==================================================================");
     println!(" Aion ACTIVE-ACTIVE on a 3-NODE / 3-SHARD haematite cluster");
@@ -402,7 +407,15 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
         .map(|i| (0..3).filter(|&j| j != i).map(|j| NODE_NAMES[j]).collect())
         .collect();
     let mut nodes: Vec<Node> = (0..3)
-        .map(|i| Node::spawn(NODE_NAMES[i], dirs[i].path(), 3, &send_targets[i], SHARD_COUNT))
+        .map(|i| {
+            Node::spawn(
+                NODE_NAMES[i],
+                dirs[i].path(),
+                3,
+                &send_targets[i],
+                SHARD_COUNT,
+            )
+        })
         .collect::<Result<_, _>>()?;
     link_both(&nodes[0], &nodes[1])?;
     link_both(&nodes[0], &nodes[2])?;
@@ -430,8 +443,9 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
     // not merely re-serve a completed one.
     // ----------------------------------------------------------------------
     println!("\n--- ACT 1: each node i owns shard i and seeds its workflow ---");
-    let workflow_ids: Vec<WorkflowId> =
-        (0..3).map(|i| workflow_id_for_shard(nodes[i].database(), i)).collect();
+    let workflow_ids: Vec<WorkflowId> = (0..3)
+        .map(|i| workflow_id_for_shard(nodes[i].database(), i))
+        .collect();
     let run_ids: Vec<RunId> = (0..3).map(|_| RunId::new_v4()).collect();
     let names = ["Shard0", "Shard1", "Shard2"];
 
@@ -456,7 +470,9 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
             &package,
         ))?;
         if i == 1 {
-            println!("  node 1: owns shard 1, seeded w[1] (name = Shard1), LEFT IN-FLIGHT (no engine)");
+            println!(
+                "  node 1: owns shard 1, seeded w[1] (name = Shard1), LEFT IN-FLIGHT (no engine)"
+            );
             continue;
         }
         // Build the engine AFTER the start is durable so recovery re-spawns w[i].
@@ -526,7 +542,9 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
     println!("\n--- ACT 5: prove the active-active failover gate ---");
 
     // (a) RE-HOMED: w[1] is resident on the absorber's NEW engine.
-    let resident = absorber_engine.registry().get(&workflow_ids[1], &run_ids[1])?;
+    let resident = absorber_engine
+        .registry()
+        .get(&workflow_ids[1], &run_ids[1])?;
     assert!(
         resident.is_some_and(|handle| handle.workflow_type() == "hello_world"),
         "w[1] must be re-resident on node 0's new engine after absorbing shard 1"
@@ -547,7 +565,10 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
 
     // (c) NO DUPLICATE START: w[1]'s history has exactly one WorkflowStarted.
     let w1_history = runtime.block_on(absorber_store.read_history(&workflow_ids[1]))?;
-    println!("  [no-dup] w[1] history on node 0 ({} events):", w1_history.len());
+    println!(
+        "  [no-dup] w[1] history on node 0 ({} events):",
+        w1_history.len()
+    );
     println!("{}", render_history(&w1_history));
     assert_eq!(
         w1_history
@@ -566,7 +587,9 @@ fn multi_shard_active_active_failover_demo() -> TestResult {
     let phantom_id = WorkflowId::new_v4();
     let phantom_run = RunId::new_v4();
     assert!(
-        runtime.block_on(absorber_store.read_history(&phantom_id))?.is_empty(),
+        runtime
+            .block_on(absorber_store.read_history(&phantom_id))?
+            .is_empty(),
         "a never-started workflow must have NO history on node 0 (non-vacuity)"
     );
     assert!(
