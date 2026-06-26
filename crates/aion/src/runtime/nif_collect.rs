@@ -576,7 +576,7 @@ fn log_unexpected_drop(result: FanOutCompletionResult, ordinal: u64) {
 
 fn record_cancelled(context: &NifContext, ordinal: u64) -> Result<(), String> {
     context
-        .record_activity_cancelled(Utc::now(), ActivityId::from_sequence_position(ordinal))
+        .record_activity_cancelled_and_settle_outbox(Utc::now(), ordinal)
         .map_err(|error| error.error_reason())
 }
 

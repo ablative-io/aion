@@ -9,6 +9,11 @@ use aion_store::{OutboxRow, OutboxStatus, Payload, StoreError, WorkflowId};
 use chrono::{DateTime, SecondsFormat, Utc};
 use libsql::{Connection, Row, Transaction, TransactionBehavior, params};
 
+mod transitions;
+pub(crate) use transitions::{
+    complete_outbox_row, fail_outbox_row, retry_outbox_row, settle_outbox_row_cancelled,
+};
+
 const INSERT_OUTBOX_SQL: &str = "
 INSERT OR IGNORE INTO outbox
     (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at)
@@ -40,15 +45,6 @@ LIMIT ?2";
 const REARM_STALE_CLAIMED_ROW_SQL: &str = "
 UPDATE outbox SET status = 'pending', visible_after = ?2, claimed_at = NULL
 WHERE dispatch_key = ?1 AND status = 'claimed'";
-
-const COMPLETE_ROW_SQL: &str = "
-UPDATE outbox SET status = 'done', claimed_at = NULL WHERE dispatch_key = ?1";
-
-const RETRY_ROW_SQL: &str = "
-UPDATE outbox SET status = 'pending', attempt = ?2, visible_after = ?3, claimed_at = NULL WHERE dispatch_key = ?1";
-
-const FAIL_ROW_SQL: &str = "
-UPDATE outbox SET status = 'failed', claimed_at = NULL WHERE dispatch_key = ?1";
 
 /// Insert a single outbox row inside an existing transaction.
 ///
@@ -316,60 +312,6 @@ async fn select_and_rearm_stale_claimed(
     Ok(rearmed)
 }
 
-/// Mark the row identified by `dispatch_key` as `done`.
-///
-/// # Errors
-///
-/// Returns `StoreError::Backend` for libSQL boundary failures.
-pub(crate) async fn complete_outbox_row(
-    conn: &Connection,
-    dispatch_key: &str,
-) -> Result<(), StoreError> {
-    conn.execute(COMPLETE_ROW_SQL, params![dispatch_key.to_string()])
-        .await
-        .map(|_| ())
-        .map_err(|error| crate::error::libsql_error(&error))
-}
-
-/// Return the row identified by `dispatch_key` to `pending` with updated attempt and backoff fence.
-///
-/// # Errors
-///
-/// Returns `StoreError::Backend` for libSQL boundary failures.
-pub(crate) async fn retry_outbox_row(
-    conn: &Connection,
-    dispatch_key: &str,
-    next_attempt: u32,
-    visible_after: DateTime<Utc>,
-) -> Result<(), StoreError> {
-    conn.execute(
-        RETRY_ROW_SQL,
-        params![
-            dispatch_key.to_string(),
-            i64::from(next_attempt),
-            encode_instant(visible_after)
-        ],
-    )
-    .await
-    .map(|_| ())
-    .map_err(|error| crate::error::libsql_error(&error))
-}
-
-/// Mark the row identified by `dispatch_key` as `failed` (dead letter).
-///
-/// # Errors
-///
-/// Returns `StoreError::Backend` for libSQL boundary failures.
-pub(crate) async fn fail_outbox_row(
-    conn: &Connection,
-    dispatch_key: &str,
-) -> Result<(), StoreError> {
-    conn.execute(FAIL_ROW_SQL, params![dispatch_key.to_string()])
-        .await
-        .map(|_| ())
-        .map_err(|error| crate::error::libsql_error(&error))
-}
-
 /// Out-of-band snapshot of one outbox row's mutable lifecycle bookkeeping.
 ///
 /// Read by [`LibSqlStore::outbox_row_state`](crate::LibSqlStore::outbox_row_state) for tests and
@@ -493,7 +435,3 @@ async fn rollback(tx: Transaction) -> Result<(), StoreError> {
         .await
         .map_err(|error| crate::error::libsql_error(&error))
 }
-
-#[cfg(test)]
-#[path = "outbox_tests.rs"]
-mod outbox_tests;

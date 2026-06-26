@@ -32,6 +32,8 @@ pub enum OutboxStatus {
     Done,
     /// Retry budget exhausted; terminal dead letter.
     Failed,
+    /// Cancelled by workflow history before dispatch completed; terminal.
+    Cancelled,
 }
 
 impl OutboxStatus {
@@ -43,6 +45,7 @@ impl OutboxStatus {
             Self::Claimed => "claimed",
             Self::Done => "done",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -57,6 +60,7 @@ impl OutboxStatus {
             "claimed" => Ok(Self::Claimed),
             "done" => Ok(Self::Done),
             "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
             other => Err(StoreError::Serialization(format!(
                 "unknown outbox status: {other}"
             ))),
@@ -170,6 +174,7 @@ pub trait OutboxStore: Send + Sync + 'static {
     /// `older_than`, then transition only those rows back to [`OutboxStatus::Pending`] with
     /// `visible_after` set to the supplied instant. The existing `attempt` value is preserved and
     /// `claimed_at` is cleared. Rows in `Done` or `Failed` are terminal and must never be touched.
+    /// Rows in `Cancelled` are also terminal and must never be touched.
     ///
     /// Claimed rows without a durable `claimed_at` value are deliberately ignored: the caller asked
     /// for rows older than a supplied instant, and `NULL` cannot satisfy that predicate safely.
@@ -238,6 +243,7 @@ mod tests {
             OutboxStatus::Claimed,
             OutboxStatus::Done,
             OutboxStatus::Failed,
+            OutboxStatus::Cancelled,
         ] {
             let parsed = OutboxStatus::parse_token(status.as_str())?;
             assert_eq!(parsed, status);

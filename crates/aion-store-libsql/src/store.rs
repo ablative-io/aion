@@ -208,6 +208,10 @@ impl WritableEventStore for LibSqlStore {
         let _guard = self.transaction_lock.lock().await;
         crate::outbox::rearm_outbox_pending(self.connection(), rows).await
     }
+
+    async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        crate::outbox::settle_outbox_row_cancelled(self.connection(), dispatch_key).await
+    }
 }
 
 #[async_trait]

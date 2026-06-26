@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aion_store::{
     ContentType, Event, OutboxRow, OutboxStatus, OutboxStore, Payload, StoreError, WorkflowId,
-    WriteToken,
+    WritableEventStore, WriteToken,
 };
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use libsql::params;
@@ -178,6 +178,91 @@ async fn stale_claim_rearm_touches_only_old_claimed_rows_and_preserves_attempt()
     assert_eq!(
         claimed_at_of(store.connection(), &stale.dispatch_key).await?,
         None
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn settle_cancelled_is_idempotent_and_terminal() -> Result<(), StoreError> {
+    let store = open_test_store("settle-cancelled").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let pending = pending_row(&workflow_id, 0, "pending", instant(1)?);
+    let claimed = pending_row(&workflow_id, 1, "claimed", instant(1)?);
+    let done = pending_row(&workflow_id, 2, "done", instant(1)?);
+    let failed = pending_row(&workflow_id, 3, "failed", instant(1)?);
+
+    store
+        .append_outbox_batch(&[
+            pending.clone(),
+            claimed.clone(),
+            done.clone(),
+            failed.clone(),
+        ])
+        .await?;
+
+    store
+        .settle_outbox_row_cancelled(&pending.dispatch_key)
+        .await?;
+    store
+        .settle_outbox_row_cancelled(&pending.dispatch_key)
+        .await?;
+    assert_eq!(
+        status_of(store.connection(), &pending.dispatch_key).await?,
+        Some(String::from("cancelled"))
+    );
+    let claimed_rows = store.claim_outbox_rows(10).await?;
+    assert!(
+        !claimed_rows
+            .iter()
+            .any(|row| row.dispatch_key == pending.dispatch_key),
+        "cancelled pending row must not be claimable"
+    );
+    assert!(
+        claimed_rows
+            .iter()
+            .any(|row| row.dispatch_key == claimed.dispatch_key),
+        "claimed test row should have been claimed before settlement"
+    );
+    store
+        .settle_outbox_row_cancelled(&claimed.dispatch_key)
+        .await?;
+    assert_eq!(
+        status_of(store.connection(), &claimed.dispatch_key).await?,
+        Some(String::from("cancelled"))
+    );
+    assert_eq!(
+        claimed_at_of(store.connection(), &claimed.dispatch_key).await?,
+        None,
+        "cancelling a claimed row clears claimed_at"
+    );
+    let rearmed = store
+        .rearm_stale_claimed_outbox_rows(Utc::now() + chrono::Duration::hours(1), instant(200)?, 10)
+        .await?;
+    assert!(
+        !rearmed
+            .iter()
+            .any(|row| row.dispatch_key == claimed.dispatch_key),
+        "cancelled claimed row must not be stale-rearmed"
+    );
+
+    store.complete_outbox_row(&done.dispatch_key).await?;
+    store.fail_outbox_row(&failed.dispatch_key).await?;
+    store
+        .settle_outbox_row_cancelled(&done.dispatch_key)
+        .await?;
+    store
+        .settle_outbox_row_cancelled(&failed.dispatch_key)
+        .await?;
+    store
+        .settle_outbox_row_cancelled("absent-dispatch-key")
+        .await?;
+    assert_eq!(
+        status_of(store.connection(), &done.dispatch_key).await?,
+        Some(String::from("done"))
+    );
+    assert_eq!(
+        status_of(store.connection(), &failed.dispatch_key).await?,
+        Some(String::from("failed"))
     );
     Ok(())
 }

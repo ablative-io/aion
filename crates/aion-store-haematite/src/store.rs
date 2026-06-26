@@ -756,6 +756,18 @@ impl WritableEventStore for HaematiteStore {
         })
         .await
     }
+
+    async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        self.transition_outbox(dispatch_key, |row| match row.status {
+            OutboxStatus::Pending | OutboxStatus::Claimed => OutboxRow {
+                status: OutboxStatus::Cancelled,
+                claimed_at: None,
+                ..row
+            },
+            OutboxStatus::Done | OutboxStatus::Failed | OutboxStatus::Cancelled => row,
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -1391,6 +1403,89 @@ mod tests {
         let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].activity_type, "charge");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settle_cancelled_is_idempotent_and_terminal() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store = store("outbox-settle-cancelled")?;
+        let workflow_id = WorkflowId::new_v4();
+        let past = Utc::now() - Duration::hours(1);
+        let pending = pending_row(&workflow_id, 0, "pending", past);
+        let claimed = pending_row(&workflow_id, 1, "claimed", past);
+        let done = pending_row(&workflow_id, 2, "done", past);
+        let failed = pending_row(&workflow_id, 3, "failed", past);
+
+        store
+            .append_outbox_batch(&[
+                pending.clone(),
+                claimed.clone(),
+                done.clone(),
+                failed.clone(),
+            ])
+            .await?;
+
+        store
+            .settle_outbox_row_cancelled(&pending.dispatch_key)
+            .await?;
+        store
+            .settle_outbox_row_cancelled(&pending.dispatch_key)
+            .await?;
+        assert_eq!(
+            status_of(&store, &pending.dispatch_key).await?,
+            Some(OutboxStatus::Cancelled)
+        );
+        let claimed_rows = store.claim_outbox_rows(10).await?;
+        assert!(
+            !claimed_rows
+                .iter()
+                .any(|row| row.dispatch_key == pending.dispatch_key),
+            "cancelled pending row must not be claimable"
+        );
+        assert!(
+            claimed_rows
+                .iter()
+                .any(|row| row.dispatch_key == claimed.dispatch_key),
+            "claimed test row should have been claimed before settlement"
+        );
+
+        store
+            .settle_outbox_row_cancelled(&claimed.dispatch_key)
+            .await?;
+        assert_eq!(
+            status_of(&store, &claimed.dispatch_key).await?,
+            Some(OutboxStatus::Cancelled)
+        );
+        let rearmed = store
+            .rearm_stale_claimed_outbox_rows(Utc::now() + Duration::hours(1), past, 10)
+            .await?;
+        assert!(
+            !rearmed
+                .iter()
+                .any(|row| row.dispatch_key == claimed.dispatch_key),
+            "cancelled claimed row must not be stale-rearmed"
+        );
+
+        store.complete_outbox_row(&done.dispatch_key).await?;
+        store.fail_outbox_row(&failed.dispatch_key).await?;
+        store
+            .settle_outbox_row_cancelled(&done.dispatch_key)
+            .await?;
+        store
+            .settle_outbox_row_cancelled(&failed.dispatch_key)
+            .await?;
+        store
+            .settle_outbox_row_cancelled(&OutboxRow::dispatch_key_for(&workflow_id, 99))
+            .await?;
+        assert_eq!(
+            status_of(&store, &done.dispatch_key).await?,
+            Some(OutboxStatus::Done)
+        );
+        assert_eq!(
+            status_of(&store, &failed.dispatch_key).await?,
+            Some(OutboxStatus::Failed)
+        );
         Ok(())
     }
 
