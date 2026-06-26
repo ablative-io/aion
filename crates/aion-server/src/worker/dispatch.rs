@@ -314,6 +314,7 @@ mod tests {
             activity_type: String::from("charge-card"),
             workflow_id: workflow_id(),
             activity_id: activity_id(),
+            run_id: None,
             input: input.clone(),
             attempt: 1,
             labels: std::collections::BTreeMap::new(),
@@ -344,6 +345,7 @@ mod tests {
             activity_type: String::from("charge-card"),
             workflow_id: workflow_id(),
             activity_id: activity_id(),
+            run_id: None,
             input: Payload::new(ContentType::Json, b"{}".to_vec()),
             attempt: 1,
             labels: std::collections::BTreeMap::new(),
@@ -385,6 +387,7 @@ mod tests {
             activity_type: String::from("charge-card"),
             workflow_id: workflow_id(),
             activity_id: activity_id(),
+            run_id: None,
             input: Payload::new(ContentType::Json, b"{}".to_vec()),
             attempt: 1,
             labels: std::collections::BTreeMap::new(),
@@ -423,6 +426,7 @@ mod tests {
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
             activity_id: Some(ProtoActivityId::from(activity_id())),
+            run_id: None,
             outcome: Some(proto_activity_result::Outcome::Result(ProtoPayload::from(
                 output.clone(),
             ))),
@@ -458,6 +462,7 @@ mod tests {
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
             activity_id: Some(ProtoActivityId::from(activity_id())),
+            run_id: None,
             outcome: Some(proto_activity_result::Outcome::Error(error)),
         };
 

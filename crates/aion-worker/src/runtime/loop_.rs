@@ -441,11 +441,13 @@ where
         Some(heartbeat_sender),
     );
     let finished_key = key.clone();
+    let finished_run_id = task.run_id.clone();
     let join_handle = tokio::spawn(async move {
         let outcome = dispatcher.dispatch(task, context).await;
         if result_sender
             .send(DispatchFinished {
                 key: finished_key,
+                run_id: finished_run_id,
                 outcome,
             })
             .is_err()

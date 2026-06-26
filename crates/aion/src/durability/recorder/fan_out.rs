@@ -7,7 +7,9 @@
 //! spawns completion tasks exactly as before. A later flag-gated cutover will route fresh fan-out
 //! batches through [`Recorder::record_fan_out_dispatch`] instead.
 
-use aion_core::{ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, status::run_segment};
+use aion_core::{
+    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, status::run_segment,
+};
 use aion_store::OutboxRow;
 use chrono::{DateTime, Utc};
 

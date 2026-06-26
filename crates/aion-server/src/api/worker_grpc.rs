@@ -513,6 +513,7 @@ fn decode_activity_result(r: generated::ActivityResult) -> ProtoActivityResult {
             sequence_position: id.sequence_position,
         }),
         outcome: r.outcome.map(decode_outcome),
+        run_id: r.run_id.map(|id| aion_proto::ProtoRunId { uuid: id.uuid }),
     }
 }
 

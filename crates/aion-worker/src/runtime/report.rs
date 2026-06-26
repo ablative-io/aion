@@ -117,7 +117,11 @@ pub(crate) async fn report_finished<S>(
     }
     match finished.outcome {
         Ok(outcome) => {
-            tracker.record(pending_report(&finished.key, finished.run_id.clone(), &outcome));
+            tracker.record(pending_report(
+                &finished.key,
+                finished.run_id.clone(),
+                &outcome,
+            ));
             let sent = report_outcome(
                 session,
                 finished.key.workflow_id,
@@ -189,7 +193,7 @@ where
         }
         DispatchOutcome::Failed { failure } => {
             session
-                .report_failure(workflow_id, activity_id.clone(), failure)
+                .report_failure(workflow_id, activity_id.clone(), run_id, failure)
                 .await?;
             info!(
                 activity_id = activity_id.sequence_position(),

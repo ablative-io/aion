@@ -72,7 +72,7 @@ pub(crate) async fn insert_outbox_row(tx: &Transaction, row: &OutboxRow) -> Resu
             i64::from(row.attempt),
             encode_instant(row.visible_after),
             row.claimed_at.map(encode_instant),
-            row.run_id.as_ref().map(|run_id| run_id.to_string())
+            row.run_id.as_ref().map(ToString::to_string)
         ],
     )
     .await

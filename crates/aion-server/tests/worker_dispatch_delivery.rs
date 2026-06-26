@@ -225,6 +225,7 @@ impl Harness {
                     generated::ActivityResult {
                         workflow_id: task.workflow_id,
                         activity_id: task.activity_id,
+                        run_id: task.run_id,
                         outcome: Some(generated::activity_result::Outcome::Result(
                             generated::Payload {
                                 content_type: "application/json".to_owned(),
@@ -536,6 +537,7 @@ async fn malformed_result_gets_no_ack_and_stream_stays_healthy() -> Result<(), T
                         uuid: "00000000-0000-0000-0000-000000000000".to_owned(),
                     }),
                     activity_id: None,
+                    run_id: None,
                     outcome: Some(generated::activity_result::Outcome::Result(
                         generated::Payload {
                             content_type: "application/json".to_owned(),

@@ -36,13 +36,15 @@ impl OutboxDeliveryCallback for ServerOutboxDeliveryCallback {
         run_id: Option<&RunId>,
         result: String,
     ) -> Result<bool, ServerError> {
-        self.engine.runtime().deliver_outbox_completion(
-            self.engine.registry(),
-            workflow_id,
-            activity_id,
-            run_id,
-            result,
-        )
+        self.engine
+            .runtime()
+            .deliver_outbox_completion(
+                self.engine.registry(),
+                workflow_id,
+                activity_id,
+                run_id,
+                result,
+            )
             .map_err(ServerError::from)
     }
 
@@ -50,11 +52,18 @@ impl OutboxDeliveryCallback for ServerOutboxDeliveryCallback {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         reason: String,
     ) -> Result<bool, ServerError> {
         self.engine
             .runtime()
-            .deliver_outbox_failure(self.engine.registry(), workflow_id, activity_id, reason)
+            .deliver_outbox_failure(
+                self.engine.registry(),
+                workflow_id,
+                activity_id,
+                run_id,
+                reason,
+            )
             .map_err(ServerError::from)
     }
 }

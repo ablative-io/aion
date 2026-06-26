@@ -109,7 +109,9 @@ enum MalformedActivityTask {
 #[cfg(test)]
 mod tests {
     use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
-    use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoRunId, ProtoWorkflowId};
+    use aion_proto::{
+        ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoRunId, ProtoWorkflowId,
+    };
     use serde_json::json;
 
     use super::ActivityTask;
@@ -158,6 +160,7 @@ mod tests {
         let result = ActivityTask::try_from(ProtoActivityTask {
             workflow_id: None,
             activity_id: Some(ProtoActivityId::from(ActivityId::from_sequence_position(1))),
+            run_id: None,
             activity_type: String::from("charge-card"),
             input: Some(ProtoPayload::from(Payload::new(
                 ContentType::Json,
@@ -175,6 +178,7 @@ mod tests {
         let result = ActivityTask::try_from(ProtoActivityTask {
             workflow_id: Some(ProtoWorkflowId::from(WorkflowId::new_v4())),
             activity_id: Some(ProtoActivityId::from(ActivityId::from_sequence_position(1))),
+            run_id: None,
             activity_type: String::from("charge-card"),
             input: Some(ProtoPayload::from(Payload::new(
                 ContentType::Json,

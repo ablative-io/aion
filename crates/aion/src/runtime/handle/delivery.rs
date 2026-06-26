@@ -4,7 +4,9 @@
 //! Markers are pure wakes — durable state lives in recorded history or the
 //! retained completion maps, never in the marker itself.
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId};
+use aion_core::{
+    ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, RunId, WorkflowId,
+};
 use beamr::atom::Atom;
 use beamr::process::ExitReason;
 
@@ -210,8 +212,13 @@ impl RuntimeHandle {
         registry: &Registry,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         result: String,
     ) -> Result<bool, EngineError> {
+        // Run scoping is enforced downstream by the recorder's
+        // `record_fan_out_completion` (OBX-011); mailbox routing resolves the
+        // workflow's single live run and is run-agnostic.
+        let _ = run_id;
         let Some(pid) = registry.live_pid(workflow_id)? else {
             return Ok(false);
         };
@@ -236,8 +243,13 @@ impl RuntimeHandle {
         registry: &Registry,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         reason: String,
     ) -> Result<bool, EngineError> {
+        // Run scoping is enforced downstream by the recorder's
+        // `record_fan_out_completion` (OBX-011); mailbox routing resolves the
+        // workflow's single live run and is run-agnostic.
+        let _ = run_id;
         let Some(pid) = registry.live_pid(workflow_id)? else {
             return Ok(false);
         };
@@ -637,6 +649,7 @@ mod tests {
             &registry,
             &workflow_id,
             &activity_id,
+            None,
             r#"{"ok":true}"#.to_owned(),
         )?;
 
@@ -651,6 +664,7 @@ mod tests {
             &registry,
             &WorkflowId::new_v4(),
             &activity_id,
+            None,
             "{}".to_owned(),
         )?;
         assert!(

@@ -111,6 +111,7 @@ message ActivityResult {
     Payload result = 3;
     ActivityError error = 4;
   }
+  optional RunId run_id = 5;
 }
 
 // Explicit retryability classification for an activity failure.

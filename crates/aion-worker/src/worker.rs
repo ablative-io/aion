@@ -562,7 +562,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use aion_core::{ActivityError, ActivityId, ContentType, Payload, WorkflowId};
+    use aion_core::{ActivityError, ActivityId, ContentType, Payload, RunId, WorkflowId};
     use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
     use async_trait::async_trait;
     use futures::StreamExt as _;
@@ -628,8 +628,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
+            let _ = run_id;
             self.reports
                 .push(RecordedReport::Completed(workflow_id, activity_id, result));
             Ok(())
@@ -639,8 +641,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
+            let _ = run_id;
             self.reports
                 .push(RecordedReport::Failed(workflow_id, activity_id, failure));
             Ok(())
@@ -690,6 +694,7 @@ mod tests {
             &mut self,
             _workflow_id: WorkflowId,
             _activity_id: ActivityId,
+            _run_id: Option<RunId>,
             _result: Payload,
         ) -> Result<(), WorkerError> {
             std::future::pending::<()>().await;
@@ -700,6 +705,7 @@ mod tests {
             &mut self,
             _workflow_id: WorkflowId,
             _activity_id: ActivityId,
+            _run_id: Option<RunId>,
             _failure: ActivityError,
         ) -> Result<(), WorkerError> {
             std::future::pending::<()>().await;
@@ -754,17 +760,18 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
             match self {
                 Self::Scripted(session) => {
                     session
-                        .report_result(workflow_id, activity_id, result)
+                        .report_result(workflow_id, activity_id, run_id, result)
                         .await
                 }
                 Self::Hung(session) => {
                     session
-                        .report_result(workflow_id, activity_id, result)
+                        .report_result(workflow_id, activity_id, run_id, result)
                         .await
                 }
             }
@@ -774,17 +781,18 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
             match self {
                 Self::Scripted(session) => {
                     session
-                        .report_failure(workflow_id, activity_id, failure)
+                        .report_failure(workflow_id, activity_id, run_id, failure)
                         .await
                 }
                 Self::Hung(session) => {
                     session
-                        .report_failure(workflow_id, activity_id, failure)
+                        .report_failure(workflow_id, activity_id, run_id, failure)
                         .await
                 }
             }
@@ -842,6 +850,7 @@ mod tests {
             &mut self,
             _workflow_id: WorkflowId,
             activity_id: ActivityId,
+            _run_id: Option<RunId>,
             _result: Payload,
         ) -> Result<(), WorkerError> {
             if activity_id == self.fail_id {
@@ -858,6 +867,7 @@ mod tests {
             &mut self,
             _workflow_id: WorkflowId,
             _activity_id: ActivityId,
+            _run_id: Option<RunId>,
             _failure: ActivityError,
         ) -> Result<(), WorkerError> {
             Ok(())
@@ -909,17 +919,18 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
             match self {
                 Self::Latch(session) => {
                     session
-                        .report_result(workflow_id, activity_id, result)
+                        .report_result(workflow_id, activity_id, run_id, result)
                         .await
                 }
                 Self::Deny(session) => {
                     session
-                        .report_result(workflow_id, activity_id, result)
+                        .report_result(workflow_id, activity_id, run_id, result)
                         .await
                 }
             }
@@ -929,17 +940,18 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
             match self {
                 Self::Latch(session) => {
                     session
-                        .report_failure(workflow_id, activity_id, failure)
+                        .report_failure(workflow_id, activity_id, run_id, failure)
                         .await
                 }
                 Self::Deny(session) => {
                     session
-                        .report_failure(workflow_id, activity_id, failure)
+                        .report_failure(workflow_id, activity_id, run_id, failure)
                         .await
                 }
             }
@@ -1107,6 +1119,7 @@ mod tests {
         ProtoActivityTask {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
             activity_id: Some(ProtoActivityId::from(activity_id)),
+            run_id: None,
             activity_type: activity_type.to_owned(),
             input: Some(ProtoPayload::from(Payload::new(
                 ContentType::Json,
@@ -1223,6 +1236,7 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
             if self.fail_reports {
@@ -1230,6 +1244,7 @@ mod tests {
                     source: tonic::Status::unavailable("transport dropped before result ack"),
                 });
             }
+            let _ = run_id;
             self.log
                 .send(SessionLog::Reported(
                     self.index,
@@ -1242,6 +1257,7 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
             if self.fail_reports {
@@ -1249,6 +1265,7 @@ mod tests {
                     source: tonic::Status::unavailable("transport dropped before failure ack"),
                 });
             }
+            let _ = run_id;
             self.log
                 .send(SessionLog::Reported(
                     self.index,
@@ -2224,6 +2241,7 @@ mod tests {
             tracker.record(PendingActivityReport::Completed {
                 workflow_id: workflow.clone(),
                 activity_id: position.clone(),
+                run_id: None,
                 output: Payload::new(ContentType::Json, b"{\"value\":1}".to_vec()),
             });
         }
@@ -2288,6 +2306,7 @@ mod tests {
             tracker.record(PendingActivityReport::Completed {
                 workflow_id: workflow_id.clone(),
                 activity_id: id.clone(),
+                run_id: None,
                 output: Payload::new(ContentType::Json, b"{\"value\":2}".to_vec()),
             });
         }
