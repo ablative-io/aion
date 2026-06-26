@@ -1,6 +1,6 @@
 //! Worker protocol serde/prost wire types.
 
-use crate::{ProtoActivityId, ProtoPayload, ProtoWorkflowId, WireError};
+use crate::{ProtoActivityId, ProtoPayload, ProtoRunId, ProtoWorkflowId, WireError};
 
 /// Proto representation of `ActivityErrorKind`. Zero is invalid on decode.
 #[derive(
@@ -75,6 +75,11 @@ pub struct ProtoActivityTask {
     /// can show what a dispatch is working on. Empty when none were set.
     #[prost(map = "string, string", tag = "6")]
     pub labels: ::std::collections::HashMap<String, String>,
+    /// Run that owns this dispatch; threaded so a completion only resolves the
+    /// run that issued it (continue-as-new safety, OBX-011). Absent for legacy
+    /// dispatches that predate run threading.
+    #[prost(message, optional, tag = "7")]
+    pub run_id: Option<ProtoRunId>,
 }
 
 /// Server-initiated drain: the server is going away (restart, deploy,
@@ -128,6 +133,11 @@ pub struct ProtoActivityResult {
     /// Successful result payload or explicit activity error.
     #[prost(oneof = "proto_activity_result::Outcome", tags = "3, 4")]
     pub outcome: Option<proto_activity_result::Outcome>,
+    /// Run that owns this completion; echoed from the dispatched task so a
+    /// completion only resolves the run that issued it (continue-as-new safety,
+    /// OBX-011). Absent for legacy completions that predate run threading.
+    #[prost(message, optional, tag = "5")]
+    pub run_id: Option<ProtoRunId>,
 }
 
 /// Types nested under [`ProtoActivityResult`].
@@ -281,6 +291,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            run_id: None,
         };
 
         assert_json_and_proto_round_trip(&task)
@@ -368,6 +379,7 @@ mod tests {
             input: None,
             attempt: 9,
             labels: ::std::collections::HashMap::new(),
+            run_id: None,
         };
         let mut bytes = Vec::new();
         task.encode(&mut bytes)?;
@@ -386,6 +398,7 @@ mod tests {
             outcome: Some(proto_activity_result::Outcome::Result(ProtoPayload::from(
                 aion_core::Payload::from_json(&json!({"authorization": "ok"}))?,
             ))),
+            run_id: None,
         };
 
         assert_json_and_proto_round_trip(&result)
@@ -406,6 +419,7 @@ mod tests {
                     details: Some(aion_core::Payload::from_json(&json!({"code": "declined"}))?),
                 }),
             )),
+            run_id: None,
         };
 
         assert_json_and_proto_round_trip(&result)

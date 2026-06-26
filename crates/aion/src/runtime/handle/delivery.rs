@@ -4,7 +4,9 @@
 //! Markers are pure wakes — durable state lives in recorded history or the
 //! retained completion maps, never in the marker itself.
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId};
+use aion_core::{
+    ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, RunId, WorkflowId,
+};
 use beamr::atom::Atom;
 use beamr::process::ExitReason;
 
@@ -210,9 +212,15 @@ impl RuntimeHandle {
         registry: &Registry,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         result: String,
     ) -> Result<bool, EngineError> {
-        let Some(pid) = registry.live_pid(workflow_id)? else {
+        // Run-aware gate: a completion carrying a run_id is only delivered when
+        // that run is still the workflow's live run. After continue-as-new the
+        // prior run is superseded, and its late completion must NOT resolve the
+        // new run's reused ordinal (OBX-011). The recorder's
+        // `record_fan_out_completion` run check is the second enforcement layer.
+        let Some(pid) = outbox_delivery_pid(registry, workflow_id, run_id)? else {
             return Ok(false);
         };
         self.deliver_activity_completion_message(pid, &activity_id.to_string(), result)?;
@@ -236,9 +244,13 @@ impl RuntimeHandle {
         registry: &Registry,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         reason: String,
     ) -> Result<bool, EngineError> {
-        let Some(pid) = registry.live_pid(workflow_id)? else {
+        // Run-aware gate, identical to `deliver_outbox_completion`: a failure
+        // belonging to a superseded run (post continue-as-new) must not resolve
+        // the new run's reused ordinal (OBX-011).
+        let Some(pid) = outbox_delivery_pid(registry, workflow_id, run_id)? else {
             return Ok(false);
         };
         self.deliver_activity_failure_message(pid, &activity_id.to_string(), reason)?;
@@ -541,6 +553,44 @@ impl RuntimeHandle {
     }
 }
 
+/// Resolve the pid an unmatched outbox completion/failure should be delivered
+/// to, enforcing run scoping when a `run_id` is supplied.
+///
+/// When `run_id` is `Some(r)`, delivery is gated on the workflow's live run
+/// still being `r`: a completion for a superseded/dead run (e.g. a prior run
+/// after continue-as-new) resolves to `Ok(None)` and is dropped, so it can
+/// never resolve the new run's reused ordinal space (OBX-011).
+///
+/// When `run_id` is `None` (legacy/pre-CAN callers), this preserves the
+/// original run-agnostic behaviour: deliver to whatever run is live.
+///
+/// `Ok(None)` is the not-live / wrong-run outcome, never an error.
+fn outbox_delivery_pid(
+    registry: &Registry,
+    workflow_id: &WorkflowId,
+    run_id: Option<&RunId>,
+) -> Result<Option<u64>, EngineError> {
+    match run_id {
+        None => registry.live_pid(workflow_id),
+        Some(expected) => {
+            let Some((live_run, pid)) = registry.live_run_pid(workflow_id)? else {
+                return Ok(None);
+            };
+            if live_run == *expected {
+                Ok(Some(pid))
+            } else {
+                tracing::debug!(
+                    %workflow_id,
+                    %expected,
+                    live_run = %live_run,
+                    "dropping outbox delivery for superseded run"
+                );
+                Ok(None)
+            }
+        }
+    }
+}
+
 fn activity_failure(message: String) -> ActivityError {
     ActivityError {
         kind: ActivityErrorKind::Terminal,
@@ -637,6 +687,7 @@ mod tests {
             &registry,
             &workflow_id,
             &activity_id,
+            None,
             r#"{"ok":true}"#.to_owned(),
         )?;
 
@@ -651,11 +702,118 @@ mod tests {
             &registry,
             &WorkflowId::new_v4(),
             &activity_id,
+            None,
             "{}".to_owned(),
         )?;
         assert!(
             !unknown,
             "an unknown workflow must report not-live, not error"
+        );
+
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_completion_is_run_scoped_across_continue_as_new()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let registry = Registry::default();
+        let workflow_id = WorkflowId::new_v4();
+        // R1 is the prior run; R2 is the live run after a continue-as-new. The
+        // index tracks the newest run, so the workflow's live run is R2.
+        let r1 = RunId::new_v4();
+        let r2 = RunId::new_v4();
+        let pid = runtime.spawn_test_process()?;
+        registry.insert(
+            (workflow_id.clone(), r2.clone()),
+            live_handle(&workflow_id, &r2, pid),
+        )?;
+
+        // A reused ordinal that exists in both R1's and R2's ordinal space.
+        let ordinal = 3;
+        let activity_id = ActivityId::from_sequence_position(ordinal);
+
+        // A completion belonging to the superseded run R1 must NOT be delivered
+        // and must NOT resolve R2's reused ordinal.
+        let stale = runtime.deliver_outbox_completion(
+            &registry,
+            &workflow_id,
+            &activity_id,
+            Some(&r1),
+            r#"{"from":"r1"}"#.to_owned(),
+        )?;
+        assert!(
+            !stale,
+            "a completion for a superseded run must not be delivered"
+        );
+        assert!(
+            runtime.take_activity_result(pid, ordinal).is_none(),
+            "a superseded run's completion must not resolve the live run's reused ordinal"
+        );
+
+        // A completion for the live run R2 IS delivered and resolves the ordinal.
+        let live = runtime.deliver_outbox_completion(
+            &registry,
+            &workflow_id,
+            &activity_id,
+            Some(&r2),
+            r#"{"from":"r2"}"#.to_owned(),
+        )?;
+        assert!(live, "a completion for the live run must be delivered");
+        let payload = runtime
+            .take_activity_result(pid, ordinal)
+            .ok_or("live-run completion was not retained where take_activity_result reads it")?;
+        assert_eq!(payload.bytes(), br#"{"from":"r2"}"#);
+
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_failure_is_run_scoped_across_continue_as_new()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+        let registry = Registry::default();
+        let workflow_id = WorkflowId::new_v4();
+        let r1 = RunId::new_v4();
+        let r2 = RunId::new_v4();
+        let pid = runtime.spawn_test_process()?;
+        registry.insert(
+            (workflow_id.clone(), r2.clone()),
+            live_handle(&workflow_id, &r2, pid),
+        )?;
+
+        let ordinal = 5;
+        let activity_id = ActivityId::from_sequence_position(ordinal);
+
+        let stale = runtime.deliver_outbox_failure(
+            &registry,
+            &workflow_id,
+            &activity_id,
+            Some(&r1),
+            "r1 failed".to_owned(),
+        )?;
+        assert!(
+            !stale,
+            "a failure for a superseded run must not be delivered"
+        );
+        assert!(
+            runtime.take_activity_error(pid, ordinal).is_none(),
+            "a superseded run's failure must not resolve the live run's reused ordinal"
+        );
+
+        let live = runtime.deliver_outbox_failure(
+            &registry,
+            &workflow_id,
+            &activity_id,
+            Some(&r2),
+            "r2 failed".to_owned(),
+        )?;
+        assert!(live, "a failure for the live run must be delivered");
+        assert!(
+            runtime.take_activity_error(pid, ordinal).is_some(),
+            "live-run failure must be retained where take_activity_error reads it"
         );
 
         runtime.shutdown()?;

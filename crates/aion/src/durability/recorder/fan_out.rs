@@ -7,7 +7,9 @@
 //! spawns completion tasks exactly as before. A later flag-gated cutover will route fresh fan-out
 //! batches through [`Recorder::record_fan_out_dispatch`] instead.
 
-use aion_core::{ActivityError, ActivityId, Event, EventEnvelope, Payload};
+use aion_core::{
+    ActivityError, ActivityId, Event, EventEnvelope, Payload, RunId, status::run_segment,
+};
 use aion_store::OutboxRow;
 use chrono::{DateTime, Utc};
 
@@ -113,13 +115,16 @@ impl Recorder {
                 envelope: started_envelope,
                 activity_id,
             });
-            outbox_rows.push(OutboxRow::pending(
-                self.workflow_id.clone(),
-                item.ordinal,
-                item.activity_type.clone(),
-                item.input.clone(),
-                recorded_at,
-            ));
+            outbox_rows.push(
+                OutboxRow::pending(
+                    self.workflow_id.clone(),
+                    item.ordinal,
+                    item.activity_type.clone(),
+                    item.input.clone(),
+                    recorded_at,
+                )
+                .with_run_id(self.run_id.clone()),
+            );
         }
 
         let expected_seq = self.sequence.current();
@@ -173,6 +178,7 @@ impl Recorder {
                     item.input.clone(),
                     recorded_at,
                 )
+                .with_run_id(self.run_id.clone())
             })
             .collect();
         self.store.rearm_outbox_pending(&rows).await?;
@@ -212,11 +218,15 @@ impl Recorder {
         &mut self,
         recorded_at: DateTime<Utc>,
         ordinal: u64,
+        run_id: Option<RunId>,
         outcome: FanOutOutcome,
     ) -> Result<FanOutCompletionResult, DurabilityError> {
         let activity_id = ActivityId::from_sequence_position(ordinal);
         let history = self.store.read_history(&self.workflow_id).await?;
-        if ordinal_is_resolved(&history, &activity_id) {
+        if run_id_mismatches_recorder(run_id.as_ref(), self.run_id.as_ref()) {
+            return Ok(FanOutCompletionResult::Dropped);
+        }
+        if ordinal_is_resolved(completion_history(&history, run_id.as_ref()), &activity_id) {
             return Ok(FanOutCompletionResult::Dropped);
         }
 
@@ -240,6 +250,17 @@ impl Recorder {
             }
         }
         Ok(FanOutCompletionResult::Recorded)
+    }
+}
+
+fn run_id_mismatches_recorder(completion: Option<&RunId>, current: Option<&RunId>) -> bool {
+    matches!((completion, current), (Some(completion), Some(current)) if completion != current)
+}
+
+fn completion_history<'a>(history: &'a [Event], run_id: Option<&RunId>) -> &'a [Event] {
+    match run_id {
+        Some(run_id) => run_segment(history, run_id),
+        None => history,
     }
 }
 

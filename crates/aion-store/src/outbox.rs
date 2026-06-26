@@ -11,7 +11,7 @@
 //! (`"{workflow_id}:{ordinal}"`) under a `UNIQUE` constraint, so a re-issued append of the same
 //! fan-out batch silently ignores the duplicate rows rather than dispatching them twice.
 
-use aion_core::{Payload, WorkflowId};
+use aion_core::{Payload, RunId, WorkflowId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -84,6 +84,9 @@ pub struct OutboxRow {
     pub workflow_id: WorkflowId,
     /// Pinned ordinal of this activity within the workflow's fan-out range.
     pub ordinal: u64,
+    /// Run that dispatched this ordinal; `None` for legacy rows (pre-RunId threading). Threaded so a
+    /// completion only resolves the run that issued it (continue-as-new safety, OBX-011).
+    pub run_id: Option<RunId>,
     /// Activity type the worker must execute.
     pub activity_type: String,
     /// Opaque activity input payload.
@@ -125,6 +128,7 @@ impl OutboxRow {
             dispatch_key,
             workflow_id,
             ordinal,
+            run_id: None,
             activity_type,
             input,
             status: OutboxStatus::Pending,
@@ -132,6 +136,13 @@ impl OutboxRow {
             visible_after: now,
             claimed_at: None,
         }
+    }
+
+    /// Sets the dispatching run on this row (the run that owns this ordinal).
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: Option<RunId>) -> Self {
+        self.run_id = run_id;
+        self
     }
 }
 

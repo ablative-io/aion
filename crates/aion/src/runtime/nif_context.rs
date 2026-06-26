@@ -417,7 +417,7 @@ impl NifContext {
             .block_on(async {
                 let mut recorder = self.recorder.lock().await;
                 recorder
-                    .record_fan_out_completion(recorded_at, ordinal, outcome)
+                    .record_fan_out_completion(recorded_at, ordinal, None, outcome)
                     .await
             })
             .map_err(Into::into)

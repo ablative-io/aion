@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::time::Duration;
 
-use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
+use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -21,6 +21,8 @@ pub enum PendingActivityReport {
         workflow_id: WorkflowId,
         /// Activity identifier used by AW for idempotent ingest.
         activity_id: ActivityId,
+        /// Concrete workflow run to echo on re-report, when known.
+        run_id: Option<RunId>,
         /// Opaque activity output payload.
         output: Payload,
     },
@@ -30,6 +32,8 @@ pub enum PendingActivityReport {
         workflow_id: WorkflowId,
         /// Activity identifier used by AW for idempotent ingest.
         activity_id: ActivityId,
+        /// Concrete workflow run to echo on re-report, when known.
+        run_id: Option<RunId>,
         /// Classified activity error.
         failure: ActivityError,
     },
@@ -351,6 +355,7 @@ where
             PendingActivityReport::Completed {
                 workflow_id,
                 activity_id,
+                run_id,
                 output,
             } => {
                 debug!(
@@ -359,12 +364,13 @@ where
                     "re-reporting unacknowledged activity result"
                 );
                 session
-                    .report_result(workflow_id, activity_id, output)
+                    .report_result(workflow_id, activity_id, run_id, output)
                     .await?;
             }
             PendingActivityReport::Failed {
                 workflow_id,
                 activity_id,
+                run_id,
                 failure,
             } => {
                 debug!(
@@ -373,7 +379,7 @@ where
                     "re-reporting unacknowledged activity failure"
                 );
                 session
-                    .report_failure(workflow_id, activity_id, failure)
+                    .report_failure(workflow_id, activity_id, run_id, failure)
                     .await?;
             }
         }
@@ -395,7 +401,7 @@ mod tests {
     use std::time::Duration;
 
     use aion_core::{
-        ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId,
+        ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, RunId, WorkflowId,
     };
     use async_trait::async_trait;
     use futures::stream;
@@ -419,11 +425,13 @@ mod tests {
         tracker.record(PendingActivityReport::Completed {
             workflow_id: workflow_id.clone(),
             activity_id: first_id.clone(),
+            run_id: None,
             output: Payload::new(ContentType::Json, b"{\"first\":true}".to_vec()),
         });
         tracker.record(PendingActivityReport::Completed {
             workflow_id: workflow_id.clone(),
             activity_id: second_id.clone(),
+            run_id: None,
             output: Payload::new(ContentType::Json, b"{\"second\":true}".to_vec()),
         });
 
@@ -444,11 +452,13 @@ mod tests {
         tracker.record(PendingActivityReport::Completed {
             workflow_id: first_workflow.clone(),
             activity_id: activity_id.clone(),
+            run_id: None,
             output: Payload::new(ContentType::Json, b"{\"workflow\":\"a\"}".to_vec()),
         });
         tracker.record(PendingActivityReport::Completed {
             workflow_id: second_workflow.clone(),
             activity_id: activity_id.clone(),
+            run_id: None,
             output: Payload::new(ContentType::Json, b"{\"workflow\":\"b\"}".to_vec()),
         });
 
@@ -664,6 +674,7 @@ mod tests {
         tracker.record(PendingActivityReport::Completed {
             workflow_id: workflow_id.clone(),
             activity_id: activity_id.clone(),
+            run_id: None,
             output: output.clone(),
         });
         let mut session = ReconnectFakeSession::default();
@@ -717,9 +728,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
-            drop((workflow_id, activity_id, result));
+            drop((workflow_id, activity_id, run_id, result));
             Err(WorkerError::Registration {
                 source: Box::new(self.denial.clone()),
             })
@@ -729,9 +741,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
-            drop((workflow_id, activity_id, failure));
+            drop((workflow_id, activity_id, run_id, failure));
             Err(WorkerError::Registration {
                 source: Box::new(self.denial.clone()),
             })
@@ -781,8 +794,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
+            let _ = run_id;
             self.reports
                 .push(RecordedReport::Completed(workflow_id, activity_id, result));
             Ok(())
@@ -792,8 +807,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
+            let _ = run_id;
             self.reports
                 .push(RecordedReport::Failed(workflow_id, activity_id, failure));
             Ok(())
@@ -837,11 +854,13 @@ mod tests {
         tracker.record(PendingActivityReport::Completed {
             workflow_id: workflow_id.clone(),
             activity_id: activity_id.clone(),
+            run_id: None,
             output: Payload::new(ContentType::Json, b"{}".to_vec()),
         });
         tracker.record(PendingActivityReport::Failed {
             workflow_id: workflow_id.clone(),
             activity_id: activity_id.clone(),
+            run_id: None,
             failure: terminal_failure(),
         });
 

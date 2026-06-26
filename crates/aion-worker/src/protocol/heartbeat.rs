@@ -124,7 +124,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::time::Duration;
 
-    use aion_core::{ActivityError, ActivityId, ContentType, Payload, WorkflowId};
+    use aion_core::{ActivityError, ActivityId, ContentType, Payload, RunId, WorkflowId};
     use async_trait::async_trait;
     use futures::stream;
 
@@ -173,9 +173,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             result: Payload,
         ) -> Result<(), WorkerError> {
-            drop((workflow_id, activity_id, result));
+            drop((workflow_id, activity_id, run_id, result));
             Ok(())
         }
 
@@ -183,9 +184,10 @@ mod tests {
             &mut self,
             workflow_id: WorkflowId,
             activity_id: ActivityId,
+            run_id: Option<RunId>,
             failure: ActivityError,
         ) -> Result<(), WorkerError> {
-            drop((workflow_id, activity_id, failure));
+            drop((workflow_id, activity_id, run_id, failure));
             Ok(())
         }
 

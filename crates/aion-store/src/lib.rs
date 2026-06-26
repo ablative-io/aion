@@ -38,8 +38,8 @@ pub mod timer;
 pub mod visibility;
 
 pub use aion_core::{
-    ContentType, Event, EventEnvelope, Payload, TimerId, WorkflowError, WorkflowFilter, WorkflowId,
-    WorkflowStatus, WorkflowSummary, status_from_events,
+    ContentType, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowError, WorkflowFilter,
+    WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
 };
 pub use error::StoreError;
 pub use memory::InMemoryStore;

@@ -292,6 +292,7 @@ impl HeartbeatTracker {
             sink.complete_activity(ActivityCompletion {
                 workflow_id: task.workflow_id.clone(),
                 activity_id: task.activity_id.clone(),
+                run_id: None,
                 outcome: ActivityCompletionOutcome::Failed(lost_worker_error(worker_id)),
             })?;
         }

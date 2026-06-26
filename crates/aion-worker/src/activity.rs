@@ -441,6 +441,7 @@ mod tests {
         Ok(ProtoActivityTask {
             workflow_id: Some(ProtoWorkflowId::from(WorkflowId::new_v4())),
             activity_id: Some(ProtoActivityId::from(ActivityId::from_sequence_position(1))),
+            run_id: None,
             activity_type: activity_type.to_owned(),
             input: Some(ProtoPayload::from(encode_payload(&input)?)),
             attempt: 1,

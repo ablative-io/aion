@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, WorkflowId};
+use aion_core::{
+    ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, RunId, WorkflowId,
+};
 use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
 use async_trait::async_trait;
 use futures::stream;
@@ -56,9 +58,10 @@ impl WorkerSession for FakeSession {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         result: Payload,
     ) -> Result<(), WorkerError> {
-        let _ = workflow_id;
+        let _ = (workflow_id, run_id);
         self.reports
             .push(RecordedReport::Completed(activity_id, result));
         Ok(())
@@ -68,9 +71,10 @@ impl WorkerSession for FakeSession {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         failure: ActivityError,
     ) -> Result<(), WorkerError> {
-        let _ = workflow_id;
+        let _ = (workflow_id, run_id);
         self.reports
             .push(RecordedReport::Failed(activity_id, failure));
         Ok(())
@@ -374,9 +378,10 @@ impl WorkerSession for ChannelSession {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         result: Payload,
     ) -> Result<(), WorkerError> {
-        let _ = workflow_id;
+        let _ = (workflow_id, run_id);
         self.reports
             .push(RecordedReport::Completed(activity_id, result));
         Ok(())
@@ -386,9 +391,10 @@ impl WorkerSession for ChannelSession {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         failure: ActivityError,
     ) -> Result<(), WorkerError> {
-        let _ = workflow_id;
+        let _ = (workflow_id, run_id);
         self.reports
             .push(RecordedReport::Failed(activity_id, failure));
         Ok(())
@@ -413,6 +419,7 @@ fn proto_task(
     ProtoActivityTask {
         workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
         activity_id: Some(ProtoActivityId::from(activity_id)),
+        run_id: None,
         activity_type: String::from(activity_type),
         input: Some(ProtoPayload::from(Payload::new(
             ContentType::Json,

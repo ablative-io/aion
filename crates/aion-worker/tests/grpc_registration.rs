@@ -80,6 +80,7 @@ fn task_frame() -> ServerToWorker {
                 input: None,
                 attempt: 1,
                 labels: std::collections::HashMap::new(),
+                run_id: None,
             },
         )),
     }

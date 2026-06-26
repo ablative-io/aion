@@ -50,7 +50,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use aion::{ActivityDispatch, ActivityDispatcher};
-use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
+use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
 use dashmap::DashMap;
 
@@ -106,6 +106,7 @@ pub trait OutboxDeliveryCallback: Send + Sync {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         result: String,
     ) -> Result<bool, ServerError>;
 
@@ -119,6 +120,7 @@ pub trait OutboxDeliveryCallback: Send + Sync {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         reason: String,
     ) -> Result<bool, ServerError>;
 }
@@ -182,6 +184,7 @@ impl PendingActivities {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         result: Result<String, String>,
     ) -> bool {
         // Take and drop the DashMap guard before any callback runs: the engine
@@ -197,8 +200,8 @@ impl PendingActivities {
             return false;
         };
         let outcome = match result {
-            Ok(payload) => callback.deliver_completion(workflow_id, activity_id, payload),
-            Err(reason) => callback.deliver_failure(workflow_id, activity_id, reason),
+            Ok(payload) => callback.deliver_completion(workflow_id, activity_id, run_id, payload),
+            Err(reason) => callback.deliver_failure(workflow_id, activity_id, run_id, reason),
         };
         match outcome {
             Ok(true) => true,
@@ -259,7 +262,12 @@ impl ActivityCompletionSink for PendingActivities {
                 Err(format!("{prefix}:{}", error.message))
             }
         };
-        self.complete(&completion.workflow_id, &completion.activity_id, result);
+        self.complete(
+            &completion.workflow_id,
+            &completion.activity_id,
+            completion.run_id.as_ref(),
+            result,
+        );
         Ok(())
     }
 }
@@ -721,6 +729,9 @@ fn activity_task(
         }),
         attempt,
         labels: labels.into_iter().collect(),
+        // The synchronous `ActivityDispatch` bridge path carries no run context
+        // (run scoping is threaded through the durable-outbox path; OBX-011).
+        run_id: None,
     }
 }
 
@@ -784,7 +795,7 @@ mod tests {
         let id = activity_id(1);
         let rx = pending.insert(workflow_id.clone(), id.clone());
 
-        assert!(pending.complete(&workflow_id, &id, Ok("done".to_owned())));
+        assert!(pending.complete(&workflow_id, &id, None, Ok("done".to_owned())));
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(50)),
             Ok(Ok("done".to_owned()))
@@ -797,6 +808,7 @@ mod tests {
         assert!(!pending.complete(
             &WorkflowId::new_v4(),
             &activity_id(99),
+            None,
             Ok("orphan".to_owned())
         ));
     }
@@ -813,8 +825,10 @@ mod tests {
             &self,
             workflow_id: &WorkflowId,
             activity_id: &ActivityId,
+            run_id: Option<&RunId>,
             result: String,
         ) -> Result<bool, ServerError> {
+            let _ = run_id;
             self.completions
                 .lock()
                 .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
@@ -826,8 +840,10 @@ mod tests {
             &self,
             workflow_id: &WorkflowId,
             activity_id: &ActivityId,
+            run_id: Option<&RunId>,
             reason: String,
         ) -> Result<bool, ServerError> {
+            let _ = run_id;
             self.failures
                 .lock()
                 .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
@@ -851,7 +867,7 @@ mod tests {
 
         // No pending entry: the completion is unmatched and must route to the
         // callback rather than being dropped. A live workflow reports true.
-        assert!(pending.complete(&workflow_id, &id, Ok("done".to_owned())));
+        assert!(pending.complete(&workflow_id, &id, None, Ok("done".to_owned())));
         let completions = callback
             .completions
             .lock()
@@ -874,7 +890,7 @@ mod tests {
         let workflow_id = WorkflowId::new_v4();
         let id = activity_id(8);
 
-        assert!(!pending.complete(&workflow_id, &id, Err("retryable:boom".to_owned())));
+        assert!(!pending.complete(&workflow_id, &id, None, Err("retryable:boom".to_owned())));
         let failures = callback
             .failures
             .lock()
@@ -889,7 +905,12 @@ mod tests {
         // Flag-off byte-identical behaviour: no callback, unmatched returns
         // false (silent drop) exactly as before.
         let pending = PendingActivities::default();
-        assert!(!pending.complete(&WorkflowId::new_v4(), &activity_id(9), Ok("x".to_owned())));
+        assert!(!pending.complete(
+            &WorkflowId::new_v4(),
+            &activity_id(9),
+            None,
+            Ok("x".to_owned())
+        ));
     }
 
     #[test]
@@ -905,7 +926,7 @@ mod tests {
         let id = activity_id(10);
         let rx = pending.insert(workflow_id.clone(), id.clone());
 
-        assert!(pending.complete(&workflow_id, &id, Ok("matched".to_owned())));
+        assert!(pending.complete(&workflow_id, &id, None, Ok("matched".to_owned())));
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(50)),
             Ok(Ok("matched".to_owned()))
@@ -932,6 +953,7 @@ mod tests {
         pending.complete_activity(ActivityCompletion {
             workflow_id,
             activity_id: id,
+            run_id: None,
             outcome: ActivityCompletionOutcome::Succeeded(payload),
         })?;
 
@@ -952,6 +974,7 @@ mod tests {
         pending.complete_activity(ActivityCompletion {
             workflow_id,
             activity_id: id,
+            run_id: None,
             outcome: ActivityCompletionOutcome::Failed(ActivityError {
                 kind: ActivityErrorKind::Retryable,
                 message: "temporary".to_owned(),
@@ -988,6 +1011,7 @@ mod tests {
         pending.complete_activity(ActivityCompletion {
             workflow_id: pre_restart_workflow,
             activity_id: id.clone(),
+            run_id: None,
             outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
                 ContentType::Json,
                 br#""stale""#.to_vec(),
@@ -1002,6 +1026,7 @@ mod tests {
         pending.complete_activity(ActivityCompletion {
             workflow_id: post_restart_workflow,
             activity_id: id,
+            run_id: None,
             outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
                 ContentType::Json,
                 br#""fresh""#.to_vec(),
@@ -1094,6 +1119,7 @@ mod tests {
             sink.complete_activity(ActivityCompletion {
                 workflow_id,
                 activity_id,
+                run_id: None,
                 outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
                     ContentType::Json,
                     br#"{"greeting":"hello"}"#.to_vec(),

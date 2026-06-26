@@ -90,7 +90,8 @@ ON visibility (close_time)";
 /// guard, so a re-issued append of the same fan-out batch silently ignores the duplicate rows via
 /// `INSERT OR IGNORE`. `status` is one of `pending`/`claimed`/`done`/`failed`; `visible_after`
 /// fences retry backoff so a row is not re-claimed before its delay elapses; nullable
-/// `claimed_at` records the durable claim instant for live stale-claim reconciliation.
+/// `claimed_at` records the durable claim instant for live stale-claim reconciliation; nullable
+/// `run_id` records the concrete run that staged the row when known.
 pub const CREATE_OUTBOX_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS outbox (
     dispatch_key TEXT NOT NULL UNIQUE,
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     status TEXT NOT NULL,
     attempt INTEGER NOT NULL,
     visible_after TEXT NOT NULL,
+    run_id TEXT,
     claimed_at TEXT,
     PRIMARY KEY (dispatch_key)
 )";
@@ -148,6 +150,7 @@ pub async fn ensure_schema(conn: &libsql::Connection) -> Result<(), StoreError> 
     }
 
     ensure_outbox_claimed_at_column(conn).await?;
+    ensure_outbox_run_id_column(conn).await?;
     conn.execute(CREATE_OUTBOX_CLAIMED_INDEX, ())
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
@@ -161,6 +164,17 @@ async fn ensure_outbox_claimed_at_column(conn: &libsql::Connection) -> Result<()
     }
 
     conn.execute("ALTER TABLE outbox ADD COLUMN claimed_at TEXT", ())
+        .await
+        .map(|_| ())
+        .map_err(|error| crate::error::libsql_error(&error))
+}
+
+async fn ensure_outbox_run_id_column(conn: &libsql::Connection) -> Result<(), StoreError> {
+    if outbox_column_exists(conn, "run_id").await? {
+        return Ok(());
+    }
+
+    conn.execute("ALTER TABLE outbox ADD COLUMN run_id TEXT", ())
         .await
         .map(|_| ())
         .map_err(|error| crate::error::libsql_error(&error))

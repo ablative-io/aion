@@ -47,6 +47,7 @@ pub struct Recorder {
     sequence: SequenceHead,
     write_token: WriteToken,
     visibility: Option<RecorderVisibility>,
+    run_id: Option<RunId>,
 }
 
 struct RecorderVisibility {
@@ -70,13 +71,22 @@ impl Recorder {
             write_token: WriteToken::recorder(),
             sequence: SequenceHead::from_head(head),
             visibility: None,
+            run_id: None,
         }
+    }
+
+    /// Sets the concrete run context used for run-scoped outbox metadata.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: RunId) -> Self {
+        self.run_id = Some(run_id);
+        self
     }
 
     /// Enables visibility projection upserts after workflow-level state-changing events recorded
     /// directly through this recorder.
     #[must_use]
     pub fn with_visibility(mut self, run_id: RunId, store: Arc<dyn VisibilityStore>) -> Self {
+        self.run_id = Some(run_id.clone());
         self.visibility = Some(RecorderVisibility { run_id, store });
         self
     }
@@ -126,6 +136,7 @@ impl Recorder {
             parent_run_id,
             package_version,
         } = start;
+        let recorded_run_id = run_id.clone();
         self.append_with(recorded_at, |envelope| Event::WorkflowStarted {
             envelope,
             workflow_type,
@@ -134,7 +145,9 @@ impl Recorder {
             parent_run_id,
             package_version,
         })
-        .await
+        .await?;
+        self.run_id = Some(recorded_run_id);
+        Ok(())
     }
 
     /// Records workflow start together with its validated initial search
@@ -171,6 +184,7 @@ impl Recorder {
             parent_run_id,
             package_version,
         } = start;
+        let recorded_run_id = run_id.clone();
 
         let started_envelope = self.next_envelope(recorded_at)?;
         let attributes_envelope = self.envelope_after(&started_envelope, recorded_at)?;
@@ -194,7 +208,9 @@ impl Recorder {
         self.store
             .append(self.write_token, &self.workflow_id, &batch, expected_seq)
             .await?;
-        self.sequence.mark_append_success(batch.len())
+        self.sequence.mark_append_success(batch.len())?;
+        self.run_id = Some(recorded_run_id);
+        Ok(())
     }
 
     /// Records schedule creation in the schedule coordinator history.

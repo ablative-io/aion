@@ -452,6 +452,7 @@ async fn fan_out_completion_records_first_terminal_for_unresolved_ordinal()
         .record_fan_out_completion(
             recorded_at(1),
             0,
+            None,
             FanOutOutcome::Completed(payload("done")?),
         )
         .await?;
@@ -491,6 +492,7 @@ async fn fan_out_completion_drops_duplicate_for_resolved_ordinal()
         .record_fan_out_completion(
             recorded_at(1),
             7,
+            None,
             FanOutOutcome::Completed(payload("first")?),
         )
         .await?;
@@ -502,6 +504,7 @@ async fn fan_out_completion_drops_duplicate_for_resolved_ordinal()
         .record_fan_out_completion(
             recorded_at(2),
             7,
+            None,
             FanOutOutcome::Completed(payload("second")?),
         )
         .await?;
@@ -543,6 +546,7 @@ async fn fan_out_completion_drops_for_cancelled_ordinal() -> Result<(), Box<dyn 
         .record_fan_out_completion(
             recorded_at(2),
             3,
+            None,
             FanOutOutcome::Completed(payload("late")?),
         )
         .await?;
@@ -573,6 +577,7 @@ async fn fan_out_completion_records_failed_terminal() -> Result<(), Box<dyn std:
         .record_fan_out_completion(
             recorded_at(1),
             3,
+            None,
             FanOutOutcome::Failed {
                 error: activity_failure("boom"),
                 attempt: 2,
@@ -622,6 +627,7 @@ async fn fan_out_completion_records_for_scheduled_but_not_terminal_ordinal()
         .record_fan_out_completion(
             recorded_at(2),
             0,
+            None,
             FanOutOutcome::Completed(payload("done")?),
         )
         .await?;
@@ -670,6 +676,7 @@ async fn fan_out_completion_sequence_conflict_surfaces_without_advancing()
         .record_fan_out_completion(
             recorded_at(2),
             0,
+            None,
             FanOutOutcome::Completed(payload("done")?),
         )
         .await;

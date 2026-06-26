@@ -168,6 +168,27 @@ impl Registry {
         Ok(index.get(workflow_id).map(|(_, pid)| *pid))
     }
 
+    /// Resolves a workflow id to its single live run and that run's pid.
+    ///
+    /// Run-aware twin of [`Self::live_pid`]: the returned [`RunId`] lets the
+    /// caller reject a completion that belongs to a superseded run (e.g. a
+    /// prior run after continue-as-new) so the new run's reused ordinal space
+    /// is never resolved by a dead run's late activity completion (OBX-011).
+    ///
+    /// Reads only the secondary index, so it never contends the handle map.
+    /// Returns `Ok(None)` when no run for the workflow is currently live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegistryPoisoned`] if the index lock was poisoned.
+    pub fn live_run_pid(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Option<(RunId, u64)>, EngineError> {
+        let index = self.index()?;
+        Ok(index.get(workflow_id).cloned())
+    }
+
     fn handles(&self) -> Result<MutexGuard<'_, HandleMap>, EngineError> {
         self.handles
             .lock()

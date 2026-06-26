@@ -469,6 +469,7 @@ fn deliver(engine: &Engine, row: &OutboxRow) -> Result<bool, Box<dyn std::error:
         engine.registry(),
         &row.workflow_id,
         &ActivityId::from_sequence_position(row.ordinal),
+        row.run_id.as_ref(),
         worker_result(row.ordinal),
     )?;
     Ok(delivered)
@@ -490,6 +491,7 @@ fn deliver_failure(
         engine.registry(),
         &row.workflow_id,
         &ActivityId::from_sequence_position(row.ordinal),
+        row.run_id.as_ref(),
         reason.to_owned(),
     )?;
     Ok(delivered)
