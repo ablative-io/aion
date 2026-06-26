@@ -58,6 +58,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 
 [dev-dependencies]
 aion-worker = { path = "../aion-worker" }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 tempfile = "3.27.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-tungstenite = "0.29.0"
