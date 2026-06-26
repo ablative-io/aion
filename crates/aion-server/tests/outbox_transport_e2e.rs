@@ -189,6 +189,8 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
             backoff_base_ms: Some(50),
             backoff_multiplier: Some(2),
             backoff_max_ms: Some(1_000),
+            reconcile_interval_ms: None,
+            reconcile_stale_after_ms: None,
         },
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),

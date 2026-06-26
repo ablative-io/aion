@@ -11,33 +11,44 @@ use libsql::{Connection, Row, Transaction, TransactionBehavior, params};
 
 const INSERT_OUTBOX_SQL: &str = "
 INSERT OR IGNORE INTO outbox
-    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)";
+    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
 
 const REARM_OUTBOX_SQL: &str = "
 INSERT INTO outbox
-    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-ON CONFLICT(dispatch_key) DO UPDATE SET status = 'pending', visible_after = ?8";
+    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
+ON CONFLICT(dispatch_key) DO UPDATE SET status = 'pending', visible_after = ?8, claimed_at = NULL";
 
 const SELECT_CLAIMABLE_SQL: &str = "
-SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at
 FROM outbox
 WHERE status = 'pending' AND visible_after <= ?1
 ORDER BY visible_after ASC, dispatch_key ASC
 LIMIT ?2";
 
 const CLAIM_ROW_SQL: &str = "
-UPDATE outbox SET status = 'claimed' WHERE dispatch_key = ?1 AND status = 'pending'";
+UPDATE outbox SET status = 'claimed', claimed_at = ?2 WHERE dispatch_key = ?1 AND status = 'pending'";
+
+const SELECT_STALE_CLAIMED_SQL: &str = "
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at
+FROM outbox
+WHERE status = 'claimed' AND claimed_at IS NOT NULL AND claimed_at < ?1
+ORDER BY claimed_at ASC, dispatch_key ASC
+LIMIT ?2";
+
+const REARM_STALE_CLAIMED_ROW_SQL: &str = "
+UPDATE outbox SET status = 'pending', visible_after = ?2, claimed_at = NULL
+WHERE dispatch_key = ?1 AND status = 'claimed'";
 
 const COMPLETE_ROW_SQL: &str = "
-UPDATE outbox SET status = 'done' WHERE dispatch_key = ?1";
+UPDATE outbox SET status = 'done', claimed_at = NULL WHERE dispatch_key = ?1";
 
 const RETRY_ROW_SQL: &str = "
-UPDATE outbox SET status = 'pending', attempt = ?2, visible_after = ?3 WHERE dispatch_key = ?1";
+UPDATE outbox SET status = 'pending', attempt = ?2, visible_after = ?3, claimed_at = NULL WHERE dispatch_key = ?1";
 
 const FAIL_ROW_SQL: &str = "
-UPDATE outbox SET status = 'failed' WHERE dispatch_key = ?1";
+UPDATE outbox SET status = 'failed', claimed_at = NULL WHERE dispatch_key = ?1";
 
 /// Insert a single outbox row inside an existing transaction.
 ///
@@ -63,7 +74,8 @@ pub(crate) async fn insert_outbox_row(tx: &Transaction, row: &OutboxRow) -> Resu
             input,
             row.status.as_str(),
             i64::from(row.attempt),
-            encode_instant(row.visible_after)
+            encode_instant(row.visible_after),
+            row.claimed_at.map(encode_instant)
         ],
     )
     .await
@@ -197,9 +209,10 @@ pub(crate) async fn claim_outbox_rows(
 }
 
 async fn select_and_claim(tx: &Transaction, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
-    let now = encode_instant(Utc::now());
+    let claimed_at = Utc::now();
+    let now = encode_instant(claimed_at);
     let mut rows = tx
-        .query(SELECT_CLAIMABLE_SQL, params![now, i64::from(limit)])
+        .query(SELECT_CLAIMABLE_SQL, params![now.clone(), i64::from(limit)])
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
@@ -210,16 +223,97 @@ async fn select_and_claim(tx: &Transaction, limit: u32) -> Result<Vec<OutboxRow>
         .map_err(|error| crate::error::libsql_error(&error))?
     {
         let decoded = decode_row(&row)?;
-        tx.execute(CLAIM_ROW_SQL, params![decoded.dispatch_key.clone()])
-            .await
-            .map_err(|error| crate::error::libsql_error(&error))?;
+        tx.execute(
+            CLAIM_ROW_SQL,
+            params![decoded.dispatch_key.clone(), now.clone()],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
         claimed.push(OutboxRow {
             status: OutboxStatus::Claimed,
+            claimed_at: Some(claimed_at),
             ..decoded
         });
     }
 
     Ok(claimed)
+}
+
+/// Re-arm stale claimed rows to claimable `pending` without changing attempt count.
+///
+/// Rows with `NULL claimed_at` are ignored because no durable claim instant can be compared to the
+/// caller-supplied threshold.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn rearm_stale_claimed_outbox_rows(
+    conn: &Connection,
+    older_than: DateTime<Utc>,
+    visible_after: DateTime<Utc>,
+    limit: u32,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let rows = match select_and_rearm_stale_claimed(&tx, older_than, visible_after, limit).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            rollback(tx).await?;
+            return Err(error);
+        }
+    };
+
+    tx.commit()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    Ok(rows)
+}
+
+async fn select_and_rearm_stale_claimed(
+    tx: &Transaction,
+    older_than: DateTime<Utc>,
+    visible_after: DateTime<Utc>,
+    limit: u32,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    let mut rows = tx
+        .query(
+            SELECT_STALE_CLAIMED_SQL,
+            params![encode_instant(older_than), i64::from(limit)],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let mut rearmed = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let decoded = decode_row(&row)?;
+        tx.execute(
+            REARM_STALE_CLAIMED_ROW_SQL,
+            params![decoded.dispatch_key.clone(), encode_instant(visible_after)],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+        rearmed.push(OutboxRow {
+            status: OutboxStatus::Pending,
+            visible_after,
+            claimed_at: None,
+            ..decoded
+        });
+    }
+
+    Ok(rearmed)
 }
 
 /// Mark the row identified by `dispatch_key` as `done`.
@@ -276,17 +370,15 @@ pub(crate) async fn fail_outbox_row(
         .map_err(|error| crate::error::libsql_error(&error))
 }
 
-/// Out-of-band snapshot of one outbox row's lifecycle bookkeeping.
+/// Out-of-band snapshot of one outbox row's mutable lifecycle bookkeeping.
 ///
-/// Read by [`LibSqlStore::outbox_row_state`](crate::LibSqlStore::outbox_row_state)
-/// for tests and operator inspection. It carries only the mutable
-/// dispatch-state columns — status, attempt count, and the retry-backoff fence —
-/// not the full row payload.
+/// Read by [`LibSqlStore::outbox_row_state`](crate::LibSqlStore::outbox_row_state) for tests and
+/// operator inspection; payload columns are intentionally omitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutboxRowState {
-    /// Current lifecycle state of the row.
+    /// Current lifecycle state.
     pub status: OutboxStatus,
-    /// Dispatch attempt count recorded on the row.
+    /// Dispatch attempt count.
     pub attempt: u32,
     /// Earliest instant at which the row becomes claimable again.
     pub visible_after: DateTime<Utc>,
@@ -295,12 +387,7 @@ pub struct OutboxRowState {
 const SELECT_ROW_STATE_SQL: &str = "
 SELECT status, attempt, visible_after FROM outbox WHERE dispatch_key = ?1";
 
-/// Read the `(status, attempt, visible_after)` bookkeeping for one row, or `None` when absent.
-///
-/// # Errors
-///
-/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when
-/// the stored status token or timestamp cannot be decoded.
+/// Read `(status, attempt, visible_after)` for one row, or `None` when absent.
 pub(crate) async fn outbox_row_state(
     conn: &Connection,
     dispatch_key: &str,
@@ -358,6 +445,9 @@ fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {
     let visible_after: String = row
         .get(7)
         .map_err(|error| crate::error::libsql_error(&error))?;
+    let claimed_at: Option<String> = row
+        .get(8)
+        .map_err(|error| crate::error::libsql_error(&error))?;
 
     Ok(OutboxRow {
         dispatch_key,
@@ -370,6 +460,7 @@ fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {
         attempt: u32::try_from(attempt)
             .map_err(|_| StoreError::Backend(format!("outbox attempt out of range: {attempt}")))?,
         visible_after: decode_instant(&visible_after)?,
+        claimed_at: claimed_at.as_deref().map(decode_instant).transpose()?,
     })
 }
 
@@ -404,344 +495,5 @@ async fn rollback(tx: Transaction) -> Result<(), StoreError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use aion_store::{
-        ContentType, Event, OutboxRow, OutboxStatus, OutboxStore, Payload, StoreError, WorkflowId,
-        WriteToken,
-    };
-    use chrono::{DateTime, TimeZone, Utc};
-    use libsql::params;
-    use serde_json::{Value, json};
-
-    use crate::LibSqlStore;
-
-    #[tokio::test]
-    async fn append_outbox_batch_ignores_duplicate_dispatch_key() -> Result<(), StoreError> {
-        let store = open_test_store("dup-key").await?;
-        let workflow_id = WorkflowId::new_v4();
-        let first = pending_row(&workflow_id, 0, "charge", instant(1)?);
-        let duplicate = pending_row(&workflow_id, 0, "different-activity", instant(2)?);
-
-        store
-            .append_outbox_batch(std::slice::from_ref(&first))
-            .await?;
-        store.append_outbox_batch(&[duplicate]).await?;
-
-        let claimed = store.claim_outbox_rows(10).await?;
-        assert_eq!(claimed.len(), 1);
-        // The original row survived; the duplicate was silently ignored, not overwritten.
-        assert_eq!(claimed[0].activity_type, "charge");
-        assert_eq!(claimed[0].dispatch_key, first.dispatch_key);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn claim_complete_retry_round_trip() -> Result<(), StoreError> {
-        let store = open_test_store("round-trip").await?;
-        let workflow_id = WorkflowId::new_v4();
-        let row_a = pending_row(&workflow_id, 0, "a", instant(1)?);
-        let row_b = pending_row(&workflow_id, 1, "b", instant(2)?);
-
-        store
-            .append_outbox_batch(&[row_a.clone(), row_b.clone()])
-            .await?;
-
-        // Claim flips both rows to claimed and returns them in visible_after order.
-        let claimed = store.claim_outbox_rows(10).await?;
-        assert_eq!(claimed.len(), 2);
-        assert!(
-            claimed
-                .iter()
-                .all(|row| row.status == OutboxStatus::Claimed)
-        );
-        assert_eq!(claimed[0].ordinal, 0);
-        assert_eq!(claimed[1].ordinal, 1);
-
-        // A second claim sees nothing pending.
-        assert!(store.claim_outbox_rows(10).await?.is_empty());
-
-        // Complete one row; it leaves the claimable set permanently.
-        store.complete_outbox_row(&row_a.dispatch_key).await?;
-        assert_eq!(
-            status_of(store.connection(), &row_a.dispatch_key).await?,
-            Some(String::from("done"))
-        );
-
-        // Retry the other with a future fence: it returns to pending but is not yet claimable.
-        // The claim path compares `visible_after` against the wall clock, so the fence must be a
-        // real future instant relative to `Utc::now()`, not one of the tiny synthetic timestamps.
-        let future = Utc::now() + chrono::Duration::hours(1);
-        store
-            .retry_outbox_row(&row_b.dispatch_key, 1, future)
-            .await?;
-        assert_eq!(
-            status_of(store.connection(), &row_b.dispatch_key).await?,
-            Some(String::from("pending"))
-        );
-        assert!(store.claim_outbox_rows(10).await?.is_empty());
-
-        // Retry into the past: now claimable again with the bumped attempt.
-        store
-            .retry_outbox_row(&row_b.dispatch_key, 2, instant(1)?)
-            .await?;
-        let reclaimed = store.claim_outbox_rows(10).await?;
-        assert_eq!(reclaimed.len(), 1);
-        assert_eq!(reclaimed[0].dispatch_key, row_b.dispatch_key);
-        assert_eq!(reclaimed[0].attempt, 2);
-
-        // Fail it: terminal, never claimable again.
-        store.fail_outbox_row(&row_b.dispatch_key).await?;
-        assert_eq!(
-            status_of(store.connection(), &row_b.dispatch_key).await?,
-            Some(String::from("failed"))
-        );
-        assert!(store.claim_outbox_rows(10).await?.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn rearm_outbox_pending_revives_a_done_row_and_inserts_a_fresh_one()
-    -> Result<(), StoreError> {
-        use aion_store::WritableEventStore;
-
-        let store = open_test_store("rearm").await?;
-        let workflow_id = WorkflowId::new_v4();
-
-        // Stage one row, drive it through claim -> done so it has left the claimable set.
-        let original = pending_row(&workflow_id, 0, "charge", instant(1)?);
-        store
-            .append_outbox_batch(std::slice::from_ref(&original))
-            .await?;
-        let claimed = store.claim_outbox_rows(10).await?;
-        assert_eq!(claimed.len(), 1);
-        store.complete_outbox_row(&original.dispatch_key).await?;
-        assert_eq!(
-            status_of(store.connection(), &original.dispatch_key).await?,
-            Some(String::from("done"))
-        );
-        assert!(store.claim_outbox_rows(10).await?.is_empty());
-
-        // Re-arm the SAME dispatch_key (UPDATE branch) plus a brand-new ordinal (INSERT branch).
-        let revived = pending_row(&workflow_id, 0, "charge", Utc::now());
-        let fresh = pending_row(&workflow_id, 1, "settle", Utc::now());
-        store
-            .rearm_outbox_pending(&[revived.clone(), fresh.clone()])
-            .await?;
-
-        // The previously-done row is back to pending...
-        assert_eq!(
-            status_of(store.connection(), &revived.dispatch_key).await?,
-            Some(String::from("pending"))
-        );
-        // ...and the brand-new dispatch_key was inserted as pending.
-        assert_eq!(
-            status_of(store.connection(), &fresh.dispatch_key).await?,
-            Some(String::from("pending"))
-        );
-
-        // Both are now claimable again.
-        let reclaimed = store.claim_outbox_rows(10).await?;
-        let mut keys: Vec<String> = reclaimed.into_iter().map(|row| row.dispatch_key).collect();
-        keys.sort();
-        let mut expected = vec![revived.dispatch_key.clone(), fresh.dispatch_key.clone()];
-        expected.sort();
-        assert_eq!(keys, expected);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn claim_respects_limit() -> Result<(), StoreError> {
-        let store = open_test_store("claim-limit").await?;
-        let workflow_id = WorkflowId::new_v4();
-        let mut rows: Vec<OutboxRow> = Vec::new();
-        for ordinal in 0..5_u64 {
-            let visible_after = instant(i64::try_from(ordinal).unwrap_or(0) + 1)?;
-            rows.push(pending_row(&workflow_id, ordinal, "a", visible_after));
-        }
-        store.append_outbox_batch(&rows).await?;
-
-        let first = store.claim_outbox_rows(2).await?;
-        assert_eq!(first.len(), 2);
-        let rest = store.claim_outbox_rows(10).await?;
-        assert_eq!(rest.len(), 3);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn append_with_outbox_commits_events_and_rows_atomically() -> Result<(), StoreError> {
-        let store = open_test_store("atomic-commit").await?;
-        let workflow_id = WorkflowId::new_v4();
-        let events = vec![workflow_started(&workflow_id, 1)?];
-        let row = pending_row(&workflow_id, 0, "charge", instant(1)?);
-
-        store
-            .append_with_outbox(
-                WriteToken::recorder(),
-                &workflow_id,
-                &events,
-                0,
-                Some(std::slice::from_ref(&row)),
-            )
-            .await?;
-
-        assert_eq!(event_count(store.connection(), &workflow_id).await?, 1);
-        let claimed = store.claim_outbox_rows(10).await?;
-        assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].dispatch_key, row.dispatch_key);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn append_with_outbox_rolls_back_both_on_failure() -> Result<(), StoreError> {
-        let store = open_test_store("atomic-rollback").await?;
-        let workflow_id = WorkflowId::new_v4();
-        let events = vec![workflow_started(&workflow_id, 1)?];
-        let row = pending_row(&workflow_id, 0, "charge", instant(1)?);
-
-        // Force a mid-transaction failure AFTER the events insert succeeds: dropping the outbox
-        // table makes the outbox insert fail, which must roll back the already-inserted events too.
-        store
-            .connection()
-            .execute("DROP TABLE outbox", ())
-            .await
-            .map_err(|error| crate::error::libsql_error(&error))?;
-
-        let result = store
-            .append_with_outbox(
-                WriteToken::recorder(),
-                &workflow_id,
-                &events,
-                0,
-                Some(&[row]),
-            )
-            .await;
-
-        assert!(result.is_err(), "outbox insert failure must surface as Err");
-        // Neither the events nor the outbox rows were committed: the events table is empty.
-        assert_eq!(event_count(store.connection(), &workflow_id).await?, 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn event_only_append_with_outbox_matches_plain_append() -> Result<(), StoreError> {
-        let store = open_test_store("event-only").await?;
-        let workflow_id = WorkflowId::new_v4();
-        let events = vec![workflow_started(&workflow_id, 1)?];
-
-        store
-            .append_with_outbox(WriteToken::recorder(), &workflow_id, &events, 0, None)
-            .await?;
-
-        assert_eq!(event_count(store.connection(), &workflow_id).await?, 1);
-        assert!(store.claim_outbox_rows(10).await?.is_empty());
-        Ok(())
-    }
-
-    async fn open_test_store(name: &str) -> Result<LibSqlStore, StoreError> {
-        LibSqlStore::open(unique_temp_path(name)).await
-    }
-
-    fn pending_row(
-        workflow_id: &WorkflowId,
-        ordinal: u64,
-        activity_type: &str,
-        visible_after: DateTime<Utc>,
-    ) -> OutboxRow {
-        OutboxRow::pending(
-            workflow_id.clone(),
-            ordinal,
-            String::from(activity_type),
-            Payload::new(ContentType::Json, b"{}".to_vec()),
-            visible_after,
-        )
-    }
-
-    async fn status_of(
-        conn: &libsql::Connection,
-        dispatch_key: &str,
-    ) -> Result<Option<String>, StoreError> {
-        let mut rows = conn
-            .query(
-                "SELECT status FROM outbox WHERE dispatch_key = ?1",
-                params![dispatch_key.to_string()],
-            )
-            .await
-            .map_err(|error| crate::error::libsql_error(&error))?;
-        match rows
-            .next()
-            .await
-            .map_err(|error| crate::error::libsql_error(&error))?
-        {
-            Some(row) => Ok(Some(
-                row.get(0)
-                    .map_err(|error| crate::error::libsql_error(&error))?,
-            )),
-            None => Ok(None),
-        }
-    }
-
-    async fn event_count(
-        conn: &libsql::Connection,
-        workflow_id: &WorkflowId,
-    ) -> Result<i64, StoreError> {
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM events WHERE workflow_id = ?1",
-                params![workflow_id.to_string()],
-            )
-            .await
-            .map_err(|error| crate::error::libsql_error(&error))?;
-        let row = rows
-            .next()
-            .await
-            .map_err(|error| crate::error::libsql_error(&error))?
-            .ok_or_else(|| StoreError::Backend(String::from("event count returned no row")))?;
-        row.get(0)
-            .map_err(|error| crate::error::libsql_error(&error))
-    }
-
-    fn workflow_started(workflow_id: &WorkflowId, seq: u64) -> Result<Event, StoreError> {
-        event_from_json(json!({
-            "type": "WorkflowStarted",
-            "data": {
-                "envelope": {
-                    "seq": seq,
-                    "recorded_at": DateTime::<Utc>::from(UNIX_EPOCH).to_rfc3339(),
-                    "workflow_id": workflow_id,
-                },
-                "workflow_type": "test-outbox",
-                "input": {
-                    "content_type": "Json",
-                    "bytes": serde_json::to_vec(&json!({ "label": "outbox" }))
-                        .map_err(|error| StoreError::Serialization(error.to_string()))?,
-                },
-                "run_id": uuid::Uuid::from_u128(seq.into()).to_string(),
-                "parent_run_id": null,
-                "package_version": "a".repeat(64),
-            }
-        }))
-    }
-
-    fn event_from_json(value: Value) -> Result<Event, StoreError> {
-        serde_json::from_value(value).map_err(|error| StoreError::Serialization(error.to_string()))
-    }
-
-    fn instant(seconds: i64) -> Result<DateTime<Utc>, StoreError> {
-        Utc.timestamp_opt(seconds, 0)
-            .single()
-            .ok_or_else(|| StoreError::Serialization(String::from("invalid test instant")))
-    }
-
-    fn unique_temp_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        std::env::temp_dir().join(format!(
-            "aion-store-libsql-outbox-{name}-{}-{nanos}.db",
-            std::process::id()
-        ))
-    }
-}
+#[path = "outbox_tests.rs"]
+mod outbox_tests;

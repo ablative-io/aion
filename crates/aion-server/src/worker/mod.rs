@@ -10,6 +10,8 @@ pub mod heartbeat;
 pub mod outbox_delivery;
 /// Non-replayed durable-outbox fan-out dispatcher (dormant unless commissioned).
 pub mod outbox_dispatcher;
+/// Live stale-claim outbox reconciler (dormant unless commissioned).
+pub mod outbox_reconciler;
 /// Connected-worker registry and handles.
 pub mod registry;
 
@@ -25,4 +27,5 @@ pub use outbox_delivery::ServerOutboxDeliveryCallback;
 pub use outbox_dispatcher::{
     OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch, WorkerOutboxDispatch,
 };
+pub use outbox_reconciler::{OutboxReconciler, OutboxReconcilerConfig};
 pub use registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerId, WorkerRegistration};

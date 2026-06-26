@@ -216,8 +216,8 @@ async fn per_workflow_records_land_on_the_workflow_shard() {
 /// `transition_outbox` via complete/retry.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_workflows_on_different_shards_stay_isolated() {
-    let store =
-        HaematiteStore::create_with_shard_count(unique_dir("isolation"), SHARD_COUNT).expect("create");
+    let store = HaematiteStore::create_with_shard_count(unique_dir("isolation"), SHARD_COUNT)
+        .expect("create");
     let database = store.event_store().database();
 
     // Choose two workflows that provably route to different shards.
@@ -293,8 +293,16 @@ async fn two_workflows_on_different_shards_stay_isolated() {
     assert_eq!(expired.len(), 2, "expired_timers fans out to both shards");
 
     let claimed = store.claim_outbox_rows(10).await.expect("claim");
-    assert_eq!(claimed.len(), 2, "claim_outbox_rows fans out to both shards");
-    assert!(claimed.iter().all(|row| row.status == OutboxStatus::Claimed));
+    assert_eq!(
+        claimed.len(),
+        2,
+        "claim_outbox_rows fans out to both shards"
+    );
+    assert!(
+        claimed
+            .iter()
+            .all(|row| row.status == OutboxStatus::Claimed)
+    );
 
     // complete/retry route by deriving the workflow id from the dispatch_key,
     // landing the rewrite back on the correct shard (proving the derivation).

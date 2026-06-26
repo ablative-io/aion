@@ -177,7 +177,10 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
 fn membership(total_nodes: usize, send_targets: &[&str]) -> WriteMembership {
     WriteMembership {
         total_nodes,
-        send_targets: send_targets.iter().map(|name| SyncNodeId::from(*name)).collect(),
+        send_targets: send_targets
+            .iter()
+            .map(|name| SyncNodeId::from(*name))
+            .collect(),
     }
 }
 
@@ -342,9 +345,11 @@ fn aion_workflow_survives_owner_node_death_on_haematite_cluster() -> TestResult 
     // ACT 1 — node A takes shard 0 and builds a live Aion engine over its store.
     // ----------------------------------------------------------------------
     println!("\n--- ACT 1: node A acquires shard 0 and builds an Aion engine ---");
-    node_a
-        .database()
-        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_B, NODE_C]), OP_TIMEOUT)?;
+    node_a.database().acquire_shard_and_serve(
+        SHARD,
+        &membership(3, &[NODE_B, NODE_C]),
+        OP_TIMEOUT,
+    )?;
     println!("  node A is the LIVE owner of shard 0 (replicating to {{B,C}}).");
 
     let a_store: Arc<dyn EventStore> = Arc::clone(&node_a.store) as Arc<dyn EventStore>;
@@ -376,7 +381,11 @@ fn aion_workflow_survives_owner_node_death_on_haematite_cluster() -> TestResult 
     let history_on_a = runtime.block_on(a_store.read_history(&workflow_id))?;
     println!("  durable history on A ({} events):", history_on_a.len());
     println!("{}", render_history(&history_on_a));
-    assert_eq!(history_on_a.len(), 5, "expected the full 5-event lifecycle on A");
+    assert_eq!(
+        history_on_a.len(),
+        5,
+        "expected the full 5-event lifecycle on A"
+    );
     assert_eq!(
         aion_core::status_from_events(&history_on_a),
         WorkflowStatus::Completed
@@ -446,7 +455,10 @@ fn aion_workflow_survives_owner_node_death_on_haematite_cluster() -> TestResult 
     );
 
     let history_after = runtime.block_on(b_store.read_history(&workflow_id))?;
-    println!("  durable history on B after promotion ({} events):", history_after.len());
+    println!(
+        "  durable history on B after promotion ({} events):",
+        history_after.len()
+    );
     println!("{}", render_history(&history_after));
     assert_eq!(
         history_after, history_on_a,
@@ -474,7 +486,9 @@ fn aion_workflow_survives_owner_node_death_on_haematite_cluster() -> TestResult 
     let phantom_id = WorkflowId::new_v4();
     let phantom_run = RunId::new_v4();
     assert!(
-        runtime.block_on(b_store.read_history(&phantom_id))?.is_empty(),
+        runtime
+            .block_on(b_store.read_history(&phantom_id))?
+            .is_empty(),
         "a never-started workflow must have NO history on B (non-vacuity)"
     );
     let phantom = runtime.block_on(engine_b.result(&phantom_id, &phantom_run));
@@ -547,9 +561,11 @@ fn inflight_workflow_completes_on_survivor_after_owner_death() -> TestResult {
 
     // ACT 1 — A owns shard 0 and records ONLY the start (the "crash mid-flight").
     println!("\n--- ACT 1: node A owns shard 0; a workflow is started but NOT finished ---");
-    node_a
-        .database()
-        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_B, NODE_C]), OP_TIMEOUT)?;
+    node_a.database().acquire_shard_and_serve(
+        SHARD,
+        &membership(3, &[NODE_B, NODE_C]),
+        OP_TIMEOUT,
+    )?;
 
     let workflow_id = WorkflowId::new_v4();
     let run_id = RunId::new_v4();
@@ -575,9 +591,16 @@ fn inflight_workflow_completes_on_survivor_after_owner_death() -> TestResult {
     // The mid-flight start replicated to survivor B.
     let b_store: Arc<dyn EventStore> = Arc::clone(&node_b.store) as Arc<dyn EventStore>;
     let pre = runtime.block_on(b_store.read_history(&workflow_id))?;
-    println!("  survivor B already holds the in-flight history ({} event):", pre.len());
+    println!(
+        "  survivor B already holds the in-flight history ({} event):",
+        pre.len()
+    );
     println!("{}", render_history(&pre));
-    assert_eq!(pre.len(), 1, "B must hold exactly the replicated WorkflowStarted");
+    assert_eq!(
+        pre.len(),
+        1,
+        "B must hold exactly the replicated WorkflowStarted"
+    );
     assert!(matches!(pre.first(), Some(Event::WorkflowStarted { .. })));
     assert_eq!(
         aion_core::status_from_events(&pre),
@@ -615,7 +638,10 @@ fn inflight_workflow_completes_on_survivor_after_owner_death() -> TestResult {
     assert_eq!(greeting, json!("Hello, Grace! Welcome to Aion."));
 
     let final_history = runtime.block_on(b_store.read_history(&workflow_id))?;
-    println!("  full lifecycle now durable on B ({} events):", final_history.len());
+    println!(
+        "  full lifecycle now durable on B ({} events):",
+        final_history.len()
+    );
     println!("{}", render_history(&final_history));
     assert_eq!(
         aion_core::status_from_events(&final_history),

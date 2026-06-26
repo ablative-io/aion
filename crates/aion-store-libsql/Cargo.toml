@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["sync"] }
 aion-core = { version = "0.7.0", path = "../aion-core" }
 uuid.workspace = true
 

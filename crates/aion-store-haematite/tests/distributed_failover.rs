@@ -58,7 +58,10 @@ type TestResult = Result<(), Box<dyn Error>>;
 /// so the runtime context is not entered on the test thread when the next
 /// (blocking) haematite election runs.
 fn block_on<F: Future>(future: F) -> F::Output {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => panic!("build runtime: {error}"),
     };
@@ -103,7 +106,10 @@ fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
 fn membership(total_nodes: usize, send_targets: &[&str]) -> WriteMembership {
     WriteMembership {
         total_nodes,
-        send_targets: send_targets.iter().map(|name| SyncNodeId::from(*name)).collect(),
+        send_targets: send_targets
+            .iter()
+            .map(|name| SyncNodeId::from(*name))
+            .collect(),
     }
 }
 
@@ -254,9 +260,11 @@ fn workflow_history_replicates_to_followers() -> TestResult {
     link_both(&node_a, &node_c)?;
     link_both(&node_b, &node_c)?;
 
-    node_a
-        .database()
-        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_B, NODE_C]), OP_TIMEOUT)?;
+    node_a.database().acquire_shard_and_serve(
+        SHARD,
+        &membership(3, &[NODE_B, NODE_C]),
+        OP_TIMEOUT,
+    )?;
 
     let workflow_id = WorkflowId::new_v4();
     let history = lifecycle(&workflow_id);

@@ -174,7 +174,10 @@ async fn aion_workflow_survives_restart_recovered_from_haematite()
     // Read the durable history straight back out of haematite and show it. This
     // is the full activity lifecycle, persisted on disk.
     let pre_restart_history = store.read_history(&workflow_id).await?;
-    println!("  durable history now in haematite ({} events):", pre_restart_history.len());
+    println!(
+        "  durable history now in haematite ({} events):",
+        pre_restart_history.len()
+    );
     println!("{}", render_history(&pre_restart_history));
     assert_eq!(
         aion_core::status_from_events(&pre_restart_history),
@@ -182,7 +185,11 @@ async fn aion_workflow_survives_restart_recovered_from_haematite()
         "workflow should be Completed in haematite before restart"
     );
     // Sanity: this is the exact five-event lifecycle the brief calls for.
-    assert_eq!(pre_restart_history.len(), 5, "expected the full 5-event lifecycle");
+    assert_eq!(
+        pre_restart_history.len(),
+        5,
+        "expected the full 5-event lifecycle"
+    );
     assert!(matches!(
         pre_restart_history.first(),
         Some(Event::WorkflowStarted { .. })
