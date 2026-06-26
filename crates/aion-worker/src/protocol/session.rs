@@ -3,10 +3,10 @@
 use std::collections::BTreeSet;
 use std::pin::Pin;
 
-use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
+use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId};
 use aion_proto::{
     ProtoActivityId, ProtoActivityResult, ProtoActivityTask, ProtoHeartbeat, ProtoPayload,
-    ProtoWorkflowId, proto_activity_result,
+    ProtoRunId, ProtoWorkflowId, proto_activity_result,
 };
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -98,6 +98,7 @@ pub trait WorkerSession: Send {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         result: Payload,
     ) -> Result<(), WorkerError>;
 
@@ -106,6 +107,7 @@ pub trait WorkerSession: Send {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         failure: ActivityError,
     ) -> Result<(), WorkerError>;
 
@@ -408,11 +410,13 @@ impl WorkerSession for GrpcWorkerSession {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         result: Payload,
     ) -> Result<(), WorkerError> {
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
             activity_id: Some(ProtoActivityId::from(activity_id)),
+            run_id: run_id.map(ProtoRunId::from),
             outcome: Some(proto_activity_result::Outcome::Result(ProtoPayload::from(
                 result,
             ))),
@@ -427,11 +431,13 @@ impl WorkerSession for GrpcWorkerSession {
         &mut self,
         workflow_id: WorkflowId,
         activity_id: ActivityId,
+        run_id: Option<RunId>,
         failure: ActivityError,
     ) -> Result<(), WorkerError> {
         let result = ProtoActivityResult {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id)),
             activity_id: Some(ProtoActivityId::from(activity_id)),
+            run_id: run_id.map(ProtoRunId::from),
             outcome: Some(proto_activity_result::Outcome::Error(failure.into())),
         };
         self.send_to_server(aion_proto::generated::worker_to_server::Message::Result(
@@ -521,6 +527,7 @@ fn generated_activity_result(value: ProtoActivityResult) -> aion_proto::generate
     aion_proto::generated::ActivityResult {
         workflow_id: value.workflow_id.map(generated_workflow_id),
         activity_id: value.activity_id.map(generated_activity_id),
+        run_id: value.run_id.map(generated_run_id),
         outcome: value.outcome.map(|outcome| match outcome {
             proto_activity_result::Outcome::Result(result) => {
                 aion_proto::generated::activity_result::Outcome::Result(generated_payload(result))
@@ -548,6 +555,7 @@ fn proto_task(value: aion_proto::generated::ActivityTask) -> ProtoActivityTask {
         input: value.input.map(proto_payload),
         attempt: value.attempt,
         labels: value.labels,
+        run_id: value.run_id.map(proto_run_id),
     }
 }
 
@@ -571,6 +579,14 @@ fn generated_workflow_id(value: ProtoWorkflowId) -> aion_proto::generated::Workf
 
 fn proto_workflow_id(value: aion_proto::generated::WorkflowId) -> ProtoWorkflowId {
     ProtoWorkflowId { uuid: value.uuid }
+}
+
+fn generated_run_id(value: ProtoRunId) -> aion_proto::generated::RunId {
+    aion_proto::generated::RunId { uuid: value.uuid }
+}
+
+fn proto_run_id(value: aion_proto::generated::RunId) -> ProtoRunId {
+    ProtoRunId { uuid: value.uuid }
 }
 
 fn generated_activity_id(value: ProtoActivityId) -> aion_proto::generated::ActivityId {
@@ -647,6 +663,7 @@ mod tests {
                     input: None,
                     attempt: 1,
                     labels: std::collections::HashMap::new(),
+                    run_id: None,
                 },
             ))]))
         }
@@ -655,9 +672,10 @@ mod tests {
             &mut self,
             workflow_id: aion_core::WorkflowId,
             activity_id: aion_core::ActivityId,
+            run_id: Option<aion_core::RunId>,
             result: aion_core::Payload,
         ) -> Result<(), WorkerError> {
-            drop((workflow_id, activity_id, result));
+            drop((workflow_id, activity_id, run_id, result));
             Ok(())
         }
 
@@ -665,9 +683,10 @@ mod tests {
             &mut self,
             workflow_id: aion_core::WorkflowId,
             activity_id: aion_core::ActivityId,
+            run_id: Option<aion_core::RunId>,
             failure: aion_core::ActivityError,
         ) -> Result<(), WorkerError> {
-            drop((workflow_id, activity_id, failure));
+            drop((workflow_id, activity_id, run_id, failure));
             Ok(())
         }
 
@@ -783,6 +802,7 @@ mod tests {
             .report_result(
                 aion_core::WorkflowId::new_v4(),
                 aion_core::ActivityId::from_sequence_position(1),
+                None,
                 aion_core::Payload::new(aion_core::ContentType::Json, b"{}".to_vec()),
             )
             .await;

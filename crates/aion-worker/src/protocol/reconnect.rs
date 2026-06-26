@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::time::Duration;
 
-use aion_core::{ActivityError, ActivityId, Payload, WorkflowId};
+use aion_core::{ActivityError, ActivityId, Payload, RunId, WorkflowId};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -21,6 +21,8 @@ pub enum PendingActivityReport {
         workflow_id: WorkflowId,
         /// Activity identifier used by AW for idempotent ingest.
         activity_id: ActivityId,
+        /// Concrete workflow run to echo on re-report, when known.
+        run_id: Option<RunId>,
         /// Opaque activity output payload.
         output: Payload,
     },
@@ -30,6 +32,8 @@ pub enum PendingActivityReport {
         workflow_id: WorkflowId,
         /// Activity identifier used by AW for idempotent ingest.
         activity_id: ActivityId,
+        /// Concrete workflow run to echo on re-report, when known.
+        run_id: Option<RunId>,
         /// Classified activity error.
         failure: ActivityError,
     },
@@ -351,6 +355,7 @@ where
             PendingActivityReport::Completed {
                 workflow_id,
                 activity_id,
+                run_id,
                 output,
             } => {
                 debug!(
@@ -359,12 +364,13 @@ where
                     "re-reporting unacknowledged activity result"
                 );
                 session
-                    .report_result(workflow_id, activity_id, output)
+                    .report_result(workflow_id, activity_id, run_id, output)
                     .await?;
             }
             PendingActivityReport::Failed {
                 workflow_id,
                 activity_id,
+                run_id,
                 failure,
             } => {
                 debug!(
@@ -373,7 +379,7 @@ where
                     "re-reporting unacknowledged activity failure"
                 );
                 session
-                    .report_failure(workflow_id, activity_id, failure)
+                    .report_failure(workflow_id, activity_id, run_id, failure)
                     .await?;
             }
         }

@@ -155,6 +155,7 @@ impl WorkerOutboxDispatch {
             activity_type: row.activity_type.clone(),
             workflow_id: row.workflow_id.clone(),
             activity_id: ActivityId::from_sequence_position(row.ordinal),
+            run_id: row.run_id.clone(),
             input: row.input.clone(),
             attempt: row.attempt.saturating_add(1),
             labels: std::collections::BTreeMap::new(),

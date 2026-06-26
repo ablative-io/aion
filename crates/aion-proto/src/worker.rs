@@ -281,6 +281,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            run_id: None,
         };
 
         assert_json_and_proto_round_trip(&task)
@@ -368,6 +369,7 @@ mod tests {
             input: None,
             attempt: 9,
             labels: ::std::collections::HashMap::new(),
+            run_id: None,
         };
         let mut bytes = Vec::new();
         task.encode(&mut bytes)?;
@@ -386,6 +388,7 @@ mod tests {
             outcome: Some(proto_activity_result::Outcome::Result(ProtoPayload::from(
                 aion_core::Payload::from_json(&json!({"authorization": "ok"}))?,
             ))),
+            run_id: None,
         };
 
         assert_json_and_proto_round_trip(&result)
@@ -406,6 +409,7 @@ mod tests {
                     details: Some(aion_core::Payload::from_json(&json!({"code": "declined"}))?),
                 }),
             )),
+            run_id: None,
         };
 
         assert_json_and_proto_round_trip(&result)

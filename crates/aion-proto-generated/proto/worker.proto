@@ -100,6 +100,7 @@ message ActivityTask {
   // replay. Carried purely so worker logs and the dashboard can show what a
   // dispatch is working on. Absent (empty map) when the workflow set none.
   map<string, string> labels = 6;
+  optional RunId run_id = 7;
 }
 
 // Activity completion or failure reported by a worker.

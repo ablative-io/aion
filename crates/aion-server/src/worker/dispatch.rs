@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload, WorkflowId};
+use aion_core::{ActivityError, ActivityErrorKind, ActivityId, Payload, RunId, WorkflowId};
 use aion_proto::{
-    ProtoActivityId, ProtoActivityResult, ProtoActivityTask, ProtoPayload, ProtoWorkflowId,
-    WireError, proto_activity_result,
+    ProtoActivityId, ProtoActivityResult, ProtoActivityTask, ProtoPayload, ProtoRunId,
+    ProtoWorkflowId, WireError, proto_activity_result,
 };
 
 use crate::error::ServerError;
@@ -24,6 +24,8 @@ pub struct ScheduledActivity {
     pub workflow_id: WorkflowId,
     /// Correlating activity id.
     pub activity_id: ActivityId,
+    /// Concrete workflow run that staged this task, when known.
+    pub run_id: Option<RunId>,
     /// Opaque activity input payload.
     pub input: Payload,
     /// One-based delivery attempt stamped by the dispatching engine seam.
@@ -45,6 +47,7 @@ impl ScheduledActivity {
             input: Some(ProtoPayload::from(self.input.clone())),
             attempt: self.attempt,
             labels: self.labels.clone().into_iter().collect(),
+            run_id: self.run_id.clone().map(ProtoRunId::from),
         }
     }
 }
@@ -185,6 +188,8 @@ pub struct ActivityCompletion {
     pub workflow_id: WorkflowId,
     /// Correlating activity id.
     pub activity_id: ActivityId,
+    /// Concrete workflow run echoed by the worker, when known.
+    pub run_id: Option<RunId>,
     /// Worker-reported outcome.
     pub outcome: ActivityCompletionOutcome,
 }
@@ -201,6 +206,10 @@ impl TryFrom<ProtoActivityResult> for ActivityCompletion {
             .activity_id
             .ok_or_else(|| wire_error("activity result activity id is missing"))
             .map(ActivityId::from)?;
+        let run_id = value
+            .run_id
+            .map(|id| RunId::try_from(id).map_err(ServerError::from))
+            .transpose()?;
         let outcome = match value.outcome {
             Some(proto_activity_result::Outcome::Result(payload)) => {
                 ActivityCompletionOutcome::Succeeded(
@@ -218,6 +227,7 @@ impl TryFrom<ProtoActivityResult> for ActivityCompletion {
         Ok(Self {
             workflow_id,
             activity_id,
+            run_id,
             outcome,
         })
     }

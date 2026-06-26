@@ -5,7 +5,7 @@
 //! `SQLite` equivalent of `SELECT ... FOR UPDATE SKIP LOCKED`): pending rows are flipped to `claimed`
 //! and returned in one atomic step so no two dispatchers observe the same row as claimable.
 
-use aion_store::{OutboxRow, OutboxStatus, Payload, StoreError, WorkflowId};
+use aion_store::{OutboxRow, OutboxStatus, Payload, RunId, StoreError, WorkflowId};
 use chrono::{DateTime, SecondsFormat, Utc};
 use libsql::{Connection, Row, Transaction, TransactionBehavior, params};
 
@@ -16,8 +16,8 @@ pub(crate) use transitions::{
 
 const INSERT_OUTBOX_SQL: &str = "
 INSERT OR IGNORE INTO outbox
-    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+    (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 
 const REARM_OUTBOX_SQL: &str = "
 INSERT INTO outbox
@@ -26,7 +26,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
 ON CONFLICT(dispatch_key) DO UPDATE SET status = 'pending', visible_after = ?8, claimed_at = NULL";
 
 const SELECT_CLAIMABLE_SQL: &str = "
-SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id
 FROM outbox
 WHERE status = 'pending' AND visible_after <= ?1
 ORDER BY visible_after ASC, dispatch_key ASC
@@ -36,7 +36,7 @@ const CLAIM_ROW_SQL: &str = "
 UPDATE outbox SET status = 'claimed', claimed_at = ?2 WHERE dispatch_key = ?1 AND status = 'pending'";
 
 const SELECT_STALE_CLAIMED_SQL: &str = "
-SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id
 FROM outbox
 WHERE status = 'claimed' AND claimed_at IS NOT NULL AND claimed_at < ?1
 ORDER BY claimed_at ASC, dispatch_key ASC
@@ -71,7 +71,8 @@ pub(crate) async fn insert_outbox_row(tx: &Transaction, row: &OutboxRow) -> Resu
             row.status.as_str(),
             i64::from(row.attempt),
             encode_instant(row.visible_after),
-            row.claimed_at.map(encode_instant)
+            row.claimed_at.map(encode_instant),
+            row.run_id.as_ref().map(|run_id| run_id.to_string())
         ],
     )
     .await
@@ -390,6 +391,9 @@ fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {
     let claimed_at: Option<String> = row
         .get(8)
         .map_err(|error| crate::error::libsql_error(&error))?;
+    let run_id: Option<String> = row
+        .get(9)
+        .map_err(|error| crate::error::libsql_error(&error))?;
 
     Ok(OutboxRow {
         dispatch_key,
@@ -403,6 +407,7 @@ fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {
             .map_err(|_| StoreError::Backend(format!("outbox attempt out of range: {attempt}")))?,
         visible_after: decode_instant(&visible_after)?,
         claimed_at: claimed_at.as_deref().map(decode_instant).transpose()?,
+        run_id: run_id.as_deref().map(decode_run_id).transpose()?,
     })
 }
 
@@ -418,6 +423,12 @@ fn decode_workflow_id(value: &str) -> Result<WorkflowId, StoreError> {
     uuid::Uuid::parse_str(value)
         .map(WorkflowId::new)
         .map_err(|error| StoreError::Serialization(format!("invalid outbox workflow id: {error}")))
+}
+
+fn decode_run_id(value: &str) -> Result<RunId, StoreError> {
+    uuid::Uuid::parse_str(value)
+        .map(RunId::new)
+        .map_err(|error| StoreError::Serialization(format!("invalid outbox run id: {error}")))
 }
 
 fn encode_instant(instant: DateTime<Utc>) -> String {

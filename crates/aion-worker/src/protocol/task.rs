@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use aion_core::{ActivityId, Payload, WorkflowId};
+use aion_core::{ActivityId, Payload, RunId, WorkflowId};
 use aion_proto::ProtoActivityTask;
 
 use crate::error::WorkerError;
@@ -14,6 +14,8 @@ pub struct ActivityTask {
     pub workflow_id: WorkflowId,
     /// Activity id correlating reports and heartbeats with this task.
     pub activity_id: ActivityId,
+    /// Concrete workflow run that staged this task, when provided by the server.
+    pub run_id: Option<RunId>,
     /// Registered activity type name requested by the engine.
     pub activity_type: String,
     /// One-based delivery attempt stamped by the dispatching engine seam and
@@ -45,6 +47,14 @@ impl TryFrom<ProtoActivityTask> for ActivityTask {
             .ok_or(MalformedActivityTask::MissingActivityId)
             .map(ActivityId::from)
             .map_err(WorkerError::decode)?;
+        let run_id = value
+            .run_id
+            .map(|run_id| {
+                RunId::try_from(run_id)
+                    .map_err(|source| MalformedActivityTask::InvalidRunId { source })
+            })
+            .transpose()
+            .map_err(WorkerError::decode)?;
         if value.activity_type.is_empty() {
             return Err(WorkerError::decode(
                 MalformedActivityTask::MissingActivityType,
@@ -67,6 +77,7 @@ impl TryFrom<ProtoActivityTask> for ActivityTask {
         Ok(Self {
             workflow_id,
             activity_id,
+            run_id,
             activity_type: value.activity_type,
             attempt: value.attempt,
             input,
@@ -91,12 +102,14 @@ enum MalformedActivityTask {
     MissingAttempt,
     #[error("activity task input payload is invalid: {source}")]
     InvalidInput { source: aion_proto::WireError },
+    #[error("activity task run_id is invalid: {source}")]
+    InvalidRunId { source: aion_proto::WireError },
 }
 
 #[cfg(test)]
 mod tests {
     use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
-    use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
+    use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoRunId, ProtoWorkflowId};
     use serde_json::json;
 
     use super::ActivityTask;
@@ -107,11 +120,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
         let activity_id = ActivityId::from_sequence_position(42);
+        let run_id = aion_core::RunId::new_v4();
         let input_value = json!({"amount": 1250, "currency": "USD"});
         let input = Payload::from_json(&input_value)?;
         let proto = ProtoActivityTask {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
             activity_id: Some(ProtoActivityId::from(activity_id.clone())),
+            run_id: Some(ProtoRunId::from(run_id.clone())),
             activity_type: String::from("charge-card"),
             input: Some(ProtoPayload::from(input.clone())),
             attempt: 3,
@@ -124,6 +139,7 @@ mod tests {
 
         assert_eq!(task.workflow_id, workflow_id);
         assert_eq!(task.activity_id, activity_id);
+        assert_eq!(task.run_id, Some(run_id));
         assert_eq!(task.activity_type, "charge-card");
         assert_eq!(task.attempt, 3, "attempt must be read from the wire");
         assert_eq!(task.input.content_type(), &ContentType::Json);

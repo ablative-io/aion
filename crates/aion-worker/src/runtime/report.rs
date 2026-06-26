@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use aion_core::{ActivityId, WorkflowId};
+use aion_core::{ActivityId, RunId, WorkflowId};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
@@ -25,6 +25,8 @@ pub(crate) struct RuntimeChannels {
 pub(crate) struct DispatchFinished {
     /// Execution key identifying the finished activity.
     pub(crate) key: ActivityExecutionKey,
+    /// Concrete workflow run echoed from the received task, when known.
+    pub(crate) run_id: Option<RunId>,
     /// Outcome computed by the dispatcher, or the dispatch failure.
     pub(crate) outcome: Result<DispatchOutcome, WorkerError>,
 }
@@ -115,11 +117,12 @@ pub(crate) async fn report_finished<S>(
     }
     match finished.outcome {
         Ok(outcome) => {
-            tracker.record(pending_report(&finished.key, &outcome));
+            tracker.record(pending_report(&finished.key, finished.run_id.clone(), &outcome));
             let sent = report_outcome(
                 session,
                 finished.key.workflow_id,
                 finished.key.activity_id,
+                finished.run_id,
                 outcome,
             )
             .await;
@@ -139,16 +142,22 @@ pub(crate) async fn report_finished<S>(
 }
 
 /// Builds the unacked-tracker entry for a computed outcome before it is sent.
-fn pending_report(key: &ActivityExecutionKey, outcome: &DispatchOutcome) -> PendingActivityReport {
+fn pending_report(
+    key: &ActivityExecutionKey,
+    run_id: Option<RunId>,
+    outcome: &DispatchOutcome,
+) -> PendingActivityReport {
     match outcome {
         DispatchOutcome::Completed { output } => PendingActivityReport::Completed {
             workflow_id: key.workflow_id.clone(),
             activity_id: key.activity_id.clone(),
+            run_id,
             output: output.clone(),
         },
         DispatchOutcome::Failed { failure } => PendingActivityReport::Failed {
             workflow_id: key.workflow_id.clone(),
             activity_id: key.activity_id.clone(),
+            run_id,
             failure: failure.clone(),
         },
     }
@@ -158,6 +167,7 @@ async fn report_outcome<S>(
     session: &mut S,
     workflow_id: WorkflowId,
     activity_id: ActivityId,
+    run_id: Option<RunId>,
     outcome: DispatchOutcome,
 ) -> Result<(), WorkerError>
 where
@@ -170,7 +180,7 @@ where
     match outcome {
         DispatchOutcome::Completed { output } => {
             session
-                .report_result(workflow_id, activity_id.clone(), output)
+                .report_result(workflow_id, activity_id.clone(), run_id, output)
                 .await?;
             info!(
                 activity_id = activity_id.sequence_position(),

@@ -50,7 +50,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use aion::{ActivityDispatch, ActivityDispatcher};
-use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
+use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_proto::{ProtoActivityId, ProtoActivityTask, ProtoPayload, ProtoWorkflowId};
 use dashmap::DashMap;
 
@@ -106,6 +106,7 @@ pub trait OutboxDeliveryCallback: Send + Sync {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         result: String,
     ) -> Result<bool, ServerError>;
 
@@ -119,6 +120,7 @@ pub trait OutboxDeliveryCallback: Send + Sync {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         reason: String,
     ) -> Result<bool, ServerError>;
 }
@@ -182,6 +184,7 @@ impl PendingActivities {
         &self,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        run_id: Option<&RunId>,
         result: Result<String, String>,
     ) -> bool {
         // Take and drop the DashMap guard before any callback runs: the engine
@@ -197,8 +200,8 @@ impl PendingActivities {
             return false;
         };
         let outcome = match result {
-            Ok(payload) => callback.deliver_completion(workflow_id, activity_id, payload),
-            Err(reason) => callback.deliver_failure(workflow_id, activity_id, reason),
+            Ok(payload) => callback.deliver_completion(workflow_id, activity_id, run_id, payload),
+            Err(reason) => callback.deliver_failure(workflow_id, activity_id, run_id, reason),
         };
         match outcome {
             Ok(true) => true,
@@ -259,7 +262,12 @@ impl ActivityCompletionSink for PendingActivities {
                 Err(format!("{prefix}:{}", error.message))
             }
         };
-        self.complete(&completion.workflow_id, &completion.activity_id, result);
+        self.complete(
+            &completion.workflow_id,
+            &completion.activity_id,
+            completion.run_id.as_ref(),
+            result,
+        );
         Ok(())
     }
 }

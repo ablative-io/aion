@@ -500,6 +500,7 @@ fn encode_task(task: aion_proto::ProtoActivityTask) -> generated::ActivityTask {
         }),
         attempt: task.attempt,
         labels: task.labels,
+        run_id: task.run_id.map(|id| generated::RunId { uuid: id.uuid }),
     }
 }
 
