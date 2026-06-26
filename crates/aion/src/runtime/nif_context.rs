@@ -345,6 +345,26 @@ impl NifContext {
             .map_err(Into::into)
     }
 
+    /// Records activity cancellation for a fan-out ordinal and settles its outbox row.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`DurabilityError`] returned by the recorder.
+    pub fn record_activity_cancelled_and_settle_outbox(
+        &self,
+        recorded_at: chrono::DateTime<chrono::Utc>,
+        ordinal: u64,
+    ) -> Result<(), NifContextError> {
+        self.tokio_handle
+            .block_on(async {
+                let mut recorder = self.recorder.lock().await;
+                recorder
+                    .record_activity_cancelled_and_settle_outbox(recorded_at, ordinal)
+                    .await
+            })
+            .map_err(Into::into)
+    }
+
     /// Records a durable fan-out dispatch batch through the workflow's single-writer recorder.
     ///
     /// # Errors

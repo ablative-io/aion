@@ -9,7 +9,7 @@ use aion_core::{
     WithTimeoutOutcome, WorkflowError, WorkflowId,
 };
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
-use aion_store::{EventStore, WriteToken};
+use aion_store::{EventStore, OutboxRow, WriteToken};
 use chrono::{DateTime, Utc};
 
 use crate::durability::{DurabilityError, seq::SequenceHead};
@@ -544,6 +544,26 @@ impl Recorder {
             activity_id,
         })
         .await
+    }
+
+    /// Records activity cancellation for a fan-out ordinal and settles its outbox row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event append fails, sequence tracking cannot advance, or
+    /// the outbox-aware store rejects the cancellation settlement.
+    pub async fn record_activity_cancelled_and_settle_outbox(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        ordinal: u64,
+    ) -> Result<(), DurabilityError> {
+        self.record_activity_cancelled(recorded_at, ActivityId::from_sequence_position(ordinal))
+            .await?;
+        let dispatch_key = OutboxRow::dispatch_key_for(&self.workflow_id, ordinal);
+        self.store
+            .settle_outbox_row_cancelled(&dispatch_key)
+            .await
+            .map_err(Into::into)
     }
 
     /// Records timer scheduling.

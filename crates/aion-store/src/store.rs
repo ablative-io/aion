@@ -220,6 +220,20 @@ pub trait WritableEventStore: Send + Sync + 'static {
              refusing to drop a non-empty re-arm (override WritableEventStore::rearm_outbox_pending)",
         )))
     }
+
+    /// Idempotently settles one outbox row to cancelled when this writer is backed by an outbox.
+    ///
+    /// Outbox-aware backends override this and delegate to [`crate::OutboxStore`]. The default is a
+    /// no-op so non-outbox test stores and legacy backends can still record `ActivityCancelled`
+    /// history without requiring an outbox table.
+    ///
+    /// # Errors
+    ///
+    /// Outbox-aware overrides return [`StoreError::Backend`] for backend boundary failures.
+    async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        let _ = dispatch_key;
+        Ok(())
+    }
 }
 
 /// Convenience trait for concrete stores that support reads/timers, recorder

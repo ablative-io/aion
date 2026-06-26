@@ -24,6 +24,9 @@ pub mod connection;
 /// Error conversion helpers for libSQL-backed storage.
 pub mod error;
 mod outbox;
+#[cfg(test)]
+#[path = "outbox_tests.rs"]
+mod outbox_tests;
 mod package;
 mod read;
 /// Idempotent schema creation for the libSQL event store.
