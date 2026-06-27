@@ -152,6 +152,35 @@ fn spawn_visibility_reconciliation_task(
     })
 }
 
+/// Apply owned-shard scoping to the store BEFORE any recovery or enumeration
+/// reads it, so a multi-shard node recovers only its shards.
+///
+/// `None` leaves the store untouched — the single-node default, where the store
+/// owns ALL shards and boot is byte-identical to today (the scoping hook is
+/// never called). `Some(set)` forwards through any store decorator to the
+/// sharded backend; a single-shard backend ignores it.
+fn apply_owned_shards(store: &dyn EventStore, owned_shards: Option<&[usize]>) {
+    if let Some(shards) = owned_shards {
+        store.set_owned_shards(Some(shards));
+    }
+}
+
+/// Spawn the periodic visibility reconciliation task when an interval is
+/// configured, returning its join handle; otherwise return `None`.
+fn maybe_spawn_visibility_reconciliation(
+    interval: Option<Duration>,
+    store: &Arc<dyn EventStore>,
+    visibility_store: &Arc<dyn VisibilityStore>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    interval.map(|interval| {
+        spawn_visibility_reconciliation_task(
+            interval,
+            Arc::clone(store),
+            Arc::clone(visibility_store),
+        )
+    })
+}
+
 impl From<PathBuf> for WorkflowPackageSource {
     fn from(path: PathBuf) -> Self {
         Self::Path(path)
@@ -196,6 +225,7 @@ pub struct EngineBuilder {
     signal_delivery: SignalDeliveryConfig,
     outbox_enabled: bool,
     bootstrap_schedule_coordinator: bool,
+    owned_shards: Option<Vec<usize>>,
     workflow_sources: Vec<WorkflowPackageSource>,
     host_nifs: Vec<NifEntry>,
     recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
@@ -231,6 +261,10 @@ impl EngineBuilder {
             // schedule coordinator. A multi-node deployment disables it on nodes
             // that do not own the coordinator's shard (see the builder method).
             bootstrap_schedule_coordinator: true,
+            // No shard restriction by default: the store owns ALL shards, which
+            // is byte-identical to single-node behaviour. `build()` only ever
+            // touches owned-shard scoping when a deployment sets this.
+            owned_shards: None,
             workflow_sources: Vec::new(),
             host_nifs: Vec::new(),
             recovery: None,
@@ -379,6 +413,31 @@ impl EngineBuilder {
     pub const fn bootstrap_schedule_coordinator(mut self, enabled: bool) -> Self {
         self.bootstrap_schedule_coordinator = enabled;
         self
+    }
+
+    /// Restrict this engine's store to the distribution shards this node owns.
+    ///
+    /// Under multi-shard active-active a node serves only a SUBSET of the
+    /// cluster's shards. `build()` calls
+    /// [`ReadableEventStore::set_owned_shards`](aion_store::ReadableEventStore::set_owned_shards)
+    /// with this set BEFORE startup recovery, so the node recovers and
+    /// enumerates only the workflows / timers / outbox rows that live on its
+    /// shards. The set is deduplicated and ordered by the store.
+    ///
+    /// Not calling this leaves the store owning ALL shards — the single-node
+    /// default, which is byte-identical to today's behaviour (`build()` never
+    /// touches the scoping hook). Single-shard backends (in-memory, libSQL)
+    /// ignore the call regardless, since they own everything unconditionally.
+    #[must_use]
+    pub fn owned_shards(mut self, shards: impl IntoIterator<Item = usize>) -> Self {
+        self.owned_shards = Some(shards.into_iter().collect());
+        self
+    }
+
+    /// Inspect the configured owned-shard set (`None` = own all shards).
+    #[must_use]
+    pub fn configured_owned_shards(&self) -> Option<&[usize]> {
+        self.owned_shards.as_deref()
     }
 
     /// Add one workflow package source to load during `build()`.
@@ -535,6 +594,8 @@ impl EngineBuilder {
             .visibility_store
             .ok_or(EngineError::MissingVisibilityStore)?;
 
+        apply_owned_shards(store.as_ref(), self.owned_shards.as_deref());
+
         let runtime = Arc::new(RuntimeHandle::new(runtime_config)?);
 
         let mut nifs = NifRegistration::new();
@@ -617,14 +678,11 @@ impl EngineBuilder {
         .await?;
         recover_timers_on_startup(&nif_state, Arc::clone(&store)).await?;
 
-        let visibility_reconciliation_task =
-            self.visibility_reconciliation_interval.map(|interval| {
-                spawn_visibility_reconciliation_task(
-                    interval,
-                    Arc::clone(&store),
-                    Arc::clone(&visibility_store),
-                )
-            });
+        let visibility_reconciliation_task = maybe_spawn_visibility_reconciliation(
+            self.visibility_reconciliation_interval,
+            &store,
+            &visibility_store,
+        );
 
         let engine = Engine::new(EngineComponents {
             store,
@@ -1016,6 +1074,20 @@ mod tests {
         ));
         engine.shutdown()?;
         Ok(())
+    }
+
+    #[test]
+    fn owned_shards_are_only_set_by_caller() {
+        // The default builder configures NO shard restriction: `build()` never
+        // touches the store's scoping hook, so single-node boot owns ALL shards
+        // and is byte-identical to today.
+        assert_eq!(EngineBuilder::new().configured_owned_shards(), None);
+        assert_eq!(
+            EngineBuilder::new()
+                .owned_shards([2, 0, 2, 1])
+                .configured_owned_shards(),
+            Some([2, 0, 2, 1].as_slice())
+        );
     }
 
     #[test]

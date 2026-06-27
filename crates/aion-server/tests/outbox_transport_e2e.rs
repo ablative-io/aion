@@ -200,6 +200,7 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
         default_namespace: NAMESPACE.to_owned(),
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: false },
+        owned_shards: Vec::new(),
     }
 }
 

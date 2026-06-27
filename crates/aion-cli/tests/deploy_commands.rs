@@ -110,6 +110,7 @@ fn runtime_config() -> RuntimeConfig {
         default_namespace: "default".to_owned(),
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: false },
+        owned_shards: Vec::new(),
     }
 }
 

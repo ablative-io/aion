@@ -144,7 +144,7 @@ impl ServerState {
             .map_err(|error| ServerError::Config {
                 message: format!("failed to register namespace search attribute: {error}"),
             })?;
-        let engine = EngineBuilder::new()
+        let builder = EngineBuilder::new()
             .store_arc(instrumented_store.clone())
             .event_streaming(event_broadcast_capacity)
             .in_memory_visibility()
@@ -158,9 +158,17 @@ impl ServerState {
                 Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
             })
             .query_timeout(query_timeout)
-            .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path))
-            .build()
-            .await?;
+            .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path));
+        // Static shard assignment (SS-1, no election): when the operator pins
+        // this node to a shard subset, scope the engine to it. Empty (the
+        // default) leaves the builder untouched, so single-node boot owns ALL
+        // shards and is byte-identical to today.
+        let builder = if runtime.owned_shards.is_empty() {
+            builder
+        } else {
+            builder.owned_shards(runtime.owned_shards.iter().copied())
+        };
+        let engine = builder.build().await?;
         let engine = Arc::new(engine);
         // Outbox ON: route unmatched worker completions arriving at the sink
         // into the live workflow's mailbox. Flag-off this callback is never
@@ -477,6 +485,7 @@ mod tests {
             default_namespace: "default".to_owned(),
             drain_timeout: Duration::from_secs(30),
             metrics: MetricsConfig { enabled: true },
+            owned_shards: Vec::new(),
         }
     }
 
@@ -501,6 +510,7 @@ mod tests {
         let (_event_store, outbox) = super::connect_store(StoreConfig {
             backend: StoreBackend::Memory,
             url: None,
+            owned_shards: Vec::new(),
         })
         .await?;
         assert!(
@@ -523,6 +533,7 @@ mod tests {
         let (_event_store, outbox) = super::connect_store(StoreConfig {
             backend: StoreBackend::LibSql,
             url: Some(path.to_string_lossy().into_owned()),
+            owned_shards: Vec::new(),
         })
         .await?;
         assert!(

@@ -117,6 +117,22 @@ pub trait ReadableEventStore: Send + Sync + 'static {
 
     /// Returns durable timers whose `fire_at` is less than or equal to `as_of`.
     async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError>;
+
+    /// Restrict every per-workflow enumeration (active workflows, timers, outbox
+    /// rows) to the named set of distribution shards this node owns, or restore
+    /// the own-all-shards default when `shards` is `None`.
+    ///
+    /// This is the engine-lifecycle hook behind a multi-shard deployment: the
+    /// boot path tells the store which shards this node serves so recovery and
+    /// enumeration see only that node's slice of the cluster's state. The
+    /// default implementation is a deliberate no-op — single-shard backends
+    /// (in-memory, libSQL) own everything unconditionally, so a `None` or any
+    /// shard set leaves their behaviour byte-identical. Only a sharded backend
+    /// (haematite) overrides this to scope its enumeration. Decorators that wrap
+    /// another store must forward this call to their inner store.
+    fn set_owned_shards(&self, shards: Option<&[usize]>) {
+        let _ = shards;
+    }
 }
 
 /// Write authority for appending workflow-history events.

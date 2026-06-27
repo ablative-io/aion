@@ -976,6 +976,17 @@ impl HaematiteStore {
 
 #[async_trait]
 impl ReadableEventStore for HaematiteStore {
+    /// Scope enumeration to the owned shard set via the inherent
+    /// [`Self::set_owned_shards`] / [`Self::own_all_shards`] state, so the
+    /// engine boot path can drive owned-shard scoping through the type-erased
+    /// `dyn ReadableEventStore` it holds. `None` reverts to owning all shards.
+    fn set_owned_shards(&self, shards: Option<&[usize]>) {
+        match shards {
+            Some(shards) => Self::set_owned_shards(self, shards.iter().copied()),
+            None => self.own_all_shards(),
+        }
+    }
+
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let workflow_id = workflow_id.clone();
         self.blocking(move |store| read_events(store, &workflow_id))

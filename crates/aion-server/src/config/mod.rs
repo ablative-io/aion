@@ -115,6 +115,13 @@ pub struct StoreConfig {
     pub backend: StoreBackend,
     /// Backend URL/path. For libSQL this is the embedded database path; for memory it is ignored.
     pub url: Option<String>,
+    /// Static distribution-shard assignment for this node (multi-shard
+    /// active-active). When empty (the default) the node owns ALL shards — the
+    /// single-node default, byte-identical to today. When set, the engine boot
+    /// path scopes recovery and enumeration to exactly these shards. Single-shard
+    /// backends (memory, libSQL) ignore the assignment; it is meaningful only for
+    /// a sharded backend. No election is performed: assignment is static config.
+    pub owned_shards: Vec<usize>,
 }
 
 /// Engine runtime settings from `[runtime]`.
@@ -479,6 +486,11 @@ pub struct RuntimeConfig {
     pub drain_timeout: Duration,
     /// Metrics endpoint settings.
     pub metrics: MetricsConfig,
+    /// Static distribution-shard assignment for this node (from `[store]
+    /// owned_shards`). Empty means own ALL shards (single-node default,
+    /// byte-identical to today); a non-empty set scopes engine recovery and
+    /// enumeration to exactly those shards. No election: assignment is static.
+    pub owned_shards: Vec<usize>,
 }
 
 impl ServerConfig {
@@ -557,6 +569,7 @@ impl ServerConfig {
             default_namespace: self.namespaces.default,
             drain_timeout: Duration::from_secs(self.drain.timeout_seconds),
             metrics: self.metrics,
+            owned_shards: self.store.owned_shards.clone(),
         };
         (self.store, runtime)
     }
@@ -750,6 +763,7 @@ impl Default for StoreConfig {
         Self {
             backend: StoreBackend::Memory,
             url: None,
+            owned_shards: Vec::new(),
         }
     }
 }

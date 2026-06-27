@@ -156,6 +156,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         default_namespace: "default".to_owned(),
         drain_timeout: std::time::Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
+        owned_shards: Vec::new(),
     }
 }
 

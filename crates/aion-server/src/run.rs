@@ -55,6 +55,12 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     let config = ServerConfig::load(&cli)?;
     reject_auth_without_feature(&config)?;
     let store_backend = config.store.backend;
+    // Static shard assignment (SS-1): read the operator's pinned shard set from
+    // `[store] owned_shards`. Empty means own ALL shards (single-node default).
+    // The set is carried into `RuntimeConfig` by `into_parts` and applied to the
+    // `EngineBuilder` during state construction; surface it here so the boot
+    // banner records which shards this node serves. No election is performed.
+    let owned_shards = config.store.owned_shards.clone();
     // Capture the outbox settings before `build` consumes `config`, so the
     // (default-off) outbox dispatcher can be wired after state is up. The
     // dispatcher shares the engine's already-opened libSQL store (one
@@ -83,6 +89,8 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
         metrics_enabled = runtime.metrics.enabled,
         workflow_package_count = workflow_packages.len(),
         workflow_packages = ?workflow_packages,
+        owned_shards = ?owned_shards,
+        owns_all_shards = owned_shards.is_empty(),
         "aion-server startup banner"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
