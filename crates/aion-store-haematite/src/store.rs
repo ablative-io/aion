@@ -359,14 +359,30 @@ impl HaematiteStore {
             })?;
         let database = database.with_distribution(endpoint);
 
+        let store = Self::with_distribution(database, boot.write_membership(), boot.timeout);
+        // Start answering peers' inbound replication/election traffic BEFORE
+        // dialing out, so this node is a usable quorum participant the moment a
+        // peer reaches it — even while its own outbound dials are still
+        // retrying. Without this, two nodes booting at once each dial-then-serve
+        // and can deadlock: each waits on a peer that is not yet answering.
+        let responder = ClusterResponder::spawn(Arc::clone(store.event_store()));
+
+        // Dial each peer with bounded retry. A separate OS process for each node
+        // means there is no global "all endpoints bound, now connect" barrier the
+        // in-process harness has: a node started before its peers would fail the
+        // first dial outright. Retrying until `boot.timeout` lets nodes boot in
+        // any order — each binds immediately, then patiently connects as peers
+        // come up. The single-shot `connect_peer` is preserved for the case a
+        // peer is already listening (first attempt wins, no added latency).
         for peer in &boot.peers {
-            database
-                .connect_peer(&peer.0, peer.1)
-                .map_err(|error| database_error(&error))?;
+            connect_peer_with_retry(
+                store.event_store().database(),
+                &peer.0,
+                peer.1,
+                boot.timeout,
+            )?;
         }
 
-        let store = Self::with_distribution(database, boot.write_membership(), boot.timeout);
-        let responder = ClusterResponder::spawn(Arc::clone(store.event_store()));
         Ok((store, responder))
     }
 
@@ -838,6 +854,41 @@ where
             Err(payload) => std::panic::resume_unwind(payload),
         }
     })
+}
+
+/// Dial `peer_name` at `addr`, retrying with backoff until it connects or
+/// `deadline` elapses.
+///
+/// At cluster boot every node lives in its OWN OS process, so there is no shared
+/// "all endpoints bound, now connect" barrier the in-process test harness has: a
+/// node started before its peers would otherwise fail the very first dial and
+/// abort the whole boot. Retrying turns boot into an order-independent
+/// convergence — each node binds its endpoint immediately and connects to peers
+/// as they come up, anywhere within `deadline`. The first attempt is issued with
+/// no delay, so a peer that is already listening connects with zero added
+/// latency; only a not-yet-listening peer pays the backoff.
+///
+/// `deadline` is the cluster operation timeout (`boot.timeout`), so the boot's
+/// patience for peers to appear matches its patience for a quorum op — one knob.
+fn connect_peer_with_retry(
+    database: &Database,
+    peer_name: &str,
+    addr: std::net::SocketAddr,
+    deadline: Duration,
+) -> Result<(), StoreError> {
+    const RETRY_BACKOFF: Duration = Duration::from_millis(100);
+    let started = std::time::Instant::now();
+    loop {
+        match database.connect_peer(peer_name, addr) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                if started.elapsed() >= deadline {
+                    return Err(database_error(&error));
+                }
+                std::thread::sleep(RETRY_BACKOFF);
+            }
+        }
+    }
 }
 
 /// Replicate one event batch to the routing quorum via `replicate_append`,

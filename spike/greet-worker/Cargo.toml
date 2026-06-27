@@ -1,0 +1,25 @@
+# Minimal `greet` activity worker for the multi-process cluster spike.
+#
+# Standalone (NOT a workspace member): it consumes the worktree's local
+# `aion-worker` by path so the API matches the binary under test exactly.
+[package]
+name = "greet-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Minimal greet-activity worker for the mp-cluster failover spike."
+
+[[bin]]
+name = "greet-worker"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+aion-worker = { path = "../../crates/aion-worker" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
