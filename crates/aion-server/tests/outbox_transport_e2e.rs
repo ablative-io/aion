@@ -437,6 +437,9 @@ async fn assert_fan_out_settled(
 ) -> Result<(), TestError> {
     let settled = wait_for_history(reader, workflow_id, "fan-out settled", |events| {
         count_completed(events) == FAN_OUT
+            && count_kind(events, |event| {
+                matches!(event, Event::WorkflowCompleted { .. })
+            }) == 1
     })
     .await?;
     assert_eq!(count_completed(&settled), FAN_OUT);
