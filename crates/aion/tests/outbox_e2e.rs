@@ -199,6 +199,20 @@ fn count_completed(history: &[Event]) -> usize {
         .count()
 }
 
+/// Count `WorkflowCompleted` terminals across `history`.
+///
+/// The `WorkflowCompleted` terminal is appended a tick *after* the last
+/// `ActivityCompleted`/`ActivityCancelled` that satisfies a fan-out, so any
+/// settle-wait whose follow-up asserts "completes exactly once" must include
+/// this count in its predicate — otherwise the wait can return on the
+/// activity-terminal snapshot before the workflow terminal has landed.
+fn count_workflow_completed(history: &[Event]) -> usize {
+    history
+        .iter()
+        .filter(|event| matches!(event, Event::WorkflowCompleted { .. }))
+        .count()
+}
+
 fn count_completed_for(history: &[Event], ordinal: u64) -> usize {
     history
         .iter()
@@ -434,7 +448,7 @@ async fn assert_settled_no_duplicates(
     workflow_id: &WorkflowId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let settled = wait_for_history(store, workflow_id, "fan-out settled", |events| {
-        count_completed(events) == FAN_OUT
+        count_completed(events) == FAN_OUT && count_workflow_completed(events) == 1
     })
     .await?;
     assert_eq!(
@@ -689,7 +703,7 @@ async fn outbox_duplicate_completion_records_exactly_one_terminal() -> TestResul
     }
 
     let settled = wait_for_history(&store, &workflow_id, "fan-out settled", |events| {
-        count_completed(events) == FAN_OUT
+        count_completed(events) == FAN_OUT && count_workflow_completed(events) == 1
     })
     .await?;
     // Exactly FAN_OUT terminals total — the duplicate added nothing.
@@ -1227,6 +1241,7 @@ async fn outbox_race_settles_first_completion_and_cancels_losers() -> TestResult
     // cancelled (ActivityCancelled). Wait until all FAN_OUT terminals land.
     let settled = wait_for_history(&store, &workflow_id, "race settled", |events| {
         count_completed(events) + count_cancelled(events) == FAN_OUT
+            && count_workflow_completed(events) == 1
     })
     .await?;
 
@@ -1355,7 +1370,7 @@ async fn outbox_map_completes_with_n_terminals_and_ordered_result() -> TestResul
     }
 
     let settled = wait_for_history(&store, &workflow_id, "map settled", |events| {
-        count_completed(events) == FAN_OUT
+        count_completed(events) == FAN_OUT && count_workflow_completed(events) == 1
     })
     .await?;
     assert_eq!(count_completed(&settled), FAN_OUT);
