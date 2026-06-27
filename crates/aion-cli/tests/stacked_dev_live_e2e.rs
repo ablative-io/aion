@@ -456,7 +456,16 @@ fn deploy_archive(
     }
 }
 
+// Ignored: this live e2e references the standalone worker crate at
+// `examples/stacked-dev/worker/`, which no longer exists — that single worker
+// was split into `norn-worker` and `mixed-worker` (binaries
+// `stacked-dev-worker-norn` / `stacked-dev-worker-mixed`), so there is no
+// drop-in replacement path. It also needs a live build environment (real
+// `cargo build` of the out-of-workspace worker, a booted server, and process
+// shims). Re-point `build_worker_binary` at the intended split worker and run
+// deliberately with: `cargo test -p aion-cli --test stacked_dev_live_e2e -- --ignored`.
 #[test]
+#[ignore = "references examples/stacked-dev/worker/ which was split into norn-worker/mixed-worker; needs a live build env — run with --ignored after fixing the worker path"]
 fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), TestError> {
     let repo = repo_root()?;
     let example = repo.join("examples/stacked-dev");
