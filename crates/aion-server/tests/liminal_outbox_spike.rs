@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_server::worker::liminal_transport::{
     DispatchRequest, DispatchResponse, LiminalCompletionSource, LiminalOutboxDispatch,
+    attempt_idempotency_key,
 };
 use aion_server::worker::{
     OutboxDeliveryCallback, OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch,
@@ -552,6 +553,104 @@ async fn outbox_dispatcher_retries_over_liminal_then_succeeds_when_worker_joins(
 
     shutdown_tx.send(true).map_err(test_error)?;
     loop_handle.await.map_err(test_error)?;
+    server.shutdown()?;
+    Ok(())
+}
+
+/// THE 13-2 VERIFY: a row re-dispatched through the real reconciler re-arm path
+/// (`rearm_stale_claimed_outbox_rows`, which PRESERVES `attempt`) does NOT cause a
+/// second worker execution. The re-armed row carries the same `attempt`, so
+/// `attempt_idempotency_key` derives the IDENTICAL `{dispatch_key}#{attempt}`
+/// liminal idempotency key as the in-flight dispatch; dedup-on-delivery (13-L1)
+/// suppresses the duplicate at delivery (`delivered: false` → non-accepted ack →
+/// `Err`), so the worker is reached exactly once. This is the 13-2 contract: a
+/// retry/reconciler/recovery re-dispatch is deduped, not re-executed.
+///
+/// Note on the design doc: §5 13-2 says "pass `dispatch_key` as the idempotency
+/// key". The BARE stable key would regress 13-1 (every legitimate bumped-attempt
+/// retry would be self-suppressed — the documented 13-0 trap). The landed seam
+/// instead passes `{dispatch_key}#{attempt}`, which BOTH dedups a same-attempt
+/// re-arm (this test) AND lets a real bumped-attempt retry through
+/// (`legit_retry_with_bumped_attempt_is_not_suppressed`). 13-2's behavioural
+/// guarantee holds because re-arm preserves `attempt`; this test pins exactly that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconciler_rearm_redispatch_is_deduped_no_second_worker_execution() -> Result<(), TestError>
+{
+    let server = RunningServer::start()?;
+    let address = server.address();
+
+    // A worker subscribes so a fresh keyed publish reports a genuine delivery and
+    // a duplicate is observably suppressed at the delivery boundary.
+    let worker = connect_channel(address)?;
+    subscribe_worker(&worker)?;
+    server.wait_for_connection()?;
+
+    // Stage one pending row in a real durable outbox store, then CLAIM it so it
+    // holds a durable `claimed_at` the reconciler can find as stale.
+    let store = open_libsql_store("rearm-dedup").await?;
+    let row = pending_row(0);
+    store
+        .append_outbox_batch(std::slice::from_ref(&row))
+        .await
+        .map_err(test_error)?;
+    let claimed = store.claim_outbox_rows(16).await.map_err(test_error)?;
+    let claimed_row = claimed
+        .into_iter()
+        .find(|r| r.dispatch_key == row.dispatch_key)
+        .ok_or_else(|| test_error("claim did not return the staged row"))?;
+    assert_eq!(claimed_row.attempt, 0, "first claim is attempt 0");
+
+    // FIRST DISPATCH: the in-flight dispatch the worker is executing. attempt 0,
+    // fresh key + live worker => genuine delivery => Ok. This claims the liminal
+    // dedup key `{dispatch_key}#0`.
+    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+    dispatch
+        .dispatch(&claimed_row)
+        .await
+        .map_err(|error| test_error(format!("in-flight dispatch must succeed: {error}")))?;
+
+    // RECONCILER RE-ARM: before the completion returns, the reconciler re-arms the
+    // stale claimed row. `older_than` is in the future so the just-claimed row
+    // qualifies; the re-arm flips it back to pending and PRESERVES attempt 0.
+    let future = Utc::now() + chrono::Duration::seconds(60);
+    let rearmed = store
+        .rearm_stale_claimed_outbox_rows(future, Utc::now(), 16)
+        .await
+        .map_err(test_error)?;
+    let rearmed_row = rearmed
+        .into_iter()
+        .find(|r| r.dispatch_key == row.dispatch_key)
+        .ok_or_else(|| test_error("reconciler did not re-arm the claimed row"))?;
+    assert_eq!(
+        rearmed_row.attempt, 0,
+        "reconciler re-arm preserves attempt, so the idempotency key is unchanged"
+    );
+    assert_eq!(
+        attempt_idempotency_key(&rearmed_row),
+        attempt_idempotency_key(&claimed_row),
+        "the re-armed row derives the IDENTICAL liminal idempotency key"
+    );
+
+    // RE-DISPATCH the re-armed row (re-claimed by the dispatcher's normal sweep).
+    // Same `{dispatch_key}#0` key => dedup-on-delivery suppresses the publish
+    // (`delivered: false`) => non-accepted ack => Err. The worker is NOT reached a
+    // second time: a re-armed duplicate dispatch cannot drive a second execution.
+    let reclaimed = store.claim_outbox_rows(16).await.map_err(test_error)?;
+    let reclaimed_row = reclaimed
+        .into_iter()
+        .find(|r| r.dispatch_key == row.dispatch_key)
+        .ok_or_else(|| test_error("re-claim did not return the re-armed row"))?;
+    assert_eq!(
+        reclaimed_row.attempt, 0,
+        "re-claim keeps the preserved attempt"
+    );
+    let redispatch = dispatch.dispatch(&reclaimed_row).await;
+    assert!(
+        redispatch.is_err(),
+        "a reconciler re-armed re-dispatch (same attempt key) is dedup-suppressed, \
+         so no second worker execution occurs"
+    );
+
     server.shutdown()?;
     Ok(())
 }
