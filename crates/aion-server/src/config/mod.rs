@@ -352,6 +352,36 @@ pub struct OutboxConfig {
     /// reconciler re-arms only rows with `claimed_at` older than this threshold, preserving their
     /// attempt count.
     pub reconcile_stale_after_ms: Option<u64>,
+    /// Wire transport the dispatcher uses to place a claimed row with a worker.
+    /// Defaults to [`OutboxTransport::Grpc`] (the connected-worker registry), so
+    /// a default server is byte-identical to before this field existed. Setting
+    /// `liminal` selects the cross-node liminal transport, which is only built
+    /// when the `liminal-transport` Cargo feature is enabled; selecting it in a
+    /// build without that feature is a configuration error surfaced at spawn.
+    pub transport: OutboxTransport,
+    /// Hard-coded liminal server address (`host:port`) for the #13-0 spike,
+    /// used only when `transport = liminal`. REQUIRED in that mode; ignored
+    /// otherwise. Spike-level addressing — `(namespace, activity_type)` channel
+    /// routing is a later increment (13-3).
+    pub liminal_server_address: Option<String>,
+    /// Hard-coded liminal channel name for the #13-0 spike, used only when
+    /// `transport = liminal`. REQUIRED in that mode; ignored otherwise.
+    pub liminal_channel: Option<String>,
+}
+
+/// Wire transport selected for outbox dispatch.
+///
+/// `grpc` (the default) keeps the existing connected-worker registry path
+/// unchanged. `liminal` routes the dispatch over the liminal cross-node bus and
+/// is gated behind the `liminal-transport` Cargo feature (#13-0 spike).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutboxTransport {
+    /// Dispatch over the in-process connected-worker gRPC registry (default).
+    #[default]
+    Grpc,
+    /// Dispatch over the liminal cross-node bus (requires `liminal-transport`).
+    Liminal,
 }
 
 /// Operator-facing message for an absent or zero `outbox.poll_interval_ms`.
