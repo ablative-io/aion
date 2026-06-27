@@ -152,6 +152,53 @@ async fn forward_cancel_relays_owner_not_found() -> Result<(), TestError> {
     Ok(())
 }
 
+/// A steered `start` forwarded to the owner runs there over the real gRPC hop:
+/// the owner has no such workflow type loaded, so it returns its typed
+/// `WorkflowNotFound`, relayed verbatim through the forwarder — proving the
+/// `ForwardRequest::Start` path dials the owner, copies metadata, stamps the hop
+/// header, and relays the owner's reply/error (R-4 steered-start forward).
+#[tokio::test]
+async fn forward_start_relays_owner_reply() -> Result<(), TestError> {
+    let state = owner_state().await?;
+    let (addr, shutdown) = spawn_owner(workflow_service(state)).await?;
+
+    let forwarder = GrpcRequestForwarder::new();
+    let mut metadata = tonic::metadata::MetadataMap::new();
+    metadata.insert("x-aion-subject", "alice".parse()?);
+    metadata.insert("x-aion-namespaces", NAMESPACE.parse()?);
+
+    let request = ForwardRequest::Start(generated::StartWorkflowRequest {
+        namespace: NAMESPACE.to_owned(),
+        workflow_type: "checkout".to_owned(),
+        input: Some(generated::Payload {
+            content_type: "application/json".to_owned(),
+            bytes: b"{}".to_vec(),
+        }),
+        routing_key: Some("tenant-a/order-1".to_owned()),
+    });
+
+    let result = forwarder.forward(addr, metadata, request).await;
+    let _ = shutdown.send(());
+
+    // The owner has no `checkout` workflow loaded: it rejects with NotFound,
+    // relayed verbatim. The forward path itself (dial + metadata + hop) succeeded.
+    let status = result
+        .err()
+        .ok_or("expected the owner to reject the start")?;
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    Ok(())
+}
+
+/// The steered-start reply variant is inhabited as expected.
+#[test]
+fn forward_reply_start_is_constructible() {
+    let reply = ForwardReply::Start(generated::StartWorkflowResponse {
+        workflow_id: None,
+        run_id: None,
+    });
+    assert!(matches!(reply, ForwardReply::Start(_)));
+}
+
 /// The forwarder stamps the next hop count onto the outbound request, and a
 /// request already at the hop cap is recognised by `current_hops`.
 #[test]

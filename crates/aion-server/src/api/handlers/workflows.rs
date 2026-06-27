@@ -71,6 +71,10 @@ pub async fn start_with_placement(
                 search_attributes,
                 namespace.clone(),
                 placement,
+                // Steered-start shard derivation already happened at the edge
+                // (which holds the concrete cluster store); the engine receives
+                // the derived placement id, so no routing key is threaded here.
+                None,
             )
             .await
             .map_err(|error| map_start_error(error, &request.workflow_type))
@@ -254,6 +258,7 @@ mod tests {
             namespace: NAMESPACE.to_owned(),
             workflow_type: "missing-workflow".to_owned(),
             input: Some(proto_payload()?),
+            routing_key: None,
         };
 
         let error = start(&context.guard, &context.caller, request).await;
@@ -520,6 +525,7 @@ mod tests {
             namespace: NAMESPACE.to_owned(),
             workflow_type: "fixture".to_owned(),
             input: None,
+            routing_key: None,
         };
 
         let error = start(&guard, &caller, request).await;

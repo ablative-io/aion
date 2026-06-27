@@ -521,6 +521,38 @@ impl HaematiteStore {
         None
     }
 
+    /// The distribution shard a caller-chosen steered-start `routing_key` targets.
+    ///
+    /// Uses the *same* `shard_for` hashing the workflow co-location routing uses
+    /// (see [`Self::shard_for_workflow`]), so a steered `start` and any later
+    /// signal/query/cancel resolved via the routing key map to one shard. The key
+    /// is hashed as raw bytes; two starts with the same key always land on the
+    /// same shard (R-4 steered start, §2.4 "placement derives from
+    /// `shard_for(routing_key)`").
+    #[must_use]
+    pub fn shard_for_routing_key(&self, routing_key: &str) -> usize {
+        self.inner.database().shard_for(routing_key.as_bytes())
+    }
+
+    /// Mint a fresh `WorkflowId` whose durable state lands on `target_shard`.
+    ///
+    /// Draws fresh v4 ids and returns the first whose `shard_for_workflow` equals
+    /// `target_shard`, bounded by `max_attempts` tries (callers pass a multiple of
+    /// `shard_count` so the probability of exhausting the budget without drawing
+    /// the target shard is negligible). `None` on exhaustion lets the caller fall
+    /// back rather than spin unbounded. Used by the R-4 steered start to place a
+    /// new id on the routing key's shard ([`Self::shard_for_routing_key`]).
+    #[must_use]
+    pub fn mint_for_shard(&self, target_shard: usize, max_attempts: usize) -> Option<WorkflowId> {
+        for _ in 0..max_attempts {
+            let candidate = WorkflowId::new_v4();
+            if self.shard_for_workflow(&candidate) == target_shard {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     /// Snapshot the owned-shard scope as an owned `Option<Vec<usize>>` suitable
     /// for moving into a `self.blocking` closure (which only borrows the
     /// `EventStore`, not `self`). `None` = all shards.
@@ -2063,6 +2095,23 @@ mod tests {
         };
         assert!(store.owns_workflow_shard(&reminted));
         assert_eq!(store.shard_for_workflow(&reminted), 2);
+        Ok(())
+    }
+
+    /// R-4: a routing key hashes to a stable shard, and `mint_for_shard` returns
+    /// an id whose durable shard is exactly that target.
+    #[test]
+    fn mint_for_shard_lands_on_the_routing_key_shard() -> Result<(), StoreError> {
+        let store = HaematiteStore::create_with_shard_count(unique_dir("steered"), 4)?;
+        let target = store.shard_for_routing_key("tenant-7/order-42");
+        // Stable: hashing the same key again yields the same shard.
+        assert_eq!(target, store.shard_for_routing_key("tenant-7/order-42"));
+        let Some(minted) = store.mint_for_shard(target, store.shard_count() * 16) else {
+            return Err(StoreError::Backend(
+                "mint_for_shard must find an id on the target shard".to_owned(),
+            ));
+        };
+        assert_eq!(store.shard_for_workflow(&minted), target);
         Ok(())
     }
 }

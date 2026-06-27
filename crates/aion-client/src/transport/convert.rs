@@ -72,6 +72,7 @@ pub(crate) fn encode_start_request(
         namespace: value.namespace,
         workflow_type: value.workflow_type,
         input: value.input.map(encode_payload),
+        routing_key: value.routing_key,
     }
 }
 

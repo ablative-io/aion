@@ -33,6 +33,10 @@ pub struct StartOptions {
     /// Reusing a key for a different start request returns
     /// [`ClientError::AlreadyExists`].
     pub idempotency_key: Option<String>,
+    /// R-4 steered-start routing key. When set, the cluster steers this start to
+    /// `shard_for(routing_key)`'s owner (forwarding there when the dialed node is
+    /// not the owner). `None` keeps the default unsteered placement.
+    pub routing_key: Option<String>,
 }
 
 /// Pagination options accepted by [`Client::list`].
@@ -73,6 +77,7 @@ impl Client {
     ) -> Result<WorkflowHandle, ClientError> {
         validate_start_options(&opts)?;
         let idempotency_key = opts.idempotency_key.clone();
+        let routing_key = opts.routing_key.clone();
         let namespace = operation_namespace(self, opts.namespace);
         let workflow_type = workflow_type.into();
         let fingerprint = idempotency_key.as_ref().map(|key| {
@@ -94,6 +99,7 @@ impl Client {
                 namespace,
                 workflow_type,
                 input: Some(ProtoPayload::from(input)),
+                routing_key,
             })
             .await?;
         let workflow_id = decode_required_workflow_id(response.workflow_id, "start response")?;
@@ -721,6 +727,7 @@ mod tests {
         let opts = StartOptions {
             namespace: None,
             idempotency_key: Some(String::from("retry-key")),
+            routing_key: None,
         };
 
         let original = client

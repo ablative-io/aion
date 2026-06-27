@@ -878,6 +878,7 @@ mod tests {
             namespace: String::from("tenant-a"),
             workflow_type: String::from("checkout"),
             input: None,
+            routing_key: None,
         };
 
         let scoped = guard

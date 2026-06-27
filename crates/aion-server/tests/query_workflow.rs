@@ -164,6 +164,7 @@ async fn start_parked(
             namespace: namespace.to_owned(),
             workflow_type: QUERY_MODULE.to_owned(),
             input: Some(Payload::from_json(&json!({ "fixture": "input" }))?.into()),
+            routing_key: None,
         },
     )
     .await?;

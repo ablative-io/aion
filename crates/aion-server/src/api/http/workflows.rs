@@ -258,6 +258,7 @@ mod tests {
             namespace: NAMESPACE.to_owned(),
             workflow_type: "missing-workflow".to_owned(),
             input: Some(proto_payload()?),
+            routing_key: None,
         };
         let response = router
             .clone()

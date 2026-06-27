@@ -16,6 +16,9 @@ struct HttpStartWorkflowRequest {
     namespace: String,
     workflow_type: String,
     input: Option<Value>,
+    /// R-4 steered-start routing key (optional; absent keeps unsteered placement).
+    #[serde(default)]
+    routing_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +57,7 @@ impl TryFrom<HttpStartWorkflowRequest> for ProtoStartWorkflowRequest {
             namespace: request.namespace,
             workflow_type: request.workflow_type,
             input: request.input.map(http_input_payload).transpose()?,
+            routing_key: request.routing_key,
         })
     }
 }

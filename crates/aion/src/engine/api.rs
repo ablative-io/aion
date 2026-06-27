@@ -219,19 +219,33 @@ impl Engine {
         search_attributes: HashMap<String, SearchAttributeValue>,
         namespace: String,
     ) -> Result<WorkflowHandle, EngineError> {
-        self.start_workflow_with_id(workflow_type, input, search_attributes, namespace, None)
-            .await
+        self.start_workflow_with_id(
+            workflow_type,
+            input,
+            search_attributes,
+            namespace,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Start a loaded workflow type, optionally with a caller-chosen
-    /// `workflow_id` instead of a freshly-minted one.
+    /// `workflow_id` and/or R-4 steered-start `routing_key`.
     ///
     /// The request-routing edge supplies `workflow_id` to *place* a new start on
-    /// a shard this node owns (the R-1 unsteered-start remint stopgap), so a
-    /// `start` whose default-minted id would hash to a non-owned shard never
-    /// fences. When `workflow_id` is `None` this is identical to
-    /// [`Self::start_workflow`]: the lifecycle mints a fresh `WorkflowId`, so the
-    /// default single-node path is unchanged.
+    /// a shard this node owns: the R-1 unsteered-start remint (any locally-owned
+    /// shard) or, for a steered start, an id the edge derived on the
+    /// `routing_key`'s shard before deciding to run locally. So a `start` whose
+    /// id would otherwise hash to a non-owned shard never fences. When
+    /// `workflow_id` is `None` this is identical to [`Self::start_workflow`]: the
+    /// lifecycle mints a fresh `WorkflowId`, so the default single-node path is
+    /// unchanged.
+    ///
+    /// `routing_key` is the caller-chosen steered-start key recorded on the start
+    /// options. Shard derivation for the cluster path is performed at the edge
+    /// (which holds the concrete cluster store); here it is threaded through for
+    /// API completeness and direct callers.
     ///
     /// # Errors
     ///
@@ -244,6 +258,7 @@ impl Engine {
         search_attributes: HashMap<String, SearchAttributeValue>,
         namespace: String,
         workflow_id: Option<WorkflowId>,
+        routing_key: Option<String>,
     ) -> Result<WorkflowHandle, EngineError> {
         let operation = self.shutdown_gate.begin_start()?;
         let result = start::start_workflow_with_options(
@@ -264,6 +279,7 @@ impl Engine {
                 namespace: Some(namespace),
                 search_attributes,
                 workflow_id,
+                routing_key,
                 ..start::StartWorkflowOptions::default()
             },
         )

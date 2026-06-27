@@ -350,6 +350,7 @@ async fn start_with_existing_workflow_id_resumes_history_sequence()
         payload("second")?,
         StartWorkflowOptions {
             workflow_id: Some(workflow_id.clone()),
+            routing_key: None,
             parent_run_id: Some(parent_run_id.clone()),
             loaded_version: None,
             search_attributes: std::collections::HashMap::new(),

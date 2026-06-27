@@ -26,6 +26,10 @@ message StartWorkflowRequest {
   string namespace = 1;
   string workflow_type = 2;
   Payload input = 3;
+  // R-4 steered start: caller-chosen routing key. When set, the start is steered
+  // to shard_for(routing_key)'s owner (forwarded there if this node is not the
+  // owner). Empty/absent keeps the unsteered (R-1 remint) behaviour.
+  optional string routing_key = 4;
 }
 
 message StartWorkflowResponse {

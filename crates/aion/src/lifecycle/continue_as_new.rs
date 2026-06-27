@@ -115,6 +115,8 @@ pub async fn continue_as_new(
         request.input.clone(),
         StartWorkflowOptions {
             workflow_id: Some(id.clone()),
+            // Continue-as-new reuses the existing id; steering does not apply.
+            routing_key: None,
             parent_run_id: Some(run.clone()),
             // D1: continue-as-new is the upgrade path for long-lived
             // workflows — the successor resolves the latest loaded version

@@ -59,6 +59,12 @@ pub struct StartWorkflowContext {
 pub struct StartWorkflowOptions {
     /// Existing workflow identifier to reuse; omitted for a fresh workflow.
     pub workflow_id: Option<WorkflowId>,
+    /// Caller-chosen R-4 steered-start routing key. When set (and no explicit
+    /// `workflow_id` is supplied), the request-routing edge derives a fresh id on
+    /// `shard_for(routing_key)` so the start is *steered* to that shard's owner —
+    /// forwarded there when this node is not the owner. `None` (the default) keeps
+    /// the unsteered R-1 remint behaviour, so the single-node path is unchanged.
+    pub routing_key: Option<String>,
     /// Parent run that continued into this run, when applicable.
     pub parent_run_id: Option<RunId>,
     /// Exact loaded package version to spawn; omitted to use the latest version.
