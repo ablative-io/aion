@@ -77,26 +77,35 @@ message ResultAck {
 }
 
 // Initial worker advertisement. A registration scopes this stream and worker to
-// exactly one (namespace, task_queue) worker pool; server-side partitioning and
+// a SET of (namespace) correctness boundaries, one task_queue pool/flavour lane
+// within each, and an optional node locality; server-side partitioning and
 // authorization are handled by the server worker endpoint.
 //
-// The two dimensions are disjoint. `namespace` is the correctness/isolation
-// boundary the worker is authorized for: a workflow's activities only ever reach
-// workers in the workflow's namespace, so crossing it is a bug, never a tuning
-// choice. `task_queue` is the pool/flavour selector *within* that namespace
-// (norn / claude / cpu / gpu); a task_queue miss is a liveness issue, never a
-// correctness one. `activity_type` (carried separately at registration) is NOT a
-// routing dimension — it is matched inside a pool after the pool is selected.
+// The dimensions are disjoint. `namespaces` is the SET of correctness/isolation
+// boundaries the worker is authorized for: a workflow's activities only ever
+// reach workers whose set includes the workflow's namespace, so crossing it is a
+// bug, never a tuning choice. `task_queue` is the pool/flavour selector *within*
+// each namespace (norn / claude / cpu / gpu); a task_queue miss is a liveness
+// issue, never a correctness one. `node` is an OPTIONAL locality affinity (a
+// locality, not a process: many workers may share a node id) used to filter
+// within a pool; absent means the worker is reachable for unpinned dispatches.
+// `activity_type` (carried separately at registration) is NOT a routing
+// dimension — it is matched inside a pool after the pool is selected.
 message RegisterWorker {
-  // Correctness/isolation boundary this worker is authorized for. The server
-  // matches a workflow's activities only against workers in the workflow's
-  // namespace.
-  string namespace = 1;
+  // Set of correctness/isolation boundaries this worker is authorized for. The
+  // server indexes the worker under each, matching a workflow's activities only
+  // against workers whose set includes the workflow's namespace.
+  repeated string namespaces = 1;
   repeated string activity_types = 2;
-  // Pool/flavour selector within the namespace. The worker-pool address is
+  // Pool/flavour selector within each namespace. The worker-pool address is
   // (namespace, task_queue); the server normalizes an empty value to the
   // literal "default" pool.
   string task_queue = 3;
+  // Optional locality affinity this worker advertises. A dispatch pinned to a
+  // node reaches only workers whose node equals it (round-robin among them); an
+  // empty value means the worker carries no locality and is reachable only for
+  // unpinned dispatches' general pool. Default = the worker's machine hostname.
+  string node = 4;
 }
 
 // Activity invocation pushed by the server to a registered worker.

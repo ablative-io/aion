@@ -350,9 +350,15 @@ fn apply_auth_metadata(
     metadata: &mut tonic::metadata::MetadataMap,
     config: &WorkerConfig,
 ) -> Result<(), WorkerError> {
+    // The `x-aion-namespaces` metadata reflects the worker's full namespace SET,
+    // comma-joined in advertised order. The server authorizes the worker for
+    // every namespace it registers under.
+    let namespaces_value = config.namespaces.join(",");
     let namespace =
-        MetadataValue::try_from(config.namespace.as_str()).map_err(|_| WorkerError::Handshake {
-            source: tonic::Status::invalid_argument("worker namespace is not valid gRPC metadata"),
+        MetadataValue::try_from(namespaces_value.as_str()).map_err(|_| WorkerError::Handshake {
+            source: tonic::Status::invalid_argument(
+                "worker namespaces are not valid gRPC metadata",
+            ),
         })?;
     let subject =
         MetadataValue::try_from(config.subject.as_str()).map_err(|_| WorkerError::Handshake {
@@ -385,14 +391,16 @@ impl WorkerSession for GrpcWorkerSession {
         validate_activity_handlers(&activity_types, available_handlers)?;
         self.activity_types.clone_from(&activity_types);
 
-        // OQ-5: the registration namespace is the SAME value advertised in the
+        // OQ-5: the registration namespace SET is the SAME set advertised in the
         // `x-aion-namespaces` auth metadata (`apply_auth_metadata`), so a worker
-        // registers into exactly the namespace it is authorized for. `task_queue`
-        // is the disjoint pool/flavour selector within that namespace.
+        // registers into exactly the namespaces it is authorized for.
+        // `task_queue` is the disjoint pool/flavour selector within each
+        // namespace; `node` is the optional locality affinity (default hostname).
         let register = aion_proto::generated::RegisterWorker {
-            namespace: self.config.namespace.clone(),
+            namespaces: self.config.namespaces.clone(),
             activity_types,
             task_queue: self.config.task_queue.clone(),
+            node: self.config.node.clone(),
         };
         self.open_registered_stream(register).await
     }

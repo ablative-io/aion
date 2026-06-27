@@ -138,9 +138,10 @@ impl Harness {
             .send(generated::WorkerToServer {
                 message: Some(worker_to_server::Message::Register(
                     generated::RegisterWorker {
-                        namespace: NAMESPACE.to_owned(),
+                        namespaces: vec![NAMESPACE.to_owned()],
                         activity_types: vec![ACTIVITY_TYPE.to_owned()],
                         task_queue: TASK_QUEUE.to_owned(),
+                        node: String::new(),
                     },
                 )),
             })
@@ -162,7 +163,7 @@ impl Harness {
             return Err(format!("first response frame must be RegisterAck, got {first:?}").into());
         };
         if registry
-            .workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE)?
+            .workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE, None)?
             .is_empty()
         {
             return Err("RegisterAck arrived before the registry registration".into());
@@ -387,7 +388,7 @@ async fn worker_death_mid_activity_fails_dispatch_with_retryable_lost_worker()
         harness
             .state
             .worker_registry()
-            .workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE)?
+            .workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE, None)?
             .is_empty(),
         "the dead worker must be deregistered"
     );
@@ -460,9 +461,10 @@ async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError>
             message: Some(worker_to_server::Message::Register(
                 generated::RegisterWorker {
                     // Registers a namespace the metadata grant does not cover.
-                    namespace: "ungranted".to_owned(),
+                    namespaces: vec!["ungranted".to_owned()],
                     activity_types: vec![ACTIVITY_TYPE.to_owned()],
                     task_queue: TASK_QUEUE.to_owned(),
+                    node: String::new(),
                 },
             )),
         })
@@ -491,7 +493,7 @@ async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError>
     assert_eq!(denial.code(), tonic::Code::PermissionDenied);
     assert!(
         registry
-            .workers_for("ungranted", TASK_QUEUE, ACTIVITY_TYPE)?
+            .workers_for("ungranted", TASK_QUEUE, ACTIVITY_TYPE, None)?
             .is_empty()
     );
 

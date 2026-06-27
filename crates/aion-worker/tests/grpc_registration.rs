@@ -171,7 +171,7 @@ fn test_config(address: std::net::SocketAddr) -> WorkerConfig {
     );
     // Genuine, disjoint routing dimensions: the worker is authorized for the
     // `default-queue` namespace and serves the `claude` pool within it.
-    config.namespace = String::from("default-queue");
+    config.namespaces = vec![String::from("default-queue")];
     config
 }
 
@@ -202,7 +202,7 @@ async fn register_completes_on_register_ack_and_captures_ack_payload() -> Result
         .recv()
         .await
         .ok_or_else(|| failure("server never received the RegisterWorker frame"))?;
-    assert_eq!(captured.namespace, "default-queue");
+    assert_eq!(captured.namespaces, vec![String::from("default-queue")]);
     assert_eq!(captured.task_queue, "claude");
     assert_eq!(captured.activity_types, activity_types);
     drop(registered);

@@ -388,9 +388,13 @@ impl WorkerActivityDispatcher {
         activity_id: &ActivityId,
     ) -> Result<WorkerHandle, String> {
         loop {
+            // node = None: this in-process bridge path is unpinned today. NODE
+            // affinity selection (a pinned node filter) arrives with SDK
+            // selection (NODE-4); `None` is genuine current behaviour, not a
+            // shim — it reaches any worker in the (namespace, task_queue) pool.
             match self
                 .registry
-                .select_worker(namespace, task_queue, activity_type)
+                .select_worker(namespace, task_queue, activity_type, None)
             {
                 Ok(Some(worker)) => return Ok(worker),
                 Ok(None) => {

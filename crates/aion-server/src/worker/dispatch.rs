@@ -26,6 +26,13 @@ pub struct ScheduledActivity {
     /// Activity type to match against worker registrations, *within* the
     /// selected pool.
     pub activity_type: String,
+    /// Optional node locality affinity. `Some(node)` pins this dispatch to
+    /// workers advertising that node (require semantics: it waits if none are
+    /// present, exactly like the no-worker path); `None` is unpinned and reaches
+    /// any worker in the `(namespace, task_queue)` pool — byte-identical to the
+    /// pre-NODE behaviour. Producers stamp `None` until SDK selection (NODE-4)
+    /// and the durable column (NODE-2) land.
+    pub node: Option<String>,
     /// Owning workflow id.
     pub workflow_id: WorkflowId,
     /// Correlating activity id.
@@ -94,6 +101,7 @@ impl ActivityDispatcher {
             operation = "activity_dispatch",
             namespace = %activity.namespace,
             task_queue = %activity.task_queue,
+            node = activity.node.as_deref(),
             workflow_id = %activity.workflow_id,
             activity_id = %activity.activity_id,
             activity_type = %activity.activity_type,
@@ -109,6 +117,7 @@ impl ActivityDispatcher {
                     &activity.namespace,
                     &activity.task_queue,
                     &activity.activity_type,
+                    activity.node.as_deref(),
                 )?;
                 if !candidates.is_empty() {
                     break candidates;
@@ -116,6 +125,7 @@ impl ActivityDispatcher {
                 tracing::info!(
                     namespace = %activity.namespace,
                     task_queue = %activity.task_queue,
+                    node = activity.node.as_deref(),
                     activity_type = %activity.activity_type,
                     workflow_id = %activity.workflow_id,
                     activity_id = %activity.activity_id,
@@ -152,36 +162,21 @@ impl ActivityDispatcher {
         .instrument(span)
         .await
         .inspect_err(|error| {
-            log_dispatch_error(
-                "activity_dispatch",
-                &activity.namespace,
-                &activity.task_queue,
-                &activity.workflow_id,
-                &activity.activity_id,
-                &activity.activity_type,
-                error,
-            );
+            log_dispatch_error("activity_dispatch", activity, error);
         })
     }
 }
 
-fn log_dispatch_error(
-    operation: &'static str,
-    namespace: &str,
-    task_queue: &str,
-    workflow_id: &WorkflowId,
-    activity_id: &ActivityId,
-    activity_type: &str,
-    error: &ServerError,
-) {
+fn log_dispatch_error(operation: &'static str, activity: &ScheduledActivity, error: &ServerError) {
     let fields = error.trace_fields();
     tracing::error!(
         operation,
-        namespace,
-        task_queue,
-        workflow_id = %workflow_id,
-        activity_id = %activity_id,
-        activity_type,
+        namespace = %activity.namespace,
+        task_queue = %activity.task_queue,
+        node = activity.node.as_deref(),
+        workflow_id = %activity.workflow_id,
+        activity_id = %activity.activity_id,
+        activity_type = %activity.activity_type,
         error_type = %fields.error_type,
         store_error_type = fields.store_error_type,
         reason = %fields.reason,
@@ -330,6 +325,7 @@ mod tests {
             namespace: String::from("tenant-a"),
             task_queue: String::from("default"),
             activity_type: String::from("charge-card"),
+            node: None,
             workflow_id: workflow_id(),
             activity_id: activity_id(),
             run_id: None,
@@ -362,6 +358,7 @@ mod tests {
             namespace: String::from("tenant-a"),
             task_queue: String::from("default"),
             activity_type: String::from("charge-card"),
+            node: None,
             workflow_id: workflow_id(),
             activity_id: activity_id(),
             run_id: None,
@@ -405,6 +402,7 @@ mod tests {
             namespace: String::from("tenant-a"),
             task_queue: String::from("default"),
             activity_type: String::from("charge-card"),
+            node: None,
             workflow_id: workflow_id(),
             activity_id: activity_id(),
             run_id: None,
@@ -418,7 +416,7 @@ mod tests {
         assert!(live_rx.recv().await.is_some());
         assert_eq!(
             registry
-                .workers_for("tenant-a", "default", "charge-card")?
+                .workers_for("tenant-a", "default", "charge-card", None)?
                 .len(),
             1
         );

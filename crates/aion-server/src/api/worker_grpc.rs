@@ -82,10 +82,17 @@ impl WorkerProtocol for WorkerGrpcService {
         let worker_id = registration
             .worker_id()
             .ok_or_else(|| Status::internal("worker registration missing id"))?;
+        // A worker serves a SET of namespaces; the ack echoes them joined in
+        // stable order purely for the worker's logs (the RegisterAck namespace
+        // field is informational, not a routing input).
         let authorized_namespace = registration
-            .namespace()
+            .namespaces()
+            .filter(|namespaces| !namespaces.is_empty())
             .ok_or_else(|| Status::internal("worker registration missing namespace"))?
-            .to_owned();
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
 
         // RegisterAck ordering guarantee: the ack is enqueued on `task_tx`
         // BEFORE the write forwarder that copies dispatched tasks onto the
@@ -466,9 +473,10 @@ fn result_ack_frame(
 
 fn decode_register(r: generated::RegisterWorker) -> ProtoRegisterWorker {
     ProtoRegisterWorker {
-        namespace: r.namespace,
+        namespaces: r.namespaces,
         activity_types: r.activity_types,
         task_queue: r.task_queue,
+        node: r.node,
     }
 }
 

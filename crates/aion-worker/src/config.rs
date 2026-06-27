@@ -104,25 +104,30 @@ impl ReconnectConfig {
 /// defaults to `default`/`worker` so development workers can register against
 /// the default namespace without an explicit auth setup.
 ///
-/// `namespace` and `task_queue` are disjoint routing dimensions. `namespace`
-/// is the correctness/isolation boundary the worker is authorized for — the
-/// same value carried in the `x-aion-namespaces` auth metadata and in the
-/// registration scope, so a worker registers into the namespace it is
-/// authorized for. `task_queue` is the pool/flavour selector *within* that
-/// namespace.
+/// `namespaces`, `task_queue`, and `node` are disjoint routing dimensions.
+/// `namespaces` is the SET of correctness/isolation boundaries the worker is
+/// authorized for — the same set carried (comma-joined) in the
+/// `x-aion-namespaces` auth metadata and in the registration scope, so a worker
+/// registers into exactly the namespaces it is authorized for. `task_queue` is
+/// the pool/flavour selector *within* each namespace. `node` is an OPTIONAL
+/// locality affinity the worker advertises (default = machine hostname).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerConfig {
-    /// Correctness/isolation boundary this worker registers into. Advertised
-    /// both in `x-aion-namespaces` worker stream metadata and as the
-    /// registration namespace, so authorization and registration scope agree.
-    pub namespace: String,
+    /// Set of correctness/isolation boundaries this worker registers into.
+    /// Advertised both in `x-aion-namespaces` worker stream metadata (comma
+    /// joined) and as the registration namespace set, so authorization and
+    /// registration scope agree. Must be non-empty.
+    pub namespaces: Vec<String>,
     /// Subject advertised in `x-aion-subject` worker stream metadata.
     pub subject: String,
     /// Engine worker endpoint URI.
     pub endpoint: String,
-    /// Pool/flavour selector within the namespace, sent as the registration's
+    /// Pool/flavour selector within each namespace, sent as the registration's
     /// `task_queue`. The worker-pool address is `(namespace, task_queue)`.
     pub task_queue: String,
+    /// Locality affinity advertised at registration. Defaults to the machine
+    /// hostname; a dispatch pinned to this node reaches this worker.
+    pub node: String,
     /// Worker identity used by operators and future wire metadata.
     pub identity: String,
     /// Maximum concurrent activities this worker may serve.
@@ -135,6 +140,29 @@ pub struct WorkerConfig {
 
 const DEFAULT_WORKER_NAMESPACE: &str = "default";
 const DEFAULT_WORKER_SUBJECT: &str = "worker";
+
+/// Fallback node id when the machine hostname cannot be resolved. A worker must
+/// never fail to start over a missing hostname, so it advertises this documented
+/// default instead of panicking.
+const DEFAULT_WORKER_NODE: &str = "localhost";
+
+/// Resolve the machine hostname for use as the default node locality affinity.
+///
+/// Falls back to [`DEFAULT_WORKER_NODE`] (never panics) when the OS hostname is
+/// unavailable or is not valid UTF-8.
+#[must_use]
+pub fn default_node() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|hostname| !hostname.is_empty())
+        .or_else(|| {
+            hostname::get()
+                .ok()
+                .and_then(|raw| raw.into_string().ok())
+                .filter(|hostname| !hostname.is_empty())
+        })
+        .unwrap_or_else(|| String::from(DEFAULT_WORKER_NODE))
+}
 
 impl WorkerConfig {
     /// Starts an explicit builder. The caller must provide every required field
@@ -155,10 +183,11 @@ impl WorkerConfig {
         transport_credentials: Option<TransportCredentials>,
     ) -> Self {
         Self {
-            namespace: String::from(DEFAULT_WORKER_NAMESPACE),
+            namespaces: vec![String::from(DEFAULT_WORKER_NAMESPACE)],
             subject: String::from(DEFAULT_WORKER_SUBJECT),
             endpoint: endpoint.into(),
             task_queue: task_queue.into(),
+            node: default_node(),
             identity: identity.into(),
             max_concurrency,
             reconnect,
@@ -170,10 +199,11 @@ impl WorkerConfig {
 /// Builder for [`WorkerConfig`] with auth metadata defaults and explicit required fields.
 #[derive(Clone, Debug, Default)]
 pub struct WorkerConfigBuilder {
-    namespace: Option<String>,
+    namespaces: Option<Vec<String>>,
     subject: Option<String>,
     endpoint: Option<String>,
     task_queue: Option<String>,
+    node: Option<String>,
     identity: Option<String>,
     max_concurrency: Option<usize>,
     reconnect_initial_backoff: Option<Duration>,
@@ -187,10 +217,11 @@ impl WorkerConfigBuilder {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            namespace: None,
+            namespaces: None,
             subject: None,
             endpoint: None,
             task_queue: None,
+            node: None,
             identity: None,
             max_concurrency: None,
             reconnect_initial_backoff: None,
@@ -200,10 +231,26 @@ impl WorkerConfigBuilder {
         }
     }
 
-    /// Sets the namespace advertised in worker stream authorization metadata.
+    /// Sets the SET of namespaces advertised in worker stream authorization
+    /// metadata and the registration scope. Replaces any previously set value.
+    #[must_use]
+    pub fn namespaces(mut self, namespaces: impl IntoIterator<Item = String>) -> Self {
+        self.namespaces = Some(namespaces.into_iter().collect());
+        self
+    }
+
+    /// Sets a single namespace, replacing any previously set namespace set.
+    /// Convenience over [`Self::namespaces`] for the common one-namespace case.
     #[must_use]
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.namespace = Some(namespace.into());
+        self.namespaces = Some(vec![namespace.into()]);
+        self
+    }
+
+    /// Sets the locality affinity (node) advertised at registration.
+    #[must_use]
+    pub fn node(mut self, node: impl Into<String>) -> Self {
+        self.node = Some(node.into());
         self
     }
 
@@ -276,10 +323,12 @@ impl WorkerConfigBuilder {
     ///
     /// Returns [`WorkerConfigBuildError`] naming the missing required field.
     pub fn build(self) -> Result<WorkerConfig, WorkerConfigBuildError> {
+        let namespaces = self
+            .namespaces
+            .filter(|namespaces| !namespaces.is_empty())
+            .unwrap_or_else(|| vec![String::from(DEFAULT_WORKER_NAMESPACE)]);
         Ok(WorkerConfig {
-            namespace: self
-                .namespace
-                .unwrap_or_else(|| String::from(DEFAULT_WORKER_NAMESPACE)),
+            namespaces,
             subject: self
                 .subject
                 .unwrap_or_else(|| String::from(DEFAULT_WORKER_SUBJECT)),
@@ -289,6 +338,7 @@ impl WorkerConfigBuilder {
             task_queue: self
                 .task_queue
                 .ok_or(WorkerConfigBuildError::MissingTaskQueue)?,
+            node: self.node.unwrap_or_else(default_node),
             identity: self
                 .identity
                 .ok_or(WorkerConfigBuildError::MissingIdentity)?,
@@ -359,10 +409,11 @@ mod tests {
             .transport_credentials(credentials.clone())
             .build()?;
 
-        assert_eq!(config.namespace, "payments");
+        assert_eq!(config.namespaces, vec![String::from("payments")]);
         assert_eq!(config.subject, "worker-a");
         assert_eq!(config.endpoint, "http://127.0.0.1:50051");
         assert_eq!(config.task_queue, "payments");
+        assert!(!config.node.is_empty(), "node defaults to the hostname");
         assert_eq!(config.identity, "worker-a");
         assert_eq!(config.max_concurrency, 7);
         assert_eq!(config.reconnect.initial_backoff, Duration::from_millis(10));
@@ -385,7 +436,31 @@ mod tests {
             None,
         );
 
-        assert_eq!(config.namespace, "default");
+        assert_eq!(config.namespaces, vec![String::from("default")]);
         assert_eq!(config.subject, "worker");
+        assert!(!config.node.is_empty(), "node defaults to the hostname");
+    }
+
+    #[test]
+    fn worker_config_builder_carries_namespace_set_and_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = WorkerConfig::builder()
+            .endpoint("http://127.0.0.1:50051")
+            .task_queue("default")
+            .identity("worker-a")
+            .max_concurrency(1)
+            .reconnect_initial_backoff(Duration::from_millis(5))
+            .reconnect_max_backoff(Duration::from_millis(20))
+            .reconnect_max_attempts(3)
+            .namespaces([String::from("a"), String::from("b")])
+            .node("host-7")
+            .build()?;
+
+        assert_eq!(
+            config.namespaces,
+            vec![String::from("a"), String::from("b")]
+        );
+        assert_eq!(config.node, "host-7");
+        Ok(())
     }
 }
