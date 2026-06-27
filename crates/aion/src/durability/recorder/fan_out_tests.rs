@@ -226,6 +226,7 @@ fn fan_out_items(
             ordinal,
             namespace: "test-ns".to_owned(),
             task_queue: "test-tq".to_owned(),
+            node: None,
             activity_type: format!("activity-{ordinal}"),
             input: payload(&format!("input-{ordinal}"))?,
         });

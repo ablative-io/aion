@@ -62,6 +62,9 @@ pub struct FanOutItem {
     /// Pool/flavour selector for this dispatch. No SDK-level task-queue selection exists yet
     /// (NSTQ-4), so this is the named `"default"` task queue today (NSTQ-2).
     pub task_queue: String,
+    /// OPTIONAL node affinity for this dispatch. No SDK-level node selection exists yet (NODE-4), so
+    /// this is `None` today (NODE-2) — `None` = genuine current "no affinity", not a shim.
+    pub node: Option<String>,
     /// Activity type the worker must execute.
     pub activity_type: String,
     /// Opaque activity input payload.
@@ -135,7 +138,8 @@ impl Recorder {
                 )
                 .with_run_id(self.run_id.clone())
                 .with_namespace(item.namespace.clone())
-                .with_task_queue(item.task_queue.clone()),
+                .with_task_queue(item.task_queue.clone())
+                .with_node(item.node.clone()),
             );
         }
 
@@ -193,6 +197,7 @@ impl Recorder {
                 .with_run_id(self.run_id.clone())
                 .with_namespace(item.namespace.clone())
                 .with_task_queue(item.task_queue.clone())
+                .with_node(item.node.clone())
             })
             .collect();
         self.store.rearm_outbox_pending(&rows).await?;

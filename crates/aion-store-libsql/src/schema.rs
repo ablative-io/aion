@@ -153,6 +153,7 @@ pub async fn ensure_schema(conn: &libsql::Connection) -> Result<(), StoreError> 
     ensure_outbox_run_id_column(conn).await?;
     ensure_outbox_namespace_column(conn).await?;
     ensure_outbox_task_queue_column(conn).await?;
+    ensure_outbox_node_column(conn).await?;
     conn.execute(CREATE_OUTBOX_CLAIMED_INDEX, ())
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
@@ -199,6 +200,17 @@ async fn ensure_outbox_task_queue_column(conn: &libsql::Connection) -> Result<()
     }
 
     conn.execute("ALTER TABLE outbox ADD COLUMN task_queue TEXT", ())
+        .await
+        .map(|_| ())
+        .map_err(|error| crate::error::libsql_error(&error))
+}
+
+async fn ensure_outbox_node_column(conn: &libsql::Connection) -> Result<(), StoreError> {
+    if outbox_column_exists(conn, "node").await? {
+        return Ok(());
+    }
+
+    conn.execute("ALTER TABLE outbox ADD COLUMN node TEXT", ())
         .await
         .map(|_| ())
         .map_err(|error| crate::error::libsql_error(&error))

@@ -730,6 +730,10 @@ struct StoredOutboxRow {
     /// Pool/flavour selector; legacy rows persisted before NSTQ-2 default to `"default"`.
     #[serde(default = "default_outbox_route")]
     task_queue: String,
+    /// OPTIONAL node affinity; an absent field (legacy rows persisted before NODE-2) decodes to
+    /// `None` = no affinity. No sentinel string.
+    #[serde(default)]
+    node: Option<String>,
     activity_type: String,
     input: aion_core::Payload,
     status: String,
@@ -751,6 +755,7 @@ fn encode_outbox(row: &OutboxRow) -> Result<Vec<u8>, StoreError> {
         run_id: row.run_id.clone(),
         namespace: row.namespace.clone(),
         task_queue: row.task_queue.clone(),
+        node: row.node.clone(),
         activity_type: row.activity_type.clone(),
         input: row.input.clone(),
         status: row.status.as_str().to_owned(),
@@ -771,6 +776,7 @@ fn decode_outbox(bytes: &[u8]) -> Result<OutboxRow, StoreError> {
         run_id: stored.run_id,
         namespace: stored.namespace,
         task_queue: stored.task_queue,
+        node: stored.node,
         activity_type: stored.activity_type,
         input: stored.input,
         status: OutboxStatus::parse_token(&stored.status)?,
@@ -1879,6 +1885,55 @@ mod tests {
             Payload::new(ContentType::Json, b"{}".to_vec()),
             visible_after,
         )
+    }
+
+    #[tokio::test]
+    async fn staged_row_round_trips_node_affinity() -> Result<(), StoreError> {
+        // NODE-2: a row staged with an explicit node affinity persists in haematite
+        // and reads back `Some(node)` verbatim through claim.
+        let store = store("node-round-trip")?;
+        let workflow_id = WorkflowId::new_v4();
+        let row =
+            pending_row(&workflow_id, 0, "charge", Utc::now()).with_node(Some("box-7".to_owned()));
+        store
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+
+        let claimed = store.claim_outbox_rows(10).await?;
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].node.as_deref(), Some("box-7"));
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_serde_round_trips_node_and_absent_field_decodes_none() -> Result<(), StoreError> {
+        // NODE-2: encode/decode carries `Some(node)` faithfully; and a serialized
+        // value with NO `node` field (a legacy row persisted before NODE-2) decodes
+        // back to `None` via `#[serde(default)]` — no sentinel string.
+        let workflow_id = WorkflowId::new_v4();
+        let pinned =
+            pending_row(&workflow_id, 0, "charge", Utc::now()).with_node(Some("box-7".to_owned()));
+        let decoded = super::decode_outbox(&super::encode_outbox(&pinned)?)?;
+        assert_eq!(decoded.node.as_deref(), Some("box-7"));
+
+        // A legacy serde value missing the `node` field decodes to `None`.
+        let legacy = serde_json::json!({
+            "dispatch_key": "wf:0",
+            "workflow_id": workflow_id,
+            "ordinal": 0,
+            "namespace": "default",
+            "task_queue": "default",
+            "activity_type": "charge",
+            "input": Payload::new(ContentType::Json, b"{}".to_vec()),
+            "status": "pending",
+            "attempt": 0,
+            "visible_after": super::encode_instant(Utc::now()),
+        });
+        let bytes = serde_json::to_vec(&legacy)
+            .map_err(|error| StoreError::Serialization(error.to_string()))?;
+        let decoded_legacy = super::decode_outbox(&bytes)?;
+        assert_eq!(decoded_legacy.node, None);
+        Ok(())
     }
 
     async fn status_of(

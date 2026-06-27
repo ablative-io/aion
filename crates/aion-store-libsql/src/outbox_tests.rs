@@ -89,6 +89,59 @@ async fn legacy_null_namespace_and_task_queue_read_back_as_default() -> Result<(
 }
 
 #[tokio::test]
+async fn staged_row_round_trips_node_affinity() -> Result<(), StoreError> {
+    // NODE-2: a row staged with an explicit node affinity persists and reads back
+    // `Some(node)` verbatim through claim.
+    let store = open_test_store("node-round-trip").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let row =
+        pending_row(&workflow_id, 0, "charge", instant(1)?).with_node(Some("box-7".to_owned()));
+
+    store
+        .append_outbox_batch(std::slice::from_ref(&row))
+        .await?;
+
+    let claimed = store.claim_outbox_rows(10).await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].node.as_deref(), Some("box-7"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_null_node_reads_back_as_none() -> Result<(), StoreError> {
+    // NODE-2: node affinity is OPTIONAL. A pre-migration row whose `node` column is
+    // NULL reads back as `None` = no affinity (NOT a sentinel string).
+    let store = open_test_store("node-legacy-null").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let dispatch_key = OutboxRow::dispatch_key_for(&workflow_id, 0);
+    // Insert a row with NULL node, exactly as a row persisted before the additive
+    // `node` column existed would read back.
+    store
+        .connection()
+        .execute(
+            "INSERT INTO outbox \
+             (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, \
+              visible_after, claimed_at, run_id, namespace, task_queue, node) \
+             VALUES (?1, ?2, 0, 'charge', ?3, 'pending', 0, ?4, NULL, NULL, NULL, NULL, NULL)",
+            params![
+                dispatch_key.clone(),
+                workflow_id.to_string(),
+                serde_json::to_vec(&Payload::new(ContentType::Json, b"{}".to_vec()))
+                    .map_err(|error| StoreError::Serialization(error.to_string()))?,
+                encode_instant(instant(1)?),
+            ],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let claimed = store.claim_outbox_rows(10).await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_key, dispatch_key);
+    assert_eq!(claimed[0].node, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn claim_complete_retry_round_trip() -> Result<(), StoreError> {
     let store = open_test_store("round-trip").await?;
     let workflow_id = WorkflowId::new_v4();

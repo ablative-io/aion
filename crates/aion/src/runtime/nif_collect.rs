@@ -353,6 +353,9 @@ fn fan_out_items(
                 // override > workflow default > the named default) from its dispatch config, so the
                 // staged outbox row and the recorded `ActivityScheduled` land on the chosen pool.
                 task_queue: super::nif_activity::resolve_task_queue(&spec.config),
+                // No SDK-level node selection exists yet (NODE-4), so a fresh dispatch stamps no
+                // affinity: `None` = any worker in the pool (NODE-2).
+                node: None,
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })
@@ -382,6 +385,9 @@ fn fan_out_items_recovered(
                 namespace: namespace.to_owned(),
                 task_queue: scheduled_task_queue(history, *ordinal)
                     .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE)),
+                // No SDK-level node selection exists yet (NODE-4); node affinity is not yet recorded
+                // on history (NODE-3), so recovery re-stages with no affinity (NODE-2).
+                node: None,
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })

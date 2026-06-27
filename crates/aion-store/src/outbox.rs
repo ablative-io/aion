@@ -103,6 +103,12 @@ pub struct OutboxRow {
     /// (pre-NSTQ-2) also read back as `"default"`. Carried on the row so the dispatcher routes via the
     /// row's real selector (NSTQ-2).
     pub task_queue: String,
+    /// OPTIONAL locality affinity within the `(namespace, task_queue)` pool. `None` = no affinity =
+    /// any worker in the pool (the genuine current behaviour: there is no SDK-level node selection
+    /// yet — NODE-4). `Some(node)` pins the dispatch to workers advertising that node id. Legacy
+    /// rows (pre-NODE-2, persisted before the column existed) read back as `None`: a NULL column is
+    /// "no affinity", NOT a sentinel string (NODE-2).
+    pub node: Option<String>,
     /// Activity type the worker must execute.
     pub activity_type: String,
     /// Opaque activity input payload.
@@ -147,6 +153,7 @@ impl OutboxRow {
             run_id: None,
             namespace: String::from(DEFAULT_OUTBOX_ROUTE),
             task_queue: String::from(DEFAULT_OUTBOX_ROUTE),
+            node: None,
             activity_type,
             input,
             status: OutboxStatus::Pending,
@@ -174,6 +181,13 @@ impl OutboxRow {
     #[must_use]
     pub fn with_task_queue(mut self, task_queue: impl Into<String>) -> Self {
         self.task_queue = task_queue.into();
+        self
+    }
+
+    /// Sets the OPTIONAL node affinity on this row. `None` = no affinity (any worker in the pool).
+    #[must_use]
+    pub fn with_node(mut self, node: Option<String>) -> Self {
+        self.node = node;
         self
     }
 }
