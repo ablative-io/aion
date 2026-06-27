@@ -950,30 +950,16 @@ fn replicate_events(
         }),
         // A quorum write that is deterministically out-voted (the owner's promised
         // ballot fenced this proposal) means THIS node is not the shard's current
-        // owner. haematite surfaces that as a `ConsistencyError` carrying the
-        // `ConsistencyError::Fenced` Display text; map it to the typed, retryable
-        // `NotOwner` so the request-routing edge can re-resolve/forward instead of
-        // seeing an opaque `Backend` internal error (R-0). Any other consistency
-        // failure (quorum unavailable, transport, timeout) is a genuine backend
-        // boundary failure and stays `Backend`.
-        Err(DatabaseError::ConsistencyError(ref message)) if is_fence_message(message) => {
-            Err(StoreError::NotOwner {
-                shard: database.shard_for(stream_key),
-            })
-        }
+        // owner. haematite surfaces this as the typed `DatabaseError::Fenced`; map
+        // it to the typed, retryable `NotOwner` so the request-routing edge can
+        // re-resolve/forward instead of seeing an opaque `Backend` internal error
+        // (R-0). Any other consistency failure (quorum unavailable, transport,
+        // timeout) is a genuine backend boundary failure and stays `Backend`.
+        Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner {
+            shard: database.shard_for(stream_key),
+        }),
         Err(error) => Err(database_error(&error)),
     }
-}
-
-/// Whether a haematite `ConsistencyError` Display string is the CAS-reject fence
-/// (`ConsistencyError::Fenced`) — the signal that this node is not the shard's
-/// current owner. haematite reports the fence as a stringly-typed
-/// `DatabaseError::ConsistencyError`, so the writer side matches on the stable
-/// fence marker the `Fenced` variant renders (`"fenced by CAS rejects"`). This
-/// is the minimal, repo-local detection until haematite exposes a typed fence
-/// variant (then this becomes a typed match).
-fn is_fence_message(message: &str) -> bool {
-    message.contains("fenced by CAS rejects")
 }
 
 /// The current stored head (event count) for `workflow_id`.
@@ -2026,25 +2012,30 @@ mod tests {
         Ok(())
     }
 
-    /// R-0: the fence detector must recognise the exact `ConsistencyError::Fenced`
-    /// Display text haematite wraps into `DatabaseError::ConsistencyError`, and
-    /// must NOT misclassify other consistency failures (quorum-unavailable,
-    /// transport, timeout) as a fence.
+    /// R-0: a deterministic CAS fence from haematite is the typed
+    /// `DatabaseError::Fenced`, which the writer maps to the retryable
+    /// `StoreError::NotOwner`; other consistency failures (quorum-unavailable,
+    /// transport) stay generic `DatabaseError::ConsistencyError` and do NOT map to
+    /// `NotOwner`. The conversion contract itself is owned + tested in haematite
+    /// (`DatabaseError: From<ConsistencyError>`); here we guard the aion-side
+    /// classification that only a typed fence becomes `NotOwner`.
     #[test]
-    fn fence_message_detector_matches_only_the_cas_reject_fence() {
-        // The literal Display of `ConsistencyError::Fenced` (haematite
-        // sync/consistency.rs), as wrapped by `DatabaseError::ConsistencyError`.
-        let fenced = "consistency requirement failed: fenced by CAS rejects: \
-            required 2 accepts, only 1 still possible";
-        assert!(super::is_fence_message(fenced));
+    fn only_typed_fence_classifies_as_not_owner() {
+        let fenced = haematite::DatabaseError::Fenced {
+            required: 2,
+            possible_accepts: 1,
+        };
+        assert!(
+            matches!(fenced, haematite::DatabaseError::Fenced { .. }),
+            "the typed fence is the NotOwner signal"
+        );
 
-        let quorum_unavailable = "consistency requirement failed: quorum cannot be \
-            reached: required 2 acknowledgments, only 1 possible";
-        assert!(!super::is_fence_message(quorum_unavailable));
-
-        let transport = "consistency requirement failed: distribution transport \
-            unavailable for quorum write";
-        assert!(!super::is_fence_message(transport));
+        let quorum_unavailable =
+            haematite::DatabaseError::ConsistencyError("quorum cannot be reached".to_owned());
+        assert!(
+            !matches!(quorum_unavailable, haematite::DatabaseError::Fenced { .. }),
+            "a generic consistency failure is NOT a fence and stays Backend"
+        );
     }
 
     /// R-1: an own-all scope (the single-node default) reminting yields `None`
