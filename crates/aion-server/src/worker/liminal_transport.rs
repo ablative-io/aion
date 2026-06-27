@@ -8,15 +8,24 @@
 //! `liminal-transport` Cargo feature and the `outbox.transport = liminal`
 //! runtime flag. It is deliberately the smallest useful slice:
 //!
-//! - **Hard-coded addressing.** One liminal server address + one channel name,
-//!   provided to [`LiminalOutboxDispatch::new`]. There is no
-//!   `(namespace, activity_type)` channel derivation yet — that is 13-3.
+//! - **Per-row channel addressing (13-3 / NSTQ-5).** One liminal server address,
+//!   provided to [`LiminalOutboxDispatch::new`]; the channel is derived
+//!   **per dispatch** from the row's `(namespace, task_queue)` via
+//!   [`dispatch_channel_name`] — the worker-pool address. `activity_type` is NOT
+//!   a routing dimension: it rides inside the [`DispatchRequest`] payload and is
+//!   matched by the worker after delivery (see `DispatchRequest::activity_type`),
+//!   exactly as the gRPC registry pushes `activity_type` in the task body while
+//!   selecting the worker by pool key. See
+//!   `docs/NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md` §4.2 for why the earlier
+//!   `(namespace, activity_type)` channel proposal was wrong.
 //! - **Happy path, one worker.** A single dispatch + result round-trip. Retry
 //!   through the honest delivery ack is exercised (the dispatch-out contract)
 //!   but the wider retry/backoff/dead-letter proof is 13-1.
-//! - **No new outbox schema.** A PER-ATTEMPT idempotency key
+//! - **Per-attempt idempotency key.** A PER-ATTEMPT idempotency key
 //!   (`{dispatch_key}#{attempt}`, both already on the row) keys liminal
-//!   dedup-on-delivery; no `namespace` column is added (that is 13-3).
+//!   dedup-on-delivery. The `namespace` + `task_queue` columns the channel
+//!   derivation reads were added by NSTQ-2 (the original "no `namespace` column"
+//!   note predates that landed schema change).
 //!
 //! # The two seams it implements
 //!
@@ -46,9 +55,21 @@
 //! is genuine (real TCP, real correlation, real dedup-on-delivery, real delivery
 //! ack), but the responder identity is liminal's echo, not a separate aion
 //! worker binary. Registering a real remote aion worker as the responder is the
-//! deferred work tracked by 13-3/13-6 and a corresponding liminal worker-pool
-//! seam. This module's types and contracts are written so that swap is a change
-//! of responder, not of the aion-side wiring.
+//! deferred work tracked by 13-6 and a corresponding liminal worker-pool seam.
+//! This module's types and contracts are written so that swap is a change of
+//! responder, not of the aion-side wiring.
+//!
+//! # The worker-subscription seam (out of scope here, documented)
+//!
+//! This module owns the DISPATCHER side: it publishes a row to the channel
+//! [`dispatch_channel_name`] derives from the row's `(namespace, task_queue)`.
+//! The SUBSCRIBER side — a remote aion-worker pool joining the liminal pg group
+//! for the channel it serves — lives in the worker/liminal layer, not here, and
+//! does not exist yet (13-0 uses liminal's in-server echo responder). When that
+//! worker-pool transport is built, a worker pool addressed `(namespace,
+//! task_queue)` MUST subscribe to the channel produced by **this same**
+//! [`dispatch_channel_name`] function so the dispatcher and subscriber strings
+//! cannot drift. That is the single contract the seam must honour.
 
 use std::sync::Arc;
 
@@ -162,66 +183,102 @@ pub fn attempt_idempotency_key(row: &OutboxRow) -> String {
     format!("{}#{}", row.dispatch_key, row.attempt)
 }
 
+/// Derives the liminal dispatch channel for a worker pool addressed
+/// `(namespace, task_queue)`.
+///
+/// This is the **single, total source of truth** for the channel string: every
+/// site that needs the channel a `(namespace, task_queue)` pool dispatches to —
+/// both this dispatcher and any future worker-pool subscription side — MUST call
+/// this function so the two sides cannot drift. The format is
+/// `"aion.dispatch.{namespace}.{task_queue}"`.
+///
+/// `activity_type` is deliberately NOT part of the channel: it is *what to run*,
+/// matched by the worker after delivery (it rides inside [`DispatchRequest`]),
+/// not *which pool* — see `docs/NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md` §4.2. The
+/// function is total (defined for every string pair) and stable (the same
+/// `(namespace, task_queue)` always yields the same channel).
+#[must_use]
+pub fn dispatch_channel_name(namespace: &str, task_queue: &str) -> String {
+    format!("aion.dispatch.{namespace}.{task_queue}")
+}
+
+/// Derives the liminal dispatch channel for a claimed outbox row.
+///
+/// Thin wrapper over [`dispatch_channel_name`] reading the row's durable
+/// `(namespace, task_queue)` (NSTQ-2 columns). Kept free-standing so the
+/// dispatch path and tests derive the row's channel identically.
+#[must_use]
+pub fn channel_for_row(row: &OutboxRow) -> String {
+    dispatch_channel_name(&row.namespace, &row.task_queue)
+}
+
 /// Cross-node [`OutboxRowDispatch`] that places a claimed row over liminal.
 ///
-/// Holds the hard-coded server address + channel name for the spike. Each
-/// dispatch opens a fresh [`RemoteChannelHandle`] (one connection, happy path);
-/// connection pooling/reuse is a later increment.
+/// Holds the liminal server address; the channel is derived **per dispatch**
+/// from each row's `(namespace, task_queue)` via [`channel_for_row`], so a row
+/// for `(remote, gpu)` and a row for `(local, norn)` publish to distinct pool
+/// channels through one dispatcher. Each dispatch opens a fresh
+/// [`RemoteChannelHandle`] (one connection, happy path); connection
+/// pooling/reuse is a later increment.
 pub struct LiminalOutboxDispatch {
     server_address: String,
-    channel_name: String,
 }
 
 impl std::fmt::Debug for LiminalOutboxDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiminalOutboxDispatch")
             .field("server_address", &self.server_address)
-            .field("channel_name", &self.channel_name)
             .finish()
     }
 }
 
 impl LiminalOutboxDispatch {
-    /// Build a liminal dispatch over a hard-coded server address + channel.
+    /// Build a liminal dispatch over a server address; the channel is derived
+    /// per-row at dispatch time, not fixed at construction.
     #[must_use]
-    pub fn new(server_address: impl Into<String>, channel_name: impl Into<String>) -> Self {
+    pub fn new(server_address: impl Into<String>) -> Self {
         Self {
             server_address: server_address.into(),
-            channel_name: channel_name.into(),
         }
     }
 
-    /// Connects a remote channel handle to the configured liminal server.
-    fn connect(&self) -> Result<RemoteChannelHandle, ServerError> {
+    /// Connects a remote channel handle to the configured liminal server on the
+    /// row-derived `channel`.
+    fn connect(&self, channel: &str) -> Result<RemoteChannelHandle, ServerError> {
         let config = RemoteConfig::new(
             self.server_address.clone(),
-            self.channel_name.clone(),
-            self.channel_name.clone(),
+            channel.to_owned(),
+            channel.to_owned(),
             SPIKE_POOL,
         )
-        .map_err(|error| self.dispatch_error(format!("remote config invalid: {error}")))?;
+        .map_err(|error| dispatch_error(channel, format!("remote config invalid: {error}")))?;
         let connected = config
             .connect_tcp()
-            .map_err(|error| self.dispatch_error(format!("connect failed: {error}")))?;
+            .map_err(|error| dispatch_error(channel, format!("connect failed: {error}")))?;
         RemoteChannelHandle::new(&connected)
-            .map_err(|error| self.dispatch_error(format!("handle build failed: {error}")))
+            .map_err(|error| dispatch_error(channel, format!("handle build failed: {error}")))
     }
+}
 
-    /// Wraps a reason in the existing worker-dispatch error so a non-accepted
-    /// send drives the outbox's unchanged retry/backoff/dead-letter path.
-    fn dispatch_error(&self, reason: String) -> ServerError {
-        ServerError::WorkerDispatch {
-            namespace: "liminal".to_owned(),
-            activity_type: self.channel_name.clone(),
-            reason,
-        }
+/// Wraps a reason in the existing worker-dispatch error so a non-accepted send
+/// drives the outbox's unchanged retry/backoff/dead-letter path. The row-derived
+/// `channel` is surfaced as the `activity_type` field for operator diagnostics
+/// (the field is a free-form context string on this transport's error).
+fn dispatch_error(channel: &str, reason: String) -> ServerError {
+    ServerError::WorkerDispatch {
+        namespace: "liminal".to_owned(),
+        activity_type: channel.to_owned(),
+        reason,
     }
 }
 
 #[async_trait]
 impl OutboxRowDispatch for LiminalOutboxDispatch {
     async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
-        let handle = self.connect()?;
+        // Derive the worker-pool channel from the row's durable
+        // (namespace, task_queue) — the single addressing source (NSTQ-5).
+        let channel = channel_for_row(row);
+        let handle = self.connect(&channel)?;
         let request = request_for_row(row);
         // Use a PER-ATTEMPT idempotency key (`{dispatch_key}#{attempt}`) so each
         // outbox retry is a fresh liminal publish that dedup-on-delivery does NOT
@@ -239,7 +296,7 @@ impl OutboxRowDispatch for LiminalOutboxDispatch {
         let idempotency_key = attempt_idempotency_key(row);
         let ack: DeliveryAck = handle
             .publish_with_idempotency_key(&request, &idempotency_key)
-            .map_err(|error| self.dispatch_error(format!("publish failed: {error}")))?;
+            .map_err(|error| dispatch_error(&channel, format!("publish failed: {error}")))?;
         // The load-bearing contract: treat the send as done ONLY on a genuine
         // delivery ack (a worker received it). With per-attempt keys a non-accept
         // now means an empty channel (no worker), so the outbox's retry/backoff is
@@ -247,7 +304,8 @@ impl OutboxRowDispatch for LiminalOutboxDispatch {
         if ack.is_accepted() {
             Ok(())
         } else {
-            Err(self.dispatch_error(
+            Err(dispatch_error(
+                &channel,
                 "liminal delivery ack reported the publish reached no worker (empty channel)"
                     .to_owned(),
             ))
@@ -317,4 +375,86 @@ impl LiminalCompletionSource {
 #[must_use]
 pub fn payload_from_request(request: &DispatchRequest) -> Payload {
     Payload::new(ContentType::Json, request.input.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{channel_for_row, dispatch_channel_name};
+    use aion_core::{ContentType, Payload, WorkflowId};
+    use aion_store::{OutboxRow, OutboxStatus};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    /// The channel format is pinned EXACTLY: any change is a wire-compatibility
+    /// break (the dispatcher and any worker subscription must agree byte-for-byte).
+    #[test]
+    fn channel_format_is_pinned() {
+        assert_eq!(
+            dispatch_channel_name("remote", "gpu"),
+            "aion.dispatch.remote.gpu"
+        );
+        assert_eq!(
+            dispatch_channel_name("local", "norn"),
+            "aion.dispatch.local.norn"
+        );
+    }
+
+    /// Same input always yields the same channel (the function is stable/total).
+    #[test]
+    fn channel_derivation_is_stable() {
+        assert_eq!(
+            dispatch_channel_name("default", "default"),
+            dispatch_channel_name("default", "default")
+        );
+    }
+
+    /// Distinct `(namespace, task_queue)` pools derive distinct channels — the
+    /// whole point of NSTQ-5: `(remote, gpu)` and `(local, norn)` never collide.
+    #[test]
+    fn distinct_pools_get_distinct_channels() {
+        assert_ne!(
+            dispatch_channel_name("remote", "gpu"),
+            dispatch_channel_name("local", "norn")
+        );
+    }
+
+    fn row(namespace: &str, task_queue: &str) -> OutboxRow {
+        let workflow_id = WorkflowId::new(Uuid::new_v4());
+        OutboxRow {
+            dispatch_key: format!("{workflow_id}:0"),
+            workflow_id,
+            ordinal: 0,
+            run_id: None,
+            namespace: namespace.to_owned(),
+            task_queue: task_queue.to_owned(),
+            activity_type: "charge-card".to_owned(),
+            input: Payload::new(ContentType::Json, Vec::new()),
+            status: OutboxStatus::Pending,
+            attempt: 0,
+            visible_after: Utc::now(),
+            claimed_at: None,
+        }
+    }
+
+    /// A row's channel is derived from its durable `(namespace, task_queue)`
+    /// columns (NSTQ-2), through the same single derivation function — and
+    /// `activity_type` does NOT enter the channel.
+    #[test]
+    fn channel_for_row_uses_namespace_and_task_queue_only() {
+        let remote_gpu = row("remote", "gpu");
+        let local_norn = row("local", "norn");
+        assert_eq!(channel_for_row(&remote_gpu), "aion.dispatch.remote.gpu");
+        assert_eq!(channel_for_row(&local_norn), "aion.dispatch.local.norn");
+        assert_ne!(channel_for_row(&remote_gpu), channel_for_row(&local_norn));
+
+        // Two rows that differ ONLY in activity_type derive the SAME channel:
+        // activity_type is matched after delivery, not used to select the pool.
+        let mut other_activity = row("remote", "gpu");
+        other_activity.activity_type = "refund".to_owned();
+        assert_eq!(
+            channel_for_row(&remote_gpu),
+            channel_for_row(&other_activity),
+            "activity_type must not affect the channel"
+        );
+    }
 }

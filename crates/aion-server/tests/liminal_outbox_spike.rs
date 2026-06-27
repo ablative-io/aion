@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_server::worker::liminal_transport::{
     DispatchRequest, DispatchResponse, LiminalCompletionSource, LiminalOutboxDispatch,
-    attempt_idempotency_key,
+    attempt_idempotency_key, channel_for_row, dispatch_channel_name,
 };
 use aion_server::worker::{
     OutboxDeliveryCallback, OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch,
@@ -60,7 +60,13 @@ type TestError = Box<dyn Error + Send + Sync>;
 /// One recorded completion delivery: the correlation ids plus the result.
 type CompletionRecord = (WorkflowId, ActivityId, Option<RunId>, String);
 
-const CHANNEL: &str = "aion.activities";
+/// The channel the `(default, default)` pool dispatches to. Post-NSTQ-5 the
+/// dispatcher derives the channel per-row from `(namespace, task_queue)` via
+/// `dispatch_channel_name`; `pending_row` stages `(default, default)` rows, so
+/// the server channel + worker subscription must match that derived name. Pinned
+/// as a literal because `dispatch_channel_name` is not `const`; the
+/// `derived_channel_matches_constant` test asserts they stay in lockstep.
+const CHANNEL: &str = "aion.dispatch.default.default";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wraps any displayable error as a `Send + Sync` test error.
@@ -271,6 +277,54 @@ fn pending_row(ordinal: u64) -> OutboxRow {
     }
 }
 
+/// Builds a pending row pinned to an explicit `(namespace, task_queue)` pool.
+fn pending_row_for(namespace: &str, task_queue: &str, ordinal: u64) -> OutboxRow {
+    OutboxRow {
+        namespace: namespace.to_owned(),
+        task_queue: task_queue.to_owned(),
+        ..pending_row(ordinal)
+    }
+}
+
+/// NSTQ-5: the dispatch channel is derived from the row's `(namespace,
+/// task_queue)` through the SINGLE `dispatch_channel_name` function, distinct
+/// pools get distinct channels in the documented format, and `activity_type`
+/// never enters the channel. Pure derivation — no server needed.
+#[test]
+fn per_row_channel_is_derived_from_namespace_and_task_queue() {
+    let remote_gpu = pending_row_for("remote", "gpu", 0);
+    let local_norn = pending_row_for("local", "norn", 0);
+
+    // The two pools derive DISTINCT channels in the documented format.
+    assert_eq!(channel_for_row(&remote_gpu), "aion.dispatch.remote.gpu");
+    assert_eq!(channel_for_row(&local_norn), "aion.dispatch.local.norn");
+    assert_ne!(channel_for_row(&remote_gpu), channel_for_row(&local_norn));
+
+    // The row derivation routes through the SAME free function the dispatcher
+    // uses, so dispatcher and any subscriber cannot drift.
+    assert_eq!(
+        channel_for_row(&remote_gpu),
+        dispatch_channel_name("remote", "gpu")
+    );
+
+    // activity_type does NOT affect the channel: it is matched after delivery.
+    let refund = OutboxRow {
+        activity_type: "refund".to_owned(),
+        ..pending_row_for("remote", "gpu", 1)
+    };
+    assert_eq!(channel_for_row(&remote_gpu), channel_for_row(&refund));
+}
+
+/// The test's `CHANNEL` constant (used for the liminal server channel def + the
+/// worker subscription) is exactly what the dispatcher derives for a
+/// `(default, default)` row, so the live round-trip tests below actually land on
+/// the channel the worker is subscribed to.
+#[test]
+fn derived_channel_matches_constant() {
+    assert_eq!(channel_for_row(&pending_row(0)), CHANNEL);
+    assert_eq!(dispatch_channel_name("default", "default"), CHANNEL);
+}
+
 /// THE LOAD-BEARING TEST: a real outbox dispatch over liminal to a worker, and
 /// the worker's result back through `OutboxDeliveryCallback`, happy path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -285,7 +339,7 @@ async fn dispatch_over_liminal_returns_result_through_callback() -> Result<(), T
 
     // DISPATCH-OUT SEAM: place one claimed row over liminal. dispatch_key is the
     // liminal idempotency key; a genuine delivery ack returns Ok(()).
-    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+    let dispatch = LiminalOutboxDispatch::new(address.to_string());
     let row = pending_row(0);
     dispatch
         .dispatch(&row)
@@ -360,7 +414,7 @@ async fn legit_retry_with_bumped_attempt_is_not_suppressed() -> Result<(), TestE
     subscribe_worker(&worker)?;
     server.wait_for_connection()?;
 
-    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+    let dispatch = LiminalOutboxDispatch::new(address.to_string());
 
     // First dispatch: attempt 0, fresh key + live worker => genuine delivery => Ok.
     let first = pending_row(0);
@@ -402,7 +456,7 @@ async fn same_attempt_duplicate_is_still_suppressed_by_dedup() -> Result<(), Tes
     subscribe_worker(&worker)?;
     server.wait_for_connection()?;
 
-    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+    let dispatch = LiminalOutboxDispatch::new(address.to_string());
     let row = pending_row(0);
 
     dispatch
@@ -435,7 +489,7 @@ async fn dispatch_with_no_worker_returns_err() -> Result<(), TestError> {
     let _probe = connect_channel(address)?;
     server.wait_for_connection()?;
 
-    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+    let dispatch = LiminalOutboxDispatch::new(address.to_string());
     let row = pending_row(7);
     let result = dispatch.dispatch(&row).await;
     assert!(
@@ -520,7 +574,7 @@ async fn outbox_dispatcher_retries_over_liminal_then_succeeds_when_worker_joins(
         .map_err(test_error)?;
 
     // Run the unchanged outbox dispatcher loop against the liminal transport.
-    let dispatch = Arc::new(LiminalOutboxDispatch::new(address.to_string(), CHANNEL));
+    let dispatch = Arc::new(LiminalOutboxDispatch::new(address.to_string()));
     let dispatcher = OutboxDispatcher::new(store.clone(), dispatch, fast_retry_config());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let loop_handle = tokio::spawn(dispatcher.run(shutdown_rx));
@@ -605,7 +659,7 @@ async fn reconciler_rearm_redispatch_is_deduped_no_second_worker_execution() -> 
     // FIRST DISPATCH: the in-flight dispatch the worker is executing. attempt 0,
     // fresh key + live worker => genuine delivery => Ok. This claims the liminal
     // dedup key `{dispatch_key}#0`.
-    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+    let dispatch = LiminalOutboxDispatch::new(address.to_string());
     dispatch
         .dispatch(&claimed_row)
         .await

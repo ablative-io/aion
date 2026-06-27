@@ -302,9 +302,9 @@ swap is **at the `OutboxRowDispatch` trait**, not the raw gRPC handler.
 
 | gRPC interaction (today) | #13 target | Replace or augment? |
 |---|---|---|
-| Activity dispatch (`ActivityTask` over `StreamWorker`) | `LiminalOutboxDispatch::dispatch` → liminal `publish`/`send` on an activity channel keyed by `(namespace, activity_type)`, idempotency key = `dispatch_key`, carrying the full `ScheduledActivity` incl. `run_id` | **Augment** (cross-node only; local keeps gRPC) |
+| Activity dispatch (`ActivityTask` over `StreamWorker`) | `LiminalOutboxDispatch::dispatch` → liminal `publish`/`send` on a channel keyed by `(namespace, task_queue)` (`dispatch_channel_name`, §5 13-3), `activity_type` carried INSIDE the payload, idempotency key = `dispatch_key`, carrying the full `ScheduledActivity` incl. `run_id` | **Augment** (cross-node only; local keeps gRPC) |
 | Result/failure report-back (`ActivityResult`) | worker publishes `DispatchResponse` (carries `conversation_id`/correlation + `run_id`); `LiminalCompletionSource` receives and calls `OutboxDeliveryCallback::deliver_completion/failure` | **Augment** |
-| Worker registration (`RegisterWorker`) | worker subscribes to its `(namespace, activity_type)` channel(s) on the liminal cluster; registration = subscription presence in the beamr pg group | **Augment** |
+| Worker registration (`RegisterWorker`) | worker pool subscribes to its `(namespace, task_queue)` channel(s) on the liminal cluster; registration = subscription presence in the beamr pg group | **Augment** |
 | Heartbeat (`Heartbeat`) | liminal supervision (process links, microsecond EXIT) replaces app-level heartbeat for liminal workers | **Replace (for liminal workers)** |
 | Deploy (`DeployService`) | unchanged — operator plane, not worker fan-out | **Neither (out of scope)** |
 | `WorkflowService` (start/signal/query/...) | unchanged — client control plane | **Neither (out of scope)** |
@@ -490,19 +490,29 @@ liminal dependency explicit rather than discovering it mid-build.
 - **Risk:** MEDIUM — correctness-relevant; relies on 13-L1 dedup being real.
 - **Depends on:** 13-1.
 
-### 13-3 — aion: namespace/task-queue addressing over liminal channels
-- **Goal:** route a dispatch to the right worker pool by `(namespace, activity_type)`
-  (and, when ROUTING-MODEL Tier 2 lands, `task_queue`) as the liminal channel/group,
-  instead of "whatever worker is on my stream."
-- **Seam:** channel-name derivation in `LiminalOutboxDispatch`; worker subscribes to its
-  `(namespace, activity_type)` channel(s). (The outbox schema reserves `namespace` for
-  exactly this — `outbox_dispatcher.rs:118`, though the row struct doesn't carry it yet,
-  so this may add a `namespace` field to `OutboxRow` — a small schema add, the first
-  one #13 needs.)
-- **Verify:** aion test: two namespaces, two worker pools; a `remote` workflow's members
-  only ever reach `remote` workers (the misrouting bug ROUTING-MODEL §2 makes structural).
-- **Risk:** MEDIUM — interacts with the routing model; keep aligned with ROUTING-MODEL.md.
-- **Depends on:** 13-2.
+### 13-3 — aion: namespace/task-queue addressing over liminal channels (LANDED, corrected)
+- **CORRECTION:** the liminal channel key is **`f(namespace, task_queue)`**, NOT
+  `(namespace, activity_type)`. `activity_type` is *what to run*, matched by the worker
+  AFTER delivery (it rides inside the `DispatchRequest` payload), not a routing/pool
+  dimension. See [NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md](./NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md)
+  §4.2 for the full rationale. The worker-pool address is `(namespace, task_queue)`.
+- **Goal:** route a dispatch to the right worker pool by `(namespace, task_queue)` as the
+  liminal channel/group, instead of "whatever worker is on my stream."
+- **Depends on NSTQ-2** (the landed `namespace` + `task_queue` columns on `OutboxRow`)
+  for the channel-derivation input — that is the small additive schema change this
+  consumes, not one this increment introduces.
+- **Seam:** the single `dispatch_channel_name(namespace, task_queue)` function in
+  `LiminalOutboxDispatch` (`crates/aion-server/src/worker/liminal_transport.rs`),
+  forming `"aion.dispatch.{namespace}.{task_queue}"`, derived per-row at dispatch time
+  from the row's `(namespace, task_queue)`. A worker pool MUST subscribe to the channel
+  this same function produces (the worker-subscription transport is a documented seam,
+  still to be built — see the module docs).
+- **Verify:** unit test pins the exact channel string; a `(remote, gpu)` row and a
+  `(local, norn)` row derive distinct channels matching the format; the row derivation
+  routes through the one function so dispatcher and subscriber cannot drift.
+- **Risk:** MEDIUM — interacts with the routing model; keep aligned with
+  NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md.
+- **Depends on:** 13-2, NSTQ-2.
 
 ### 13-4 — aion: continue-as-new safety over liminal (RunId end-to-end)
 - **Goal:** prove `run_id` survives the liminal round-trip and the existing run gates
@@ -578,10 +588,12 @@ the liminal repo.**
   in AION-DISTRIBUTION-DESIGN §Affinity. Out of scope for #13 but flagged.
 - **Discovery is seed-list only** (`SRV-005-PLAN.md:42`). Fine for a fixed cluster;
   insufficient for dynamic worker fleets. Out of scope for #13.
-- **The `namespace` column.** The outbox schema comment reserves `namespace` for the
-  liminal send (`outbox_dispatcher.rs:118`) but `OutboxRow` has no such field today; 13-3
-  likely adds it — the first (small) schema change #13 needs. Everything before 13-3
-  needs **no** schema change, as the cutover decision promised.
+- **The `namespace` + `task_queue` columns (RESOLVED).** NSTQ-2 added durable
+  `namespace` + `task_queue` columns to `OutboxRow` (additive libSQL `ADD COLUMN`
+  migrations). 13-3 *consumes* these as the channel-derivation input
+  (`dispatch_channel_name(namespace, task_queue)`); it introduces no further schema
+  change. The earlier note (channel keyed by `(namespace, activity_type)`, schema add
+  owned by 13-3) is superseded — see §5 13-3 and NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md §4.2.
 
 ### Prerequisites (gating)
 1. liminal 13-L0 (remote request-reply over the wire) — **hard blocker**.
