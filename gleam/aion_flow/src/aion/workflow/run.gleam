@@ -35,6 +35,20 @@ pub fn timestamp_to_milliseconds(timestamp: Timestamp) -> Int {
 /// activity's input `Codec`, the engine dispatches and records via AD, and the
 /// returned payload is decoded with the output `Codec`.
 pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
+  run_with_default(activity_value, None)
+}
+
+/// Dispatch an activity, supplying the workflow-level default task queue used
+/// when the activity itself selects none.
+///
+/// Resolution precedence (activity override > workflow default > the named
+/// `"default"` queue) is applied once at the engine schedule seam; this SDK
+/// only carries both unresolved selections across the boundary. A `None`
+/// workflow default behaves exactly as `run`.
+pub fn run_with_default(
+  activity_value: Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> Result(o, error.ActivityError) {
   let input_codec = activity.input_codec(activity_value)
   let output_codec = activity.output_codec(activity_value)
   let encoded_input = input_codec.encode(activity.input(activity_value))
@@ -43,7 +57,7 @@ pub fn run(activity_value: Activity(i, o)) -> Result(o, error.ActivityError) {
     ffi.dispatch_activity(
       activity.name(activity_value),
       encoded_input,
-      activity_config(activity_value),
+      activity_config(activity_value, workflow_default_task_queue),
     )
   {
     Ok(correlation_id) -> {
@@ -179,7 +193,10 @@ fn activity_error(raw: String) -> error.ActivityError {
   }
 }
 
-fn activity_config(activity_value: Activity(i, o)) -> String {
+fn activity_config(
+  activity_value: Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> String {
   json.object([
     #("retry", retry_config(activity.retry_policy(activity_value))),
     #(
@@ -191,8 +208,23 @@ fn activity_config(activity_value: Activity(i, o)) -> String {
       optional_duration(activity.heartbeat_interval(activity_value)),
     ),
     #("labels", labels_config(activity.labels(activity_value))),
+    // Both task-queue selections cross unresolved: the activity override and the
+    // workflow-level default. The engine schedule seam applies the precedence
+    // (override > default > the named "default" queue) exactly once.
+    #(
+      "task_queue",
+      optional_string(activity.selected_task_queue(activity_value)),
+    ),
+    #("workflow_task_queue", optional_string(workflow_default_task_queue)),
   ])
   |> json.to_string
+}
+
+fn optional_string(value: option.Option(String)) -> json.Json {
+  case value {
+    None -> json.null()
+    Some(text) -> json.string(text)
+  }
 }
 
 /// Encode the activity's display labels as a JSON object of string values.

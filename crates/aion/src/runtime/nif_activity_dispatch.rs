@@ -197,19 +197,24 @@ fn dispatch_activity_with_context(
                 )
                 .unwrap_or(Term::NIL));
             };
+            // NSTQ-4: resolve the dispatch's task queue once at this schedule
+            // seam (activity override > workflow default > the named default),
+            // then stamp the same value onto BOTH the recorded
+            // `ActivityScheduled` and the live dispatch so history and routing
+            // never diverge.
+            let task_queue = super::nif_activity::resolve_task_queue(&call.config);
             record_started(
                 ctx,
                 &context,
                 activity_id.clone(),
                 call.name.clone(),
                 input_payload,
+                task_queue.clone(),
             )?;
             let labels = labels_from_config(&call.config);
             let request = ActivityDispatch {
                 namespace,
-                // No workflow-level task_queue selection yet (NSTQ-4); every
-                // dispatch lands on the named default pool within its namespace.
-                task_queue: String::from("default"),
+                task_queue,
                 workflow_id: context.workflow_id().clone(),
                 activity_id,
                 name: call.name,

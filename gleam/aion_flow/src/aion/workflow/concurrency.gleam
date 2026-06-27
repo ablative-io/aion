@@ -27,11 +27,21 @@ import gleam/string
 pub fn all(
   activities: List(Activity(i, o)),
 ) -> Result(List(o), error.ActivityError) {
+  all_with_default(activities, None)
+}
+
+/// `all`, supplying the workflow-level default task queue used for any member
+/// that selects none. Precedence (member override > workflow default > the
+/// named `"default"` queue) is resolved once at the engine schedule seam.
+pub fn all_with_default(
+  activities: List(Activity(i, o)),
+  workflow_default_task_queue: option.Option(String),
+) -> Result(List(o), error.ActivityError) {
   case activities {
     [] -> Ok([])
     [first, ..] -> {
       let output_codec = activity.output_codec(first)
-      let specs = activity_specs(activities)
+      let specs = activity_specs(activities, workflow_default_task_queue)
       let id = collection_id("all", specs)
 
       case pump.run(fn() { pump.shield(ffi.collect_all(id, specs)) }) {
@@ -53,6 +63,16 @@ pub fn all(
 pub fn race(
   activities: List(Activity(i, o)),
 ) -> Result(o, error.ActivityError) {
+  race_with_default(activities, None)
+}
+
+/// `race`, supplying the workflow-level default task queue used for any member
+/// that selects none. Precedence (member override > workflow default > the
+/// named `"default"` queue) is resolved once at the engine schedule seam.
+pub fn race_with_default(
+  activities: List(Activity(i, o)),
+  workflow_default_task_queue: option.Option(String),
+) -> Result(o, error.ActivityError) {
   case activities {
     [] ->
       Error(error.ActivityEngineFailure(
@@ -60,7 +80,7 @@ pub fn race(
       ))
     [first, ..] -> {
       let output_codec = activity.output_codec(first)
-      let specs = activity_specs(activities)
+      let specs = activity_specs(activities, workflow_default_task_queue)
       let id = collection_id("race", specs)
 
       case pump.run(fn() { pump.shield(ffi.collect_race(id, specs)) }) {
@@ -79,19 +99,37 @@ pub fn map(
   items: List(a),
   to_activity: fn(a) -> Activity(i, o),
 ) -> Result(List(o), error.ActivityError) {
-  items
-  |> list.map(to_activity)
-  |> all
+  map_with_default(items, to_activity, None)
 }
 
-fn activity_specs(activities: List(Activity(i, o))) -> List(String) {
+/// `map`, supplying the workflow-level default task queue used for any produced
+/// activity that selects none. Precedence (activity override > workflow default
+/// > the named `"default"` queue) is resolved once at the engine schedule seam.
+pub fn map_with_default(
+  items: List(a),
+  to_activity: fn(a) -> Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> Result(List(o), error.ActivityError) {
+  items
+  |> list.map(to_activity)
+  |> all_with_default(workflow_default_task_queue)
+}
+
+fn activity_specs(
+  activities: List(Activity(i, o)),
+  workflow_default_task_queue: option.Option(String),
+) -> List(String) {
   activities
   |> list.index_map(fn(activity_value, index) {
-    activity_spec(activity_value, index)
+    activity_spec(activity_value, index, workflow_default_task_queue)
   })
 }
 
-fn activity_spec(activity_value: Activity(i, o), index: Int) -> String {
+fn activity_spec(
+  activity_value: Activity(i, o),
+  index: Int,
+  workflow_default_task_queue: option.Option(String),
+) -> String {
   let input_codec = activity.input_codec(activity_value)
   let encoded_input = input_codec.encode(activity.input(activity_value))
 
@@ -99,7 +137,10 @@ fn activity_spec(activity_value: Activity(i, o), index: Int) -> String {
     #("correlation", json.string("activity-" <> int.to_string(index))),
     #("name", json.string(activity.name(activity_value))),
     #("input", json.string(encoded_input)),
-    #("config", json.string(activity_config(activity_value))),
+    #(
+      "config",
+      json.string(activity_config(activity_value, workflow_default_task_queue)),
+    ),
   ])
   |> json.to_string
 }
@@ -164,7 +205,10 @@ fn activity_error(raw: String) -> error.ActivityError {
   }
 }
 
-fn activity_config(activity_value: Activity(i, o)) -> String {
+fn activity_config(
+  activity_value: Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> String {
   json.object([
     #("retry", retry_config(activity.retry_policy(activity_value))),
     #(
@@ -176,8 +220,23 @@ fn activity_config(activity_value: Activity(i, o)) -> String {
       optional_duration(activity.heartbeat_interval(activity_value)),
     ),
     #("labels", labels_config(activity.labels(activity_value))),
+    // Both task-queue selections cross unresolved: the activity override and the
+    // workflow-level default. The engine schedule seam applies the precedence
+    // (override > default > the named "default" queue) exactly once.
+    #(
+      "task_queue",
+      optional_string(activity.selected_task_queue(activity_value)),
+    ),
+    #("workflow_task_queue", optional_string(workflow_default_task_queue)),
   ])
   |> json.to_string
+}
+
+fn optional_string(value: option.Option(String)) -> json.Json {
+  case value {
+    None -> json.null()
+    Some(text) -> json.string(text)
+  }
 }
 
 /// Encode the activity's display labels as a JSON object of string values.
