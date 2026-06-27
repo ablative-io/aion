@@ -28,10 +28,10 @@ pub struct EventEnvelope {
 /// selected (no SDK-level selection exists yet — that is NSTQ-4) and the replay-safe decode value
 /// for [`Event::ActivityScheduled`] events recorded before the `task_queue` field existed.
 ///
-/// This is the in-layer (`aion-core`) twin of `aion_store::DEFAULT_OUTBOX_ROUTE`; the two crates
-/// cannot share a constant because `aion-core` is the base domain crate and does not depend on
-/// `aion-store`. Both resolve to the same literal `"default"` so a history-derived task queue and
-/// an outbox-row-derived task queue agree.
+/// This is the canonical task-queue default for the whole workspace. `aion_store::DEFAULT_OUTBOX_ROUTE`
+/// and `aion_server::worker::registry::DEFAULT_TASK_QUEUE` both alias/re-export this constant rather
+/// than redeclaring the literal, so a history-derived task queue and an outbox-row-derived task queue
+/// cannot drift.
 pub const DEFAULT_TASK_QUEUE: &str = "default";
 
 /// serde default for [`Event::ActivityScheduled::task_queue`]: the named [`DEFAULT_TASK_QUEUE`].

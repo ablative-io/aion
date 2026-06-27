@@ -21,7 +21,11 @@ use crate::StoreError;
 /// the `"default"` task queue. This is both the fresh-staging fallback (no SDK task-queue selection
 /// exists yet — NSTQ-4) and the legacy-NULL read-back value for rows persisted before the columns
 /// existed (NSTQ-2).
-pub const DEFAULT_OUTBOX_ROUTE: &str = "default";
+///
+/// Aliased to [`aion_core::DEFAULT_TASK_QUEUE`] so the outbox-row default cannot drift from the
+/// canonical domain task-queue default; both the namespace and task-queue fallbacks resolve to the
+/// same `"default"` literal.
+pub const DEFAULT_OUTBOX_ROUTE: &str = aion_core::DEFAULT_TASK_QUEUE;
 
 /// Lifecycle state of an outbox row as the dispatcher drives it to a terminal outcome.
 ///
