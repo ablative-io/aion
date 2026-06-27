@@ -63,3 +63,10 @@ tokio-stream = { version = "0.1", features = ["net"] }
 # Forwarded to the embedded server. Off by default, matching the feature set
 # the standalone `aion-server` binary shipped with.
 auth = ["aion-server/auth"]
+# Forwarded to the embedded server: compiles the haematite event-store backend
+# (single-node or distributed `[store.cluster]`) and, for a distributed boot,
+# the SS-5b cluster supervisor that auto-recovers a dead peer's shards. OFF by
+# default so a default `aion` binary is byte-identical and never links
+# aion-store-haematite/haematite. When on, `store.backend = haematite` is
+# selectable at runtime.
+haematite-backend = ["aion-server/haematite-backend"]

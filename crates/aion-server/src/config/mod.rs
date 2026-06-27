@@ -171,7 +171,26 @@ pub struct ClusterConfig {
     /// quorum denominator.
     #[serde(default)]
     pub peers: Vec<ClusterPeer>,
+    /// SS-5b automatic-failover poll interval in milliseconds: how often the
+    /// cluster supervisor checks each watched peer's replication liveness.
+    /// Defaults to [`DEFAULT_FAILOVER_POLL_INTERVAL_MS`] when omitted.
+    #[serde(default)]
+    pub failover_poll_interval_ms: Option<u64>,
+    /// SS-5b debounce: the number of CONSECUTIVE polls a peer must be observed
+    /// disconnected before its shards are adopted, so a transient blip does not
+    /// trigger a disruptive failover. Defaults to
+    /// [`DEFAULT_FAILOVER_CONFIRMATIONS`] when omitted; must be at least one.
+    #[serde(default)]
+    pub failover_confirmations: Option<u32>,
 }
+
+/// Default SS-5b failover poll interval (milliseconds) when `[store.cluster]`
+/// does not set `failover_poll_interval_ms`.
+pub const DEFAULT_FAILOVER_POLL_INTERVAL_MS: u64 = 500;
+
+/// Default SS-5b debounce count when `[store.cluster]` does not set
+/// `failover_confirmations`.
+pub const DEFAULT_FAILOVER_CONFIRMATIONS: u32 = 3;
 
 /// One dialable cluster peer: its distribution name and replication address.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -181,6 +200,15 @@ pub struct ClusterPeer {
     pub name: String,
     /// The peer's replication endpoint address to dial.
     pub address: SocketAddr,
+    /// The distribution shards this peer owns. Empty (the default) means the
+    /// operator did not declare the peer's shards, so the SS-5b cluster
+    /// supervisor cannot adopt them automatically when the peer dies — automatic
+    /// failover for a peer requires its `owned_shards` to be declared here so the
+    /// survivor knows exactly which shards to elect + resume. Declaring them does
+    /// not change replication or quorum; it only tells the supervisor what to
+    /// adopt on this peer's death.
+    #[serde(default)]
+    pub owned_shards: Vec<usize>,
 }
 
 /// Engine runtime settings from `[runtime]`.
@@ -824,6 +852,14 @@ fn validate_cluster(cluster: &ClusterConfig) -> Result<(), ServerError> {
     }
     if cluster.peers.iter().any(|peer| peer.name.is_empty()) {
         return config_error("store.cluster.peers entries must name a non-empty node");
+    }
+    if matches!(cluster.failover_poll_interval_ms, Some(0)) {
+        return config_error(
+            "store.cluster.failover_poll_interval_ms must be greater than zero when set",
+        );
+    }
+    if matches!(cluster.failover_confirmations, Some(0)) {
+        return config_error("store.cluster.failover_confirmations must be at least one when set");
     }
     Ok(())
 }

@@ -74,11 +74,23 @@ liminal-server = { version = "0.2.0", path = "../../../liminal/crates/liminal-se
 
 [dev-dependencies]
 aion-worker = { path = "../aion-worker" }
+aion-core = { version = "0.7.0", path = "../aion-core" }
+# The SS-5b auto-failover test reuses the aion-rs SS-5 example-build helper,
+# which rebuilds the `hello-world` archive from source and advisory-locks the
+# build dir; these dev-deps back that helper for the haematite test build.
+aion-package = { version = "0.7.0", path = "../aion-package", features = ["test-support"] }
+fs4 = { workspace = true }
 libsql = { workspace = true }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 tempfile = "3.27.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-tungstenite = "0.29.0"
+# Used ONLY by the feature-gated SS-5b auto-failover integration test, which
+# stands up a real 3-node loopback haematite cluster through the raw
+# DistributionEndpoint/Database harness (mirroring the aion-rs SS-5 demo). The
+# test file is `#![cfg(feature = "haematite-backend")]`, so without that feature
+# it compiles to nothing; this dev-dep only links for the haematite test build.
+haematite = { path = "../../../haematite/crates/haematite" }
 # Deploy e2e builds hostile DEFLATE-bomb archives; PackageBuilder writes
 # Stored entries only, so it cannot produce one.
 zip = { workspace = true }
@@ -95,3 +107,10 @@ liminal-transport = ["dep:liminal-sdk", "dep:liminal-server"]
 # `store.backend = haematite` constructs a single-node HaematiteStore rooted at
 # `store.data_dir` with `store.shard_count` shards.
 haematite-backend = ["dep:aion-store-haematite"]
+
+# The runnable multi-node failover demo: boots an in-process haematite cluster,
+# kills the shard owner, and watches the SS-5b supervisor auto-recover the
+# workflow. Requires the haematite backend (and `gleam` on PATH at runtime).
+[[example]]
+name = "failover_demo"
+required-features = ["haematite-backend"]
