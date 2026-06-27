@@ -60,11 +60,11 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 # beamr distribution). Enabled only by the `liminal-transport` feature. Path
 # dependency on the sibling repo; the default `std` feature carries the real TCP
 # transport and the canonical wire codec.
-liminal-sdk = { version = "0.2.0", path = "../../../../../liminal/crates/liminal-sdk", optional = true }
+liminal-sdk = { version = "0.2.0", path = "../../../liminal/crates/liminal-sdk", optional = true }
 # Used only by the feature-gated #13-0 integration test to stand up a real
 # liminal server over loopback TCP (the spike's worker-side endpoint). Optional
 # and enabled only by `liminal-transport`, so a default build never pulls it.
-liminal-server = { version = "0.2.0", path = "../../../../../liminal/crates/liminal-server", optional = true }
+liminal-server = { version = "0.2.0", path = "../../../liminal/crates/liminal-server", optional = true }
 
 [dev-dependencies]
 aion-worker = { path = "../aion-worker" }
