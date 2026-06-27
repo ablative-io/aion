@@ -44,7 +44,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aion_core::{ContentType, Event, EventEnvelope, Payload, RunId, WorkflowId};
+use aion_core::{ContentType, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowId};
 use aion_store::{ReadableEventStore, WritableEventStore, WriteToken};
 use aion_store_haematite::HaematiteStore;
 use haematite::db::respond_to_inbound_writes;
@@ -483,6 +483,108 @@ fn adopted_shard_owner_is_published_to_and_read_by_a_different_survivor() -> Tes
         node_b.store.read_shard_owner(SHARD)?.as_deref(),
         Some(NODE_B),
         "re-publishing the same owner is a value-preserving no-op CAS"
+    );
+    Ok(())
+}
+
+// ===========================================================================
+// #82 — DURABLE TIMERS SURVIVE SHARD ADOPTION: a workflow's durable timer is
+// a STAMPED, co-located envelope, so a survivor can adopt the shard (whose
+// become_live → merge_committed_union decodes EVERY committed entry as a
+// StampedEntry) WITHOUT a HandoffMergeError::UndecodableEntry, and the timer
+// is readable post-adoption.
+// ===========================================================================
+
+/// Regression guard for failover-correctness bug #82. Before the fix,
+/// `schedule_timer` wrote the durable timer through an UNSTAMPED `put_routed` +
+/// `commit`. Shard adoption's `become_live` → `merge_committed_union` decodes
+/// every committed entry on the shard as a `StampedEntry`, so the unstamped timer
+/// failed to decode (`UndecodableEntry`), wedging adoption of ANY shard carrying a
+/// durable timer.
+///
+/// In distributed mode `schedule_timer` now routes through
+/// `Database::replicate_write_routed` — a STAMPED, quorum-replicated envelope
+/// co-located on the workflow's shard. This test schedules a durable timer on the
+/// owner A (replicated to B), partitions A away, and has the survivor C adopt the
+/// shard via `acquire_shard_and_serve` (the become_live merge path). The adoption
+/// MUST succeed (no UndecodableEntry) and the timer MUST be readable on C after.
+///
+/// NON-VACUOUS: C lagged the timer write entirely before the failover (its
+/// `expired_timers` is empty), so a timer it serves after becoming live could ONLY
+/// have arrived through the replicate + union-merge path.
+#[test]
+fn durable_timer_survives_shard_adoption() -> TestResult {
+    let dir_a = tempfile::tempdir()?;
+    let dir_b = tempfile::tempdir()?;
+    let dir_c = tempfile::tempdir()?;
+
+    // A replicates to {B} ONLY: quorum {A,B} reached, C never receives the write.
+    let node_a = Node::spawn(NODE_A, dir_a.path(), 3, &[NODE_B])?;
+    let node_b = Node::spawn(NODE_B, dir_b.path(), 3, &[NODE_A])?;
+    let node_c = Node::spawn(NODE_C, dir_c.path(), 3, &[NODE_A, NODE_B])?;
+    link_both(&node_a, &node_b)?;
+    link_both(&node_a, &node_c)?;
+    link_both(&node_b, &node_c)?;
+
+    // A is the owner of the shard and serves it (so its stamps draw a live epoch).
+    node_a
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_B]), OP_TIMEOUT)?;
+
+    // A schedules a durable timer for a workflow on the shard. This goes through
+    // the DISTRIBUTED path → `replicate_write_routed` (a stamped, co-located
+    // envelope), quorum-replicated to B.
+    let workflow_id = WorkflowId::new_v4();
+    let timer_id = TimerId::anonymous(1);
+    let fire_at = chrono::Utc::now();
+    block_on(
+        node_a
+            .store
+            .schedule_timer(&workflow_id, &timer_id, fire_at),
+    )?;
+
+    // The owner reads its own scheduled timer back (decoded through the read path,
+    // which strips the stamp).
+    let as_of = fire_at + chrono::Duration::seconds(1);
+    let a_timers = block_on(node_a.store.expired_timers(as_of))?;
+    assert_eq!(
+        a_timers.len(),
+        1,
+        "the owner must hold its own scheduled durable timer"
+    );
+
+    // FALSIFIABILITY: C lagged the timer write before the failover, so anything it
+    // serves afterward could ONLY have arrived via the merge pull from B.
+    assert!(
+        block_on(node_c.store.expired_timers(as_of))?.is_empty(),
+        "C must lag the durable timer before adoption (load-bearing non-vacuity check)"
+    );
+
+    // FAILOVER + ADOPTION: A is partitioned (not a send target). C adopts the shard
+    // over {C,B}. `acquire_shard_and_serve` runs become_live → merge_committed_union,
+    // which decodes EVERY committed entry on the shard — including the timer — as a
+    // StampedEntry. Pre-fix this returned HandoffMergeError::UndecodableEntry; with
+    // the stamped timer it MUST succeed.
+    node_c
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_B]), OP_TIMEOUT)?;
+
+    // The adopter now owns the shard, so its scoped scan covers it. The timer is
+    // readable post-adoption — it travelled with the shard through the union merge.
+    let recovered = block_on(node_c.store.expired_timers(as_of))?;
+    assert_eq!(
+        recovered.len(),
+        1,
+        "the survivor must serve the durable timer after adopting the shard — the \
+         stamped, co-located timer survived become_live's union merge (bug #82 fixed)"
+    );
+    assert_eq!(
+        recovered[0].workflow_id, workflow_id,
+        "the recovered timer is the one A scheduled"
+    );
+    assert_eq!(
+        recovered[0].timer_id, timer_id,
+        "the recovered timer's id round-trips through replicate + merge unchanged"
     );
     Ok(())
 }
