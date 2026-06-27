@@ -183,6 +183,45 @@ pub fn attempt_idempotency_key(row: &OutboxRow) -> String {
     format!("{}#{}", row.dispatch_key, row.attempt)
 }
 
+/// The single reserved character that separates channel segments. Because
+/// `namespace`/`task_queue` are free-form, any occurrence of this byte INSIDE a
+/// segment must be escaped so it cannot be mistaken for the segment boundary.
+const SEGMENT_SEPARATOR: char = '.';
+
+/// The escape character used by [`encode_segment`]. It must itself be escaped so
+/// the encoding stays injective (otherwise `%2E` as a literal field value would
+/// collide with an encoded `.`).
+const SEGMENT_ESCAPE: char = '%';
+
+/// Percent-encodes the two reserved characters (`.` and `%`) inside one channel
+/// segment so distinct segment values can never collide across the join.
+///
+/// This is a minimal, deterministic, per-segment escape: a literal `.` becomes
+/// `%2E` and a literal `%` becomes `%25`; every other byte (including the empty
+/// string) passes through unchanged. Because both the separator AND the escape
+/// char are encoded, the mapping `value -> encoded` is injective: it is exactly
+/// reversible by replacing `%2E -> .` and `%25 -> %`, so two distinct values
+/// can never encode to the same string. Dot-free, percent-free inputs (the
+/// normal case, e.g. `"remote"`, `"gpu"`) are returned byte-for-byte unchanged,
+/// so existing channels are stable.
+fn encode_segment(segment: &str) -> String {
+    // Fast path: nothing reserved, return an owned copy unchanged.
+    if !segment.contains([SEGMENT_SEPARATOR, SEGMENT_ESCAPE]) {
+        return segment.to_owned();
+    }
+    let mut encoded = String::with_capacity(segment.len());
+    for ch in segment.chars() {
+        match ch {
+            // Encode the escape char FIRST so an already-present `%` cannot be
+            // confused with one we introduce for the separator.
+            SEGMENT_ESCAPE => encoded.push_str("%25"),
+            SEGMENT_SEPARATOR => encoded.push_str("%2E"),
+            other => encoded.push(other),
+        }
+    }
+    encoded
+}
+
 /// Derives the liminal dispatch channel for a worker pool addressed
 /// `(namespace, task_queue)`.
 ///
@@ -190,7 +229,28 @@ pub fn attempt_idempotency_key(row: &OutboxRow) -> String {
 /// site that needs the channel a `(namespace, task_queue)` pool dispatches to —
 /// both this dispatcher and any future worker-pool subscription side — MUST call
 /// this function so the two sides cannot drift. The format is
-/// `"aion.dispatch.{namespace}.{task_queue}"`.
+/// `"aion.dispatch.{namespace}.{task_queue}"` where each `{segment}` is
+/// independently passed through [`encode_segment`].
+///
+/// # Injectivity (why the per-segment encode matters)
+///
+/// `namespace` and `task_queue` are free-form (the design forbids preset
+/// categories), so a raw `format!` would be NON-injective: a `.` inside either
+/// field bleeds across the separator and two pools the design declares disjoint
+/// collide onto one channel — e.g. `("a.b", "c")` and `("a", "b.c")` both yield
+/// `aion.dispatch.a.b.c`, a cross-pool leak on the very isolation dimension this
+/// routing exists to keep separate. Encoding each segment independently (the
+/// separator `.` and the escape `%` are escaped within a segment) makes the map
+/// from `(namespace, task_queue)` to channel string injective: distinct pairs
+/// always yield distinct channels.
+///
+/// # Forward-compat (composes with an Nth segment)
+///
+/// Each segment is encoded on its own and the segments are joined with the
+/// single separator, so adding a later optional segment (e.g. NODE-5's
+/// `aion.dispatch.{ns}.{tq}.{node}`) is a trivial extension that stays injective
+/// by the same argument — no field can ever produce a separator that bleeds into
+/// the next segment.
 ///
 /// `activity_type` is deliberately NOT part of the channel: it is *what to run*,
 /// matched by the worker after delivery (it rides inside [`DispatchRequest`]),
@@ -199,6 +259,8 @@ pub fn attempt_idempotency_key(row: &OutboxRow) -> String {
 /// `(namespace, task_queue)` always yields the same channel).
 #[must_use]
 pub fn dispatch_channel_name(namespace: &str, task_queue: &str) -> String {
+    let namespace = encode_segment(namespace);
+    let task_queue = encode_segment(task_queue);
     format!("aion.dispatch.{namespace}.{task_queue}")
 }
 
@@ -416,6 +478,61 @@ mod tests {
             dispatch_channel_name("remote", "gpu"),
             dispatch_channel_name("local", "norn")
         );
+    }
+
+    /// The core injectivity property: free-form fields containing the segment
+    /// separator `.` must NOT bleed across the join. With the raw `format!` the
+    /// disjoint pools `("a.b", "c")` and `("a", "b.c")` both collapsed onto
+    /// `aion.dispatch.a.b.c` — a cross-pool/cross-namespace leak. The per-segment
+    /// encode keeps them distinct.
+    #[test]
+    fn dotted_fields_do_not_collide_across_segments() {
+        assert_ne!(
+            dispatch_channel_name("a.b", "c"),
+            dispatch_channel_name("a", "b.c"),
+            "a '.' in a field must not bleed across the segment separator"
+        );
+    }
+
+    /// More reserved-char shifts that the raw `format!` collapsed but the encode
+    /// must keep distinct — the dot can sit on either side of the boundary.
+    #[test]
+    fn reserved_char_shifts_stay_distinct() {
+        // Dot at the end of namespace vs start of task_queue.
+        assert_ne!(
+            dispatch_channel_name("ns.", "tq"),
+            dispatch_channel_name("ns", ".tq")
+        );
+        // Empty field vs the dot living in the other field.
+        assert_ne!(
+            dispatch_channel_name("", "a.b"),
+            dispatch_channel_name(".a", "b")
+        );
+        // The escape char itself must not let a literal `%2E` impersonate an
+        // encoded `.`: `("%2E", "x")` (literal percent-two-E) must differ from
+        // `(".", "x")` (an actual dot, which encodes to `%2E`).
+        assert_ne!(
+            dispatch_channel_name("%2E", "x"),
+            dispatch_channel_name(".", "x")
+        );
+    }
+
+    /// Encoding is injective in BOTH fields independently and is exactly
+    /// reversible (the property the channel relies on), so a small exhaustive
+    /// sweep of reserved-char arrangements yields all-distinct channels.
+    #[test]
+    fn encoding_is_injective_over_reserved_char_pairs() {
+        let fields = ["a", "a.b", "a.", ".a", ".", "", "%", "%2E", "a%b", "%2."];
+        let mut channels = std::collections::HashSet::new();
+        for ns in fields {
+            for tq in fields {
+                let channel = dispatch_channel_name(ns, tq);
+                assert!(
+                    channels.insert(channel.clone()),
+                    "collision on ({ns:?}, {tq:?}) -> {channel}"
+                );
+            }
+        }
     }
 
     fn row(namespace: &str, task_queue: &str) -> OutboxRow {
