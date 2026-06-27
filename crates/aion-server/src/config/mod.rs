@@ -105,6 +105,8 @@ pub enum StoreBackend {
     Memory,
     /// libSQL durable store.
     LibSql,
+    /// haematite durable store (single-node, shardable).
+    Haematite,
 }
 
 /// Event-store backend configuration from `[store]`.
@@ -122,6 +124,14 @@ pub struct StoreConfig {
     /// backends (memory, libSQL) ignore the assignment; it is meaningful only for
     /// a sharded backend. No election is performed: assignment is static config.
     pub owned_shards: Vec<usize>,
+    /// Filesystem data directory for the haematite backend. Required when
+    /// `backend = haematite`; ignored by every other backend. The directory is
+    /// opened if it already holds a haematite database, otherwise created.
+    pub data_dir: Option<String>,
+    /// Number of haematite shards to create on a fresh database. Defaults to 1
+    /// (the single-shard default). Ignored by every other backend, and ignored
+    /// when opening an existing haematite database (the on-disk shard count wins).
+    pub shard_count: usize,
 }
 
 /// Engine runtime settings from `[runtime]`.
@@ -630,6 +640,16 @@ impl ServerConfig {
                 return config_error("store.url must not be empty");
             }
         }
+        if matches!(self.store.backend, StoreBackend::Haematite) {
+            if self.store.data_dir.as_deref().is_none_or(str::is_empty) {
+                return config_error(
+                    "store.data_dir must not be empty when store.backend is haematite",
+                );
+            }
+            if self.store.shard_count == 0 {
+                return config_error("store.shard_count must be greater than zero");
+            }
+        }
         if let DashboardAssetSource::FileSystem { asset_path } = &self.dashboard.source {
             if asset_path.as_os_str().is_empty() {
                 return config_error("dashboard.source.FileSystem.asset_path must not be empty");
@@ -764,6 +784,8 @@ impl Default for StoreConfig {
             backend: StoreBackend::Memory,
             url: None,
             owned_shards: Vec::new(),
+            data_dir: None,
+            shard_count: 1,
         }
     }
 }

@@ -395,6 +395,11 @@ fn metrics_config_error(error: &MetricsError) -> ServerError {
     }
 }
 
+/// The engine's [`EventStore`] handle paired with an optional [`OutboxStore`]
+/// cast of the SAME leaf store. Backends with a durable outbox table (libSQL,
+/// haematite) yield `Some`; the in-memory backend yields `None`.
+type ConnectedStore = (Arc<dyn EventStore>, Option<Arc<dyn OutboxStore>>);
+
 /// Connect the durable store, yielding the engine's [`EventStore`] handle and,
 /// for the libSQL backend, the SAME leaf store cast as an [`OutboxStore`].
 ///
@@ -404,9 +409,7 @@ fn metrics_config_error(error: &MetricsError) -> ServerError {
 /// `claim_outbox_rows` writes, so the two never contend across separate
 /// connections and never raise `SQLITE_BUSY`. The in-memory backend has no
 /// outbox table, so it yields `None`.
-async fn connect_store(
-    config: StoreConfig,
-) -> Result<(Arc<dyn EventStore>, Option<Arc<dyn OutboxStore>>), ServerError> {
+async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerError> {
     match config.backend {
         StoreBackend::Memory => Ok((Arc::new(aion_store::InMemoryStore::default()), None)),
         StoreBackend::LibSql => {
@@ -434,7 +437,76 @@ async fn connect_store(
             let outbox_store: Arc<dyn OutboxStore> = leaf;
             Ok((event_store, Some(outbox_store)))
         }
+        StoreBackend::Haematite => {
+            #[cfg(feature = "haematite-backend")]
+            {
+                connect_haematite_store(config).await
+            }
+            #[cfg(not(feature = "haematite-backend"))]
+            {
+                let _ = config;
+                connect_haematite_store_unavailable()
+            }
+        }
     }
+}
+
+/// Connect the single-node haematite backend, opening the on-disk database if
+/// `store.data_dir` already holds one and otherwise creating it with
+/// `store.shard_count` shards. The SAME leaf `Arc<HaematiteStore>` is shared as
+/// both the engine's [`EventStore`] and the dispatcher's [`OutboxStore`] (one
+/// inner haematite database), mirroring the libSQL backend so outbox writes and
+/// event appends route through one store. Static `owned_shards` scoping is wired
+/// downstream by the engine builder, exactly as for the other backends.
+#[cfg(feature = "haematite-backend")]
+async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, ServerError> {
+    let Some(data_dir) = config.data_dir else {
+        return Err(ServerError::Config {
+            message: "store.data_dir must not be empty when store.backend is haematite".to_owned(),
+        });
+    };
+    let shard_count = config.shard_count;
+    // Construction touches the filesystem and spawns shard actors, so run it on
+    // the blocking pool rather than stalling the async runtime.
+    let store =
+        tokio::task::spawn_blocking(move || open_or_create_haematite(&data_dir, shard_count))
+            .await
+            .map_err(|error| ServerError::Config {
+                message: format!("haematite store initialization task failed: {error}"),
+            })??;
+    let leaf = Arc::new(store);
+    let event_store: Arc<dyn EventStore> = leaf.clone();
+    let outbox_store: Arc<dyn OutboxStore> = leaf;
+    Ok((event_store, Some(outbox_store)))
+}
+
+/// Open the haematite database at `data_dir` if it already exists, otherwise
+/// create a fresh one with `shard_count` shards. Restart-safe: a server that
+/// boots over an existing data directory reuses it (the on-disk shard count
+/// wins) rather than failing the create path.
+#[cfg(feature = "haematite-backend")]
+fn open_or_create_haematite(
+    data_dir: &str,
+    shard_count: usize,
+) -> Result<aion_store_haematite::HaematiteStore, ServerError> {
+    use aion_store_haematite::HaematiteStore;
+
+    let path = std::path::Path::new(data_dir);
+    if path.join("config.json").exists() {
+        return HaematiteStore::open(path).map_err(ServerError::from);
+    }
+    HaematiteStore::create_with_shard_count(path, shard_count).map_err(ServerError::from)
+}
+
+/// Reject `backend = haematite` cleanly when the optional `haematite-backend`
+/// feature is not compiled in, so a default build gives a precise operator
+/// error instead of a silent fallthrough.
+#[cfg(not(feature = "haematite-backend"))]
+fn connect_haematite_store_unavailable() -> Result<ConnectedStore, ServerError> {
+    Err(ServerError::Config {
+        message: "store.backend = haematite requires the aion-server `haematite-backend` feature"
+            .to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -500,6 +572,63 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "haematite-backend")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_store_haematite_round_trips_through_event_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_core::{ContentType, EventEnvelope, PackageVersion, Payload, RunId, WorkflowId};
+        use aion_store::WriteToken;
+        use chrono::Utc;
+
+        use crate::config::{StoreBackend, StoreConfig};
+
+        let data_dir = tempfile::tempdir()?;
+        // Single shard, a fresh temp data_dir: the production connect path opens
+        // an existing haematite database or creates one, then shares the leaf as
+        // both the engine EventStore and the dispatcher OutboxStore.
+        let (event_store, outbox) = super::connect_store(StoreConfig {
+            backend: StoreBackend::Haematite,
+            url: None,
+            owned_shards: Vec::new(),
+            data_dir: Some(data_dir.path().to_string_lossy().into_owned()),
+            shard_count: 1,
+        })
+        .await?;
+        assert!(
+            outbox.is_some(),
+            "the haematite backend shares its leaf store as the dispatcher's outbox store"
+        );
+
+        let workflow_id = WorkflowId::new_v4();
+        let event = aion_core::Event::WorkflowStarted {
+            envelope: EventEnvelope {
+                seq: 1,
+                recorded_at: Utc::now(),
+                workflow_id: workflow_id.clone(),
+            },
+            workflow_type: String::from("checkout"),
+            input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            run_id: RunId::new_v4(),
+            parent_run_id: None,
+            package_version: PackageVersion::new("a".repeat(64)),
+        };
+        event_store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id,
+                std::slice::from_ref(&event),
+                0,
+            )
+            .await?;
+        let history = event_store.read_history(&workflow_id).await?;
+        assert_eq!(
+            history.len(),
+            1,
+            "an event appended through the server's dyn EventStore reads back"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn connect_store_shares_outbox_store_only_for_libsql()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -511,6 +640,8 @@ mod tests {
             backend: StoreBackend::Memory,
             url: None,
             owned_shards: Vec::new(),
+            data_dir: None,
+            shard_count: 1,
         })
         .await?;
         assert!(
@@ -534,6 +665,8 @@ mod tests {
             backend: StoreBackend::LibSql,
             url: Some(path.to_string_lossy().into_owned()),
             owned_shards: Vec::new(),
+            data_dir: None,
+            shard_count: 1,
         })
         .await?;
         assert!(
