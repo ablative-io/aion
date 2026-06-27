@@ -245,6 +245,74 @@ impl Engine {
         result
     }
 
+    /// Absorb a dead peer's distribution shards into this LIVE engine and resume
+    /// their orphaned workflows — the SS-5 failover entry point.
+    ///
+    /// This is the production failover step a cluster supervisor invokes when it
+    /// observes a peer gone (membership loss). It is the post-boot counterpart to
+    /// the boot path's `EngineBuilder::owned_shards` election + recovery, run
+    /// against an already-running engine:
+    ///
+    /// 1. **Elect + union-merge.** `acquire_owned_shards` wins the per-shard
+    ///    election for each `shards` entry (fencing the dead owner) and
+    ///    `become_live` union-merges that shard's committed history locally, so
+    ///    every event the dead node had quorum-committed is now present on this
+    ///    node. The election is blocking and runs off the tokio runtime inside the
+    ///    store seam, honouring haematite's no-blocking-election-in-async
+    ///    constraint, so this `async` method may call it directly.
+    /// 2. **Widen the scope.** `extend_owned_shards` unions `shards` into this
+    ///    node's owned-enumeration set so the adopted workflows, timers, and
+    ///    outbox rows become visible to enumeration WITHOUT dropping this node's
+    ///    own shards.
+    /// 3. **Re-resident.** Re-run the idempotent active-workflow recovery and
+    ///    timer recovery, which re-spawn every adopted workflow from the
+    ///    union-merged history through the same production recovery seam the boot
+    ///    path uses, skipping the workflows this node already owns.
+    ///
+    /// Detection of the peer's death is the CALLER's responsibility (a cluster
+    /// supervisor / membership-loss trigger); this method performs the
+    /// re-acquisition and resume once that decision is made. It is idempotent:
+    /// adopting a shard this node already serves re-acquires (a no-op on the
+    /// fence it already holds) and recovers nothing new.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins, store errors
+    /// from the election / union-merge ([`EngineError::Durability`]), and any
+    /// typed recovery error from re-residenting an adopted workflow.
+    pub async fn adopt_shards(&self, shards: &[usize]) -> Result<(), EngineError> {
+        let operation = self.shutdown_gate.begin_start()?;
+        let result = self.adopt_shards_inner(shards).await;
+        drop(operation);
+        result
+    }
+
+    /// Body of [`Self::adopt_shards`]: elect + union-merge, widen scope, recover.
+    async fn adopt_shards_inner(&self, shards: &[usize]) -> Result<(), EngineError> {
+        // 1. Win the election for each shard and union-merge its committed
+        //    history locally (fences the dead owner). Off-runtime inside the seam.
+        self.store.acquire_owned_shards(shards)?;
+        // 2. Widen this node's enumeration scope to include the adopted shards
+        //    without dropping its own — recovery enumerates over the union.
+        self.store.extend_owned_shards(shards);
+        // 3. Re-resident the adopted workflows through the production recovery
+        //    seam (idempotent: this node's own workflows are skipped).
+        super::startup::recover_adopted_shards(super::startup::StartupRecoveryContext {
+            store: Arc::clone(&self.store),
+            visibility_store: Arc::clone(&self.visibility_store),
+            runtime: Arc::clone(&self.runtime),
+            catalog: Arc::clone(&self.catalog),
+            registry: Arc::clone(&self.registry),
+            supervision: Arc::clone(&self.supervision),
+            recovery: None,
+            search_attribute_schema: Arc::clone(&self.search_attribute_schema),
+            bootstrap_schedule_coordinator: false,
+        })
+        .await?;
+        super::startup::recover_timers_on_startup(self.runtime.nif_state(), Arc::clone(&self.store))
+            .await
+    }
+
     /// Resume a suspended workflow run and flush deferred signals through its mailbox.
     ///
     /// # Errors

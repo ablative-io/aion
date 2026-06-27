@@ -78,6 +78,37 @@ pub(super) async fn recover_active_workflows_on_startup(
     sweep_continued_as_new_replacements(&context).await
 }
 
+/// Re-resident the active workflows on shards this LIVE engine has just adopted
+/// from a dead peer (SS-5 failover).
+///
+/// This is the post-boot counterpart to
+/// [`recover_active_workflows_on_startup`]: it re-runs the SAME idempotent
+/// repopulation over the (now-widened) owned-shard enumeration, so every
+/// workflow on a newly-adopted shard whose history `become_live` union-merged
+/// locally is re-spawned and registered through the production recovery seam.
+///
+/// It deliberately does NOT seed the schedule coordinator (a survivor adopting a
+/// peer's shards is not forming the cluster) and skips workflows already resident
+/// in this engine's registry (the idempotency guard in
+/// [`repopulate_active_workflows`]), so this engine's own in-flight workflows are
+/// untouched — only the adopted ones are recovered.
+pub(super) async fn recover_adopted_shards(
+    context: StartupRecoveryContext,
+) -> Result<(), EngineError> {
+    crate::lifecycle::visibility::reconcile_visibility(
+        Arc::clone(&context.store),
+        Arc::clone(&context.visibility_store),
+    )
+    .await?;
+    let recovery = context.recovery.clone().unwrap_or_else(|| {
+        Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(
+            &context.runtime,
+        ))) as Arc<dyn ActiveWorkflowRecoverySeam>
+    });
+    repopulate_active_workflows(&context, recovery.as_ref()).await?;
+    sweep_continued_as_new_replacements(&context).await
+}
+
 async fn seed_schedule_coordinator_history(store: Arc<dyn EventStore>) -> Result<(), EngineError> {
     let workflow_id = schedule_coordinator_workflow_id();
     let history = store.as_ref().read_history(&workflow_id).await?;
@@ -114,6 +145,14 @@ async fn repopulate_active_workflows(
     let registry = &context.registry;
     let supervision = &context.supervision;
     for workflow_id in store.as_ref().list_active().await? {
+        // Idempotent repopulation: a workflow already resident in this engine's
+        // registry must not be re-spawned. At the boot path the registry is
+        // empty, so this never fires; on the SS-5 failover re-run (adopting a
+        // dead peer's shards into a LIVE engine) it skips the workflows this node
+        // already owns, leaving only the newly-adopted ones to recover.
+        if registry.live_pid(&workflow_id)?.is_some() {
+            continue;
+        }
         let history = store.as_ref().read_history(&workflow_id).await?;
         let workflow_type = started_workflow_type(&workflow_id, &history)?;
         let projected_status = status_from_events(&history);

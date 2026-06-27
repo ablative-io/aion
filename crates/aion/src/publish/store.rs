@@ -168,6 +168,12 @@ impl ReadableEventStore for PublishingEventStore {
         self.inner.acquire_owned_shards(shards)
     }
 
+    /// Forward the SS-5 failover scope-widening to the inner store; this
+    /// decorator only publishes appends and never owns shard policy.
+    fn extend_owned_shards(&self, shards: &[usize]) {
+        self.inner.extend_owned_shards(shards);
+    }
+
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         self.inner.read_history(workflow_id).await
     }

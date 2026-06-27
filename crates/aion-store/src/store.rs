@@ -159,6 +159,27 @@ pub trait ReadableEventStore: Send + Sync + 'static {
         let _ = shards;
         Ok(())
     }
+
+    /// Add `shards` to this node's owned-enumeration scope, UNIONING them with
+    /// the shards it already owns rather than replacing the set.
+    ///
+    /// This is the SS-5 failover hook: when a live node absorbs a dead peer's
+    /// shards it must KEEP serving its own shards while ALSO enumerating the
+    /// adopted ones. [`Self::set_owned_shards`] replaces the scope (the boot
+    /// path's one-shot assignment); this widens it in place. The boot path uses
+    /// `set_owned_shards`; the failover path uses this.
+    ///
+    /// The default implementation is a deliberate no-op — single-shard backends
+    /// own everything unconditionally, so widening their scope is meaningless and
+    /// leaves their behaviour byte-identical. Only a sharded backend (haematite)
+    /// overrides this. Decorators that wrap another store must forward this call.
+    ///
+    /// When the store currently owns ALL shards (the `None` / single-node
+    /// default), it already enumerates `shards`, so a sharded backend leaves the
+    /// own-all scope untouched.
+    fn extend_owned_shards(&self, shards: &[usize]) {
+        let _ = shards;
+    }
 }
 
 /// Write authority for appending workflow-history events.

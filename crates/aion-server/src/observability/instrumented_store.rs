@@ -163,6 +163,12 @@ impl ReadableEventStore for InstrumentedEventStore {
         self.inner.acquire_owned_shards(shards)
     }
 
+    /// Forward the SS-5 failover scope-widening to the inner store; this
+    /// decorator adds only metrics, never ownership policy.
+    fn extend_owned_shards(&self, shards: &[usize]) {
+        self.inner.extend_owned_shards(shards);
+    }
+
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let started = Instant::now();
         let result = self.inner.read_history(workflow_id).await;
