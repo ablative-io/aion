@@ -316,6 +316,7 @@ mod tests {
                 activity_id: activity_id.clone(),
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
+                task_queue: String::from("default"),
             },
             aion_core::Event::ActivityCompleted {
                 envelope: envelope(3, 30)?,
@@ -369,6 +370,7 @@ mod tests {
                 activity_id: activity_id.clone(),
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
+                task_queue: String::from("default"),
             },
             aion_core::Event::ActivityFailed {
                 envelope: envelope(3, 30)?,

@@ -462,7 +462,11 @@ impl Recorder {
         Ok(())
     }
 
-    /// Records activity scheduling.
+    /// Records activity scheduling, stamping the `task_queue` the activity dispatches to so
+    /// reopen/recovery re-targets the **same** pool (NSTQ-3).
+    ///
+    /// No SDK-level task-queue selection exists yet (NSTQ-4), so the single-schedule engine seam
+    /// passes the named `"default"` task queue — the genuine current value, not a shim.
     ///
     /// # Errors
     ///
@@ -474,12 +478,14 @@ impl Recorder {
         activity_id: ActivityId,
         activity_type: String,
         input: Payload,
+        task_queue: String,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::ActivityScheduled {
             envelope,
             activity_id,
             activity_type,
             input,
+            task_queue,
         })
         .await
     }
@@ -1499,6 +1505,7 @@ mod tests {
                 activity_id.clone(),
                 String::from("charge-card"),
                 payload("input")?,
+                String::from("default"),
             )
             .await?;
         recorder

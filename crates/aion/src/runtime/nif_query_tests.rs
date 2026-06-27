@@ -435,6 +435,7 @@ fn dispatch_query_is_refused_during_replay() -> TestResult {
         activity_id: aion_core::ActivityId::from_sequence_position(0),
         activity_type: "billing/charge".to_owned(),
         input: aion_core::Payload::from_json(&serde_json::json!({}))?,
+        task_queue: String::from("default"),
     };
     runtime.block_on(store.append(WriteToken::recorder(), &workflow_id, &[scheduled], 1))?;
     let config = serde_json::json!({ "target_workflow_id": WorkflowId::new_v4() }).to_string();

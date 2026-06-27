@@ -51,6 +51,7 @@ fn activity_scheduled(seq: u64, ordinal: u64) -> Result<Event, Box<dyn std::erro
         activity_id: ActivityId::from_sequence_position(ordinal),
         activity_type: "activity".to_owned(),
         input: payload("activity-input")?,
+        task_queue: String::from("default"),
     })
 }
 

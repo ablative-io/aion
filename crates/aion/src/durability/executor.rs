@@ -181,6 +181,9 @@ async fn execute_live_and_record(
                     activity_id.clone(),
                     activity_type.clone(),
                     input.clone(),
+                    // No SDK-level task-queue selection yet (NSTQ-4); the single-schedule seam
+                    // records the named default task queue.
+                    String::from(aion_core::DEFAULT_TASK_QUEUE),
                 )
                 .await?;
             recorder

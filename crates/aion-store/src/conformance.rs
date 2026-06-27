@@ -997,6 +997,7 @@ fn activity_scheduled(
         activity_id: aion_core::ActivityId::from_sequence_position(seq),
         activity_type: activity_type.to_owned(),
         input: payload("activity-input")?,
+        task_queue: String::from(aion_core::DEFAULT_TASK_QUEUE),
     })
 }
 

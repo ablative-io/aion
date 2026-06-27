@@ -44,6 +44,7 @@ async fn store_with_activity_history() -> Result<Arc<dyn EventStore>, Box<dyn st
             activity_id.clone(),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder

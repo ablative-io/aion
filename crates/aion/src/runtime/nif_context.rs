@@ -273,6 +273,9 @@ impl NifContext {
                         activity_id.clone(),
                         activity_type,
                         input,
+                        // No SDK-level task-queue selection yet (NSTQ-4); the live single-schedule
+                        // path records the named default task queue.
+                        String::from(aion_core::DEFAULT_TASK_QUEUE),
                     )
                     .await?;
                 recorder
@@ -760,6 +763,7 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(0),
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
+                task_queue: String::from("default"),
             },
             Event::ActivityCompleted {
                 envelope: envelope(&workflow_id, 3)?,
@@ -800,6 +804,7 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(0),
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
+                task_queue: String::from("default"),
             },
             Event::ActivityCompleted {
                 envelope: envelope(workflow_id, 3)?,
