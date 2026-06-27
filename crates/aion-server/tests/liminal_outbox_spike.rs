@@ -305,7 +305,7 @@ fn per_row_channel_is_derived_from_namespace_and_task_queue() {
     // uses, so dispatcher and any subscriber cannot drift.
     assert_eq!(
         channel_for_row(&remote_gpu),
-        dispatch_channel_name("remote", "gpu")
+        dispatch_channel_name("remote", "gpu", None)
     );
 
     // activity_type does NOT affect the channel: it is matched after delivery.
@@ -323,7 +323,7 @@ fn per_row_channel_is_derived_from_namespace_and_task_queue() {
 #[test]
 fn derived_channel_matches_constant() {
     assert_eq!(channel_for_row(&pending_row(0)), CHANNEL);
-    assert_eq!(dispatch_channel_name("default", "default"), CHANNEL);
+    assert_eq!(dispatch_channel_name("default", "default", None), CHANNEL);
 }
 
 /// THE LOAD-BEARING TEST: a real outbox dispatch over liminal to a worker, and

@@ -62,14 +62,23 @@
 //! # The worker-subscription seam (out of scope here, documented)
 //!
 //! This module owns the DISPATCHER side: it publishes a row to the channel
-//! [`dispatch_channel_name`] derives from the row's `(namespace, task_queue)`.
-//! The SUBSCRIBER side — a remote aion-worker pool joining the liminal pg group
-//! for the channel it serves — lives in the worker/liminal layer, not here, and
-//! does not exist yet (13-0 uses liminal's in-server echo responder). When that
-//! worker-pool transport is built, a worker pool addressed `(namespace,
-//! task_queue)` MUST subscribe to the channel produced by **this same**
+//! [`dispatch_channel_name`] derives from the row's `(namespace, task_queue)`
+//! and its optional `node` (NODE-2/NODE-5). The SUBSCRIBER side — a remote
+//! aion-worker pool joining the liminal pg group for the channel it serves —
+//! lives in the worker/liminal layer, not here, and does not exist yet (13-0
+//! uses liminal's in-server echo responder). When that worker-pool transport is
+//! built, the subscriber MUST derive its channel(s) from **this same**
 //! [`dispatch_channel_name`] function so the dispatcher and subscriber strings
-//! cannot drift. That is the single contract the seam must honour.
+//! cannot drift. The precise subscriber contract:
+//!
+//! - An UNPINNED worker pool addressed `(namespace, task_queue)` subscribes to
+//!   `dispatch_channel_name(namespace, task_queue, None)`.
+//! - A NODE-PINNED dispatch (the row carries `Some(node)`) is published to
+//!   `dispatch_channel_name(namespace, task_queue, Some(node))` — a DISTINCT
+//!   channel that a worker on that node must ALSO subscribe to in order to serve
+//!   pinned work; the unpinned channel alone never delivers a pinned dispatch.
+//!
+//! That is the single contract the seam must honour.
 
 use std::sync::Arc;
 
@@ -223,55 +232,80 @@ fn encode_segment(segment: &str) -> String {
 }
 
 /// Derives the liminal dispatch channel for a worker pool addressed
-/// `(namespace, task_queue)`.
+/// `(namespace, task_queue)`, optionally pinned to a specific `node`.
 ///
 /// This is the **single, total source of truth** for the channel string: every
-/// site that needs the channel a `(namespace, task_queue)` pool dispatches to —
-/// both this dispatcher and any future worker-pool subscription side — MUST call
-/// this function so the two sides cannot drift. The format is
-/// `"aion.dispatch.{namespace}.{task_queue}"` where each `{segment}` is
-/// independently passed through [`encode_segment`].
+/// site that needs the channel a `(namespace, task_queue[, node])` pool
+/// dispatches to — both this dispatcher and any future worker-pool subscription
+/// side — MUST call this function so the two sides cannot drift. The format is
+/// `"aion.dispatch.{namespace}.{task_queue}"` for an unpinned dispatch and
+/// `"aion.dispatch.{namespace}.{task_queue}.{node}"` when a `node` is pinned;
+/// each `{segment}` is independently passed through [`encode_segment`].
+///
+/// # The subscriber contract (the seam this function pins, NODE-5 / 13-x)
+///
+/// The subscriber side remains the documented seam (it does not exist yet; 13-0
+/// uses liminal's in-server echo responder). The contract both sides MUST honour:
+///
+/// - An **unpinned** worker pool addressed `(namespace, task_queue)` subscribes
+///   to `dispatch_channel_name(namespace, task_queue, None)` and receives every
+///   unpinned dispatch for that pool.
+/// - A **node-pinned** dispatch (the row carries `Some(node)`) goes to
+///   `dispatch_channel_name(namespace, task_queue, Some(node))`, a DISTINCT
+///   channel. A worker running on that node which is meant to serve pinned work
+///   for the pool MUST ALSO subscribe to that node-specific channel — the
+///   `None` channel alone will never deliver a node-pinned dispatch to it.
+///
+/// Because the `None` channel and any `Some(node)` channel are distinct strings,
+/// a node-pinned dispatch never reaches an unpinned-only subscriber and vice
+/// versa; node isolation is therefore enforced by the channel string itself.
 ///
 /// # Injectivity (why the per-segment encode matters)
 ///
-/// `namespace` and `task_queue` are free-form (the design forbids preset
-/// categories), so a raw `format!` would be NON-injective: a `.` inside either
-/// field bleeds across the separator and two pools the design declares disjoint
-/// collide onto one channel — e.g. `("a.b", "c")` and `("a", "b.c")` both yield
-/// `aion.dispatch.a.b.c`, a cross-pool leak on the very isolation dimension this
-/// routing exists to keep separate. Encoding each segment independently (the
-/// separator `.` and the escape `%` are escaped within a segment) makes the map
-/// from `(namespace, task_queue)` to channel string injective: distinct pairs
-/// always yield distinct channels.
-///
-/// # Forward-compat (composes with an Nth segment)
-///
-/// Each segment is encoded on its own and the segments are joined with the
-/// single separator, so adding a later optional segment (e.g. NODE-5's
-/// `aion.dispatch.{ns}.{tq}.{node}`) is a trivial extension that stays injective
-/// by the same argument — no field can ever produce a separator that bleeds into
-/// the next segment.
+/// `namespace`, `task_queue` and `node` are all free-form (the design forbids
+/// preset categories), so a raw `format!` would be NON-injective: a `.` inside
+/// any field bleeds across the separator and pools the design declares disjoint
+/// collide onto one channel — e.g. `("a.b", "c", None)` and `("a", "b.c", None)`
+/// would both yield `aion.dispatch.a.b.c`, a cross-pool leak on the very
+/// isolation dimension this routing exists to keep separate. Encoding each
+/// segment independently (the separator `.` and the escape `%` are escaped within
+/// a segment) makes the map from `(namespace, task_queue, node)` to channel
+/// string injective: distinct triples always yield distinct channels, ACROSS
+/// segment counts too. The node segment is appended only for `Some(node)`, and
+/// because no encoded segment can contain a bare separator, a 2-segment channel
+/// (unpinned) can never be confused with a 3-segment channel (pinned) — e.g.
+/// `("a", "b", Some("c"))` and `("a", "b.c", None)` stay distinct, as do
+/// `("a.b", "c", None)` and `("a", "b", Some("c"))`.
 ///
 /// `activity_type` is deliberately NOT part of the channel: it is *what to run*,
 /// matched by the worker after delivery (it rides inside [`DispatchRequest`]),
 /// not *which pool* — see `docs/NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md` §4.2. The
-/// function is total (defined for every string pair) and stable (the same
-/// `(namespace, task_queue)` always yields the same channel).
+/// function is total (defined for every input) and stable (the same
+/// `(namespace, task_queue, node)` always yields the same channel).
 #[must_use]
-pub fn dispatch_channel_name(namespace: &str, task_queue: &str) -> String {
+pub fn dispatch_channel_name(namespace: &str, task_queue: &str, node: Option<&str>) -> String {
     let namespace = encode_segment(namespace);
     let task_queue = encode_segment(task_queue);
-    format!("aion.dispatch.{namespace}.{task_queue}")
+    match node {
+        Some(node) => {
+            let node = encode_segment(node);
+            format!("aion.dispatch.{namespace}.{task_queue}.{node}")
+        }
+        None => format!("aion.dispatch.{namespace}.{task_queue}"),
+    }
 }
 
 /// Derives the liminal dispatch channel for a claimed outbox row.
 ///
 /// Thin wrapper over [`dispatch_channel_name`] reading the row's durable
-/// `(namespace, task_queue)` (NSTQ-2 columns). Kept free-standing so the
-/// dispatch path and tests derive the row's channel identically.
+/// `(namespace, task_queue)` (NSTQ-2 columns) and its optional `node` (NODE-2):
+/// when `row.node` is `Some`, the row dispatches to the node-pinned sub-channel;
+/// when `None`, it derives the byte-identical unpinned channel. Kept
+/// free-standing so the dispatch path and tests derive the row's channel
+/// identically.
 #[must_use]
 pub fn channel_for_row(row: &OutboxRow) -> String {
-    dispatch_channel_name(&row.namespace, &row.task_queue)
+    dispatch_channel_name(&row.namespace, &row.task_queue, row.node.as_deref())
 }
 
 /// Cross-node [`OutboxRowDispatch`] that places a claimed row over liminal.
@@ -449,24 +483,41 @@ mod tests {
 
     /// The channel format is pinned EXACTLY: any change is a wire-compatibility
     /// break (the dispatcher and any worker subscription must agree byte-for-byte).
+    /// The UNPINNED (`None`) channel MUST stay byte-identical to the pre-NODE-5
+    /// format so existing pool subscriptions are stable.
     #[test]
     fn channel_format_is_pinned() {
         assert_eq!(
-            dispatch_channel_name("remote", "gpu"),
+            dispatch_channel_name("remote", "gpu", None),
             "aion.dispatch.remote.gpu"
         );
         assert_eq!(
-            dispatch_channel_name("local", "norn"),
+            dispatch_channel_name("local", "norn", None),
             "aion.dispatch.local.norn"
         );
     }
 
-    /// Same input always yields the same channel (the function is stable/total).
+    /// A node-pinned dispatch appends the node as an injectively-encoded
+    /// sub-segment: `f(ns, tq, Some(node))` == `aion.dispatch.{ns}.{tq}.{node}`.
+    #[test]
+    fn node_pinned_channel_appends_node_subsegment() {
+        assert_eq!(
+            dispatch_channel_name("remote", "gpu", Some("box-7")),
+            "aion.dispatch.remote.gpu.box-7"
+        );
+    }
+
+    /// Same input always yields the same channel (the function is stable/total),
+    /// for both the unpinned and node-pinned cases.
     #[test]
     fn channel_derivation_is_stable() {
         assert_eq!(
-            dispatch_channel_name("default", "default"),
-            dispatch_channel_name("default", "default")
+            dispatch_channel_name("default", "default", None),
+            dispatch_channel_name("default", "default", None)
+        );
+        assert_eq!(
+            dispatch_channel_name("default", "default", Some("box-1")),
+            dispatch_channel_name("default", "default", Some("box-1"))
         );
     }
 
@@ -475,9 +526,24 @@ mod tests {
     #[test]
     fn distinct_pools_get_distinct_channels() {
         assert_ne!(
-            dispatch_channel_name("remote", "gpu"),
-            dispatch_channel_name("local", "norn")
+            dispatch_channel_name("remote", "gpu", None),
+            dispatch_channel_name("local", "norn", None)
         );
+    }
+
+    /// A node-pinned dispatch and the unpinned dispatch for the SAME pool derive
+    /// DISTINCT channels, and two distinct nodes for the same pool also differ —
+    /// the property node isolation rests on (the subscriber contract).
+    #[test]
+    fn node_pin_separates_channels() {
+        let unpinned = dispatch_channel_name("remote", "gpu", None);
+        let box7 = dispatch_channel_name("remote", "gpu", Some("box-7"));
+        let box8 = dispatch_channel_name("remote", "gpu", Some("box-8"));
+        assert_ne!(
+            unpinned, box7,
+            "pinned dispatch must not reach unpinned pool"
+        );
+        assert_ne!(box7, box8, "distinct nodes must not collide");
     }
 
     /// The core injectivity property: free-form fields containing the segment
@@ -488,9 +554,29 @@ mod tests {
     #[test]
     fn dotted_fields_do_not_collide_across_segments() {
         assert_ne!(
-            dispatch_channel_name("a.b", "c"),
-            dispatch_channel_name("a", "b.c"),
+            dispatch_channel_name("a.b", "c", None),
+            dispatch_channel_name("a", "b.c", None),
             "a '.' in a field must not bleed across the segment separator"
+        );
+    }
+
+    /// Injectivity holds ACROSS segment counts: a 2-segment (unpinned) channel
+    /// can never be confused with a 3-segment (node-pinned) channel even when a
+    /// `.` in a field would otherwise make the raw strings line up. Both
+    /// directions of the brief's collision cases must stay distinct.
+    #[test]
+    fn node_subsegment_does_not_collide_with_dotted_fields() {
+        // A node sub-segment vs the same dot living inside task_queue.
+        assert_ne!(
+            dispatch_channel_name("a", "b", Some("c")),
+            dispatch_channel_name("a", "b.c", None),
+            "a node sub-segment must not collide with a dotted task_queue"
+        );
+        // The dot living inside namespace vs a node sub-segment.
+        assert_ne!(
+            dispatch_channel_name("a.b", "c", None),
+            dispatch_channel_name("a", "b", Some("c")),
+            "a dotted namespace must not collide with a node-pinned channel"
         );
     }
 
@@ -500,37 +586,49 @@ mod tests {
     fn reserved_char_shifts_stay_distinct() {
         // Dot at the end of namespace vs start of task_queue.
         assert_ne!(
-            dispatch_channel_name("ns.", "tq"),
-            dispatch_channel_name("ns", ".tq")
+            dispatch_channel_name("ns.", "tq", None),
+            dispatch_channel_name("ns", ".tq", None)
         );
         // Empty field vs the dot living in the other field.
         assert_ne!(
-            dispatch_channel_name("", "a.b"),
-            dispatch_channel_name(".a", "b")
+            dispatch_channel_name("", "a.b", None),
+            dispatch_channel_name(".a", "b", None)
         );
         // The escape char itself must not let a literal `%2E` impersonate an
         // encoded `.`: `("%2E", "x")` (literal percent-two-E) must differ from
         // `(".", "x")` (an actual dot, which encodes to `%2E`).
         assert_ne!(
-            dispatch_channel_name("%2E", "x"),
-            dispatch_channel_name(".", "x")
+            dispatch_channel_name("%2E", "x", None),
+            dispatch_channel_name(".", "x", None)
         );
     }
 
-    /// Encoding is injective in BOTH fields independently and is exactly
+    /// Encoding is injective in ALL THREE segments independently and is exactly
     /// reversible (the property the channel relies on), so a small exhaustive
-    /// sweep of reserved-char arrangements yields all-distinct channels.
+    /// sweep of reserved-char arrangements — INCLUDING the optional node taking
+    /// `None` and every reserved-char value — yields all-distinct channels. This
+    /// covers cross-segment-count collisions (the `None` vs `Some` boundary) too.
     #[test]
-    fn encoding_is_injective_over_reserved_char_pairs() {
+    fn encoding_is_injective_over_reserved_char_triples() {
         let fields = ["a", "a.b", "a.", ".a", ".", "", "%", "%2E", "a%b", "%2."];
+        let nodes = [
+            None,
+            Some("a"),
+            Some("a.b"),
+            Some("."),
+            Some(""),
+            Some("%2E"),
+        ];
         let mut channels = std::collections::HashSet::new();
         for ns in fields {
             for tq in fields {
-                let channel = dispatch_channel_name(ns, tq);
-                assert!(
-                    channels.insert(channel.clone()),
-                    "collision on ({ns:?}, {tq:?}) -> {channel}"
-                );
+                for node in nodes {
+                    let channel = dispatch_channel_name(ns, tq, node);
+                    assert!(
+                        channels.insert(channel.clone()),
+                        "collision on ({ns:?}, {tq:?}, {node:?}) -> {channel}"
+                    );
+                }
             }
         }
     }
@@ -556,7 +654,8 @@ mod tests {
 
     /// A row's channel is derived from its durable `(namespace, task_queue)`
     /// columns (NSTQ-2), through the same single derivation function — and
-    /// `activity_type` does NOT enter the channel.
+    /// `activity_type` does NOT enter the channel. With `node = None` the channel
+    /// is byte-identical to the pre-NODE-5 2-segment form.
     #[test]
     fn channel_for_row_uses_namespace_and_task_queue_only() {
         let remote_gpu = row("remote", "gpu");
@@ -574,5 +673,20 @@ mod tests {
             channel_for_row(&other_activity),
             "activity_type must not affect the channel"
         );
+    }
+
+    /// A row carrying `Some(node)` (NODE-2) derives the node-pinned sub-channel,
+    /// distinct from the same pool's unpinned channel; a row with `None` derives
+    /// the 2-segment channel. `channel_for_row` threads `row.node` through the
+    /// single derivation function.
+    #[test]
+    fn channel_for_row_derives_node_subchannel_when_pinned() {
+        let mut pinned = row("remote", "gpu");
+        pinned.node = Some("box-7".to_owned());
+        assert_eq!(channel_for_row(&pinned), "aion.dispatch.remote.gpu.box-7");
+
+        let unpinned = row("remote", "gpu");
+        assert_eq!(channel_for_row(&unpinned), "aion.dispatch.remote.gpu");
+        assert_ne!(channel_for_row(&pinned), channel_for_row(&unpinned));
     }
 }
