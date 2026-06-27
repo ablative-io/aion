@@ -260,6 +260,8 @@ fn pending_row(ordinal: u64) -> OutboxRow {
         workflow_id,
         ordinal,
         run_id: Some(RunId::new(Uuid::new_v4())),
+        namespace: "default".to_owned(),
+        task_queue: "default".to_owned(),
         activity_type: "charge-card".to_owned(),
         input: Payload::new(ContentType::Json, br#"{"amount":42}"#.to_vec()),
         status: OutboxStatus::Pending,

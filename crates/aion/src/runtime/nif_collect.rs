@@ -254,9 +254,12 @@ fn dispatch_unscheduled(
     // Stale members keep today's path — their recovery is a later increment.
     // Flag OFF: today's behaviour exactly (per-item record + spawn for fresh∪stale).
     let outbox_enabled = deps.runtime.outbox_enabled();
+    // The workflow's durable isolation namespace is the routing correctness boundary the staged
+    // outbox rows must carry (NSTQ-2), so resolve it once and stamp it onto every fan-out item.
+    let workflow_namespace = context.workflow_handle().namespace().to_owned();
     if outbox_enabled {
         if !fresh.is_empty() {
-            let items = fan_out_items(&fresh, label)?;
+            let items = fan_out_items(&fresh, &workflow_namespace, label)?;
             context
                 .record_fan_out_dispatch(Utc::now(), &items)
                 .map_err(|error| error.error_reason())?;
@@ -267,7 +270,7 @@ fn dispatch_unscheduled(
         // not supplement — the in-process `spawn_completion_task` path (excluded below). The
         // completion dedup makes the redelivery at-least-once-safe.
         if !stale.is_empty() {
-            let items = fan_out_items(&stale, label)?;
+            let items = fan_out_items(&stale, &workflow_namespace, label)?;
             context
                 .rearm_outbox_pending(Utc::now(), &items)
                 .map_err(|error| error.error_reason())?;
@@ -287,7 +290,7 @@ fn dispatch_unscheduled(
                 .map_err(|error| error.error_reason())?;
         }
     }
-    let namespace = context.workflow_handle().namespace().to_owned();
+    let namespace = workflow_namespace;
     let workflow_id = context.workflow_id().clone();
     // Flag ON drives BOTH fresh (via record_fan_out_dispatch) and stale (via the
     // rearm_outbox_pending re-stage above) through the OutboxDispatcher, so spawn
@@ -325,12 +328,20 @@ fn dispatch_unscheduled(
 /// Shared by the flag-ON fresh dispatch ([`NifContext::record_fan_out_dispatch`]) and stale
 /// re-arm ([`NifContext::rearm_outbox_pending`]) paths so both derive identical
 /// `(ordinal, activity_type, input)` items.
-fn fan_out_items(members: &[(u64, &ActivitySpec)], label: &str) -> Result<Vec<FanOutItem>, String> {
+fn fan_out_items(
+    members: &[(u64, &ActivitySpec)],
+    namespace: &str,
+    label: &str,
+) -> Result<Vec<FanOutItem>, String> {
     members
         .iter()
         .map(|(ordinal, spec)| {
             Ok(FanOutItem {
                 ordinal: *ordinal,
+                namespace: namespace.to_owned(),
+                // No SDK-level task-queue selection yet (NSTQ-4); fan-out dispatches carry the named
+                // default task queue within the workflow's namespace.
+                task_queue: String::from("default"),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })

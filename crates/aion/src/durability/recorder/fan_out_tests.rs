@@ -224,6 +224,8 @@ fn fan_out_items(
         let ordinal = base_ordinal + offset;
         items.push(FanOutItem {
             ordinal,
+            namespace: "test-ns".to_owned(),
+            task_queue: "test-tq".to_owned(),
             activity_type: format!("activity-{ordinal}"),
             input: payload(&format!("input-{ordinal}"))?,
         });
@@ -306,6 +308,9 @@ async fn fan_out_dispatch_stages_n_outbox_rows_with_dispatch_keys()
         assert_eq!(row.status, OutboxStatus::Pending);
         assert_eq!(row.attempt, 0);
         assert_eq!(row.visible_after, recorded_at(1));
+        // NSTQ-2: the staged row carries the workflow's routing identity off the item.
+        assert_eq!(row.namespace, "test-ns");
+        assert_eq!(row.task_queue, "test-tq");
     }
     Ok(())
 }

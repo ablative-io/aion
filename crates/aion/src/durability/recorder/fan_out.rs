@@ -56,6 +56,12 @@ pub enum FanOutCompletionResult {
 pub struct FanOutItem {
     /// Pinned ordinal of this activity within the workflow's fan-out range.
     pub ordinal: u64,
+    /// Workflow's durable isolation namespace — the routing correctness boundary the staged outbox
+    /// row records so the dispatcher routes within the workflow's real namespace (NSTQ-2).
+    pub namespace: String,
+    /// Pool/flavour selector for this dispatch. No SDK-level task-queue selection exists yet
+    /// (NSTQ-4), so this is the named `"default"` task queue today (NSTQ-2).
+    pub task_queue: String,
     /// Activity type the worker must execute.
     pub activity_type: String,
     /// Opaque activity input payload.
@@ -123,7 +129,9 @@ impl Recorder {
                     item.input.clone(),
                     recorded_at,
                 )
-                .with_run_id(self.run_id.clone()),
+                .with_run_id(self.run_id.clone())
+                .with_namespace(item.namespace.clone())
+                .with_task_queue(item.task_queue.clone()),
             );
         }
 
@@ -179,6 +187,8 @@ impl Recorder {
                     recorded_at,
                 )
                 .with_run_id(self.run_id.clone())
+                .with_namespace(item.namespace.clone())
+                .with_task_queue(item.task_queue.clone())
             })
             .collect();
         self.store.rearm_outbox_pending(&rows).await?;

@@ -723,6 +723,13 @@ struct StoredOutboxRow {
     ordinal: u64,
     #[serde(default)]
     run_id: Option<aion_core::RunId>,
+    /// Workflow's durable isolation namespace; legacy rows persisted before NSTQ-2 default to
+    /// `"default"`.
+    #[serde(default = "default_outbox_route")]
+    namespace: String,
+    /// Pool/flavour selector; legacy rows persisted before NSTQ-2 default to `"default"`.
+    #[serde(default = "default_outbox_route")]
+    task_queue: String,
     activity_type: String,
     input: aion_core::Payload,
     status: String,
@@ -732,12 +739,18 @@ struct StoredOutboxRow {
     claimed_at: Option<String>,
 }
 
+fn default_outbox_route() -> String {
+    String::from(aion_store::DEFAULT_OUTBOX_ROUTE)
+}
+
 fn encode_outbox(row: &OutboxRow) -> Result<Vec<u8>, StoreError> {
     let stored = StoredOutboxRow {
         dispatch_key: row.dispatch_key.clone(),
         workflow_id: row.workflow_id.clone(),
         ordinal: row.ordinal,
         run_id: row.run_id.clone(),
+        namespace: row.namespace.clone(),
+        task_queue: row.task_queue.clone(),
         activity_type: row.activity_type.clone(),
         input: row.input.clone(),
         status: row.status.as_str().to_owned(),
@@ -756,6 +769,8 @@ fn decode_outbox(bytes: &[u8]) -> Result<OutboxRow, StoreError> {
         workflow_id: stored.workflow_id,
         ordinal: stored.ordinal,
         run_id: stored.run_id,
+        namespace: stored.namespace,
+        task_queue: stored.task_queue,
         activity_type: stored.activity_type,
         input: stored.input,
         status: OutboxStatus::parse_token(&stored.status)?,

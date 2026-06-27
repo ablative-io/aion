@@ -43,7 +43,7 @@ pub use aion_core::{
 };
 pub use error::StoreError;
 pub use memory::InMemoryStore;
-pub use outbox::{OutboxRow, OutboxStatus, OutboxStore};
+pub use outbox::{DEFAULT_OUTBOX_ROUTE, OutboxRow, OutboxStatus, OutboxStore};
 pub use package::{PackageRecord, PackageRouteRecord, PackageStore};
 pub use store::{EventStore, ReadableEventStore, RunSummary, WritableEventStore, WriteToken};
 pub use timer::TimerEntry;

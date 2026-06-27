@@ -17,6 +17,12 @@ use chrono::{DateTime, Utc};
 
 use crate::StoreError;
 
+/// Routing identity a row carries when no explicit value was staged: the `"default"` namespace and
+/// the `"default"` task queue. This is both the fresh-staging fallback (no SDK task-queue selection
+/// exists yet — NSTQ-4) and the legacy-NULL read-back value for rows persisted before the columns
+/// existed (NSTQ-2).
+pub const DEFAULT_OUTBOX_ROUTE: &str = "default";
+
 /// Lifecycle state of an outbox row as the dispatcher drives it to a terminal outcome.
 ///
 /// Rows are inserted `Pending`, transitioned to `Claimed` while a dispatcher holds them, and end
@@ -87,6 +93,16 @@ pub struct OutboxRow {
     /// Run that dispatched this ordinal; `None` for legacy rows (pre-RunId threading). Threaded so a
     /// completion only resolves the run that issued it (continue-as-new safety, OBX-011).
     pub run_id: Option<RunId>,
+    /// Workflow's durable isolation namespace — the correctness boundary the dispatched activity must
+    /// route within. Legacy rows (pre-NSTQ-2, persisted before the column existed) read back as the
+    /// `"default"` namespace. Carried on the row so the dispatcher routes via the workflow's real
+    /// namespace instead of inventing the server default (NSTQ-2).
+    pub namespace: String,
+    /// Pool/flavour selector within the namespace. There is no SDK-level task-queue selection yet
+    /// (NSTQ-4), so a freshly staged row carries the named `"default"` task queue; legacy rows
+    /// (pre-NSTQ-2) also read back as `"default"`. Carried on the row so the dispatcher routes via the
+    /// row's real selector (NSTQ-2).
+    pub task_queue: String,
     /// Activity type the worker must execute.
     pub activity_type: String,
     /// Opaque activity input payload.
@@ -129,6 +145,8 @@ impl OutboxRow {
             workflow_id,
             ordinal,
             run_id: None,
+            namespace: String::from(DEFAULT_OUTBOX_ROUTE),
+            task_queue: String::from(DEFAULT_OUTBOX_ROUTE),
             activity_type,
             input,
             status: OutboxStatus::Pending,
@@ -142,6 +160,20 @@ impl OutboxRow {
     #[must_use]
     pub fn with_run_id(mut self, run_id: Option<RunId>) -> Self {
         self.run_id = run_id;
+        self
+    }
+
+    /// Sets the workflow's durable isolation namespace on this row (the routing correctness boundary).
+    #[must_use]
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
+    }
+
+    /// Sets the pool/flavour selector (task queue) on this row.
+    #[must_use]
+    pub fn with_task_queue(mut self, task_queue: impl Into<String>) -> Self {
+        self.task_queue = task_queue.into();
         self
     }
 }

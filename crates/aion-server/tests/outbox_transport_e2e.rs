@@ -536,7 +536,7 @@ async fn outbox_cutover_completes_through_the_real_server_sink() -> Result<(), T
     let outbox_store: Arc<dyn OutboxStore> = Arc::new(LibSqlStore::open(db_path.clone()).await?);
     let push = ActivityDispatcher::new(state.worker_registry().clone())
         .with_drain_state(state.drain_state().clone());
-    let row_dispatch = Arc::new(WorkerOutboxDispatch::new(push, NAMESPACE));
+    let row_dispatch = Arc::new(WorkerOutboxDispatch::new(push));
     let dispatcher = OutboxDispatcher::new(outbox_store, row_dispatch, outbox_dispatcher_config());
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let dispatcher_task = tokio::spawn(dispatcher.run(shutdown_rx));
