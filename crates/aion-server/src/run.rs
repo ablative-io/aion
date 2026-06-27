@@ -66,6 +66,11 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // dispatcher shares the engine's already-opened libSQL store (one
     // connection) via `state.outbox_store()`, so no store settings are needed.
     let outbox_config = config.outbox.clone();
+    // Capture the SS-5b failover supervisor knobs before `build` consumes config.
+    // Only a distributed haematite boot carries a `[store.cluster]` section; this
+    // is `None` for every single-node boot, so no supervisor is ever spawned.
+    #[cfg(feature = "haematite-backend")]
+    let cluster_config = config.store.cluster.clone();
     let state = ServerState::build(config).await?;
     reject_tls_until_supported(&state)?;
 
@@ -98,6 +103,12 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // non-replayed outbox dispatcher task start. With the flag off (the
     // default) nothing here runs and server behaviour is unchanged.
     maybe_spawn_outbox_dispatcher(&state, &outbox_config, &shutdown_rx)?;
+    // SS-5b: a distributed boot whose peers declare owned shards runs the cluster
+    // supervisor — automatic failover detection. A single-node boot spawns
+    // nothing here (the method returns `false`), so default behaviour is
+    // unchanged.
+    #[cfg(feature = "haematite-backend")]
+    maybe_spawn_cluster_supervisor(&state, cluster_config.as_ref(), &shutdown_rx)?;
     let mut grpc = tokio::spawn(serve_grpc(state.clone(), grpc_address, shutdown_rx.clone()));
     let mut http = tokio::spawn(serve_http(state.clone(), http_address, shutdown_rx));
 
@@ -272,6 +283,46 @@ fn maybe_spawn_outbox_dispatcher(
         let reconciler = OutboxReconciler::new(outbox_store, reconciler_config);
         tokio::spawn(reconciler.run(shutdown_rx.clone()));
         info!("outbox reconciler commissioned");
+    }
+    Ok(())
+}
+
+/// Spawn the SS-5b cluster supervisor when, and only when, this is a distributed
+/// haematite boot whose `[store.cluster]` declared peers with owned shards.
+///
+/// Reads the failover cadence + debounce from the cluster config (or the
+/// documented defaults), then asks the state to spawn the supervisor over its
+/// retained concrete store and live engine. With no `[store.cluster]` section —
+/// or with no peer declaring `owned_shards` — nothing is spawned and behaviour
+/// is unchanged.
+#[cfg(feature = "haematite-backend")]
+fn maybe_spawn_cluster_supervisor(
+    state: &ServerState,
+    cluster_config: Option<&crate::config::ClusterConfig>,
+    shutdown_rx: &tokio::sync::watch::Receiver<bool>,
+) -> Result<(), ServerError> {
+    let Some(cluster) = cluster_config else {
+        return Ok(());
+    };
+    let poll_interval = std::time::Duration::from_millis(
+        cluster
+            .failover_poll_interval_ms
+            .unwrap_or(crate::config::DEFAULT_FAILOVER_POLL_INTERVAL_MS),
+    );
+    let confirmations = cluster
+        .failover_confirmations
+        .unwrap_or(crate::config::DEFAULT_FAILOVER_CONFIRMATIONS);
+    let supervisor_config = crate::cluster::SupervisorConfig {
+        poll_interval,
+        confirmations,
+    };
+    let spawned = state.spawn_cluster_supervisor(supervisor_config, shutdown_rx.clone())?;
+    if spawned {
+        info!(
+            poll_interval_ms = %poll_interval.as_millis(),
+            confirmations,
+            "SS-5b cluster supervisor commissioned (automatic peer-down failover)"
+        );
     }
     Ok(())
 }

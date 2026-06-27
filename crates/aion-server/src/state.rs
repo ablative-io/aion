@@ -54,6 +54,14 @@ struct ServerStateInner {
     /// the state stops the responder.
     #[cfg(feature = "haematite-backend")]
     cluster_responder: Option<aion_store_haematite::ClusterResponder>,
+    /// The concrete distributed haematite store the SS-5b supervisor polls for
+    /// peer liveness. `None` for every non-distributed boot.
+    #[cfg(feature = "haematite-backend")]
+    cluster_store: Option<Arc<aion_store_haematite::HaematiteStore>>,
+    /// The peers the SS-5b supervisor watches (each with the shards this node
+    /// adopts on its death). Empty for non-distributed boots.
+    #[cfg(feature = "haematite-backend")]
+    watched_peers: Vec<crate::cluster::WatchedPeer>,
     #[cfg(feature = "auth")]
     jwks_cache: Option<JwksCache>,
 }
@@ -93,6 +101,10 @@ impl ServerState {
         let bootstrap_coordinator = connected.bootstrap_coordinator;
         #[cfg(feature = "haematite-backend")]
         let cluster_responder = connected.cluster_responder;
+        #[cfg(feature = "haematite-backend")]
+        let cluster_store = connected.cluster_store;
+        #[cfg(feature = "haematite-backend")]
+        let watched_peers = connected.watched_peers;
         // The server unconditionally mounts /events/stream, so the engine's
         // broadcast channel must be installed and explicitly sized here —
         // a mounted-but-unconfigured streaming endpoint is never acceptable.
@@ -184,6 +196,10 @@ impl ServerState {
                 outbox_store,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder,
+                #[cfg(feature = "haematite-backend")]
+                cluster_store,
+                #[cfg(feature = "haematite-backend")]
+                watched_peers,
                 #[cfg(feature = "auth")]
                 jwks_cache,
             }),
@@ -208,6 +224,10 @@ impl ServerState {
                 outbox_store: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_store: None,
+                #[cfg(feature = "haematite-backend")]
+                watched_peers: Vec::new(),
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -241,6 +261,10 @@ impl ServerState {
                 outbox_store: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_store: None,
+                #[cfg(feature = "haematite-backend")]
+                watched_peers: Vec::new(),
                 jwks_cache: Some(jwks_cache),
             }),
         }
@@ -268,6 +292,10 @@ impl ServerState {
                 outbox_store: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_store: None,
+                #[cfg(feature = "haematite-backend")]
+                watched_peers: Vec::new(),
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -356,6 +384,47 @@ impl ServerState {
     #[must_use]
     pub fn is_clustered(&self) -> bool {
         self.inner.cluster_responder.is_some()
+    }
+
+    /// Spawn the SS-5b cluster supervisor: a background task that watches every
+    /// declared peer's replication liveness and, on a confirmed peer death,
+    /// calls `adopt_shards` for that peer's shards on THIS node's live engine —
+    /// automatic failover with no manual trigger.
+    ///
+    /// Does nothing (returns `Ok(())` without spawning) unless this is a
+    /// distributed boot whose cluster config declared at least one peer with
+    /// `owned_shards`. A single-node / non-clustered server therefore never runs
+    /// a supervisor, so default behaviour is unchanged.
+    ///
+    /// The spawned task drains on `shutdown` exactly like the transports.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the engine handle cannot be resolved.
+    #[cfg(feature = "haematite-backend")]
+    pub fn spawn_cluster_supervisor(
+        &self,
+        config: crate::cluster::SupervisorConfig,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<bool, ServerError> {
+        let Some(cluster_store) = self.inner.cluster_store.clone() else {
+            return Ok(false);
+        };
+        if self.inner.watched_peers.is_empty() {
+            return Ok(false);
+        }
+        let engine = Arc::clone(self.inner.namespace_guard.resolver().engine()?);
+        let supervisor = crate::cluster::ClusterSupervisor::new(
+            cluster_store,
+            engine,
+            self.inner.watched_peers.clone(),
+            config,
+        );
+        if !supervisor.watches_any() {
+            return Ok(false);
+        }
+        tokio::spawn(supervisor.run(shutdown));
+        Ok(true)
     }
 
     /// Borrow the shared JWKS cache when authentication is enabled.
@@ -485,6 +554,15 @@ struct ConnectedStore {
     bootstrap_coordinator: bool,
     #[cfg(feature = "haematite-backend")]
     cluster_responder: Option<aion_store_haematite::ClusterResponder>,
+    /// The concrete distributed haematite store (the SAME leaf as `event_store`),
+    /// retained for the SS-5b cluster supervisor's peer-liveness polling. `None`
+    /// for every non-distributed boot.
+    #[cfg(feature = "haematite-backend")]
+    cluster_store: Option<Arc<aion_store_haematite::HaematiteStore>>,
+    /// The peers the SS-5b supervisor watches, each with the shards this node
+    /// adopts on its death. Empty for non-distributed boots.
+    #[cfg(feature = "haematite-backend")]
+    watched_peers: Vec<crate::cluster::WatchedPeer>,
 }
 
 impl ConnectedStore {
@@ -497,6 +575,10 @@ impl ConnectedStore {
             bootstrap_coordinator: true,
             #[cfg(feature = "haematite-backend")]
             cluster_responder: None,
+            #[cfg(feature = "haematite-backend")]
+            cluster_store: None,
+            #[cfg(feature = "haematite-backend")]
+            watched_peers: Vec::new(),
         }
     }
 }
@@ -584,6 +666,23 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
     let shard_count = config.shard_count;
     let owned_shards = config.owned_shards.clone();
     let cluster = config.cluster.clone();
+    // The peers the SS-5b supervisor watches, captured before `cluster` is moved
+    // into the blocking build. A peer with declared `owned_shards` becomes a
+    // watch target; peers without are kept out of the watch set (the supervisor
+    // would have nothing to adopt for them).
+    let watched_peers: Vec<crate::cluster::WatchedPeer> = cluster
+        .as_ref()
+        .map(|cluster| {
+            cluster
+                .peers
+                .iter()
+                .map(|peer| crate::cluster::WatchedPeer {
+                    name: peer.name.clone(),
+                    owned_shards: peer.owned_shards.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // Construction (and, for the distributed path, the off-runtime endpoint bind)
     // must not stall the async runtime, so run it on the blocking pool. The
     // distributed constructor itself steps onto a bare thread for the bind.
@@ -606,12 +705,23 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
 
     let leaf = Arc::new(store);
     let event_store: Arc<dyn EventStore> = leaf.clone();
-    let outbox_store: Arc<dyn OutboxStore> = leaf;
+    let outbox_store: Arc<dyn OutboxStore> = leaf.clone();
+    // Retain the concrete store ONLY for a distributed boot (responder present),
+    // where the SS-5b supervisor will poll it for peer liveness. A single-node
+    // boot has no peers, so it carries no cluster store and never supervises.
+    let cluster_store = responder.as_ref().map(|_| leaf);
+    let watched_peers = if cluster_store.is_some() {
+        watched_peers
+    } else {
+        Vec::new()
+    };
     Ok(ConnectedStore {
         event_store,
         outbox_store: Some(outbox_store),
         bootstrap_coordinator,
         cluster_responder: responder,
+        cluster_store,
+        watched_peers,
     })
 }
 

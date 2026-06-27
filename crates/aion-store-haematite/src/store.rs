@@ -442,6 +442,27 @@ impl HaematiteStore {
         }
     }
 
+    /// Whether this distributed node currently holds a live replication link to
+    /// the peer named `peer_name` (SS-5b automatic failover detection).
+    ///
+    /// Returns `true` while the OTP distribution connection to `peer_name` is
+    /// active. It flips to `false` once that connection is torn down — which
+    /// happens when the peer's process dies (`kill -9` closes its sockets, the
+    /// survivor's read loop hits EOF and deregisters the link) or its endpoint is
+    /// dropped. This is the honest peer-liveness signal a cluster supervisor polls
+    /// to decide a peer is gone and its shards must be adopted; it reflects real
+    /// socket death, not a heartbeat heuristic.
+    ///
+    /// A single-node store (no distribution) has no peers, so this is always
+    /// `false`.
+    #[must_use]
+    pub fn peer_connected(&self, peer_name: &str) -> bool {
+        self.inner
+            .database()
+            .distribution()
+            .is_some_and(|endpoint| endpoint.is_connected(peer_name))
+    }
+
     /// Snapshot the current owned set (`None` = all shards). For tests/diagnostics.
     #[must_use]
     pub fn owned_shards(&self) -> Option<Vec<usize>> {

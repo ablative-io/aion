@@ -20,6 +20,10 @@ pub mod api;
 pub mod auth;
 /// Server-side Gleam authoring surface (compile, type-check, package, hot-load).
 pub mod authoring;
+/// SS-5b automatic multi-node failover detection (cluster supervisor). Only
+/// meaningful for a distributed haematite boot, so gated behind the backend.
+#[cfg(feature = "haematite-backend")]
+pub mod cluster;
 /// Runtime configuration loading and validation.
 pub mod config;
 /// Dashboard asset serving helpers.
