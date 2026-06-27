@@ -112,6 +112,39 @@ pub(super) fn resolve_task_queue(config: &str) -> String {
         .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE))
 }
 
+/// Resolve the OPTIONAL node affinity one activity dispatch pins to, decided
+/// once at the schedule seam (NODE-4).
+///
+/// Unlike [`resolve_task_queue`], node affinity is optional and has no
+/// workflow-level default: the precedence is simply the per-activity selection
+/// (`config.node`) if set, else `None` (no affinity — dispatch to any worker in
+/// the pool). This is the single seam where the optional node is decoded for
+/// both the single-schedule and the fan-out paths; the selection crosses the
+/// FFI boundary unresolved inside the activity-dispatch `config` JSON (the SDK's
+/// `activity_config`).
+///
+/// A `config` that is not valid JSON, or whose `node` field is absent, JSON
+/// `null` (the SDK's encoding of "no pin"), or non-string, deterministically
+/// resolves to `None` — the SDK always emits valid config, so a malformed
+/// string signals a defect without taking down an otherwise-valid dispatch over
+/// routing metadata (mirroring [`labels_from_config`] and [`resolve_task_queue`]).
+pub(super) fn resolve_node(config: &str) -> Option<String> {
+    let value = match serde_json::from_str::<serde_json::Value>(config) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "activity dispatch config was not valid JSON; dispatching with no node affinity"
+            );
+            return None;
+        }
+    };
+    value
+        .get("node")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 pub(super) fn runtime_context(state: &EngineNifState) -> Result<RuntimeContext, NifContextError> {
     let guard = state
         .runtime_context
@@ -195,6 +228,7 @@ pub(super) fn record_started(
     activity_type: String,
     input: Payload,
     task_queue: String,
+    node: Option<String>,
 ) -> Result<(), Term> {
     let recorded_at = Utc::now();
     context
@@ -204,6 +238,7 @@ pub(super) fn record_started(
             activity_type,
             input,
             task_queue,
+            node,
         )
         .map_err(|error| context_error_term(ctx, &error))
 }
@@ -234,13 +269,21 @@ pub(super) fn activity_id_from_correlation(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_task_queue;
+    use super::{resolve_node, resolve_task_queue};
 
     /// Build the activity-dispatch config the SDK's `activity_config` emits,
     /// with the two task-queue selection fields set to the supplied JSON.
     fn config(task_queue: &str, workflow_task_queue: &str) -> String {
         format!(
             r#"{{"retry":null,"timeout_ms":null,"heartbeat_ms":null,"labels":{{}},"task_queue":{task_queue},"workflow_task_queue":{workflow_task_queue}}}"#
+        )
+    }
+
+    /// Build the activity-dispatch config the SDK's `activity_config` emits,
+    /// with the optional `node` affinity field set to the supplied JSON.
+    fn config_with_node(node: &str) -> String {
+        format!(
+            r#"{{"retry":null,"timeout_ms":null,"heartbeat_ms":null,"labels":{{}},"task_queue":null,"workflow_task_queue":null,"node":{node}}}"#
         )
     }
 
@@ -284,5 +327,32 @@ mod tests {
             resolve_task_queue("{not json"),
             aion_core::DEFAULT_TASK_QUEUE
         );
+    }
+
+    #[test]
+    fn node_pin_resolves_to_the_selected_node() {
+        // A config that pins node "box-7" resolves to Some("box-7").
+        assert_eq!(
+            resolve_node(&config_with_node(r#""box-7""#)),
+            Some("box-7".to_owned())
+        );
+    }
+
+    #[test]
+    fn null_node_resolves_to_no_affinity() {
+        // The SDK encodes "no pin" as JSON null: no affinity.
+        assert_eq!(resolve_node(&config_with_node("null")), None);
+    }
+
+    #[test]
+    fn absent_node_resolves_to_no_affinity() {
+        // A config predating the field (labels-only) decodes as no affinity.
+        assert_eq!(resolve_node(r#"{"labels":{}}"#), None);
+    }
+
+    #[test]
+    fn malformed_config_resolves_to_no_node_affinity() {
+        // Invalid JSON never takes down a dispatch over routing metadata.
+        assert_eq!(resolve_node("{not json"), None);
     }
 }

@@ -39,6 +39,7 @@ fn greet_request(input: &str, attempt: u32) -> ActivityDispatch {
     ActivityDispatch {
         namespace: NAMESPACE.to_owned(),
         task_queue: TASK_QUEUE.to_owned(),
+        node: None,
         workflow_id: WorkflowId::new_v4(),
         activity_id: ActivityId::from_sequence_position(0),
         name: ACTIVITY_TYPE.to_owned(),
