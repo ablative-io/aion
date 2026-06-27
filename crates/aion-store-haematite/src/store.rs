@@ -53,7 +53,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
 use haematite::db::respond_to_inbound_writes;
 use haematite::sync::membership::WriteMembership;
-use haematite::sync::{DistributionEndpoint, SyncNodeId};
+use haematite::sync::{DistributionEndpoint, ProposeWrite, SyncNodeId};
 use haematite::{Database, DatabaseConfig, DatabaseError, Hash};
 use serde::{Deserialize, Serialize};
 
@@ -1581,6 +1581,51 @@ impl ReadableEventStore for HaematiteStore {
     ) -> Result<(), StoreError> {
         let workflow_id = workflow_id.clone();
         let timer_id = timer_id.clone();
+        // DISTRIBUTED mode: the durable timer MUST be a stamped envelope co-located
+        // on the workflow's shard, or shard adoption's union merge (which decodes
+        // every committed entry on the shard as a StampedEntry) fails with
+        // UndecodableEntry and wedges adoption of any shard carrying timers (#82).
+        // `replicate_write_routed` writes the timer as a STAMPED, quorum-replicated
+        // envelope routed onto the workflow's shard — the stamped analog of the
+        // single-node `put_routed`.
+        if let Some(routing) = self.distribution.clone() {
+            let database = self.inner.database();
+            let token = timer_id_token(&timer_id)?;
+            let entry = TimerEntry {
+                workflow_id: workflow_id.clone(),
+                timer_id,
+                fire_at,
+            };
+            let route_key = keyspace::event_stream_key(&workflow_id);
+            let key = keyspace::timer_key(&workflow_id, &token);
+            let value = encode_timer(&entry)?;
+            // CAS on the current value's hash so re-scheduling the same timer key
+            // overwrites cleanly (create-if-absent on a fresh key, value-CAS on an
+            // existing one), mirroring `publish_shard_owner`.
+            let current = database
+                .get_routed(&route_key, &key)
+                .map_err(|error| database_error(&error))?;
+            let expected = current.as_deref().map(Hash::of);
+            // The quorum write blocks and must run off the tokio runtime.
+            return run_off_runtime(|| {
+                database.replicate_write_routed(
+                    &route_key,
+                    ProposeWrite {
+                        key,
+                        expected,
+                        value,
+                        ttl: None,
+                    },
+                    &routing.membership,
+                    routing.timeout,
+                )
+            })
+            .map(|_| ())
+            .map_err(|error| database_error(&error));
+        }
+        // SINGLE-NODE mode: byte-identical to the original unstamped path
+        // (`put_routed` + `commit`). A single node has no peers and never adopts a
+        // shard, so there is no union merge to satisfy.
         self.blocking(move |store| {
             let token = timer_id_token(&timer_id)?;
             let entry = TimerEntry {
