@@ -32,6 +32,63 @@ async fn append_outbox_batch_ignores_duplicate_dispatch_key() -> Result<(), Stor
 }
 
 #[tokio::test]
+async fn staged_row_round_trips_namespace_and_task_queue() -> Result<(), StoreError> {
+    // NSTQ-2: a row staged with an explicit routing identity persists and reads
+    // back both `namespace` and `task_queue` verbatim through claim.
+    let store = open_test_store("ns-tq-round-trip").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let row = pending_row(&workflow_id, 0, "charge", instant(1)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu");
+
+    store
+        .append_outbox_batch(std::slice::from_ref(&row))
+        .await?;
+
+    let claimed = store.claim_outbox_rows(10).await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].namespace, "remote");
+    assert_eq!(claimed[0].task_queue, "gpu");
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_null_namespace_and_task_queue_read_back_as_default() -> Result<(), StoreError> {
+    // NSTQ-2 legacy fallback: a pre-migration row whose `namespace`/`task_queue`
+    // columns are NULL reads back as the `"default"` routing identity at the
+    // store-read layer, so the dispatcher always sees a concrete pool.
+    let store = open_test_store("ns-tq-legacy-null").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let dispatch_key = OutboxRow::dispatch_key_for(&workflow_id, 0);
+    // Insert a row with NULL namespace + task_queue, exactly as a row persisted
+    // before the additive columns existed would read back.
+    store
+        .connection()
+        .execute(
+            "INSERT INTO outbox \
+             (dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, \
+              visible_after, claimed_at, run_id, namespace, task_queue) \
+             VALUES (?1, ?2, 0, 'charge', ?3, 'pending', 0, ?4, NULL, NULL, NULL, NULL)",
+            params![
+                dispatch_key.clone(),
+                workflow_id.to_string(),
+                serde_json::to_vec(&Payload::new(ContentType::Json, b"{}".to_vec()))
+                    .map_err(|error| StoreError::Serialization(error.to_string()))?,
+                encode_instant(instant(1)?),
+            ],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let claimed = store.claim_outbox_rows(10).await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_key, dispatch_key);
+    assert_eq!(claimed[0].namespace, "default");
+    assert_eq!(claimed[0].task_queue, "default");
+    Ok(())
+}
+
+#[tokio::test]
 async fn claim_complete_retry_round_trip() -> Result<(), StoreError> {
     let store = open_test_store("round-trip").await?;
     let workflow_id = WorkflowId::new_v4();

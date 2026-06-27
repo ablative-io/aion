@@ -343,10 +343,7 @@ fn select_outbox_row_dispatch(
         OutboxTransport::Grpc => {
             let push_dispatcher = ActivityDispatcher::new(state.worker_registry().clone())
                 .with_drain_state(state.drain_state().clone());
-            Ok(Arc::new(WorkerOutboxDispatch::new(
-                push_dispatcher,
-                state.runtime_config().default_namespace.clone(),
-            )))
+            Ok(Arc::new(WorkerOutboxDispatch::new(push_dispatcher)))
         }
         OutboxTransport::Liminal => build_liminal_row_dispatch(outbox_config),
     }

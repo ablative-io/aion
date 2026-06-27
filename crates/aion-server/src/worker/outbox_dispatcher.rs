@@ -114,23 +114,20 @@ pub trait OutboxRowDispatch: Send + Sync + 'static {
 
 /// Production [`OutboxRowDispatch`] backed by the connected-worker registry.
 ///
-/// Maps an [`OutboxRow`] to a [`ScheduledActivity`] in the server's default
-/// namespace and pushes it through the existing [`ActivityDispatcher`]. The
-/// outbox row carries neither a namespace nor a `task_queue` column yet (those
-/// columns land in NSTQ-2), so dispatch uses the server's configured default
-/// namespace and the named `"default"` task queue. This is a transient internal
-/// state: it is acceptable here ONLY because the row genuinely lacks the columns
-/// to carry the real routing identity, and it is removed once NSTQ-2 adds them
-/// and `to_scheduled` reads them off the row.
+/// Maps an [`OutboxRow`] to a [`ScheduledActivity`] and pushes it through the
+/// existing [`ActivityDispatcher`]. Since NSTQ-2 the row carries its own
+/// `namespace` and `task_queue`, so dispatch routes via the workflow's real
+/// routing identity read straight off the row — no server default is injected.
+/// Legacy rows persisted before NSTQ-2 read back as the `"default"` namespace and
+/// `"default"` task queue at the store-read layer, so the fallback lives there,
+/// not here.
 pub struct WorkerOutboxDispatch {
     dispatcher: ActivityDispatcher,
-    namespace: String,
 }
 
 impl std::fmt::Debug for WorkerOutboxDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerOutboxDispatch")
-            .field("namespace", &self.namespace)
             .finish_non_exhaustive()
     }
 }
@@ -138,26 +135,22 @@ impl std::fmt::Debug for WorkerOutboxDispatch {
 impl WorkerOutboxDispatch {
     /// Build a worker-backed dispatch over the shared push dispatcher.
     #[must_use]
-    pub fn new(dispatcher: ActivityDispatcher, namespace: impl Into<String>) -> Self {
-        Self {
-            dispatcher,
-            namespace: namespace.into(),
-        }
+    pub fn new(dispatcher: ActivityDispatcher) -> Self {
+        Self { dispatcher }
     }
 
     /// Translate an outbox row into the wire-bound scheduled activity.
     ///
-    /// The pinned `ordinal` is the per-workflow activity ordinal recorded in
-    /// history, so it maps directly onto the activity id the worker correlates
-    /// its result against; the stored zero-based `attempt` is stamped onto the
-    /// wire as a one-based delivery attempt (zero is malformed on the wire).
-    fn to_scheduled(&self, row: &OutboxRow) -> ScheduledActivity {
+    /// The routing identity (`namespace`, `task_queue`) is read off the row, so
+    /// the activity dispatches into the workflow's real namespace pool. The pinned
+    /// `ordinal` is the per-workflow activity ordinal recorded in history, so it
+    /// maps directly onto the activity id the worker correlates its result
+    /// against; the stored zero-based `attempt` is stamped onto the wire as a
+    /// one-based delivery attempt (zero is malformed on the wire).
+    fn to_scheduled(row: &OutboxRow) -> ScheduledActivity {
         ScheduledActivity {
-            namespace: self.namespace.clone(),
-            // The outbox row has no task_queue column yet (NSTQ-2 adds it), so
-            // every outbox dispatch lands on the named default pool. Transient
-            // until the column exists to carry the real selector.
-            task_queue: String::from(crate::worker::registry::DEFAULT_TASK_QUEUE),
+            namespace: row.namespace.clone(),
+            task_queue: row.task_queue.clone(),
             activity_type: row.activity_type.clone(),
             workflow_id: row.workflow_id.clone(),
             activity_id: ActivityId::from_sequence_position(row.ordinal),
@@ -172,7 +165,7 @@ impl WorkerOutboxDispatch {
 #[async_trait]
 impl OutboxRowDispatch for WorkerOutboxDispatch {
     async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
-        self.dispatcher.dispatch(&self.to_scheduled(row)).await
+        self.dispatcher.dispatch(&Self::to_scheduled(row)).await
     }
 }
 
@@ -572,6 +565,62 @@ mod tests {
         assert_eq!(config.backoff_for_attempt(2), Duration::from_millis(400));
         // A very large attempt clamps at backoff_max, never overflows.
         assert_eq!(config.backoff_for_attempt(1000), config.backoff_max);
+    }
+
+    /// NSTQ-2: the production [`WorkerOutboxDispatch`] routes a claimed row by the
+    /// `namespace` + `task_queue` carried ON THE ROW, not by any server default.
+    /// A row stamped `namespace = "remote"` reaches a worker registered in the
+    /// `remote` namespace. A row stamped `namespace = "default"` is NOT served by
+    /// that `remote` worker (its dispatch blocks waiting for a `default`-ns worker
+    /// that never registers), proving the routing identity comes off the row and
+    /// the server default is no longer injected.
+    #[tokio::test]
+    async fn worker_dispatch_routes_by_row_namespace_not_server_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::worker::dispatch::ActivityDispatcher;
+        use crate::worker::registry::{ConnectedWorkerRegistry, WorkerMessage};
+        use aion_store::OutboxRow;
+
+        let registry = ConnectedWorkerRegistry::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let activity_types = [String::from("charge")];
+        // Only a `remote`-namespace worker is connected.
+        let _registration = registry.register("remote", activity_types.iter(), tx)?;
+
+        let dispatch = super::WorkerOutboxDispatch::new(ActivityDispatcher::new(registry.clone()));
+
+        // A row whose routing identity is `remote` reaches the remote worker.
+        let workflow_id = WorkflowId::new_v4();
+        let remote_row = OutboxRow::pending(
+            workflow_id.clone(),
+            0,
+            String::from("charge"),
+            Payload::new(ContentType::Json, b"{}".to_vec()),
+            Utc::now(),
+        )
+        .with_namespace("remote")
+        .with_task_queue("default");
+
+        OutboxRowDispatch::dispatch(&dispatch, &remote_row).await?;
+        let message = rx.recv().await.ok_or("expected pushed activity task")?;
+        assert!(
+            matches!(message, WorkerMessage::ActivityTask(_)),
+            "the remote-namespace worker must receive the activity task for a remote row"
+        );
+
+        // A row whose namespace is `default` is NOT served by the remote worker:
+        // its dispatch blocks waiting for a `default`-ns worker that never appears.
+        let default_row = remote_row.clone().with_namespace("default");
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(200),
+            OutboxRowDispatch::dispatch(&dispatch, &default_row),
+        )
+        .await;
+        assert!(
+            blocked.is_err(),
+            "a default-namespace row must not be served by a remote-namespace worker"
+        );
+        Ok(())
     }
 
     #[tokio::test]
