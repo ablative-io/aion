@@ -133,6 +133,32 @@ pub trait ReadableEventStore: Send + Sync + 'static {
     fn set_owned_shards(&self, shards: Option<&[usize]>) {
         let _ = shards;
     }
+
+    /// Acquire-and-serve ownership of each named distribution shard BEFORE the
+    /// boot path recovers or enumerates over them, so the node is the fenced
+    /// owner and its replicated state is union-merged locally first.
+    ///
+    /// This is the SS-2 election hook the engine boot path calls right after
+    /// [`Self::set_owned_shards`] and BEFORE startup recovery: a distributed
+    /// backend wins the per-shard election and becomes the live owner, so the
+    /// subsequent recovery reads see the full committed history for its shards.
+    ///
+    /// The default implementation is a deliberate no-op returning `Ok(())` —
+    /// single-shard / non-distributed backends (in-memory, libSQL, and the
+    /// single-node haematite mode) own everything unconditionally and elect
+    /// nothing, so boot stays byte-identical. Only a DISTRIBUTED sharded backend
+    /// overrides this to run the election. Decorators that wrap another store
+    /// must forward this call to their inner store.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] when a distributed backend cannot win the
+    /// election or become the live owner of one of `shards`; the node must not
+    /// serve those shards in that case (fail-closed).
+    fn acquire_owned_shards(&self, shards: &[usize]) -> Result<(), StoreError> {
+        let _ = shards;
+        Ok(())
+    }
 }
 
 /// Write authority for appending workflow-history events.

@@ -165,6 +165,32 @@ fn apply_owned_shards(store: &dyn EventStore, owned_shards: Option<&[usize]>) {
     }
 }
 
+/// Win the per-shard election and become the live owner of each owned shard
+/// BEFORE startup recovery reads them (SS-2).
+///
+/// Ordering matters: this runs after [`apply_owned_shards`] (so the store is
+/// already scoped to this node's shards) and BEFORE
+/// [`recover_active_workflows_on_startup`], so a distributed backend's
+/// `become_live` union-merge has made every committed write on those shards
+/// locally present before recovery enumerates them. The election is driven
+/// through the type-erased [`ReadableEventStore::acquire_owned_shards`] seam,
+/// whose distributed implementation runs the blocking coordinator on a bare
+/// off-runtime thread — so calling it from this async `build()` honours
+/// haematite's no-blocking-election-inside-an-async-context constraint.
+///
+/// `None` (the single-node default) skips election entirely, and the seam is a
+/// no-op for every non-distributed backend even when a shard set is configured,
+/// so boot stays byte-identical to today.
+fn acquire_owned_shards(
+    store: &dyn EventStore,
+    owned_shards: Option<&[usize]>,
+) -> Result<(), EngineError> {
+    if let Some(shards) = owned_shards {
+        store.acquire_owned_shards(shards)?;
+    }
+    Ok(())
+}
+
 /// Spawn the periodic visibility reconciliation task when an interval is
 /// configured, returning its join handle; otherwise return `None`.
 fn maybe_spawn_visibility_reconciliation(
@@ -595,6 +621,11 @@ impl EngineBuilder {
             .ok_or(EngineError::MissingVisibilityStore)?;
 
         apply_owned_shards(store.as_ref(), self.owned_shards.as_deref());
+        // SS-2: become the fenced live owner of this node's shards BEFORE any
+        // recovery enumerates them, so a distributed backend's `become_live`
+        // union-merge has landed every committed write locally first. No-op for
+        // single-node / non-distributed backends, so default boot is unchanged.
+        acquire_owned_shards(store.as_ref(), self.owned_shards.as_deref())?;
 
         let runtime = Arc::new(RuntimeHandle::new(runtime_config)?);
 

@@ -132,6 +132,55 @@ pub struct StoreConfig {
     /// (the single-shard default). Ignored by every other backend, and ignored
     /// when opening an existing haematite database (the on-disk shard count wins).
     pub shard_count: usize,
+    /// Optional distributed-cluster membership for the haematite backend (SS-2).
+    ///
+    /// Absent (the default) selects the SINGLE-NODE haematite path, byte-identical
+    /// to today: no endpoint is bound, no shard is elected, the store owns
+    /// everything locally. Present selects the DISTRIBUTED path: the boot path
+    /// binds a replication endpoint, builds a quorum membership from `members` +
+    /// `peers`, and the engine boot path elects (`acquire_shard_and_serve`) this
+    /// node's `owned_shards` before recovery. Ignored by every non-haematite
+    /// backend.
+    pub cluster: Option<ClusterConfig>,
+}
+
+/// Distributed-cluster membership for the haematite backend, from `[store.cluster]`.
+///
+/// This is the minimal, well-defaulted seam that turns the single-node haematite
+/// store into a distributed one (SS-2). A "cluster of one" — `node_id` set,
+/// `members` either empty or naming only `node_id`, and no `peers` — is a valid,
+/// non-flaky configuration: election self-quorums (quorum denominator 1) and the
+/// node boots through the production builder as the fenced owner of its shards.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterConfig {
+    /// This node's globally-unique distribution name (e.g. `node-0@127.0.0.1`).
+    /// Used as the local endpoint name and the local membership identity.
+    pub node_id: String,
+    /// The replication endpoint listen address this node binds for peer
+    /// quorum/election traffic (e.g. `127.0.0.1:7000`).
+    pub bind_address: SocketAddr,
+    /// The FULL cluster membership by node id — the quorum DENOMINATOR. Never the
+    /// reachable subset. May be empty or omit peers for a cluster of one, in which
+    /// case it is treated as `[node_id]` (denominator 1). `node_id` is always
+    /// counted in the denominator whether or not it appears here.
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// Dialable peers (name + address) this node connects to for replication. A
+    /// cluster of one leaves this empty. Peers not in `members` do not inflate the
+    /// quorum denominator.
+    #[serde(default)]
+    pub peers: Vec<ClusterPeer>,
+}
+
+/// One dialable cluster peer: its distribution name and replication address.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterPeer {
+    /// The peer's globally-unique distribution name (matches its `node_id`).
+    pub name: String,
+    /// The peer's replication endpoint address to dial.
+    pub address: SocketAddr,
 }
 
 /// Engine runtime settings from `[runtime]`.
@@ -649,6 +698,11 @@ impl ServerConfig {
             if self.store.shard_count == 0 {
                 return config_error("store.shard_count must be greater than zero");
             }
+            if let Some(cluster) = &self.store.cluster {
+                validate_cluster(cluster)?;
+            }
+        } else if self.store.cluster.is_some() {
+            return config_error("store.cluster is only valid when store.backend is haematite");
         }
         if let DashboardAssetSource::FileSystem { asset_path } = &self.dashboard.source {
             if asset_path.as_os_str().is_empty() {
@@ -758,6 +812,22 @@ impl ServerConfig {
     }
 }
 
+/// Validate a `[store.cluster]` section: a non-empty node id, and every member /
+/// peer name non-empty. A cluster of one (no peers, members empty or `[node_id]`)
+/// is valid.
+fn validate_cluster(cluster: &ClusterConfig) -> Result<(), ServerError> {
+    if cluster.node_id.is_empty() {
+        return config_error("store.cluster.node_id must not be empty");
+    }
+    if cluster.members.iter().any(String::is_empty) {
+        return config_error("store.cluster.members entries must not be empty");
+    }
+    if cluster.peers.iter().any(|peer| peer.name.is_empty()) {
+        return config_error("store.cluster.peers entries must name a non-empty node");
+    }
+    Ok(())
+}
+
 /// Refuses byte-ceiling values that cannot index memory on this platform.
 fn ensure_fits_usize(key: &str, value: u64) -> Result<(), ServerError> {
     if usize::try_from(value).is_err() {
@@ -786,6 +856,7 @@ impl Default for StoreConfig {
             owned_shards: Vec::new(),
             data_dir: None,
             shard_count: 1,
+            cluster: None,
         }
     }
 }

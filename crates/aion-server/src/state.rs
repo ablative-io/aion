@@ -48,6 +48,12 @@ struct ServerStateInner {
     /// `EventStore` so the outbox dispatcher writes through the same single
     /// `libsql::Connection`. `None` for the in-memory backend (no outbox table).
     outbox_store: Option<Arc<dyn OutboxStore>>,
+    /// Owns the distributed haematite inbound-write responder thread, kept alive
+    /// for the server's lifetime so a cluster node keeps answering peers'
+    /// replication/election traffic. `None` for non-distributed boots. Dropping
+    /// the state stops the responder.
+    #[cfg(feature = "haematite-backend")]
+    cluster_responder: Option<aion_store_haematite::ClusterResponder>,
     #[cfg(feature = "auth")]
     jwks_cache: Option<JwksCache>,
 }
@@ -61,8 +67,8 @@ impl ServerState {
     /// be constructed.
     pub async fn build(config: ServerConfig) -> Result<Self, ServerError> {
         let (store_config, runtime) = config.into_parts();
-        let (store, outbox_store) = connect_store(store_config).await?;
-        Self::build_with_store_arc(store, outbox_store, runtime).await
+        let connected = connect_store(store_config).await?;
+        Self::build_with_connected_store(connected, runtime).await
     }
 
     /// Build shared state from an already-constructed store.
@@ -74,14 +80,19 @@ impl ServerState {
     where
         S: EventStore,
     {
-        Self::build_with_store_arc(Arc::new(store), None, runtime).await
+        Self::build_with_connected_store(ConnectedStore::local(Arc::new(store), None), runtime)
+            .await
     }
 
-    async fn build_with_store_arc(
-        store: Arc<dyn EventStore>,
-        outbox_store: Option<Arc<dyn OutboxStore>>,
+    async fn build_with_connected_store(
+        connected: ConnectedStore,
         runtime: RuntimeConfig,
     ) -> Result<Self, ServerError> {
+        let store = connected.event_store;
+        let outbox_store = connected.outbox_store;
+        let bootstrap_coordinator = connected.bootstrap_coordinator;
+        #[cfg(feature = "haematite-backend")]
+        let cluster_responder = connected.cluster_responder;
         // The server unconditionally mounts /events/stream, so the engine's
         // broadcast channel must be installed and explicitly sized here —
         // a mounted-but-unconfigured streaming endpoint is never acceptable.
@@ -135,40 +146,16 @@ impl ServerState {
                 (Arc::new(dispatcher), None)
             };
 
-        let mut search_attribute_schema = aion_core::SearchAttributeSchema::new();
-        search_attribute_schema
-            .register(
-                crate::namespace::NAMESPACE_ATTRIBUTE,
-                aion_core::SearchAttributeType::String,
-            )
-            .map_err(|error| ServerError::Config {
-                message: format!("failed to register namespace search attribute: {error}"),
-            })?;
-        let builder = EngineBuilder::new()
-            .store_arc(instrumented_store.clone())
-            .event_streaming(event_broadcast_capacity)
-            .in_memory_visibility()
-            .search_attribute_schema(search_attribute_schema)
-            .scheduler_threads(runtime.scheduler_threads)
-            .outbox_enabled(runtime.outbox.enabled)
-            .activity_dispatcher(activity_dispatcher)
-            .active_registry(active_registry)
-            .production_recovery_seam()
-            .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
-                Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
-            })
-            .query_timeout(query_timeout)
-            .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path));
-        // Static shard assignment (SS-1, no election): when the operator pins
-        // this node to a shard subset, scope the engine to it. Empty (the
-        // default) leaves the builder untouched, so single-node boot owns ALL
-        // shards and is byte-identical to today.
-        let builder = if runtime.owned_shards.is_empty() {
-            builder
-        } else {
-            builder.owned_shards(runtime.owned_shards.iter().copied())
-        };
-        let engine = builder.build().await?;
+        let engine = build_engine(EngineAssembly {
+            instrumented_store: &instrumented_store,
+            event_broadcast_capacity,
+            query_timeout,
+            activity_dispatcher,
+            active_registry,
+            bootstrap_coordinator,
+            runtime: &runtime,
+        })
+        .await?;
         let engine = Arc::new(engine);
         // Outbox ON: route unmatched worker completions arriving at the sink
         // into the live workflow's mailbox. Flag-off this callback is never
@@ -195,6 +182,8 @@ impl ServerState {
                 health: Some(HealthState::new(instrumented_store, true)),
                 activity_mock_registry,
                 outbox_store,
+                #[cfg(feature = "haematite-backend")]
+                cluster_responder,
                 #[cfg(feature = "auth")]
                 jwks_cache,
             }),
@@ -217,6 +206,8 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_responder: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -248,6 +239,8 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_responder: None,
                 jwks_cache: Some(jwks_cache),
             }),
         }
@@ -273,6 +266,8 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_responder: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -352,6 +347,17 @@ impl ServerState {
         self.inner.outbox_store.clone()
     }
 
+    /// Whether this server is a node in a distributed haematite cluster.
+    ///
+    /// `true` when boot constructed the distributed backend (a `[store.cluster]`
+    /// section was present) and is holding its inbound-write responder alive;
+    /// `false` for every single-node / non-haematite boot.
+    #[cfg(feature = "haematite-backend")]
+    #[must_use]
+    pub fn is_clustered(&self) -> bool {
+        self.inner.cluster_responder.is_some()
+    }
+
     /// Borrow the shared JWKS cache when authentication is enabled.
     #[cfg(feature = "auth")]
     #[must_use]
@@ -395,10 +401,105 @@ fn metrics_config_error(error: &MetricsError) -> ServerError {
     }
 }
 
-/// The engine's [`EventStore`] handle paired with an optional [`OutboxStore`]
-/// cast of the SAME leaf store. Backends with a durable outbox table (libSQL,
-/// haematite) yield `Some`; the in-memory backend yields `None`.
-type ConnectedStore = (Arc<dyn EventStore>, Option<Arc<dyn OutboxStore>>);
+/// Borrowed inputs assembled into the embedded engine by [`build_engine`].
+struct EngineAssembly<'a> {
+    /// The metrics-instrumented store the engine writes through.
+    instrumented_store: &'a Arc<InstrumentedEventStore>,
+    /// Explicitly-sized broadcast channel capacity for `/events/stream`.
+    event_broadcast_capacity: std::num::NonZeroUsize,
+    /// Explicit workflow-query reply deadline for `/workflows/query`.
+    query_timeout: std::time::Duration,
+    /// The activity dispatcher (optionally dev-mock-decorated) the engine uses.
+    activity_dispatcher: Arc<dyn ActivityDispatcher>,
+    /// The shared active-workflow registry server dispatchers correlate against.
+    active_registry: Arc<aion::Registry>,
+    /// Whether THIS node seeds the schedule coordinator (SS-2 ownership gate).
+    bootstrap_coordinator: bool,
+    /// Non-secret runtime settings driving scheduler/outbox/package/shard knobs.
+    runtime: &'a RuntimeConfig,
+}
+
+/// Assemble the embedded engine from the server's runtime configuration.
+///
+/// Factored out of [`ServerState::build_with_connected_store`] to keep that
+/// method within length bounds; it carries the SS-2 wiring — the coordinator
+/// bootstrap gate fed from real ownership and the `owned_shards` hook that drives
+/// both scoping and the per-shard election before recovery.
+async fn build_engine(assembly: EngineAssembly<'_>) -> Result<aion::Engine, ServerError> {
+    let mut search_attribute_schema = aion_core::SearchAttributeSchema::new();
+    search_attribute_schema
+        .register(
+            crate::namespace::NAMESPACE_ATTRIBUTE,
+            aion_core::SearchAttributeType::String,
+        )
+        .map_err(|error| ServerError::Config {
+            message: format!("failed to register namespace search attribute: {error}"),
+        })?;
+    let runtime = assembly.runtime;
+    let builder = EngineBuilder::new()
+        .store_arc(assembly.instrumented_store.clone())
+        .event_streaming(assembly.event_broadcast_capacity)
+        .in_memory_visibility()
+        .search_attribute_schema(search_attribute_schema)
+        .scheduler_threads(runtime.scheduler_threads)
+        .outbox_enabled(runtime.outbox.enabled)
+        .activity_dispatcher(assembly.activity_dispatcher)
+        .active_registry(assembly.active_registry)
+        .production_recovery_seam()
+        .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+            Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
+        })
+        .query_timeout(assembly.query_timeout)
+        // SS-2: only the node owning the schedule-coordinator's shard seeds and
+        // serves it. `true` for every non-distributed boot (owns all shards); a
+        // distributed non-owner passes `false` so it does not fence the
+        // coordinator stream (AA-4-4). Default `true`, so a single-node boot is
+        // byte-identical to today.
+        .bootstrap_schedule_coordinator(assembly.bootstrap_coordinator)
+        .load_workflow_sources(runtime.workflow_packages.iter().map(PathBuf::as_path));
+    // Owned-shard assignment: when the operator pins this node to a shard subset,
+    // scope the engine to it AND (SS-2) elect those shards before recovery — the
+    // builder's `owned_shards` hook drives both. Empty (the default) leaves the
+    // builder untouched, so single-node boot owns ALL shards, elects nothing, and
+    // is byte-identical to today.
+    let builder = if runtime.owned_shards.is_empty() {
+        builder
+    } else {
+        builder.owned_shards(runtime.owned_shards.iter().copied())
+    };
+    builder.build().await.map_err(ServerError::from)
+}
+
+/// A connected durable store plus the lifecycle pieces the boot path needs.
+///
+/// `outbox_store` is the SAME leaf store cast as an [`OutboxStore`] for backends
+/// with a durable outbox table (libSQL, haematite); the in-memory backend yields
+/// `None`. `bootstrap_coordinator` gates the schedule-coordinator seed on real
+/// ownership (SS-2 / AA-4-4): `true` for every non-distributed boot (single-node
+/// owns the coordinator's shard), and for a distributed node only when it owns
+/// that shard. `cluster_responder` owns the distributed inbound-write responder
+/// thread, kept alive for the server's lifetime; `None` for non-distributed boots.
+struct ConnectedStore {
+    event_store: Arc<dyn EventStore>,
+    outbox_store: Option<Arc<dyn OutboxStore>>,
+    bootstrap_coordinator: bool,
+    #[cfg(feature = "haematite-backend")]
+    cluster_responder: Option<aion_store_haematite::ClusterResponder>,
+}
+
+impl ConnectedStore {
+    /// A non-distributed connected store: owns the coordinator's shard (so it
+    /// bootstraps the coordinator) and has no cluster responder.
+    fn local(event_store: Arc<dyn EventStore>, outbox_store: Option<Arc<dyn OutboxStore>>) -> Self {
+        Self {
+            event_store,
+            outbox_store,
+            bootstrap_coordinator: true,
+            #[cfg(feature = "haematite-backend")]
+            cluster_responder: None,
+        }
+    }
+}
 
 /// Connect the durable store, yielding the engine's [`EventStore`] handle and,
 /// for the libSQL backend, the SAME leaf store cast as an [`OutboxStore`].
@@ -411,7 +512,10 @@ type ConnectedStore = (Arc<dyn EventStore>, Option<Arc<dyn OutboxStore>>);
 /// outbox table, so it yields `None`.
 async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerError> {
     match config.backend {
-        StoreBackend::Memory => Ok((Arc::new(aion_store::InMemoryStore::default()), None)),
+        StoreBackend::Memory => Ok(ConnectedStore::local(
+            Arc::new(aion_store::InMemoryStore::default()),
+            None,
+        )),
         StoreBackend::LibSql => {
             let Some(url) = config.url else {
                 return Err(ServerError::Config {
@@ -435,7 +539,7 @@ async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerErro
             let leaf = Arc::new(store);
             let event_store: Arc<dyn EventStore> = leaf.clone();
             let outbox_store: Arc<dyn OutboxStore> = leaf;
-            Ok((event_store, Some(outbox_store)))
+            Ok(ConnectedStore::local(event_store, Some(outbox_store)))
         }
         StoreBackend::Haematite => {
             #[cfg(feature = "haematite-backend")]
@@ -451,13 +555,25 @@ async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerErro
     }
 }
 
-/// Connect the single-node haematite backend, opening the on-disk database if
-/// `store.data_dir` already holds one and otherwise creating it with
-/// `store.shard_count` shards. The SAME leaf `Arc<HaematiteStore>` is shared as
-/// both the engine's [`EventStore`] and the dispatcher's [`OutboxStore`] (one
-/// inner haematite database), mirroring the libSQL backend so outbox writes and
-/// event appends route through one store. Static `owned_shards` scoping is wired
-/// downstream by the engine builder, exactly as for the other backends.
+/// Connect the haematite backend, opening the on-disk database if `store.data_dir`
+/// already holds one and otherwise creating it with `store.shard_count` shards.
+///
+/// Without a `[store.cluster]` section this is the SINGLE-NODE path
+/// ([`HaematiteStore::open`] / [`create_with_shard_count`]), byte-identical to
+/// before: no endpoint, no election, owns everything, bootstraps the coordinator.
+/// With a cluster section this is the DISTRIBUTED path
+/// ([`HaematiteStore::open_or_create_distributed`]): it binds the replication
+/// endpoint, builds the quorum membership, dials peers, starts the responder, and
+/// computes whether THIS node owns the schedule-coordinator's shard so the engine
+/// boot path seeds the coordinator on exactly one owner cluster-wide (SS-2).
+///
+/// The SAME leaf `Arc<HaematiteStore>` is shared as both the engine's
+/// [`EventStore`] and the dispatcher's [`OutboxStore`] (one inner haematite
+/// database), mirroring the libSQL backend.
+///
+/// [`HaematiteStore::open`]: aion_store_haematite::HaematiteStore::open
+/// [`create_with_shard_count`]: aion_store_haematite::HaematiteStore::create_with_shard_count
+/// [`HaematiteStore::open_or_create_distributed`]: aion_store_haematite::HaematiteStore::open_or_create_distributed
 #[cfg(feature = "haematite-backend")]
 async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, ServerError> {
     let Some(data_dir) = config.data_dir else {
@@ -466,37 +582,88 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
         });
     };
     let shard_count = config.shard_count;
-    // Construction touches the filesystem and spawns shard actors, so run it on
-    // the blocking pool rather than stalling the async runtime.
-    let store =
-        tokio::task::spawn_blocking(move || open_or_create_haematite(&data_dir, shard_count))
+    let owned_shards = config.owned_shards.clone();
+    let cluster = config.cluster.clone();
+    // Construction (and, for the distributed path, the off-runtime endpoint bind)
+    // must not stall the async runtime, so run it on the blocking pool. The
+    // distributed constructor itself steps onto a bare thread for the bind.
+    let (store, responder) =
+        tokio::task::spawn_blocking(move || build_haematite_store(&data_dir, shard_count, cluster))
             .await
             .map_err(|error| ServerError::Config {
                 message: format!("haematite store initialization task failed: {error}"),
             })??;
+
+    // Gate the coordinator bootstrap on real ownership: a distributed node that
+    // does NOT own the coordinator's shard must not seed/fence it (AA-4-4). A
+    // single-node boot owns all shards, so it always bootstraps.
+    let bootstrap_coordinator = if owned_shards.is_empty() {
+        true
+    } else {
+        store.set_owned_shards(owned_shards.iter().copied());
+        store.owns_workflow_shard(&aion::schedule_coordinator_workflow_id())
+    };
+
     let leaf = Arc::new(store);
     let event_store: Arc<dyn EventStore> = leaf.clone();
     let outbox_store: Arc<dyn OutboxStore> = leaf;
-    Ok((event_store, Some(outbox_store)))
+    Ok(ConnectedStore {
+        event_store,
+        outbox_store: Some(outbox_store),
+        bootstrap_coordinator,
+        cluster_responder: responder,
+    })
 }
 
-/// Open the haematite database at `data_dir` if it already exists, otherwise
-/// create a fresh one with `shard_count` shards. Restart-safe: a server that
-/// boots over an existing data directory reuses it (the on-disk shard count
-/// wins) rather than failing the create path.
+/// Build the haematite store: the distributed path when a cluster section is
+/// present, otherwise the single-node path. Returns the store and (for the
+/// distributed path) its inbound-write responder. Restart-safe: an existing
+/// on-disk database is reused (its shard count wins) rather than re-created.
 #[cfg(feature = "haematite-backend")]
-fn open_or_create_haematite(
+fn build_haematite_store(
     data_dir: &str,
     shard_count: usize,
-) -> Result<aion_store_haematite::HaematiteStore, ServerError> {
-    use aion_store_haematite::HaematiteStore;
+    cluster: Option<crate::config::ClusterConfig>,
+) -> Result<
+    (
+        aion_store_haematite::HaematiteStore,
+        Option<aion_store_haematite::ClusterResponder>,
+    ),
+    ServerError,
+> {
+    use aion_store_haematite::{ClusterBootstrap, HaematiteStore};
 
-    let path = std::path::Path::new(data_dir);
-    if path.join("config.json").exists() {
-        return HaematiteStore::open(path).map_err(ServerError::from);
-    }
-    HaematiteStore::create_with_shard_count(path, shard_count).map_err(ServerError::from)
+    let Some(cluster) = cluster else {
+        // Single-node path: byte-identical to before.
+        let path = std::path::Path::new(data_dir);
+        let store = if path.join("config.json").exists() {
+            HaematiteStore::open(path).map_err(ServerError::from)?
+        } else {
+            HaematiteStore::create_with_shard_count(path, shard_count).map_err(ServerError::from)?
+        };
+        return Ok((store, None));
+    };
+
+    let boot = ClusterBootstrap {
+        node_id: cluster.node_id,
+        bind_address: cluster.bind_address,
+        members: cluster.members,
+        peers: cluster
+            .peers
+            .into_iter()
+            .map(|peer| (peer.name, peer.address))
+            .collect(),
+        timeout: HAEMATITE_CLUSTER_OP_TIMEOUT,
+    };
+    let (store, responder) =
+        HaematiteStore::open_or_create_distributed(data_dir, shard_count, boot)
+            .map_err(ServerError::from)?;
+    Ok((store, Some(responder)))
 }
+
+/// Per-operation quorum/election timeout for the distributed haematite backend.
+#[cfg(feature = "haematite-backend")]
+const HAEMATITE_CLUSTER_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Reject `backend = haematite` cleanly when the optional `haematite-backend`
 /// feature is not compiled in, so a default build gives a precise operator
@@ -586,17 +753,27 @@ mod tests {
         // Single shard, a fresh temp data_dir: the production connect path opens
         // an existing haematite database or creates one, then shares the leaf as
         // both the engine EventStore and the dispatcher OutboxStore.
-        let (event_store, outbox) = super::connect_store(StoreConfig {
+        let connected = super::connect_store(StoreConfig {
             backend: StoreBackend::Haematite,
             url: None,
             owned_shards: Vec::new(),
             data_dir: Some(data_dir.path().to_string_lossy().into_owned()),
             shard_count: 1,
+            cluster: None,
         })
         .await?;
+        let event_store = connected.event_store;
         assert!(
-            outbox.is_some(),
+            connected.outbox_store.is_some(),
             "the haematite backend shares its leaf store as the dispatcher's outbox store"
+        );
+        assert!(
+            connected.bootstrap_coordinator,
+            "a single-node haematite boot owns all shards and bootstraps the coordinator"
+        );
+        assert!(
+            connected.cluster_responder.is_none(),
+            "a single-node (no [cluster]) haematite boot has no distributed responder"
         );
 
         let workflow_id = WorkflowId::new_v4();
@@ -636,16 +813,17 @@ mod tests {
 
         // Memory backend: no durable outbox table, so no outbox store handle —
         // and `outbox.enabled` over memory is rejected at dispatcher commission.
-        let (_event_store, outbox) = super::connect_store(StoreConfig {
+        let connected = super::connect_store(StoreConfig {
             backend: StoreBackend::Memory,
             url: None,
             owned_shards: Vec::new(),
             data_dir: None,
             shard_count: 1,
+            cluster: None,
         })
         .await?;
         assert!(
-            outbox.is_none(),
+            connected.outbox_store.is_none(),
             "the in-memory backend exposes no outbox store"
         );
 
@@ -661,16 +839,17 @@ mod tests {
                 .map(|elapsed| elapsed.as_nanos())
                 .unwrap_or_default()
         ));
-        let (_event_store, outbox) = super::connect_store(StoreConfig {
+        let connected = super::connect_store(StoreConfig {
             backend: StoreBackend::LibSql,
             url: Some(path.to_string_lossy().into_owned()),
             owned_shards: Vec::new(),
             data_dir: None,
             shard_count: 1,
+            cluster: None,
         })
         .await?;
         assert!(
-            outbox.is_some(),
+            connected.outbox_store.is_some(),
             "the libSQL backend shares its leaf store as the dispatcher's outbox store"
         );
         Ok(())
