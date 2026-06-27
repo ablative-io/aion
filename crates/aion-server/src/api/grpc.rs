@@ -32,6 +32,58 @@ impl WorkflowGrpcService {
     async fn caller<T>(&self, request: &Request<T>) -> Result<CallerIdentity, Status> {
         caller_from_metadata(request.metadata(), &self.state).await
     }
+
+    /// R-1 edge guard entry point for signal/query/cancel given the request's
+    /// (optional) proto workflow id. A missing/malformed id is left to the
+    /// handler's existing validation — routing only acts on a well-formed target
+    /// — so behaviour for bad requests is unchanged. If a cluster store is
+    /// present and this node does not own the target's shard, rejects with the
+    /// typed retryable `NotOwner` status so a routing-aware caller re-resolves;
+    /// R-3 replaces the rejection with a forward to the owner.
+    #[cfg(feature = "haematite-backend")]
+    fn guard_request_shard(
+        &self,
+        workflow_id: Option<aion_proto::ProtoWorkflowId>,
+    ) -> Result<(), Status> {
+        use crate::routing::{RouteDecision, route_mutation};
+        let Some(cluster_store) = self.state.cluster_store() else {
+            return Ok(());
+        };
+        let Some(proto) = workflow_id else {
+            return Ok(());
+        };
+        let Ok(workflow_id) = aion_core::WorkflowId::try_from(proto) else {
+            return Ok(());
+        };
+        if let RouteDecision::NotOwner { shard } =
+            route_mutation(Some(cluster_store.as_ref()), &workflow_id)
+        {
+            return Err(not_owner_status(shard));
+        }
+        Ok(())
+    }
+
+    /// R-1 unsteered-start placement: an id re-minted onto a locally-owned shard
+    /// when this clustered node owns only a subset of shards, else `None` (engine
+    /// mints as usual — the default path).
+    #[cfg(feature = "haematite-backend")]
+    fn start_placement(&self) -> Option<aion_core::WorkflowId> {
+        use crate::routing::{RemintOutcome, route_start};
+        match route_start(self.state.cluster_store().map(AsRef::as_ref)) {
+            RemintOutcome::UseId(workflow_id) => Some(workflow_id),
+            RemintOutcome::EngineMint => None,
+        }
+    }
+}
+
+/// Build the typed retryable `NotOwner` tonic status for shard `shard` (R-1).
+#[cfg(feature = "haematite-backend")]
+fn not_owner_status(shard: usize) -> Status {
+    let wire = WireError::not_owner(format!(
+        "workflow shard {shard} is owned by another cluster node"
+    ))
+    .with_error_type("NotOwner");
+    status_from_wire_error(wire)
 }
 
 /// Construct the generated tonic server wrapper.
@@ -52,10 +104,19 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
             ));
         }
         let caller = self.caller(&request).await?;
-        let response = handlers::start(
+        // R-1: place an unsteered start on a locally-owned shard so it never
+        // fences. `placement` is `None` for single-node / non-clustered boots
+        // (and own-all scope), so the engine mints as usual — default path
+        // unchanged. Without the cluster backend there is no placement at all.
+        #[cfg(feature = "haematite-backend")]
+        let placement = self.start_placement();
+        #[cfg(not(feature = "haematite-backend"))]
+        let placement: Option<aion_core::WorkflowId> = None;
+        let response = handlers::start_with_placement(
             self.state.namespace_guard(),
             &caller,
             decode_start_request(request.into_inner()),
+            placement,
         )
         .await
         .map_err(status_from_wire_error)?;
@@ -67,13 +128,12 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::SignalRequest>,
     ) -> Result<Response<generated::SignalResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::signal(
-            self.state.namespace_guard(),
-            &caller,
-            decode_signal_request(request.into_inner()),
-        )
-        .await
-        .map_err(status_from_wire_error)?;
+        let decoded = decode_signal_request(request.into_inner());
+        #[cfg(feature = "haematite-backend")]
+        self.guard_request_shard(decoded.workflow_id.clone())?;
+        let response = handlers::signal(self.state.namespace_guard(), &caller, decoded)
+            .await
+            .map_err(status_from_wire_error)?;
         Ok(Response::new(encode_signal_response(response)))
     }
 
@@ -82,13 +142,12 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::QueryRequest>,
     ) -> Result<Response<generated::QueryResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::query(
-            self.state.namespace_guard(),
-            &caller,
-            decode_query_request(request.into_inner()),
-        )
-        .await
-        .map_err(status_from_wire_error)?;
+        let decoded = decode_query_request(request.into_inner());
+        #[cfg(feature = "haematite-backend")]
+        self.guard_request_shard(decoded.workflow_id.clone())?;
+        let response = handlers::query(self.state.namespace_guard(), &caller, decoded)
+            .await
+            .map_err(status_from_wire_error)?;
         Ok(Response::new(encode_query_response(response)))
     }
 
@@ -97,13 +156,12 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::CancelRequest>,
     ) -> Result<Response<generated::CancelResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::cancel(
-            self.state.namespace_guard(),
-            &caller,
-            decode_cancel_request(request.into_inner()),
-        )
-        .await
-        .map_err(status_from_wire_error)?;
+        let decoded = decode_cancel_request(request.into_inner());
+        #[cfg(feature = "haematite-backend")]
+        self.guard_request_shard(decoded.workflow_id.clone())?;
+        let response = handlers::cancel(self.state.namespace_guard(), &caller, decoded)
+            .await
+            .map_err(status_from_wire_error)?;
         Ok(Response::new(encode_cancel_response(response)))
     }
 

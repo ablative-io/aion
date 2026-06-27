@@ -489,6 +489,38 @@ impl HaematiteStore {
             .map(|set| set.iter().copied().collect())
     }
 
+    /// The total number of distribution shards this store's keyspace is split
+    /// across — the modulus `shard_for_workflow` routes within. Used by the
+    /// request-routing edge to bound the unsteered-start remint loop (R-1).
+    #[must_use]
+    pub fn shard_count(&self) -> usize {
+        self.inner.database().shard_count()
+    }
+
+    /// Mint a fresh `WorkflowId` whose durable shard this node currently owns, so
+    /// an unsteered `start` lands locally and never fences (R-1 stopgap, §2.4).
+    ///
+    /// Returns `None` when this node owns every shard (`owned_shards() == None`):
+    /// any id is already local, so the caller should NOT remint and should let
+    /// the engine mint as usual — keeping the single-node / own-all path
+    /// byte-identical. Otherwise it draws fresh v4 ids and returns the first
+    /// whose `shard_for_workflow` is owned, bounded by `max_attempts` tries
+    /// (callers pass a multiple of `shard_count` so the probability of exhausting
+    /// the budget without hitting an owned shard is negligible); `None` on
+    /// exhaustion lets the caller fall back rather than spin unbounded.
+    #[must_use]
+    pub fn remint_for_owned_shard(&self, max_attempts: usize) -> Option<WorkflowId> {
+        // Own-all scope: nothing to remint toward — every shard is already local.
+        self.owned_shards()?;
+        for _ in 0..max_attempts {
+            let candidate = WorkflowId::new_v4();
+            if self.owns_workflow_shard(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     /// Snapshot the owned-shard scope as an owned `Option<Vec<usize>>` suitable
     /// for moving into a `self.blocking` closure (which only borrows the
     /// `EventStore`, not `self`). `None` = all shards.
@@ -2013,5 +2045,24 @@ mod tests {
         let transport = "consistency requirement failed: distribution transport \
             unavailable for quorum write";
         assert!(!super::is_fence_message(transport));
+    }
+
+    /// R-1: an own-all scope (the single-node default) reminting yields `None`
+    /// (any id is already local); a subset scope yields an id on an owned shard.
+    #[test]
+    fn remint_for_owned_shard_respects_scope() -> Result<(), StoreError> {
+        let store = HaematiteStore::create_with_shard_count(unique_dir("remint"), 4)?;
+        // Own-all: nothing to remint toward.
+        assert!(store.remint_for_owned_shard(64).is_none());
+
+        store.set_owned_shards([2]);
+        let Some(reminted) = store.remint_for_owned_shard(store.shard_count() * 16) else {
+            return Err(StoreError::Backend(
+                "a subset-owning store must remint an owned-shard id".to_owned(),
+            ));
+        };
+        assert!(store.owns_workflow_shard(&reminted));
+        assert_eq!(store.shard_for_workflow(&reminted), 2);
+        Ok(())
     }
 }

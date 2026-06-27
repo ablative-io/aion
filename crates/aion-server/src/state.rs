@@ -386,6 +386,16 @@ impl ServerState {
         self.inner.cluster_responder.is_some()
     }
 
+    /// The concrete distributed haematite store the request-routing edge consults
+    /// for shard ownership (`shard_for_workflow` / `owns_workflow_shard`) and
+    /// unsteered-start remint. `None` for every single-node / non-clustered boot,
+    /// so the routing pre-step is a no-op and the default path is unchanged.
+    #[cfg(feature = "haematite-backend")]
+    #[must_use]
+    pub fn cluster_store(&self) -> Option<&Arc<aion_store_haematite::HaematiteStore>> {
+        self.inner.cluster_store.as_ref()
+    }
+
     /// Spawn the SS-5b cluster supervisor: a background task that watches every
     /// declared peer's replication liveness and, on a confirmed peer death,
     /// calls `adopt_shards` for that peer's shards on THIS node's live engine —

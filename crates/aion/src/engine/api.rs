@@ -219,6 +219,32 @@ impl Engine {
         search_attributes: HashMap<String, SearchAttributeValue>,
         namespace: String,
     ) -> Result<WorkflowHandle, EngineError> {
+        self.start_workflow_with_id(workflow_type, input, search_attributes, namespace, None)
+            .await
+    }
+
+    /// Start a loaded workflow type, optionally with a caller-chosen
+    /// `workflow_id` instead of a freshly-minted one.
+    ///
+    /// The request-routing edge supplies `workflow_id` to *place* a new start on
+    /// a shard this node owns (the R-1 unsteered-start remint stopgap), so a
+    /// `start` whose default-minted id would hash to a non-owned shard never
+    /// fences. When `workflow_id` is `None` this is identical to
+    /// [`Self::start_workflow`]: the lifecycle mints a fresh `WorkflowId`, so the
+    /// default single-node path is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Identical to [`Self::start_workflow`]. A supplied `workflow_id` is treated
+    /// as a fresh execution; the caller is responsible for choosing an unused id.
+    pub async fn start_workflow_with_id(
+        &self,
+        workflow_type: &str,
+        input: Payload,
+        search_attributes: HashMap<String, SearchAttributeValue>,
+        namespace: String,
+        workflow_id: Option<WorkflowId>,
+    ) -> Result<WorkflowHandle, EngineError> {
         let operation = self.shutdown_gate.begin_start()?;
         let result = start::start_workflow_with_options(
             StartWorkflowContext {
@@ -237,6 +263,7 @@ impl Engine {
             start::StartWorkflowOptions {
                 namespace: Some(namespace),
                 search_attributes,
+                workflow_id,
                 ..start::StartWorkflowOptions::default()
             },
         )
