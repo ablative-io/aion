@@ -394,6 +394,27 @@ impl HaematiteStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
+    /// Add `shards` to the owned-enumeration scope, UNIONING with the current
+    /// set rather than replacing it (SS-5 failover).
+    ///
+    /// [`Self::set_owned_shards`] replaces the scope — the boot path's one-shot
+    /// assignment. This widens it in place, so a survivor absorbing a dead peer's
+    /// shards keeps enumerating its OWN shards while also enumerating the adopted
+    /// ones. When the current scope is `None` (own all shards — the single-node
+    /// default), the store already enumerates `shards`, so the own-all scope is
+    /// left untouched. Idempotent. Shared across `Clone`s through the inner lock.
+    pub fn extend_owned_shards(&self, shards: impl IntoIterator<Item = usize>) {
+        let mut guard = self
+            .owned_shards
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `None` already owns everything: widening an own-all scope is a no-op,
+        // and must NOT collapse it into a finite set that would drop shards.
+        if let Some(set) = guard.as_mut() {
+            set.extend(shards);
+        }
+    }
+
     /// The distribution shard that owns `workflow_id`'s durable state.
     ///
     /// Computes `shard_for(event_stream_key(workflow_id))` — the same routing the
@@ -1204,6 +1225,14 @@ impl ReadableEventStore for HaematiteStore {
             .map_err(|error| database_error(&error))?;
         }
         Ok(())
+    }
+
+    /// Widen the owned-enumeration scope by `shards`, unioning with the current
+    /// set, via the inherent [`Self::extend_owned_shards`] (SS-5 failover) — so
+    /// the engine can drive scope-widening through the type-erased
+    /// `dyn ReadableEventStore` it holds after absorbing a dead peer's shards.
+    fn extend_owned_shards(&self, shards: &[usize]) {
+        Self::extend_owned_shards(self, shards.iter().copied());
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
