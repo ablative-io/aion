@@ -544,6 +544,7 @@ mod tests {
             run_id: None,
             namespace: namespace.to_owned(),
             task_queue: task_queue.to_owned(),
+            node: None,
             activity_type: "charge-card".to_owned(),
             input: Payload::new(ContentType::Json, Vec::new()),
             status: OutboxStatus::Pending,

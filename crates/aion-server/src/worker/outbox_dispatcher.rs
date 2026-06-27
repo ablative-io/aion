@@ -141,8 +141,9 @@ impl WorkerOutboxDispatch {
 
     /// Translate an outbox row into the wire-bound scheduled activity.
     ///
-    /// The routing identity (`namespace`, `task_queue`) is read off the row, so
-    /// the activity dispatches into the workflow's real namespace pool. The pinned
+    /// The routing identity (`namespace`, `task_queue`, optional `node`) is read
+    /// off the row, so the activity dispatches into the workflow's real namespace
+    /// pool with any node affinity the row carries (NODE-2). The pinned
     /// `ordinal` is the per-workflow activity ordinal recorded in history, so it
     /// maps directly onto the activity id the worker correlates its result
     /// against; the stored zero-based `attempt` is stamped onto the wire as a
@@ -152,10 +153,11 @@ impl WorkerOutboxDispatch {
             namespace: row.namespace.clone(),
             task_queue: row.task_queue.clone(),
             activity_type: row.activity_type.clone(),
-            // node = None: the outbox row carries no node affinity yet (the
-            // durable column lands in NODE-2). `None` = unpinned = genuine
-            // current behaviour, reaching any worker in the pool.
-            node: None,
+            // node affinity is sourced off the row (NODE-2): `Some(node)` pins the
+            // dispatch to workers on that node; `None` = unpinned = any worker in
+            // the pool. There is no SDK-level node selection yet (NODE-4), so the
+            // row carries `None` today, but the dispatcher no longer hard-codes it.
+            node: row.node.clone(),
             workflow_id: row.workflow_id.clone(),
             activity_id: ActivityId::from_sequence_position(row.ordinal),
             run_id: row.run_id.clone(),
@@ -625,6 +627,28 @@ mod tests {
             "a default-namespace row must not be served by a remote-namespace worker"
         );
         Ok(())
+    }
+
+    /// NODE-2: `to_scheduled` sources node affinity off the row. A row stamped
+    /// `Some(node)` produces a `ScheduledActivity` pinned to that node; a row with
+    /// no affinity (`None`) produces an unpinned dispatch.
+    #[test]
+    fn to_scheduled_sources_node_affinity_from_row() {
+        let workflow_id = WorkflowId::new_v4();
+        let pinned = OutboxRow::pending(
+            workflow_id.clone(),
+            0,
+            String::from("charge"),
+            Payload::new(ContentType::Json, b"{}".to_vec()),
+            Utc::now(),
+        )
+        .with_node(Some(String::from("box-7")));
+        let scheduled = super::WorkerOutboxDispatch::to_scheduled(&pinned);
+        assert_eq!(scheduled.node.as_deref(), Some("box-7"));
+
+        let unpinned = pending_row(&workflow_id, 1);
+        let scheduled = super::WorkerOutboxDispatch::to_scheduled(&unpinned);
+        assert_eq!(scheduled.node, None);
     }
 
     #[tokio::test]
