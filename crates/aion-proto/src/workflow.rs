@@ -15,6 +15,11 @@ pub struct ProtoStartWorkflowRequest {
     /// Workflow start input payload.
     #[prost(message, optional, tag = "3")]
     pub input: Option<ProtoPayload>,
+    /// R-4 steered-start routing key. When set, the start is steered to
+    /// `shard_for(routing_key)`'s owner (forwarded there when this node is not the
+    /// owner). `None`/empty keeps the unsteered R-1 remint behaviour.
+    #[prost(string, optional, tag = "4")]
+    pub routing_key: Option<String>,
 }
 
 /// Proto representation of `StartWorkflowResponse`.
@@ -244,6 +249,7 @@ mod tests {
             namespace: String::from("tenant-a"),
             workflow_type: String::from("checkout"),
             input: Some(payload("input")?),
+            routing_key: Some(String::from("tenant-a/order-1")),
         };
         let response = ProtoStartWorkflowResponse {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),

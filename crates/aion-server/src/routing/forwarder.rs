@@ -28,11 +28,14 @@ pub const FORWARD_HOPS_METADATA: &str = "x-aion-forward-hops";
 /// forwards (e.g. 2)").
 pub const MAX_FORWARD_HOPS: u32 = 2;
 
-/// The forwardable client RPCs whose target `workflow_id` is known at the edge.
-/// `start` is excluded: its placement is handled by the R-1 remint until steered
-/// start (R-4) lands.
+/// The forwardable client RPCs. For `signal`/`query`/`cancel` the target
+/// `workflow_id` is known at the edge; `start` is forwardable once the caller
+/// supplies an R-4 `routing_key` so the edge can resolve the target shard's owner
+/// before placing the start.
 #[derive(Clone, Debug)]
 pub enum ForwardRequest {
+    /// A steered `start` to relay verbatim to the routing key's shard owner (R-4).
+    Start(generated::StartWorkflowRequest),
     /// A `signal` to relay verbatim to the owner.
     Signal(generated::SignalRequest),
     /// A `query` to relay verbatim to the owner.
@@ -44,6 +47,8 @@ pub enum ForwardRequest {
 /// The owner's reply, relayed back to the original caller unchanged.
 #[derive(Clone, Debug)]
 pub enum ForwardReply {
+    /// The owner's `start` reply (R-4 steered start).
+    Start(generated::StartWorkflowResponse),
     /// The owner's `signal` reply.
     Signal(generated::SignalResponse),
     /// The owner's `query` reply.
@@ -126,6 +131,14 @@ impl RequestForwarder for GrpcRequestForwarder {
         stamp_next_hop(&mut metadata)?;
         let mut client = connect(target).await?;
         match request {
+            ForwardRequest::Start(message) => {
+                let mut outbound = Request::new(message);
+                *outbound.metadata_mut() = metadata;
+                client
+                    .start_workflow(outbound)
+                    .await
+                    .map(|response| ForwardReply::Start(response.into_inner()))
+            }
             ForwardRequest::Signal(message) => {
                 let mut outbound = Request::new(message);
                 *outbound.metadata_mut() = metadata;

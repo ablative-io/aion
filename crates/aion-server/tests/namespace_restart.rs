@@ -154,6 +154,7 @@ fn start_request(
         namespace: namespace.to_owned(),
         workflow_type: workflow_type.to_owned(),
         input: Some(Payload::from_json(input)?.into()),
+        routing_key: None,
     })
 }
 

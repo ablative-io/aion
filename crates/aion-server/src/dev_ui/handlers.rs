@@ -106,6 +106,7 @@ pub async fn trigger_run(
         namespace: request.namespace.clone(),
         workflow_type: request.workflow_type.clone(),
         input: Some(input.into()),
+        routing_key: None,
     };
     let response = start(state.namespace_guard(), caller, start_request).await?;
     let workflow_id = response
@@ -303,6 +304,7 @@ pub async fn replay_run(
         namespace: request.namespace.clone(),
         workflow_type: workflow_type.clone(),
         input: Some(input.into()),
+        routing_key: None,
     };
     let response = start(state.namespace_guard(), caller, start_request).await?;
     let fresh_workflow_id = WorkflowId::try_from(

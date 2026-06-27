@@ -126,6 +126,91 @@ impl WorkflowGrpcService {
             RemintOutcome::EngineMint => None,
         }
     }
+
+    /// Resolve a `start` at the edge (R-4 steered start over R-1 remint).
+    ///
+    /// With a non-empty `routing_key` on a clustered node, the target shard is
+    /// derived from the key and the start is steered to its owner: forwarded when
+    /// a live remote node owns the shard, run locally on a key-shard-minted id
+    /// otherwise, or rejected `NotOwner` when the owner is unreachable. With no
+    /// routing key (or no cluster store) this falls back to the R-1 unsteered
+    /// remint — so the single-node / unsteered path is unchanged.
+    #[cfg(feature = "haematite-backend")]
+    async fn resolve_start(
+        &self,
+        request: &generated::StartWorkflowRequest,
+        metadata: &tonic::metadata::MetadataMap,
+    ) -> StartResolution {
+        use crate::routing::{SteerDecision, route_start_steered};
+        let routing_key = request.routing_key.as_deref().filter(|key| !key.is_empty());
+        let Some(routing_key) = routing_key else {
+            // Unsteered: keep the R-1 remint behaviour exactly.
+            return StartResolution::Local(self.start_placement());
+        };
+        let Some(cluster_store) = self.state.cluster_store() else {
+            // A routing key on a non-clustered node has no shards to steer to:
+            // let the engine mint as usual (unsteered fallback).
+            return StartResolution::Local(None);
+        };
+        let directory = self
+            .state
+            .shard_directory()
+            .map(|directory| directory.as_ref() as &dyn crate::routing::ShardDirectory);
+        match route_start_steered(cluster_store.as_ref(), directory, routing_key) {
+            SteerDecision::Local(workflow_id) => StartResolution::Local(Some(workflow_id)),
+            SteerDecision::NotOwner { shard } => StartResolution::Reject(not_owner_status(shard)),
+            SteerDecision::Forward { owner, shard } => {
+                self.forward_or_reject_start(owner, shard, metadata, request.clone())
+                    .await
+            }
+        }
+    }
+
+    /// Forward a steered `start` to its shard owner, enforcing the hop cap and
+    /// returning `NotOwner` rather than forwarding when the owner is not
+    /// forwardable, the cap is exceeded, or the forward reports a stale target
+    /// (§2.5 re-resolve-or-reject — identical discipline to signal/query/cancel).
+    #[cfg(feature = "haematite-backend")]
+    async fn forward_or_reject_start(
+        &self,
+        owner: crate::routing::NodeRef,
+        shard: usize,
+        metadata: &tonic::metadata::MetadataMap,
+        request: generated::StartWorkflowRequest,
+    ) -> StartResolution {
+        use crate::routing::{ForwardReply, ForwardRequest, MAX_FORWARD_HOPS, current_hops};
+        if current_hops(metadata) >= MAX_FORWARD_HOPS {
+            return StartResolution::Reject(not_owner_status(shard));
+        }
+        let Some(target) = owner.grpc_addr else {
+            return StartResolution::Reject(not_owner_status(shard));
+        };
+        let Some(forwarder) = self.state.request_forwarder() else {
+            return StartResolution::Reject(not_owner_status(shard));
+        };
+        match forwarder
+            .forward(target, metadata.clone(), ForwardRequest::Start(request))
+            .await
+        {
+            Ok(ForwardReply::Start(reply)) => StartResolution::Reply(reply),
+            Ok(_) => {
+                StartResolution::Reject(Status::internal("forwarder returned a mismatched reply"))
+            }
+            // Stale/unreachable target: NotOwner so the caller re-resolves (§2.5).
+            Err(_status) => StartResolution::Reject(not_owner_status(shard)),
+        }
+    }
+}
+
+/// The edge's routing outcome for a `start` (R-1 remint / R-4 steered start).
+#[cfg(feature = "haematite-backend")]
+enum StartResolution {
+    /// Run the start locally with this placement id (`None` → engine mints).
+    Local(Option<aion_core::WorkflowId>),
+    /// The steered start was forwarded; relay this reply to the caller.
+    Reply(generated::StartWorkflowResponse),
+    /// Return this typed status (`NotOwner` / internal) to the caller.
+    Reject(Status),
 }
 
 /// The edge's routing outcome for a signal/query/cancel (R-3).
@@ -167,23 +252,43 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
             ));
         }
         let caller = self.caller(&request).await?;
-        // R-1: place an unsteered start on a locally-owned shard so it never
-        // fences. `placement` is `None` for single-node / non-clustered boots
-        // (and own-all scope), so the engine mints as usual — default path
-        // unchanged. Without the cluster backend there is no placement at all.
+        // R-4 steered start over R-1 remint: a non-empty routing key steers the
+        // start to its shard owner (forwarding when remote); otherwise the R-1
+        // remint places it locally. `placement` is `None` for single-node /
+        // non-clustered boots (and own-all scope), so the engine mints as usual —
+        // default path unchanged. Without the cluster backend there is no
+        // steering or placement at all.
         #[cfg(feature = "haematite-backend")]
-        let placement = self.start_placement();
+        {
+            let (metadata, _ext, inner) = request.into_parts();
+            let placement = match self.resolve_start(&inner, &metadata).await {
+                StartResolution::Reject(status) => return Err(status),
+                StartResolution::Reply(reply) => return Ok(Response::new(reply)),
+                StartResolution::Local(placement) => placement,
+            };
+            let response = handlers::start_with_placement(
+                self.state.namespace_guard(),
+                &caller,
+                decode_start_request(inner),
+                placement,
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            return Ok(Response::new(encode_start_response(response)));
+        }
         #[cfg(not(feature = "haematite-backend"))]
-        let placement: Option<aion_core::WorkflowId> = None;
-        let response = handlers::start_with_placement(
-            self.state.namespace_guard(),
-            &caller,
-            decode_start_request(request.into_inner()),
-            placement,
-        )
-        .await
-        .map_err(status_from_wire_error)?;
-        Ok(Response::new(encode_start_response(response)))
+        {
+            let placement: Option<aion_core::WorkflowId> = None;
+            let response = handlers::start_with_placement(
+                self.state.namespace_guard(),
+                &caller,
+                decode_start_request(request.into_inner()),
+                placement,
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            Ok(Response::new(encode_start_response(response)))
+        }
     }
 
     async fn signal(
@@ -698,6 +803,7 @@ fn decode_start_request(value: generated::StartWorkflowRequest) -> ProtoStartWor
         namespace: value.namespace,
         workflow_type: value.workflow_type,
         input: value.input.map(decode_payload),
+        routing_key: value.routing_key,
     }
 }
 
@@ -1016,6 +1122,7 @@ mod tests {
             namespace: NAMESPACE.to_owned(),
             workflow_type: "missing-workflow".to_owned(),
             input: Some(encode_payload(proto_payload()?)),
+            routing_key: None,
         });
         apply_metadata(start.metadata_mut())?;
         let start_error = service.start_workflow(start).await;

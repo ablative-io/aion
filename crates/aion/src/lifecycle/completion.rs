@@ -201,6 +201,8 @@ async fn start_continuation_replacement(
         input,
         StartWorkflowOptions {
             workflow_id: Some(handle.workflow_id().clone()),
+            // Continue-as-new reuses the existing id; steering does not apply.
+            routing_key: None,
             parent_run_id: Some(parent_run_id),
             // D1: the continue-as-new successor resolves the latest loaded
             // version at record time, identically to the startup sweep.
