@@ -369,6 +369,7 @@ mod tests {
                     "charge-card".to_owned(),
                     payload("activity")?,
                     String::from("default"),
+                    None,
                 )
                 .await?;
         }

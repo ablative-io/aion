@@ -363,14 +363,17 @@ fn fan_out_items(
         .collect()
 }
 
-/// Map a slice of recovered `(ordinal, spec)` pairs to [`FanOutItem`]s whose `task_queue` is read
-/// back from each ordinal's recorded [`Event::ActivityScheduled`] (NSTQ-3 recovery).
+/// Map a slice of recovered `(ordinal, spec)` pairs to [`FanOutItem`]s whose `task_queue` and
+/// OPTIONAL `node` affinity are read back from each ordinal's recorded
+/// [`Event::ActivityScheduled`] (NSTQ-3 / NODE-3 recovery).
 ///
-/// Unlike [`fan_out_items`] — which stamps the named default on a FRESH dispatch because no
-/// SDK-level selection exists yet (NSTQ-4) — this re-derives the durable task queue from history so
-/// the re-staged outbox row re-targets the SAME pool the crashed dispatch chose. A history recorded
-/// before the field existed (or any ordinal without a recorded `ActivityScheduled`) deterministically
-/// reads back the named default via the event's serde default, so recovery is replay-safe.
+/// Unlike [`fan_out_items`] — which stamps the named default task queue and no node on a FRESH
+/// dispatch because no SDK-level selection exists yet (NSTQ-4 / NODE-4) — this re-derives the
+/// durable task queue and node from history so the re-staged outbox row re-targets the SAME pool
+/// AND node the crashed dispatch chose. A history recorded before the `task_queue` field existed
+/// (or any ordinal without a recorded `ActivityScheduled`) deterministically reads back the named
+/// default queue via the event's serde default; a history recorded before the `node` field existed
+/// deterministically reads back `None` (no affinity), so recovery is replay-safe.
 fn fan_out_items_recovered(
     members: &[(u64, &ActivitySpec)],
     namespace: &str,
@@ -385,9 +388,10 @@ fn fan_out_items_recovered(
                 namespace: namespace.to_owned(),
                 task_queue: scheduled_task_queue(history, *ordinal)
                     .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE)),
-                // No SDK-level node selection exists yet (NODE-4); node affinity is not yet recorded
-                // on history (NODE-3), so recovery re-stages with no affinity (NODE-2).
-                node: None,
+                // NODE-3 recovery: re-derive the OPTIONAL node affinity from history so the
+                // re-staged outbox row re-targets the SAME node the crashed dispatch chose. A
+                // pre-field history reads back `None` (no affinity) deterministically.
+                node: scheduled_node(history, *ordinal),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })
@@ -740,6 +744,23 @@ fn scheduled_task_queue(history: &[Event], ordinal: u64) -> Option<String> {
     })
 }
 
+/// The recorded `ActivityScheduled` OPTIONAL node affinity for `ordinal` (NODE-3 recovery).
+///
+/// The durable source of truth for re-targeting the same node on reopen/recovery. Returns the
+/// recorded `node` (`Some`/`None`) for a recorded `ActivityScheduled`, or `None` if no
+/// `ActivityScheduled` exists for the ordinal. A history recorded before the `node` field existed
+/// decodes the field to `None` via the event's serde default, so this is `None` (no affinity) for
+/// such ordinals — never a sentinel, deterministically replay-safe.
+fn scheduled_node(history: &[Event], ordinal: u64) -> Option<String> {
+    let target = ActivityId::from_sequence_position(ordinal);
+    history.iter().find_map(|event| match event {
+        Event::ActivityScheduled {
+            activity_id, node, ..
+        } if *activity_id == target => node.clone(),
+        _ => None,
+    })
+}
+
 fn payload_from_json_text(text: &str, label: &str) -> Result<Payload, String> {
     let value = serde_json::from_str(text)
         .map_err(|error| format!("{label}: invalid JSON payload: {error}"))?;
@@ -777,7 +798,7 @@ mod tests {
 
     use super::{
         ActivitySpec, CollectDeps, CollectStep, collect_step, fan_out_items,
-        fan_out_items_recovered, scheduled_task_queue,
+        fan_out_items_recovered, scheduled_node, scheduled_task_queue,
     };
     use crate::activity::bridge::ActivityDispatch;
     use crate::durability::Recorder;
@@ -973,6 +994,7 @@ mod tests {
                 activity_type,
                 input,
                 task_queue,
+                node,
                 ..
             } => Event::ActivityScheduled {
                 envelope,
@@ -980,6 +1002,7 @@ mod tests {
                 activity_type,
                 input,
                 task_queue,
+                node,
             },
             Event::ActivityStarted { activity_id, .. } => Event::ActivityStarted {
                 envelope,
@@ -1048,6 +1071,7 @@ mod tests {
                 activity_type: name.to_owned(),
                 input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
                 task_queue: String::from("default"),
+                node: None,
             },
             Event::ActivityStarted {
                 envelope: placeholder_envelope(),
@@ -1064,7 +1088,12 @@ mod tests {
         }
     }
 
-    fn scheduled_started_on(ordinal: u64, name: &str, task_queue: &str) -> Vec<Event> {
+    fn scheduled_started_on(
+        ordinal: u64,
+        name: &str,
+        task_queue: &str,
+        node: Option<&str>,
+    ) -> Vec<Event> {
         vec![
             Event::ActivityScheduled {
                 envelope: placeholder_envelope(),
@@ -1072,6 +1101,7 @@ mod tests {
                 activity_type: name.to_owned(),
                 input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
                 task_queue: task_queue.to_owned(),
+                node: node.map(str::to_owned),
             },
             Event::ActivityStarted {
                 envelope: placeholder_envelope(),
@@ -1087,7 +1117,7 @@ mod tests {
     #[test]
     fn recovery_re_targets_the_recorded_task_queue_not_default() -> TestResult {
         // History recorded the activity on task queue "claude" before the crash.
-        let history = scheduled_started_on(0, "work", "claude");
+        let history = scheduled_started_on(0, "work", "claude", None);
         assert_eq!(scheduled_task_queue(&history, 0).as_deref(), Some("claude"));
 
         let work = spec("work");
@@ -1113,7 +1143,7 @@ mod tests {
     #[test]
     fn recovery_from_pre_field_history_defaults_task_queue() -> TestResult {
         // Reconstruct the exact old wire form: serialize a current event, strip task_queue, decode.
-        let current = &scheduled_started_on(0, "work", "ignored-when-stripped")[0];
+        let current = &scheduled_started_on(0, "work", "ignored-when-stripped", None)[0];
         let mut value = serde_json::to_value(current)?;
         let data = value
             .get_mut("data")
@@ -1131,6 +1161,59 @@ mod tests {
         assert_eq!(
             items[0].task_queue, "default",
             "an old history with no recorded task_queue must recover as the named default"
+        );
+        Ok(())
+    }
+
+    /// NODE-3 recovery: when an in-flight dispatch is re-staged from history after a restart, the
+    /// re-armed item must re-target the SAME node the original `ActivityScheduled` recorded, not
+    /// silently drop the affinity. This is the durable source-of-truth path the stale-recovery
+    /// branch of `dispatch_unscheduled` consumes.
+    #[test]
+    fn recovery_re_targets_the_recorded_node_not_none() -> TestResult {
+        // History recorded the activity pinned to node "box-7" before the crash.
+        let history = scheduled_started_on(0, "work", "claude", Some("box-7"));
+        assert_eq!(scheduled_node(&history, 0).as_deref(), Some("box-7"));
+
+        let work = spec("work");
+        let members = [(0u64, &work)];
+        let items = fan_out_items_recovered(&members, "remote", &history, "recovery")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].node.as_deref(),
+            Some("box-7"),
+            "recovery must re-target the RECORDED node, never silently drop affinity"
+        );
+        Ok(())
+    }
+
+    /// NODE-3 recovery replay-safety: an OLD history (recorded before the `node` field existed)
+    /// decodes its `ActivityScheduled` `node` to `None`, so a recovered dispatch deterministically
+    /// re-stages with no affinity — never a sentinel, never panics, never differs.
+    #[test]
+    fn recovery_from_pre_field_history_has_no_node() -> TestResult {
+        // Reconstruct the exact old wire form: serialize a current event, strip node, decode.
+        let current = &scheduled_started_on(0, "work", "claude", Some("ignored-when-stripped"))[0];
+        let mut value = serde_json::to_value(current)?;
+        let data = value
+            .get_mut("data")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("ActivityScheduled must serialize to a tagged object with a `data` map")?;
+        assert!(data.remove("node").is_some());
+        let old_event: Event = serde_json::from_value(value)?;
+        let history = vec![old_event];
+        assert_eq!(scheduled_node(&history, 0), None);
+
+        let work = spec("work");
+        let members = [(0u64, &work)];
+        let items = fan_out_items_recovered(&members, "remote", &history, "recovery")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        assert_eq!(
+            items[0].node, None,
+            "an old history with no recorded node must recover as no affinity (None)"
         );
         Ok(())
     }

@@ -62,6 +62,7 @@ fn history() -> TestResult<Vec<Event>> {
             activity_type: "activity".to_owned(),
             input: payload("activity-input")?,
             task_queue: String::from("default"),
+            node: None,
         },
         Event::ActivityCompleted {
             envelope: envelope(3, 30)?,
@@ -243,6 +244,7 @@ fn faulted_history() -> TestResult<(Vec<Event>, crate::durability::NonDeterminis
             activity_type: "activity".to_owned(),
             input: payload("activity-input")?,
             task_queue: String::from("default"),
+            node: None,
         },
         Event::WorkflowFailed {
             envelope: envelope(3, 30)?,
