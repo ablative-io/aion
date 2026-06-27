@@ -96,7 +96,12 @@ fn saga_worker_crate_passes_cargo_check() -> Result<(), TestError> {
 /// ran codegen (`--check` passes, the module is listed and on disk) →
 /// `gleam build` → `aion package` produces the three declared archives →
 /// the scaffolded hermetic `gleam test` suite passes.
+// Ignored: this gate downloads the `gleam_json` hex dependency from
+// https://hex.pm during `gleam build`/`gleam test`, so it fails in a normal
+// offline `cargo test --workspace`. Run deliberately when online with:
+// `cargo test -p aion-cli --test new_scaffold_build -- --ignored`.
 #[test]
+#[ignore = "downloads gleam_json from hex.pm; fails offline — run with --ignored when online"]
 fn dev_pipeline_template_builds_packages_and_passes_its_tests() -> Result<(), TestError> {
     let temp_dir = tempfile::tempdir()?;
     let (project, report) = common::scaffold_project(
