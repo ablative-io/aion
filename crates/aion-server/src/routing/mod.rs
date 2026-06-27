@@ -26,7 +26,11 @@
 //!   request to the owner instead of rejecting it.
 
 #[cfg(feature = "haematite-backend")]
+mod directory;
+#[cfg(feature = "haematite-backend")]
 mod edge;
 
+#[cfg(feature = "haematite-backend")]
+pub use directory::{DirectoryPeer, NodeRef, OwnerView, ShardDirectory, StaticShardDirectory};
 #[cfg(feature = "haematite-backend")]
 pub use edge::{RemintOutcome, RouteDecision, route_mutation, route_start};

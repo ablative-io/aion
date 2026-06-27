@@ -55,12 +55,18 @@ impl WorkflowGrpcService {
         let Ok(workflow_id) = aion_core::WorkflowId::try_from(proto) else {
             return Ok(());
         };
-        if let RouteDecision::NotOwner { shard } =
-            route_mutation(Some(cluster_store.as_ref()), &workflow_id)
-        {
-            return Err(not_owner_status(shard));
+        let directory = self
+            .state
+            .shard_directory()
+            .map(|directory| directory.as_ref() as &dyn crate::routing::ShardDirectory);
+        match route_mutation(Some(cluster_store.as_ref()), directory, &workflow_id) {
+            RouteDecision::Local => Ok(()),
+            // R-2: a live remote owner is resolved but there is no forwarder yet,
+            // so reject with the typed retryable NotOwner. R-3 forwards instead.
+            RouteDecision::Forward { shard, .. } | RouteDecision::NotOwner { shard } => {
+                Err(not_owner_status(shard))
+            }
         }
-        Ok(())
     }
 
     /// R-1 unsteered-start placement: an id re-minted onto a locally-owned shard

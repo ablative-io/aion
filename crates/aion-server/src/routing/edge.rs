@@ -1,8 +1,11 @@
-//! R-1 gRPC-edge routing primitives: the `shard_for`-aware ownership guard for
-//! signal/query/cancel and the unsteered-start remint for `start`.
+//! gRPC-edge routing primitives: the directory-aware ownership guard for
+//! signal/query/cancel (R-1/R-2) and the unsteered-start remint for `start`
+//! (R-1).
 
 use aion_core::WorkflowId;
 use aion_store_haematite::HaematiteStore;
+
+use super::directory::{NodeRef, OwnerView, ShardDirectory};
 
 /// How many remint attempts per declared shard the unsteered-start loop is given
 /// before falling back. Generous so that, even with a single owned shard out of
@@ -12,15 +15,26 @@ const REMINT_ATTEMPTS_PER_SHARD: usize = 16;
 
 /// The routing verdict for a mutation/read (signal/query/cancel) whose target
 /// `workflow_id` is known up front.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteDecision {
-    /// This node owns the workflow's shard (or owns all shards / is not
-    /// clustered): proceed to the engine.
+    /// This node owns the workflow's shard, owns all shards, is not clustered, or
+    /// the owner is `Unknown` (route optimistically; the fence backstops):
+    /// proceed to the local engine.
     Local,
+    /// A live remote node owns the workflow's shard. R-2 cannot forward yet, so
+    /// the edge returns `NotOwner` for this; R-3 forwards to `owner` when it has
+    /// a `grpc_addr` and returns `NotOwner` only when it does not.
+    Forward {
+        /// The resolved remote owner (may or may not carry a `grpc_addr`).
+        owner: NodeRef,
+        /// The shard the workflow's durable state lives on (for the `NotOwner`
+        /// fallback message and re-resolution).
+        shard: usize,
+    },
     /// Another node owns the workflow's shard and there is no forwarding target
-    /// yet (R-1: no directory). Return the typed retryable `NotOwner` carrying
-    /// the shard so a routing-aware caller can re-resolve and retry. R-3 replaces
-    /// this rejection with a forward when the owner's gRPC address is known.
+    /// (no directory, or the owner declared no gRPC address). Return the typed
+    /// retryable `NotOwner` carrying the shard so a routing-aware caller can
+    /// re-resolve and retry.
     NotOwner {
         /// The distribution shard the workflow's durable state lives on.
         shard: usize,
@@ -40,26 +54,37 @@ pub enum RemintOutcome {
     UseId(WorkflowId),
 }
 
-/// Route a signal/query/cancel at the edge.
+/// Route a signal/query/cancel at the edge through the shard directory.
 ///
-/// `cluster_store` is `None` for every single-node / non-clustered boot — then
-/// the result is always [`RouteDecision::Local`] and the call is byte-identical
-/// to today. With a cluster store, returns [`RouteDecision::NotOwner`] when this
-/// node does not own the workflow's shard (R-1: reject; R-3: forward).
+/// `cluster_store`/`directory` are `None` for every single-node / non-clustered
+/// boot — then the result is always [`RouteDecision::Local`] and the call is
+/// byte-identical to today. With a cluster store and directory:
+/// - the owner is this node, `Unknown`, or no directory → [`RouteDecision::Local`]
+///   (own/optimistic; the fence backstops),
+/// - a live remote owner → [`RouteDecision::Forward`] (R-3 forwards; R-2 maps it
+///   to `NotOwner` since it has no forwarder yet).
 #[must_use]
 pub fn route_mutation(
     cluster_store: Option<&HaematiteStore>,
+    directory: Option<&dyn ShardDirectory>,
     workflow_id: &WorkflowId,
 ) -> RouteDecision {
     let Some(store) = cluster_store else {
         return RouteDecision::Local;
     };
-    if store.owns_workflow_shard(workflow_id) {
-        RouteDecision::Local
-    } else {
-        RouteDecision::NotOwner {
-            shard: store.shard_for_workflow(workflow_id),
-        }
+    let shard = store.shard_for_workflow(workflow_id);
+    let Some(directory) = directory else {
+        // Clustered but no directory wired: fall back to the bare local-ownership
+        // check (R-1 behaviour) — own it or reject as NotOwner.
+        return if store.owns_workflow_shard(workflow_id) {
+            RouteDecision::Local
+        } else {
+            RouteDecision::NotOwner { shard }
+        };
+    };
+    match directory.owner_of(shard) {
+        OwnerView::Local | OwnerView::Unknown => RouteDecision::Local,
+        OwnerView::Remote(owner) => RouteDecision::Forward { owner, shard },
     }
 }
 
@@ -126,13 +151,16 @@ mod tests {
     #[test]
     fn mutation_without_cluster_store_is_local() {
         let workflow_id = WorkflowId::new_v4();
-        assert_eq!(route_mutation(None, &workflow_id), RouteDecision::Local);
+        assert_eq!(
+            route_mutation(None, None, &workflow_id),
+            RouteDecision::Local
+        );
     }
 
-    /// A workflow on an owned shard routes local; one on a non-owned shard yields
-    /// `NotOwner` carrying that shard.
+    /// Clustered but no directory wired (R-1 fallback): owned shard → `Local`,
+    /// non-owned → `NotOwner`.
     #[test]
-    fn mutation_routes_by_owned_shard() -> TestResult {
+    fn mutation_without_directory_falls_back_to_bare_ownership() -> TestResult {
         let store = store_owning("mutation", 4, &[0])?;
         // Find one id whose shard is owned and one whose shard is not, so the
         // assertion exercises both arms regardless of hash distribution.
@@ -156,13 +184,47 @@ mod tests {
         };
 
         assert_eq!(
-            route_mutation(Some(&store), &owned_id),
+            route_mutation(Some(&store), None, &owned_id),
             RouteDecision::Local
         );
         let shard = store.shard_for_workflow(&foreign_id);
         assert_eq!(
-            route_mutation(Some(&store), &foreign_id),
+            route_mutation(Some(&store), None, &foreign_id),
             RouteDecision::NotOwner { shard }
+        );
+        Ok(())
+    }
+
+    /// With a directory, a non-owned shard whose owner is believed-down resolves
+    /// `Unknown` → route locally (the fence backstops), not `NotOwner`.
+    #[test]
+    fn mutation_with_directory_routes_unknown_owner_locally() -> TestResult {
+        use super::super::directory::{DirectoryPeer, StaticShardDirectory};
+        let store = std::sync::Arc::new(store_owning("dir-unknown", 4, &[0])?);
+        let directory = StaticShardDirectory::new(
+            std::sync::Arc::clone(&store),
+            vec![DirectoryPeer {
+                name: "peer-1".to_owned(),
+                owned_shards: vec![1, 2, 3],
+                grpc_addr: None,
+            }],
+        );
+        // A non-owned id: its shard's declared owner has no live link in this
+        // single-node test store, so owner_of is Unknown → Local.
+        let mut foreign_id = None;
+        for _ in 0..10_000 {
+            let candidate = WorkflowId::new_v4();
+            if !store.owns_workflow_shard(&candidate) {
+                foreign_id = Some(candidate);
+                break;
+            }
+        }
+        let Some(foreign_id) = foreign_id else {
+            return Err(StoreError::Backend("expected a non-owned id".to_owned()));
+        };
+        assert_eq!(
+            route_mutation(Some(store.as_ref()), Some(&directory), &foreign_id),
+            RouteDecision::Local
         );
         Ok(())
     }
