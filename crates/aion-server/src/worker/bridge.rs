@@ -384,17 +384,20 @@ impl WorkerActivityDispatcher {
         namespace: &str,
         task_queue: &str,
         activity_type: &str,
+        node: Option<&str>,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<WorkerHandle, String> {
         loop {
-            // node = None: this in-process bridge path is unpinned today. NODE
-            // affinity selection (a pinned node filter) arrives with SDK
-            // selection (NODE-4); `None` is genuine current behaviour, not a
-            // shim — it reaches any worker in the (namespace, task_queue) pool.
+            // `node` is the OPTIONAL within-pool affinity carried on the
+            // dispatch: `Some(n)` pins selection to workers advertising node
+            // `n` (require semantics — it waits, via the no-worker path below,
+            // if none are present); `None` is unpinned and reaches any worker
+            // in the (namespace, task_queue) pool — byte-identical to the
+            // pre-NODE behaviour.
             match self
                 .registry
-                .select_worker(namespace, task_queue, activity_type, None)
+                .select_worker(namespace, task_queue, activity_type, node)
             {
                 Ok(Some(worker)) => return Ok(worker),
                 Ok(None) => {
@@ -408,6 +411,7 @@ impl WorkerActivityDispatcher {
                     tracing::info!(
                         namespace,
                         activity_type,
+                        node,
                         workflow_id = %workflow_id,
                         activity_id = %activity_id,
                         "no connected worker; waiting for a matching worker to register"
@@ -663,10 +667,10 @@ impl WorkerActivityDispatcher {
         let ActivityDispatch {
             namespace,
             task_queue,
-            // NODE-4 carries the OPTIONAL node affinity onto the dispatch; the
-            // worker-selection path does not yet consume it (a later increment
-            // narrows worker matching to the pinned node).
-            node: _,
+            // OPTIONAL within-pool node affinity (NODE-4): `Some(n)` pins this
+            // dispatch to workers advertising node `n` (require semantics);
+            // `None` is unpinned and reaches any worker in the pool.
+            node,
             workflow_id,
             activity_id,
             name,
@@ -677,14 +681,21 @@ impl WorkerActivityDispatcher {
         } = request;
         let started_at = Instant::now();
         self.ensure_accepting(&namespace, &name, &workflow_id, &activity_id, None)?;
-        let worker =
-            self.select_worker_or_wait(&namespace, &task_queue, &name, &workflow_id, &activity_id)?;
+        let worker = self.select_worker_or_wait(
+            &namespace,
+            &task_queue,
+            &name,
+            node.as_deref(),
+            &workflow_id,
+            &activity_id,
+        )?;
         let worker_id = worker.id();
         let span = info_span!(
             "activity_dispatch",
             operation = "activity_dispatch",
             namespace = %namespace,
             task_queue = %task_queue,
+            node = node.as_deref(),
             workflow_id = %workflow_id,
             activity_id = %activity_id,
             activity_type = %name,
@@ -1195,6 +1206,160 @@ mod tests {
             "fail-fast path took {elapsed:?}"
         );
         registration.deregister()?;
+        Ok(())
+    }
+
+    /// Bridge-level mirror of the e2e node-pin proof: two workers share the
+    /// `(namespace, task_queue)` pool but advertise different nodes; an
+    /// `ActivityDispatch` pinned to one node must reach ONLY the worker on that
+    /// node through the live engine-seam `WorkerActivityDispatcher`. This is the
+    /// regression guard for the bridge discarding the dispatch's `node`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dispatch_pinned_to_node_reaches_only_that_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let pending = PendingActivities::default();
+        let activity_types = [String::from("greet")];
+        let (n1_tx, mut n1_rx) = tokio::sync::mpsc::channel(32);
+        let (n2_tx, mut n2_rx) = tokio::sync::mpsc::channel(32);
+        // Register the DECOY (n2) FIRST so it owns the lowest worker id. The
+        // bridge's `select_worker` picks the lowest-id matching worker, so a
+        // bridge that DISCARDED the node would route to n2 (the decoy) here —
+        // the n1 echo would never fire and the round trip would time out. With
+        // the node threaded through, selection is filtered to n1.
+        let on_n2 = registry.register_namespaces(
+            [String::from("default")],
+            "default",
+            Some(String::from("n2")),
+            activity_types.iter(),
+            n2_tx,
+        )?;
+        let on_n1 = registry.register_namespaces(
+            [String::from("default")],
+            "default",
+            Some(String::from("n1")),
+            activity_types.iter(),
+            n1_tx,
+        )?;
+
+        // Echo only on the n1 channel: the dispatch can only complete if the
+        // task was routed to n1. If it leaked to n2, the n1 wait would stall and
+        // the round trip below would time out instead.
+        let sink = pending.clone();
+        let echo_n1 = tokio::spawn(async move {
+            let Some(WorkerMessage::ActivityTask(task)) = n1_rx.recv().await else {
+                return Err("expected an activity task on the n1 worker channel".to_owned());
+            };
+            let workflow_id = task
+                .workflow_id
+                .ok_or("task missing workflow id")
+                .and_then(|id| WorkflowId::try_from(id).map_err(|_| "bad workflow id"))?;
+            let activity_id = task
+                .activity_id
+                .map(ActivityId::from)
+                .ok_or("task missing activity id")?;
+            sink.complete_activity(ActivityCompletion {
+                workflow_id,
+                activity_id,
+                run_id: None,
+                outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
+                    ContentType::Json,
+                    br#"{"greeting":"hello"}"#.to_vec(),
+                )),
+            })
+            .map_err(|error| error.to_string())
+        });
+
+        let dispatcher = Arc::new(
+            WorkerActivityDispatcher::new(registry.clone(), "default", test_tracker())
+                .with_pending(pending),
+        );
+
+        let pinned = ActivityDispatch {
+            node: Some(String::from("n1")),
+            ..greet_request()
+        };
+        let started = Instant::now();
+        let result = tokio::spawn(futures::future::lazy(move |_| dispatcher.dispatch(pinned)))
+            .await
+            .map_err(|error| error.to_string())?;
+        let elapsed = started.elapsed();
+
+        assert_eq!(result, Ok(r#"{"greeting":"hello"}"#.to_owned()));
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "pinned dispatch round trip took {elapsed:?}; the task must route to n1"
+        );
+        echo_n1.await.map_err(|error| error.to_string())??;
+
+        // The n2 worker (wrong node) must never have been handed the task.
+        assert!(
+            n2_rx.try_recv().is_err(),
+            "node=Some(\"n1\") dispatch must not reach the n2 worker"
+        );
+
+        on_n1.deregister()?;
+        on_n2.deregister()?;
+        Ok(())
+    }
+
+    /// An unpinned (`node = None`) dispatch is byte-identical to today: it
+    /// reaches a worker in the pool regardless of the worker's advertised node.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unpinned_dispatch_reaches_a_pooled_worker_regardless_of_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let pending = PendingActivities::default();
+        let activity_types = [String::from("greet")];
+        let (n1_tx, mut n1_rx) = tokio::sync::mpsc::channel(32);
+        let on_n1 = registry.register_namespaces(
+            [String::from("default")],
+            "default",
+            Some(String::from("n1")),
+            activity_types.iter(),
+            n1_tx,
+        )?;
+
+        let sink = pending.clone();
+        let echo = tokio::spawn(async move {
+            let Some(WorkerMessage::ActivityTask(task)) = n1_rx.recv().await else {
+                return Err("expected an activity task on the worker channel".to_owned());
+            };
+            let workflow_id = task
+                .workflow_id
+                .ok_or("task missing workflow id")
+                .and_then(|id| WorkflowId::try_from(id).map_err(|_| "bad workflow id"))?;
+            let activity_id = task
+                .activity_id
+                .map(ActivityId::from)
+                .ok_or("task missing activity id")?;
+            sink.complete_activity(ActivityCompletion {
+                workflow_id,
+                activity_id,
+                run_id: None,
+                outcome: ActivityCompletionOutcome::Succeeded(Payload::new(
+                    ContentType::Json,
+                    br#"{"greeting":"hello"}"#.to_vec(),
+                )),
+            })
+            .map_err(|error| error.to_string())
+        });
+
+        let dispatcher = Arc::new(
+            WorkerActivityDispatcher::new(registry.clone(), "default", test_tracker())
+                .with_pending(pending),
+        );
+
+        // greet_request() carries node: None — the unpinned path.
+        let result = tokio::spawn(futures::future::lazy(move |_| {
+            dispatcher.dispatch(greet_request())
+        }))
+        .await
+        .map_err(|error| error.to_string())?;
+
+        assert_eq!(result, Ok(r#"{"greeting":"hello"}"#.to_owned()));
+        echo.await.map_err(|error| error.to_string())??;
+        on_n1.deregister()?;
         Ok(())
     }
 }
