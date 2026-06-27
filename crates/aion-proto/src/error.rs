@@ -62,6 +62,10 @@ pub enum WireErrorCode {
     /// A deploy unload/route was refused because the version is route-active
     /// or pinned by live state.
     VersionPinned,
+    /// The targeted shard is owned by a different cluster node; the request was
+    /// fenced. A retryable routing signal: the caller (or the request-routing
+    /// edge) should re-resolve the shard owner and retry or forward.
+    NotOwner,
 }
 
 impl WireErrorCode {
@@ -81,6 +85,7 @@ impl WireErrorCode {
             Self::QueryFailed => "query_failed",
             Self::DeployDenied => "deploy_denied",
             Self::VersionPinned => "version_pinned",
+            Self::NotOwner => "not_owner",
         }
     }
 }
@@ -211,6 +216,12 @@ impl WireError {
         Self::new(WireErrorCode::VersionPinned, message)
     }
 
+    /// Wrong-shard-owner (fenced) failure — retryable routing signal.
+    #[must_use]
+    pub fn not_owner(message: impl Into<String>) -> Self {
+        Self::new(WireErrorCode::NotOwner, message)
+    }
+
     /// Not-found failure with a concrete typed error variant name.
     #[must_use]
     pub fn not_found_with_type(error_type: impl Into<String>, message: impl Into<String>) -> Self {
@@ -263,6 +274,8 @@ pub enum ProtoWireErrorCode {
     DeployDenied = 11,
     /// See [`WireErrorCode::VersionPinned`].
     VersionPinned = 12,
+    /// See [`WireErrorCode::NotOwner`].
+    NotOwner = 13,
 }
 
 /// Proto representation of [`WireError`].
@@ -294,6 +307,7 @@ impl From<WireErrorCode> for ProtoWireErrorCode {
             WireErrorCode::QueryFailed => Self::QueryFailed,
             WireErrorCode::DeployDenied => Self::DeployDenied,
             WireErrorCode::VersionPinned => Self::VersionPinned,
+            WireErrorCode::NotOwner => Self::NotOwner,
         }
     }
 }
@@ -318,6 +332,7 @@ impl TryFrom<ProtoWireErrorCode> for WireErrorCode {
             ProtoWireErrorCode::QueryFailed => Ok(Self::QueryFailed),
             ProtoWireErrorCode::DeployDenied => Ok(Self::DeployDenied),
             ProtoWireErrorCode::VersionPinned => Ok(Self::VersionPinned),
+            ProtoWireErrorCode::NotOwner => Ok(Self::NotOwner),
         }
     }
 }
@@ -368,7 +383,8 @@ mod tests {
             WireErrorCode::Backend => Some(WireErrorCode::QueryFailed),
             WireErrorCode::QueryFailed => Some(WireErrorCode::DeployDenied),
             WireErrorCode::DeployDenied => Some(WireErrorCode::VersionPinned),
-            WireErrorCode::VersionPinned => None,
+            WireErrorCode::VersionPinned => Some(WireErrorCode::NotOwner),
+            WireErrorCode::NotOwner => None,
         }
     }
 
@@ -407,6 +423,7 @@ mod tests {
             (WireErrorCode::QueryFailed, 10),
             (WireErrorCode::DeployDenied, 11),
             (WireErrorCode::VersionPinned, 12),
+            (WireErrorCode::NotOwner, 13),
         ];
         assert_eq!(
             expected.len(),
@@ -439,6 +456,7 @@ mod tests {
             (WireErrorCode::QueryFailed, "query_failed"),
             (WireErrorCode::DeployDenied, "deploy_denied"),
             (WireErrorCode::VersionPinned, "version_pinned"),
+            (WireErrorCode::NotOwner, "not_owner"),
         ];
         assert_eq!(
             expected.len(),
@@ -548,6 +566,10 @@ mod tests {
         assert_eq!(
             WireError::version_pinned("pinned by live run").code,
             WireErrorCode::VersionPinned
+        );
+        assert_eq!(
+            WireError::not_owner("wrong shard owner").code,
+            WireErrorCode::NotOwner
         );
     }
 }

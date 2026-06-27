@@ -391,7 +391,12 @@ fn grpc_code(code: aion_proto::WireErrorCode) -> Code {
         aion_proto::WireErrorCode::NamespaceDenied | aion_proto::WireErrorCode::DeployDenied => {
             Code::PermissionDenied
         }
-        aion_proto::WireErrorCode::SequenceConflict => Code::Aborted,
+        // Wrong-shard-owner (fenced) is a retryable routing signal: surface it as
+        // `Aborted`, the same retryable code the CAS `SequenceConflict` precedent
+        // uses (R-0). A routing-aware caller re-resolves the owner and retries.
+        aion_proto::WireErrorCode::SequenceConflict | aion_proto::WireErrorCode::NotOwner => {
+            Code::Aborted
+        }
         aion_proto::WireErrorCode::UnknownQuery | aion_proto::WireErrorCode::InvalidInput => {
             Code::InvalidArgument
         }
@@ -727,6 +732,14 @@ mod tests {
             tokio::task::yield_now().await;
             Ok(ServerState::from_parts(resolver, runtime))
         }
+    }
+
+    /// R-0: the typed wrong-shard-owner fence maps to the retryable `Aborted`
+    /// gRPC code (the same code the CAS `SequenceConflict` precedent uses), not
+    /// the opaque `Internal` the stringly-typed fence used to collapse into.
+    #[test]
+    fn not_owner_wire_code_maps_to_retryable_aborted() {
+        assert_eq!(grpc_code(WireErrorCode::NotOwner), Code::Aborted);
     }
 
     #[tokio::test]

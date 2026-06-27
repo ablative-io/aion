@@ -19,7 +19,11 @@ fn http_status(code: WireErrorCode) -> StatusCode {
     match code {
         WireErrorCode::NotFound => StatusCode::NOT_FOUND,
         WireErrorCode::NamespaceDenied | WireErrorCode::DeployDenied => StatusCode::FORBIDDEN,
-        WireErrorCode::SequenceConflict | WireErrorCode::VersionPinned => StatusCode::CONFLICT,
+        // NotOwner (wrong-shard-owner fence) is retryable, like the CAS
+        // SequenceConflict precedent: a 409 the caller re-resolves and retries.
+        WireErrorCode::SequenceConflict
+        | WireErrorCode::VersionPinned
+        | WireErrorCode::NotOwner => StatusCode::CONFLICT,
         WireErrorCode::UnknownQuery | WireErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
         WireErrorCode::QueryTimeout => StatusCode::REQUEST_TIMEOUT,
         WireErrorCode::NotRunning => StatusCode::PRECONDITION_FAILED,
