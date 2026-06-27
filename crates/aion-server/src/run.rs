@@ -18,12 +18,12 @@ use std::sync::Arc;
 
 use crate::{
     ServerConfig, ServerError, ServerState, api,
-    config::{CliOverrides, NamespaceMode, OutboxConfig, StoreBackend},
+    config::{CliOverrides, NamespaceMode, OutboxConfig, OutboxTransport, StoreBackend},
     observability,
     shutdown::{self, ShutdownOutcome},
     worker::{
         ActivityDispatcher, OutboxDispatcher, OutboxDispatcherConfig, OutboxReconciler,
-        OutboxReconcilerConfig, WorkerOutboxDispatch,
+        OutboxReconcilerConfig, OutboxRowDispatch, WorkerOutboxDispatch,
     },
 };
 
@@ -255,12 +255,7 @@ fn maybe_spawn_outbox_dispatcher(
                   store does not provide"
             .to_owned(),
     })?;
-    let push_dispatcher = ActivityDispatcher::new(state.worker_registry().clone())
-        .with_drain_state(state.drain_state().clone());
-    let row_dispatch = Arc::new(WorkerOutboxDispatch::new(
-        push_dispatcher,
-        state.runtime_config().default_namespace.clone(),
-    ));
+    let row_dispatch = select_outbox_row_dispatch(state, outbox_config)?;
     let dispatcher =
         OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config);
     tokio::spawn(dispatcher.run(shutdown_rx.clone()));
@@ -271,6 +266,75 @@ fn maybe_spawn_outbox_dispatcher(
         info!("outbox reconciler commissioned");
     }
     Ok(())
+}
+
+/// Select the outbox row-dispatch sink by the configured `outbox.transport`.
+///
+/// `grpc` (the default) builds the unchanged [`WorkerOutboxDispatch`] over the
+/// connected-worker registry, so a default server is byte-identical. `liminal`
+/// builds the cross-node [`LiminalOutboxDispatch`](crate::worker::LiminalOutboxDispatch);
+/// it is only reachable when the `liminal-transport` feature is compiled in, and
+/// selecting it without that feature is a configuration error rather than a
+/// silent fall-through to gRPC.
+fn select_outbox_row_dispatch(
+    state: &ServerState,
+    outbox_config: &OutboxConfig,
+) -> Result<Arc<dyn OutboxRowDispatch>, ServerError> {
+    match outbox_config.transport {
+        OutboxTransport::Grpc => {
+            let push_dispatcher = ActivityDispatcher::new(state.worker_registry().clone())
+                .with_drain_state(state.drain_state().clone());
+            Ok(Arc::new(WorkerOutboxDispatch::new(
+                push_dispatcher,
+                state.runtime_config().default_namespace.clone(),
+            )))
+        }
+        OutboxTransport::Liminal => build_liminal_row_dispatch(outbox_config),
+    }
+}
+
+/// Build the liminal row-dispatch sink, or fail with the missing-feature error.
+///
+/// Split out so the feature-gated arm never grows the selector function past the
+/// length lint and so the feature-off build has one clear error site.
+#[cfg(feature = "liminal-transport")]
+fn build_liminal_row_dispatch(
+    outbox_config: &OutboxConfig,
+) -> Result<Arc<dyn OutboxRowDispatch>, ServerError> {
+    let address = outbox_config
+        .liminal_server_address
+        .as_ref()
+        .ok_or_else(|| ServerError::Config {
+            message: "outbox.transport=liminal requires outbox.liminal_server_address \
+                      (host:port of the liminal server)"
+                .to_owned(),
+        })?;
+    let channel = outbox_config
+        .liminal_channel
+        .as_ref()
+        .ok_or_else(|| ServerError::Config {
+            message: "outbox.transport=liminal requires outbox.liminal_channel \
+                      (the liminal channel name workers subscribe to)"
+                .to_owned(),
+        })?;
+    Ok(Arc::new(crate::worker::LiminalOutboxDispatch::new(
+        address.clone(),
+        channel.clone(),
+    )))
+}
+
+/// Feature-off stub: selecting the liminal transport without the
+/// `liminal-transport` feature is a configuration error, never a silent
+/// fall-through to gRPC.
+#[cfg(not(feature = "liminal-transport"))]
+fn build_liminal_row_dispatch(
+    _outbox_config: &OutboxConfig,
+) -> Result<Arc<dyn OutboxRowDispatch>, ServerError> {
+    Err(ServerError::Config {
+        message: "outbox.transport=liminal requires the aion-server `liminal-transport` \
+                  Cargo feature, which is not enabled in this build"
+            .to_owned(),
+    })
 }
 
 /// Resolve the validated, all-present outbox knobs into the dispatcher's
