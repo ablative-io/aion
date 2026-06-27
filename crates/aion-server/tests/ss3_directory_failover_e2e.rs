@@ -25,7 +25,6 @@
 //! a thread with an entered tokio runtime, exactly as `distributed_failover.rs`.
 
 #![cfg(feature = "haematite-backend")]
-#![allow(clippy::panic)]
 
 use std::error::Error;
 use std::net::SocketAddr;
@@ -293,28 +292,24 @@ fn directory_resolves_adopter_after_failover_so_request_forwards() -> TestResult
     // The directory resolves SHARD to B as a forwardable Remote (B is live to C),
     // NOT to the dead declared owner A and NOT to Unknown.
     let view = directory.owner_of(SHARD);
-    match &view {
-        OwnerView::Remote(node) => {
-            assert_eq!(node.node_id, NODE_B, "owner resolves to the ADOPTER B");
-            assert_eq!(
-                node.grpc_addr,
-                Some(node_b_grpc),
-                "the resolved owner carries B's gRPC forward address"
-            );
-        }
-        other => panic!("expected Remote(adopter B), got {other:?}"),
-    }
+    let OwnerView::Remote(node) = &view else {
+        return Err(format!("expected Remote(adopter B), got {view:?}").into());
+    };
+    assert_eq!(node.node_id, NODE_B, "owner resolves to the ADOPTER B");
+    assert_eq!(
+        node.grpc_addr,
+        Some(node_b_grpc),
+        "the resolved owner carries B's gRPC forward address"
+    );
 
     // And `route_mutation` therefore FORWARDS a request for that workflow to B —
     // the availability behaviour gap #2 was blocking (previously it routed Local
     // and the engine returned WorkflowNotFound on the non-owning survivor).
     let decision = route_mutation(Some(node_c.store.as_ref()), Some(&directory), &workflow_id);
-    match decision {
-        RouteDecision::Forward { owner, shard } => {
-            assert_eq!(owner.node_id, NODE_B, "forward target is the adopter B");
-            assert_eq!(shard, SHARD);
-        }
-        other => panic!("expected Forward to the adopter, got {other:?}"),
-    }
+    let RouteDecision::Forward { owner, shard } = decision else {
+        return Err(format!("expected Forward to the adopter, got {decision:?}").into());
+    };
+    assert_eq!(owner.node_id, NODE_B, "forward target is the adopter B");
+    assert_eq!(shard, SHARD);
     Ok(())
 }
