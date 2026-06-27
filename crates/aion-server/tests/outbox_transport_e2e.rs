@@ -194,7 +194,6 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
             reconcile_stale_after_ms: None,
             transport: aion_server::config::OutboxTransport::Grpc,
             liminal_server_address: None,
-            liminal_channel: None,
         },
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),

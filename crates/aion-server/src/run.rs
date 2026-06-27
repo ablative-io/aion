@@ -365,17 +365,12 @@ fn build_liminal_row_dispatch(
                       (host:port of the liminal server)"
                 .to_owned(),
         })?;
-    let channel = outbox_config
-        .liminal_channel
-        .as_ref()
-        .ok_or_else(|| ServerError::Config {
-            message: "outbox.transport=liminal requires outbox.liminal_channel \
-                      (the liminal channel name workers subscribe to)"
-                .to_owned(),
-        })?;
+    // The dispatch channel is no longer a fixed config value: it is derived
+    // per-row from the row's durable (namespace, task_queue) via
+    // `LiminalOutboxDispatch`'s `dispatch_channel_name` (NSTQ-5), so a single
+    // dispatcher fans different pools out to different channels.
     Ok(Arc::new(crate::worker::LiminalOutboxDispatch::new(
         address.clone(),
-        channel.clone(),
     )))
 }
 

@@ -461,14 +461,13 @@ pub struct OutboxConfig {
     /// when the `liminal-transport` Cargo feature is enabled; selecting it in a
     /// build without that feature is a configuration error surfaced at spawn.
     pub transport: OutboxTransport,
-    /// Hard-coded liminal server address (`host:port`) for the #13-0 spike,
-    /// used only when `transport = liminal`. REQUIRED in that mode; ignored
-    /// otherwise. Spike-level addressing — `(namespace, activity_type)` channel
-    /// routing is a later increment (13-3).
+    /// Liminal server address (`host:port`), used only when
+    /// `transport = liminal`. REQUIRED in that mode; ignored otherwise. The
+    /// dispatch *channel* is no longer configured here: it is derived per-row
+    /// from each row's durable `(namespace, task_queue)` via
+    /// `dispatch_channel_name` (NSTQ-5), so one dispatcher routes different
+    /// worker pools to different channels.
     pub liminal_server_address: Option<String>,
-    /// Hard-coded liminal channel name for the #13-0 spike, used only when
-    /// `transport = liminal`. REQUIRED in that mode; ignored otherwise.
-    pub liminal_channel: Option<String>,
 }
 
 /// Wire transport selected for outbox dispatch.
