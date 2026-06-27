@@ -73,6 +73,7 @@ pub opaque type Activity(i, o) {
     timeout: Option(duration.Duration),
     heartbeat: Option(duration.Duration),
     labels: List(#(String, String)),
+    task_queue: Option(String),
   )
 }
 
@@ -98,6 +99,7 @@ pub fn new(
     timeout: None,
     heartbeat: None,
     labels: [],
+    task_queue: None,
   )
 }
 
@@ -116,6 +118,7 @@ pub fn retry(activity: Activity(i, o), policy: RetryPolicy) -> Activity(i, o) {
     timeout: activity.timeout,
     heartbeat: activity.heartbeat,
     labels: activity.labels,
+    task_queue: activity.task_queue,
   )
 }
 
@@ -134,6 +137,7 @@ pub fn timeout(
     timeout: Some(timeout_duration),
     heartbeat: activity.heartbeat,
     labels: activity.labels,
+    task_queue: activity.task_queue,
   )
 }
 
@@ -152,6 +156,7 @@ pub fn heartbeat(
     timeout: activity.timeout,
     heartbeat: Some(heartbeat_interval),
     labels: activity.labels,
+    task_queue: activity.task_queue,
   )
 }
 
@@ -178,6 +183,34 @@ pub fn label(
     timeout: activity.timeout,
     heartbeat: activity.heartbeat,
     labels: list.append(activity.labels, [#(key, value)]),
+    task_queue: activity.task_queue,
+  )
+}
+
+/// Select the task queue this activity is dispatched on (per-activity override).
+///
+/// The task queue is the routing pool inside the workflow's namespace that a
+/// worker subscribes to; selecting it lets one workflow mix activities across
+/// pools (for example a `"norn"` step and a `"gpu"` step). This is the
+/// highest-precedence selection: it overrides any workflow-level default.
+///
+/// Absence is intentional data, exactly like retry/timeout/heartbeat: an
+/// activity built with `new` and no `task_queue` decorator carries no
+/// selection, so the engine resolves it to the workflow-level default when one
+/// is set, else the named `"default"` task queue. Later calls replace earlier
+/// values; the SDK does not merge.
+pub fn task_queue(activity: Activity(i, o), name: String) -> Activity(i, o) {
+  Activity(
+    name: activity.name,
+    input: activity.input,
+    input_codec: activity.input_codec,
+    output_codec: activity.output_codec,
+    runner: activity.runner,
+    retry_policy: activity.retry_policy,
+    timeout: activity.timeout,
+    heartbeat: activity.heartbeat,
+    labels: activity.labels,
+    task_queue: Some(name),
   )
 }
 
@@ -228,6 +261,14 @@ pub fn heartbeat_interval(
   activity: Activity(i, o),
 ) -> Option(duration.Duration) {
   activity.heartbeat
+}
+
+/// Return the explicitly selected per-activity task queue, if one exists.
+///
+/// Absence (`None`) means no override was set, so the engine resolves the
+/// dispatch to the workflow-level default, else the named `"default"` queue.
+pub fn selected_task_queue(activity: Activity(i, o)) -> Option(String) {
+  activity.task_queue
 }
 
 /// A typed binding of a value type's name to its codec.

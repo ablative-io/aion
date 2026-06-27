@@ -16,6 +16,7 @@ import aion/workflow/continuation
 import aion/workflow/define as definition
 import aion/workflow/run as dispatch
 import aion/workflow/timer
+import gleam/option.{type Option}
 
 pub type Timestamp =
   dispatch.Timestamp
@@ -38,10 +39,29 @@ pub fn run(
   dispatch.run(activity)
 }
 
+/// `run`, supplying the workflow-level default task queue applied when the
+/// activity selects none. Precedence (activity override > workflow default >
+/// the named `"default"` queue) is resolved once at the engine schedule seam.
+pub fn run_with_default(
+  activity: Activity(input, output),
+  workflow_default_task_queue: Option(String),
+) -> Result(output, error.ActivityError) {
+  dispatch.run_with_default(activity, workflow_default_task_queue)
+}
+
 pub fn all(
   activities: List(Activity(input, output)),
 ) -> Result(List(output), error.ActivityError) {
   concurrency.all(activities)
+}
+
+/// `all`, supplying the workflow-level default task queue for any member that
+/// selects none. See [`run_with_default`] for the resolution precedence.
+pub fn all_with_default(
+  activities: List(Activity(input, output)),
+  workflow_default_task_queue: Option(String),
+) -> Result(List(output), error.ActivityError) {
+  concurrency.all_with_default(activities, workflow_default_task_queue)
 }
 
 pub fn race(
@@ -50,11 +70,30 @@ pub fn race(
   concurrency.race(activities)
 }
 
+/// `race`, supplying the workflow-level default task queue for any member that
+/// selects none. See [`run_with_default`] for the resolution precedence.
+pub fn race_with_default(
+  activities: List(Activity(input, output)),
+  workflow_default_task_queue: Option(String),
+) -> Result(output, error.ActivityError) {
+  concurrency.race_with_default(activities, workflow_default_task_queue)
+}
+
 pub fn map(
   items: List(value),
   to_activity: fn(value) -> Activity(input, output),
 ) -> Result(List(output), error.ActivityError) {
   concurrency.map(items, to_activity)
+}
+
+/// `map`, supplying the workflow-level default task queue for any produced
+/// activity that selects none. See [`run_with_default`] for the precedence.
+pub fn map_with_default(
+  items: List(value),
+  to_activity: fn(value) -> Activity(input, output),
+  workflow_default_task_queue: Option(String),
+) -> Result(List(output), error.ActivityError) {
+  concurrency.map_with_default(items, to_activity, workflow_default_task_queue)
 }
 
 pub fn id() -> Result(String, error.EngineError) {

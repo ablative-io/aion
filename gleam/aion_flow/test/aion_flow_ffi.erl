@@ -36,13 +36,15 @@
     testing_clear_observations/0,
     testing_observations/0,
     testing_query_replies/0,
-    testing_enqueue_collect_result/1
+    testing_enqueue_collect_result/1,
+    testing_last_activity_config/1
 ]).
 
 -define(DEFAULT_NOW, 1700000000000).
 
 dispatch_activity(Name, Input, Config) ->
     observe(<<"activity:", Name/binary, ":", Input/binary>>),
+    erlang:put({aion_activity_config, self(), Name}, Config),
     Result = case lookup_mock(Name) of
         {ok, Handler} -> Handler(Input);
         error -> legacy_run_activity(Name, Input, Config)
@@ -301,6 +303,15 @@ testing_clear_observations() ->
 
 testing_observations() ->
     {ok, json_string_array(observations())}.
+
+%% NSTQ-4 test channel: the dispatch `config` JSON the SDK last sent for an
+%% activity name. Stored by dispatch_activity/3 without affecting observation
+%% counts, so encoding tests assert the task-queue fields the SDK emitted.
+testing_last_activity_config(Name) ->
+    case erlang:get({aion_activity_config, self(), Name}) of
+        undefined -> {error, <<"no dispatch config recorded for activity">>};
+        Config -> {ok, Config}
+    end.
 
 %% Test-double diagnostic channel for the query pump: every reply attempt is
 %% recorded as "ok:Id:Payload", "error:Id:Message", or "failed:Id"

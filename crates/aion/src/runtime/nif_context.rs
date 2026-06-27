@@ -263,6 +263,7 @@ impl NifContext {
         activity_id: ActivityId,
         activity_type: String,
         input: Payload,
+        task_queue: String,
     ) -> Result<(), NifContextError> {
         self.tokio_handle
             .block_on(async {
@@ -273,9 +274,9 @@ impl NifContext {
                         activity_id.clone(),
                         activity_type,
                         input,
-                        // No SDK-level task-queue selection yet (NSTQ-4); the live single-schedule
-                        // path records the named default task queue.
-                        String::from(aion_core::DEFAULT_TASK_QUEUE),
+                        // NSTQ-4: the resolved task queue (activity override > workflow default >
+                        // the named default), decided once at the schedule seam by the caller.
+                        task_queue,
                     )
                     .await?;
                 recorder

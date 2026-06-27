@@ -74,6 +74,44 @@ pub(super) fn labels_from_config(config: &str) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Resolve the task queue one activity dispatch lands on, applying the locked
+/// precedence exactly once (NSTQ-4).
+///
+/// Precedence: the per-activity override (`config.task_queue`) wins; absent
+/// that, the workflow-level default (`config.workflow_task_queue`); absent both,
+/// the named [`aion_core::DEFAULT_TASK_QUEUE`]. Both selections cross the FFI
+/// boundary unresolved inside the activity-dispatch `config` JSON (the SDK's
+/// `activity_config`), so this is the single seam where the precedence is
+/// decided for both the single-schedule and the fan-out paths.
+///
+/// A `config` that is not valid JSON, or whose selection fields are absent or
+/// non-string, deterministically resolves to the named default — the SDK always
+/// emits valid config, so a malformed string signals a defect without taking
+/// down an otherwise-valid dispatch over routing metadata (mirroring
+/// [`labels_from_config`]). An explicit JSON `null` (the SDK's encoding of "no
+/// selection") is treated as absent.
+pub(super) fn resolve_task_queue(config: &str) -> String {
+    let value = match serde_json::from_str::<serde_json::Value>(config) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "activity dispatch config was not valid JSON; routing to the default task queue"
+            );
+            return String::from(aion_core::DEFAULT_TASK_QUEUE);
+        }
+    };
+    let selection = |field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    selection("task_queue")
+        .or_else(|| selection("workflow_task_queue"))
+        .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE))
+}
+
 pub(super) fn runtime_context(state: &EngineNifState) -> Result<RuntimeContext, NifContextError> {
     let guard = state
         .runtime_context
@@ -156,10 +194,17 @@ pub(super) fn record_started(
     activity_id: ActivityId,
     activity_type: String,
     input: Payload,
+    task_queue: String,
 ) -> Result<(), Term> {
     let recorded_at = Utc::now();
     context
-        .record_activity_scheduled_started(recorded_at, activity_id, activity_type, input)
+        .record_activity_scheduled_started(
+            recorded_at,
+            activity_id,
+            activity_type,
+            input,
+            task_queue,
+        )
         .map_err(|error| context_error_term(ctx, &error))
 }
 
@@ -185,4 +230,59 @@ pub(super) fn activity_id_from_correlation(
         .unwrap_or(Term::NIL)
     })?;
     Ok(ActivityId::from_sequence_position(sequence))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_task_queue;
+
+    /// Build the activity-dispatch config the SDK's `activity_config` emits,
+    /// with the two task-queue selection fields set to the supplied JSON.
+    fn config(task_queue: &str, workflow_task_queue: &str) -> String {
+        format!(
+            r#"{{"retry":null,"timeout_ms":null,"heartbeat_ms":null,"labels":{{}},"task_queue":{task_queue},"workflow_task_queue":{workflow_task_queue}}}"#
+        )
+    }
+
+    #[test]
+    fn activity_override_wins_over_workflow_default() {
+        // The per-activity selection is highest precedence.
+        assert_eq!(
+            resolve_task_queue(&config(r#""claude""#, r#""gpu""#)),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn workflow_default_applies_when_activity_selects_none() {
+        // No activity override (JSON null) falls back to the workflow default.
+        assert_eq!(resolve_task_queue(&config("null", r#""gpu""#)), "gpu");
+    }
+
+    #[test]
+    fn no_selection_resolves_to_the_named_default() {
+        // Neither selection set: the named "default" task queue.
+        assert_eq!(
+            resolve_task_queue(&config("null", "null")),
+            aion_core::DEFAULT_TASK_QUEUE
+        );
+    }
+
+    #[test]
+    fn absent_fields_resolve_to_the_named_default() {
+        // A config predating the fields (labels-only) decodes as no selection.
+        assert_eq!(
+            resolve_task_queue(r#"{"labels":{}}"#),
+            aion_core::DEFAULT_TASK_QUEUE
+        );
+    }
+
+    #[test]
+    fn malformed_config_resolves_to_the_named_default() {
+        // Invalid JSON never takes down a dispatch over routing metadata.
+        assert_eq!(
+            resolve_task_queue("{not json"),
+            aion_core::DEFAULT_TASK_QUEUE
+        );
+    }
 }

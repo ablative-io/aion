@@ -292,6 +292,9 @@ fn dispatch_unscheduled(
                     ActivityId::from_sequence_position(*ordinal),
                     spec.name.clone(),
                     input,
+                    // NSTQ-4: resolve once at this schedule seam, same precedence
+                    // as the flag-ON fan-out and the single-schedule paths.
+                    super::nif_activity::resolve_task_queue(&spec.config),
                 )
                 .map_err(|error| error.error_reason())?;
         }
@@ -313,9 +316,10 @@ fn dispatch_unscheduled(
             super::nif_activity::correlation_id(*ordinal),
             ActivityDispatch {
                 namespace: namespace.clone(),
-                // No workflow-level task_queue selection yet (NSTQ-4); fan-out
-                // dispatches land on the named default pool within the namespace.
-                task_queue: String::from("default"),
+                // NSTQ-4: resolve once at this schedule seam (member override >
+                // workflow default > the named default), matching the recorded
+                // `ActivityScheduled` for this ordinal on the flag-OFF path.
+                task_queue: super::nif_activity::resolve_task_queue(&spec.config),
                 workflow_id: workflow_id.clone(),
                 activity_id: ActivityId::from_sequence_position(*ordinal),
                 name: spec.name.clone(),
@@ -345,9 +349,10 @@ fn fan_out_items(
             Ok(FanOutItem {
                 ordinal: *ordinal,
                 namespace: namespace.to_owned(),
-                // No SDK-level task-queue selection yet (NSTQ-4); fan-out dispatches carry the named
-                // default task queue within the workflow's namespace.
-                task_queue: String::from("default"),
+                // NSTQ-4: resolve each member's task queue once at this schedule seam (member
+                // override > workflow default > the named default) from its dispatch config, so the
+                // staged outbox row and the recorded `ActivityScheduled` land on the chosen pool.
+                task_queue: super::nif_activity::resolve_task_queue(&spec.config),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })
@@ -765,9 +770,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ActivitySpec, CollectDeps, CollectStep, collect_step, fan_out_items_recovered,
-        scheduled_task_queue,
+        ActivitySpec, CollectDeps, CollectStep, collect_step, fan_out_items,
+        fan_out_items_recovered, scheduled_task_queue,
     };
+    use crate::activity::bridge::ActivityDispatch;
     use crate::durability::Recorder;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
@@ -777,6 +783,26 @@ mod tests {
     use crate::runtime::{RuntimeConfig, RuntimeHandle};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A dispatcher whose async dispatch never resolves: the schedule path
+    /// records `ActivityScheduled`+`ActivityStarted` durably, spawns the
+    /// completion task, then parks — so the recorded events are observable
+    /// without a completion racing the assertion.
+    struct NeverDispatcher;
+
+    impl crate::activity::bridge::ActivityDispatcher for NeverDispatcher {
+        fn dispatch(&self, _request: ActivityDispatch) -> Result<String, String> {
+            // Never invoked: dispatch_async is overridden to a pending future.
+            Err("NeverDispatcher: dispatch_async never resolves".to_owned())
+        }
+
+        fn dispatch_async(
+            self: Arc<Self>,
+            _request: ActivityDispatch,
+        ) -> futures::future::BoxFuture<'static, Result<String, String>> {
+            Box::pin(std::future::pending())
+        }
+    }
 
     /// Everything one `collect_step` test needs over a synthesized history.
     struct CollectHarness {
@@ -870,6 +896,27 @@ mod tests {
 
         fn pinned(&self) -> Option<PendingAwait> {
             self.state.pending_awaits.get(&self.pid).map(|e| e.clone())
+        }
+
+        /// Every recorded `ActivityScheduled` as `(ordinal, task_queue)`, in
+        /// history order — the durable record the fresh dispatch stamped.
+        async fn scheduled_task_queues(
+            &self,
+        ) -> Result<Vec<(u64, String)>, Box<dyn std::error::Error>> {
+            Ok(self
+                .store
+                .read_history(&self.workflow_id)
+                .await?
+                .iter()
+                .filter_map(|event| match event {
+                    Event::ActivityScheduled {
+                        activity_id,
+                        task_queue,
+                        ..
+                    } => Some((activity_id.sequence_position(), task_queue.clone())),
+                    _ => None,
+                })
+                .collect())
         }
 
         async fn cancelled_ordinals(&self) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
@@ -1082,6 +1129,81 @@ mod tests {
         Ok(())
     }
 
+    /// NSTQ-4 fresh dispatch: a fan-out member whose config selects task queue
+    /// "claude" produces an outbox item (the durable row) on "claude", not the
+    /// named default. This is the host-decode → outbox-row seam.
+    #[test]
+    fn fresh_fan_out_item_carries_the_selected_task_queue() -> TestResult {
+        let claude = spec_with_task_queue("work", Some("claude"), None);
+        let members = [(0u64, &claude)];
+        let items = fan_out_items(&members, "remote", "fanout")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].namespace, "remote");
+        assert_eq!(
+            items[0].task_queue, "claude",
+            "the member override must reach the fresh outbox row"
+        );
+        Ok(())
+    }
+
+    /// NSTQ-4 precedence at the fresh-dispatch seam: a member with no override
+    /// under a workflow defaulting to "gpu" resolves to "gpu"; with neither, to
+    /// the named default. Mixed members each land on their own resolved queue.
+    #[test]
+    fn fresh_fan_out_items_resolve_precedence_per_member() -> TestResult {
+        let overridden = spec_with_task_queue("a", Some("claude"), Some("gpu"));
+        let defaulted = spec_with_task_queue("b", None, Some("gpu"));
+        let plain = spec_with_task_queue("c", None, None);
+        let members = [(0u64, &overridden), (1u64, &defaulted), (2u64, &plain)];
+        let items = fan_out_items(&members, "remote", "fanout")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        let queues: Vec<&str> = items.iter().map(|i| i.task_queue.as_str()).collect();
+        assert_eq!(
+            queues,
+            vec!["claude", "gpu", aion_core::DEFAULT_TASK_QUEUE],
+            "override > workflow default > the named default, resolved once per member"
+        );
+        Ok(())
+    }
+
+    /// NSTQ-4 end-to-end through the flag-OFF schedule path: scheduling a batch
+    /// that mixes a "claude"-selected member with a workflow-"gpu"-defaulted
+    /// member and a no-selection member records each `ActivityScheduled` on its
+    /// own resolved task queue (host decode → recorder → durable history).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scheduled_events_record_each_members_resolved_task_queue() -> TestResult {
+        let mut harness = CollectHarness::over_events(&[]).await?;
+        // A dispatcher that never completes: the fresh batch's Scheduled+Started
+        // events are recorded durably up-front, then the step parks at Suspend
+        // (no completion arrives), so the recorded task queues are observable
+        // without racing a settlement.
+        harness.deps.dispatcher = Some(Arc::new(NeverDispatcher));
+        let specs = vec![
+            spec_with_task_queue("a", Some("claude"), Some("gpu")),
+            spec_with_task_queue("b", None, Some("gpu")),
+            spec_with_task_queue("c", None, None),
+        ];
+
+        assert_eq!(
+            harness.step(CollectKind::All, &specs),
+            Ok(CollectStep::Suspend)
+        );
+
+        assert_eq!(
+            harness.scheduled_task_queues().await?,
+            vec![
+                (0, "claude".to_owned()),
+                (1, "gpu".to_owned()),
+                (2, aion_core::DEFAULT_TASK_QUEUE.to_owned()),
+            ],
+            "each recorded ActivityScheduled must carry its resolved task queue"
+        );
+        harness.shutdown()
+    }
+
     fn failed(ordinal: u64, message: &str) -> Event {
         Event::ActivityFailed {
             envelope: placeholder_envelope(),
@@ -1100,6 +1222,30 @@ mod tests {
             name: name.to_owned(),
             input: r#""in""#.to_owned(),
             config: "{}".to_owned(),
+        }
+    }
+
+    /// An [`ActivitySpec`] carrying the SDK's two task-queue selection fields in
+    /// its dispatch config: `task_queue` (the per-activity override) and
+    /// `workflow_task_queue` (the workflow-level default). `None` encodes the
+    /// SDK's "no selection" as JSON null.
+    fn spec_with_task_queue(
+        name: &str,
+        task_queue: Option<&str>,
+        workflow_task_queue: Option<&str>,
+    ) -> ActivitySpec {
+        let field = |value: Option<&str>| match value {
+            Some(text) => format!("\"{text}\""),
+            None => "null".to_owned(),
+        };
+        ActivitySpec {
+            name: name.to_owned(),
+            input: r#""in""#.to_owned(),
+            config: format!(
+                r#"{{"labels":{{}},"task_queue":{},"workflow_task_queue":{}}}"#,
+                field(task_queue),
+                field(workflow_task_queue)
+            ),
         }
     }
 
