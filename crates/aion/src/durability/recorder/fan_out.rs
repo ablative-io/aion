@@ -116,6 +116,10 @@ impl Recorder {
                 activity_id: activity_id.clone(),
                 activity_type: item.activity_type.clone(),
                 input: item.input.clone(),
+                // NSTQ-3: record the pool selector on the event from the same `FanOutItem`
+                // (NSTQ-2) that stamps the outbox row, so the durable history is the
+                // source-of-truth backstop for re-targeting this queue on recovery.
+                task_queue: item.task_queue.clone(),
             });
             events.push(Event::ActivityStarted {
                 envelope: started_envelope,

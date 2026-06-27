@@ -368,6 +368,7 @@ mod tests {
                     ActivityId::from_sequence_position(2),
                     "charge-card".to_owned(),
                     payload("activity")?,
+                    String::from("default"),
                 )
                 .await?;
         }

@@ -24,6 +24,24 @@ pub struct EventEnvelope {
     pub workflow_id: WorkflowId,
 }
 
+/// The named default task queue: the single sanctioned fallback when no explicit task queue was
+/// selected (no SDK-level selection exists yet — that is NSTQ-4) and the replay-safe decode value
+/// for [`Event::ActivityScheduled`] events recorded before the `task_queue` field existed.
+///
+/// This is the in-layer (`aion-core`) twin of `aion_store::DEFAULT_OUTBOX_ROUTE`; the two crates
+/// cannot share a constant because `aion-core` is the base domain crate and does not depend on
+/// `aion-store`. Both resolve to the same literal `"default"` so a history-derived task queue and
+/// an outbox-row-derived task queue agree.
+pub const DEFAULT_TASK_QUEUE: &str = "default";
+
+/// serde default for [`Event::ActivityScheduled::task_queue`]: the named [`DEFAULT_TASK_QUEUE`].
+///
+/// Used by `#[serde(default = ...)]` so an old recorded history that has no `task_queue` on its
+/// `ActivityScheduled` events decodes deterministically to `"default"`.
+fn default_task_queue() -> String {
+    String::from(DEFAULT_TASK_QUEUE)
+}
+
 /// A recorded workflow history event.
 ///
 /// User data is carried as opaque [`Payload`] values, while failures use the closed workflow and
@@ -135,6 +153,18 @@ pub enum Event {
         activity_type: String,
         /// Opaque activity input payload.
         input: Payload,
+        /// Pool/flavour selector this activity dispatches to within the workflow's namespace
+        /// (NSTQ-3). This is the durable source-of-truth for re-targeting the **same** task queue
+        /// on reopen/recovery, mirroring how the namespace is recovered from history but recorded
+        /// **per-activity** rather than as a workflow-level search attribute.
+        ///
+        /// Replay-safety: histories recorded before this field existed have no `task_queue` on
+        /// their `ActivityScheduled` events. Decode defaults the missing value to
+        /// [`DEFAULT_TASK_QUEUE`] (`"default"`) via `#[serde(default = ...)]`, so an old history
+        /// deterministically re-derives `task_queue = "default"` — never panics, never differs
+        /// run-to-run. The encoding of the existing fields is untouched.
+        #[serde(default = "default_task_queue")]
+        task_queue: String,
     },
     /// An activity worker started executing an activity attempt.
     ActivityStarted {
@@ -394,7 +424,7 @@ mod tests {
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
-    use super::{Event, EventEnvelope};
+    use super::{DEFAULT_TASK_QUEUE, Event, EventEnvelope};
     use crate::{
         ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, PackageVersion,
         Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeValue, TimerId, TriggerSpec,
@@ -459,6 +489,80 @@ mod tests {
         Ok(())
     }
 
+    /// NSTQ-3: a recorded `ActivityScheduled` carries its `task_queue` through the durable JSON
+    /// wire so reopen/recovery can re-target the same pool.
+    #[test]
+    fn activity_scheduled_records_and_reads_back_its_task_queue()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let event = Event::ActivityScheduled {
+            envelope: envelope(6),
+            activity_id: ActivityId::from_sequence_position(6),
+            activity_type: String::from("charge-card"),
+            input: payload("activity-input")?,
+            task_queue: String::from("claude"),
+        };
+
+        let json = serde_json::to_string(&event)?;
+        let decoded = serde_json::from_str::<Event>(&json)?;
+
+        match decoded {
+            Event::ActivityScheduled { task_queue, .. } => {
+                assert_eq!(
+                    task_queue, "claude",
+                    "the recorded task queue must survive the round-trip"
+                );
+            }
+            other => return Err(format!("expected ActivityScheduled, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// NSTQ-3 replay-safety (the load-bearing test): an OLD recorded history that has no
+    /// `task_queue` key on its `ActivityScheduled` events MUST still decode, defaulting the missing
+    /// value to the named `"default"` task queue, deterministically — never panic, never differ
+    /// run-to-run. The old wire form is the exact pre-field bytes: the current serialization with
+    /// the `task_queue` key removed.
+    #[test]
+    fn activity_scheduled_decodes_old_history_without_task_queue_as_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Build a current event, serialize, then strip the `task_queue` key to reconstruct exactly
+        // what a history recorded before the field existed looks like on the wire.
+        let current = Event::ActivityScheduled {
+            envelope: envelope(6),
+            activity_id: ActivityId::from_sequence_position(6),
+            activity_type: String::from("charge-card"),
+            input: payload("activity-input")?,
+            task_queue: String::from("ignored-when-stripped"),
+        };
+        let mut value = serde_json::to_value(&current)?;
+        let data = value
+            .get_mut("data")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("ActivityScheduled must serialize to a tagged object with a `data` map")?;
+        assert!(
+            data.remove("task_queue").is_some(),
+            "the current wire form must contain task_queue before we strip it"
+        );
+
+        // Decode the stripped (old-shape) wire form repeatedly: it must succeed and always read
+        // back the named default, deterministically.
+        let old_wire = serde_json::to_string(&value)?;
+        for _ in 0..4 {
+            let decoded = serde_json::from_str::<Event>(&old_wire)?;
+            match &decoded {
+                Event::ActivityScheduled { task_queue, .. } => {
+                    assert_eq!(
+                        task_queue, DEFAULT_TASK_QUEUE,
+                        "a missing task_queue must default to the named default queue"
+                    );
+                    assert_eq!(task_queue, "default");
+                }
+                other => return Err(format!("expected ActivityScheduled, got {other:?}").into()),
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn event_accessors_return_envelope_fields() -> Result<(), Box<dyn std::error::Error>> {
         let workflow_id = WorkflowId::new_v4();
@@ -516,6 +620,7 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(6),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
+                task_queue: String::from("claude"),
             },
             Event::ActivityStarted {
                 envelope: envelope(7),

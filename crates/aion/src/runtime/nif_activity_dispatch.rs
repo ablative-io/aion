@@ -610,6 +610,7 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(0),
                 activity_type: "work".to_owned(),
                 input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
+                task_queue: String::from("default"),
             },
             Event::ActivityStarted {
                 envelope: envelope(&workflow_id, 3),

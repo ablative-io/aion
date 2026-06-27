@@ -269,8 +269,14 @@ fn dispatch_unscheduled(
         // claimable `Pending`, so the OutboxDispatcher re-dispatches it. This replaces — does
         // not supplement — the in-process `spawn_completion_task` path (excluded below). The
         // completion dedup makes the redelivery at-least-once-safe.
+        //
+        // NSTQ-3 recovery: the re-staged row must re-target the SAME task queue the original
+        // dispatch recorded, not the live default. Read it back from the recorded
+        // `ActivityScheduled` event (the durable source of truth) so a recovered dispatch lands on
+        // `(namespace, recorded_task_queue)`, never silently on `(namespace, "default")`.
         if !stale.is_empty() {
-            let items = fan_out_items(&stale, &workflow_namespace, label)?;
+            let items =
+                fan_out_items_recovered(&stale, &workflow_namespace, context.history(), label)?;
             context
                 .rearm_outbox_pending(Utc::now(), &items)
                 .map_err(|error| error.error_reason())?;
@@ -342,6 +348,35 @@ fn fan_out_items(
                 // No SDK-level task-queue selection yet (NSTQ-4); fan-out dispatches carry the named
                 // default task queue within the workflow's namespace.
                 task_queue: String::from("default"),
+                activity_type: spec.name.clone(),
+                input: payload_from_json_text(&spec.input, label)?,
+            })
+        })
+        .collect()
+}
+
+/// Map a slice of recovered `(ordinal, spec)` pairs to [`FanOutItem`]s whose `task_queue` is read
+/// back from each ordinal's recorded [`Event::ActivityScheduled`] (NSTQ-3 recovery).
+///
+/// Unlike [`fan_out_items`] — which stamps the named default on a FRESH dispatch because no
+/// SDK-level selection exists yet (NSTQ-4) — this re-derives the durable task queue from history so
+/// the re-staged outbox row re-targets the SAME pool the crashed dispatch chose. A history recorded
+/// before the field existed (or any ordinal without a recorded `ActivityScheduled`) deterministically
+/// reads back the named default via the event's serde default, so recovery is replay-safe.
+fn fan_out_items_recovered(
+    members: &[(u64, &ActivitySpec)],
+    namespace: &str,
+    history: &[Event],
+    label: &str,
+) -> Result<Vec<FanOutItem>, String> {
+    members
+        .iter()
+        .map(|(ordinal, spec)| {
+            Ok(FanOutItem {
+                ordinal: *ordinal,
+                namespace: namespace.to_owned(),
+                task_queue: scheduled_task_queue(history, *ordinal)
+                    .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE)),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })
@@ -676,6 +711,24 @@ fn scheduled_activity_type(history: &[Event], ordinal: u64) -> Option<String> {
     })
 }
 
+/// The recorded `ActivityScheduled` task queue for `ordinal`, if any (NSTQ-3 recovery).
+///
+/// The durable source of truth for re-targeting the same pool on reopen/recovery. A history
+/// recorded before the `task_queue` field existed decodes the field to the named default
+/// (`aion_core::DEFAULT_TASK_QUEUE`) via the event's serde default, so this returns `"default"`
+/// for such ordinals — never absent for a recorded `ActivityScheduled`.
+fn scheduled_task_queue(history: &[Event], ordinal: u64) -> Option<String> {
+    let target = ActivityId::from_sequence_position(ordinal);
+    history.iter().find_map(|event| match event {
+        Event::ActivityScheduled {
+            activity_id,
+            task_queue,
+            ..
+        } if *activity_id == target => Some(task_queue.clone()),
+        _ => None,
+    })
+}
+
 fn payload_from_json_text(text: &str, label: &str) -> Result<Payload, String> {
     let value = serde_json::from_str(text)
         .map_err(|error| format!("{label}: invalid JSON payload: {error}"))?;
@@ -711,7 +764,10 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore, WriteToken};
     use serde_json::json;
 
-    use super::{ActivitySpec, CollectDeps, CollectStep, collect_step};
+    use super::{
+        ActivitySpec, CollectDeps, CollectStep, collect_step, fan_out_items_recovered,
+        scheduled_task_queue,
+    };
     use crate::durability::Recorder;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
@@ -863,12 +919,14 @@ mod tests {
                 activity_id,
                 activity_type,
                 input,
+                task_queue,
                 ..
             } => Event::ActivityScheduled {
                 envelope,
                 activity_id,
                 activity_type,
                 input,
+                task_queue,
             },
             Event::ActivityStarted { activity_id, .. } => Event::ActivityStarted {
                 envelope,
@@ -936,6 +994,7 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(ordinal),
                 activity_type: name.to_owned(),
                 input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
+                task_queue: String::from("default"),
             },
             Event::ActivityStarted {
                 envelope: placeholder_envelope(),
@@ -950,6 +1009,77 @@ mod tests {
             activity_id: ActivityId::from_sequence_position(ordinal),
             result: Payload::new(ContentType::Json, result.as_bytes().to_vec()),
         }
+    }
+
+    fn scheduled_started_on(ordinal: u64, name: &str, task_queue: &str) -> Vec<Event> {
+        vec![
+            Event::ActivityScheduled {
+                envelope: placeholder_envelope(),
+                activity_id: ActivityId::from_sequence_position(ordinal),
+                activity_type: name.to_owned(),
+                input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
+                task_queue: task_queue.to_owned(),
+            },
+            Event::ActivityStarted {
+                envelope: placeholder_envelope(),
+                activity_id: ActivityId::from_sequence_position(ordinal),
+            },
+        ]
+    }
+
+    /// NSTQ-3 recovery: when an in-flight dispatch is re-staged from history after a restart, the
+    /// re-armed item must re-target the SAME task queue the original `ActivityScheduled` recorded
+    /// (`(namespace, X)`), not silently fall back to `(namespace, "default")`. This is the durable
+    /// source-of-truth path the stale-recovery branch of `dispatch_unscheduled` consumes.
+    #[test]
+    fn recovery_re_targets_the_recorded_task_queue_not_default() -> TestResult {
+        // History recorded the activity on task queue "claude" before the crash.
+        let history = scheduled_started_on(0, "work", "claude");
+        assert_eq!(scheduled_task_queue(&history, 0).as_deref(), Some("claude"));
+
+        let work = spec("work");
+        let members = [(0u64, &work)];
+        let items = fan_out_items_recovered(&members, "remote", &history, "recovery")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].namespace, "remote",
+            "recovery keeps the workflow namespace"
+        );
+        assert_eq!(
+            items[0].task_queue, "claude",
+            "recovery must re-target the RECORDED task queue, never the default"
+        );
+        Ok(())
+    }
+
+    /// NSTQ-3 recovery replay-safety: an OLD history (recorded before the `task_queue` field
+    /// existed) decodes its `ActivityScheduled` `task_queue` to the named default, so a recovered
+    /// dispatch deterministically re-targets `(namespace, "default")` — never panics, never differs.
+    #[test]
+    fn recovery_from_pre_field_history_defaults_task_queue() -> TestResult {
+        // Reconstruct the exact old wire form: serialize a current event, strip task_queue, decode.
+        let current = &scheduled_started_on(0, "work", "ignored-when-stripped")[0];
+        let mut value = serde_json::to_value(current)?;
+        let data = value
+            .get_mut("data")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("ActivityScheduled must serialize to a tagged object with a `data` map")?;
+        assert!(data.remove("task_queue").is_some());
+        let old_event: Event = serde_json::from_value(value)?;
+        let history = vec![old_event];
+
+        let work = spec("work");
+        let members = [(0u64, &work)];
+        let items = fan_out_items_recovered(&members, "remote", &history, "recovery")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        assert_eq!(
+            items[0].task_queue, "default",
+            "an old history with no recorded task_queue must recover as the named default"
+        );
+        Ok(())
     }
 
     fn failed(ordinal: u64, message: &str) -> Event {

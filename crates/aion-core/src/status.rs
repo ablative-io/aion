@@ -353,6 +353,7 @@ mod tests {
                 activity_id: ActivityId::from_sequence_position(3),
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
+                task_queue: String::from("default"),
             },
         ];
 

@@ -101,6 +101,7 @@ async fn record_full_history(
             activity_id.clone(),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -168,6 +169,7 @@ async fn record_partial_history_for(
             activity_id.clone(),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -296,6 +298,7 @@ async fn record_round_trip_history(
             first_activity_id.clone(),
             "activity".to_owned(),
             payload("first-activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -311,6 +314,7 @@ async fn record_round_trip_history(
             second_activity_id.clone(),
             "activity".to_owned(),
             payload("second-activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -400,6 +404,7 @@ async fn record_partial_history(
             activity_id.clone(),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -801,6 +806,7 @@ async fn terminal_activity_failure_is_served_from_history_cache_without_live_cal
             activity_id.clone(),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -845,6 +851,7 @@ async fn record_realistic_history(
             activity_id.clone(),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     recorder
@@ -982,6 +989,7 @@ async fn recover_realistic_multi_event_workflow_to_resume_live()
             ActivityId::from_sequence_position(1),
             "activity".to_owned(),
             payload("activity-input")?,
+            String::from("default"),
         )
         .await?;
     let recovered_history = store.read_history(&workflow_id).await?;

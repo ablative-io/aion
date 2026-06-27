@@ -280,6 +280,7 @@ fn run_shape(history: &[Event]) -> Vec<String> {
                 activity_id,
                 activity_type,
                 input,
+                ..
             } => format!(
                 "{}|sched|{}|{activity_type}|{}",
                 envelope.seq,
