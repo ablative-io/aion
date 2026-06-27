@@ -1,9 +1,17 @@
-//! Minimal remote activity worker serving the hello-world `greet` activity.
+//! Minimal remote activity worker for the multi-process cluster spike.
 //!
-//! Connects to an aion server's gRPC endpoint, registers the single `greet`
-//! handler, and serves until killed. Mirrors the hello-world worker.py and the
-//! ss5b test's GreetDispatcher: input `{"name": String}` -> output
-//! `{"greeting": String}`.
+//! Connects to an aion server's gRPC endpoint, registers the activity handlers
+//! the spike's workflows need, and serves until killed.
+//!
+//! Activities served:
+//!   * `greet` (hello-world, Phase A): input `{"name": String}` -> output
+//!     `{"greeting": String}`.
+//!   * `publish_document` / `archive_document` (approval-gate, Phase B): input
+//!     `{"document_id": String, "reason": String}` -> output
+//!     `{"action_taken": String}`. These mirror the Gleam example's
+//!     `local_publish_document` / `local_archive_document` bodies and the e2e
+//!     test's RecordingDispatcher, so the approval workflow's terminal activity
+//!     runs cross-process exactly as in production.
 //!
 //! Usage: `greet-worker --endpoint http://127.0.0.1:50051 [--identity <id>]`
 //!
@@ -36,6 +44,55 @@ fn greet(input: GreetInput, _context: &ActivityContext) -> HandlerFuture<'_, Gre
         tracing::info!(name = %input.name, worker = %identity, "serving greet activity");
         Ok(GreetOutput {
             greeting: format!("Hello, {}! Welcome to Aion.", input.name),
+        })
+    })
+}
+
+/// approval-gate document activity input (`publish_document` / `archive_document`).
+#[derive(Deserialize, Serialize)]
+struct DocumentInput {
+    /// The document under decision.
+    document_id: String,
+    /// Why this action is being taken (for the recorded action message).
+    reason: String,
+}
+
+/// approval-gate document activity output.
+#[derive(Deserialize, Serialize)]
+struct DocumentOutput {
+    /// Human-readable description of the action taken.
+    action_taken: String,
+}
+
+/// The `publish_document` activity handler (approval-gate's approved branch).
+/// Mirrors the Gleam `local_publish_document`: `published <document_id>`.
+fn publish_document(
+    input: DocumentInput,
+    _context: &ActivityContext,
+) -> HandlerFuture<'_, DocumentOutput> {
+    Box::pin(async move {
+        let identity = std::env::var("GREET_WORKER_IDENTITY").unwrap_or_else(|_| "?".to_owned());
+        tracing::info!(document = %input.document_id, worker = %identity, "serving publish_document activity");
+        Ok(DocumentOutput {
+            action_taken: format!("published {}", input.document_id),
+        })
+    })
+}
+
+/// The `archive_document` activity handler (approval-gate's rejected/timeout
+/// branch). Mirrors the Gleam `local_archive_document`.
+fn archive_document(
+    input: DocumentInput,
+    _context: &ActivityContext,
+) -> HandlerFuture<'_, DocumentOutput> {
+    Box::pin(async move {
+        let identity = std::env::var("GREET_WORKER_IDENTITY").unwrap_or_else(|_| "?".to_owned());
+        tracing::info!(document = %input.document_id, worker = %identity, "serving archive_document activity");
+        Ok(DocumentOutput {
+            action_taken: format!(
+                "archived {} because {}",
+                input.document_id, input.reason
+            ),
         })
     })
 }
@@ -91,6 +148,8 @@ async fn main() -> anyhow::Result<()> {
 
     Worker::builder(config)
         .register_activity("greet", greet)?
+        .register_activity("publish_document", publish_document)?
+        .register_activity("archive_document", archive_document)?
         .build()?
         .run()
         .await?;
