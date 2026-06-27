@@ -1,5 +1,5 @@
-//! #13-0 spike: one outbox fan-out dispatch over liminal, result back through
-//! the existing `OutboxDeliveryCallback`, behind the `liminal-transport` feature.
+//! #13-0/#13-1: outbox fan-out dispatch over liminal, result back through the
+//! existing `OutboxDeliveryCallback`, behind the `liminal-transport` feature.
 //!
 //! The whole file is gated on the feature, so a default build never compiles it
 //! and never links liminal. It stands up a REAL `liminal-server` over loopback
@@ -7,6 +7,14 @@
 //! the socket, and routes a worker result back through `LiminalCompletionSource`
 //! into a recording `OutboxDeliveryCallback` (the completion-return seam) — the
 //! same callback trait the gRPC completion path uses.
+//!
+//! 13-1 adds the honest-ack retry composition: `LiminalOutboxDispatch` now keys
+//! liminal dedup-on-delivery on a PER-ATTEMPT key (`{dispatch_key}#{attempt}`),
+//! so a legitimate outbox retry is a fresh, non-suppressed publish. The
+//! `legit_retry_*` tests prove a bumped-attempt re-dispatch succeeds (no longer
+//! self-suppressed), a same-attempt duplicate is still deduped, and the full
+//! `OutboxDispatcher` retry loop drives a no-worker dispatch through backoff to a
+//! successful re-dispatch once a worker subscribes.
 //!
 //! Honest scope: liminal's request-reply responder is an in-server echo
 //! participant (13-L0), so the "worker" that returns the result is liminal's
@@ -29,8 +37,11 @@ use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_server::worker::liminal_transport::{
     DispatchRequest, DispatchResponse, LiminalCompletionSource, LiminalOutboxDispatch,
 };
-use aion_server::worker::{OutboxDeliveryCallback, OutboxRowDispatch};
-use aion_store::{OutboxRow, OutboxStatus};
+use aion_server::worker::{
+    OutboxDeliveryCallback, OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch,
+};
+use aion_store::{OutboxRow, OutboxStatus, OutboxStore};
+use aion_store_libsql::LibSqlStore;
 use chrono::Utc;
 use futures::Stream;
 use liminal_sdk::{
@@ -40,6 +51,7 @@ use liminal_sdk::{
 use liminal_server::config::{ChannelDef, ServerConfig};
 use liminal_server::server::connection::ConnectionSupervisor;
 use liminal_server::server::listener::ServerListener;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 type TestError = Box<dyn Error + Send + Sync>;
@@ -330,12 +342,56 @@ async fn dispatch_over_liminal_returns_result_through_callback() -> Result<(), T
     Ok(())
 }
 
-/// THE DEDUP<->RETRY COMPOSITION TEST: a re-dispatch of the SAME `dispatch_key`
-/// (the stable key the outbox reuses on every retry) is suppressed by liminal's
-/// dedup-on-delivery, so `LiminalOutboxDispatch::dispatch` returns Err on the
-/// second call EVEN THOUGH a worker is present. This documents the known trap.
+/// THE 13-1 FIX (renamed from 13-0's `redispatch_with_stable_key_is_suppressed_by_dedup`,
+/// whose meaning is now INVERTED by the per-attempt-key fix): a legitimate outbox
+/// retry — same row, `attempt` bumped, as `retry_outbox_row` produces — is a fresh
+/// liminal publish that dedup-on-delivery does NOT suppress, so the re-dispatch
+/// returns Ok with a live worker. This is the composition bug 13-0 documented as a
+/// trap; 13-1 fixes it with `{dispatch_key}#{attempt}` keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn redispatch_with_stable_key_is_suppressed_by_dedup() -> Result<(), TestError> {
+async fn legit_retry_with_bumped_attempt_is_not_suppressed() -> Result<(), TestError> {
+    let server = RunningServer::start()?;
+    let address = server.address();
+
+    let worker = connect_channel(address)?;
+    subscribe_worker(&worker)?;
+    server.wait_for_connection()?;
+
+    let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
+
+    // First dispatch: attempt 0, fresh key + live worker => genuine delivery => Ok.
+    let first = pending_row(0);
+    dispatch
+        .dispatch(&first)
+        .await
+        .map_err(|error| test_error(format!("first dispatch must succeed: {error}")))?;
+
+    // The outbox retries by returning the SAME row to pending with `attempt`
+    // bumped (and an unchanged stable dispatch_key). With the per-attempt key the
+    // re-dispatch is a DISTINCT liminal idempotency key, so it is delivered, not
+    // dedup-suppressed: the legitimate retry now succeeds.
+    let mut retried = first.clone();
+    retried.attempt += 1;
+    assert_eq!(
+        retried.dispatch_key, first.dispatch_key,
+        "the outbox keeps the stable dispatch_key across retries"
+    );
+    dispatch
+        .dispatch(&retried)
+        .await
+        .map_err(|error| test_error(format!("bumped-attempt retry must succeed: {error}")))?;
+
+    server.shutdown()?;
+    Ok(())
+}
+
+/// The dedup floor still holds: a re-dispatch of the IDENTICAL attempt (same
+/// `{dispatch_key}#{attempt}` key, e.g. a transport-level resend of the same
+/// publish) IS suppressed by dedup-on-delivery and returns Err. This is the
+/// at-most-once-per-attempt property the per-attempt key preserves — only the
+/// attempt boundary opens a fresh delivery, not an arbitrary resend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_attempt_duplicate_is_still_suppressed_by_dedup() -> Result<(), TestError> {
     let server = RunningServer::start()?;
     let address = server.address();
 
@@ -346,21 +402,20 @@ async fn redispatch_with_stable_key_is_suppressed_by_dedup() -> Result<(), TestE
     let dispatch = LiminalOutboxDispatch::new(address.to_string(), CHANNEL);
     let row = pending_row(0);
 
-    // First dispatch: fresh key + live worker => genuine delivery => Ok.
     dispatch
         .dispatch(&row)
         .await
         .map_err(|error| test_error(format!("first dispatch must succeed: {error}")))?;
 
-    // Re-dispatch the SAME row (same stable dispatch_key, as a retry/re-arm
-    // would). liminal dedup-on-delivery suppresses the second delivery, so the
-    // ack is non-accepted and dispatch returns Err — INDISTINGUISHABLE from
-    // "reached no worker". A naive outbox would treat this legitimate retry as a
-    // hard failure and burn an attempt / dead-letter the row.
-    let second = dispatch.dispatch(&row).await;
+    // Re-dispatch the EXACT same attempt (no bump): same per-attempt key =>
+    // dedup-on-delivery suppresses it => non-accepted ack => Err. The outbox
+    // never replays an identical attempt, so this Err cannot mis-drive a retry;
+    // it is the redundant idempotency floor the design keeps under aion's terminal
+    // dedup authority.
+    let duplicate = dispatch.dispatch(&row).await;
     assert!(
-        second.is_err(),
-        "re-dispatch with the stable dispatch_key is suppressed by dedup and surfaces as Err"
+        duplicate.is_err(),
+        "an identical-attempt duplicate is suppressed by dedup and surfaces as Err"
     );
 
     server.shutdown()?;
@@ -385,6 +440,118 @@ async fn dispatch_with_no_worker_returns_err() -> Result<(), TestError> {
         "a dispatch that reaches no worker must return Err so the outbox retries"
     );
 
+    server.shutdown()?;
+    Ok(())
+}
+
+/// Opens a fresh on-disk `LibSqlStore` for the retry-loop test.
+async fn open_libsql_store(name: &str) -> Result<Arc<LibSqlStore>, TestError> {
+    let nanos = Instant::now().elapsed().as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "aion-13-1-{name}-{}-{nanos}.db",
+        std::process::id()
+    ));
+    LibSqlStore::open(path)
+        .await
+        .map(Arc::new)
+        .map_err(test_error)
+}
+
+/// Outbox dispatcher config tuned for a fast, deterministic retry loop.
+fn fast_retry_config() -> OutboxDispatcherConfig {
+    OutboxDispatcherConfig {
+        poll_interval: Duration::from_millis(10),
+        batch_size: 16,
+        // Generous budget so the loop never dead-letters before the worker joins.
+        max_attempts: 100,
+        backoff_base: Duration::from_millis(10),
+        backoff_multiplier: 1,
+        backoff_max: Duration::from_millis(10),
+    }
+}
+
+/// Polls the outbox row's state until `predicate` holds or the deadline passes.
+async fn wait_for_row<F>(
+    store: &LibSqlStore,
+    dispatch_key: &str,
+    deadline: Instant,
+    predicate: F,
+) -> Result<aion_store_libsql::OutboxRowState, TestError>
+where
+    F: Fn(&aion_store_libsql::OutboxRowState) -> bool,
+{
+    while Instant::now() < deadline {
+        if let Some(state) = store
+            .outbox_row_state(dispatch_key)
+            .await
+            .map_err(test_error)?
+        {
+            if predicate(&state) {
+                return Ok(state);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(test_error("outbox row never reached the awaited state"))
+}
+
+/// THE 13-1 END-TO-END RETRY TEST: the real `OutboxDispatcher` drives a row over
+/// the `LiminalOutboxDispatch` to a liminal server with NO worker. The honest
+/// non-accepted ack returns Err, so the row retries with backoff (attempt bumps,
+/// stays pending). Once a worker subscribes, the next sweep's bumped-attempt
+/// publish is NOT dedup-suppressed (the 13-1 fix) and is genuinely delivered, so
+/// the row advances to Done. Proves honest-ack retry over a real liminal loopback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn outbox_dispatcher_retries_over_liminal_then_succeeds_when_worker_joins()
+-> Result<(), TestError> {
+    let server = RunningServer::start()?;
+    let address = server.address();
+
+    // Stage one pending row in a real durable outbox store. No worker is
+    // subscribed yet, so the first dispatches reach an empty channel.
+    let store = open_libsql_store("retry-loop").await?;
+    let row = pending_row(0);
+    store
+        .append_outbox_batch(std::slice::from_ref(&row))
+        .await
+        .map_err(test_error)?;
+
+    // Run the unchanged outbox dispatcher loop against the liminal transport.
+    let dispatch = Arc::new(LiminalOutboxDispatch::new(address.to_string(), CHANNEL));
+    let dispatcher = OutboxDispatcher::new(store.clone(), dispatch, fast_retry_config());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let loop_handle = tokio::spawn(dispatcher.run(shutdown_rx));
+
+    // The no-worker dispatches must drive retry/backoff: the row stays pending
+    // with a bumped attempt rather than dead-lettering or recording a false done.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let retried = wait_for_row(&store, &row.dispatch_key, deadline, |state| {
+        state.status == OutboxStatus::Pending && state.attempt >= 1
+    })
+    .await?;
+    assert!(
+        retried.attempt >= 1,
+        "no-worker dispatch drove at least one honest retry"
+    );
+
+    // A worker subscribes; the next sweep's bumped-attempt key is a fresh,
+    // non-suppressed publish, so the dispatch is genuinely delivered.
+    let worker = connect_channel(address)?;
+    subscribe_worker(&worker)?;
+    server.wait_for_connection()?;
+
+    let done = wait_for_row(&store, &row.dispatch_key, deadline, |state| {
+        state.status == OutboxStatus::Done
+    })
+    .await?;
+    assert_eq!(
+        done.status,
+        OutboxStatus::Done,
+        "the bumped-attempt retry succeeds once a worker is present (not dedup-suppressed)"
+    );
+
+    shutdown_tx.send(true).map_err(test_error)?;
+    loop_handle.await.map_err(test_error)?;
     server.shutdown()?;
     Ok(())
 }
