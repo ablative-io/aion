@@ -307,7 +307,13 @@ impl Engine {
     ///    node's owned-enumeration set so the adopted workflows, timers, and
     ///    outbox rows become visible to enumeration WITHOUT dropping this node's
     ///    own shards.
-    /// 3. **Re-resident.** Re-run the idempotent active-workflow recovery and
+    /// 3. **Publish ownership.** `publish_shard_owner` records this node as each
+    ///    adopted shard's current owner in the cluster's quorum-replicated
+    ///    shard-owner directory (SS-3), so a request reaching a DIFFERENT survivor
+    ///    routes to this adopter rather than mis-resolving to the dead declared
+    ///    owner. The publish is fenced by the election just won, so only the true
+    ///    adopter writes it; a non-distributed store no-ops it.
+    /// 4. **Re-resident.** Re-run the idempotent active-workflow recovery and
     ///    timer recovery, which re-spawn every adopted workflow from the
     ///    union-merged history through the same production recovery seam the boot
     ///    path uses, skipping the workflows this node already owns.
@@ -338,6 +344,15 @@ impl Engine {
         // 2. Widen this node's enumeration scope to include the adopted shards
         //    without dropping its own — recovery enumerates over the union.
         self.store.extend_owned_shards(shards);
+        // 2b. Publish this node as each adopted shard's CURRENT owner in the
+        //     cluster's shard-owner directory (SS-3), so a request reaching a
+        //     DIFFERENT survivor resolves the shard to THIS adopter rather than
+        //     mis-routing to the dead declared owner (gap #2). The publish is
+        //     fenced by the election just won, so only the true adopter writes it.
+        //     A single-node / non-distributed store no-ops this.
+        for &shard in shards {
+            self.store.publish_shard_owner(shard)?;
+        }
         // 3. Re-resident the adopted workflows through the production recovery
         //    seam (idempotent: this node's own workflows are skipped).
         super::startup::recover_adopted_shards(super::startup::StartupRecoveryContext {

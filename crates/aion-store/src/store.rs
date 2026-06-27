@@ -180,6 +180,32 @@ pub trait ReadableEventStore: Send + Sync + 'static {
     fn extend_owned_shards(&self, shards: &[usize]) {
         let _ = shards;
     }
+
+    /// Publish THIS node as the current owner of `shard` in the cluster's
+    /// shard-owner directory, so other nodes' request-routing edges resolve
+    /// `shard` to this node (SS-3).
+    ///
+    /// This is the failover-publish hook the engine calls from `adopt_shards`
+    /// right after it has won `shard`'s election: it records, durably and
+    /// cluster-visibly, that this node has adopted `shard`, so a request reaching
+    /// a DIFFERENT survivor routes to this adopter rather than mis-resolving to
+    /// the dead declared owner (gap #2).
+    ///
+    /// The default implementation is a deliberate no-op returning `Ok(())` —
+    /// single-shard / non-distributed backends own everything unconditionally and
+    /// have no peers to coordinate, so boot and adoption stay byte-identical. Only
+    /// a DISTRIBUTED sharded backend overrides this. Decorators that wrap another
+    /// store must forward this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotOwner`] when a distributed backend's fenced
+    /// directory write is out-voted (this node is not actually the owner), and
+    /// [`StoreError::Backend`] for any other replication/transport failure.
+    fn publish_shard_owner(&self, shard: usize) -> Result<(), StoreError> {
+        let _ = shard;
+        Ok(())
+    }
 }
 
 /// Write authority for appending workflow-history events.

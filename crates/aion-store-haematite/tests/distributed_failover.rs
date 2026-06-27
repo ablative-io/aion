@@ -145,6 +145,7 @@ impl Node {
             database,
             membership(total_nodes, send_targets),
             OP_TIMEOUT,
+            name.to_owned(),
         );
         let event_store = Arc::clone(store.event_store());
 
@@ -395,6 +396,93 @@ fn lagging_node_without_writes_reads_empty_history() -> TestResult {
         "WITHOUT become_live's merge a node that never received the writes serves NOTHING \
          — proving the survivor's recovery in the failover test comes from the data path, \
          not the harness"
+    );
+    Ok(())
+}
+
+// ===========================================================================
+// SS-3 — SHARD-OWNER DIRECTORY: the adopter's ownership is published to and
+// read by a DIFFERENT survivor (gap #2 at the store layer).
+// ===========================================================================
+
+/// The store-layer proof for SS-3 gap #2. A is the declared owner of the shard;
+/// A is partitioned away (its host "dies"). B adopts the shard — wins the
+/// election over the survivors AND `publish_shard_owner`s itself as the new
+/// owner. Then C — a DIFFERENT survivor that did NOT adopt — must read the
+/// adopter's identity (NODE_B) from its OWN locally-applied replica of the
+/// directory record. This is exactly what closes gap #2: without the published
+/// record, C resolves the dead declared owner A to "unknown" and a request for
+/// the shard's workflows fails locally; with it, C resolves the shard to B (the
+/// adopter) and can forward there.
+///
+/// NON-VACUOUS: C is asserted to have NO directory record before the adoption
+/// (`read_shard_owner` is `None`), so the NODE_B it reads afterward could ONLY
+/// have arrived via B's quorum-replicated publish.
+#[test]
+fn adopted_shard_owner_is_published_to_and_read_by_a_different_survivor() -> TestResult {
+    let dir_a = tempfile::tempdir()?;
+    let dir_b = tempfile::tempdir()?;
+    let dir_c = tempfile::tempdir()?;
+
+    // A is the declared owner and replicates to {B}; B and C are survivors.
+    let node_a = Node::spawn(NODE_A, dir_a.path(), 3, &[NODE_B])?;
+    let node_b = Node::spawn(NODE_B, dir_b.path(), 3, &[NODE_A, NODE_C])?;
+    let node_c = Node::spawn(NODE_C, dir_c.path(), 3, &[NODE_A, NODE_B])?;
+    link_both(&node_a, &node_b)?;
+    link_both(&node_a, &node_c)?;
+    link_both(&node_b, &node_c)?;
+
+    // A is the original fenced owner of the shard.
+    node_a
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_B]), OP_TIMEOUT)?;
+
+    // FALSIFIABILITY: no node has published a directory record yet, so a DIFFERENT
+    // survivor (C) sees no current owner — ownership is still described only by
+    // static config (which names the now-doomed A).
+    assert_eq!(
+        node_c.store.read_shard_owner(SHARD)?,
+        None,
+        "before adoption there is no published owner record (load-bearing non-vacuity)"
+    );
+
+    // "A dies": A is no longer a send target. B adopts the shard over the
+    // surviving quorum {B,C} — election win + become_live merge — then publishes
+    // ITSELF as the shard's current owner (the directory write the engine's
+    // adopt_shards drives in production).
+    node_b
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(3, &[NODE_C]), OP_TIMEOUT)?;
+    node_b.store.publish_shard_owner(SHARD)?;
+
+    // GAP #2 CLOSED: C — which did NOT adopt — reads the adopter's identity off
+    // its OWN replica of the quorum-replicated directory record. So a request
+    // reaching C now resolves the shard to B (the adopter), not the dead A.
+    assert!(
+        wait_until(OP_TIMEOUT, || node_c
+            .store
+            .read_shard_owner(SHARD)
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(NODE_B)),
+        "a different survivor (C) must read the ADOPTER (B) as the shard's current owner \
+         from the quorum-replicated directory record — this is the gap-#2 fix"
+    );
+
+    // The adopter itself also reads its own published record (idempotent self-view).
+    assert_eq!(
+        node_b.store.read_shard_owner(SHARD)?.as_deref(),
+        Some(NODE_B),
+        "the adopter reads back its own published ownership"
+    );
+
+    // Idempotent re-publish (a second adopt tick) succeeds and is stable.
+    node_b.store.publish_shard_owner(SHARD)?;
+    assert_eq!(
+        node_b.store.read_shard_owner(SHARD)?.as_deref(),
+        Some(NODE_B),
+        "re-publishing the same owner is a value-preserving no-op CAS"
     );
     Ok(())
 }

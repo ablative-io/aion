@@ -241,6 +241,7 @@ impl Node {
             database,
             membership(total_nodes, send_targets),
             OP_TIMEOUT,
+            name.to_owned(),
         ));
         let event_store = Arc::clone(store.event_store());
 
