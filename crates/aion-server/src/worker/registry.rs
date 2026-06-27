@@ -113,10 +113,18 @@ impl WorkerId {
 }
 
 /// Cloneable handle for a registered worker stream.
+///
+/// A worker serves a SET of namespaces under a single `task_queue`, so it is
+/// indexed under one `(namespace, task_queue, activity_type)` key per namespace
+/// in its set. `node` is an OPTIONAL locality affinity (a locality, not a
+/// process — many handles may share a node id) used as a within-pool filter at
+/// selection time; `None` means the worker advertised no locality.
 #[derive(Clone, Debug)]
 pub struct WorkerHandle {
     id: WorkerId,
-    pool: PoolAddress,
+    namespaces: BTreeSet<String>,
+    task_queue: String,
+    node: Option<String>,
     activity_types: BTreeSet<String>,
     sender: WorkerTaskSender,
 }
@@ -128,22 +136,24 @@ impl WorkerHandle {
         self.id
     }
 
-    /// Worker-pool address (namespace + task queue) this worker serves.
+    /// Namespaces authorized for this worker stream. The worker is reachable for
+    /// a dispatch only when its set includes the workflow's namespace.
     #[must_use]
-    pub const fn pool(&self) -> &PoolAddress {
-        &self.pool
+    pub const fn namespaces(&self) -> &BTreeSet<String> {
+        &self.namespaces
     }
 
-    /// Namespace authorized for this worker stream.
-    #[must_use]
-    pub fn namespace(&self) -> &str {
-        self.pool.namespace()
-    }
-
-    /// Task queue (pool/flavour) this worker serves within its namespace.
+    /// Task queue (pool/flavour) this worker serves within each namespace.
     #[must_use]
     pub fn task_queue(&self) -> &str {
-        self.pool.task_queue()
+        &self.task_queue
+    }
+
+    /// Optional locality affinity this worker advertised. `None` means the
+    /// worker carries no node and is reachable only for unpinned dispatches.
+    #[must_use]
+    pub fn node(&self) -> Option<&str> {
+        self.node.as_deref()
     }
 
     /// Activity types advertised by this worker.
@@ -221,21 +231,31 @@ impl ConnectedWorkerRegistry {
         registration: &ProtoRegisterWorker,
         sender: WorkerTaskSender,
     ) -> Result<WorkerRegistration, ServerError> {
-        let scoped = guard
+        // Verify the operation against the guard's worker-registration policy,
+        // then authorize EACH namespace in the worker's set: a worker serves a
+        // SET of correctness boundaries, so the registration is denied unless
+        // the caller is granted every one. The wire's empty `node` carries no
+        // locality affinity; a non-empty value is the worker's advertised node.
+        guard
             .scope(caller, &NamespaceOperation::register_worker(registration))
             .await?;
-        // The authorized namespace is the correctness boundary; the wire's
-        // task_queue is the disjoint pool selector within it (empty normalizes
-        // to the named default pool inside `PoolAddress::new`).
-        let pool = PoolAddress::new(scoped.namespace(), registration.task_queue.clone());
-        self.register_pool(pool, registration.activity_types.iter(), sender)
+        let namespaces = guard.scope_worker_namespaces(caller, &registration.namespaces)?;
+        let node = optional_node(&registration.node);
+        self.register_namespaces(
+            namespaces,
+            registration.task_queue.clone(),
+            node,
+            registration.activity_types.iter(),
+            sender,
+        )
     }
 
-    /// Insert an already-authorized worker stream into a pool addressed by
-    /// `namespace` alone, using the named default task queue.
+    /// Insert an already-authorized worker stream into the default task queue of
+    /// a single `namespace`, with no node affinity.
     ///
-    /// Convenience over [`Self::register_pool`] for callers that do not select a
-    /// task queue (notably tests of the default pool).
+    /// Convenience over [`Self::register_namespaces`] for callers that serve one
+    /// namespace and do not select a task queue (notably tests of the default
+    /// pool).
     ///
     /// # Errors
     ///
@@ -246,14 +266,17 @@ impl ConnectedWorkerRegistry {
         activity_types: impl IntoIterator<Item = &'a String>,
         sender: WorkerTaskSender,
     ) -> Result<WorkerRegistration, ServerError> {
-        self.register_pool(
-            PoolAddress::new(namespace, DEFAULT_TASK_QUEUE),
+        self.register_namespaces(
+            [namespace.into()],
+            String::from(DEFAULT_TASK_QUEUE),
+            None,
             activity_types,
             sender,
         )
     }
 
-    /// Insert an already-authorized worker stream into an explicit worker pool.
+    /// Insert an already-authorized worker stream into one explicit worker pool
+    /// (single namespace + task queue), with no node affinity.
     ///
     /// # Errors
     ///
@@ -264,6 +287,34 @@ impl ConnectedWorkerRegistry {
         activity_types: impl IntoIterator<Item = &'a String>,
         sender: WorkerTaskSender,
     ) -> Result<WorkerRegistration, ServerError> {
+        let PoolAddress {
+            namespace,
+            task_queue,
+        } = pool;
+        self.register_namespaces([namespace], task_queue, None, activity_types, sender)
+    }
+
+    /// Insert an already-authorized worker stream serving a SET of namespaces
+    /// under one `task_queue`, with an optional `node` locality affinity.
+    ///
+    /// The worker is indexed under one `(namespace, task_queue, activity_type)`
+    /// key per namespace in its set, so a dispatch in any of those namespaces
+    /// can reach it. `node` is recorded on the handle and used only as a
+    /// within-pool filter at selection time — it is NOT part of [`PoolAddress`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn register_namespaces<'a>(
+        &self,
+        namespaces: impl IntoIterator<Item = String>,
+        task_queue: impl Into<String>,
+        node: Option<String>,
+        activity_types: impl IntoIterator<Item = &'a String>,
+        sender: WorkerTaskSender,
+    ) -> Result<WorkerRegistration, ServerError> {
+        let namespaces = namespaces.into_iter().collect::<BTreeSet<_>>();
+        let task_queue = task_queue.into();
         let activity_types = activity_types.into_iter().cloned().collect::<BTreeSet<_>>();
         let mut state = self.state()?;
         let worker_id = WorkerId(state.next_worker_id);
@@ -271,23 +322,30 @@ impl ConnectedWorkerRegistry {
 
         let handle = WorkerHandle {
             id: worker_id,
-            pool: pool.clone(),
+            namespaces: namespaces.clone(),
+            task_queue: task_queue.clone(),
+            node,
             activity_types: activity_types.clone(),
             sender,
         };
 
-        for activity_type in &activity_types {
-            state
-                .by_activity
-                .entry(ActivityKey::new(pool.clone(), activity_type.clone()))
-                .or_default()
-                .insert(worker_id, handle.clone());
+        for namespace in &namespaces {
+            let pool = PoolAddress::new(namespace.clone(), task_queue.clone());
+            for activity_type in &activity_types {
+                state
+                    .by_activity
+                    .entry(ActivityKey::new(pool.clone(), activity_type.clone()))
+                    .or_default()
+                    .insert(worker_id, handle.clone());
+            }
         }
         state.workers.insert(worker_id, handle);
         drop(state);
 
         if let Some(metrics) = &self.metrics {
-            metrics.worker_connected(pool.namespace());
+            for namespace in &namespaces {
+                metrics.worker_connected(namespace);
+            }
         }
 
         self.worker_arrived.notify_waiters();
@@ -296,7 +354,8 @@ impl ConnectedWorkerRegistry {
             registry: self.clone(),
             parts: Some(WorkerRegistrationParts {
                 worker_id,
-                pool,
+                namespaces,
+                task_queue,
                 activity_types,
             }),
         })
@@ -316,6 +375,14 @@ impl ConnectedWorkerRegistry {
     /// then rotated so each call starts from the next worker in the pool. The
     /// rotation cursor is per triple, so each pool round-robins independently.
     ///
+    /// When `node` is `Some`, the result is filtered to workers whose advertised
+    /// node equals it — a dispatch pinned to a node reaches only workers on that
+    /// node (NODE affinity = require). When `node` is `None`, the behaviour is
+    /// exactly the unpinned pool: every worker in the `(namespace, task_queue)`
+    /// pool is a candidate regardless of locality. node is a within-pool filter,
+    /// NOT part of the pool key, so the per-triple rotation cursor is shared
+    /// across pinned and unpinned lookups of the same pool.
+    ///
     /// The id sort matters: `by_activity` holds workers in a `HashMap`, whose
     /// iteration order is unspecified. Sorting first makes the rotation below
     /// the sole, deterministic source of ordering — true round-robin across
@@ -329,13 +396,20 @@ impl ConnectedWorkerRegistry {
         namespace: &str,
         task_queue: &str,
         activity_type: &str,
+        node: Option<&str>,
     ) -> Result<Vec<WorkerHandle>, ServerError> {
         let mut state = self.state()?;
         let key = ActivityKey::new(PoolAddress::new(namespace, task_queue), activity_type);
         let mut workers: Vec<WorkerHandle> = state
             .by_activity
             .get(&key)
-            .map(|workers| workers.values().cloned().collect())
+            .map(|workers| {
+                workers
+                    .values()
+                    .filter(|worker| worker_matches_node(worker, node))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         if workers.is_empty() {
             return Ok(workers);
@@ -384,6 +458,10 @@ impl ConnectedWorkerRegistry {
 
     /// Select one worker for the `(namespace, task_queue, activity_type)` pool.
     ///
+    /// When `node` is `Some`, only workers whose advertised node equals it are
+    /// considered (NODE affinity = require); `None` considers every worker in
+    /// the pool. node is a within-pool filter, NOT part of the pool key.
+    ///
     /// # Errors
     ///
     /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
@@ -392,13 +470,17 @@ impl ConnectedWorkerRegistry {
         namespace: &str,
         task_queue: &str,
         activity_type: &str,
+        node: Option<&str>,
     ) -> Result<Option<WorkerHandle>, ServerError> {
         let state = self.state()?;
         let key = ActivityKey::new(PoolAddress::new(namespace, task_queue), activity_type);
-        Ok(state
-            .by_activity
-            .get(&key)
-            .and_then(|workers| workers.values().min_by_key(|worker| worker.id).cloned()))
+        Ok(state.by_activity.get(&key).and_then(|workers| {
+            workers
+                .values()
+                .filter(|worker| worker_matches_node(worker, node))
+                .min_by_key(|worker| worker.id)
+                .cloned()
+        }))
     }
 
     /// Return whether a worker stream is currently registered.
@@ -422,31 +504,45 @@ impl ConnectedWorkerRegistry {
     /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
     pub fn deregister(&self, worker_id: WorkerId) -> Result<(), ServerError> {
         let mut state = self.state()?;
-        let removed_namespace = Self::remove_worker(&mut state, worker_id);
+        let removed_namespaces = Self::remove_worker(&mut state, worker_id);
         drop(state);
 
-        if let (Some(namespace), Some(metrics)) = (removed_namespace, &self.metrics) {
-            metrics.worker_disconnected(&namespace);
+        if let (Some(namespaces), Some(metrics)) = (removed_namespaces, &self.metrics) {
+            for namespace in &namespaces {
+                metrics.worker_disconnected(namespace);
+            }
         }
 
         Ok(())
     }
 
-    fn remove_worker(state: &mut RegistryState, worker_id: WorkerId) -> Option<String> {
+    /// Remove a worker from every `(namespace, task_queue, activity_type)` index
+    /// it advertised. Returns the namespace set it served (for metrics), or
+    /// `None` if the worker was already gone.
+    fn remove_worker(state: &mut RegistryState, worker_id: WorkerId) -> Option<BTreeSet<String>> {
         let handle = state.workers.remove(&worker_id)?;
-        let namespace = handle.pool.namespace().to_owned();
 
-        for activity_type in handle.activity_types {
-            let key = ActivityKey::new(handle.pool.clone(), activity_type);
-            if let Some(workers) = state.by_activity.get_mut(&key) {
-                workers.remove(&worker_id);
-                if workers.is_empty() {
-                    state.by_activity.remove(&key);
+        for namespace in &handle.namespaces {
+            let pool = PoolAddress::new(namespace.clone(), handle.task_queue.clone());
+            for activity_type in &handle.activity_types {
+                let key = ActivityKey::new(pool.clone(), activity_type.clone());
+                if let Some(workers) = state.by_activity.get_mut(&key) {
+                    workers.remove(&worker_id);
+                    if workers.is_empty() {
+                        state.by_activity.remove(&key);
+                        // Prune the round-robin cursor in lockstep: the cursor
+                        // map is keyed on arbitrary caller-supplied strings and
+                        // is lazily created by `workers_for`, so leaving stale
+                        // entries behind leaks memory unboundedly on a
+                        // never-dying server. When the last worker for a triple
+                        // leaves, its cursor has no remaining meaning.
+                        state.rotation.remove(&key);
+                    }
                 }
             }
         }
 
-        Some(namespace)
+        Some(handle.namespaces)
     }
 
     fn state(&self) -> Result<MutexGuard<'_, RegistryState>, ServerError> {
@@ -456,10 +552,33 @@ impl ConnectedWorkerRegistry {
     }
 }
 
+/// Normalize a wire `node` string into an optional locality affinity: an empty
+/// value (the proto3 default) carries no node, anything else is the worker's
+/// advertised node id.
+fn optional_node(node: &str) -> Option<String> {
+    if node.is_empty() {
+        None
+    } else {
+        Some(node.to_owned())
+    }
+}
+
+/// Whether a worker satisfies an optional node filter. `None` (unpinned) matches
+/// every worker; `Some(node)` matches only a worker advertising that exact node
+/// (NODE affinity = require). A worker with no advertised node never matches a
+/// pinned dispatch.
+fn worker_matches_node(worker: &WorkerHandle, node: Option<&str>) -> bool {
+    match node {
+        None => true,
+        Some(node) => worker.node() == Some(node),
+    }
+}
+
 #[derive(Clone, Debug)]
 struct WorkerRegistrationParts {
     worker_id: WorkerId,
-    pool: PoolAddress,
+    namespaces: BTreeSet<String>,
+    task_queue: String,
     activity_types: BTreeSet<String>,
 }
 
@@ -480,16 +599,16 @@ impl WorkerRegistration {
         self.parts.as_ref().map(|parts| parts.worker_id)
     }
 
-    /// Authorized namespace for this registration.
+    /// Authorized namespace set for this registration.
     #[must_use]
-    pub fn namespace(&self) -> Option<&str> {
-        self.parts.as_ref().map(|parts| parts.pool.namespace())
+    pub fn namespaces(&self) -> Option<&BTreeSet<String>> {
+        self.parts.as_ref().map(|parts| &parts.namespaces)
     }
 
-    /// Task queue (pool/flavour) this registration serves within its namespace.
+    /// Task queue (pool/flavour) this registration serves within each namespace.
     #[must_use]
     pub fn task_queue(&self) -> Option<&str> {
-        self.parts.as_ref().map(|parts| parts.pool.task_queue())
+        self.parts.as_ref().map(|parts| parts.task_queue.as_str())
     }
 
     /// Activity types advertised by this registration.
@@ -517,10 +636,13 @@ impl Drop for WorkerRegistration {
             return;
         };
         if let Ok(mut state) = self.registry.inner.lock() {
-            let removed_namespace =
+            let removed_namespaces =
                 ConnectedWorkerRegistry::remove_worker(&mut state, parts.worker_id);
-            if let (Some(namespace), Some(metrics)) = (removed_namespace, &self.registry.metrics) {
-                metrics.worker_disconnected(&namespace);
+            if let (Some(namespaces), Some(metrics)) = (removed_namespaces, &self.registry.metrics)
+            {
+                for namespace in &namespaces {
+                    metrics.worker_disconnected(namespace);
+                }
             }
         }
     }
@@ -554,14 +676,28 @@ mod tests {
         task_queue: &str,
         activity_types: &[&str],
     ) -> ProtoRegisterWorker {
+        registration_full(&[namespace], task_queue, "", activity_types)
+    }
+
+    fn registration_full(
+        namespaces: &[&str],
+        task_queue: &str,
+        node: &str,
+        activity_types: &[&str],
+    ) -> ProtoRegisterWorker {
         ProtoRegisterWorker {
-            namespace: namespace.to_owned(),
+            namespaces: namespaces.iter().map(|value| (*value).to_owned()).collect(),
             activity_types: activity_types
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
             task_queue: task_queue.to_owned(),
+            node: node.to_owned(),
         }
+    }
+
+    fn multi_caller(namespaces: &[&str]) -> CallerIdentity {
+        CallerIdentity::new("worker", namespaces.iter().map(|value| (*value).to_owned()))
     }
 
     #[tokio::test]
@@ -588,19 +724,40 @@ mod tests {
             .await?;
 
         let tq = DEFAULT_TASK_QUEUE;
-        assert_eq!(registry.workers_for("tenant-a", tq, "charge")?.len(), 1);
-        assert_eq!(registry.workers_for("tenant-b", tq, "charge")?.len(), 1);
-        assert!(registry.workers_for("tenant-a", tq, "missing")?.is_empty());
+        assert_eq!(
+            registry.workers_for("tenant-a", tq, "charge", None)?.len(),
+            1
+        );
+        assert_eq!(
+            registry.workers_for("tenant-b", tq, "charge", None)?.len(),
+            1
+        );
+        assert!(
+            registry
+                .workers_for("tenant-a", tq, "missing", None)?
+                .is_empty()
+        );
 
         let tenant_a_id = tenant_a.worker_id();
         tenant_a.deregister()?;
 
-        assert!(registry.workers_for("tenant-a", tq, "charge")?.is_empty());
-        assert_eq!(registry.workers_for("tenant-b", tq, "charge")?.len(), 1);
+        assert!(
+            registry
+                .workers_for("tenant-a", tq, "charge", None)?
+                .is_empty()
+        );
+        assert_eq!(
+            registry.workers_for("tenant-b", tq, "charge", None)?.len(),
+            1
+        );
         assert_ne!(tenant_a_id, tenant_b.worker_id());
 
         tenant_b.deregister()?;
-        assert!(registry.workers_for("tenant-b", tq, "charge")?.is_empty());
+        assert!(
+            registry
+                .workers_for("tenant-b", tq, "charge", None)?
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -620,7 +777,7 @@ mod tests {
         assert!(denied.is_err());
         assert!(
             registry
-                .workers_for("tenant-b", DEFAULT_TASK_QUEUE, "charge")?
+                .workers_for("tenant-b", DEFAULT_TASK_QUEUE, "charge", None)?
                 .is_empty()
         );
         Ok(())
@@ -663,12 +820,12 @@ mod tests {
             )
             .await?;
 
-        let norn_pool = registry.workers_for("local", "norn", "dev")?;
+        let norn_pool = registry.workers_for("local", "norn", "dev", None)?;
         assert_eq!(norn_pool.len(), 1, "norn pool has exactly its one worker");
         let norn_id = norn.worker_id().ok_or_else(missing_id)?;
         assert_eq!(norn_pool[0].id(), norn_id);
 
-        let claude_pool = registry.workers_for("local", "claude", "dev")?;
+        let claude_pool = registry.workers_for("local", "claude", "dev", None)?;
         assert_eq!(
             claude_pool.len(),
             2,
@@ -684,7 +841,7 @@ mod tests {
         // versa: the disjoint key is the boundary.
         assert!(
             !registry
-                .workers_for("local", "norn", "dev")?
+                .workers_for("local", "norn", "dev", None)?
                 .iter()
                 .any(|worker| claude_ids.contains(&worker.id()))
         );
@@ -692,14 +849,14 @@ mod tests {
         // Round-robin per triple: the (local, claude, dev) cursor advances
         // independently and cycles through both claude workers, while the
         // (local, norn, dev) cursor keeps returning its single worker.
-        let first = registry.workers_for("local", "claude", "dev")?[0].id();
-        let second = registry.workers_for("local", "claude", "dev")?[0].id();
+        let first = registry.workers_for("local", "claude", "dev", None)?[0].id();
+        let second = registry.workers_for("local", "claude", "dev", None)?[0].id();
         assert_ne!(
             first, second,
             "claude pool round-robins across both workers"
         );
         assert_eq!(
-            registry.workers_for("local", "norn", "dev")?[0].id(),
+            registry.workers_for("local", "norn", "dev", None)?[0].id(),
             norn_id,
             "the norn pool rotation is unaffected by claude traffic"
         );
@@ -735,8 +892,8 @@ mod tests {
             )
             .await?;
 
-        let local_pool = registry.workers_for("local", "gpu", "render")?;
-        let remote_pool = registry.workers_for("remote", "gpu", "render")?;
+        let local_pool = registry.workers_for("local", "gpu", "render", None)?;
+        let remote_pool = registry.workers_for("remote", "gpu", "render", None)?;
         assert_eq!(local_pool.len(), 1);
         assert_eq!(remote_pool.len(), 1);
         assert_ne!(
@@ -747,12 +904,226 @@ mod tests {
 
         local.deregister()?;
         assert!(
-            registry.workers_for("local", "gpu", "render")?.is_empty(),
+            registry
+                .workers_for("local", "gpu", "render", None)?
+                .is_empty(),
             "deregistering the local worker leaves the remote namespace untouched"
         );
-        assert_eq!(registry.workers_for("remote", "gpu", "render")?.len(), 1);
+        assert_eq!(
+            registry.workers_for("remote", "gpu", "render", None)?.len(),
+            1
+        );
 
         remote.deregister()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn worker_serving_a_namespace_set_is_reachable_in_each() -> Result<(), ServerError> {
+        // A worker advertising {a, b} is reachable for dispatch in BOTH a and b;
+        // a worker in {a} is NOT reachable in b.
+        let registry = ConnectedWorkerRegistry::default();
+        let (ab_tx, _ab_rx) = mpsc::channel(1);
+        let (a_tx, _a_rx) = mpsc::channel(1);
+
+        let worker_ab = registry
+            .accept_registration(
+                &guard(),
+                &multi_caller(&["a", "b"]),
+                &registration_full(&["a", "b"], "default", "", &["dev"]),
+                ab_tx,
+            )
+            .await?;
+        let worker_a = registry
+            .accept_registration(
+                &guard(),
+                &caller("a"),
+                &registration_full(&["a"], "default", "", &["dev"]),
+                a_tx,
+            )
+            .await?;
+
+        let in_a = registry.workers_for("a", "default", "dev", None)?;
+        let in_b = registry.workers_for("b", "default", "dev", None)?;
+        let both_id = worker_ab.worker_id().ok_or_else(missing_id)?;
+        let only_a_id = worker_a.worker_id().ok_or_else(missing_id)?;
+
+        // Namespace a sees BOTH workers; namespace b sees ONLY the {a, b} worker.
+        let a_ids: BTreeSet<WorkerId> = in_a.iter().map(WorkerHandle::id).collect();
+        assert_eq!(a_ids, BTreeSet::from([both_id, only_a_id]));
+        assert_eq!(in_b.len(), 1, "only the {{a, b}} worker is reachable in b");
+        assert_eq!(in_b[0].id(), both_id);
+        assert!(
+            !in_b.iter().any(|worker| worker.id() == only_a_id),
+            "the {{a}}-only worker must not be reachable in b"
+        );
+
+        // Deregistering the {a, b} worker removes it from BOTH buckets.
+        worker_ab.deregister()?;
+        assert!(
+            registry
+                .workers_for("b", "default", "dev", None)?
+                .is_empty()
+        );
+        assert_eq!(registry.workers_for("a", "default", "dev", None)?.len(), 1);
+
+        worker_a.deregister()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn node_pin_filters_within_pool() -> Result<(), ServerError> {
+        // Two workers in the same (namespace, task_queue) pool on different
+        // nodes: unpinned round-robins across both; pinned to node N reaches
+        // ONLY the worker(s) on N; pinned to a node with no worker finds none.
+        let registry = ConnectedWorkerRegistry::default();
+        let (n1_tx, _n1_rx) = mpsc::channel(1);
+        let (n2_tx, _n2_rx) = mpsc::channel(1);
+
+        let on_n1 = registry
+            .accept_registration(
+                &guard(),
+                &caller("ns"),
+                &registration_full(&["ns"], "tq", "n1", &["dev"]),
+                n1_tx,
+            )
+            .await?;
+        let on_n2 = registry
+            .accept_registration(
+                &guard(),
+                &caller("ns"),
+                &registration_full(&["ns"], "tq", "n2", &["dev"]),
+                n2_tx,
+            )
+            .await?;
+        let n1_id = on_n1.worker_id().ok_or_else(missing_id)?;
+        let n2_id = on_n2.worker_id().ok_or_else(missing_id)?;
+
+        // Unpinned: both workers are candidates and round-robin advances.
+        let unpinned = registry.workers_for("ns", "tq", "dev", None)?;
+        assert_eq!(unpinned.len(), 2, "unpinned reaches the whole pool");
+        let first = registry.workers_for("ns", "tq", "dev", None)?[0].id();
+        let second = registry.workers_for("ns", "tq", "dev", None)?[0].id();
+        assert_ne!(first, second, "unpinned round-robins across both nodes");
+
+        // Pinned to n1: only the n1 worker; pinned to n2: only the n2 worker.
+        let pinned_n1 = registry.workers_for("ns", "tq", "dev", Some("n1"))?;
+        assert_eq!(pinned_n1.len(), 1);
+        assert_eq!(pinned_n1[0].id(), n1_id);
+        let pinned_n2 = registry.workers_for("ns", "tq", "dev", Some("n2"))?;
+        assert_eq!(pinned_n2.len(), 1);
+        assert_eq!(pinned_n2[0].id(), n2_id);
+
+        // select_worker honours the same filter.
+        assert_eq!(
+            registry
+                .select_worker("ns", "tq", "dev", Some("n1"))?
+                .map(|worker| worker.id()),
+            Some(n1_id)
+        );
+
+        // Pinned to a node with no worker finds no candidate (the dispatcher
+        // then waits via the same no-worker path the existing test exercises).
+        assert!(
+            registry
+                .workers_for("ns", "tq", "dev", Some("absent"))?
+                .is_empty(),
+            "a pin to a node with no worker yields no candidate"
+        );
+        assert!(
+            registry
+                .select_worker("ns", "tq", "dev", Some("absent"))?
+                .is_none()
+        );
+
+        on_n1.deregister()?;
+        on_n2.deregister()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_node_id_round_robins_across_workers() -> Result<(), ServerError> {
+        // Two workers SHARING a node id in the same pool: a dispatch pinned to
+        // that node round-robins across BOTH (node is locality, not process).
+        let registry = ConnectedWorkerRegistry::default();
+        let (a_tx, _a_rx) = mpsc::channel(1);
+        let (b_tx, _b_rx) = mpsc::channel(1);
+
+        let worker_a = registry
+            .accept_registration(
+                &guard(),
+                &caller("ns"),
+                &registration_full(&["ns"], "tq", "shared", &["dev"]),
+                a_tx,
+            )
+            .await?;
+        let worker_b = registry
+            .accept_registration(
+                &guard(),
+                &caller("ns"),
+                &registration_full(&["ns"], "tq", "shared", &["dev"]),
+                b_tx,
+            )
+            .await?;
+        let a_id = worker_a.worker_id().ok_or_else(missing_id)?;
+        let b_id = worker_b.worker_id().ok_or_else(missing_id)?;
+
+        let pinned = registry.workers_for("ns", "tq", "dev", Some("shared"))?;
+        assert_eq!(
+            pinned.len(),
+            2,
+            "both workers on the shared node are candidates"
+        );
+        let pinned_ids: BTreeSet<WorkerId> = pinned.iter().map(WorkerHandle::id).collect();
+        assert_eq!(pinned_ids, BTreeSet::from([a_id, b_id]));
+
+        let first = registry.workers_for("ns", "tq", "dev", Some("shared"))?[0].id();
+        let second = registry.workers_for("ns", "tq", "dev", Some("shared"))?[0].id();
+        assert_ne!(
+            first, second,
+            "a pin to a shared node round-robins across both workers on it"
+        );
+
+        worker_a.deregister()?;
+        worker_b.deregister()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rotation_cursor_is_pruned_when_last_worker_leaves() -> Result<(), ServerError> {
+        // The round-robin cursor is keyed on arbitrary caller-supplied strings;
+        // it must not outlive the pool it rotates, or a never-dying server leaks
+        // memory. After the last worker for a triple deregisters, no cursor for
+        // that triple may remain.
+        let registry = ConnectedWorkerRegistry::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let worker = registry
+            .accept_registration(
+                &guard(),
+                &caller("ns"),
+                &registration_full(&["ns"], "tq", "", &["dev"]),
+                tx,
+            )
+            .await?;
+
+        // Drive the lazy cursor insert.
+        let _ = registry.workers_for("ns", "tq", "dev", None)?;
+        let key = ActivityKey::new(PoolAddress::new("ns", "tq"), "dev");
+        assert!(
+            registry.state()?.rotation.contains_key(&key),
+            "a lookup must have created the rotation cursor"
+        );
+
+        worker.deregister()?;
+        let state = registry.state()?;
+        assert!(
+            !state.rotation.contains_key(&key),
+            "the rotation cursor must be pruned once the last worker leaves"
+        );
+        assert!(
+            !state.by_activity.contains_key(&key),
+            "the activity bucket must also be gone"
+        );
         Ok(())
     }
 

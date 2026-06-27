@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(reports[0].tasks.len(), 1);
         assert!(
             registry
-                .workers_for("tenant-a", "default", "charge-card")?
+                .workers_for("tenant-a", "default", "charge-card", None)?
                 .is_empty()
         );
 
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(report.tasks.len(), 2);
         assert!(
             registry
-                .workers_for("tenant-a", "default", "charge-card")?
+                .workers_for("tenant-a", "default", "charge-card", None)?
                 .is_empty()
         );
 

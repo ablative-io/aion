@@ -40,24 +40,33 @@ pub struct ProtoActivityError {
 
 /// Worker registration advertisement.
 ///
-/// A registration scopes the worker to one `(namespace, task_queue)` worker
-/// pool. The two dimensions are disjoint: `namespace` is the
-/// correctness/isolation boundary the worker is authorized for, `task_queue`
-/// is the pool/flavour selector within that namespace. `activity_type` (carried
-/// in `activity_types`) is matched inside a pool, not used to select it.
+/// A registration scopes the worker to a SET of `namespaces` correctness
+/// boundaries, one `task_queue` pool/flavour lane within each, and an optional
+/// `node` locality. The dimensions are disjoint: `namespaces` is the set of
+/// correctness/isolation boundaries the worker is authorized for, `task_queue`
+/// is the pool/flavour selector within each, and `node` is an OPTIONAL locality
+/// used to filter within a pool. `activity_type` (carried in `activity_types`)
+/// is matched inside a pool, not used to select it.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoRegisterWorker {
-    /// Correctness/isolation boundary this worker is authorized for.
-    #[prost(string, tag = "1")]
-    pub namespace: String,
+    /// Set of correctness/isolation boundaries this worker is authorized for.
+    /// The server indexes the worker under each, preserving wire order.
+    #[prost(string, repeated, tag = "1")]
+    pub namespaces: Vec<String>,
     /// Activity types implemented by the worker, preserving wire order.
     #[prost(string, repeated, tag = "2")]
     pub activity_types: Vec<String>,
-    /// Pool/flavour selector within the namespace. The worker-pool address is
+    /// Pool/flavour selector within each namespace. The worker-pool address is
     /// `(namespace, task_queue)`; the server normalizes an empty value to the
     /// literal `"default"` pool.
     #[prost(string, tag = "3")]
     pub task_queue: String,
+    /// Optional locality affinity this worker advertises. A dispatch pinned to a
+    /// node reaches only workers whose node equals it (round-robin among them);
+    /// an empty value means the worker carries no locality. Default = the
+    /// worker's machine hostname, resolved by the SDK at registration.
+    #[prost(string, tag = "4")]
+    pub node: String,
 }
 
 /// Activity invocation pushed to a worker.
@@ -276,40 +285,65 @@ mod tests {
     fn worker_registration_round_trips_through_serde_and_proto()
     -> Result<(), Box<dyn std::error::Error>> {
         let registration = ProtoRegisterWorker {
-            namespace: String::from("tenant-a"),
+            namespaces: vec![String::from("tenant-a"), String::from("tenant-b")],
             activity_types: vec![String::from("charge-card"), String::from("send-email")],
             task_queue: String::from("claude"),
+            node: String::from("host-7"),
         };
 
         assert_json_and_proto_round_trip(&registration)
     }
 
     #[test]
-    fn worker_registration_task_queue_uses_wire_tag_three() -> Result<(), Box<dyn std::error::Error>>
+    fn worker_registration_repeated_namespaces_round_trip() -> Result<(), Box<dyn std::error::Error>>
     {
-        // Pins task_queue to proto tag 3 (field key 0x1A = tag 3,
-        // length-delimited) so the hand-written stubs cannot drift, and
-        // confirms an old-shape registration that omits it decodes to the
-        // proto3 default `""` (the server normalizes that to "default").
+        // A worker advertising a SET of namespaces survives a proto and serde
+        // round trip preserving every namespace in wire order.
         let registration = ProtoRegisterWorker {
-            namespace: String::new(),
+            namespaces: vec![String::from("a"), String::from("b"), String::from("c")],
+            activity_types: vec![String::from("dev")],
+            task_queue: String::from("default"),
+            node: String::new(),
+        };
+        let decoded =
+            ProtoRegisterWorker::decode(prost_round_trip_bytes(&registration)?.as_slice())?;
+        assert_eq!(decoded.namespaces, vec!["a", "b", "c"]);
+        assert_eq!(decoded.node, "");
+        assert_json_and_proto_round_trip(&registration)
+    }
+
+    #[test]
+    fn worker_registration_task_queue_and_node_use_wire_tags_three_and_four()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Pins task_queue to proto tag 3 and node to tag 4 (field keys 0x1A and
+        // 0x22 = tags 3/4, length-delimited) so the hand-written stubs cannot
+        // drift, and confirms an old-shape registration that omits node decodes
+        // to the proto3 default `""` (= no locality affinity).
+        let registration = ProtoRegisterWorker {
+            namespaces: Vec::new(),
             activity_types: Vec::new(),
             task_queue: String::from("gpu"),
+            node: String::from("n1"),
         };
         let mut bytes = Vec::new();
         registration.encode(&mut bytes)?;
-        assert_eq!(bytes, vec![0x1A, 0x03, b'g', b'p', b'u']);
+        assert_eq!(
+            bytes,
+            vec![0x1A, 0x03, b'g', b'p', b'u', 0x22, 0x02, b'n', b'1']
+        );
 
-        // An encoded registration with no tag-3 field decodes task_queue to "".
-        let no_task_queue = ProtoRegisterWorker {
-            namespace: String::from("tenant-a"),
+        // An encoded registration with no tag-4 field decodes node to "".
+        let no_node = ProtoRegisterWorker {
+            namespaces: vec![String::from("tenant-a")],
             activity_types: vec![String::from("charge-card")],
             task_queue: String::new(),
+            node: String::new(),
         };
         let mut bytes = Vec::new();
-        no_task_queue.encode(&mut bytes)?;
+        no_node.encode(&mut bytes)?;
         let decoded = ProtoRegisterWorker::decode(bytes.as_slice())?;
         assert_eq!(decoded.task_queue, "");
+        assert_eq!(decoded.node, "");
         Ok(())
     }
 
@@ -502,8 +536,15 @@ mod tests {
     where
         T: Message + Default,
     {
+        Ok(T::decode(prost_round_trip_bytes(value)?.as_slice())?)
+    }
+
+    fn prost_round_trip_bytes<T>(value: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>>
+    where
+        T: Message,
+    {
         let mut bytes = Vec::new();
         value.encode(&mut bytes)?;
-        Ok(T::decode(bytes.as_slice())?)
+        Ok(bytes)
     }
 }

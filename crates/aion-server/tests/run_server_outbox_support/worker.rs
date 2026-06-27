@@ -38,12 +38,13 @@ impl WorkerSession {
             .send(generated::WorkerToServer {
                 message: Some(worker_to_server::Message::Register(
                     generated::RegisterWorker {
-                        namespace: NAMESPACE.to_owned(),
+                        namespaces: vec![NAMESPACE.to_owned()],
                         activity_types: FAN_ACTIVITY_TYPES
                             .iter()
                             .map(|activity| (*activity).to_owned())
                             .collect(),
                         task_queue: String::from("default"),
+                        node: String::new(),
                     },
                 )),
             })

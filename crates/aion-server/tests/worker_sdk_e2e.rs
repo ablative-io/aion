@@ -104,7 +104,7 @@ async fn wait_for_worker(
 ) -> Result<u64, TestError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let workers = registry.workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE)?;
+        let workers = registry.workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE, None)?;
         if let Some(handle) = workers
             .iter()
             .find(|handle| Some(handle.id().value()) != not_id)

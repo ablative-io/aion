@@ -239,12 +239,13 @@ impl WorkerSession {
             .send(generated::WorkerToServer {
                 message: Some(worker_to_server::Message::Register(
                     generated::RegisterWorker {
-                        namespace: NAMESPACE.to_owned(),
+                        namespaces: vec![NAMESPACE.to_owned()],
                         activity_types: FAN_ACTIVITY_TYPES
                             .iter()
                             .map(|t| (*t).to_owned())
                             .collect(),
                         task_queue: TASK_QUEUE.to_owned(),
+                        node: String::new(),
                     },
                 )),
             })
@@ -267,7 +268,7 @@ impl WorkerSession {
         // dispatch-eligible for every fan-out activity type.
         for activity_type in FAN_ACTIVITY_TYPES {
             if registry
-                .workers_for(NAMESPACE, TASK_QUEUE, activity_type)?
+                .workers_for(NAMESPACE, TASK_QUEUE, activity_type, None)?
                 .is_empty()
             {
                 return Err(

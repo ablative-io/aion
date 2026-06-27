@@ -57,6 +57,40 @@ impl NamespaceGuard {
         operation.verify(&self.resolver, scoped.namespace()).await?;
         Ok(scoped)
     }
+
+    /// Authorize every namespace in a worker registration's set, returning the
+    /// resolved namespaces in stable wire order with duplicates removed.
+    ///
+    /// A worker serves a SET of namespaces (NODE affinity model). Each one is an
+    /// independent correctness boundary, so the worker is authorized for it
+    /// exactly as a single-namespace operation would be: the whole registration
+    /// is denied if the caller lacks a grant for any namespace in the set. The
+    /// set must be non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Namespace`] (`namespace_denied`) when the set is
+    /// empty or the caller has no grant for some namespace in it.
+    pub fn scope_worker_namespaces(
+        &self,
+        caller: &CallerIdentity,
+        namespaces: &[String],
+    ) -> Result<Vec<String>, ServerError> {
+        if namespaces.is_empty() {
+            return Err(ServerError::namespace_denied(
+                "worker registration must name at least one namespace",
+            ));
+        }
+        let mut authorized: Vec<String> = Vec::with_capacity(namespaces.len());
+        for namespace in namespaces {
+            let scoped = self.resolver.resolve(caller, namespace)?;
+            let resolved = scoped.namespace().to_owned();
+            if !authorized.contains(&resolved) {
+                authorized.push(resolved);
+            }
+        }
+        Ok(authorized)
+    }
 }
 
 /// Namespace-sensitive operation described at the adapter boundary.
@@ -227,7 +261,13 @@ impl<'a> NamespaceOperation<'a> {
             | Self::DescribeSchedule(request, _target) => request.namespace.as_str(),
             Self::ListSchedules(request) => request.namespace.as_str(),
             Self::Subscribe(scope, _filter) => scope.namespace(),
-            Self::RegisterWorker(request) => request.namespace.as_str(),
+            // A worker advertises a SET of namespaces; the first stands in for
+            // the single-scope path. Multi-namespace worker registration
+            // authorizes every namespace via `scope_worker_namespaces`, so this
+            // is only reached if a caller routes a worker registration through
+            // the single-scope `scope` API. Empty set => empty string, which
+            // the resolver rejects as an unauthorized namespace.
+            Self::RegisterWorker(request) => request.namespaces.first().map_or("", String::as_str),
         }
     }
 
@@ -634,9 +674,10 @@ mod tests {
             filter: None,
         };
         let worker = ProtoRegisterWorker {
-            namespace: String::from("tenant-b"),
+            namespaces: vec![String::from("tenant-b")],
             activity_types: vec![String::from("ship")],
             task_queue: String::new(),
+            node: String::new(),
         };
 
         assert!(
@@ -902,9 +943,10 @@ mod tests {
         );
         let guard = NamespaceGuard::new(resolver);
         let request = ProtoRegisterWorker {
-            namespace: String::from("tenant-a"),
+            namespaces: vec![String::from("tenant-a")],
             activity_types: Vec::new(),
             task_queue: String::new(),
+            node: String::new(),
         };
 
         let scoped = guard

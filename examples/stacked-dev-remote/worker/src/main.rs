@@ -28,10 +28,16 @@ struct Args {
     endpoint: String,
     /// Maximum concurrent activity executions.
     concurrency: usize,
-    /// Namespace (correctness/isolation boundary) to register into.
-    namespace: String,
-    /// Task queue (pool/flavour selector within the namespace) to serve.
+    /// Namespace SET (correctness/isolation boundaries) to register into. A
+    /// worker serves a SET of namespaces; `--namespace` is repeatable AND each
+    /// occurrence may be a comma-separated list, so `--namespace a,b` and
+    /// `--namespace a --namespace b` are equivalent.
+    namespaces: Vec<String>,
+    /// Task queue (pool/flavour selector within each namespace) to serve.
     task_queue: String,
+    /// Optional node locality affinity. When omitted the SDK defaults it to the
+    /// machine hostname.
+    node: Option<String>,
 }
 
 /// Parse CLI flags.
@@ -39,8 +45,9 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut endpoint = None;
     let mut concurrency = None;
-    let mut namespace = None;
+    let mut namespaces: Vec<String> = Vec::new();
     let mut task_queue = None;
+    let mut node = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--endpoint" => {
@@ -59,28 +66,40 @@ fn parse_args() -> anyhow::Result<Args> {
             }
             "--namespace" => {
                 let value = args.next().context("--namespace requires a value")?;
-                namespace = Some(value);
+                // Repeatable and comma-set friendly: split each occurrence on
+                // commas so `--namespace a,b` adds both.
+                for namespace in value.split(',').filter(|name| !name.is_empty()) {
+                    namespaces.push(namespace.to_owned());
+                }
             }
             "--task-queue" => {
                 let value = args.next().context("--task-queue requires a value")?;
                 task_queue = Some(value);
             }
+            "--node" => {
+                let value = args.next().context("--node requires a value")?;
+                node = Some(value);
+            }
             other => {
                 bail!(
                     "unknown argument `{other}`\nusage: stacked-dev-remote-worker \
-                     --endpoint <grpc-url> [--concurrency <n>] [--namespace <name>] \
-                     [--task-queue <name>]"
+                     --endpoint <grpc-url> [--concurrency <n>] [--namespace <name>]... \
+                     [--task-queue <name>] [--node <id>]"
                 )
             }
         }
+    }
+    if namespaces.is_empty() {
+        namespaces.push("default".to_owned());
     }
     Ok(Args {
         endpoint: endpoint.context(
             "missing required --endpoint <grpc-url> (the server's [server] grpc_address)",
         )?,
         concurrency: concurrency.unwrap_or(4),
-        namespace: namespace.unwrap_or_else(|| "default".to_owned()),
+        namespaces,
         task_queue: task_queue.unwrap_or_else(|| "default".to_owned()),
+        node,
     })
 }
 
@@ -159,16 +178,20 @@ async fn main() -> anyhow::Result<()> {
     // bring it back — the worker should still be there), so it probes every
     // 5s for as long as it runs. The published SDK cannot express "unbounded"
     // yet; usize::MAX is the honest spelling of that intent.
-    let config = WorkerConfig::builder()
+    let mut builder = WorkerConfig::builder()
         .endpoint(cli.endpoint)
-        .namespace(&cli.namespace)
+        .namespaces(cli.namespaces)
         .task_queue(&cli.task_queue)
         .identity("stacked-dev-remote-worker-1")
         .max_concurrency(cli.concurrency)
         .reconnect_initial_backoff(Duration::from_millis(100))
         .reconnect_max_backoff(Duration::from_secs(5))
-        .reconnect_max_attempts(usize::MAX)
-        .build()?;
+        .reconnect_max_attempts(usize::MAX);
+    // When --node is omitted the SDK defaults the locality to the hostname.
+    if let Some(node) = cli.node {
+        builder = builder.node(node);
+    }
+    let config = builder.build()?;
 
     Worker::builder(config)
         .register_activity(

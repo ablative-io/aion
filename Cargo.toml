@@ -69,4 +69,5 @@ dashmap = "6.2"
 fs4 = "1.1"
 notify = "8.2"
 saffron = { version = "0.1", features = ["std"] }
+hostname = "0.4"
 beamr = { version = "0.10.0", features = ["json"] }

@@ -29,6 +29,7 @@ futures = { workspace = true }
 async-trait.workspace = true
 tokio-stream = "0.1.18"
 uuid = { workspace = true }
+hostname = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

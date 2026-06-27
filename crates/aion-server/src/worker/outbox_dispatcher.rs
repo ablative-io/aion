@@ -152,6 +152,10 @@ impl WorkerOutboxDispatch {
             namespace: row.namespace.clone(),
             task_queue: row.task_queue.clone(),
             activity_type: row.activity_type.clone(),
+            // node = None: the outbox row carries no node affinity yet (the
+            // durable column lands in NODE-2). `None` = unpinned = genuine
+            // current behaviour, reaching any worker in the pool.
+            node: None,
             workflow_id: row.workflow_id.clone(),
             activity_id: ActivityId::from_sequence_position(row.ordinal),
             run_id: row.run_id.clone(),
