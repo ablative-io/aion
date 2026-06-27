@@ -72,6 +72,38 @@ fn event_stream_key(workflow_id: &WorkflowId) -> Vec<u8> {
     key
 }
 
+/// Deterministically choose `count` workflow ids that span >=2 shards with shard 0
+/// holding at least one and at least one OFF shard 0. Random `new_v4` ids leave
+/// shard 0 empty ~(2/3)^6 of the time at `WORKFLOWS == 6`, which previously flaked
+/// the proper-subset gates. Rejection-sampling over `shard_of` (a total function of
+/// the id) always converges and yields a distribution that satisfies those gates.
+fn pick_spanning_ids(count: usize, shard_of: impl Fn(&WorkflowId) -> usize) -> Vec<WorkflowId> {
+    let mut on_shard0: Vec<WorkflowId> = Vec::new();
+    let mut off_shard0: Vec<WorkflowId> = Vec::new();
+    while on_shard0.is_empty()
+        || off_shard0.is_empty()
+        || on_shard0.len() + off_shard0.len() < count
+    {
+        let id = WorkflowId::new_v4();
+        if shard_of(&id) == 0 {
+            on_shard0.push(id);
+        } else {
+            off_shard0.push(id);
+        }
+    }
+    // Guarantee >=1 on shard 0 and >=1 off it, then fill to `count` from either bucket.
+    let mut chosen = Vec::with_capacity(count);
+    chosen.push(on_shard0.remove(0));
+    chosen.push(off_shard0.remove(0));
+    for id in on_shard0.into_iter().chain(off_shard0) {
+        if chosen.len() == count {
+            break;
+        }
+        chosen.push(id);
+    }
+    chosen
+}
+
 /// Sorted string form of a workflow-id collection. `WorkflowId` is not `Ord`, so
 /// id sets are compared by their string representation (as `multishard.rs` does).
 fn id_strings<'a>(ids: impl IntoIterator<Item = &'a WorkflowId>) -> Vec<String> {
@@ -99,8 +131,11 @@ fn started_event(workflow_id: &WorkflowId, seq: u64) -> Event {
 /// claimable (Pending, past `visible_after`) outbox row — all through the public
 /// API, so they go through the co-locating routed writes. Returns the workflow id
 /// and its outbox `dispatch_key`.
-async fn stage_workflow(store: &HaematiteStore, ordinal: u64) -> (WorkflowId, String) {
-    let workflow_id = WorkflowId::new_v4();
+async fn stage_workflow(
+    store: &HaematiteStore,
+    workflow_id: WorkflowId,
+    ordinal: u64,
+) -> (WorkflowId, String) {
     let past = Utc::now() - Duration::hours(1);
 
     store
@@ -158,8 +193,10 @@ async fn enumeration_scopes_to_owned_shards() {
     let mut non_shard0_ids: Vec<WorkflowId> = Vec::new();
     let mut shards_seen: BTreeSet<usize> = BTreeSet::new();
 
-    for ordinal in 0..WORKFLOWS as u64 {
-        let (workflow_id, dispatch_key) = stage_workflow(&store, ordinal).await;
+    let chosen_ids = pick_spanning_ids(WORKFLOWS, |id| database.shard_for(&event_stream_key(id)));
+    for (ordinal, workflow_id) in chosen_ids.iter().enumerate() {
+        let (workflow_id, dispatch_key) =
+            stage_workflow(&store, workflow_id.clone(), ordinal as u64).await;
         let shard = database.shard_for(&event_stream_key(&workflow_id));
         shards_seen.insert(shard);
         all_ids.push(workflow_id.clone());
@@ -353,8 +390,10 @@ async fn default_claim_spans_all_shards() {
 
     let mut all_dispatch: BTreeSet<String> = BTreeSet::new();
     let mut shards_seen: BTreeSet<usize> = BTreeSet::new();
-    for ordinal in 0..WORKFLOWS as u64 {
-        let (workflow_id, dispatch_key) = stage_workflow(&store, ordinal).await;
+    let chosen_ids = pick_spanning_ids(WORKFLOWS, |id| database.shard_for(&event_stream_key(id)));
+    for (ordinal, workflow_id) in chosen_ids.iter().enumerate() {
+        let (workflow_id, dispatch_key) =
+            stage_workflow(&store, workflow_id.clone(), ordinal as u64).await;
         shards_seen.insert(database.shard_for(&event_stream_key(&workflow_id)));
         all_dispatch.insert(dispatch_key);
     }
