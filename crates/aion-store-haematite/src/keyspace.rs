@@ -109,6 +109,44 @@ pub(crate) fn outbox_key(dispatch_key: &str) -> Vec<u8> {
     composite(OUTBOX_PREFIX, &[dispatch_key.as_bytes()])
 }
 
+/// Prefix for the shard-owner directory region (SS-3).
+///
+/// A directory record names the node that currently OWNS (or has adopted) a
+/// distribution shard, so a non-owning node's request-routing edge can resolve
+/// the shard's *current* owner — including a survivor that adopted the shard
+/// after the declared owner died — rather than mis-resolving to the dead
+/// declared owner (gap #2). The record is written through the quorum-replicated
+/// fenced path ([`crate::HaematiteStore::publish_shard_owner`]) so only the true
+/// fenced owner can publish it and every reachable member durably receives it.
+pub(crate) const SHARD_OWNER_PREFIX: &[u8] = b"d:";
+
+/// The directory-record key for `shard`, derived so it deterministically HASHES
+/// to `shard` itself under the supplied `shard_for` routing.
+///
+/// Co-locating the record on its own shard means the record write is subject to
+/// the SAME epoch fence the publisher just won for that shard: only the node
+/// that elected itself owner of `shard` can replicate-write the record, so two
+/// survivors racing to adopt cannot both publish — exactly one (the election
+/// winner) does. The key is found by probing a `u64` suffix counter until
+/// `shard_for(key) == shard`. The probe uses the live database's OWN
+/// `shard_for` (passed in) rather than a reimplementation, so the key can never
+/// drift from haematite's routing. The search is deterministic (every node
+/// computes the identical key for a given `shard`) and terminates quickly
+/// (`1/shard_count` of suffixes match).
+pub(crate) fn shard_owner_key(shard: usize, shard_for: impl Fn(&[u8]) -> usize) -> Vec<u8> {
+    let mut suffix: u64 = 0;
+    loop {
+        let mut key = SHARD_OWNER_PREFIX.to_vec();
+        key.extend_from_slice(&suffix.to_be_bytes());
+        if shard_for(&key) == shard {
+            return key;
+        }
+        // A u64 counter cannot realistically be exhausted (every shard has many
+        // matching suffixes among 2^64), so this loop always returns.
+        suffix = suffix.wrapping_add(1);
+    }
+}
+
 /// Build a composite key: `prefix` then each field joined by [`FIELD_SEP`].
 fn composite(prefix: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     let mut key = prefix.to_vec();
@@ -193,5 +231,43 @@ mod tests {
         assert_eq!(key[0], b'E');
         assert_ne!(&key[..2], TIMER_PREFIX);
         assert_ne!(&key[..2], OUTBOX_PREFIX);
+    }
+
+    /// `shard_owner_key(shard, shard_for)` returns a key that the SAME
+    /// `shard_for` routes to `shard` — for every shard, and deterministically
+    /// (two calls yield the identical key). This is the load-bearing property:
+    /// every node computes the identical directory key for a shard and that key
+    /// co-locates on the shard itself (so the publish is fenced by the shard's
+    /// ownership). Uses a real `Database::shard_for` so the probe can never drift
+    /// from haematite's routing.
+    #[test]
+    fn shard_owner_key_lands_on_its_shard_for_every_shard() -> Result<(), haematite::DatabaseError>
+    {
+        let dir = std::env::temp_dir().join(format!(
+            "aion-keyspace-downer-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ));
+        let shard_count = 4;
+        let database = haematite::Database::create(haematite::DatabaseConfig {
+            data_dir: dir,
+            shard_count,
+            sweep_interval: None,
+            distributed: None,
+        })?;
+        for shard in 0..shard_count {
+            let key = shard_owner_key(shard, |bytes| database.shard_for(bytes));
+            assert_eq!(
+                database.shard_for(&key),
+                shard,
+                "directory key for shard {shard} must route to that shard"
+            );
+            // Deterministic: a second derivation yields the identical key.
+            let again = shard_owner_key(shard, |bytes| database.shard_for(bytes));
+            assert_eq!(key, again, "directory key derivation must be deterministic");
+            // Tagged into the directory region, disjoint from other KV regions.
+            assert_eq!(&key[..2], SHARD_OWNER_PREFIX);
+        }
+        Ok(())
     }
 }

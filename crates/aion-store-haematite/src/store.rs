@@ -54,7 +54,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use haematite::db::respond_to_inbound_writes;
 use haematite::sync::membership::WriteMembership;
 use haematite::sync::{DistributionEndpoint, SyncNodeId};
-use haematite::{Database, DatabaseConfig, DatabaseError};
+use haematite::{Database, DatabaseConfig, DatabaseError, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{api_error, database_error, join_error, serde_error};
@@ -77,6 +77,10 @@ struct DistributedRouting {
     membership: WriteMembership,
     /// Per-operation quorum timeout passed to `replicate_append`.
     timeout: Duration,
+    /// This node's globally-unique distribution name. Recorded so the SS-3
+    /// shard-owner directory record can name THIS node as the current owner when
+    /// it adopts a shard ([`HaematiteStore::publish_shard_owner`]).
+    node_id: String,
 }
 
 /// Cluster-membership inputs for [`HaematiteStore::open_or_create_distributed`].
@@ -262,18 +266,22 @@ impl HaematiteStore {
     /// rebuilds the outbox from replicated history, and enumerates workflows from
     /// the replicated event streams).
     ///
-    /// `timeout` bounds each quorum write.
+    /// `timeout` bounds each quorum write. `node_id` is this node's distribution
+    /// name, recorded so the SS-3 shard-owner directory record can name this node
+    /// when it adopts a shard ([`Self::publish_shard_owner`]).
     #[must_use]
     pub fn with_distribution(
         database: Database,
         membership: WriteMembership,
         timeout: Duration,
+        node_id: String,
     ) -> Self {
         Self {
             inner: Arc::new(haematite::EventStore::new(database)),
             distribution: Some(DistributedRouting {
                 membership,
                 timeout,
+                node_id,
             }),
             owned_shards: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
@@ -359,7 +367,12 @@ impl HaematiteStore {
             })?;
         let database = database.with_distribution(endpoint);
 
-        let store = Self::with_distribution(database, boot.write_membership(), boot.timeout);
+        let store = Self::with_distribution(
+            database,
+            boot.write_membership(),
+            boot.timeout,
+            boot.node_id.clone(),
+        );
         // Start answering peers' inbound replication/election traffic BEFORE
         // dialing out, so this node is a usable quorum participant the moment a
         // peer reaches it — even while its own outbound dials are still
@@ -551,6 +564,91 @@ impl HaematiteStore {
             }
         }
         None
+    }
+
+    /// Publish THIS node as the current owner of `shard` in the cluster's
+    /// shard-owner directory (SS-3), so other nodes' request-routing edges resolve
+    /// `shard` to this node — closing gap #2: after a survivor adopts a dead
+    /// declared-owner's shard, a request reaching a DIFFERENT survivor must route
+    /// to the adopter, not mis-resolve to the dead declared owner.
+    ///
+    /// The record is a quorum-replicated, fenced KV write
+    /// ([`Database::replicate_write`]) keyed by [`keyspace::shard_owner_key`] so it
+    /// CO-LOCATES on `shard` itself. That makes the record write subject to the
+    /// SAME epoch fence the publisher just won when it elected itself owner of
+    /// `shard`: only the true (fenced) owner can publish, so two survivors racing
+    /// to adopt cannot both win the record — exactly one does. The record's VALUE
+    /// is this node's distribution name bytes, which any member reads back with
+    /// [`Self::read_shard_owner`] off its locally-applied replica.
+    ///
+    /// Idempotent: re-publishing the same owner is a value-preserving CAS that
+    /// succeeds. It is a no-op (returns `Ok(())`) on a single-node / non-distributed
+    /// store, which has no peers and no directory to coordinate.
+    ///
+    /// The quorum write blocks and must run off the tokio runtime (the same
+    /// constraint `replicate_append` honours), so callers may invoke it from async.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotOwner`] when the fenced write is out-voted (this
+    /// node is not actually the shard's current owner), and [`StoreError::Backend`]
+    /// for any other replication/transport failure.
+    pub fn publish_shard_owner(&self, shard: usize) -> Result<(), StoreError> {
+        let Some(routing) = self.distribution.clone() else {
+            // Single-node / non-distributed: no peers, no directory to publish to.
+            return Ok(());
+        };
+        let database = self.inner.database();
+        let key = keyspace::shard_owner_key(shard, |bytes| database.shard_for(bytes));
+        let value = routing.node_id.clone().into_bytes();
+        // CAS on the current value's hash so re-publication overwrites cleanly
+        // (create-if-absent on a fresh record, value-CAS on an existing one).
+        let current = database.get(&key).map_err(|error| database_error(&error))?;
+        let expected = current.as_deref().map(Hash::of);
+        let result = run_off_runtime(|| {
+            database.replicate_write(
+                key,
+                expected,
+                value,
+                None,
+                &routing.membership,
+                routing.timeout,
+            )
+        });
+        match result {
+            Ok(_) => Ok(()),
+            // Out-voted by the shard's promised ballot: this node is not the owner.
+            Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner { shard }),
+            Err(error) => Err(database_error(&error)),
+        }
+    }
+
+    /// Read the distribution name of the node that currently owns `shard` per the
+    /// cluster's shard-owner directory (SS-3), or `None` when no node has published
+    /// a record for `shard` (the steady-state pre-adoption case: ownership is still
+    /// described by static config).
+    ///
+    /// This is a LOCAL read of the locally-applied replica
+    /// ([`Database::get`]): a record published via [`Self::publish_shard_owner`] is
+    /// durably replicated to every reachable member, so any survivor reads the
+    /// adopter's identity off its own store with no extra round trip. Returns
+    /// `None` on a single-node / non-distributed store (no directory exists).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] when the local read fails.
+    pub fn read_shard_owner(&self, shard: usize) -> Result<Option<String>, StoreError> {
+        if self.distribution.is_none() {
+            return Ok(None);
+        }
+        let database = self.inner.database();
+        let key = keyspace::shard_owner_key(shard, |bytes| database.shard_for(bytes));
+        let Some(bytes) = database.get(&key).map_err(|error| database_error(&error))? else {
+            return Ok(None);
+        };
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|error| StoreError::Backend(format!("corrupt shard-owner record: {error}")))
     }
 
     /// Snapshot the owned-shard scope as an owned `Option<Vec<usize>>` suitable
@@ -1379,6 +1477,14 @@ impl ReadableEventStore for HaematiteStore {
     /// `dyn ReadableEventStore` it holds after absorbing a dead peer's shards.
     fn extend_owned_shards(&self, shards: &[usize]) {
         Self::extend_owned_shards(self, shards.iter().copied());
+    }
+
+    /// Publish this node as `shard`'s current owner in the cluster directory via
+    /// the inherent [`Self::publish_shard_owner`] (SS-3 failover-publish), so the
+    /// engine can drive it through the type-erased `dyn ReadableEventStore` after
+    /// adopting a dead peer's shards.
+    fn publish_shard_owner(&self, shard: usize) -> Result<(), StoreError> {
+        Self::publish_shard_owner(self, shard)
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {

@@ -285,6 +285,7 @@ mod tests {
                 owned_shards: vec![1, 2, 3],
                 grpc_addr: None,
             }],
+            None,
         );
         // A non-owned id: its shard's declared owner has no live link in this
         // single-node test store, so owner_of is Unknown → Local.
@@ -397,6 +398,7 @@ mod tests {
                 owned_shards: vec![1, 2, 3],
                 grpc_addr: Some(grpc_addr),
             }],
+            None,
         );
         // A believed-down peer resolves Unknown → Local (route optimistically).
         let SteerDecision::Local(workflow_id) =

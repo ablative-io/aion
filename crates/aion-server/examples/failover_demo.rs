@@ -280,6 +280,7 @@ impl Node {
                 send_targets: send_targets.iter().map(|n| SyncNodeId::from(*n)).collect(),
             },
             OP_TIMEOUT,
+            name.to_owned(),
         ));
         let event_store = Arc::clone(store.event_store());
         let running = Arc::new(AtomicBool::new(true));

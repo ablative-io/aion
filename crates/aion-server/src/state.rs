@@ -123,7 +123,11 @@ impl ServerState {
         let RoutingState {
             shard_directory,
             request_forwarder,
-        } = build_routing_state(cluster_store.as_ref(), connected.directory_peers);
+        } = build_routing_state(
+            cluster_store.as_ref(),
+            connected.directory_peers,
+            connected.self_node_id,
+        );
         let (event_broadcast_capacity, query_timeout) = required_engine_seams(&runtime)?;
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
         let instrumented_store = Arc::new(InstrumentedEventStore::new(
@@ -615,6 +619,7 @@ struct RoutingState {
 fn build_routing_state(
     cluster_store: Option<&Arc<aion_store_haematite::HaematiteStore>>,
     directory_peers: Vec<crate::routing::DirectoryPeer>,
+    self_node_id: Option<String>,
 ) -> RoutingState {
     let Some(store) = cluster_store else {
         return RoutingState {
@@ -626,6 +631,7 @@ fn build_routing_state(
         shard_directory: Some(Arc::new(crate::routing::StaticShardDirectory::new(
             Arc::clone(store),
             directory_peers,
+            self_node_id,
         ))),
         request_forwarder: Some(Arc::new(crate::routing::GrpcRequestForwarder::new())),
     }
@@ -660,6 +666,11 @@ struct ConnectedStore {
     /// for non-distributed boots.
     #[cfg(feature = "haematite-backend")]
     directory_peers: Vec<crate::routing::DirectoryPeer>,
+    /// This node's own distribution name (cluster `node_id`), so the SS-3
+    /// directory can resolve a shard-owner record naming THIS node to `Local`.
+    /// `None` for non-distributed boots.
+    #[cfg(feature = "haematite-backend")]
+    self_node_id: Option<String>,
 }
 
 impl ConnectedStore {
@@ -678,6 +689,8 @@ impl ConnectedStore {
             watched_peers: Vec::new(),
             #[cfg(feature = "haematite-backend")]
             directory_peers: Vec::new(),
+            #[cfg(feature = "haematite-backend")]
+            self_node_id: None,
         }
     }
 }
@@ -798,6 +811,9 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
                 .collect()
         })
         .unwrap_or_default();
+    // This node's own distribution name, so the SS-3 directory resolves a
+    // shard-owner record naming THIS node to `Local`.
+    let self_node_id: Option<String> = cluster.as_ref().map(|cluster| cluster.node_id.clone());
     // Construction (and, for the distributed path, the off-runtime endpoint bind)
     // must not stall the async runtime, so run it on the blocking pool. The
     // distributed constructor itself steps onto a bare thread for the bind.
@@ -825,10 +841,10 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
     // where the SS-5b supervisor will poll it for peer liveness. A single-node
     // boot has no peers, so it carries no cluster store and never supervises.
     let cluster_store = responder.as_ref().map(|_| leaf);
-    let (watched_peers, directory_peers) = if cluster_store.is_some() {
-        (watched_peers, directory_peers)
+    let (watched_peers, directory_peers, self_node_id) = if cluster_store.is_some() {
+        (watched_peers, directory_peers, self_node_id)
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), None)
     };
     Ok(ConnectedStore {
         event_store,
@@ -838,6 +854,7 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
         cluster_store,
         watched_peers,
         directory_peers,
+        self_node_id,
     })
 }
 
