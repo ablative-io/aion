@@ -30,6 +30,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 type TestError = Box<dyn std::error::Error>;
 
 const NAMESPACE: &str = "default";
+const TASK_QUEUE: &str = "default";
 const ACTIVITY_TYPE: &str = "greet";
 
 /// A `greet` dispatch request carrying real (test-synthesized) ids, the
@@ -37,6 +38,7 @@ const ACTIVITY_TYPE: &str = "greet";
 fn greet_request(input: &str, attempt: u32) -> ActivityDispatch {
     ActivityDispatch {
         namespace: NAMESPACE.to_owned(),
+        task_queue: TASK_QUEUE.to_owned(),
         workflow_id: WorkflowId::new_v4(),
         activity_id: ActivityId::from_sequence_position(0),
         name: ACTIVITY_TYPE.to_owned(),
@@ -102,7 +104,7 @@ async fn wait_for_worker(
 ) -> Result<u64, TestError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let workers = registry.workers_for(NAMESPACE, ACTIVITY_TYPE)?;
+        let workers = registry.workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE)?;
         if let Some(handle) = workers
             .iter()
             .find(|handle| Some(handle.id().value()) != not_id)

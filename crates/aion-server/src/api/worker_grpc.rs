@@ -468,6 +468,7 @@ fn decode_register(r: generated::RegisterWorker) -> ProtoRegisterWorker {
     ProtoRegisterWorker {
         namespace: r.namespace,
         activity_types: r.activity_types,
+        task_queue: r.task_queue,
     }
 }
 

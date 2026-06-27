@@ -38,6 +38,7 @@ use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 type TestError = Box<dyn std::error::Error>;
 
 const NAMESPACE: &str = "default";
+const TASK_QUEUE: &str = "default";
 const ACTIVITY_TYPE: &str = "greet";
 
 /// A `greet` dispatch request carrying real (test-synthesized) ids, the
@@ -46,6 +47,7 @@ const ACTIVITY_TYPE: &str = "greet";
 fn greet_request(input: &str, attempt: u32) -> ActivityDispatch {
     ActivityDispatch {
         namespace: NAMESPACE.to_owned(),
+        task_queue: TASK_QUEUE.to_owned(),
         workflow_id: WorkflowId::new_v4(),
         activity_id: ActivityId::from_sequence_position(0),
         name: ACTIVITY_TYPE.to_owned(),
@@ -138,6 +140,7 @@ impl Harness {
                     generated::RegisterWorker {
                         namespace: NAMESPACE.to_owned(),
                         activity_types: vec![ACTIVITY_TYPE.to_owned()],
+                        task_queue: TASK_QUEUE.to_owned(),
                     },
                 )),
             })
@@ -158,7 +161,10 @@ impl Harness {
         let server_to_worker::Message::RegisterAck(register_ack) = first else {
             return Err(format!("first response frame must be RegisterAck, got {first:?}").into());
         };
-        if registry.workers_for(NAMESPACE, ACTIVITY_TYPE)?.is_empty() {
+        if registry
+            .workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE)?
+            .is_empty()
+        {
             return Err("RegisterAck arrived before the registry registration".into());
         }
 
@@ -381,7 +387,7 @@ async fn worker_death_mid_activity_fails_dispatch_with_retryable_lost_worker()
         harness
             .state
             .worker_registry()
-            .workers_for(NAMESPACE, ACTIVITY_TYPE)?
+            .workers_for(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE)?
             .is_empty(),
         "the dead worker must be deregistered"
     );
@@ -456,6 +462,7 @@ async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError>
                     // Registers a namespace the metadata grant does not cover.
                     namespace: "ungranted".to_owned(),
                     activity_types: vec![ACTIVITY_TYPE.to_owned()],
+                    task_queue: TASK_QUEUE.to_owned(),
                 },
             )),
         })
@@ -482,7 +489,11 @@ async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError>
         Err(status) => status,
     };
     assert_eq!(denial.code(), tonic::Code::PermissionDenied);
-    assert!(registry.workers_for("ungranted", ACTIVITY_TYPE)?.is_empty());
+    assert!(
+        registry
+            .workers_for("ungranted", TASK_QUEUE, ACTIVITY_TYPE)?
+            .is_empty()
+    );
 
     server.abort();
     Ok(())

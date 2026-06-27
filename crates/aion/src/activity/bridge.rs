@@ -27,8 +27,14 @@ use futures::future::BoxFuture;
 /// `ActivityTask.attempt`), so consumers distinguish retries without guessing.
 #[derive(Clone, Debug)]
 pub struct ActivityDispatch {
-    /// Namespace selected for worker matching.
+    /// Namespace selected for worker matching — the correctness/isolation
+    /// boundary the activity may dispatch within.
     pub namespace: String,
+    /// Task queue (pool/flavour) selected within the namespace. The worker-pool
+    /// address is `(namespace, task_queue)`. There is no workflow-level
+    /// selection yet, so the engine seam stamps the named `"default"` pool until
+    /// the Gleam SDK selection (NSTQ-4) lands.
+    pub task_queue: String,
     /// Real owning workflow id, recorded in history at `WorkflowStarted`.
     pub workflow_id: WorkflowId,
     /// Real per-workflow activity ordinal, recorded at `ActivityScheduled`.
@@ -117,6 +123,7 @@ mod tests {
     fn echo_request(input: &str) -> ActivityDispatch {
         ActivityDispatch {
             namespace: "default".to_owned(),
+            task_queue: "default".to_owned(),
             workflow_id: WorkflowId::new_v4(),
             activity_id: ActivityId::from_sequence_position(0),
             name: "test".to_owned(),

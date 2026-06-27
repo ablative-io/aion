@@ -382,12 +382,16 @@ impl WorkerActivityDispatcher {
     fn select_worker_or_wait(
         &self,
         namespace: &str,
+        task_queue: &str,
         activity_type: &str,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<WorkerHandle, String> {
         loop {
-            match self.registry.select_worker(namespace, activity_type) {
+            match self
+                .registry
+                .select_worker(namespace, task_queue, activity_type)
+            {
                 Ok(Some(worker)) => return Ok(worker),
                 Ok(None) => {
                     self.ensure_accepting(
@@ -654,6 +658,7 @@ impl WorkerActivityDispatcher {
     fn dispatch_blocking(&self, request: ActivityDispatch) -> Result<String, String> {
         let ActivityDispatch {
             namespace,
+            task_queue,
             workflow_id,
             activity_id,
             name,
@@ -664,12 +669,14 @@ impl WorkerActivityDispatcher {
         } = request;
         let started_at = Instant::now();
         self.ensure_accepting(&namespace, &name, &workflow_id, &activity_id, None)?;
-        let worker = self.select_worker_or_wait(&namespace, &name, &workflow_id, &activity_id)?;
+        let worker =
+            self.select_worker_or_wait(&namespace, &task_queue, &name, &workflow_id, &activity_id)?;
         let worker_id = worker.id();
         let span = info_span!(
             "activity_dispatch",
             operation = "activity_dispatch",
             namespace = %namespace,
+            task_queue = %task_queue,
             workflow_id = %workflow_id,
             activity_id = %activity_id,
             activity_type = %name,
@@ -1050,6 +1057,7 @@ mod tests {
     fn greet_request() -> ActivityDispatch {
         ActivityDispatch {
             namespace: "default".to_owned(),
+            task_queue: "default".to_owned(),
             workflow_id: WorkflowId::new_v4(),
             activity_id: ActivityId::from_sequence_position(0),
             name: "greet".to_owned(),

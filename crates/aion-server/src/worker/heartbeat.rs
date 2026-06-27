@@ -510,7 +510,11 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].worker_id, worker_id);
         assert_eq!(reports[0].tasks.len(), 1);
-        assert!(registry.workers_for("tenant-a", "charge-card")?.is_empty());
+        assert!(
+            registry
+                .workers_for("tenant-a", "default", "charge-card")?
+                .is_empty()
+        );
 
         let second = tracker.fail_disconnected_worker(worker_id, &registry, &sink)?;
         assert!(second.tasks.is_empty());
@@ -561,7 +565,11 @@ mod tests {
 
         let report = tracker.fail_disconnected_worker(worker_id, &registry, &sink)?;
         assert_eq!(report.tasks.len(), 2);
-        assert!(registry.workers_for("tenant-a", "charge-card")?.is_empty());
+        assert!(
+            registry
+                .workers_for("tenant-a", "default", "charge-card")?
+                .is_empty()
+        );
 
         let completions = sink
             .completions

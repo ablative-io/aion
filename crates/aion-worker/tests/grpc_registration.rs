@@ -161,14 +161,18 @@ async fn spawn_scripted_server(
 }
 
 fn test_config(address: std::net::SocketAddr) -> WorkerConfig {
-    WorkerConfig::new(
+    let mut config = WorkerConfig::new(
         format!("http://{address}"),
-        "default-queue",
+        "claude",
         "rust-worker-1",
         2,
         ReconnectConfig::new(Duration::from_millis(5), Duration::from_millis(200), 3),
         None,
-    )
+    );
+    // Genuine, disjoint routing dimensions: the worker is authorized for the
+    // `default-queue` namespace and serves the `claude` pool within it.
+    config.namespace = String::from("default-queue");
+    config
 }
 
 #[tokio::test]
@@ -199,6 +203,7 @@ async fn register_completes_on_register_ack_and_captures_ack_payload() -> Result
         .await
         .ok_or_else(|| failure("server never received the RegisterWorker frame"))?;
     assert_eq!(captured.namespace, "default-queue");
+    assert_eq!(captured.task_queue, "claude");
     assert_eq!(captured.activity_types, activity_types);
     drop(registered);
     server_handle.abort();

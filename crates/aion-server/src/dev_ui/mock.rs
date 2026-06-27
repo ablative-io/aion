@@ -218,6 +218,7 @@ mod tests {
     fn dispatch(workflow_id: WorkflowId, name: &str) -> ActivityDispatch {
         ActivityDispatch {
             namespace: "default".to_owned(),
+            task_queue: "default".to_owned(),
             workflow_id,
             activity_id: ActivityId::from_sequence_position(0),
             name: name.to_owned(),

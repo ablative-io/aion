@@ -636,6 +636,7 @@ mod tests {
         let worker = ProtoRegisterWorker {
             namespace: String::from("tenant-b"),
             activity_types: vec![String::from("ship")],
+            task_queue: String::new(),
         };
 
         assert!(
@@ -903,6 +904,7 @@ mod tests {
         let request = ProtoRegisterWorker {
             namespace: String::from("tenant-a"),
             activity_types: Vec::new(),
+            task_queue: String::new(),
         };
 
         let scoped = guard

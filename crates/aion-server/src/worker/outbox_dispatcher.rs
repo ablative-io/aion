@@ -116,10 +116,12 @@ pub trait OutboxRowDispatch: Send + Sync + 'static {
 ///
 /// Maps an [`OutboxRow`] to a [`ScheduledActivity`] in the server's default
 /// namespace and pushes it through the existing [`ActivityDispatcher`]. The
-/// outbox row carries no namespace today (the schema's `namespace` column is
-/// reserved for the later liminal cross-node send), so dispatch uses the
-/// server's configured default namespace, exactly as local worker dispatch
-/// does.
+/// outbox row carries neither a namespace nor a `task_queue` column yet (those
+/// columns land in NSTQ-2), so dispatch uses the server's configured default
+/// namespace and the named `"default"` task queue. This is a transient internal
+/// state: it is acceptable here ONLY because the row genuinely lacks the columns
+/// to carry the real routing identity, and it is removed once NSTQ-2 adds them
+/// and `to_scheduled` reads them off the row.
 pub struct WorkerOutboxDispatch {
     dispatcher: ActivityDispatcher,
     namespace: String,
@@ -152,6 +154,10 @@ impl WorkerOutboxDispatch {
     fn to_scheduled(&self, row: &OutboxRow) -> ScheduledActivity {
         ScheduledActivity {
             namespace: self.namespace.clone(),
+            // The outbox row has no task_queue column yet (NSTQ-2 adds it), so
+            // every outbox dispatch lands on the named default pool. Transient
+            // until the column exists to carry the real selector.
+            task_queue: String::from(crate::worker::registry::DEFAULT_TASK_QUEUE),
             activity_type: row.activity_type.clone(),
             workflow_id: row.workflow_id.clone(),
             activity_id: ActivityId::from_sequence_position(row.ordinal),

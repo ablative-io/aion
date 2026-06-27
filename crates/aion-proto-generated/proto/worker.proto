@@ -77,11 +77,26 @@ message ResultAck {
 }
 
 // Initial worker advertisement. A registration scopes this stream and worker to
-// exactly one namespace; server-side partitioning and authorization are handled
-// by the server worker endpoint.
+// exactly one (namespace, task_queue) worker pool; server-side partitioning and
+// authorization are handled by the server worker endpoint.
+//
+// The two dimensions are disjoint. `namespace` is the correctness/isolation
+// boundary the worker is authorized for: a workflow's activities only ever reach
+// workers in the workflow's namespace, so crossing it is a bug, never a tuning
+// choice. `task_queue` is the pool/flavour selector *within* that namespace
+// (norn / claude / cpu / gpu); a task_queue miss is a liveness issue, never a
+// correctness one. `activity_type` (carried separately at registration) is NOT a
+// routing dimension — it is matched inside a pool after the pool is selected.
 message RegisterWorker {
+  // Correctness/isolation boundary this worker is authorized for. The server
+  // matches a workflow's activities only against workers in the workflow's
+  // namespace.
   string namespace = 1;
   repeated string activity_types = 2;
+  // Pool/flavour selector within the namespace. The worker-pool address is
+  // (namespace, task_queue); the server normalizes an empty value to the
+  // literal "default" pool.
+  string task_queue = 3;
 }
 
 // Activity invocation pushed by the server to a registered worker.
