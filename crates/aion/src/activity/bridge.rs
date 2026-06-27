@@ -35,6 +35,11 @@ pub struct ActivityDispatch {
     /// selection yet, so the engine seam stamps the named `"default"` pool until
     /// the Gleam SDK selection (NSTQ-4) lands.
     pub task_queue: String,
+    /// OPTIONAL node affinity (NODE-4): the concrete worker host this dispatch is
+    /// pinned to within the `(namespace, task_queue)` pool. `None` = no affinity
+    /// (any worker in the pool). Resolved once at the schedule seam from the
+    /// SDK's per-activity `node` selection; there is no workflow-level default.
+    pub node: Option<String>,
     /// Real owning workflow id, recorded in history at `WorkflowStarted`.
     pub workflow_id: WorkflowId,
     /// Real per-workflow activity ordinal, recorded at `ActivityScheduled`.
@@ -124,6 +129,7 @@ mod tests {
         ActivityDispatch {
             namespace: "default".to_owned(),
             task_queue: "default".to_owned(),
+            node: None,
             workflow_id: WorkflowId::new_v4(),
             activity_id: ActivityId::from_sequence_position(0),
             name: "test".to_owned(),

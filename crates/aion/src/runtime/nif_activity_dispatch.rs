@@ -203,6 +203,11 @@ fn dispatch_activity_with_context(
             // `ActivityScheduled` and the live dispatch so history and routing
             // never diverge.
             let task_queue = super::nif_activity::resolve_task_queue(&call.config);
+            // NODE-4: resolve the OPTIONAL node affinity once at the same seam
+            // (activity pin, else None — no workflow default), and stamp the same
+            // value onto BOTH the recorded `ActivityScheduled` and the live
+            // dispatch so history and routing never diverge.
+            let node = super::nif_activity::resolve_node(&call.config);
             record_started(
                 ctx,
                 &context,
@@ -210,11 +215,13 @@ fn dispatch_activity_with_context(
                 call.name.clone(),
                 input_payload,
                 task_queue.clone(),
+                node.clone(),
             )?;
             let labels = labels_from_config(&call.config);
             let request = ActivityDispatch {
                 namespace,
                 task_queue,
+                node,
                 workflow_id: context.workflow_id().clone(),
                 activity_id,
                 name: call.name,
@@ -796,6 +803,7 @@ mod tests {
                 ActivityDispatch {
                     namespace: String::from("default"),
                     task_queue: String::from("default"),
+                    node: None,
                     workflow_id: WorkflowId::new_v4(),
                     activity_id: ActivityId::from_sequence_position(0),
                     name: "gated".to_owned(),

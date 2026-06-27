@@ -74,6 +74,7 @@ pub opaque type Activity(i, o) {
     heartbeat: Option(duration.Duration),
     labels: List(#(String, String)),
     task_queue: Option(String),
+    node: Option(String),
   )
 }
 
@@ -100,6 +101,7 @@ pub fn new(
     heartbeat: None,
     labels: [],
     task_queue: None,
+    node: None,
   )
 }
 
@@ -119,6 +121,7 @@ pub fn retry(activity: Activity(i, o), policy: RetryPolicy) -> Activity(i, o) {
     heartbeat: activity.heartbeat,
     labels: activity.labels,
     task_queue: activity.task_queue,
+    node: activity.node,
   )
 }
 
@@ -138,6 +141,7 @@ pub fn timeout(
     heartbeat: activity.heartbeat,
     labels: activity.labels,
     task_queue: activity.task_queue,
+    node: activity.node,
   )
 }
 
@@ -157,6 +161,7 @@ pub fn heartbeat(
     heartbeat: Some(heartbeat_interval),
     labels: activity.labels,
     task_queue: activity.task_queue,
+    node: activity.node,
   )
 }
 
@@ -184,6 +189,7 @@ pub fn label(
     heartbeat: activity.heartbeat,
     labels: list.append(activity.labels, [#(key, value)]),
     task_queue: activity.task_queue,
+    node: activity.node,
   )
 }
 
@@ -211,6 +217,35 @@ pub fn task_queue(activity: Activity(i, o), name: String) -> Activity(i, o) {
     heartbeat: activity.heartbeat,
     labels: activity.labels,
     task_queue: Some(name),
+    node: activity.node,
+  )
+}
+
+/// Pin this activity's dispatch to a specific node (per-activity affinity).
+///
+/// A node is a concrete worker host inside the activity's `(namespace,
+/// task_queue)` pool. Pinning narrows the dispatch from "any worker in the
+/// pool" to that one host — for an activity that must run where its state or
+/// hardware lives, for example.
+///
+/// Affinity is OPTIONAL and has NO workflow-level default: an activity built
+/// with `new` and no `node` decorator carries no pin (`None`), so the engine
+/// dispatches it to any worker in the pool. There is no precedence to resolve —
+/// the activity either pins a node or it does not. Later calls replace earlier
+/// values; the SDK does not merge.
+pub fn node(activity: Activity(i, o), name: String) -> Activity(i, o) {
+  Activity(
+    name: activity.name,
+    input: activity.input,
+    input_codec: activity.input_codec,
+    output_codec: activity.output_codec,
+    runner: activity.runner,
+    retry_policy: activity.retry_policy,
+    timeout: activity.timeout,
+    heartbeat: activity.heartbeat,
+    labels: activity.labels,
+    task_queue: activity.task_queue,
+    node: Some(name),
   )
 }
 
@@ -269,6 +304,15 @@ pub fn heartbeat_interval(
 /// dispatch to the workflow-level default, else the named `"default"` queue.
 pub fn selected_task_queue(activity: Activity(i, o)) -> Option(String) {
   activity.task_queue
+}
+
+/// Return the explicitly pinned per-activity node affinity, if one exists.
+///
+/// Absence (`None`) means no pin was set, so the engine dispatches the activity
+/// to any worker in its `(namespace, task_queue)` pool. Unlike the task queue,
+/// node affinity has no workflow-level default: `None` is final.
+pub fn selected_node(activity: Activity(i, o)) -> Option(String) {
+  activity.node
 }
 
 /// A typed binding of a value type's name to its codec.

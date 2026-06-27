@@ -663,6 +663,10 @@ impl WorkerActivityDispatcher {
         let ActivityDispatch {
             namespace,
             task_queue,
+            // NODE-4 carries the OPTIONAL node affinity onto the dispatch; the
+            // worker-selection path does not yet consume it (a later increment
+            // narrows worker matching to the pinned node).
+            node: _,
             workflow_id,
             activity_id,
             name,
@@ -1062,6 +1066,7 @@ mod tests {
         ActivityDispatch {
             namespace: "default".to_owned(),
             task_queue: "default".to_owned(),
+            node: None,
             workflow_id: WorkflowId::new_v4(),
             activity_id: ActivityId::from_sequence_position(0),
             name: "greet".to_owned(),

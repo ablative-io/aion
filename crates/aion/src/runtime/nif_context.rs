@@ -264,6 +264,7 @@ impl NifContext {
         activity_type: String,
         input: Payload,
         task_queue: String,
+        node: Option<String>,
     ) -> Result<(), NifContextError> {
         self.tokio_handle
             .block_on(async {
@@ -277,9 +278,9 @@ impl NifContext {
                         // NSTQ-4: the resolved task queue (activity override > workflow default >
                         // the named default), decided once at the schedule seam by the caller.
                         task_queue,
-                        // No SDK-level node selection yet (NODE-4); the live single-schedule path
-                        // records no node affinity (`None` = genuine current value).
-                        None,
+                        // NODE-4: the resolved OPTIONAL node affinity (activity pin, else None),
+                        // decided once at the schedule seam by the caller.
+                        node,
                     )
                     .await?;
                 recorder

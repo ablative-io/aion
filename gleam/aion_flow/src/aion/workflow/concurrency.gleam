@@ -228,6 +228,9 @@ fn activity_config(
       optional_string(activity.selected_task_queue(activity_value)),
     ),
     #("workflow_task_queue", optional_string(workflow_default_task_queue)),
+    // Optional per-activity node affinity (NODE-4). `null` = no pin (dispatch to
+    // any worker in the pool); there is no workflow-level node default to carry.
+    #("node", optional_string(activity.selected_node(activity_value))),
   ])
   |> json.to_string
 }

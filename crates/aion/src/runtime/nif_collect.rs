@@ -295,6 +295,9 @@ fn dispatch_unscheduled(
                     // NSTQ-4: resolve once at this schedule seam, same precedence
                     // as the flag-ON fan-out and the single-schedule paths.
                     super::nif_activity::resolve_task_queue(&spec.config),
+                    // NODE-4: resolve the OPTIONAL node affinity at the same seam
+                    // (member pin, else None), matching the live dispatch below.
+                    super::nif_activity::resolve_node(&spec.config),
                 )
                 .map_err(|error| error.error_reason())?;
         }
@@ -320,6 +323,10 @@ fn dispatch_unscheduled(
                 // workflow default > the named default), matching the recorded
                 // `ActivityScheduled` for this ordinal on the flag-OFF path.
                 task_queue: super::nif_activity::resolve_task_queue(&spec.config),
+                // NODE-4: resolve the OPTIONAL node affinity at the same seam
+                // (member pin, else None), matching the recorded
+                // `ActivityScheduled` for this ordinal on the flag-OFF path.
+                node: super::nif_activity::resolve_node(&spec.config),
                 workflow_id: workflow_id.clone(),
                 activity_id: ActivityId::from_sequence_position(*ordinal),
                 name: spec.name.clone(),
@@ -353,9 +360,10 @@ fn fan_out_items(
                 // override > workflow default > the named default) from its dispatch config, so the
                 // staged outbox row and the recorded `ActivityScheduled` land on the chosen pool.
                 task_queue: super::nif_activity::resolve_task_queue(&spec.config),
-                // No SDK-level node selection exists yet (NODE-4), so a fresh dispatch stamps no
-                // affinity: `None` = any worker in the pool (NODE-2).
-                node: None,
+                // NODE-4: resolve each member's OPTIONAL node affinity once at this schedule seam
+                // (member pin, else None — no workflow default) from its dispatch config, so the
+                // staged outbox row and the recorded `ActivityScheduled` land on the chosen node.
+                node: super::nif_activity::resolve_node(&spec.config),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
             })
@@ -367,10 +375,10 @@ fn fan_out_items(
 /// OPTIONAL `node` affinity are read back from each ordinal's recorded
 /// [`Event::ActivityScheduled`] (NSTQ-3 / NODE-3 recovery).
 ///
-/// Unlike [`fan_out_items`] — which stamps the named default task queue and no node on a FRESH
-/// dispatch because no SDK-level selection exists yet (NSTQ-4 / NODE-4) — this re-derives the
-/// durable task queue and node from history so the re-staged outbox row re-targets the SAME pool
-/// AND node the crashed dispatch chose. A history recorded before the `task_queue` field existed
+/// Unlike [`fan_out_items`] — which resolves each member's task queue and OPTIONAL node from its
+/// live dispatch config (NSTQ-4 / NODE-4) — this re-derives the durable task queue and node from
+/// history so the re-staged outbox row re-targets the SAME pool AND node the crashed dispatch
+/// chose. A history recorded before the `task_queue` field existed
 /// (or any ordinal without a recorded `ActivityScheduled`) deterministically reads back the named
 /// default queue via the event's serde default; a history recorded before the `node` field existed
 /// deterministically reads back `None` (no affinity), so recovery is replay-safe.
@@ -946,6 +954,25 @@ mod tests {
                 .collect())
         }
 
+        /// Every recorded `ActivityScheduled` as `(ordinal, node)`, in history
+        /// order — the durable OPTIONAL affinity the fresh dispatch stamped.
+        async fn scheduled_nodes(
+            &self,
+        ) -> Result<Vec<(u64, Option<String>)>, Box<dyn std::error::Error>> {
+            Ok(self
+                .store
+                .read_history(&self.workflow_id)
+                .await?
+                .iter()
+                .filter_map(|event| match event {
+                    Event::ActivityScheduled {
+                        activity_id, node, ..
+                    } => Some((activity_id.sequence_position(), node.clone())),
+                    _ => None,
+                })
+                .collect())
+        }
+
         async fn cancelled_ordinals(&self) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
             Ok(self
                 .store
@@ -1258,6 +1285,57 @@ mod tests {
         Ok(())
     }
 
+    /// NODE-4 fresh dispatch: a fan-out member whose config pins node "box-7"
+    /// produces an outbox item (the durable row) carrying node=Some("box-7"); a
+    /// member with no pin carries node=None. This is the host-decode → outbox-row
+    /// seam for the OPTIONAL affinity.
+    #[test]
+    fn fresh_fan_out_item_carries_the_selected_node() -> TestResult {
+        let pinned = spec_with_node("a", Some("box-7"));
+        let unpinned = spec_with_node("b", None);
+        let members = [(0u64, &pinned), (1u64, &unpinned)];
+        let items = fan_out_items(&members, "remote", "fanout")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].node.as_deref(),
+            Some("box-7"),
+            "the member pin must reach the fresh outbox row"
+        );
+        assert_eq!(
+            items[1].node, None,
+            "an unpinned member must carry no affinity"
+        );
+        Ok(())
+    }
+
+    /// NODE-4 end-to-end through the flag-OFF schedule path: scheduling a batch
+    /// mixing a node-pinned member and an unpinned member records each
+    /// `ActivityScheduled` with its resolved node (host decode → recorder →
+    /// durable history).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scheduled_events_record_each_members_resolved_node() -> TestResult {
+        let mut harness = CollectHarness::over_events(&[]).await?;
+        harness.deps.dispatcher = Some(Arc::new(NeverDispatcher));
+        let specs = vec![
+            spec_with_node("a", Some("box-7")),
+            spec_with_node("b", None),
+        ];
+
+        assert_eq!(
+            harness.step(CollectKind::All, &specs),
+            Ok(CollectStep::Suspend)
+        );
+
+        assert_eq!(
+            harness.scheduled_nodes().await?,
+            vec![(0, Some("box-7".to_owned())), (1, None)],
+            "each recorded ActivityScheduled must carry its resolved node affinity"
+        );
+        harness.shutdown()
+    }
+
     /// NSTQ-4 end-to-end through the flag-OFF schedule path: scheduling a batch
     /// that mixes a "claude"-selected member with a workflow-"gpu"-defaulted
     /// member and a no-selection member records each `ActivityScheduled` on its
@@ -1334,6 +1412,22 @@ mod tests {
                 r#"{{"labels":{{}},"task_queue":{},"workflow_task_queue":{}}}"#,
                 field(task_queue),
                 field(workflow_task_queue)
+            ),
+        }
+    }
+
+    /// An [`ActivitySpec`] carrying the SDK's OPTIONAL `node` affinity field in
+    /// its dispatch config. `None` encodes the SDK's "no pin" as JSON null.
+    fn spec_with_node(name: &str, node: Option<&str>) -> ActivitySpec {
+        let field = match node {
+            Some(text) => format!("\"{text}\""),
+            None => "null".to_owned(),
+        };
+        ActivitySpec {
+            name: name.to_owned(),
+            input: r#""in""#.to_owned(),
+            config: format!(
+                r#"{{"labels":{{}},"task_queue":null,"workflow_task_queue":null,"node":{field}}}"#
             ),
         }
     }

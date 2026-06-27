@@ -219,6 +219,7 @@ mod tests {
         ActivityDispatch {
             namespace: "default".to_owned(),
             task_queue: "default".to_owned(),
+            node: None,
             workflow_id,
             activity_id: ActivityId::from_sequence_position(0),
             name: name.to_owned(),
