@@ -22,6 +22,7 @@ mod startup;
 mod startup_sweeps;
 
 pub use api::Engine;
+pub use api_schedule::schedule_coordinator_workflow_id;
 pub use builder::EngineBuilder;
 pub use delegated::{
     DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams,

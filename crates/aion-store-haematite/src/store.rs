@@ -51,7 +51,9 @@ use aion_store::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
+use haematite::db::respond_to_inbound_writes;
 use haematite::sync::membership::WriteMembership;
+use haematite::sync::{DistributionEndpoint, SyncNodeId};
 use haematite::{Database, DatabaseConfig, DatabaseError};
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +77,95 @@ struct DistributedRouting {
     membership: WriteMembership,
     /// Per-operation quorum timeout passed to `replicate_append`.
     timeout: Duration,
+}
+
+/// Cluster-membership inputs for [`HaematiteStore::open_or_create_distributed`].
+///
+/// The minimal, well-defaulted seam a deployment passes to turn the single-node
+/// haematite store into a distributed one (SS-2). A cluster of one is `node_id`
+/// set, `members` empty (or `[node_id]`), and `peers` empty.
+#[derive(Clone, Debug)]
+pub struct ClusterBootstrap {
+    /// This node's globally-unique distribution name and local endpoint identity.
+    pub node_id: String,
+    /// The address the local replication endpoint binds.
+    pub bind_address: std::net::SocketAddr,
+    /// The FULL cluster membership by node id (the quorum DENOMINATOR). The local
+    /// node is always counted whether or not it appears here.
+    pub members: Vec<String>,
+    /// Dialable peers `(name, address)` to connect for replication.
+    pub peers: Vec<(String, std::net::SocketAddr)>,
+    /// Per-operation quorum/election timeout.
+    pub timeout: Duration,
+}
+
+impl ClusterBootstrap {
+    /// Build the [`WriteMembership`] for this node: a denominator that ALWAYS
+    /// counts the full membership (never the reachable subset — sizing quorum
+    /// from reachability lets a minority self-quorum), and send targets that are
+    /// the configured peers excluding the local node.
+    fn write_membership(&self) -> WriteMembership {
+        let mut names: std::collections::BTreeSet<String> = self.members.iter().cloned().collect();
+        // The local node is always part of the denominator.
+        names.insert(self.node_id.clone());
+        for peer in &self.peers {
+            names.insert(peer.0.clone());
+        }
+        let send_targets = self
+            .peers
+            .iter()
+            .map(|peer| SyncNodeId::from(peer.0.as_str()))
+            .collect();
+        WriteMembership {
+            total_nodes: names.len(),
+            send_targets,
+        }
+    }
+}
+
+/// Owns the background thread that answers peers' inbound replication and
+/// election traffic for a distributed [`HaematiteStore`].
+///
+/// Dropping it (or calling [`Self::stop`]) signals the loop to exit and joins the
+/// thread, so a survivor stops responding once the node is taken down.
+pub struct ClusterResponder {
+    running: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ClusterResponder {
+    /// Spawn the inbound-write responder over `event_store`'s database.
+    fn spawn(event_store: Arc<haematite::EventStore>) -> Self {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let loop_running = Arc::clone(&running);
+        let handle = std::thread::spawn(move || {
+            while loop_running.load(std::sync::atomic::Ordering::Relaxed) {
+                drop(respond_to_inbound_writes(
+                    event_store.database(),
+                    Duration::from_millis(50),
+                ));
+            }
+        });
+        Self {
+            running,
+            handle: Some(handle),
+        }
+    }
+
+    /// Stop the responder loop and join its thread. Idempotent.
+    pub fn stop(&mut self) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            drop(handle.join());
+        }
+    }
+}
+
+impl Drop for ClusterResponder {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// A durable Aion event store backed by haematite.
@@ -208,6 +299,77 @@ impl HaematiteStore {
         }
     }
 
+    /// Open (or create) a DISTRIBUTED store and wire it into a cluster (SS-2).
+    ///
+    /// This is the production-boot counterpart to [`Self::open`] /
+    /// [`Self::create_with_shard_count`]: it opens the on-disk database at
+    /// `data_dir` (or creates a fresh one with `shard_count` shards), binds a
+    /// replication [`DistributionEndpoint`] at `boot.bind_address` under
+    /// `boot.node_id`, attaches it to the database, builds the quorum
+    /// [`WriteMembership`] from `boot.members` (the denominator) and `boot.peers`
+    /// (the dial targets), dials every peer, and spawns the inbound-write
+    /// responder thread that answers peers' replication and election traffic.
+    ///
+    /// A "cluster of one" — no peers, `members` empty or naming only the local
+    /// node — yields a denominator of 1 and no send targets, so the later
+    /// `acquire_owned_shards` election self-quorums. The returned
+    /// [`ClusterResponder`] owns the responder thread; dropping it stops the
+    /// responder.
+    ///
+    /// Endpoint binding refuses to run from a thread with an entered tokio
+    /// runtime, so the whole construction runs on a bare [`run_off_runtime`]
+    /// thread — letting an async caller drive it directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] when the database cannot be opened/created,
+    /// the endpoint cannot bind, or a peer cannot be dialed.
+    pub fn open_or_create_distributed(
+        data_dir: impl Into<PathBuf>,
+        shard_count: usize,
+        boot: ClusterBootstrap,
+    ) -> Result<(Self, ClusterResponder), StoreError> {
+        let data_dir = data_dir.into();
+        // Bind + dial run the endpoint's own runtime and must not see an entered
+        // tokio runtime, so build the whole distributed store off-runtime.
+        run_off_runtime(move || Self::build_distributed(&data_dir, shard_count, &boot))
+    }
+
+    /// Off-runtime body of [`Self::open_or_create_distributed`]: open/create the
+    /// database, bind + attach the endpoint, dial peers, and start the responder.
+    fn build_distributed(
+        data_dir: &std::path::Path,
+        shard_count: usize,
+        boot: &ClusterBootstrap,
+    ) -> Result<(Self, ClusterResponder), StoreError> {
+        let database = if data_dir.join("config.json").exists() {
+            Database::open(data_dir).map_err(|error| database_error(&error))?
+        } else {
+            Database::create(DatabaseConfig {
+                data_dir: data_dir.to_path_buf(),
+                shard_count,
+                sweep_interval: None,
+                distributed: None,
+            })
+            .map_err(|error| database_error(&error))?
+        };
+        let endpoint = DistributionEndpoint::bind(boot.node_id.clone(), boot.bind_address, 1, None)
+            .map_err(|error| {
+                StoreError::Backend(format!("cluster endpoint bind failed: {error}"))
+            })?;
+        let database = database.with_distribution(endpoint);
+
+        for peer in &boot.peers {
+            database
+                .connect_peer(&peer.0, peer.1)
+                .map_err(|error| database_error(&error))?;
+        }
+
+        let store = Self::with_distribution(database, boot.write_membership(), boot.timeout);
+        let responder = ClusterResponder::spawn(Arc::clone(store.event_store()));
+        Ok((store, responder))
+    }
+
     /// Restrict enumeration to these shard ids (multi-node: the shards this node
     /// owns). Pass the shards acquired via `acquire_shard_and_serve`. Idempotent.
     ///
@@ -230,6 +392,33 @@ impl HaematiteStore {
             .owned_shards
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// The distribution shard that owns `workflow_id`'s durable state.
+    ///
+    /// Computes `shard_for(event_stream_key(workflow_id))` — the same routing the
+    /// co-located writes use — so a deployment can ask which shard a workflow
+    /// lands on (e.g. to gate the schedule-coordinator bootstrap on real
+    /// ownership; SS-2 / AA-4-4).
+    #[must_use]
+    pub fn shard_for_workflow(&self, workflow_id: &WorkflowId) -> usize {
+        self.inner
+            .database()
+            .shard_for(&keyspace::event_stream_key(workflow_id))
+    }
+
+    /// Whether this node currently owns the shard `workflow_id` lives on.
+    ///
+    /// `true` when the workflow's shard is in the configured owned set, or when
+    /// the store owns all shards (`None` scope — the single-node default). Lets a
+    /// multi-shard deployment gate the coordinator bootstrap on real ownership.
+    #[must_use]
+    pub fn owns_workflow_shard(&self, workflow_id: &WorkflowId) -> bool {
+        let shard = self.shard_for_workflow(workflow_id);
+        match self.owned_shards() {
+            Some(owned) => owned.contains(&shard),
+            None => true,
+        }
     }
 
     /// Snapshot the current owned set (`None` = all shards). For tests/diagnostics.
@@ -985,6 +1174,36 @@ impl ReadableEventStore for HaematiteStore {
             Some(shards) => Self::set_owned_shards(self, shards.iter().copied()),
             None => self.own_all_shards(),
         }
+    }
+
+    /// Win the per-shard election and become the live owner of each shard in
+    /// `shards` BEFORE the engine recovers over them (SS-2).
+    ///
+    /// Only a DISTRIBUTED store (`with_distribution`) elects: it runs
+    /// [`Database::acquire_shard_and_serve`] for each shard over its configured
+    /// `WriteMembership`, so on return every committed write on those shards is
+    /// locally present (`become_live` union-merge) and the node is the fenced
+    /// owner. A single-node store (`create`/`open`) has no membership and owns
+    /// everything unconditionally, so this is a no-op there — boot stays
+    /// byte-identical to the non-distributed path.
+    ///
+    /// The election is blocking and refuses to run from a thread with an entered
+    /// tokio runtime, so it executes on a bare [`run_off_runtime`] thread exactly
+    /// like the replication write path — which is what lets the async engine
+    /// builder drive it directly.
+    fn acquire_owned_shards(&self, shards: &[usize]) -> Result<(), StoreError> {
+        let Some(routing) = self.distribution.as_ref() else {
+            // Single-node mode: nothing to elect, owns everything already.
+            return Ok(());
+        };
+        let database = self.inner.database();
+        for &shard in shards {
+            run_off_runtime(|| {
+                database.acquire_shard_and_serve(shard, &routing.membership, routing.timeout)
+            })
+            .map_err(|error| database_error(&error))?;
+        }
+        Ok(())
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {

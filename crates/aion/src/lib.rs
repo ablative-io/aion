@@ -81,7 +81,7 @@ pub use durability::ActiveWorkflowRecoverySeamImpl;
 pub use engine::{
     DeferredEventPublisher, DeferredQueryService, DeferredSignalRouter, DelegatedSeams, Engine,
     EngineBuilder, EventFamily, EventFilter, EventPublisher, EventStreamLagged, QueryService,
-    SignalRouter,
+    SignalRouter, schedule_coordinator_workflow_id,
 };
 pub use engine_seam::EngineHandle;
 pub use error::{EngineError, PinHolder, SignalRouterError};

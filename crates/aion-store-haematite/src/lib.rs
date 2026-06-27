@@ -37,4 +37,4 @@ mod keyspace;
 /// The [`HaematiteStore`] type and its `EventStore` trait implementations.
 pub mod store;
 
-pub use store::HaematiteStore;
+pub use store::{ClusterBootstrap, ClusterResponder, HaematiteStore};

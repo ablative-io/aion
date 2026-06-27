@@ -156,6 +156,13 @@ impl ReadableEventStore for InstrumentedEventStore {
         self.inner.set_owned_shards(shards);
     }
 
+    /// Forward the SS-2 shard election to the inner store; this decorator adds
+    /// only metrics, never ownership policy, so the inner backend runs the
+    /// election (or no-ops in single-node mode).
+    fn acquire_owned_shards(&self, shards: &[usize]) -> Result<(), StoreError> {
+        self.inner.acquire_owned_shards(shards)
+    }
+
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let started = Instant::now();
         let result = self.inner.read_history(workflow_id).await;

@@ -316,7 +316,16 @@ impl Engine {
     }
 }
 
-pub(crate) fn schedule_coordinator_workflow_id() -> WorkflowId {
+/// The fixed `WorkflowId` of the durable schedule coordinator.
+///
+/// Exposed so a multi-shard deployment can compute which shard owns the
+/// coordinator stream and gate [`EngineBuilder::bootstrap_schedule_coordinator`]
+/// on real ownership (SS-2 / AA-4-4): only the node owning this workflow's shard
+/// may seed and serve the coordinator.
+///
+/// [`EngineBuilder::bootstrap_schedule_coordinator`]: crate::EngineBuilder::bootstrap_schedule_coordinator
+#[must_use]
+pub fn schedule_coordinator_workflow_id() -> WorkflowId {
     WorkflowId::new(uuid::Uuid::from_u128(
         0x0000_0000_a10a_0000_0000_0000_0000_0004,
     ))
