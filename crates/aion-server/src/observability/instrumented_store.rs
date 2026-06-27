@@ -149,6 +149,13 @@ impl WritableEventStore for InstrumentedEventStore {
 
 #[async_trait]
 impl ReadableEventStore for InstrumentedEventStore {
+    /// Forward owned-shard scoping to the inner store; this decorator adds only
+    /// metrics, never shard policy, so the inner backend remains the sole
+    /// authority on enumeration scope.
+    fn set_owned_shards(&self, shards: Option<&[usize]>) {
+        self.inner.set_owned_shards(shards);
+    }
+
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         let started = Instant::now();
         let result = self.inner.read_history(workflow_id).await;

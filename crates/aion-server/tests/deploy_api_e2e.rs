@@ -125,6 +125,7 @@ fn runtime_config(deploy: DeployConfig) -> RuntimeConfig {
         default_namespace: NAMESPACE.to_owned(),
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
+        owned_shards: Vec::new(),
     }
 }
 

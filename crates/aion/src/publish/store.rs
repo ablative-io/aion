@@ -155,6 +155,12 @@ impl WritableEventStore for PublishingEventStore {
 
 #[async_trait]
 impl ReadableEventStore for PublishingEventStore {
+    /// Forward owned-shard scoping to the inner store; this decorator only
+    /// publishes appends and never owns shard policy.
+    fn set_owned_shards(&self, shards: Option<&[usize]>) {
+        self.inner.set_owned_shards(shards);
+    }
+
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
         self.inner.read_history(workflow_id).await
     }
