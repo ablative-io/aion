@@ -346,6 +346,7 @@ fn store_error_type(source: &StoreError) -> &'static str {
     match source {
         StoreError::SequenceConflict { .. } => "SequenceConflict",
         StoreError::NotFound { .. } => "NotFound",
+        StoreError::NotOwner { .. } => "NotOwner",
         StoreError::Backend(_) => "Backend",
         StoreError::Serialization(_) => "Serialization",
     }
@@ -455,6 +456,9 @@ fn wire_from_store(source: &StoreError) -> WireError {
         StoreError::NotFound { .. } => {
             WireError::not_found_with_type("NotFound", source.to_string())
         }
+        StoreError::NotOwner { .. } => {
+            WireError::not_owner(source.to_string()).with_error_type("NotOwner")
+        }
         StoreError::Backend(_) => WireError::backend_with_type("Backend", source.to_string()),
         StoreError::Serialization(_) => {
             WireError::backend_with_type("Serialization", source.to_string())
@@ -483,6 +487,19 @@ mod tests {
         };
 
         assert_eq!(error.to_wire_error().code, WireErrorCode::Lagged);
+    }
+
+    /// R-0: a fenced quorum write (`StoreError::NotOwner`) must surface as the
+    /// typed, retryable `NotOwner` wire code with a `NotOwner` `error_type`, NOT
+    /// the opaque `Backend` it used to collapse into.
+    #[test]
+    fn not_owner_store_error_maps_to_wire_not_owner() {
+        let error = ServerError::StoreBackend {
+            source: aion_store::StoreError::NotOwner { shard: 3 },
+        };
+        let wire = error.to_wire_error();
+        assert_eq!(wire.code, WireErrorCode::NotOwner);
+        assert_eq!(wire.error_type.as_deref(), Some("NotOwner"));
     }
 
     fn workflow_id() -> WorkflowId {

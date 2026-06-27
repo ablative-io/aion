@@ -24,6 +24,18 @@ pub enum StoreError {
         workflow_id: WorkflowId,
     },
 
+    /// The targeted shard is owned by a different node: a quorum write was fenced
+    /// because this node is not the current owner of the workflow's shard. Unlike
+    /// [`Self::Backend`] this is a typed, *retryable* routing signal — the caller
+    /// (or the request-routing edge) should re-resolve the shard's owner and retry
+    /// or forward, rather than treating it as an opaque internal failure. Emitted
+    /// only on the distributed (`[store.cluster]`) replication path.
+    #[error("shard {shard} is owned by another node (not owner)")]
+    NotOwner {
+        /// The distribution shard the fenced workflow's durable state lives on.
+        shard: usize,
+    },
+
     /// Backend-specific failure mapped into the store contract's closed error surface.
     #[error("store backend error: {0}")]
     Backend(String),

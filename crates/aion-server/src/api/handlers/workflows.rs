@@ -30,6 +30,23 @@ pub async fn start(
     caller: &CallerIdentity,
     request: ProtoStartWorkflowRequest,
 ) -> Result<ProtoStartWorkflowResponse, WireError> {
+    start_with_placement(guard, caller, request, None).await
+}
+
+/// Start a workflow, optionally with a `placement` id chosen by the routing edge
+/// so the new execution lands on a locally-owned shard (R-1 unsteered-start
+/// remint). `placement = None` is the default path: the engine mints the id, so
+/// the single-node / non-clustered behaviour is unchanged.
+///
+/// # Errors
+///
+/// Identical to [`start`].
+pub async fn start_with_placement(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoStartWorkflowRequest,
+    placement: Option<aion_core::WorkflowId>,
+) -> Result<ProtoStartWorkflowResponse, WireError> {
     let scoped = guard
         .scope(caller, &NamespaceOperation::start(&request))
         .await
@@ -48,11 +65,12 @@ pub async fn start(
         scoped
             .engine()
             .map_err(|error| log_server_error("start", Some(&namespace), None, &error))?
-            .start_workflow(
+            .start_workflow_with_id(
                 &request.workflow_type,
                 input,
                 search_attributes,
                 namespace.clone(),
+                placement,
             )
             .await
             .map_err(|error| map_start_error(error, &request.workflow_type))

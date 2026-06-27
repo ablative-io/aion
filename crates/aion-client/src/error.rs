@@ -291,7 +291,11 @@ impl ClientError {
             | WireErrorCode::VersionPinned => Self::Server { detail },
             WireErrorCode::QueryFailed => Self::QueryFailed { detail },
             WireErrorCode::QueryTimeout => Self::QueryTimeout { detail },
-            WireErrorCode::Lagged => Self::Unavailable { detail },
+            // `not_owner` (wrong-shard-owner fence) is a retryable routing
+            // signal: the request reached a node that does not own the
+            // workflow's shard. It is transient (re-resolve + retry), so it
+            // joins the `Unavailable` bucket alongside the lagged-stream signal.
+            WireErrorCode::Lagged | WireErrorCode::NotOwner => Self::Unavailable { detail },
         }
     }
 

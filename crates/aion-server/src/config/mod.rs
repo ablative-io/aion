@@ -200,6 +200,14 @@ pub struct ClusterPeer {
     pub name: String,
     /// The peer's replication endpoint address to dial.
     pub address: SocketAddr,
+    /// The peer's gRPC client-API address, for request forwarding (R-2/R-3).
+    /// This is DISTINCT from `address` (the replication/quorum endpoint): a
+    /// forwarded client `signal`/`query`/`cancel` is dialed here, not on the
+    /// replication port. Absent (the default) means the peer is not
+    /// forwardable — its shards still resolve to a remote owner, but routing
+    /// falls back to returning the typed `NotOwner` instead of forwarding (R-3).
+    #[serde(default)]
+    pub grpc_address: Option<SocketAddr>,
     /// The distribution shards this peer owns. Empty (the default) means the
     /// operator did not declare the peer's shards, so the SS-5b cluster
     /// supervisor cannot adopt them automatically when the peer dies — automatic

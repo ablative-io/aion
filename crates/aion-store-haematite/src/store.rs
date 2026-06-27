@@ -489,6 +489,38 @@ impl HaematiteStore {
             .map(|set| set.iter().copied().collect())
     }
 
+    /// The total number of distribution shards this store's keyspace is split
+    /// across — the modulus `shard_for_workflow` routes within. Used by the
+    /// request-routing edge to bound the unsteered-start remint loop (R-1).
+    #[must_use]
+    pub fn shard_count(&self) -> usize {
+        self.inner.database().shard_count()
+    }
+
+    /// Mint a fresh `WorkflowId` whose durable shard this node currently owns, so
+    /// an unsteered `start` lands locally and never fences (R-1 stopgap, §2.4).
+    ///
+    /// Returns `None` when this node owns every shard (`owned_shards() == None`):
+    /// any id is already local, so the caller should NOT remint and should let
+    /// the engine mint as usual — keeping the single-node / own-all path
+    /// byte-identical. Otherwise it draws fresh v4 ids and returns the first
+    /// whose `shard_for_workflow` is owned, bounded by `max_attempts` tries
+    /// (callers pass a multiple of `shard_count` so the probability of exhausting
+    /// the budget without hitting an owned shard is negligible); `None` on
+    /// exhaustion lets the caller fall back rather than spin unbounded.
+    #[must_use]
+    pub fn remint_for_owned_shard(&self, max_attempts: usize) -> Option<WorkflowId> {
+        // Own-all scope: nothing to remint toward — every shard is already local.
+        self.owned_shards()?;
+        for _ in 0..max_attempts {
+            let candidate = WorkflowId::new_v4();
+            if self.owns_workflow_shard(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     /// Snapshot the owned-shard scope as an owned `Option<Vec<usize>>` suitable
     /// for moving into a `self.blocking` closure (which only borrows the
     /// `EventStore`, not `self`). `None` = all shards.
@@ -916,8 +948,32 @@ fn replicate_events(
             expected: expected_seq,
             found: actual,
         }),
+        // A quorum write that is deterministically out-voted (the owner's promised
+        // ballot fenced this proposal) means THIS node is not the shard's current
+        // owner. haematite surfaces that as a `ConsistencyError` carrying the
+        // `ConsistencyError::Fenced` Display text; map it to the typed, retryable
+        // `NotOwner` so the request-routing edge can re-resolve/forward instead of
+        // seeing an opaque `Backend` internal error (R-0). Any other consistency
+        // failure (quorum unavailable, transport, timeout) is a genuine backend
+        // boundary failure and stays `Backend`.
+        Err(DatabaseError::ConsistencyError(ref message)) if is_fence_message(message) => {
+            Err(StoreError::NotOwner {
+                shard: database.shard_for(stream_key),
+            })
+        }
         Err(error) => Err(database_error(&error)),
     }
+}
+
+/// Whether a haematite `ConsistencyError` Display string is the CAS-reject fence
+/// (`ConsistencyError::Fenced`) — the signal that this node is not the shard's
+/// current owner. haematite reports the fence as a stringly-typed
+/// `DatabaseError::ConsistencyError`, so the writer side matches on the stable
+/// fence marker the `Fenced` variant renders (`"fenced by CAS rejects"`). This
+/// is the minimal, repo-local detection until haematite exposes a typed fence
+/// variant (then this becomes a typed match).
+fn is_fence_message(message: &str) -> bool {
+    message.contains("fenced by CAS rejects")
 }
 
 /// The current stored head (event count) for `workflow_id`.
@@ -1967,6 +2023,46 @@ mod tests {
             1,
             "package route survives reopen"
         );
+        Ok(())
+    }
+
+    /// R-0: the fence detector must recognise the exact `ConsistencyError::Fenced`
+    /// Display text haematite wraps into `DatabaseError::ConsistencyError`, and
+    /// must NOT misclassify other consistency failures (quorum-unavailable,
+    /// transport, timeout) as a fence.
+    #[test]
+    fn fence_message_detector_matches_only_the_cas_reject_fence() {
+        // The literal Display of `ConsistencyError::Fenced` (haematite
+        // sync/consistency.rs), as wrapped by `DatabaseError::ConsistencyError`.
+        let fenced = "consistency requirement failed: fenced by CAS rejects: \
+            required 2 accepts, only 1 still possible";
+        assert!(super::is_fence_message(fenced));
+
+        let quorum_unavailable = "consistency requirement failed: quorum cannot be \
+            reached: required 2 acknowledgments, only 1 possible";
+        assert!(!super::is_fence_message(quorum_unavailable));
+
+        let transport = "consistency requirement failed: distribution transport \
+            unavailable for quorum write";
+        assert!(!super::is_fence_message(transport));
+    }
+
+    /// R-1: an own-all scope (the single-node default) reminting yields `None`
+    /// (any id is already local); a subset scope yields an id on an owned shard.
+    #[test]
+    fn remint_for_owned_shard_respects_scope() -> Result<(), StoreError> {
+        let store = HaematiteStore::create_with_shard_count(unique_dir("remint"), 4)?;
+        // Own-all: nothing to remint toward.
+        assert!(store.remint_for_owned_shard(64).is_none());
+
+        store.set_owned_shards([2]);
+        let Some(reminted) = store.remint_for_owned_shard(store.shard_count() * 16) else {
+            return Err(StoreError::Backend(
+                "a subset-owning store must remint an owned-shard id".to_owned(),
+            ));
+        };
+        assert!(store.owns_workflow_shard(&reminted));
+        assert_eq!(store.shard_for_workflow(&reminted), 2);
         Ok(())
     }
 }

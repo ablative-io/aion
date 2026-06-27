@@ -32,6 +32,121 @@ impl WorkflowGrpcService {
     async fn caller<T>(&self, request: &Request<T>) -> Result<CallerIdentity, Status> {
         caller_from_metadata(request.metadata(), &self.state).await
     }
+
+    /// Resolve routing for a signal/query/cancel at the edge (R-1/R-2/R-3).
+    ///
+    /// Returns:
+    /// - [`RouteResolution::Local`] — proceed to the local engine handler. This
+    ///   is the only outcome for single-node / non-clustered boots (no cluster
+    ///   store), so the default path is unchanged.
+    /// - [`RouteResolution::Reply`] — the request was forwarded to the owner and
+    ///   this is its relayed reply.
+    /// - [`RouteResolution::Reject`] — return this typed `NotOwner` status (no
+    ///   forward target, hop cap exceeded, or re-resolution still off-owner).
+    ///
+    /// `workflow_id` is the request's (optional) proto id; a missing/malformed id
+    /// is left to the handler's existing validation (routing only acts on a
+    /// well-formed target). `metadata` is the inbound caller metadata — copied
+    /// onto the forward so the owner authorizes identically — and carries the hop
+    /// count for loop prevention. `request` is the verbatim RPC to relay.
+    #[cfg(feature = "haematite-backend")]
+    async fn resolve_route(
+        &self,
+        workflow_id: Option<aion_proto::ProtoWorkflowId>,
+        metadata: &tonic::metadata::MetadataMap,
+        request: crate::routing::ForwardRequest,
+    ) -> RouteResolution {
+        use crate::routing::{RouteDecision, route_mutation};
+        let Some(cluster_store) = self.state.cluster_store() else {
+            return RouteResolution::Local;
+        };
+        let Some(proto) = workflow_id else {
+            return RouteResolution::Local;
+        };
+        let Ok(workflow_id) = aion_core::WorkflowId::try_from(proto) else {
+            return RouteResolution::Local;
+        };
+        let directory = self
+            .state
+            .shard_directory()
+            .map(|directory| directory.as_ref() as &dyn crate::routing::ShardDirectory);
+        match route_mutation(Some(cluster_store.as_ref()), directory, &workflow_id) {
+            RouteDecision::Local => RouteResolution::Local,
+            RouteDecision::NotOwner { shard } => RouteResolution::Reject(not_owner_status(shard)),
+            RouteDecision::Forward { owner, shard } => {
+                self.forward_or_reject(owner, shard, metadata, request)
+                    .await
+            }
+        }
+    }
+
+    /// Forward a resolved non-local request to `owner`, enforcing the hop cap and
+    /// returning a typed `NotOwner` rather than forwarding when the owner is not
+    /// forwardable, the cap is exceeded, or the forward itself reports the target
+    /// is stale (§2.5: re-resolve-or-reject discipline).
+    #[cfg(feature = "haematite-backend")]
+    async fn forward_or_reject(
+        &self,
+        owner: crate::routing::NodeRef,
+        shard: usize,
+        metadata: &tonic::metadata::MetadataMap,
+        request: crate::routing::ForwardRequest,
+    ) -> RouteResolution {
+        use crate::routing::{MAX_FORWARD_HOPS, current_hops};
+        // Loop prevention: a request that has already taken the maximum number of
+        // hops is not forwarded again — break the chain with NotOwner so the
+        // original caller re-resolves with backoff.
+        if current_hops(metadata) >= MAX_FORWARD_HOPS {
+            return RouteResolution::Reject(not_owner_status(shard));
+        }
+        // A known-but-not-forwardable owner (no declared gRPC address) → NotOwner.
+        let Some(target) = owner.grpc_addr else {
+            return RouteResolution::Reject(not_owner_status(shard));
+        };
+        let Some(forwarder) = self.state.request_forwarder() else {
+            return RouteResolution::Reject(not_owner_status(shard));
+        };
+        match forwarder.forward(target, metadata.clone(), request).await {
+            Ok(reply) => RouteResolution::Reply(reply),
+            // The forward target is stale or unreachable (it may have just died /
+            // not yet adopted). Return NotOwner so the caller re-resolves; under
+            // the v1.5 overlay the directory then sees the target down (§2.5).
+            Err(_status) => RouteResolution::Reject(not_owner_status(shard)),
+        }
+    }
+
+    /// R-1 unsteered-start placement: an id re-minted onto a locally-owned shard
+    /// when this clustered node owns only a subset of shards, else `None` (engine
+    /// mints as usual — the default path).
+    #[cfg(feature = "haematite-backend")]
+    fn start_placement(&self) -> Option<aion_core::WorkflowId> {
+        use crate::routing::{RemintOutcome, route_start};
+        match route_start(self.state.cluster_store().map(AsRef::as_ref)) {
+            RemintOutcome::UseId(workflow_id) => Some(workflow_id),
+            RemintOutcome::EngineMint => None,
+        }
+    }
+}
+
+/// The edge's routing outcome for a signal/query/cancel (R-3).
+#[cfg(feature = "haematite-backend")]
+enum RouteResolution {
+    /// Proceed to the local engine handler.
+    Local,
+    /// The request was forwarded; relay this reply to the caller.
+    Reply(crate::routing::ForwardReply),
+    /// Return this typed `NotOwner` status to the caller.
+    Reject(Status),
+}
+
+/// Build the typed retryable `NotOwner` tonic status for shard `shard` (R-1).
+#[cfg(feature = "haematite-backend")]
+fn not_owner_status(shard: usize) -> Status {
+    let wire = WireError::not_owner(format!(
+        "workflow shard {shard} is owned by another cluster node"
+    ))
+    .with_error_type("NotOwner");
+    status_from_wire_error(wire)
 }
 
 /// Construct the generated tonic server wrapper.
@@ -52,10 +167,19 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
             ));
         }
         let caller = self.caller(&request).await?;
-        let response = handlers::start(
+        // R-1: place an unsteered start on a locally-owned shard so it never
+        // fences. `placement` is `None` for single-node / non-clustered boots
+        // (and own-all scope), so the engine mints as usual — default path
+        // unchanged. Without the cluster backend there is no placement at all.
+        #[cfg(feature = "haematite-backend")]
+        let placement = self.start_placement();
+        #[cfg(not(feature = "haematite-backend"))]
+        let placement: Option<aion_core::WorkflowId> = None;
+        let response = handlers::start_with_placement(
             self.state.namespace_guard(),
             &caller,
             decode_start_request(request.into_inner()),
+            placement,
         )
         .await
         .map_err(status_from_wire_error)?;
@@ -67,14 +191,49 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::SignalRequest>,
     ) -> Result<Response<generated::SignalResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::signal(
-            self.state.namespace_guard(),
-            &caller,
-            decode_signal_request(request.into_inner()),
-        )
-        .await
-        .map_err(status_from_wire_error)?;
-        Ok(Response::new(encode_signal_response(response)))
+        #[cfg(feature = "haematite-backend")]
+        {
+            use crate::routing::{ForwardReply, ForwardRequest};
+            let (metadata, _ext, inner) = request.into_parts();
+            let workflow_id = inner.workflow_id.clone().map(decode_workflow_id);
+            match self
+                .resolve_route(
+                    workflow_id,
+                    &metadata,
+                    ForwardRequest::Signal(inner.clone()),
+                )
+                .await
+            {
+                RouteResolution::Reject(status) => return Err(status),
+                RouteResolution::Reply(ForwardReply::Signal(reply)) => {
+                    return Ok(Response::new(reply));
+                }
+                RouteResolution::Reply(_) => {
+                    return Err(Status::internal("forwarder returned a mismatched reply"));
+                }
+                RouteResolution::Local => {
+                    let response = handlers::signal(
+                        self.state.namespace_guard(),
+                        &caller,
+                        decode_signal_request(inner),
+                    )
+                    .await
+                    .map_err(status_from_wire_error)?;
+                    return Ok(Response::new(encode_signal_response(response)));
+                }
+            }
+        }
+        #[cfg(not(feature = "haematite-backend"))]
+        {
+            let response = handlers::signal(
+                self.state.namespace_guard(),
+                &caller,
+                decode_signal_request(request.into_inner()),
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            Ok(Response::new(encode_signal_response(response)))
+        }
     }
 
     async fn query(
@@ -82,14 +241,45 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::QueryRequest>,
     ) -> Result<Response<generated::QueryResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::query(
-            self.state.namespace_guard(),
-            &caller,
-            decode_query_request(request.into_inner()),
-        )
-        .await
-        .map_err(status_from_wire_error)?;
-        Ok(Response::new(encode_query_response(response)))
+        #[cfg(feature = "haematite-backend")]
+        {
+            use crate::routing::{ForwardReply, ForwardRequest};
+            let (metadata, _ext, inner) = request.into_parts();
+            let workflow_id = inner.workflow_id.clone().map(decode_workflow_id);
+            match self
+                .resolve_route(workflow_id, &metadata, ForwardRequest::Query(inner.clone()))
+                .await
+            {
+                RouteResolution::Reject(status) => return Err(status),
+                RouteResolution::Reply(ForwardReply::Query(reply)) => {
+                    return Ok(Response::new(reply));
+                }
+                RouteResolution::Reply(_) => {
+                    return Err(Status::internal("forwarder returned a mismatched reply"));
+                }
+                RouteResolution::Local => {
+                    let response = handlers::query(
+                        self.state.namespace_guard(),
+                        &caller,
+                        decode_query_request(inner),
+                    )
+                    .await
+                    .map_err(status_from_wire_error)?;
+                    return Ok(Response::new(encode_query_response(response)));
+                }
+            }
+        }
+        #[cfg(not(feature = "haematite-backend"))]
+        {
+            let response = handlers::query(
+                self.state.namespace_guard(),
+                &caller,
+                decode_query_request(request.into_inner()),
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            Ok(Response::new(encode_query_response(response)))
+        }
     }
 
     async fn cancel(
@@ -97,14 +287,49 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         request: Request<generated::CancelRequest>,
     ) -> Result<Response<generated::CancelResponse>, Status> {
         let caller = self.caller(&request).await?;
-        let response = handlers::cancel(
-            self.state.namespace_guard(),
-            &caller,
-            decode_cancel_request(request.into_inner()),
-        )
-        .await
-        .map_err(status_from_wire_error)?;
-        Ok(Response::new(encode_cancel_response(response)))
+        #[cfg(feature = "haematite-backend")]
+        {
+            use crate::routing::{ForwardReply, ForwardRequest};
+            let (metadata, _ext, inner) = request.into_parts();
+            let workflow_id = inner.workflow_id.clone().map(decode_workflow_id);
+            match self
+                .resolve_route(
+                    workflow_id,
+                    &metadata,
+                    ForwardRequest::Cancel(inner.clone()),
+                )
+                .await
+            {
+                RouteResolution::Reject(status) => return Err(status),
+                RouteResolution::Reply(ForwardReply::Cancel(reply)) => {
+                    return Ok(Response::new(reply));
+                }
+                RouteResolution::Reply(_) => {
+                    return Err(Status::internal("forwarder returned a mismatched reply"));
+                }
+                RouteResolution::Local => {
+                    let response = handlers::cancel(
+                        self.state.namespace_guard(),
+                        &caller,
+                        decode_cancel_request(inner),
+                    )
+                    .await
+                    .map_err(status_from_wire_error)?;
+                    return Ok(Response::new(encode_cancel_response(response)));
+                }
+            }
+        }
+        #[cfg(not(feature = "haematite-backend"))]
+        {
+            let response = handlers::cancel(
+                self.state.namespace_guard(),
+                &caller,
+                decode_cancel_request(request.into_inner()),
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            Ok(Response::new(encode_cancel_response(response)))
+        }
     }
 
     async fn list_workflows(
@@ -391,7 +616,12 @@ fn grpc_code(code: aion_proto::WireErrorCode) -> Code {
         aion_proto::WireErrorCode::NamespaceDenied | aion_proto::WireErrorCode::DeployDenied => {
             Code::PermissionDenied
         }
-        aion_proto::WireErrorCode::SequenceConflict => Code::Aborted,
+        // Wrong-shard-owner (fenced) is a retryable routing signal: surface it as
+        // `Aborted`, the same retryable code the CAS `SequenceConflict` precedent
+        // uses (R-0). A routing-aware caller re-resolves the owner and retries.
+        aion_proto::WireErrorCode::SequenceConflict | aion_proto::WireErrorCode::NotOwner => {
+            Code::Aborted
+        }
         aion_proto::WireErrorCode::UnknownQuery | aion_proto::WireErrorCode::InvalidInput => {
             Code::InvalidArgument
         }
@@ -727,6 +957,14 @@ mod tests {
             tokio::task::yield_now().await;
             Ok(ServerState::from_parts(resolver, runtime))
         }
+    }
+
+    /// R-0: the typed wrong-shard-owner fence maps to the retryable `Aborted`
+    /// gRPC code (the same code the CAS `SequenceConflict` precedent uses), not
+    /// the opaque `Internal` the stringly-typed fence used to collapse into.
+    #[test]
+    fn not_owner_wire_code_maps_to_retryable_aborted() {
+        assert_eq!(grpc_code(WireErrorCode::NotOwner), Code::Aborted);
     }
 
     #[tokio::test]

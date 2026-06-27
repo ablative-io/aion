@@ -42,6 +42,8 @@ mod internal_workflow;
 pub mod namespace;
 /// Health, metrics, and tracing support.
 pub mod observability;
+/// Distributed request routing: the gRPC-edge availability layer over the fence.
+pub mod routing;
 /// Server run loop: configuration load, transports, and graceful shutdown.
 pub mod run;
 /// Cooperative shutdown and drain handling.

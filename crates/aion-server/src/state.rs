@@ -62,6 +62,17 @@ struct ServerStateInner {
     /// adopts on its death). Empty for non-distributed boots.
     #[cfg(feature = "haematite-backend")]
     watched_peers: Vec<crate::cluster::WatchedPeer>,
+    /// The request-routing shard directory (R-2), built over the cluster store +
+    /// static peer config. `None` for every non-distributed boot, so the routing
+    /// edge falls back to the bare R-1 ownership check (and the default path is a
+    /// no-op).
+    #[cfg(feature = "haematite-backend")]
+    shard_directory: Option<Arc<crate::routing::StaticShardDirectory>>,
+    /// The request forwarder (R-3): relays a non-local signal/query/cancel to the
+    /// shard owner's gRPC address. `None` for non-distributed boots. The trait
+    /// object makes the liminal forwarder a one-line swap when 13-L0/L1 land (R-6).
+    #[cfg(feature = "haematite-backend")]
+    request_forwarder: Option<Arc<dyn crate::routing::RequestForwarder>>,
     #[cfg(feature = "auth")]
     jwks_cache: Option<JwksCache>,
 }
@@ -105,26 +116,15 @@ impl ServerState {
         let cluster_store = connected.cluster_store;
         #[cfg(feature = "haematite-backend")]
         let watched_peers = connected.watched_peers;
-        // The server unconditionally mounts /events/stream, so the engine's
-        // broadcast channel must be installed and explicitly sized here —
-        // a mounted-but-unconfigured streaming endpoint is never acceptable.
-        let event_broadcast_capacity = runtime
-            .websocket
-            .event_broadcast_capacity
-            .and_then(std::num::NonZeroUsize::new)
-            .ok_or_else(|| ServerError::Config {
-                message: crate::config::EVENT_BROADCAST_CAPACITY_REQUIRED.to_owned(),
-            })?;
-        // The server unconditionally mounts /workflows/query, so the engine's
-        // query seam must be installed with an explicitly configured reply
-        // deadline here — a mounted-but-unconfigured query surface is never
-        // acceptable.
-        let query_timeout = runtime
-            .query_timeout
-            .filter(|timeout| !timeout.is_zero())
-            .ok_or_else(|| ServerError::Config {
-                message: crate::config::QUERY_TIMEOUT_REQUIRED.to_owned(),
-            })?;
+        // Build the R-2 directory + R-3 forwarder over the (live, failover-aware)
+        // cluster store and static peer config. Both present only for a
+        // distributed boot; `None` otherwise leaves the routing edge a no-op.
+        #[cfg(feature = "haematite-backend")]
+        let RoutingState {
+            shard_directory,
+            request_forwarder,
+        } = build_routing_state(cluster_store.as_ref(), connected.directory_peers);
+        let (event_broadcast_capacity, query_timeout) = required_engine_seams(&runtime)?;
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
         let instrumented_store = Arc::new(InstrumentedEventStore::new(
             store.clone(),
@@ -200,6 +200,10 @@ impl ServerState {
                 cluster_store,
                 #[cfg(feature = "haematite-backend")]
                 watched_peers,
+                #[cfg(feature = "haematite-backend")]
+                shard_directory,
+                #[cfg(feature = "haematite-backend")]
+                request_forwarder,
                 #[cfg(feature = "auth")]
                 jwks_cache,
             }),
@@ -228,6 +232,10 @@ impl ServerState {
                 cluster_store: None,
                 #[cfg(feature = "haematite-backend")]
                 watched_peers: Vec::new(),
+                #[cfg(feature = "haematite-backend")]
+                shard_directory: None,
+                #[cfg(feature = "haematite-backend")]
+                request_forwarder: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -296,6 +304,10 @@ impl ServerState {
                 cluster_store: None,
                 #[cfg(feature = "haematite-backend")]
                 watched_peers: Vec::new(),
+                #[cfg(feature = "haematite-backend")]
+                shard_directory: None,
+                #[cfg(feature = "haematite-backend")]
+                request_forwarder: None,
                 #[cfg(feature = "auth")]
                 jwks_cache: None,
             }),
@@ -384,6 +396,33 @@ impl ServerState {
     #[must_use]
     pub fn is_clustered(&self) -> bool {
         self.inner.cluster_responder.is_some()
+    }
+
+    /// The concrete distributed haematite store the request-routing edge consults
+    /// for shard ownership (`shard_for_workflow` / `owns_workflow_shard`) and
+    /// unsteered-start remint. `None` for every single-node / non-clustered boot,
+    /// so the routing pre-step is a no-op and the default path is unchanged.
+    #[cfg(feature = "haematite-backend")]
+    #[must_use]
+    pub fn cluster_store(&self) -> Option<&Arc<aion_store_haematite::HaematiteStore>> {
+        self.inner.cluster_store.as_ref()
+    }
+
+    /// The request-routing shard directory (R-2) the edge consults to resolve a
+    /// non-owned shard's owner. `None` for single-node / non-clustered boots, so
+    /// the edge falls back to the bare R-1 ownership check.
+    #[cfg(feature = "haematite-backend")]
+    #[must_use]
+    pub fn shard_directory(&self) -> Option<&Arc<crate::routing::StaticShardDirectory>> {
+        self.inner.shard_directory.as_ref()
+    }
+
+    /// The R-3 request forwarder used to relay a non-local signal/query/cancel to
+    /// the shard owner. `None` for single-node / non-clustered boots.
+    #[cfg(feature = "haematite-backend")]
+    #[must_use]
+    pub fn request_forwarder(&self) -> Option<&Arc<dyn crate::routing::RequestForwarder>> {
+        self.inner.request_forwarder.as_ref()
     }
 
     /// Spawn the SS-5b cluster supervisor: a background task that watches every
@@ -539,6 +578,59 @@ async fn build_engine(assembly: EngineAssembly<'_>) -> Result<aion::Engine, Serv
     builder.build().await.map_err(ServerError::from)
 }
 
+/// Validate the two engine seams the server unconditionally mounts: the event
+/// broadcast channel capacity (`/events/stream`) and the query reply deadline
+/// (`/workflows/query`). Both are explicit-no-default — a mounted-but-
+/// unconfigured surface is never acceptable.
+fn required_engine_seams(
+    runtime: &RuntimeConfig,
+) -> Result<(std::num::NonZeroUsize, std::time::Duration), ServerError> {
+    let event_broadcast_capacity = runtime
+        .websocket
+        .event_broadcast_capacity
+        .and_then(std::num::NonZeroUsize::new)
+        .ok_or_else(|| ServerError::Config {
+            message: crate::config::EVENT_BROADCAST_CAPACITY_REQUIRED.to_owned(),
+        })?;
+    let query_timeout = runtime
+        .query_timeout
+        .filter(|timeout| !timeout.is_zero())
+        .ok_or_else(|| ServerError::Config {
+            message: crate::config::QUERY_TIMEOUT_REQUIRED.to_owned(),
+        })?;
+    Ok((event_broadcast_capacity, query_timeout))
+}
+
+/// The request-routing pieces built from the cluster store + peer config.
+#[cfg(feature = "haematite-backend")]
+struct RoutingState {
+    shard_directory: Option<Arc<crate::routing::StaticShardDirectory>>,
+    request_forwarder: Option<Arc<dyn crate::routing::RequestForwarder>>,
+}
+
+/// Build the R-2 shard directory and R-3 request forwarder over the cluster
+/// store and static peer config, or all-`None` when this is not a distributed
+/// boot (no cluster store) so the routing edge is a no-op (default path).
+#[cfg(feature = "haematite-backend")]
+fn build_routing_state(
+    cluster_store: Option<&Arc<aion_store_haematite::HaematiteStore>>,
+    directory_peers: Vec<crate::routing::DirectoryPeer>,
+) -> RoutingState {
+    let Some(store) = cluster_store else {
+        return RoutingState {
+            shard_directory: None,
+            request_forwarder: None,
+        };
+    };
+    RoutingState {
+        shard_directory: Some(Arc::new(crate::routing::StaticShardDirectory::new(
+            Arc::clone(store),
+            directory_peers,
+        ))),
+        request_forwarder: Some(Arc::new(crate::routing::GrpcRequestForwarder::new())),
+    }
+}
+
 /// A connected durable store plus the lifecycle pieces the boot path needs.
 ///
 /// `outbox_store` is the SAME leaf store cast as an [`OutboxStore`] for backends
@@ -563,6 +655,11 @@ struct ConnectedStore {
     /// adopts on its death. Empty for non-distributed boots.
     #[cfg(feature = "haematite-backend")]
     watched_peers: Vec<crate::cluster::WatchedPeer>,
+    /// The static shard-directory peer entries (name + declared shards + gRPC
+    /// forward address) used to build the request-routing directory (R-2). Empty
+    /// for non-distributed boots.
+    #[cfg(feature = "haematite-backend")]
+    directory_peers: Vec<crate::routing::DirectoryPeer>,
 }
 
 impl ConnectedStore {
@@ -579,6 +676,8 @@ impl ConnectedStore {
             cluster_store: None,
             #[cfg(feature = "haematite-backend")]
             watched_peers: Vec::new(),
+            #[cfg(feature = "haematite-backend")]
+            directory_peers: Vec::new(),
         }
     }
 }
@@ -683,6 +782,22 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
                 .collect()
         })
         .unwrap_or_default();
+    // The static shard-directory entries (R-2): each peer's declared shards plus
+    // its gRPC forward address. Built from the same config the supervisor uses.
+    let directory_peers: Vec<crate::routing::DirectoryPeer> = cluster
+        .as_ref()
+        .map(|cluster| {
+            cluster
+                .peers
+                .iter()
+                .map(|peer| crate::routing::DirectoryPeer {
+                    name: peer.name.clone(),
+                    owned_shards: peer.owned_shards.clone(),
+                    grpc_addr: peer.grpc_address,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // Construction (and, for the distributed path, the off-runtime endpoint bind)
     // must not stall the async runtime, so run it on the blocking pool. The
     // distributed constructor itself steps onto a bare thread for the bind.
@@ -710,10 +825,10 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
     // where the SS-5b supervisor will poll it for peer liveness. A single-node
     // boot has no peers, so it carries no cluster store and never supervises.
     let cluster_store = responder.as_ref().map(|_| leaf);
-    let watched_peers = if cluster_store.is_some() {
-        watched_peers
+    let (watched_peers, directory_peers) = if cluster_store.is_some() {
+        (watched_peers, directory_peers)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     Ok(ConnectedStore {
         event_store,
@@ -722,6 +837,7 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
         cluster_responder: responder,
         cluster_store,
         watched_peers,
+        directory_peers,
     })
 }
 
