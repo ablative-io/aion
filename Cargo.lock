@@ -213,6 +213,7 @@ dependencies = [
  "aion-proto",
  "aion-rs",
  "aion-store",
+ "aion-store-haematite",
  "aion-store-libsql",
  "aion-toolchain",
  "aion-worker",

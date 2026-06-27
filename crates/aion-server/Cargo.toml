@@ -20,6 +20,12 @@ aion = { package = "aion-rs", version = "0.7.0", path = "../aion" }
 aion-proto = { version = "0.7.0", path = "../aion-proto", features = ["generated"] }
 aion-store-libsql = { version = "0.7.0", path = "../aion-store-libsql" }
 aion-store = { version = "0.7.0", path = "../aion-store" }
+# Single-node haematite event-store backend. OPTIONAL and OFF by default: a
+# default aion-server build does not link aion-store-haematite (nor its
+# transitive haematite engine), so the default dependency surface and backend
+# selection are byte-identical to before. Enabled only by the
+# `haematite-backend` feature, which lights up the `backend = haematite` arm.
+aion-store-haematite = { version = "0.7.0", path = "../aion-store-haematite", optional = true }
 aion-package = { version = "0.7.0", path = "../aion-package" }
 # Server-side authoring toolchain. It embeds NO Gleam compiler — it only
 # spawns the external `gleam` binary — so depending on it adds no compiler to
@@ -84,3 +90,8 @@ auth = ["dep:jsonwebtoken", "dep:reqwest"]
 # default build is byte-identical and never links liminal-sdk/beamr. When on,
 # `outbox.transport = liminal` selects the liminal dispatch + completion path.
 liminal-transport = ["dep:liminal-sdk", "dep:liminal-server"]
+# Selectable haematite event-store backend. OFF by default so a default build is
+# byte-identical and never links aion-store-haematite/haematite. When on,
+# `store.backend = haematite` constructs a single-node HaematiteStore rooted at
+# `store.data_dir` with `store.shard_count` shards.
+haematite-backend = ["dep:aion-store-haematite"]

@@ -413,6 +413,7 @@ fn store_backend_label(backend: StoreBackend) -> &'static str {
     match backend {
         StoreBackend::Memory => "memory",
         StoreBackend::LibSql => "libsql",
+        StoreBackend::Haematite => "haematite",
     }
 }
 

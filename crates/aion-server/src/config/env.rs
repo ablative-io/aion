@@ -34,6 +34,15 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
                     config.store.backend = StoreBackend::LibSql;
                 }
             }
+            "AION_STORE_DATA_DIR" => {
+                if value.is_empty() {
+                    return config_error("AION_STORE_DATA_DIR must not be empty");
+                }
+                config.store.data_dir = Some(value);
+            }
+            "AION_STORE_SHARD_COUNT" => {
+                config.store.shard_count = parse_positive_usize(&name, &value)?;
+            }
             "AION_RUNTIME_SCHEDULER_THREADS" => {
                 config.runtime.scheduler_threads = parse_positive_usize(&name, &value)?;
             }
@@ -151,7 +160,8 @@ fn parse_store_backend(name: &str, value: &str) -> Result<StoreBackend, ServerEr
     match value.to_ascii_lowercase().as_str() {
         "memory" => Ok(StoreBackend::Memory),
         "libsql" => Ok(StoreBackend::LibSql),
-        _ => config_error(format!("{name} must be one of: memory, libsql")),
+        "haematite" => Ok(StoreBackend::Haematite),
+        _ => config_error(format!("{name} must be one of: memory, libsql, haematite")),
     }
 }
 
