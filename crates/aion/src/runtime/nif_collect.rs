@@ -304,6 +304,9 @@ fn dispatch_unscheduled(
             super::nif_activity::correlation_id(*ordinal),
             ActivityDispatch {
                 namespace: namespace.clone(),
+                // No workflow-level task_queue selection yet (NSTQ-4); fan-out
+                // dispatches land on the named default pool within the namespace.
+                task_queue: String::from("default"),
                 workflow_id: workflow_id.clone(),
                 activity_id: ActivityId::from_sequence_position(*ordinal),
                 name: spec.name.clone(),

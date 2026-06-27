@@ -29,7 +29,9 @@ struct Args {
     endpoint: String,
     /// Maximum concurrent activity executions.
     concurrency: usize,
-    /// Task queue (namespace) to register on.
+    /// Namespace (correctness/isolation boundary) to register into.
+    namespace: String,
+    /// Task queue (pool/flavour selector within the namespace) to serve.
     task_queue: String,
 }
 
@@ -38,6 +40,7 @@ fn parse_args() -> anyhow::Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut endpoint = None;
     let mut concurrency = None;
+    let mut namespace = None;
     let mut task_queue = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -55,6 +58,10 @@ fn parse_args() -> anyhow::Result<Args> {
                         .context("--concurrency must be a positive integer")?,
                 );
             }
+            "--namespace" => {
+                let value = args.next().context("--namespace requires a value")?;
+                namespace = Some(value);
+            }
             "--task-queue" => {
                 let value = args.next().context("--task-queue requires a value")?;
                 task_queue = Some(value);
@@ -62,7 +69,8 @@ fn parse_args() -> anyhow::Result<Args> {
             other => {
                 bail!(
                     "unknown argument `{other}`\nusage: stacked-dev-worker \
-                     --endpoint <grpc-url> [--concurrency <n>] [--task-queue <name>]"
+                     --endpoint <grpc-url> [--concurrency <n>] [--namespace <name>] \
+                     [--task-queue <name>]"
                 )
             }
         }
@@ -72,6 +80,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "missing required --endpoint <grpc-url> (the server's [server] grpc_address)",
         )?,
         concurrency: concurrency.unwrap_or(4),
+        namespace: namespace.unwrap_or_else(|| "default".to_owned()),
         task_queue: task_queue.unwrap_or_else(|| "default".to_owned()),
     })
 }
@@ -153,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
     // yet; usize::MAX is the honest spelling of that intent.
     let config = WorkerConfig::builder()
         .endpoint(cli.endpoint)
-        .namespace(&cli.task_queue)
+        .namespace(&cli.namespace)
         .task_queue(&cli.task_queue)
         .identity("stacked-dev-worker-1")
         .max_concurrency(cli.concurrency)

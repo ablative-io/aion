@@ -207,6 +207,9 @@ fn dispatch_activity_with_context(
             let labels = labels_from_config(&call.config);
             let request = ActivityDispatch {
                 namespace,
+                // No workflow-level task_queue selection yet (NSTQ-4); every
+                // dispatch lands on the named default pool within its namespace.
+                task_queue: String::from("default"),
                 workflow_id: context.workflow_id().clone(),
                 activity_id,
                 name: call.name,
@@ -785,6 +788,7 @@ mod tests {
                 super::correlation_id(0),
                 ActivityDispatch {
                     namespace: String::from("default"),
+                    task_queue: String::from("default"),
                     workflow_id: WorkflowId::new_v4(),
                     activity_id: ActivityId::from_sequence_position(0),
                     name: "gated".to_owned(),

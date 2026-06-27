@@ -16,9 +16,15 @@ use tracing::{Instrument, info_span};
 /// Scheduled remote activity that must be placed with a connected worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduledActivity {
-    /// Namespace selected by the adapter boundary before dispatch.
+    /// Namespace selected by the adapter boundary before dispatch — the
+    /// correctness/isolation boundary the activity may dispatch within.
     pub namespace: String,
-    /// Activity type to match against worker registrations.
+    /// Task queue (pool/flavour) selected within the namespace. The worker-pool
+    /// address is `(namespace, task_queue)`; an empty value is normalized to the
+    /// named default pool by the registry lookup.
+    pub task_queue: String,
+    /// Activity type to match against worker registrations, *within* the
+    /// selected pool.
     pub activity_type: String,
     /// Owning workflow id.
     pub workflow_id: WorkflowId,
@@ -87,6 +93,7 @@ impl ActivityDispatcher {
             "activity_dispatch",
             operation = "activity_dispatch",
             namespace = %activity.namespace,
+            task_queue = %activity.task_queue,
             workflow_id = %activity.workflow_id,
             activity_id = %activity.activity_id,
             activity_type = %activity.activity_type,
@@ -98,14 +105,17 @@ impl ActivityDispatcher {
             let workers = loop {
                 self.drain_state
                     .ensure_accepting(&activity.namespace, &activity.activity_type)?;
-                let candidates = self
-                    .registry
-                    .workers_for(&activity.namespace, &activity.activity_type)?;
+                let candidates = self.registry.workers_for(
+                    &activity.namespace,
+                    &activity.task_queue,
+                    &activity.activity_type,
+                )?;
                 if !candidates.is_empty() {
                     break candidates;
                 }
                 tracing::info!(
                     namespace = %activity.namespace,
+                    task_queue = %activity.task_queue,
                     activity_type = %activity.activity_type,
                     workflow_id = %activity.workflow_id,
                     activity_id = %activity.activity_id,
@@ -132,7 +142,11 @@ impl ActivityDispatcher {
             Err(ServerError::worker_dispatch(
                 activity.namespace.clone(),
                 activity.activity_type.clone(),
-                "all matching worker streams closed before task could be delivered",
+                format!(
+                    "all matching worker streams in task queue {} closed before task could be \
+                     delivered",
+                    activity.task_queue
+                ),
             ))
         }
         .instrument(span)
@@ -141,6 +155,7 @@ impl ActivityDispatcher {
             log_dispatch_error(
                 "activity_dispatch",
                 &activity.namespace,
+                &activity.task_queue,
                 &activity.workflow_id,
                 &activity.activity_id,
                 &activity.activity_type,
@@ -153,6 +168,7 @@ impl ActivityDispatcher {
 fn log_dispatch_error(
     operation: &'static str,
     namespace: &str,
+    task_queue: &str,
     workflow_id: &WorkflowId,
     activity_id: &ActivityId,
     activity_type: &str,
@@ -162,6 +178,7 @@ fn log_dispatch_error(
     tracing::error!(
         operation,
         namespace,
+        task_queue,
         workflow_id = %workflow_id,
         activity_id = %activity_id,
         activity_type,
@@ -311,6 +328,7 @@ mod tests {
         let input = payload(&json!({"amount": 1200}))?;
         let scheduled = ScheduledActivity {
             namespace: String::from("tenant-a"),
+            task_queue: String::from("default"),
             activity_type: String::from("charge-card"),
             workflow_id: workflow_id(),
             activity_id: activity_id(),
@@ -342,6 +360,7 @@ mod tests {
         let dispatcher = ActivityDispatcher::new(registry.clone());
         let scheduled = ScheduledActivity {
             namespace: String::from("tenant-a"),
+            task_queue: String::from("default"),
             activity_type: String::from("charge-card"),
             workflow_id: workflow_id(),
             activity_id: activity_id(),
@@ -384,6 +403,7 @@ mod tests {
         let dispatcher = ActivityDispatcher::new(registry.clone());
         let scheduled = ScheduledActivity {
             namespace: String::from("tenant-a"),
+            task_queue: String::from("default"),
             activity_type: String::from("charge-card"),
             workflow_id: workflow_id(),
             activity_id: activity_id(),
@@ -396,7 +416,12 @@ mod tests {
         dispatcher.dispatch(&scheduled).await?;
 
         assert!(live_rx.recv().await.is_some());
-        assert_eq!(registry.workers_for("tenant-a", "charge-card")?.len(), 1);
+        assert_eq!(
+            registry
+                .workers_for("tenant-a", "default", "charge-card")?
+                .len(),
+            1
+        );
 
         closed_registration.deregister()?;
         live_registration.deregister()?;

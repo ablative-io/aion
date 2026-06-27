@@ -1,4 +1,4 @@
-//! Connected-worker registry keyed by namespace and activity type.
+//! Connected-worker registry keyed by worker-pool address and activity type.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -9,6 +9,14 @@ use tokio::sync::{Notify, mpsc};
 use crate::error::ServerError;
 use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
 use crate::observability::Metrics;
+
+/// The literal task queue an empty/absent selector normalizes to.
+///
+/// A worker-pool address has two disjoint dimensions; the second one
+/// (`task_queue`) is a liveness selector, not a correctness boundary. An empty
+/// `task_queue` is normalized to this one named default pool so a producer that
+/// names no queue and a worker that advertises none both land on the same pool.
+pub const DEFAULT_TASK_QUEUE: &str = "default";
 
 /// Server-side handle used to push activity tasks to a connected worker stream.
 pub type WorkerTaskSender = mpsc::Sender<WorkerMessage>;
@@ -22,7 +30,72 @@ pub enum WorkerMessage {
     DrainRequest,
 }
 
-type ActivityKey = (String, String);
+/// Address of a worker pool: the two disjoint routing dimensions that select a
+/// pool, before an `activity_type` is matched within it.
+///
+/// `namespace` is the correctness/isolation boundary — a workflow's activities
+/// only ever reach workers in the workflow's namespace, so crossing it is a bug.
+/// `task_queue` is the pool/flavour selector within that namespace (norn /
+/// claude / cpu / gpu) — a miss is a liveness issue, never a correctness one.
+///
+/// This is a named type rather than a `(String, String)` tuple so a `node`
+/// dimension (Tier 3 affinity) can be added later without re-threading every
+/// call site.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PoolAddress {
+    namespace: String,
+    task_queue: String,
+}
+
+impl PoolAddress {
+    /// Build a pool address, normalizing an empty `task_queue` to the named
+    /// [`DEFAULT_TASK_QUEUE`] pool. The `namespace` is the authorization
+    /// boundary and is never normalized.
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, task_queue: impl Into<String>) -> Self {
+        let task_queue = task_queue.into();
+        let task_queue = if task_queue.is_empty() {
+            String::from(DEFAULT_TASK_QUEUE)
+        } else {
+            task_queue
+        };
+        Self {
+            namespace: namespace.into(),
+            task_queue,
+        }
+    }
+
+    /// The correctness/isolation boundary of this pool.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// The pool/flavour selector within the namespace.
+    #[must_use]
+    pub fn task_queue(&self) -> &str {
+        &self.task_queue
+    }
+}
+
+/// Registry match key: a worker-pool address plus the activity type matched
+/// within that pool. A named type (not an anonymous tuple) so the routing
+/// identity stays self-describing and extensible.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct ActivityKey {
+    pool: PoolAddress,
+    activity_type: String,
+}
+
+impl ActivityKey {
+    fn new(pool: PoolAddress, activity_type: impl Into<String>) -> Self {
+        Self {
+            pool,
+            activity_type: activity_type.into(),
+        }
+    }
+}
+
 type WorkerMap = HashMap<WorkerId, WorkerHandle>;
 type RegistryMap = HashMap<ActivityKey, WorkerMap>;
 
@@ -43,7 +116,7 @@ impl WorkerId {
 #[derive(Clone, Debug)]
 pub struct WorkerHandle {
     id: WorkerId,
-    namespace: String,
+    pool: PoolAddress,
     activity_types: BTreeSet<String>,
     sender: WorkerTaskSender,
 }
@@ -55,10 +128,22 @@ impl WorkerHandle {
         self.id
     }
 
+    /// Worker-pool address (namespace + task queue) this worker serves.
+    #[must_use]
+    pub const fn pool(&self) -> &PoolAddress {
+        &self.pool
+    }
+
     /// Namespace authorized for this worker stream.
     #[must_use]
     pub fn namespace(&self) -> &str {
-        &self.namespace
+        self.pool.namespace()
+    }
+
+    /// Task queue (pool/flavour) this worker serves within its namespace.
+    #[must_use]
+    pub fn task_queue(&self) -> &str {
+        self.pool.task_queue()
     }
 
     /// Activity types advertised by this worker.
@@ -79,6 +164,8 @@ struct RegistryState {
     next_worker_id: u64,
     workers: BTreeMap<WorkerId, WorkerHandle>,
     by_activity: RegistryMap,
+    /// Round-robin cursor per `(namespace, task_queue, activity_type)` triple, so
+    /// each pool rotates independently of every other pool.
     rotation: HashMap<ActivityKey, usize>,
 }
 
@@ -137,14 +224,18 @@ impl ConnectedWorkerRegistry {
         let scoped = guard
             .scope(caller, &NamespaceOperation::register_worker(registration))
             .await?;
-        self.register(
-            scoped.namespace(),
-            registration.activity_types.iter(),
-            sender,
-        )
+        // The authorized namespace is the correctness boundary; the wire's
+        // task_queue is the disjoint pool selector within it (empty normalizes
+        // to the named default pool inside `PoolAddress::new`).
+        let pool = PoolAddress::new(scoped.namespace(), registration.task_queue.clone());
+        self.register_pool(pool, registration.activity_types.iter(), sender)
     }
 
-    /// Insert an already-authorized worker stream.
+    /// Insert an already-authorized worker stream into a pool addressed by
+    /// `namespace` alone, using the named default task queue.
+    ///
+    /// Convenience over [`Self::register_pool`] for callers that do not select a
+    /// task queue (notably tests of the default pool).
     ///
     /// # Errors
     ///
@@ -155,7 +246,24 @@ impl ConnectedWorkerRegistry {
         activity_types: impl IntoIterator<Item = &'a String>,
         sender: WorkerTaskSender,
     ) -> Result<WorkerRegistration, ServerError> {
-        let namespace = namespace.into();
+        self.register_pool(
+            PoolAddress::new(namespace, DEFAULT_TASK_QUEUE),
+            activity_types,
+            sender,
+        )
+    }
+
+    /// Insert an already-authorized worker stream into an explicit worker pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn register_pool<'a>(
+        &self,
+        pool: PoolAddress,
+        activity_types: impl IntoIterator<Item = &'a String>,
+        sender: WorkerTaskSender,
+    ) -> Result<WorkerRegistration, ServerError> {
         let activity_types = activity_types.into_iter().cloned().collect::<BTreeSet<_>>();
         let mut state = self.state()?;
         let worker_id = WorkerId(state.next_worker_id);
@@ -163,7 +271,7 @@ impl ConnectedWorkerRegistry {
 
         let handle = WorkerHandle {
             id: worker_id,
-            namespace: namespace.clone(),
+            pool: pool.clone(),
             activity_types: activity_types.clone(),
             sender,
         };
@@ -171,7 +279,7 @@ impl ConnectedWorkerRegistry {
         for activity_type in &activity_types {
             state
                 .by_activity
-                .entry((namespace.clone(), activity_type.clone()))
+                .entry(ActivityKey::new(pool.clone(), activity_type.clone()))
                 .or_default()
                 .insert(worker_id, handle.clone());
         }
@@ -179,7 +287,7 @@ impl ConnectedWorkerRegistry {
         drop(state);
 
         if let Some(metrics) = &self.metrics {
-            metrics.worker_connected(&namespace);
+            metrics.worker_connected(pool.namespace());
         }
 
         self.worker_arrived.notify_waiters();
@@ -188,7 +296,7 @@ impl ConnectedWorkerRegistry {
             registry: self.clone(),
             parts: Some(WorkerRegistrationParts {
                 worker_id,
-                namespace,
+                pool,
                 activity_types,
             }),
         })
@@ -203,9 +311,10 @@ impl ConnectedWorkerRegistry {
         self.worker_arrived.notified().await;
     }
 
-    /// Return a snapshot of workers registered for the namespace and activity
-    /// type, ordered by worker id and then rotated so each call starts from the
-    /// next worker in the pool.
+    /// Return a snapshot of workers registered for the
+    /// `(namespace, task_queue, activity_type)` pool, ordered by worker id and
+    /// then rotated so each call starts from the next worker in the pool. The
+    /// rotation cursor is per triple, so each pool round-robins independently.
     ///
     /// The id sort matters: `by_activity` holds workers in a `HashMap`, whose
     /// iteration order is unspecified. Sorting first makes the rotation below
@@ -218,10 +327,11 @@ impl ConnectedWorkerRegistry {
     pub fn workers_for(
         &self,
         namespace: &str,
+        task_queue: &str,
         activity_type: &str,
     ) -> Result<Vec<WorkerHandle>, ServerError> {
         let mut state = self.state()?;
-        let key = (namespace.to_owned(), activity_type.to_owned());
+        let key = ActivityKey::new(PoolAddress::new(namespace, task_queue), activity_type);
         let mut workers: Vec<WorkerHandle> = state
             .by_activity
             .get(&key)
@@ -272,7 +382,7 @@ impl ConnectedWorkerRegistry {
         Ok(delivered)
     }
 
-    /// Select one worker for the namespace and activity type.
+    /// Select one worker for the `(namespace, task_queue, activity_type)` pool.
     ///
     /// # Errors
     ///
@@ -280,10 +390,11 @@ impl ConnectedWorkerRegistry {
     pub fn select_worker(
         &self,
         namespace: &str,
+        task_queue: &str,
         activity_type: &str,
     ) -> Result<Option<WorkerHandle>, ServerError> {
         let state = self.state()?;
-        let key = (namespace.to_owned(), activity_type.to_owned());
+        let key = ActivityKey::new(PoolAddress::new(namespace, task_queue), activity_type);
         Ok(state
             .by_activity
             .get(&key)
@@ -323,10 +434,10 @@ impl ConnectedWorkerRegistry {
 
     fn remove_worker(state: &mut RegistryState, worker_id: WorkerId) -> Option<String> {
         let handle = state.workers.remove(&worker_id)?;
-        let namespace = handle.namespace.clone();
+        let namespace = handle.pool.namespace().to_owned();
 
         for activity_type in handle.activity_types {
-            let key = (handle.namespace.clone(), activity_type);
+            let key = ActivityKey::new(handle.pool.clone(), activity_type);
             if let Some(workers) = state.by_activity.get_mut(&key) {
                 workers.remove(&worker_id);
                 if workers.is_empty() {
@@ -348,7 +459,7 @@ impl ConnectedWorkerRegistry {
 #[derive(Clone, Debug)]
 struct WorkerRegistrationParts {
     worker_id: WorkerId,
-    namespace: String,
+    pool: PoolAddress,
     activity_types: BTreeSet<String>,
 }
 
@@ -372,7 +483,13 @@ impl WorkerRegistration {
     /// Authorized namespace for this registration.
     #[must_use]
     pub fn namespace(&self) -> Option<&str> {
-        self.parts.as_ref().map(|parts| parts.namespace.as_str())
+        self.parts.as_ref().map(|parts| parts.pool.namespace())
+    }
+
+    /// Task queue (pool/flavour) this registration serves within its namespace.
+    #[must_use]
+    pub fn task_queue(&self) -> Option<&str> {
+        self.parts.as_ref().map(|parts| parts.pool.task_queue())
     }
 
     /// Activity types advertised by this registration.
@@ -429,12 +546,21 @@ mod tests {
     }
 
     fn registration(namespace: &str, activity_types: &[&str]) -> ProtoRegisterWorker {
+        registration_with_queue(namespace, "", activity_types)
+    }
+
+    fn registration_with_queue(
+        namespace: &str,
+        task_queue: &str,
+        activity_types: &[&str],
+    ) -> ProtoRegisterWorker {
         ProtoRegisterWorker {
             namespace: namespace.to_owned(),
             activity_types: activity_types
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
+            task_queue: task_queue.to_owned(),
         }
     }
 
@@ -461,19 +587,20 @@ mod tests {
             )
             .await?;
 
-        assert_eq!(registry.workers_for("tenant-a", "charge")?.len(), 1);
-        assert_eq!(registry.workers_for("tenant-b", "charge")?.len(), 1);
-        assert!(registry.workers_for("tenant-a", "missing")?.is_empty());
+        let tq = DEFAULT_TASK_QUEUE;
+        assert_eq!(registry.workers_for("tenant-a", tq, "charge")?.len(), 1);
+        assert_eq!(registry.workers_for("tenant-b", tq, "charge")?.len(), 1);
+        assert!(registry.workers_for("tenant-a", tq, "missing")?.is_empty());
 
         let tenant_a_id = tenant_a.worker_id();
         tenant_a.deregister()?;
 
-        assert!(registry.workers_for("tenant-a", "charge")?.is_empty());
-        assert_eq!(registry.workers_for("tenant-b", "charge")?.len(), 1);
+        assert!(registry.workers_for("tenant-a", tq, "charge")?.is_empty());
+        assert_eq!(registry.workers_for("tenant-b", tq, "charge")?.len(), 1);
         assert_ne!(tenant_a_id, tenant_b.worker_id());
 
         tenant_b.deregister()?;
-        assert!(registry.workers_for("tenant-b", "charge")?.is_empty());
+        assert!(registry.workers_for("tenant-b", tq, "charge")?.is_empty());
         Ok(())
     }
 
@@ -491,7 +618,145 @@ mod tests {
             .await;
 
         assert!(denied.is_err());
-        assert!(registry.workers_for("tenant-b", "charge")?.is_empty());
+        assert!(
+            registry
+                .workers_for("tenant-b", DEFAULT_TASK_QUEUE, "charge")?
+                .is_empty()
+        );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_queues_partition_disjoint_pools_within_one_namespace() -> Result<(), ServerError>
+    {
+        // Same namespace + same activity_type, two DIFFERENT task queues: the
+        // pools are disjoint, a lookup for one queue never returns the other's
+        // worker, and round-robin holds independently per (ns, tq, type) triple.
+        let registry = ConnectedWorkerRegistry::default();
+        let (norn_tx, _norn_rx) = mpsc::channel(1);
+        let (claude_a_tx, _claude_a_rx) = mpsc::channel(1);
+        let (claude_b_tx, _claude_b_rx) = mpsc::channel(1);
+
+        let norn = registry
+            .accept_registration(
+                &guard(),
+                &caller("local"),
+                &registration_with_queue("local", "norn", &["dev"]),
+                norn_tx,
+            )
+            .await?;
+        // Two workers on the SAME (local, claude) pool to exercise round-robin.
+        let claude_a = registry
+            .accept_registration(
+                &guard(),
+                &caller("local"),
+                &registration_with_queue("local", "claude", &["dev"]),
+                claude_a_tx,
+            )
+            .await?;
+        let claude_b = registry
+            .accept_registration(
+                &guard(),
+                &caller("local"),
+                &registration_with_queue("local", "claude", &["dev"]),
+                claude_b_tx,
+            )
+            .await?;
+
+        let norn_pool = registry.workers_for("local", "norn", "dev")?;
+        assert_eq!(norn_pool.len(), 1, "norn pool has exactly its one worker");
+        let norn_id = norn.worker_id().ok_or_else(missing_id)?;
+        assert_eq!(norn_pool[0].id(), norn_id);
+
+        let claude_pool = registry.workers_for("local", "claude", "dev")?;
+        assert_eq!(
+            claude_pool.len(),
+            2,
+            "claude pool sees only its two workers"
+        );
+        let claude_ids: BTreeSet<WorkerId> = claude_pool.iter().map(WorkerHandle::id).collect();
+        assert!(
+            !claude_ids.contains(&norn_id),
+            "the norn worker must never appear in the claude pool"
+        );
+
+        // A dispatch targeting `norn` never reaches a `claude` worker, and vice
+        // versa: the disjoint key is the boundary.
+        assert!(
+            !registry
+                .workers_for("local", "norn", "dev")?
+                .iter()
+                .any(|worker| claude_ids.contains(&worker.id()))
+        );
+
+        // Round-robin per triple: the (local, claude, dev) cursor advances
+        // independently and cycles through both claude workers, while the
+        // (local, norn, dev) cursor keeps returning its single worker.
+        let first = registry.workers_for("local", "claude", "dev")?[0].id();
+        let second = registry.workers_for("local", "claude", "dev")?[0].id();
+        assert_ne!(
+            first, second,
+            "claude pool round-robins across both workers"
+        );
+        assert_eq!(
+            registry.workers_for("local", "norn", "dev")?[0].id(),
+            norn_id,
+            "the norn pool rotation is unaffected by claude traffic"
+        );
+
+        norn.deregister()?;
+        claude_a.deregister()?;
+        claude_b.deregister()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn same_task_queue_in_different_namespaces_is_isolated() -> Result<(), ServerError> {
+        // Same task_queue string, two DIFFERENT namespaces: namespace is the
+        // correctness boundary, so the pools are isolated.
+        let registry = ConnectedWorkerRegistry::default();
+        let (local_tx, _local_rx) = mpsc::channel(1);
+        let (remote_tx, _remote_rx) = mpsc::channel(1);
+
+        let local = registry
+            .accept_registration(
+                &guard(),
+                &caller("local"),
+                &registration_with_queue("local", "gpu", &["render"]),
+                local_tx,
+            )
+            .await?;
+        let remote = registry
+            .accept_registration(
+                &guard(),
+                &caller("remote"),
+                &registration_with_queue("remote", "gpu", &["render"]),
+                remote_tx,
+            )
+            .await?;
+
+        let local_pool = registry.workers_for("local", "gpu", "render")?;
+        let remote_pool = registry.workers_for("remote", "gpu", "render")?;
+        assert_eq!(local_pool.len(), 1);
+        assert_eq!(remote_pool.len(), 1);
+        assert_ne!(
+            local_pool[0].id(),
+            remote_pool[0].id(),
+            "a shared task_queue string does not merge two namespaces"
+        );
+
+        local.deregister()?;
+        assert!(
+            registry.workers_for("local", "gpu", "render")?.is_empty(),
+            "deregistering the local worker leaves the remote namespace untouched"
+        );
+        assert_eq!(registry.workers_for("remote", "gpu", "render")?.len(), 1);
+
+        remote.deregister()?;
+        Ok(())
+    }
+
+    fn missing_id() -> ServerError {
+        ServerError::lock_poisoned("registration unexpectedly missing a worker id")
     }
 }

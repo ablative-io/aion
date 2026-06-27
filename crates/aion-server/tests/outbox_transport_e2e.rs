@@ -91,6 +91,7 @@ use tower::ServiceExt;
 type TestError = Box<dyn std::error::Error>;
 
 const NAMESPACE: &str = "default";
+const TASK_QUEUE: &str = "default";
 const OUTBOX_MODULE: &str = "aion_outbox_fixture";
 const OUTBOX_BEAM: &[u8] = include_bytes!("fixtures/aion_outbox_fixture.beam");
 const OUTBOX_SOURCE: &[u8] = include_bytes!("fixtures/aion_outbox_fixture.erl");
@@ -244,6 +245,7 @@ impl WorkerSession {
                             .iter()
                             .map(|t| (*t).to_owned())
                             .collect(),
+                        task_queue: TASK_QUEUE.to_owned(),
                     },
                 )),
             })
@@ -265,7 +267,10 @@ impl WorkerSession {
         // Registration is live once the ack is consumed: the worker is
         // dispatch-eligible for every fan-out activity type.
         for activity_type in FAN_ACTIVITY_TYPES {
-            if registry.workers_for(NAMESPACE, activity_type)?.is_empty() {
+            if registry
+                .workers_for(NAMESPACE, TASK_QUEUE, activity_type)?
+                .is_empty()
+            {
                 return Err(
                     format!("worker not registered for {activity_type} after the ack").into(),
                 );

@@ -39,14 +39,25 @@ pub struct ProtoActivityError {
 }
 
 /// Worker registration advertisement.
+///
+/// A registration scopes the worker to one `(namespace, task_queue)` worker
+/// pool. The two dimensions are disjoint: `namespace` is the
+/// correctness/isolation boundary the worker is authorized for, `task_queue`
+/// is the pool/flavour selector within that namespace. `activity_type` (carried
+/// in `activity_types`) is matched inside a pool, not used to select it.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoRegisterWorker {
-    /// Namespace that scopes this worker stream.
+    /// Correctness/isolation boundary this worker is authorized for.
     #[prost(string, tag = "1")]
     pub namespace: String,
     /// Activity types implemented by the worker, preserving wire order.
     #[prost(string, repeated, tag = "2")]
     pub activity_types: Vec<String>,
+    /// Pool/flavour selector within the namespace. The worker-pool address is
+    /// `(namespace, task_queue)`; the server normalizes an empty value to the
+    /// literal `"default"` pool.
+    #[prost(string, tag = "3")]
+    pub task_queue: String,
 }
 
 /// Activity invocation pushed to a worker.
@@ -267,9 +278,39 @@ mod tests {
         let registration = ProtoRegisterWorker {
             namespace: String::from("tenant-a"),
             activity_types: vec![String::from("charge-card"), String::from("send-email")],
+            task_queue: String::from("claude"),
         };
 
         assert_json_and_proto_round_trip(&registration)
+    }
+
+    #[test]
+    fn worker_registration_task_queue_uses_wire_tag_three() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Pins task_queue to proto tag 3 (field key 0x1A = tag 3,
+        // length-delimited) so the hand-written stubs cannot drift, and
+        // confirms an old-shape registration that omits it decodes to the
+        // proto3 default `""` (the server normalizes that to "default").
+        let registration = ProtoRegisterWorker {
+            namespace: String::new(),
+            activity_types: Vec::new(),
+            task_queue: String::from("gpu"),
+        };
+        let mut bytes = Vec::new();
+        registration.encode(&mut bytes)?;
+        assert_eq!(bytes, vec![0x1A, 0x03, b'g', b'p', b'u']);
+
+        // An encoded registration with no tag-3 field decodes task_queue to "".
+        let no_task_queue = ProtoRegisterWorker {
+            namespace: String::from("tenant-a"),
+            activity_types: vec![String::from("charge-card")],
+            task_queue: String::new(),
+        };
+        let mut bytes = Vec::new();
+        no_task_queue.encode(&mut bytes)?;
+        let decoded = ProtoRegisterWorker::decode(bytes.as_slice())?;
+        assert_eq!(decoded.task_queue, "");
+        Ok(())
     }
 
     #[test]

@@ -102,17 +102,26 @@ impl ReconnectConfig {
 ///
 /// Tunable fields remain caller-supplied. Namespace authorization metadata
 /// defaults to `default`/`worker` so development workers can register against
-/// the default task queue without an explicit auth setup.
+/// the default namespace without an explicit auth setup.
+///
+/// `namespace` and `task_queue` are disjoint routing dimensions. `namespace`
+/// is the correctness/isolation boundary the worker is authorized for — the
+/// same value carried in the `x-aion-namespaces` auth metadata and in the
+/// registration scope, so a worker registers into the namespace it is
+/// authorized for. `task_queue` is the pool/flavour selector *within* that
+/// namespace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerConfig {
-    /// Namespace advertised in `x-aion-namespaces` worker stream metadata.
+    /// Correctness/isolation boundary this worker registers into. Advertised
+    /// both in `x-aion-namespaces` worker stream metadata and as the
+    /// registration namespace, so authorization and registration scope agree.
     pub namespace: String,
     /// Subject advertised in `x-aion-subject` worker stream metadata.
     pub subject: String,
     /// Engine worker endpoint URI.
     pub endpoint: String,
-    /// Task queue advertised to the engine. The current AW wire names this field
-    /// `namespace`; this SDK maps the task queue value to that owned wire shape.
+    /// Pool/flavour selector within the namespace, sent as the registration's
+    /// `task_queue`. The worker-pool address is `(namespace, task_queue)`.
     pub task_queue: String,
     /// Worker identity used by operators and future wire metadata.
     pub identity: String,

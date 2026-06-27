@@ -43,6 +43,7 @@ impl WorkerSession {
                             .iter()
                             .map(|activity| (*activity).to_owned())
                             .collect(),
+                        task_queue: String::from("default"),
                     },
                 )),
             })

@@ -65,12 +65,14 @@ pub enum WorkerSessionEvent {
 /// stubs directly. If AW changes the wire shape, this trait adapts in this module.
 #[async_trait]
 pub trait WorkerSession: Send {
-    /// Performs the worker handshake for the configured task queue and identity.
+    /// Performs the worker handshake for the configured namespace, task queue,
+    /// and identity.
     ///
-    /// Maps to transport/channel establishment for AW's `StreamWorker` RPC.
-    /// AW currently names the task-queue scope `namespace` and has no identity
-    /// field, so identity is retained at this SDK boundary until the wire adds
-    /// a corresponding shape.
+    /// Maps to transport/channel establishment for AW's `StreamWorker` RPC. The
+    /// wire carries the genuine `namespace` (correctness boundary) and
+    /// `task_queue` (pool selector) as disjoint registration fields; it has no
+    /// identity field, so identity is retained at this SDK boundary until the
+    /// wire adds a corresponding shape.
     async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError>;
 
     /// Registers activity-type names implemented by this worker.
@@ -383,9 +385,14 @@ impl WorkerSession for GrpcWorkerSession {
         validate_activity_handlers(&activity_types, available_handlers)?;
         self.activity_types.clone_from(&activity_types);
 
+        // OQ-5: the registration namespace is the SAME value advertised in the
+        // `x-aion-namespaces` auth metadata (`apply_auth_metadata`), so a worker
+        // registers into exactly the namespace it is authorized for. `task_queue`
+        // is the disjoint pool/flavour selector within that namespace.
         let register = aion_proto::generated::RegisterWorker {
-            namespace: self.config.task_queue.clone(),
+            namespace: self.config.namespace.clone(),
             activity_types,
+            task_queue: self.config.task_queue.clone(),
         };
         self.open_registered_stream(register).await
     }
