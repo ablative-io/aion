@@ -123,7 +123,7 @@ name = "aion-nif"
 version = "0.7.0"
 dependencies = [
  "aion-core",
- "beamr 0.9.0",
+ "beamr 0.10.0",
  "serde",
  "serde_json",
 ]
@@ -183,7 +183,7 @@ dependencies = [
  "aion-store-haematite",
  "aion-store-libsql",
  "async-trait",
- "beamr 0.9.0",
+ "beamr 0.10.0",
  "chrono",
  "dashmap",
  "fs4",
@@ -639,9 +639,9 @@ dependencies = [
 
 [[package]]
 name = "beamr"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62a857ad3b628a27b579ba922b3f7790aca27af006bce57b2db6d2b56d0eddc7"
+checksum = "984cc69d5f7c5e3b6f97254bd98783974c73cd7c79baa11668ff2b8eba0c5563"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -654,6 +654,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "flate2",
+ "getrandom 0.4.2",
  "gleam-types",
  "io-uring",
  "libc",
@@ -1913,7 +1914,7 @@ dependencies = [
 name = "haematite"
 version = "0.2.0"
 dependencies = [
- "beamr 0.9.0",
+ "beamr 0.10.0",
  "blake3",
  "crc32fast",
  "dashmap",
@@ -2809,7 +2810,7 @@ name = "liminal"
 version = "0.2.0"
 dependencies = [
  "async-trait",
- "beamr 0.9.0",
+ "beamr 0.10.0",
  "chrono",
  "haematite 0.1.0",
  "jsonschema",
@@ -2837,7 +2838,7 @@ name = "liminal-server"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "beamr 0.9.0",
+ "beamr 0.10.0",
  "clap",
  "haematite 0.1.0",
  "liminal",
