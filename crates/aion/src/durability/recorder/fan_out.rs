@@ -123,6 +123,10 @@ impl Recorder {
                 // (NSTQ-2) that stamps the outbox row, so the durable history is the
                 // source-of-truth backstop for re-targeting this queue on recovery.
                 task_queue: item.task_queue.clone(),
+                // NODE-3: record the OPTIONAL node affinity on the event from the same `FanOutItem`
+                // (NODE-2) that stamps the outbox row, so the durable history is the
+                // source-of-truth backstop for re-targeting this node on recovery.
+                node: item.node.clone(),
             });
             events.push(Event::ActivityStarted {
                 envelope: started_envelope,

@@ -390,6 +390,7 @@ mod tests {
             activity_type: "activity".to_owned(),
             input: payload("activity-input")?,
             task_queue: String::from("default"),
+            node: None,
         })
     }
 

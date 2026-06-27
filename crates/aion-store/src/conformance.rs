@@ -998,6 +998,7 @@ fn activity_scheduled(
         activity_type: activity_type.to_owned(),
         input: payload("activity-input")?,
         task_queue: String::from(aion_core::DEFAULT_TASK_QUEUE),
+        node: None,
     })
 }
 

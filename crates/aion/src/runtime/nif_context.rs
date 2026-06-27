@@ -277,6 +277,9 @@ impl NifContext {
                         // NSTQ-4: the resolved task queue (activity override > workflow default >
                         // the named default), decided once at the schedule seam by the caller.
                         task_queue,
+                        // No SDK-level node selection yet (NODE-4); the live single-schedule path
+                        // records no node affinity (`None` = genuine current value).
+                        None,
                     )
                     .await?;
                 recorder
@@ -765,6 +768,7 @@ mod tests {
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
                 task_queue: String::from("default"),
+                node: None,
             },
             Event::ActivityCompleted {
                 envelope: envelope(&workflow_id, 3)?,
@@ -806,6 +810,7 @@ mod tests {
                 activity_type: "activity".to_owned(),
                 input: payload("activity-input")?,
                 task_queue: String::from("default"),
+                node: None,
             },
             Event::ActivityCompleted {
                 envelope: envelope(workflow_id, 3)?,

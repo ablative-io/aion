@@ -616,6 +616,7 @@ mod tests {
                 activity_type: "work".to_owned(),
                 input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
                 task_queue: String::from("default"),
+                node: None,
             },
             Event::ActivityStarted {
                 envelope: envelope(&workflow_id, 3),

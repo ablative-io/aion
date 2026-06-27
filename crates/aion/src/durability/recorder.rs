@@ -462,11 +462,13 @@ impl Recorder {
         Ok(())
     }
 
-    /// Records activity scheduling, stamping the `task_queue` the activity dispatches to so
-    /// reopen/recovery re-targets the **same** pool (NSTQ-3).
+    /// Records activity scheduling, stamping the `task_queue` and OPTIONAL `node` affinity the
+    /// activity dispatches to so reopen/recovery re-targets the **same** pool and node (NSTQ-3 /
+    /// NODE-3).
     ///
-    /// No SDK-level task-queue selection exists yet (NSTQ-4), so the single-schedule engine seam
-    /// passes the named `"default"` task queue — the genuine current value, not a shim.
+    /// No SDK-level task-queue or node selection exists yet (NSTQ-4 / NODE-4), so the
+    /// single-schedule engine seam passes the named `"default"` task queue and `None` node — the
+    /// genuine current values, not a shim.
     ///
     /// # Errors
     ///
@@ -479,6 +481,7 @@ impl Recorder {
         activity_type: String,
         input: Payload,
         task_queue: String,
+        node: Option<String>,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::ActivityScheduled {
             envelope,
@@ -486,6 +489,7 @@ impl Recorder {
             activity_type,
             input,
             task_queue,
+            node,
         })
         .await
     }
@@ -1506,6 +1510,7 @@ mod tests {
                 String::from("charge-card"),
                 payload("input")?,
                 String::from("default"),
+                None,
             )
             .await?;
         recorder

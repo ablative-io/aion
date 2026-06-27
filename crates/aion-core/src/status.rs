@@ -354,6 +354,7 @@ mod tests {
                 activity_type: String::from("charge-card"),
                 input: payload("activity-input")?,
                 task_queue: String::from("default"),
+                node: None,
             },
         ];
 
