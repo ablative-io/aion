@@ -29,8 +29,15 @@
 mod directory;
 #[cfg(feature = "haematite-backend")]
 mod edge;
+#[cfg(feature = "haematite-backend")]
+mod forwarder;
 
 #[cfg(feature = "haematite-backend")]
 pub use directory::{DirectoryPeer, NodeRef, OwnerView, ShardDirectory, StaticShardDirectory};
 #[cfg(feature = "haematite-backend")]
 pub use edge::{RemintOutcome, RouteDecision, route_mutation, route_start};
+#[cfg(feature = "haematite-backend")]
+pub use forwarder::{
+    FORWARD_HOPS_METADATA, ForwardReply, ForwardRequest, GrpcRequestForwarder, MAX_FORWARD_HOPS,
+    RequestForwarder, current_hops,
+};
