@@ -16,7 +16,11 @@ use crate::observability::Metrics;
 /// (`task_queue`) is a liveness selector, not a correctness boundary. An empty
 /// `task_queue` is normalized to this one named default pool so a producer that
 /// names no queue and a worker that advertises none both land on the same pool.
-pub const DEFAULT_TASK_QUEUE: &str = "default";
+///
+/// Re-exported from [`aion_core::DEFAULT_TASK_QUEUE`] so the server cannot drift
+/// from the canonical domain default; the name is kept stable here for existing
+/// call sites.
+pub use aion_core::DEFAULT_TASK_QUEUE;
 
 /// Server-side handle used to push activity tasks to a connected worker stream.
 pub type WorkerTaskSender = mpsc::Sender<WorkerMessage>;
