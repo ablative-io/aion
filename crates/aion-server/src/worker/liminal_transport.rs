@@ -14,16 +14,18 @@
 //! - **Happy path, one worker.** A single dispatch + result round-trip. Retry
 //!   through the honest delivery ack is exercised (the dispatch-out contract)
 //!   but the wider retry/backoff/dead-letter proof is 13-1.
-//! - **No new outbox schema.** The `dispatch_key` is reused verbatim as the
-//!   liminal idempotency key; no `namespace` column is added (that is 13-3).
+//! - **No new outbox schema.** A PER-ATTEMPT idempotency key
+//!   (`{dispatch_key}#{attempt}`, both already on the row) keys liminal
+//!   dedup-on-delivery; no `namespace` column is added (that is 13-3).
 //!
 //! # The two seams it implements
 //!
 //! - [`LiminalOutboxDispatch`] implements
 //!   [`OutboxRowDispatch`](super::outbox_dispatcher::OutboxRowDispatch): it maps
 //!   an [`OutboxRow`] to a [`DispatchRequest`] and publishes it over liminal with
-//!   the `dispatch_key` as the per-message idempotency key, via
-//!   `publish_with_idempotency_key`. It returns `Ok(())` ONLY when the returned
+//!   a per-attempt idempotency key (`{dispatch_key}#{attempt}`, see
+//!   [`attempt_idempotency_key`]), via `publish_with_idempotency_key`. It returns
+//!   `Ok(())` ONLY when the returned
 //!   [`DeliveryAck::is_accepted`] is `true` (a worker genuinely received it);
 //!   otherwise it returns a [`ServerError::WorkerDispatch`] so the outbox's
 //!   existing retry/backoff/dead-letter path drives the row, exactly as the gRPC
@@ -143,6 +145,23 @@ pub fn request_for_row(row: &OutboxRow) -> DispatchRequest {
     }
 }
 
+/// Builds the per-attempt liminal idempotency key for one outbox row.
+///
+/// The outbox `dispatch_key` is stable across every retry of the same row, but
+/// liminal's dedup-on-delivery claims a key at the first publish. Composing the
+/// stable key with the row's zero-based `attempt` (`{dispatch_key}#{attempt}`)
+/// gives each retry a distinct key, so a legitimate re-dispatch is a fresh,
+/// non-suppressed publish while a true duplicate of the same attempt is still
+/// deduped. The exactly-once authority remains aion's terminal dedup, not this
+/// key.
+///
+/// Kept free-standing (not a method) so both the dispatch path and tests derive
+/// the key identically.
+#[must_use]
+pub fn attempt_idempotency_key(row: &OutboxRow) -> String {
+    format!("{}#{}", row.dispatch_key, row.attempt)
+}
+
 /// Cross-node [`OutboxRowDispatch`] that places a claimed row over liminal.
 ///
 /// Holds the hard-coded server address + channel name for the spike. Each
@@ -204,23 +223,32 @@ impl OutboxRowDispatch for LiminalOutboxDispatch {
     async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
         let handle = self.connect()?;
         let request = request_for_row(row);
-        // Use the dispatch_key as the per-message idempotency key so a
-        // re-dispatch (aion retry, reconciler re-arm, crash recovery) reuses the
-        // SAME key and liminal's dedup-on-delivery suppresses a second delivery.
+        // Use a PER-ATTEMPT idempotency key (`{dispatch_key}#{attempt}`) so each
+        // outbox retry is a fresh liminal publish that dedup-on-delivery does NOT
+        // suppress. The stable `dispatch_key` alone would be claimed at the first
+        // attempt and every legitimate retry would come back non-accepted —
+        // indistinguishable from "reached no worker" — burning the attempt budget
+        // and dead-lettering a row that should have re-run (13-0's known trap).
+        //
+        // This does not weaken correctness: liminal dedup still suppresses a true
+        // duplicate of the SAME attempt (e.g. a transport-level resend), and the
+        // exactly-once authority is aion's terminal dedup
+        // (`record_fan_out_completion`, idempotent on the dispatch_key/ordinal),
+        // which never moves to liminal. Net contract: at-least-once delivery to
+        // the worker, effectively-once terminal recording — unchanged from today.
+        let idempotency_key = attempt_idempotency_key(row);
         let ack: DeliveryAck = handle
-            .publish_with_idempotency_key(&request, &row.dispatch_key)
+            .publish_with_idempotency_key(&request, &idempotency_key)
             .map_err(|error| self.dispatch_error(format!("publish failed: {error}")))?;
         // The load-bearing contract: treat the send as done ONLY on a genuine
-        // delivery ack (a worker received it). A non-accept (no subscriber OR a
-        // dedup-suppressed duplicate) returns Err so the outbox retries — see
-        // the dedup<->retry composition note in the module-level docs and the
-        // 13-0 report.
+        // delivery ack (a worker received it). With per-attempt keys a non-accept
+        // now means an empty channel (no worker), so the outbox's retry/backoff is
+        // the correct response — a legitimate retry is no longer self-suppressed.
         if ack.is_accepted() {
             Ok(())
         } else {
             Err(self.dispatch_error(
-                "liminal delivery ack reported the publish reached no worker (empty channel \
-                 or dedup-suppressed duplicate)"
+                "liminal delivery ack reported the publish reached no worker (empty channel)"
                     .to_owned(),
             ))
         }
