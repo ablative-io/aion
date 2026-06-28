@@ -70,3 +70,13 @@ auth = ["aion-server/auth"]
 # aion-store-haematite/haematite. When on, `store.backend = haematite` is
 # selectable at runtime.
 haematite-backend = ["aion-server/haematite-backend"]
+# Forwarded to the embedded server: compiles the liminal push transport so a
+# deployed `aion server` can HOST the cross-node outbox worker listener
+# (`outbox.transport = liminal` + `outbox.liminal_listen_address`). Remote
+# `LiminalActivityWorker` clients connect IN and the server pushes fan-out
+# dispatches out over those connections, recording completions through the same
+# `record_fan_out_completion` seam as the gRPC path. OFF by default so a default
+# `aion` binary is byte-identical and never links liminal-sdk/liminal-server;
+# without it, selecting `outbox.transport = liminal` at runtime is a boot-time
+# configuration error rather than a silent fall-through to gRPC.
+liminal-transport = ["aion-server/liminal-transport"]
