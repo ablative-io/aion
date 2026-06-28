@@ -536,15 +536,14 @@ impl LiminalWorkerDelivery {
     /// - `push_to_connection` returns `Err` only when the connection process is no
     ///   longer live (the connection was already gone at push time). It has no
     ///   other failure mode, so that whole arm is connection-lost.
-    /// - `awaiter.receive` returns the liminal *Disconnected* case when the
-    ///   connection closed before a correlated reply arrived (after Stage A this
-    ///   wakes PROMPTLY instead of blocking the full [`PUSH_REPLY_TIMEOUT`]).
-    ///   Liminal collapses *Timeout* and *Disconnected* into one
-    ///   `ServerError::ListenerAccept` whose message carries the only
-    ///   distinguishing text, so [`is_connection_closed_reply_error`] matches the
-    ///   disconnect sentinel exactly. A genuine *Timeout* (the worker is alive but
-    ///   slow) does NOT match and stays on the existing [`ServerError::WorkerDispatch`]
-    ///   backoff path — the two are never collapsed.
+    /// - `awaiter.receive` returns the typed liminal
+    ///   `ServerError::PushReplyDisconnected` when the connection closed before a
+    ///   correlated reply arrived (after Stage A this wakes PROMPTLY instead of
+    ///   blocking the full [`PUSH_REPLY_TIMEOUT`]), and `PushReplyTimeout` when the
+    ///   worker is alive but slow. [`is_connection_closed_reply_error`] matches the
+    ///   Disconnected variant BY TYPE; the Timeout variant (and anything else)
+    ///   stays on the existing [`ServerError::WorkerDispatch`] backoff path — the
+    ///   two are never collapsed.
     ///
     /// Every other failure (serialize, decode, or any unrecognized reply error)
     /// remains a [`ServerError::WorkerDispatch`] so the outbox's unchanged
@@ -595,31 +594,17 @@ impl LiminalWorkerDelivery {
     }
 }
 
-/// Sentinel substring liminal's `PushReplyAwaiter::receive` puts in its error
-/// message for the *Disconnected* case — the connection closed before a
-/// correlated push reply arrived.
-///
-/// Liminal maps both `RecvTimeoutError::Timeout` and `RecvTimeoutError::Disconnected`
-/// onto a single `liminal_server::ServerError::ListenerAccept`, differing ONLY in
-/// this detail text (see `liminal-server` `supervisor.rs` `PushReplyAwaiter::receive`).
-/// Matching this exact substring is therefore how the aion side tells a worker
-/// that DIED (connection-lost, fast failover) from a worker that is merely SLOW
-/// (genuine timeout, normal backoff). The timeout case carries
-/// "no correlated push reply arrived within the timeout" instead and is left on
-/// the backoff path.
-const LIMINAL_REPLY_DISCONNECT_SENTINEL: &str =
-    "the connection closed before sending a correlated push reply";
-
 /// Returns true when a liminal push-reply error is the *Disconnected* case (the
 /// worker's connection closed before it replied), as opposed to a genuine reply
 /// timeout (the worker is alive but slow).
 ///
-/// See [`LIMINAL_REPLY_DISCONNECT_SENTINEL`] for why this is a substring match on
-/// liminal's collapsed `ListenerAccept` message.
+/// Liminal returns these as distinct TYPED variants —
+/// `ServerError::PushReplyDisconnected` vs `PushReplyTimeout` (see `liminal-server`
+/// `supervisor.rs` `PushReplyAwaiter::receive`) — so this is a type match, not a
+/// message-text match: a worker that DIED (connection-lost, fast failover) is told
+/// apart from one that is merely SLOW (genuine timeout, normal backoff) by variant.
 fn is_connection_closed_reply_error(error: &LiminalServerError) -> bool {
-    error
-        .to_string()
-        .contains(LIMINAL_REPLY_DISCONNECT_SENTINEL)
+    matches!(error, LiminalServerError::PushReplyDisconnected { .. })
 }
 
 /// Cross-node [`OutboxRowDispatch`] that selects a liminal worker from the
