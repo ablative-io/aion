@@ -248,36 +248,17 @@ impl OutboxDispatcher {
 
     /// Claim one batch of pending rows and drive each to its terminal state.
     async fn sweep_once(&self) {
+        // LSUB-4-3 / Fork-A2 seam: ownership is NOT enforced on this claim. The
+        // claim path is an UNFENCED local `put_routed` scoped by `owned_shard_scope()`
+        // — it simply returns `Ok` with only the rows on shards this node owns and
+        // never surfaces a `NotOwner`. Deposition is surfaced (and the owned set
+        // narrowed by re-residency) on the FENCED stamped event-append a deposed
+        // owner attempts when recording a terminal (aion-store-haematite store.rs
+        // ~622/1110: `DatabaseError::Fenced => StoreError::NotOwner`), not here. So
+        // this sweep has nothing ownership-specific to handle: a claim error is a
+        // genuine backend failure, retried next tick.
         let rows = match self.store.claim_outbox_rows(self.config.batch_size).await {
             Ok(rows) => rows,
-            // LSUB-4-3: discriminate an ownership-loss signal from a generic claim
-            // failure. A `NotOwner` here means this node lost the shard whose rows
-            // it tried to claim and is no longer the fenced owner — re-scanning it
-            // is futile, so log it distinctly (not as a transient backend blip) and
-            // wait for the next tick rather than treating it as a retryable error.
-            //
-            // IMPORTANT — verified seam (do not "fix" by inventing scope-narrowing
-            // here): under Fork-A2 the outbox CLAIM path is an UNFENCED local
-            // `put_routed` scoped by `owned_shard_scope()`; it returns `Ok(rows)`
-            // (filtering out shards not in the scope) and NEVER produces
-            // `StoreError::NotOwner`. `NotOwner` is emitted ONLY by the FENCED
-            // quorum write paths (`replicate_append` / `replicate_write` in
-            // aion-store-haematite) — i.e. the STAMPED event-append a deposed owner
-            // attempts when recording a terminal, which is where deposition is
-            // actually surfaced and where re-residency narrows the owned set. The
-            // `OutboxStore` trait exposes no scope-narrowing method, so the
-            // dispatcher cannot drop a lost shard from here even if it wanted to.
-            // This arm is therefore defensive + forward-compatible (correct the day
-            // the claim becomes fenced) and must stay a no-op-besides-logging today.
-            Err(aion_store::StoreError::NotOwner { shard }) => {
-                warn!(
-                    shard,
-                    "outbox dispatcher claim was fenced (NotOwner): this node no longer owns the \
-                     shard; waiting for re-residency to narrow scope (no further action here under \
-                     the unfenced-claim model — see LSUB-4-3)"
-                );
-                return;
-            }
             Err(error) => {
                 error!(%error, "outbox dispatcher failed to claim rows; retrying next tick");
                 return;
@@ -546,85 +527,6 @@ mod tests {
         );
         // A dead-lettered row is never claimable again.
         assert!(store.claim_outbox_rows(10).await?.is_empty());
-        Ok(())
-    }
-
-    /// LSUB-4-3: a `NotOwner` claim error is discriminated from a generic claim
-    /// failure — `sweep_once` returns cleanly and dispatches NOTHING and reaches no
-    /// terminal transition. (Under Fork-A2 the real claim path never emits
-    /// `NotOwner`; this proves the defensive arm is correct should the claim ever
-    /// become fenced.) Terminal writes flip an `AtomicBool` (never reachable here)
-    /// rather than panicking, keeping the test free of the restriction lints.
-    #[tokio::test]
-    async fn not_owner_claim_error_is_handled_without_dispatch()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use aion_store::{ClaimScope, StoreError};
-        use chrono::{DateTime, Utc};
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        /// A store whose claim is fenced (`NotOwner`); any terminal write records a
-        /// flag so the test can assert none was reached after a fenced claim.
-        #[derive(Default)]
-        struct FencedClaimStore {
-            terminal_reached: AtomicBool,
-        }
-
-        #[async_trait]
-        impl OutboxStore for FencedClaimStore {
-            async fn append_outbox_batch(&self, _rows: &[OutboxRow]) -> Result<(), StoreError> {
-                Ok(())
-            }
-            async fn claim_outbox_rows(&self, _limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
-                Err(StoreError::NotOwner { shard: 1 })
-            }
-            async fn claim_outbox_rows_scoped(
-                &self,
-                _scope: &ClaimScope,
-                _limit: u32,
-            ) -> Result<Vec<OutboxRow>, StoreError> {
-                Err(StoreError::NotOwner { shard: 1 })
-            }
-            async fn rearm_stale_claimed_outbox_rows(
-                &self,
-                _older_than: DateTime<Utc>,
-                _visible_after: DateTime<Utc>,
-                _limit: u32,
-            ) -> Result<Vec<OutboxRow>, StoreError> {
-                Ok(Vec::new())
-            }
-            async fn complete_outbox_row(&self, _dispatch_key: &str) -> Result<(), StoreError> {
-                self.terminal_reached.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-            async fn retry_outbox_row(
-                &self,
-                _dispatch_key: &str,
-                _next_attempt: u32,
-                _visible_after: DateTime<Utc>,
-            ) -> Result<(), StoreError> {
-                self.terminal_reached.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-            async fn fail_outbox_row(&self, _dispatch_key: &str) -> Result<(), StoreError> {
-                self.terminal_reached.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-        }
-
-        let store = Arc::new(FencedClaimStore::default());
-        let dispatch = Arc::new(RecordingDispatch::new(true));
-        let dispatcher = OutboxDispatcher::new(store.clone(), dispatch.clone(), config());
-        // Must return cleanly, dispatch nothing, and reach no terminal transition.
-        dispatcher.sweep_once().await;
-        assert_eq!(
-            dispatch.count()?,
-            0,
-            "a fenced (NotOwner) claim dispatches no rows"
-        );
-        assert!(
-            !store.terminal_reached.load(Ordering::SeqCst),
-            "a fenced claim must reach no terminal transition"
-        );
         Ok(())
     }
 
