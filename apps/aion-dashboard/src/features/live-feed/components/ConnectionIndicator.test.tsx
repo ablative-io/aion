@@ -3,10 +3,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { ConnectionStatus } from '@/lib/api';
 
+import { ConnectionIndicatorContent } from './ConnectionIndicator';
+
 let currentStatus: ConnectionStatus = 'disconnected';
 
 mock.module('../hooks/useConnectionStatus', () => ({
   useConnectionStatus: () => currentStatus,
+  useSocketError: () => null,
 }));
 
 describe('ConnectionIndicator', () => {
@@ -26,6 +29,28 @@ describe('ConnectionIndicator', () => {
       expect(markup).toContain(`data-connection-status="${status}"`);
       expect(markup).toContain(connectionLabel(status));
     }
+  });
+
+  test('ConnectionIndicatorContent surfaces a socket error message as visible state', () => {
+    const markup = renderToStaticMarkup(
+      <ConnectionIndicatorContent
+        error={{
+          kind: 'frame-decode',
+          message: 'A live event could not be decoded; the feed may be missing entries.',
+          cause: null,
+        }}
+        status="connected"
+      />
+    );
+
+    expect(markup).toContain('A live event could not be decoded');
+    expect(markup).toContain('data-socket-error="frame-decode"');
+  });
+
+  test('ConnectionIndicatorContent omits the error region when healthy', () => {
+    const markup = renderToStaticMarkup(<ConnectionIndicatorContent status="connected" />);
+
+    expect(markup).not.toContain('data-socket-error');
   });
 });
 

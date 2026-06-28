@@ -47,6 +47,26 @@ export const SOCKET_CLOSING = 2;
 
 export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
 
+/**
+ * Kinds of live-socket failure surfaced to the UI. Each maps to a distinct,
+ * human-readable cause so a view can render *why* the stream is degraded rather
+ * than swallowing the error to the console.
+ */
+export type AionSocketErrorKind = 'frame-decode' | 'reconnect-exhausted';
+
+/**
+ * A typed live-socket error. M1 (no-silent-failure): instead of warning to the
+ * console and dropping the failure, the manager emits this to error listeners so
+ * the connection indicator and live views can show it as visible state.
+ */
+export type AionSocketError = {
+  kind: AionSocketErrorKind;
+  /** Operator-facing message; safe to render directly. */
+  message: string;
+  /** The underlying error/value, kept for the console trail. */
+  cause: unknown;
+};
+
 export type WorkflowEventSubscriptionFilter = {
   kind: 'workflow';
   namespace: Namespace;
@@ -102,6 +122,7 @@ export type JsonRecord = Record<string, unknown>;
 export type ConsoleLike = { warn(message: string, error: unknown): void };
 export type Unsubscribe = () => void;
 export type StatusListener = (status: ConnectionStatus) => void;
+export type SocketErrorListener = (error: AionSocketError | null) => void;
 export type TransitionListener = () => void;
 export type WarningLogger = (message: string, error: unknown) => void;
 export type WebSocketMessage = { data: unknown };

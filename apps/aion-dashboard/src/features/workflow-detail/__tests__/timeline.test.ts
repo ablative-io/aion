@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 
 import type { Event, Payload } from '@/types';
+import type { ScheduleConfig } from '@/types/generated';
 
 import {
   mergeEventsBySequence,
@@ -8,9 +9,19 @@ import {
   projectTimeline,
   terminalOutcomeForEvents,
 } from '../lib/timeline';
+import { KNOWN_EVENT_TYPES } from '../lib/timelineVariants';
+import type { TimelineEntry } from '../types';
 
 const workflowId = 'workflow-1';
 const jsonPayload: Payload = { content_type: 'Json', bytes: [123, 125] };
+const scheduleConfig: ScheduleConfig = {
+  trigger: { Cron: { expression: '0 * * * *' } },
+  overlap_policy: 'Skip',
+  catch_up_policy: 'One',
+  workflow_type: 'nightly',
+  input: jsonPayload,
+  search_attributes: {},
+};
 
 test('projectTimeline orders by sequence and groups logical lifecycle families', () => {
   const timeline = projectTimeline([
@@ -84,7 +95,14 @@ function envelope(seq: number) {
 function workflowStarted(seq: number): Event {
   return {
     type: 'WorkflowStarted',
-    data: { envelope: envelope(seq), workflow_type: 'checkout', input: jsonPayload },
+    data: {
+      envelope: envelope(seq),
+      workflow_type: 'checkout',
+      input: jsonPayload,
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      parent_run_id: null,
+      package_version: '1.0.0',
+    },
   };
 }
 
@@ -103,6 +121,8 @@ function activityScheduled(seq: number): Event {
       activity_id: 7,
       activity_type: 'charge-card',
       input: jsonPayload,
+      task_queue: 'default',
+      node: null,
     },
   };
 }
@@ -145,6 +165,7 @@ function childStarted(seq: number): Event {
       child_workflow_id: 'child-1',
       workflow_type: 'receipt',
       input: jsonPayload,
+      package_version: '1.0.0',
     },
   };
 }
@@ -155,3 +176,248 @@ function childCompleted(seq: number): Event {
     data: { envelope: envelope(seq), child_workflow_id: 'child-1', result: jsonPayload },
   };
 }
+
+// --- 29-variant exhaustiveness coverage -----------------------------------
+
+/** One concrete event for each of the 29 generated variants, keyed by type. */
+const VARIANT_FIXTURES: Record<string, Event> = {
+  WorkflowStarted: workflowStarted(1),
+  WorkflowCompleted: workflowCompleted(1),
+  WorkflowFailed: {
+    type: 'WorkflowFailed',
+    data: { envelope: envelope(1), error: { message: 'boom', details: null } },
+  },
+  WorkflowCancelled: {
+    type: 'WorkflowCancelled',
+    data: { envelope: envelope(1), reason: 'operator' },
+  },
+  WorkflowTimedOut: {
+    type: 'WorkflowTimedOut',
+    data: { envelope: envelope(1), timeout: 'execution' },
+  },
+  WorkflowContinuedAsNew: {
+    type: 'WorkflowContinuedAsNew',
+    data: {
+      envelope: envelope(1),
+      input: jsonPayload,
+      workflow_type: 'checkout-v2',
+      parent_run_id: '00000000-0000-0000-0000-0000000000a1',
+    },
+  },
+  WorkflowReopened: {
+    type: 'WorkflowReopened',
+    data: { envelope: envelope(1), run_id: '00000000-0000-0000-0000-0000000000a1', reopened: [7] },
+  },
+  SearchAttributesUpdated: {
+    type: 'SearchAttributesUpdated',
+    data: {
+      envelope: envelope(1),
+      workflow_id: workflowId,
+      attributes: { customer: { type: 'String', data: 'acme' } },
+    },
+  },
+  ActivityScheduled: activityScheduled(1),
+  ActivityStarted: activityStarted(1),
+  ActivityCompleted: activityCompleted(1),
+  ActivityFailed: activityFailed(1, 1),
+  ActivityCancelled: {
+    type: 'ActivityCancelled',
+    data: { envelope: envelope(1), activity_id: 7 },
+  },
+  TimerStarted: {
+    type: 'TimerStarted',
+    data: { envelope: envelope(1), timer_id: { Named: 'retry' }, fire_at: '2026-06-05T20:01:00Z' },
+  },
+  TimerFired: {
+    type: 'TimerFired',
+    data: { envelope: envelope(1), timer_id: { Named: 'retry' } },
+  },
+  TimerCancelled: {
+    type: 'TimerCancelled',
+    data: { envelope: envelope(1), timer_id: { Named: 'retry' } },
+  },
+  WithTimeoutCompleted: {
+    type: 'WithTimeoutCompleted',
+    data: {
+      envelope: envelope(1),
+      timer_id: { Named: 'bound' },
+      outcome: 'OperationCompleted',
+      result: jsonPayload,
+    },
+  },
+  SignalReceived: signalReceived(1),
+  SignalSent: {
+    type: 'SignalSent',
+    data: {
+      envelope: envelope(1),
+      target_workflow_id: 'peer-1',
+      name: 'notify',
+      payload: jsonPayload,
+    },
+  },
+  ChildWorkflowStarted: childStarted(1),
+  ChildWorkflowCompleted: childCompleted(1),
+  ChildWorkflowFailed: {
+    type: 'ChildWorkflowFailed',
+    data: {
+      envelope: envelope(1),
+      child_workflow_id: 'child-1',
+      error: { message: 'child boom', details: null },
+    },
+  },
+  ChildWorkflowCancelled: {
+    type: 'ChildWorkflowCancelled',
+    data: { envelope: envelope(1), child_workflow_id: 'child-1' },
+  },
+  ScheduleCreated: {
+    type: 'ScheduleCreated',
+    data: { envelope: envelope(1), schedule_id: 'sched-1', config: scheduleConfig },
+  },
+  ScheduleUpdated: {
+    type: 'ScheduleUpdated',
+    data: { envelope: envelope(1), schedule_id: 'sched-1', config: scheduleConfig },
+  },
+  SchedulePaused: {
+    type: 'SchedulePaused',
+    data: { envelope: envelope(1), schedule_id: 'sched-1' },
+  },
+  ScheduleResumed: {
+    type: 'ScheduleResumed',
+    data: { envelope: envelope(1), schedule_id: 'sched-1' },
+  },
+  ScheduleDeleted: {
+    type: 'ScheduleDeleted',
+    data: { envelope: envelope(1), schedule_id: 'sched-1' },
+  },
+  ScheduleTriggered: {
+    type: 'ScheduleTriggered',
+    data: {
+      envelope: envelope(1),
+      schedule_id: 'sched-1',
+      workflow_id: 'run-1',
+      run_id: '00000000-0000-0000-0000-0000000000a2',
+    },
+  },
+};
+
+const LANE_VARIANTS: Record<string, string> = {
+  WorkflowStarted: 'lifecycle',
+  WorkflowCompleted: 'lifecycle',
+  WorkflowFailed: 'lifecycle',
+  WorkflowCancelled: 'lifecycle',
+  WorkflowTimedOut: 'lifecycle',
+  ActivityScheduled: 'activity',
+  ActivityStarted: 'activity',
+  ActivityCompleted: 'activity',
+  ActivityFailed: 'activity',
+  ActivityCancelled: 'activity',
+  TimerStarted: 'timer',
+  TimerFired: 'timer',
+  TimerCancelled: 'timer',
+  WithTimeoutCompleted: 'timer',
+  SignalReceived: 'signal',
+  SignalSent: 'signal',
+  ChildWorkflowStarted: 'child',
+  ChildWorkflowCompleted: 'child',
+  ChildWorkflowFailed: 'child',
+  ChildWorkflowCancelled: 'child',
+};
+
+test('every one of the 29 variants is covered by a fixture', () => {
+  for (const eventType of KNOWN_EVENT_TYPES) {
+    expect(VARIANT_FIXTURES[eventType]).toBeDefined();
+  }
+});
+
+test('each of the 29 variants projects to a real typed row (no silent drop)', () => {
+  for (const eventType of KNOWN_EVENT_TYPES) {
+    const event = VARIANT_FIXTURES[eventType];
+
+    if (event === undefined) {
+      throw new Error(`missing fixture for ${eventType}`);
+    }
+
+    const [entry] = projectTimeline([event]);
+
+    if (entry === undefined) {
+      throw new Error(`no timeline entry projected for ${eventType}`);
+    }
+
+    expect(entry.summary.length).toBeGreaterThan(0);
+
+    const expectedLane = LANE_VARIANTS[eventType];
+
+    if (expectedLane) {
+      expect(entry.kind).toBe(expectedLane as TimelineEntry['kind']);
+    } else {
+      // marker + schedule variants render as a typed generic row carrying their
+      // classifier family + sub-kind — never an unlabelled fallback.
+      expect(entry.kind).toBe('generic');
+
+      if (entry.kind === 'generic') {
+        expect(entry.family).not.toBeNull();
+        expect(entry.subKind).toBe(eventType);
+      }
+    }
+  }
+});
+
+test('SignalSent carries direction + target; WithTimeoutCompleted closes the timer lane', () => {
+  const sent = projectTimeline([VARIANT_FIXTURES.SignalSent as Event])[0];
+
+  if (sent?.kind !== 'signal') {
+    throw new Error('expected a signal entry');
+  }
+
+  expect(sent.direction).toBe('sent');
+  expect(sent.targetWorkflowId).toBe('peer-1');
+
+  const timedOut = projectTimeline([
+    {
+      type: 'WithTimeoutCompleted',
+      data: {
+        envelope: envelope(1),
+        timer_id: { Named: 'bound' },
+        outcome: 'TimedOut',
+        result: null,
+      },
+    },
+  ])[0];
+
+  if (timedOut?.kind !== 'timer') {
+    throw new Error('expected a timer entry');
+  }
+
+  expect(timedOut.status).toBe('timed-out');
+});
+
+test('a genuinely-unknown future variant renders a generic row, never throwing', () => {
+  // Simulate a server that emitted a variant the wire types do not yet know.
+  const future = {
+    type: 'SomeFutureVariant',
+    data: { envelope: envelope(1) },
+  } as unknown as Event;
+
+  const entry = projectTimeline([future])[0];
+  expect(entry?.kind).toBe('generic');
+
+  if (entry?.kind === 'generic') {
+    expect(entry.family).toBeNull();
+    expect(entry.subKind).toBeNull();
+    expect(entry.summary.length).toBeGreaterThan(0);
+  }
+});
+
+test('payload decode failure falls back to the raw envelope, no throw', () => {
+  // Bytes that are not valid JSON despite a Json content-type.
+  const badJson: Payload = { content_type: 'Json', bytes: [123, 34] };
+  expect(payloadSummary(badJson)).toContain('{');
+
+  const event: Event = {
+    type: 'WorkflowCompleted',
+    data: { envelope: envelope(1), result: badJson },
+  };
+  const entry = projectTimeline([event])[0];
+  expect(entry?.kind).toBe('lifecycle');
+  expect(entry?.summary).toContain('Workflow completed');
+});

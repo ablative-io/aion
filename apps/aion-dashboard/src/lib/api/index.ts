@@ -1,6 +1,8 @@
 export type {
   ApiClientOptions,
   ApiCredentials,
+  EventSearchQuery,
+  EventSearchResult,
   RequestOptions,
   ServerErrorBody,
   WorkflowPage,
@@ -16,6 +18,8 @@ export type {
   AionEventHandler,
   AionEventSubscriptionFilter,
   AionEventWebSocketManagerOptions,
+  AionSocketError,
+  AionSocketErrorKind,
   ConnectionStatus,
   FilteredEventSubscriptionFilter,
   FirehoseEventSubscriptionFilter,

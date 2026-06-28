@@ -7,9 +7,9 @@ import {
   eventSequence,
   mergeEventsBySequence,
 } from '@/features/workflow-detail/lib/timeline';
-import type { FirehoseEventSubscriptionFilter } from '@/lib/api';
+import type { AionSocketError, FirehoseEventSubscriptionFilter } from '@/lib/api';
 import type { Event } from '@/types';
-import { useConnectionStatus } from '../hooks/useConnectionStatus';
+import { useConnectionStatus, useSocketError } from '../hooks/useConnectionStatus';
 import { type EventSubscriptionManager, useEventSubscription } from '../hooks/useEventSubscription';
 import { ConnectionIndicatorContent } from './ConnectionIndicator';
 
@@ -21,6 +21,7 @@ export type FirehoseFeedProps = {
 export function FirehoseFeed({ manager, maxEvents = 100 }: FirehoseFeedProps) {
   const { selectedNamespace } = useNamespace();
   const status = useConnectionStatus();
+  const error = useSocketError();
   const [events, setEvents] = useState<Event[]>([]);
   const subscriptionFilter = useMemo<FirehoseEventSubscriptionFilter | null>(() => {
     if (!isSelectedNamespace(selectedNamespace)) {
@@ -39,16 +40,29 @@ export function FirehoseFeed({ manager, maxEvents = 100 }: FirehoseFeedProps) {
     },
   });
 
-  return <FirehoseFeedContent events={events} namespace={selectedNamespace} status={status} />;
+  return (
+    <FirehoseFeedContent
+      error={error}
+      events={events}
+      namespace={selectedNamespace}
+      status={status}
+    />
+  );
 }
 
 export type FirehoseFeedContentProps = {
   events: readonly Event[];
   namespace: string | null;
   status: ReturnType<typeof useConnectionStatus>;
+  error?: AionSocketError | null;
 };
 
-export function FirehoseFeedContent({ events, namespace, status }: FirehoseFeedContentProps) {
+export function FirehoseFeedContent({
+  events,
+  namespace,
+  status,
+  error = null,
+}: FirehoseFeedContentProps) {
   if (!isSelectedNamespace(namespace)) {
     return (
       <EmptyState
@@ -65,10 +79,18 @@ export function FirehoseFeedContent({ events, namespace, status }: FirehoseFeedC
           <h2 className="font-semibold text-lg text-[var(--text-primary)]">Live firehose</h2>
           <p className="text-[var(--text-muted)] text-sm">Namespace {namespace}</p>
         </div>
-        <ConnectionIndicatorContent status={status} />
+        <ConnectionIndicatorContent error={error} status={status} />
       </header>
 
-      {status !== 'connected' ? (
+      {error !== null ? (
+        <div
+          className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-destructive text-sm"
+          data-socket-error={error.kind}
+          role="alert"
+        >
+          {error.message}
+        </div>
+      ) : status !== 'connected' ? (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-amber-800 text-sm">
           {status === 'reconnecting'
             ? 'Socket dropped; reconnecting and resubscribing to the firehose.'

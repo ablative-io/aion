@@ -4,13 +4,24 @@ import type {
   ActivityAttempt,
   ActivityTimelineEntry,
   ChildWorkflowTimelineEntry,
+  GenericTimelineEntry,
   LifecycleOutcome,
   LifecycleTimelineEntry,
   SignalTimelineEntry,
   TimelineEntry,
   TimerTimelineEntry,
 } from '../types';
+import {
+  type LifecycleType,
+  lifecycleOutcome,
+  lifecyclePayload,
+  lifecycleSummary,
+  type TerminalLifecycleType,
+} from './lifecycle';
+import { classifyKnownEvent, genericSummary } from './timelineVariants';
 
+// Stable re-export so existing consumers keep their `../lib/timeline` import path.
+export { decodePayload, isPayloadBytes, payloadSummary } from './payload';
 export function projectTimeline(events: readonly Event[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
   const activities = new Map<string, ActivityTimelineEntry>();
@@ -38,9 +49,11 @@ export function projectTimeline(events: readonly Event[]): TimelineEntry[] {
       case 'TimerStarted':
       case 'TimerFired':
       case 'TimerCancelled':
+      case 'WithTimeoutCompleted':
         patchTimer(entries, timers, event);
         break;
       case 'SignalReceived':
+      case 'SignalSent':
         entries.push(signalEntry(event));
         break;
       case 'ChildWorkflowStarted':
@@ -49,8 +62,13 @@ export function projectTimeline(events: readonly Event[]): TimelineEntry[] {
       case 'ChildWorkflowCancelled':
         patchChild(entries, children, event);
         break;
+      // Markers (continue-as-new / reopened / search-attributes) + the six
+      // schedule variants render as typed generic rows (classifier family +
+      // sub-kind). The default arm also catches any future-unknown variant, so
+      // the view never crashes; exhaustiveness over the KNOWN set is enforced at
+      // COMPILE time in timelineVariants.ts, never with a runtime throw here.
       default:
-        assertNever(event);
+        entries.push(genericEntry(event));
     }
   }
 
@@ -100,50 +118,6 @@ export function isTerminalWorkflowEvent(
     event.type === 'WorkflowCancelled' ||
     event.type === 'WorkflowTimedOut'
   );
-}
-
-export function payloadSummary(payload: unknown): string {
-  const decodedPayload = decodePayload(payload);
-
-  if (decodedPayload === null) {
-    return 'null';
-  }
-
-  if (decodedPayload === undefined) {
-    return 'none';
-  }
-
-  if (
-    typeof decodedPayload === 'string' ||
-    typeof decodedPayload === 'number' ||
-    typeof decodedPayload === 'boolean'
-  ) {
-    return String(decodedPayload);
-  }
-
-  try {
-    return JSON.stringify(decodedPayload);
-  } catch {
-    return String(decodedPayload);
-  }
-}
-
-export function decodePayload(payload: unknown): unknown {
-  if (!isPayloadBytes(payload)) {
-    return payload;
-  }
-
-  const text = new TextDecoder().decode(Uint8Array.from(payload.bytes));
-
-  if (payload.content_type !== 'Json') {
-    return text;
-  }
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return text;
-  }
 }
 
 function lifecycleEntry(event: Extract<Event, { type: LifecycleType }>): LifecycleTimelineEntry {
@@ -264,15 +238,15 @@ function patchTimer(
     entry.started = event;
   } else if (event.type === 'TimerFired') {
     entry.fired = event;
-  } else {
+  } else if (event.type === 'TimerCancelled') {
     entry.cancelled = event;
+  } else {
+    entry.withTimeout = event;
   }
 
-  entry.status = entry.cancelled ? 'cancelled' : entry.fired ? 'fired' : 'started';
-  entry.summary = `Timer ${timerId} ${entry.status}`;
-  entry.payload = entry.started
-    ? { timer_id: timerId, fire_at: entry.started.data.fire_at }
-    : undefined;
+  entry.status = timerStatus(entry);
+  entry.summary = timerSummary(timerId, entry);
+  entry.payload = timerPayload(timerId, entry);
   entry.recordedAt = eventRecordedAt(event);
 }
 
@@ -293,21 +267,80 @@ function newTimerEntry(
     started: null,
     fired: null,
     cancelled: null,
+    withTimeout: null,
     status: 'started',
   };
 }
 
-function signalEntry(event: Extract<Event, { type: 'SignalReceived' }>): SignalTimelineEntry {
+function timerStatus(entry: TimerTimelineEntry): TimerTimelineEntry['status'] {
+  if (entry.cancelled) {
+    return 'cancelled';
+  }
+
+  if (entry.withTimeout) {
+    return entry.withTimeout.data.outcome === 'TimedOut' ? 'timed-out' : 'completed';
+  }
+
+  return entry.fired ? 'fired' : 'started';
+}
+
+function timerSummary(timerId: string, entry: TimerTimelineEntry): string {
+  if (entry.withTimeout) {
+    return entry.status === 'timed-out'
+      ? `Bounded operation on ${timerId} timed out`
+      : `Bounded operation on ${timerId} completed before deadline`;
+  }
+
+  return `Timer ${timerId} ${entry.status}`;
+}
+
+function timerPayload(timerId: string, entry: TimerTimelineEntry): unknown {
+  if (entry.withTimeout?.data.result != null) {
+    return entry.withTimeout.data.result;
+  }
+
+  return entry.started ? { timer_id: timerId, fire_at: entry.started.data.fire_at } : undefined;
+}
+
+function signalEntry(
+  event: Extract<Event, { type: 'SignalReceived' | 'SignalSent' }>
+): SignalTimelineEntry {
+  const sent = event.type === 'SignalSent';
+
   return {
-    id: `signal:${event.data.name}:${eventSequence(event)}`,
+    id: `signal:${sent ? 'sent' : 'received'}:${event.data.name}:${eventSequence(event)}`,
     kind: 'signal',
     sequence: eventSequence(event),
     recordedAt: eventRecordedAt(event),
-    summary: `Signal received: ${event.data.name}`,
+    summary: sent
+      ? `Signal sent: ${event.data.name} → ${event.data.target_workflow_id}`
+      : `Signal received: ${event.data.name}`,
     payload: event.data.payload,
     events: [event],
     envelope: eventEnvelope(event),
     signalName: event.data.name,
+    direction: sent ? 'sent' : 'received',
+    targetWorkflowId: sent ? event.data.target_workflow_id : null,
+    event,
+  };
+}
+
+function genericEntry(event: Event): GenericTimelineEntry {
+  const sequence = eventSequence(event);
+  const descriptor = classifyKnownEvent(event.type);
+
+  return {
+    id: `event:${event.type}:${sequence}`,
+    kind: 'generic',
+    sequence,
+    recordedAt: eventRecordedAt(event),
+    summary: genericSummary(event),
+    payload: event.data,
+    events: [event],
+    envelope: eventEnvelope(event),
+    eventType: event.type,
+    family: descriptor?.family ?? null,
+    subKind: descriptor?.subKind ?? null,
     event,
   };
 }
@@ -379,52 +412,6 @@ function refreshChild(entry: ChildWorkflowTimelineEntry): void {
   entry.recordedAt = latest ? eventRecordedAt(latest) : entry.recordedAt;
 }
 
-function lifecycleOutcome(event: Extract<Event, { type: LifecycleType }>): LifecycleOutcome {
-  const outcomes: Record<LifecycleType, LifecycleOutcome> = {
-    WorkflowStarted: 'started',
-    WorkflowCompleted: 'completed',
-    WorkflowFailed: 'failed',
-    WorkflowCancelled: 'cancelled',
-    WorkflowTimedOut: 'timed-out',
-  };
-
-  return outcomes[event.type];
-}
-
-function lifecycleSummary(event: Extract<Event, { type: LifecycleType }>): string {
-  switch (event.type) {
-    case 'WorkflowStarted':
-      return `Workflow started: ${event.data.workflow_type}`;
-    case 'WorkflowCompleted':
-      return `Workflow completed with ${payloadSummary(event.data.result)}`;
-    case 'WorkflowFailed':
-      return `Workflow failed: ${event.data.error.message}`;
-    case 'WorkflowCancelled':
-      return `Workflow cancelled: ${event.data.reason}`;
-    case 'WorkflowTimedOut':
-      return `Workflow timed out after ${event.data.timeout}`;
-    default:
-      assertNever(event);
-  }
-}
-
-function lifecyclePayload(event: Extract<Event, { type: LifecycleType }>): unknown {
-  switch (event.type) {
-    case 'WorkflowStarted':
-      return event.data.input;
-    case 'WorkflowCompleted':
-      return event.data.result;
-    case 'WorkflowFailed':
-      return event.data.error;
-    case 'WorkflowCancelled':
-      return { reason: event.data.reason };
-    case 'WorkflowTimedOut':
-      return { timeout: event.data.timeout };
-    default:
-      assertNever(event);
-  }
-}
-
 function activitySummary(entry: ActivityTimelineEntry): string {
   const name = entry.activityType ?? entry.activityId;
 
@@ -459,39 +446,6 @@ function stringifyTimerId(timerId: TimerId): string {
   return 'Named' in timerId ? timerId.Named : `anonymous-${timerId.Anonymous}`;
 }
 
-function isPayloadBytes(value: unknown): value is { content_type: string; bytes: number[] } {
-  if (typeof value !== 'object' || value === null || !('bytes' in value)) {
-    return false;
-  }
-
-  const maybePayload = value as { content_type?: unknown; bytes?: unknown };
-  return (
-    typeof maybePayload.content_type === 'string' &&
-    Array.isArray(maybePayload.bytes) &&
-    maybePayload.bytes.every((byte) => typeof byte === 'number')
-  );
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled event variant: ${JSON.stringify(value)}`);
-}
-
-type LifecycleType =
-  | 'WorkflowStarted'
-  | 'WorkflowCompleted'
-  | 'WorkflowFailed'
-  | 'WorkflowCancelled'
-  | 'WorkflowTimedOut';
-type TerminalLifecycleType = Exclude<LifecycleType, 'WorkflowStarted'>;
-type ActivityType =
-  | 'ActivityScheduled'
-  | 'ActivityStarted'
-  | 'ActivityCompleted'
-  | 'ActivityFailed'
-  | 'ActivityCancelled';
-type TimerType = 'TimerStarted' | 'TimerFired' | 'TimerCancelled';
-type ChildType =
-  | 'ChildWorkflowStarted'
-  | 'ChildWorkflowCompleted'
-  | 'ChildWorkflowFailed'
-  | 'ChildWorkflowCancelled';
+type ActivityType = `Activity${'Scheduled' | 'Started' | 'Completed' | 'Failed' | 'Cancelled'}`;
+type TimerType = 'TimerStarted' | 'TimerFired' | 'TimerCancelled' | 'WithTimeoutCompleted';
+type ChildType = `ChildWorkflow${'Started' | 'Completed' | 'Failed' | 'Cancelled'}`;

@@ -3,9 +3,10 @@ import { useMemo, useState } from 'react';
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
-import { Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui';
+import { Button, Table, TableBody, TableHead, TableHeader, TableRow } from '@/components/ui';
 import type { ApiClient } from '@/lib/api';
 import type { Namespace, WorkflowFilter } from '@/types';
+import { useLiveListUpdates } from '../hooks/useLiveListUpdates';
 import { useWorkflowQuery } from '../hooks/useWorkflowQuery';
 import {
   EMPTY_WORKFLOW_LIST_FILTER_STATE,
@@ -35,11 +36,21 @@ export function WorkflowList({
   const [pagination, setPagination] = useState(FIRST_WORKFLOW_LIST_PAGE);
   const [filter, setFilter] = useState(() => workflowFilterFromState(initialFilterState));
   const normalizedPageLimit = useMemo(() => normalizePageLimit(pageLimit), [pageLimit]);
+  const page = useMemo(
+    () => ({ cursor: pagination.cursor, limit: normalizedPageLimit }),
+    [pagination.cursor, normalizedPageLimit]
+  );
+  const isFirstPage = pagination.cursor === undefined;
   const query = useWorkflowQuery({
     apiClient: client,
     filter,
-    page: { cursor: pagination.cursor, limit: normalizedPageLimit },
+    page,
   });
+  // Close the dead-wired C4 path: live-patch the React Query cache for this
+  // exact page key so rows transition (Running -> Completed) and new workflows
+  // appear without a refetch. Off page 1 new rows are surfaced as "new above"
+  // rather than mutating the cursor view (R3).
+  const live = useLiveListUpdates({ filter, page, isFirstPage });
 
   function handleFilterChange(nextFilter: WorkflowFilter, state: WorkflowListFilterState) {
     setFilterState(state);
@@ -81,9 +92,15 @@ export function WorkflowList({
     );
   }
 
+  function handleShowNewAbove() {
+    live.acknowledgeNewAbove();
+    setPagination(FIRST_WORKFLOW_LIST_PAGE);
+  }
+
   return (
     <section className="space-y-4">
       <FilterBar value={filterState} onChange={handleFilterChange} />
+      <NewAboveBanner count={live.newAboveCount} onShow={handleShowNewAbove} />
       <WorkflowListBody
         query={query}
         canGoPrevious={pagination.previousCursors.length > 0}
@@ -91,6 +108,29 @@ export function WorkflowList({
         onPrevious={handlePreviousPage}
       />
     </section>
+  );
+}
+
+type NewAboveBannerProps = {
+  count: number;
+  onShow: () => void;
+};
+
+export function NewAboveBanner({ count, onShow }: NewAboveBannerProps) {
+  if (count <= 0) {
+    return null;
+  }
+
+  const label =
+    count === 1 ? '1 new workflow started above' : `${count} new workflows started above`;
+
+  return (
+    <div className="flex items-center justify-between rounded-md border border-[var(--border-default)] bg-[var(--surface-hover)] px-3 py-2 text-sm">
+      <span className="text-[var(--text-muted)]">{label}</span>
+      <Button type="button" variant="outline" size="sm" onClick={onShow}>
+        Jump to top
+      </Button>
+    </div>
   );
 }
 

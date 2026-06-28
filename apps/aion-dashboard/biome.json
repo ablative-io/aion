@@ -77,7 +77,7 @@
     }
   },
   "files": {
-    "includes": ["**/*.ts", "**/*.tsx", "**/*.json"],
+    "includes": ["**/*.ts", "**/*.tsx", "**/*.json", "!src/types/generated"],
     "ignoreUnknown": true
   }
 }
