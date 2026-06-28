@@ -72,6 +72,8 @@ pub use protocol::{
 };
 #[cfg(feature = "liminal-transport")]
 pub use runtime::liminal::{DispatchRequest, DispatchResponse, LiminalActivityWorker};
+#[cfg(feature = "liminal-transport")]
+pub use runtime::serve_with_redial;
 pub use runtime::{
     ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, SessionHealth,
     TypedActivityDispatcher, decode_payload, encode_payload, serve_activity_tasks,
