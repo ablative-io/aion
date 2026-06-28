@@ -1,0 +1,26 @@
+# Fleet-workload packager for the Aion failover demo.
+#
+# Standalone (NOT a workspace member): it produces the `.aion` archive the demo
+# cluster loads as its "AI-agent-task fleet" workload, reusing `aion-package`'s
+# `PackageBuilder` so the archive is byte-identical to the one the proven
+# OS-process failover test builds in-process (`crates/aion-cli/tests/common/
+# osproc.rs::write_package_archive`). It packages the `collect_four` fan-out
+# fixture — the reliable exactly-once shape — keyed off the same beam/erl the
+# test loads. Swap those two `include_bytes!` inputs (and the manifest entry) to
+# drop in a real Norn-agent workflow later; the rest of the demo is unchanged.
+[package]
+name = "fleet-packager"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Packages the Aion failover demo's fan-out fleet workload into a .aion archive."
+
+[[bin]]
+name = "fleet-packager"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+aion-package = { path = "../../crates/aion-package" }
+serde_json = "1"
