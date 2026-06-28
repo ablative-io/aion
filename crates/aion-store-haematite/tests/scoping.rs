@@ -407,3 +407,96 @@ async fn default_claim_spans_all_shards() {
         "own-all claim_outbox_rows claims rows across ALL shards"
     );
 }
+
+/// LSUB-4-6 (active-active single-owner): partition the shards across TWO node
+/// "views" of the SAME store — node A owns `{0}`, node B owns the disjoint
+/// complement — and prove the cross-node single-owner invariant the outbox
+/// dispatcher relies on under Fork-A2: each outbox row is claimable by EXACTLY
+/// ONE node (the owner of its workflow's shard), the two nodes' claims are
+/// disjoint, their union is every row, and the non-owner's claim NEVER returns a
+/// foreign-shard row.
+///
+/// Two engines in production each hold their OWN `HaematiteStore` over their own
+/// replicated copy and enforce ownership through `owned_shard_scope()`; here we
+/// drive both scopes against one physical store by setting the owned set to each
+/// node's partition before its claim — exercising the exact same scope filter the
+/// production claim path applies, with no distribution machinery required.
+#[tokio::test(flavor = "multi_thread")]
+async fn active_active_each_row_claimed_by_exactly_one_owner() {
+    let store = HaematiteStore::create_with_shard_count(unique_dir("active-active"), SHARD_COUNT)
+        .expect("create");
+    let database = store.event_store().database();
+
+    // Stage spanning workflows and record, per dispatch_key, which shard owns it.
+    let mut all_dispatch: BTreeSet<String> = BTreeSet::new();
+    let mut shard0_dispatch: BTreeSet<String> = BTreeSet::new();
+    let mut complement_dispatch: BTreeSet<String> = BTreeSet::new();
+    let chosen_ids = pick_spanning_ids(WORKFLOWS, |id| database.shard_for(&event_stream_key(id)));
+    for (ordinal, workflow_id) in chosen_ids.iter().enumerate() {
+        let (workflow_id, dispatch_key) =
+            stage_workflow(&store, workflow_id.clone(), ordinal as u64).await;
+        let shard = database.shard_for(&event_stream_key(&workflow_id));
+        all_dispatch.insert(dispatch_key.clone());
+        if shard == 0 {
+            shard0_dispatch.insert(dispatch_key);
+        } else {
+            complement_dispatch.insert(dispatch_key);
+        }
+    }
+    // Non-vacuous: both partitions must be non-empty so the mutual-exclusion proof
+    // actually spans two owners.
+    assert!(
+        !shard0_dispatch.is_empty(),
+        "node A's partition (shard 0) must own at least one row"
+    );
+    assert!(
+        !complement_dispatch.is_empty(),
+        "node B's partition (shards 1..) must own at least one row"
+    );
+
+    // --- Node A's view: owns ONLY shard 0 -------------------------------------
+    store.set_owned_shards([0]);
+    let node_a_claim = store.claim_outbox_rows(100).await.expect("node A claim");
+    let node_a_keys: BTreeSet<String> = node_a_claim
+        .iter()
+        .map(|row| row.dispatch_key.clone())
+        .collect();
+    assert_eq!(
+        node_a_keys, shard0_dispatch,
+        "node A claims EXACTLY its shard-0 rows"
+    );
+    // The non-owner invariant: node A's claim contains NO complement-shard row.
+    assert!(
+        node_a_keys.is_disjoint(&complement_dispatch),
+        "node A must never claim a foreign-shard (complement) row"
+    );
+
+    // --- Node B's view: owns the disjoint complement {1, 2} -------------------
+    // (Shard 0's rows are now Claimed by A; with disjoint scopes B could never see
+    // them anyway — the scope filter excludes shard 0 entirely.)
+    store.set_owned_shards([1, 2]);
+    let node_b_claim = store.claim_outbox_rows(100).await.expect("node B claim");
+    let node_b_keys: BTreeSet<String> = node_b_claim
+        .iter()
+        .map(|row| row.dispatch_key.clone())
+        .collect();
+    assert_eq!(
+        node_b_keys, complement_dispatch,
+        "node B claims EXACTLY its complement-shard rows"
+    );
+    assert!(
+        node_b_keys.is_disjoint(&shard0_dispatch),
+        "node B must never claim a foreign-shard (shard-0) row"
+    );
+
+    // --- The single-owner cross-node invariant --------------------------------
+    assert!(
+        node_a_keys.is_disjoint(&node_b_keys),
+        "no row is claimed by BOTH nodes (single-owner)"
+    );
+    let union: BTreeSet<String> = node_a_keys.union(&node_b_keys).cloned().collect();
+    assert_eq!(
+        union, all_dispatch,
+        "every row is claimed by exactly one owner (A and B together cover all)"
+    );
+}
