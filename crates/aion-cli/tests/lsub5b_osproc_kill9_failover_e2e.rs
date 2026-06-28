@@ -59,9 +59,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+#[path = "common/aion_cli.rs"]
+mod aion_cli;
 #[path = "common/osproc.rs"]
 mod osproc;
 
+use aion_cli::{activity_completed_count, describe, status_of, try_start};
 use osproc::{
     TestError, build_worker_binary, reap, reserve_port, wait_for_liveness, write_package_archive,
 };
@@ -239,65 +242,6 @@ fn boot_node(config: &Path, log_path: &Path, ports: (u16, u16, u16)) -> Result<N
         liminal_port: ports.2,
         log_path: log_path.to_path_buf(),
     })
-}
-
-/// Run `aion <args>` and return parsed JSON stdout, or `None` on any failure
-/// (a fenced start, an unreachable endpoint) so the caller can retry/poll.
-fn aion_json(args: &[&str]) -> Option<Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_aion"))
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&output.stdout).ok()
-}
-
-/// Start the `collect_four` fan-out (workflow type = the fixture module name)
-/// against `endpoint`, returning its workflow id on success.
-fn try_start(endpoint: &str) -> Option<String> {
-    let value = aion_json(&[
-        "start",
-        "aion_outbox_fixture",
-        "--input",
-        "{\"fixture\":\"input\"}",
-        "--endpoint",
-        endpoint,
-    ])?;
-    value
-        .get("workflow_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-
-/// Describe `workflow_id` over `endpoint`, returning the parsed JSON.
-fn describe(endpoint: &str, workflow_id: &str) -> Option<Value> {
-    aion_json(&["describe", workflow_id, "--endpoint", endpoint])
-}
-
-/// The `summary.status` string from a describe payload, if present.
-fn status_of(description: &Value) -> Option<&str> {
-    description
-        .get("summary")
-        .and_then(|summary| summary.get("status"))
-        .and_then(Value::as_str)
-}
-
-/// Count `ActivityCompleted` terminal events in a describe payload's history —
-/// the exactly-once observable. Events serialize as `{"type": "...", ...}`.
-fn activity_completed_count(description: &Value) -> usize {
-    description
-        .get("history")
-        .and_then(Value::as_array)
-        .map_or(0, |events| {
-            events
-                .iter()
-                .filter(|event| {
-                    event.get("type").and_then(Value::as_str) == Some("ActivityCompleted")
-                })
-                .count()
-        })
 }
 
 #[test]
