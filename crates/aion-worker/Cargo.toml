@@ -36,6 +36,13 @@ hostname = { workspace = true }
 # `liminal-transport` feature. Path dependency on the sibling repo; the default
 # `std` feature carries the real TCP push client and the canonical wire codec.
 liminal-sdk = { version = "0.2.0", path = "../../../liminal/crates/liminal-sdk", optional = true }
+# Liminal core protocol types (LSUB-L2): the worker builds a
+# `liminal::protocol::WorkerRegistration` and self-registers in-band via
+# `PushClient::connect_with_registration`. Already in the dependency graph
+# transitively (liminal-sdk depends on it); named directly only so the worker can
+# construct the wire registration type. Optional, enabled only by
+# `liminal-transport`.
+liminal = { version = "0.2.0", path = "../../../liminal/crates/liminal", optional = true }
 
 [features]
 default = []
@@ -43,7 +50,7 @@ default = []
 # client, receives `DispatchRequest` frames, executes via the existing activity
 # registry, and replies with a correlated `DispatchResponse`. OFF by default so a
 # default worker build is byte-identical and never links liminal-sdk.
-liminal-transport = ["dep:liminal-sdk"]
+liminal-transport = ["dep:liminal-sdk", "dep:liminal"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

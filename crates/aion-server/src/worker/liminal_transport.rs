@@ -80,22 +80,25 @@
 //!
 //! That is the single contract the seam must honour.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_store::OutboxRow;
 use async_trait::async_trait;
+use liminal::protocol::WorkerRegistration as WireWorkerRegistration;
 use liminal_sdk::{
     ConnectionPoolConfig, DeliveryAck, RemoteChannelHandle, RemoteConfig, SchemaMetadata,
     SchemaValidate,
 };
-use liminal_server::server::connection::ConnectionSupervisor;
+use liminal_server::ServerError as LiminalServerError;
+use liminal_server::server::connection::{ConnectionNotifier, ConnectionSupervisor};
 use serde::{Deserialize, Serialize};
 
 use super::bridge::OutboxDeliveryCallback;
 use super::outbox_dispatcher::OutboxRowDispatch;
-use super::registry::ConnectedWorkerRegistry;
+use super::registry::{ConnectedWorkerRegistry, WorkerDelivery, WorkerRegistration};
 use crate::error::ServerError;
 
 /// Upper bound on how long a server-initiated dispatch push waits for the
@@ -594,8 +597,6 @@ impl RegistryLiminalDispatch {
 #[async_trait]
 impl OutboxRowDispatch for RegistryLiminalDispatch {
     async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
-        use super::registry::WorkerDelivery;
-
         // Select the worker the SAME way the gRPC path does: by the row's
         // (namespace, task_queue, activity_type) pool key with the row's optional
         // node affinity. No worker for the pool => honest no-worker error => the
@@ -647,9 +648,178 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
     }
 }
 
+/// Normalize a wire `node` (`Option<String>`) onto the registry's optional
+/// locality affinity, applying the SAME none-convention the gRPC registration
+/// path uses (`registry::optional_node`): an empty string carries no node, so it
+/// collapses to `None`; any non-empty value is the worker's advertised node.
+///
+/// The wire already models `node` as `Option<String>`, but a worker that joins
+/// `Some("")` (the empty-string node) must not register a distinct empty-node
+/// affinity that no pinned dispatch could ever match — it is semantically
+/// unpinned, exactly as the gRPC proto3 empty default is. Folding it to `None`
+/// here keeps the two registration paths byte-for-byte equivalent.
+fn normalize_wire_node(node: Option<&str>) -> Option<String> {
+    node.filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Connection-keyed [`ConnectionNotifier`] that turns liminal's in-band worker
+/// registration into a first-class [`ConnectedWorkerRegistry`] membership.
+///
+/// This is the SERVER half of LSUB-L2: when a worker connects with a
+/// [`WireWorkerRegistration`] (the SDK's `connect_with_registration`), liminal's
+/// connection process invokes [`on_worker_registered`](Self::on_worker_registered)
+/// with the connection's beamr `pid` and the worker's declared
+/// `(namespaces, task_queue, node, activity_types)`. The notifier builds a
+/// [`WorkerDelivery::Liminal`] over the connection and inserts it into the
+/// registry — the SAME registry entry, selected the SAME way, as a gRPC worker —
+/// retiring the LSUB-1 out-of-band `active_connection_pids()` + hard-coded
+/// registration hack.
+///
+/// # Lifetime of the registration guard
+///
+/// [`ConnectedWorkerRegistry::register_delivery`] returns a
+/// [`WorkerRegistration`] guard whose drop deregisters the worker. The notifier
+/// OWNS that guard keyed by `pid` (`Mutex<HashMap<u64, WorkerRegistration>>`), so
+/// the registration lives exactly as long as the connection: it is inserted on
+/// register and removed (dropped) on
+/// [`on_worker_unregistered`](Self::on_worker_unregistered), which liminal fires
+/// on connection close.
+///
+/// # Construction-order cycle (notifier <-> supervisor)
+///
+/// [`Self::dispatch`'s delivery] needs a [`ConnectionSupervisor`] handle to push
+/// to the worker's connection, but the supervisor is itself constructed WITH this
+/// notifier ([`ConnectionSupervisor::with_services_and_notifier`]) — a cycle. The
+/// notifier therefore holds the supervisor behind a [`OnceLock`], populated
+/// IMMEDIATELY after the supervisor is built via [`Self::bind_supervisor`]. The
+/// `OnceLock` is never read before it is set in correct wiring (a worker can only
+/// register after the listener — built after the supervisor and after
+/// `bind_supervisor` — accepts its connection); if it somehow were, registration
+/// is REJECTED with a typed error rather than panicking, so there is no
+/// production `unwrap`/`expect` and no second always-`None` code path.
+pub struct LiminalConnectionNotifier {
+    registry: ConnectedWorkerRegistry,
+    supervisor: OnceLock<ConnectionSupervisor>,
+    guards: Mutex<HashMap<u64, WorkerRegistration>>,
+}
+
+impl std::fmt::Debug for LiminalConnectionNotifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiminalConnectionNotifier")
+            .field("supervisor_bound", &self.supervisor.get().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LiminalConnectionNotifier {
+    /// Build a notifier that registers connecting workers into `registry`.
+    ///
+    /// The supervisor handle is bound separately via [`Self::bind_supervisor`]
+    /// immediately after the supervisor is constructed, resolving the
+    /// notifier <-> supervisor construction cycle (see the type docs).
+    #[must_use]
+    pub fn new(registry: ConnectedWorkerRegistry) -> Self {
+        Self {
+            registry,
+            supervisor: OnceLock::new(),
+            guards: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Bind the connection supervisor the notifier pushes through, immediately
+    /// after it is constructed with this notifier.
+    ///
+    /// Returns `true` when the supervisor was stored, `false` when it was already
+    /// bound (a second bind is a wiring bug and is ignored, never overwriting the
+    /// live handle). Call this exactly once, right after
+    /// [`ConnectionSupervisor::with_services_and_notifier`].
+    pub fn bind_supervisor(&self, supervisor: ConnectionSupervisor) -> bool {
+        self.supervisor.set(supervisor).is_ok()
+    }
+}
+
+impl ConnectionNotifier for LiminalConnectionNotifier {
+    fn on_worker_registered(
+        &self,
+        pid: u64,
+        registration: &WireWorkerRegistration,
+    ) -> Result<(), LiminalServerError> {
+        // The delivery leg needs the supervisor to push to this connection. In
+        // correct wiring it is bound before any connection is accepted; a missing
+        // binding is a rejected registration, never a panic.
+        let supervisor = self.supervisor.get().ok_or_else(|| {
+            LiminalServerError::ListenerAccept {
+                message: format!(
+                    "liminal worker registration for connection {pid} rejected: \
+                     notifier supervisor handle not yet bound"
+                ),
+            }
+        })?;
+
+        let delivery =
+            WorkerDelivery::Liminal(LiminalWorkerDelivery::new(supervisor.clone(), pid));
+        let node = normalize_wire_node(registration.node.as_deref());
+        // Insert into the SAME registry, selected the SAME way, as a gRPC worker.
+        // A registry error (poisoned lock) becomes a Rejected ack so the worker
+        // never believes it is registered when it is not.
+        let guard = self
+            .registry
+            .register_delivery(
+                registration.namespaces.iter().cloned(),
+                registration.task_queue.clone(),
+                node,
+                registration.activity_types.iter(),
+                delivery,
+            )
+            .map_err(|error| LiminalServerError::ListenerAccept {
+                message: format!(
+                    "liminal worker registration for connection {pid} rejected: {error}"
+                ),
+            })?;
+
+        // OWN the guard for the connection's lifetime, keyed by pid. Dropping it
+        // (on unregister) deregisters the worker, so the registration lives
+        // exactly as long as the connection.
+        let mut guards = self.guards.lock().map_err(|_| {
+            // The accepted registry entry cannot be tracked for deregistration, so
+            // reject (and drop the just-created guard, deregistering it) rather
+            // than leak a never-deregistered association.
+            LiminalServerError::ListenerAccept {
+                message: format!(
+                    "liminal worker registration for connection {pid} rejected: \
+                     notifier guard map poisoned"
+                ),
+            }
+        })?;
+        guards.insert(pid, guard);
+        tracing::info!(
+            connection_pid = pid,
+            identity = %registration.identity,
+            task_queue = %registration.task_queue,
+            "registered liminal worker in-band"
+        );
+        Ok(())
+    }
+
+    fn on_worker_unregistered(&self, pid: u64) {
+        // Remove + drop the guard for pid, deregistering the worker. A poisoned
+        // lock on the close path has no peer to report to; recover the guard map
+        // and still drop the guard so the registry does not keep routing to a
+        // gone connection.
+        let removed = match self.guards.lock() {
+            Ok(mut guards) => guards.remove(&pid),
+            Err(poisoned) => poisoned.into_inner().remove(&pid),
+        };
+        if removed.is_some() {
+            tracing::info!(connection_pid = pid, "deregistered liminal worker on disconnect");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{channel_for_row, dispatch_channel_name};
+    use super::{channel_for_row, dispatch_channel_name, normalize_wire_node};
     use aion_core::{ContentType, Payload, WorkflowId};
     use aion_store::{OutboxRow, OutboxStatus};
     use chrono::Utc;
@@ -862,5 +1032,17 @@ mod tests {
         let unpinned = row("remote", "gpu");
         assert_eq!(channel_for_row(&unpinned), "aion.dispatch.remote.gpu");
         assert_ne!(channel_for_row(&pinned), channel_for_row(&unpinned));
+    }
+
+    /// The wire `node` is normalized onto the registry's optional affinity with
+    /// the SAME none-convention the gRPC registration path uses: `None` and the
+    /// empty-string node both collapse to unpinned (`None`), a non-empty value is
+    /// the advertised node. An empty-string node must NOT register a distinct
+    /// empty affinity no pinned dispatch could match.
+    #[test]
+    fn wire_node_normalizes_empty_to_none() {
+        assert_eq!(normalize_wire_node(None), None);
+        assert_eq!(normalize_wire_node(Some("")), None);
+        assert_eq!(normalize_wire_node(Some("box-7")), Some("box-7".to_owned()));
     }
 }
