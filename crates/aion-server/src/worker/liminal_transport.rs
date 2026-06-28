@@ -527,23 +527,64 @@ impl LiminalWorkerDelivery {
     /// Serializes `request`, pushes it via [`ConnectionSupervisor::push_to_connection`],
     /// and decodes the worker's correlated [`DispatchResponse`] reply.
     ///
+    /// # Error classification (LSUB-3)
+    ///
+    /// Two of the failure paths mean the chosen worker's connection is GONE, and
+    /// they surface the typed [`ServerError::WorkerConnectionLost`] so the outbox
+    /// can fail over immediately rather than waiting out the retry backoff:
+    ///
+    /// - `push_to_connection` returns `Err` only when the connection process is no
+    ///   longer live (the connection was already gone at push time). It has no
+    ///   other failure mode, so that whole arm is connection-lost.
+    /// - `awaiter.receive` returns the liminal *Disconnected* case when the
+    ///   connection closed before a correlated reply arrived (after Stage A this
+    ///   wakes PROMPTLY instead of blocking the full [`PUSH_REPLY_TIMEOUT`]).
+    ///   Liminal collapses *Timeout* and *Disconnected* into one
+    ///   `ServerError::ListenerAccept` whose message carries the only
+    ///   distinguishing text, so [`is_connection_closed_reply_error`] matches the
+    ///   disconnect sentinel exactly. A genuine *Timeout* (the worker is alive but
+    ///   slow) does NOT match and stays on the existing [`ServerError::WorkerDispatch`]
+    ///   backoff path — the two are never collapsed.
+    ///
+    /// Every other failure (serialize, decode, or any unrecognized reply error)
+    /// remains a [`ServerError::WorkerDispatch`] so the outbox's unchanged
+    /// backoff/dead-letter path drives the row.
+    ///
     /// # Errors
     ///
-    /// Returns [`ServerError`] when the request cannot be serialized, the push
-    /// cannot be enqueued (the connection is gone), the reply does not arrive in
-    /// [`PUSH_REPLY_TIMEOUT`], or the reply cannot be decoded.
+    /// Returns [`ServerError::WorkerConnectionLost`] when the worker connection was
+    /// gone at push time or closed before replying; returns
+    /// [`ServerError::WorkerDispatch`] when the request cannot be serialized, the
+    /// reply does not arrive within [`PUSH_REPLY_TIMEOUT`] (slow worker), or the
+    /// reply cannot be decoded.
     pub fn dispatch(&self, request: &DispatchRequest) -> Result<DispatchResponse, ServerError> {
         let payload = serde_json::to_vec(request).map_err(|error| {
             dispatch_error("liminal-push", format!("request serialize failed: {error}"))
         })?;
+        // A push-enqueue failure has exactly one cause in liminal — the connection
+        // process is not live (the worker is already gone) — so the whole arm is a
+        // lost connection, re-armed for immediate failover by the outbox.
         let awaiter = self
             .supervisor
             .push_to_connection(self.pid, payload)
             .map_err(|error| {
-                dispatch_error("liminal-push", format!("push to worker failed: {error}"))
+                ServerError::worker_connection_lost(
+                    "liminal-push",
+                    format!("push to worker failed: {error}"),
+                )
             })?;
         let reply = awaiter.receive(PUSH_REPLY_TIMEOUT).map_err(|error| {
-            dispatch_error("liminal-push", format!("worker reply failed: {error}"))
+            // Disconnected (worker died mid-flight) => connection-lost => immediate
+            // failover. Timeout (worker alive but slow) and anything unrecognized
+            // => WorkerDispatch => unchanged backoff. Never collapse the two.
+            if is_connection_closed_reply_error(&error) {
+                ServerError::worker_connection_lost(
+                    "liminal-push",
+                    format!("worker connection closed before reply: {error}"),
+                )
+            } else {
+                dispatch_error("liminal-push", format!("worker reply failed: {error}"))
+            }
         })?;
         serde_json::from_slice(&reply).map_err(|error| {
             dispatch_error(
@@ -552,6 +593,33 @@ impl LiminalWorkerDelivery {
             )
         })
     }
+}
+
+/// Sentinel substring liminal's `PushReplyAwaiter::receive` puts in its error
+/// message for the *Disconnected* case — the connection closed before a
+/// correlated push reply arrived.
+///
+/// Liminal maps both `RecvTimeoutError::Timeout` and `RecvTimeoutError::Disconnected`
+/// onto a single `liminal_server::ServerError::ListenerAccept`, differing ONLY in
+/// this detail text (see `liminal-server` `supervisor.rs` `PushReplyAwaiter::receive`).
+/// Matching this exact substring is therefore how the aion side tells a worker
+/// that DIED (connection-lost, fast failover) from a worker that is merely SLOW
+/// (genuine timeout, normal backoff). The timeout case carries
+/// "no correlated push reply arrived within the timeout" instead and is left on
+/// the backoff path.
+const LIMINAL_REPLY_DISCONNECT_SENTINEL: &str =
+    "the connection closed before sending a correlated push reply";
+
+/// Returns true when a liminal push-reply error is the *Disconnected* case (the
+/// worker's connection closed before it replied), as opposed to a genuine reply
+/// timeout (the worker is alive but slow).
+///
+/// See [`LIMINAL_REPLY_DISCONNECT_SENTINEL`] for why this is a substring match on
+/// liminal's collapsed `ListenerAccept` message.
+fn is_connection_closed_reply_error(error: &LiminalServerError) -> bool {
+    error
+        .to_string()
+        .contains(LIMINAL_REPLY_DISCONNECT_SENTINEL)
 }
 
 /// Cross-node [`OutboxRowDispatch`] that selects a liminal worker from the
@@ -748,17 +816,17 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
         // The delivery leg needs the supervisor to push to this connection. In
         // correct wiring it is bound before any connection is accepted; a missing
         // binding is a rejected registration, never a panic.
-        let supervisor = self.supervisor.get().ok_or_else(|| {
-            LiminalServerError::ListenerAccept {
-                message: format!(
-                    "liminal worker registration for connection {pid} rejected: \
+        let supervisor =
+            self.supervisor
+                .get()
+                .ok_or_else(|| LiminalServerError::ListenerAccept {
+                    message: format!(
+                        "liminal worker registration for connection {pid} rejected: \
                      notifier supervisor handle not yet bound"
-                ),
-            }
-        })?;
+                    ),
+                })?;
 
-        let delivery =
-            WorkerDelivery::Liminal(LiminalWorkerDelivery::new(supervisor.clone(), pid));
+        let delivery = WorkerDelivery::Liminal(LiminalWorkerDelivery::new(supervisor.clone(), pid));
         let node = normalize_wire_node(registration.node.as_deref());
         // Insert into the SAME registry, selected the SAME way, as a gRPC worker.
         // A registry error (poisoned lock) becomes a Rejected ack so the worker
@@ -812,7 +880,10 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
             Err(poisoned) => poisoned.into_inner().remove(&pid),
         };
         if removed.is_some() {
-            tracing::info!(connection_pid = pid, "deregistered liminal worker on disconnect");
+            tracing::info!(
+                connection_pid = pid,
+                "deregistered liminal worker on disconnect"
+            );
         }
     }
 }
