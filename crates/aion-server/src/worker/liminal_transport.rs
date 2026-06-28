@@ -81,6 +81,7 @@
 //! That is the single contract the seam must honour.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_store::OutboxRow;
@@ -89,11 +90,19 @@ use liminal_sdk::{
     ConnectionPoolConfig, DeliveryAck, RemoteChannelHandle, RemoteConfig, SchemaMetadata,
     SchemaValidate,
 };
+use liminal_server::server::connection::ConnectionSupervisor;
 use serde::{Deserialize, Serialize};
 
 use super::bridge::OutboxDeliveryCallback;
 use super::outbox_dispatcher::OutboxRowDispatch;
+use super::registry::ConnectedWorkerRegistry;
 use crate::error::ServerError;
+
+/// Upper bound on how long a server-initiated dispatch push waits for the
+/// worker's correlated reply before the row is treated as undelivered and the
+/// outbox retries. Generous because an activity may legitimately run a while; the
+/// outbox's own retry/reconcile loop is the real liveness backstop.
+const PUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default connection-pool sizing for the spike's single hard-coded connection.
 ///
@@ -471,6 +480,171 @@ impl LiminalCompletionSource {
 #[must_use]
 pub fn payload_from_request(request: &DispatchRequest) -> Payload {
     Payload::new(ContentType::Json, request.input.clone())
+}
+
+/// Delivery handle for a liminal-connected worker held in the worker registry.
+///
+/// A worker that connects over liminal is a first-class registry member selected
+/// the SAME way as a gRPC worker (`select_worker` on `(namespace, task_queue,
+/// node)`); this is the delivery leg the registry holds for it. It pairs the
+/// [`ConnectionSupervisor`] that owns the worker's connection with that
+/// connection's beamr `pid`, so [`Self::dispatch`] can push a [`DispatchRequest`]
+/// out on the worker's existing socket (the LSUB-0 server-push primitive) and
+/// block for the correlated [`DispatchResponse`].
+#[derive(Clone)]
+pub struct LiminalWorkerDelivery {
+    supervisor: ConnectionSupervisor,
+    pid: u64,
+}
+
+impl std::fmt::Debug for LiminalWorkerDelivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiminalWorkerDelivery")
+            .field("pid", &self.pid)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LiminalWorkerDelivery {
+    /// Build a delivery handle for the worker reachable on connection `pid`
+    /// through `supervisor`.
+    #[must_use]
+    pub const fn new(supervisor: ConnectionSupervisor, pid: u64) -> Self {
+        Self { supervisor, pid }
+    }
+
+    /// The connection pid this worker is addressed on.
+    #[must_use]
+    pub const fn pid(&self) -> u64 {
+        self.pid
+    }
+
+    /// Push one dispatch out on the worker's connection and block for its reply.
+    ///
+    /// Serializes `request`, pushes it via [`ConnectionSupervisor::push_to_connection`],
+    /// and decodes the worker's correlated [`DispatchResponse`] reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the request cannot be serialized, the push
+    /// cannot be enqueued (the connection is gone), the reply does not arrive in
+    /// [`PUSH_REPLY_TIMEOUT`], or the reply cannot be decoded.
+    pub fn dispatch(&self, request: &DispatchRequest) -> Result<DispatchResponse, ServerError> {
+        let payload = serde_json::to_vec(request).map_err(|error| {
+            dispatch_error("liminal-push", format!("request serialize failed: {error}"))
+        })?;
+        let awaiter = self
+            .supervisor
+            .push_to_connection(self.pid, payload)
+            .map_err(|error| {
+                dispatch_error("liminal-push", format!("push to worker failed: {error}"))
+            })?;
+        let reply = awaiter.receive(PUSH_REPLY_TIMEOUT).map_err(|error| {
+            dispatch_error("liminal-push", format!("worker reply failed: {error}"))
+        })?;
+        serde_json::from_slice(&reply).map_err(|error| {
+            dispatch_error(
+                "liminal-push",
+                format!("worker reply decode failed: {error}"),
+            )
+        })
+    }
+}
+
+/// Cross-node [`OutboxRowDispatch`] that selects a liminal worker from the
+/// connected-worker registry and pushes the row to it.
+///
+/// This is the LSUB-1 server-side composition: for each claimed row it selects a
+/// worker by the row's `(namespace, task_queue, activity_type, node)` via the
+/// EXISTING registry `select_worker` (the same selection the gRPC path uses, so
+/// routing semantics are shared), pushes the [`DispatchRequest`] to that worker's
+/// liminal connection via its [`LiminalWorkerDelivery`], and re-enters the
+/// worker's [`DispatchResponse`] through the SAME [`LiminalCompletionSource`] /
+/// [`OutboxDeliveryCallback`] the existing completion path uses. A row that
+/// reaches no matching worker, or whose worker is not liminal-delivered, returns
+/// an error so the outbox's unchanged retry/backoff drives it — the same honest
+/// no-worker contract as the gRPC path.
+pub struct RegistryLiminalDispatch {
+    registry: ConnectedWorkerRegistry,
+    completion: LiminalCompletionSource,
+}
+
+impl std::fmt::Debug for RegistryLiminalDispatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryLiminalDispatch")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RegistryLiminalDispatch {
+    /// Build a registry-backed liminal dispatch that re-enters worker results
+    /// through `callback` (the shared `ServerOutboxDeliveryCallback`).
+    #[must_use]
+    pub fn new(
+        registry: ConnectedWorkerRegistry,
+        callback: Arc<dyn OutboxDeliveryCallback>,
+    ) -> Self {
+        Self {
+            registry,
+            completion: LiminalCompletionSource::new(callback),
+        }
+    }
+}
+
+#[async_trait]
+impl OutboxRowDispatch for RegistryLiminalDispatch {
+    async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
+        use super::registry::WorkerDelivery;
+
+        // Select the worker the SAME way the gRPC path does: by the row's
+        // (namespace, task_queue, activity_type) pool key with the row's optional
+        // node affinity. No worker for the pool => honest no-worker error => the
+        // outbox retries (never a false `done`).
+        let worker = self
+            .registry
+            .select_worker(
+                &row.namespace,
+                &row.task_queue,
+                &row.activity_type,
+                row.node.as_deref(),
+            )?
+            .ok_or_else(|| {
+                dispatch_error(
+                    &channel_for_row(row),
+                    "no liminal worker registered for the row's pool".to_owned(),
+                )
+            })?;
+
+        let delivery = match worker.delivery() {
+            WorkerDelivery::Liminal(delivery) => delivery.clone(),
+            WorkerDelivery::Grpc(_) => {
+                return Err(dispatch_error(
+                    &channel_for_row(row),
+                    "selected worker is not delivered over liminal".to_owned(),
+                ));
+            }
+        };
+
+        // Push the dispatch to the worker and block for its correlated reply. The
+        // push is a blocking, thread-based liminal call; run it off the async
+        // runtime so a long-running activity cannot starve a runtime worker.
+        let request = request_for_row(row);
+        let response = tokio::task::spawn_blocking(move || delivery.dispatch(&request))
+            .await
+            .map_err(|error| {
+                dispatch_error(
+                    &channel_for_row(row),
+                    format!("dispatch task join failed: {error}"),
+                )
+            })??;
+
+        // Re-enter the worker's result through the SAME completion path the gRPC
+        // transport uses (terminal dedup in `record_fan_out_completion` applies
+        // unchanged). The dispatch itself succeeded — the row's terminal state is
+        // recorded by the completion callback, exactly as in the gRPC path.
+        self.completion.deliver(&response)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

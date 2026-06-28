@@ -501,7 +501,17 @@ impl WorkerActivityDispatcher {
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<(), String> {
-        match worker.sender().try_send(WorkerMessage::ActivityTask(task)) {
+        let Some(sender) = worker.sender() else {
+            // The gRPC dispatch path only ever holds gRPC-delivery workers, so a
+            // missing stream sender means a worker on another transport leaked
+            // into this path — treat it as a closed channel and clean up.
+            let worker_id = worker.id();
+            self.cleanup_activity(worker_id, workflow_id, activity_id);
+            return Err(format!(
+                "worker {worker_id:?} has no gRPC stream sender (non-gRPC transport)"
+            ));
+        };
+        match sender.try_send(WorkerMessage::ActivityTask(task)) {
             Ok(()) => Ok(()),
             Err(error) => {
                 let worker_id = worker.id();

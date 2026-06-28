@@ -73,7 +73,11 @@ liminal-sdk = { version = "0.2.0", path = "../../../liminal/crates/liminal-sdk",
 liminal-server = { version = "0.2.0", path = "../../../liminal/crates/liminal-server", optional = true }
 
 [dev-dependencies]
-aion-worker = { path = "../aion-worker" }
+# The LSUB-1 cross-node dispatch e2e drives a REAL aion-worker over the liminal
+# push transport, so the test build enables the worker's `liminal-transport`
+# feature. A default (non-test) build never pulls this; the worker feature is OFF
+# in the production dependency graph.
+aion-worker = { path = "../aion-worker", features = ["liminal-transport"] }
 aion-core = { version = "0.7.0", path = "../aion-core" }
 # The SS-5b auto-failover test reuses the aion-rs SS-5 example-build helper,
 # which rebuilds the `hello-world` archive from source and advisory-locks the

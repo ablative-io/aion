@@ -30,6 +30,20 @@ async-trait.workspace = true
 tokio-stream = "0.1.18"
 uuid = { workspace = true }
 hostname = { workspace = true }
+# Cross-node worker transport over the liminal bus (LSUB-1). OPTIONAL and OFF by
+# default: a default worker build links only the gRPC transport and never pulls
+# liminal-sdk (nor its transitive beamr distribution). Enabled only by the
+# `liminal-transport` feature. Path dependency on the sibling repo; the default
+# `std` feature carries the real TCP push client and the canonical wire codec.
+liminal-sdk = { version = "0.2.0", path = "../../../liminal/crates/liminal-sdk", optional = true }
+
+[features]
+default = []
+# Liminal worker transport: a `LiminalActivityWorker` that connects a server-push
+# client, receives `DispatchRequest` frames, executes via the existing activity
+# registry, and replies with a correlated `DispatchResponse`. OFF by default so a
+# default worker build is byte-identical and never links liminal-sdk.
+liminal-transport = ["dep:liminal-sdk"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

@@ -319,6 +319,7 @@ dependencies = [
  "async-trait",
  "futures",
  "hostname",
+ "liminal-sdk",
  "prost 0.14.3",
  "serde",
  "serde_json",

@@ -25,6 +25,30 @@ pub use aion_core::DEFAULT_TASK_QUEUE;
 /// Server-side handle used to push activity tasks to a connected worker stream.
 pub type WorkerTaskSender = mpsc::Sender<WorkerMessage>;
 
+/// Transport through which the server delivers a dispatch to a registered worker.
+///
+/// A worker is selected the SAME way regardless of transport (`select_worker`
+/// over the `(namespace, task_queue, node)` pool key); only the delivery leg
+/// differs. The default gRPC path pushes a [`WorkerMessage`] onto the worker's
+/// stream `mpsc` ([`WorkerDelivery::Grpc`]); a liminal-connected worker is
+/// delivered to by pushing the dispatch out on its existing liminal connection
+/// ([`WorkerDelivery::Liminal`], feature-gated). This enum is the minimal
+/// transport-agnostic seam: the registry holds it on each [`WorkerHandle`], and
+/// the dispatch path reads the variant it needs. The gRPC variant carries exactly
+/// the `mpsc::Sender` it always did, so the gRPC dispatch path is unchanged.
+#[derive(Clone, Debug)]
+pub enum WorkerDelivery {
+    /// gRPC stream delivery: the dispatch path pushes a [`WorkerMessage`] onto
+    /// this `mpsc` sender, exactly as before this enum existed.
+    Grpc(WorkerTaskSender),
+    /// Liminal server-push delivery: the dispatch path pushes the serialized
+    /// dispatch out on the worker's existing liminal connection and awaits the
+    /// correlated reply. Carries the connection identity needed to address that
+    /// push.
+    #[cfg(feature = "liminal-transport")]
+    Liminal(crate::worker::liminal_transport::LiminalWorkerDelivery),
+}
+
 /// Message queued from server-side dispatch/shutdown into a worker stream writer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerMessage {
@@ -130,7 +154,7 @@ pub struct WorkerHandle {
     task_queue: String,
     node: Option<String>,
     activity_types: BTreeSet<String>,
-    sender: WorkerTaskSender,
+    delivery: WorkerDelivery,
 }
 
 impl WorkerHandle {
@@ -166,10 +190,25 @@ impl WorkerHandle {
         &self.activity_types
     }
 
-    /// Sender used by dispatch to push work to the stream task.
+    /// The transport this worker is delivered to through.
     #[must_use]
-    pub fn sender(&self) -> &WorkerTaskSender {
-        &self.sender
+    pub const fn delivery(&self) -> &WorkerDelivery {
+        &self.delivery
+    }
+
+    /// gRPC stream sender used by the gRPC dispatch path to push work, or `None`
+    /// when this worker is delivered to over a non-gRPC transport (liminal).
+    ///
+    /// The gRPC dispatch path registers every worker with a [`WorkerDelivery::Grpc`]
+    /// delivery, so this is always `Some` for a gRPC-registered worker — the
+    /// behaviour the path relied on before delivery became transport-agnostic.
+    #[must_use]
+    pub fn sender(&self) -> Option<&WorkerTaskSender> {
+        match &self.delivery {
+            WorkerDelivery::Grpc(sender) => Some(sender),
+            #[cfg(feature = "liminal-transport")]
+            WorkerDelivery::Liminal(_) => None,
+        }
     }
 }
 
@@ -317,6 +356,35 @@ impl ConnectedWorkerRegistry {
         activity_types: impl IntoIterator<Item = &'a String>,
         sender: WorkerTaskSender,
     ) -> Result<WorkerRegistration, ServerError> {
+        self.register_delivery(
+            namespaces,
+            task_queue,
+            node,
+            activity_types,
+            WorkerDelivery::Grpc(sender),
+        )
+    }
+
+    /// Insert an already-authorized worker serving a SET of namespaces under one
+    /// `task_queue` and optional `node`, delivered to through an explicit
+    /// [`WorkerDelivery`] transport.
+    ///
+    /// This is the transport-agnostic registration core: [`Self::register_namespaces`]
+    /// is the gRPC façade over it (it wraps the stream sender in
+    /// [`WorkerDelivery::Grpc`]). Selection (`select_worker`/`workers_for`) is
+    /// identical across transports; only the held delivery differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn register_delivery<'a>(
+        &self,
+        namespaces: impl IntoIterator<Item = String>,
+        task_queue: impl Into<String>,
+        node: Option<String>,
+        activity_types: impl IntoIterator<Item = &'a String>,
+        delivery: WorkerDelivery,
+    ) -> Result<WorkerRegistration, ServerError> {
         let namespaces = namespaces.into_iter().collect::<BTreeSet<_>>();
         let task_queue = task_queue.into();
         let activity_types = activity_types.into_iter().cloned().collect::<BTreeSet<_>>();
@@ -330,7 +398,7 @@ impl ConnectedWorkerRegistry {
             task_queue: task_queue.clone(),
             node,
             activity_types: activity_types.clone(),
-            sender,
+            delivery,
         };
 
         for namespace in &namespaces {
@@ -447,11 +515,13 @@ impl ConnectedWorkerRegistry {
         let workers = self.all_workers()?;
         let mut delivered = 0usize;
         for worker in workers {
-            if worker
-                .sender()
-                .try_send(WorkerMessage::DrainRequest)
-                .is_ok()
-            {
+            // Only gRPC-stream workers carry a drain mpsc. A worker on a non-gRPC
+            // transport (liminal) has no drain frame in this spike, so it is left
+            // untouched rather than spuriously deregistered.
+            let Some(sender) = worker.sender() else {
+                continue;
+            };
+            if sender.try_send(WorkerMessage::DrainRequest).is_ok() {
                 delivered = delivered.saturating_add(1);
             } else {
                 self.deregister(worker.id())?;
