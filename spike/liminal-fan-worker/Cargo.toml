@@ -1,0 +1,32 @@
+# Minimal liminal PUSH fan-out worker for the LSUB-5-B multi-process spike.
+#
+# Standalone (NOT a workspace member): it consumes the worktree's local
+# `aion-worker` (with the `liminal-transport` feature) by path so the
+# push-client API matches the in-process LSUB-5 capstone and the production
+# `build_liminal_row_dispatch` listener exactly.
+#
+# Unlike `greet-worker` (which connects to a server's *gRPC* endpoint and pulls
+# tasks), this worker connects IN to a server's `outbox.liminal_listen_address`
+# over the liminal SERVER-PUSH transport: it self-registers in-band, then serves
+# pushed `DispatchRequest`s. It is the OS-process counterpart of the in-process
+# `LiminalActivityWorker` used by `lsub5_xnode_failover_e2e`.
+[package]
+name = "liminal-fan-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Minimal liminal push fan-out worker for the LSUB-5-B OS-process spike."
+
+[[bin]]
+name = "liminal-fan-worker"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+aion-worker = { path = "../../crates/aion-worker", features = ["liminal-transport"] }
+anyhow = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
