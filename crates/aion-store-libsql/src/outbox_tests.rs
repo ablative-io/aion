@@ -515,6 +515,103 @@ async fn event_only_append_with_outbox_matches_plain_append() -> Result<(), Stor
     Ok(())
 }
 
+#[tokio::test]
+async fn scoped_claim_matches_namespace_task_queue_and_node_predicate() -> Result<(), StoreError> {
+    // LSUB-1a: a scoped claim for (remote, gpu, box-7) claims ONLY rows whose
+    // (namespace, task_queue) match AND whose node is Some("box-7") or None,
+    // excluding other namespaces, other task queues, and rows pinned elsewhere.
+    let store = open_test_store("scoped-claim").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let in_pinned = pending_row(&workflow_id, 0, "pinned", instant(1)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu")
+        .with_node(Some("box-7".to_owned()));
+    let in_unpinned = pending_row(&workflow_id, 1, "unpinned", instant(2)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu")
+        .with_node(None);
+    let other_ns = pending_row(&workflow_id, 2, "other-ns", instant(3)?)
+        .with_namespace("default")
+        .with_task_queue("gpu");
+    let other_tq = pending_row(&workflow_id, 3, "other-tq", instant(4)?)
+        .with_namespace("remote")
+        .with_task_queue("cpu");
+    let other_node = pending_row(&workflow_id, 4, "other-node", instant(5)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu")
+        .with_node(Some("box-9".to_owned()));
+
+    store
+        .append_outbox_batch(&[
+            in_pinned.clone(),
+            in_unpinned.clone(),
+            other_ns,
+            other_tq,
+            other_node,
+        ])
+        .await?;
+
+    let scope = aion_store::ClaimScope::new("remote", "gpu").with_node(Some("box-7".to_owned()));
+    let claimed = store.claim_outbox_rows_scoped(&scope, 100).await?;
+
+    let mut keys: Vec<String> = claimed.into_iter().map(|row| row.dispatch_key).collect();
+    keys.sort();
+    let mut expected = vec![
+        in_pinned.dispatch_key.clone(),
+        in_unpinned.dispatch_key.clone(),
+    ];
+    expected.sort();
+    assert_eq!(
+        keys, expected,
+        "scoped claim returns exactly the in-pool rows"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn node_less_scoped_claim_excludes_pinned_rows() -> Result<(), StoreError> {
+    // LSUB-1a: a scope advertising no node locality claims only unpinned rows.
+    let store = open_test_store("scoped-claim-no-node").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let unpinned = pending_row(&workflow_id, 0, "unpinned", instant(1)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu");
+    let pinned = pending_row(&workflow_id, 1, "pinned", instant(2)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu")
+        .with_node(Some("box-7".to_owned()));
+    store
+        .append_outbox_batch(&[unpinned.clone(), pinned])
+        .await?;
+
+    let scope = aion_store::ClaimScope::new("remote", "gpu");
+    let claimed = store.claim_outbox_rows_scoped(&scope, 100).await?;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].dispatch_key, unpinned.dispatch_key);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unscoped_claim_still_claims_any_row() -> Result<(), StoreError> {
+    // LSUB-1a regression guard: the existing unscoped path claims EVERY visible
+    // row regardless of namespace/task_queue/node — byte-identical to before.
+    let store = open_test_store("unscoped-claims-all").await?;
+    let workflow_id = WorkflowId::new_v4();
+    let a = pending_row(&workflow_id, 0, "a", instant(1)?)
+        .with_namespace("remote")
+        .with_task_queue("gpu")
+        .with_node(Some("box-7".to_owned()));
+    let b = pending_row(&workflow_id, 1, "b", instant(2)?)
+        .with_namespace("default")
+        .with_task_queue("cpu");
+    let c = pending_row(&workflow_id, 2, "c", instant(3)?).with_node(Some("box-9".to_owned()));
+    store.append_outbox_batch(&[a, b, c]).await?;
+
+    let claimed = store.claim_outbox_rows(100).await?;
+    assert_eq!(claimed.len(), 3, "unscoped claim takes all visible rows");
+    Ok(())
+}
+
 async fn open_test_store(name: &str) -> Result<LibSqlStore, StoreError> {
     LibSqlStore::open(unique_temp_path(name)).await
 }
