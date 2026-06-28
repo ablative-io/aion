@@ -293,8 +293,20 @@ impl OutboxDispatcher {
     ///
     /// The just-failed attempt is `row.attempt` (zero-based). If a further
     /// attempt remains within `max_attempts`, the row is returned to `pending`
-    /// with the attempt bumped and a future `visible_after` computed from the
-    /// backoff curve; otherwise it is dead-lettered to `failed`.
+    /// with the attempt bumped and a `visible_after` fence; otherwise it is
+    /// dead-lettered to `failed`.
+    ///
+    /// # Fast cross-node failover (LSUB-3)
+    ///
+    /// When the failure is [`ServerError::WorkerConnectionLost`] — the chosen
+    /// worker died mid-dispatch and liminal has already deregistered it — the row
+    /// is re-armed for IMMEDIATE re-claim (`visible_after = now`, no backoff) so the
+    /// next sweep promptly re-dispatches it to a live worker in the pool. The
+    /// attempt is STILL consumed: this is the deliberate policy choice — immediate
+    /// re-claim but attempt-consuming — so pathological worker churn stays bounded
+    /// by `max_attempts` and eventually dead-letters rather than forming an
+    /// unbounded re-dispatch loop. A genuine reply timeout (the worker is alive but
+    /// slow) and every other error keep the normal exponential backoff unchanged.
     async fn handle_dispatch_error(&self, row: &OutboxRow, dispatch_error: &ServerError) {
         let attempted = row.attempt.saturating_add(1);
         if attempted >= self.config.max_attempts {
@@ -307,6 +319,26 @@ impl OutboxDispatcher {
             );
             if let Err(error) = self.store.fail_outbox_row(&row.dispatch_key).await {
                 error!(dispatch_key = %row.dispatch_key, %error, "outbox dispatcher failed to dead-letter row");
+            }
+            return;
+        }
+        // LSUB-3 fast failover: a lost worker connection re-arms for immediate
+        // re-claim (skip backoff); everything else keeps the backoff curve.
+        if dispatch_error.is_worker_connection_lost() {
+            let visible_after = Utc::now();
+            warn!(
+                dispatch_key = %row.dispatch_key,
+                attempt = row.attempt,
+                next_attempt = attempted,
+                error = %dispatch_error,
+                "outbox dispatch lost the worker connection; re-arming for immediate failover"
+            );
+            if let Err(error) = self
+                .store
+                .retry_outbox_row(&row.dispatch_key, attempted, visible_after)
+                .await
+            {
+                error!(dispatch_key = %row.dispatch_key, %error, "outbox dispatcher failed to re-arm row for failover");
             }
             return;
         }
@@ -498,6 +530,100 @@ mod tests {
             "visible_after must advance by at least the base backoff"
         );
         // The backoff fence holds the row out of the claimable set right now.
+        assert!(store.claim_outbox_rows(10).await?.is_empty());
+        Ok(())
+    }
+
+    /// Always fails with a [`ServerError::WorkerConnectionLost`], standing in for
+    /// the chosen worker dying mid-dispatch.
+    struct ConnectionLostDispatch;
+
+    #[async_trait]
+    impl OutboxRowDispatch for ConnectionLostDispatch {
+        async fn dispatch(&self, _row: &OutboxRow) -> Result<(), ServerError> {
+            Err(ServerError::worker_connection_lost(
+                "liminal-push",
+                "worker connection closed before reply",
+            ))
+        }
+    }
+
+    /// LSUB-3: a lost worker connection re-arms the row for IMMEDIATE re-claim
+    /// (no backoff) so the next sweep fails it over to a live worker — while STILL
+    /// consuming one attempt so churn stays bounded. Contrast with
+    /// `failed_dispatch_retries_with_backoff_and_bumps_attempt`, where a generic
+    /// failure pushes `visible_after` into the future.
+    #[tokio::test]
+    async fn connection_lost_rearms_immediately_and_consumes_attempt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = open_store("conn-lost").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let row = pending_row(&workflow_id, 0);
+        store
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+
+        let before = Utc::now();
+        let dispatcher =
+            OutboxDispatcher::new(store.clone(), Arc::new(ConnectionLostDispatch), config());
+        dispatcher.sweep_once().await;
+        let after = Utc::now();
+
+        let state = store
+            .outbox_row_state(&row.dispatch_key)
+            .await?
+            .ok_or("re-armed row must still exist")?;
+        // Returned to pending with the attempt consumed (0 -> 1): churn stays
+        // bounded by max_attempts and eventually dead-letters.
+        assert_eq!(state.status, OutboxStatus::Pending);
+        assert_eq!(state.attempt, 1, "the failover still consumes one attempt");
+        // visible_after is "now", NOT pushed out by the base backoff: it sits in
+        // the [before, after] window of this sweep, well below the 100ms base
+        // backoff the generic-failure path would have applied.
+        assert!(
+            state.visible_after >= before && state.visible_after <= after,
+            "visible_after must be re-armed to now (immediate re-claim), not backed off"
+        );
+        assert!(
+            state.visible_after < before + chrono::Duration::milliseconds(100),
+            "immediate re-arm must not apply the base backoff fence"
+        );
+        // The row is IMMEDIATELY claimable again — the next sweep re-dispatches it.
+        assert_eq!(
+            store.claim_outbox_rows(10).await?.len(),
+            1,
+            "the re-armed row is immediately claimable for failover"
+        );
+        Ok(())
+    }
+
+    /// LSUB-3: a lost worker connection STILL dead-letters once the attempt budget
+    /// is exhausted — immediate re-claim never forms an unbounded re-dispatch loop.
+    #[tokio::test]
+    async fn connection_lost_dead_letters_after_max_attempts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = open_store("conn-lost-dead").await?;
+        let workflow_id = WorkflowId::new_v4();
+        // Seed at the final attempt so the next connection-lost failure exhausts
+        // the budget rather than re-arming forever.
+        let mut row = pending_row(&workflow_id, 0);
+        row.attempt = config().max_attempts - 1;
+        store
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+
+        let dispatcher =
+            OutboxDispatcher::new(store.clone(), Arc::new(ConnectionLostDispatch), config());
+        dispatcher.sweep_once().await;
+
+        assert_eq!(
+            store
+                .outbox_row_state(&row.dispatch_key)
+                .await?
+                .map(|s| s.status),
+            Some(OutboxStatus::Failed),
+            "connection-lost churn is bounded by max_attempts and dead-letters"
+        );
         assert!(store.claim_outbox_rows(10).await?.is_empty());
         Ok(())
     }

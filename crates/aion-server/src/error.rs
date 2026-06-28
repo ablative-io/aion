@@ -90,6 +90,26 @@ pub enum ServerError {
         reason: String,
     },
 
+    /// The worker connection chosen for a dispatch was lost mid-flight: the
+    /// connection was already gone at push time, or it closed before the worker
+    /// sent its correlated push reply.
+    ///
+    /// This is DISTINCT from [`Self::WorkerDispatch`]: a `WorkerDispatch` covers a
+    /// genuine reply timeout (the worker is alive but slow), a no-worker-available
+    /// selection failure, or any other dispatch fault, all of which keep the
+    /// outbox's normal exponential backoff. A `WorkerConnectionLost` instead means
+    /// the chosen worker is gone (and has already been deregistered by liminal's
+    /// `on_worker_unregistered`), so the row can be re-armed for IMMEDIATE re-claim
+    /// to fail over to a live worker without waiting out the backoff. The outbox
+    /// dispatcher keys its fast-failover decision on this variant.
+    #[error("worker connection lost during dispatch on {channel}: {detail}")]
+    WorkerConnectionLost {
+        /// Row-derived dispatch channel for operator diagnostics.
+        channel: String,
+        /// Redacted, operator-facing description of how the connection was lost.
+        detail: String,
+    },
+
     /// A lock was poisoned and the protected state cannot be trusted.
     #[error("{resource} lock was poisoned")]
     LockPoisoned {
@@ -137,6 +157,9 @@ impl ServerError {
             | Self::SignalListener { .. }
             | Self::LockPoisoned { .. } => WireError::backend("server backend failure"),
             Self::WorkerDispatch { .. } => WireError::backend("worker dispatch failed"),
+            Self::WorkerConnectionLost { .. } => {
+                WireError::backend("worker connection lost during dispatch")
+            }
             Self::Namespace { message } => WireError::namespace_denied(message.clone()),
             Self::EngineCall { source } => wire_from_engine(source),
             Self::StoreBackend { source } => wire_from_store(source),
@@ -193,6 +216,26 @@ impl ServerError {
             activity_type: activity_type.into(),
             reason: reason.into(),
         }
+    }
+
+    /// Construct a worker-connection-lost error for a dispatch whose chosen
+    /// worker connection was gone at push time or closed before replying.
+    #[must_use]
+    pub fn worker_connection_lost(channel: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::WorkerConnectionLost {
+            channel: channel.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// Return true when this is a lost-worker-connection dispatch failure.
+    ///
+    /// The outbox dispatcher keys its fast cross-node failover on this: a lost
+    /// connection means the worker is gone (already deregistered), so the row is
+    /// re-armed for immediate re-claim instead of waiting out the retry backoff.
+    #[must_use]
+    pub const fn is_worker_connection_lost(&self) -> bool {
+        matches!(self, Self::WorkerConnectionLost { .. })
     }
 
     /// Construct a lock-poison error at the lock boundary.
@@ -254,6 +297,11 @@ impl ServerError {
                 error_type: Cow::Borrowed("WorkerDispatch"),
                 store_error_type: None,
                 reason,
+            },
+            Self::WorkerConnectionLost { detail, .. } => ErrorTraceFields {
+                error_type: Cow::Borrowed("WorkerConnectionLost"),
+                store_error_type: None,
+                reason: detail,
             },
             Self::LockPoisoned { resource } => ErrorTraceFields {
                 error_type: Cow::Borrowed("LockPoisoned"),
