@@ -184,6 +184,14 @@ pub struct OutboxDispatcher {
     store: Arc<dyn OutboxStore>,
     dispatch: Arc<dyn OutboxRowDispatch>,
     config: OutboxDispatcherConfig,
+    /// Advisory wake (LSUB-2): an in-process `Notify` the engine's stage seam
+    /// pulses when a pending outbox row is committed, so the run loop sweeps
+    /// ~immediately instead of waiting up to one poll interval. The wake is
+    /// strictly advisory — a dropped, coalesced, or absent wake degrades cleanly
+    /// to the interval poll, which remains the correctness backstop. When no wake
+    /// is wired in (the default), this is a private `Notify` that is never pulsed,
+    /// so the loop behaves exactly as a pure poll.
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for OutboxDispatcher {
@@ -206,7 +214,24 @@ impl OutboxDispatcher {
             store,
             dispatch,
             config,
+            // Default to a private, never-pulsed wake so an unwired dispatcher is
+            // a pure poll. Callers that share the engine's stage seam install the
+            // real handle with `with_wake`.
+            wake: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Install the shared advisory wake (LSUB-2).
+    ///
+    /// The supplied `Notify` is pulsed by the engine's append-with-outbox seam
+    /// when a pending row is committed, so the run loop sweeps promptly rather
+    /// than waiting for the next interval tick. The wake never affects
+    /// correctness — the interval poll is untouched — so a lost wake simply
+    /// reverts to poll latency.
+    #[must_use]
+    pub fn with_wake(mut self, wake: Arc<tokio::sync::Notify>) -> Self {
+        self.wake = wake;
+        self
     }
 
     /// Run the claim/dispatch loop until `shutdown` flips to `true`.
@@ -229,6 +254,18 @@ impl OutboxDispatcher {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    if *shutdown.borrow() {
+                        break;
+                    }
+                    self.sweep_once().await;
+                }
+                // LSUB-2 advisory wake: a stage-seam pulse interrupts the sleep so
+                // a newly-staged row dispatches in ~RTT instead of up to one poll
+                // interval. Re-check shutdown first, exactly like the interval arm,
+                // so a wake never races a drain. The interval tick above is left
+                // untouched, so the poll stays the correctness backstop: a dropped
+                // or coalesced wake just costs poll latency, never a lost dispatch.
+                () = self.wake.notified() => {
                     if *shutdown.borrow() {
                         break;
                     }
@@ -755,6 +792,118 @@ mod tests {
             !store.other_terminal.load(Ordering::SeqCst),
             "a mark_done failure must not retry or dead-letter the row (it stays Claimed)"
         );
+        Ok(())
+    }
+
+    /// Drive a dispatcher's `run` loop until a row reaches `Done` or the deadline
+    /// elapses; returns whether it reached `Done` in time.
+    async fn wait_for_done(
+        store: &LibSqlStore,
+        dispatch_key: &str,
+        deadline: std::time::Instant,
+    ) -> Result<bool, ServerError> {
+        loop {
+            let done = store
+                .outbox_row_state(dispatch_key)
+                .await?
+                .map(|s| s.status)
+                == Some(OutboxStatus::Done);
+            if done {
+                return Ok(true);
+            }
+            if std::time::Instant::now() > deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// LSUB-2 (fast path): a wake drives a staged row to `Done` FAST — well under
+    /// the poll interval — proving the wake, not the poll, ran the sweep. The poll
+    /// is set to 10s so it cannot explain a sub-second dispatch.
+    #[tokio::test]
+    async fn wake_dispatches_staged_row_well_under_poll_interval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = open_store("wake-fast").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let row = pending_row(&workflow_id, 0);
+        store
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+
+        // A 10s poll interval: any dispatch inside the 1s assert deadline must be
+        // the wake's doing, not the poll (a >=100x margin keeps it non-flaky).
+        let mut slow_poll = config();
+        slow_poll.poll_interval = Duration::from_secs(10);
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let dispatch = Arc::new(RecordingDispatch::new(true));
+        let dispatcher = OutboxDispatcher::new(store.clone(), dispatch.clone(), slow_poll)
+            .with_wake(Arc::clone(&wake));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(dispatcher.run(shutdown_rx));
+
+        // The row is already staged, so the stored permit from `notify_one` is
+        // consumed by the first `notified()` and the sweep finds the pending row.
+        wake.notify_one();
+
+        let reached = wait_for_done(
+            store.as_ref(),
+            &row.dispatch_key,
+            std::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await?;
+        assert!(
+            reached,
+            "the wake must dispatch the staged row within 1s, far under the 10s poll"
+        );
+        assert_eq!(dispatch.count()?, 1);
+
+        shutdown_tx.send(true)?;
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .map_err(|_| "outbox dispatcher did not stop after shutdown")??;
+        Ok(())
+    }
+
+    /// LSUB-2 (correctness backstop): with the wake NEVER pulsed, a staged row
+    /// STILL reaches `Done` via the interval poll. Together with the fast-path test
+    /// this proves the wake is advisory-only — a dropped/absent wake degrades
+    /// cleanly to the existing poll and never loses a dispatch.
+    #[tokio::test]
+    async fn poll_dispatches_staged_row_when_wake_never_fires()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = open_store("wake-absent").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let row = pending_row(&workflow_id, 0);
+        store
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+
+        // Short (10ms) poll, and a wake handle that is installed but never pulsed.
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let dispatch = Arc::new(RecordingDispatch::new(true));
+        let dispatcher = OutboxDispatcher::new(store.clone(), dispatch.clone(), config())
+            .with_wake(Arc::clone(&wake));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(dispatcher.run(shutdown_rx));
+
+        // Deliberately never call `wake.notify_one()`: only the poll can drive this.
+        let reached = wait_for_done(
+            store.as_ref(),
+            &row.dispatch_key,
+            std::time::Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
+        assert!(
+            reached,
+            "the poll must dispatch the staged row even though the wake never fired"
+        );
+        assert_eq!(dispatch.count()?, 1);
+
+        shutdown_tx.send(true)?;
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .map_err(|_| "outbox dispatcher did not stop after shutdown")??;
         Ok(())
     }
 
