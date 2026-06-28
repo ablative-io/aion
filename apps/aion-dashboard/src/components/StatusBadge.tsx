@@ -31,6 +31,10 @@ export const STATUS_BADGE_METADATA: Record<WorkflowStatus, StatusBadgeMetadata> 
     label: 'Timed out',
     className: 'border-amber-400/30 bg-amber-500/15 text-amber-300',
   },
+  ContinuedAsNew: {
+    label: 'Continued as new',
+    className: 'border-violet-400/30 bg-violet-500/15 text-violet-300',
+  },
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {

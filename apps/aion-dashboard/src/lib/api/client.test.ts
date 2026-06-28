@@ -37,6 +37,9 @@ const event: Event = {
       content_type: 'Json',
       bytes: [123, 125],
     },
+    run_id: '00000000-0000-0000-0000-0000000000a1',
+    parent_run_id: null,
+    package_version: '1.0.0',
   },
 };
 
@@ -130,6 +133,54 @@ test('malformed failure bodies still throw typed ApiError', async () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(502);
     expect((error as ApiError).message).toBe('Request failed with 502');
+  }
+});
+
+test('searchEvents posts a namespaced query and parses located results', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({
+        results: [{ event, workflow_id: workflowId, seq: 1 }],
+        next_cursor: null,
+        has_more: false,
+      });
+    },
+  });
+
+  const page = await client.searchEvents(
+    { eventType: 'WorkflowStarted', errorText: 'boom' },
+    { limit: 25 },
+    { namespace }
+  );
+
+  expect(page).toEqual({
+    items: [{ event, workflowId, seq: 1 }],
+    nextCursor: null,
+    hasMore: false,
+  });
+  expect(calls[0]?.url).toBe('https://aion.example/events/search');
+  await expect(calls[0]?.json()).resolves.toEqual({
+    namespace,
+    query: { eventType: 'WorkflowStarted', errorText: 'boom' },
+    cursor: null,
+    limit: 25,
+  });
+});
+
+test('searchEvents surfaces an absent endpoint as ApiError (no silent empty result)', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () => jsonResponse({ message: 'not found' }, { status: 404 }),
+  });
+
+  try {
+    await client.searchEvents({ eventType: 'WorkflowStarted' }, {}, { namespace });
+    throw new Error('expected searchEvents to throw');
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(404);
   }
 });
 

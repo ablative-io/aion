@@ -2,6 +2,7 @@ import {
   Activity,
   Bell,
   CheckCircle2,
+  CircleDot,
   CircleSlash,
   GitBranch,
   type LucideIcon,
@@ -11,7 +12,7 @@ import {
 
 import { cn } from '@/lib/utils';
 
-export type EventIconKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
+export type EventIconKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child' | 'generic';
 
 export type EventIconTone = 'neutral' | 'success' | 'danger' | 'warning' | 'info';
 
@@ -59,6 +60,11 @@ const EVENT_ICON_METADATA: Record<EventIconKind, EventIconMetadata> = {
     label: 'Child workflow event',
     className: 'ring-cyan-400/20',
     Icon: GitBranch,
+  },
+  generic: {
+    label: 'Workflow event',
+    className: 'ring-zinc-400/20',
+    Icon: CircleDot,
   },
 };
 

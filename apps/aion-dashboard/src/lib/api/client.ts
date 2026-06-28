@@ -1,5 +1,26 @@
 import type { Event, Namespace, WorkflowFilter, WorkflowId, WorkflowSummary } from '@/types';
 
+import { ApiError } from './api-error';
+import {
+  apiErrorFromResponse,
+  type EventSearchResponse,
+  type EventSearchResult,
+  type HistoryResponse,
+  type JsonRecord,
+  type NamespacesResponse,
+  normalizeEventSearch,
+  normalizeHistory,
+  normalizeNamespaces,
+  normalizeWorkflowPage,
+  readJson,
+  type WorkflowPage,
+  type WorkflowQueryResponse,
+} from './client-normalize';
+
+export type { ServerErrorBody } from './api-error';
+export { ApiError } from './api-error';
+export type { EventSearchResult, WorkflowPage } from './client-normalize';
+
 const DEFAULT_LIMIT = 50;
 
 // AW REST contract surface: update this one object when cluster AW pins endpoint paths,
@@ -7,13 +28,19 @@ const DEFAULT_LIMIT = 50;
 const AW_REST_CONTRACT = {
   endpoints: {
     workflows: '/workflows/list',
+    workflowsPlain: '/workflows',
+    workflowsCount: '/workflows/count',
     history: '/workflows/describe',
     namespaces: '/namespaces',
+    eventSearch: '/events/search',
   },
   methods: {
     workflows: 'POST',
     history: 'POST',
     namespaces: 'GET',
+    workflowsPlain: 'GET',
+    workflowsCount: 'GET',
+    eventSearch: 'POST',
   },
   requestKeys: {
     namespace: 'namespace',
@@ -21,6 +48,7 @@ const AW_REST_CONTRACT = {
     workflowId: 'workflow_id',
     runId: 'run_id',
     includeHistory: 'include_history',
+    query: 'query',
     pagination: {
       cursor: 'cursor',
       limit: 'limit',
@@ -32,6 +60,7 @@ const AW_REST_CONTRACT = {
     events: 'events',
     history: 'history',
     namespaces: 'namespaces',
+    results: 'results',
     nextCursor: 'next_cursor',
     hasMore: 'has_more',
     payload: 'payload',
@@ -64,50 +93,27 @@ export type WorkflowPageRequest = {
   limit?: number;
 };
 
-export type WorkflowPage<T> = {
-  items: T[];
-  nextCursor: string | null;
-  hasMore: boolean;
+/**
+ * Field-aware event-search query (plan §4.5 / slice S8). All fields are
+ * optional and AND-combined server-side; an empty query is rejected by the
+ * caller, not silently treated as "match all".
+ */
+export type EventSearchQuery = {
+  /** Match a specific event variant (`Event['type']`), e.g. "ActivityFailed". */
+  eventType?: string;
+  /** Match the workflow type the event belongs to. */
+  workflowType?: string;
+  /** Match an activity type (for activity events). */
+  activityType?: string;
+  /** Substring match against an error message / kind. */
+  errorText?: string;
+  /** Lower bound (inclusive) on the event's recorded_at, ISO-8601. */
+  recordedAfter?: string;
+  /** Upper bound (inclusive) on the event's recorded_at, ISO-8601. */
+  recordedBefore?: string;
 };
-
-export type ServerErrorBody = {
-  code?: string;
-  message?: string;
-};
-
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string | null;
-
-  constructor(status: number, message: string, code: string | null = null) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-type JsonRecord = Record<string, unknown>;
 
 type RequestBody = JsonRecord | undefined;
-
-type WorkflowQueryResponse =
-  | WorkflowSummary[]
-  | {
-      items?: WorkflowSummary[];
-      summaries?: unknown[];
-      next_cursor?: string | null;
-      has_more?: boolean;
-    };
-
-type HistoryResponse =
-  | Event[]
-  | {
-      events?: unknown[];
-      history?: unknown[];
-    };
-
-type NamespacesResponse = Namespace[] | { namespaces?: Namespace[] };
 
 export class ApiClient {
   private readonly baseUrl: string;
@@ -155,6 +161,28 @@ export class ApiClient {
     return normalizeHistory(response);
   }
 
+  /**
+   * Field-aware event search (plan §4.5 / slice S8). Posts the query to the AW
+   * event-search endpoint and normalizes the result envelope. The server search
+   * surface is not pinned yet: when the endpoint is absent the request throws a
+   * real {@link ApiError} (e.g. 404) which the caller surfaces to visible state —
+   * it never returns fabricated or empty-but-silent results.
+   */
+  async searchEvents(
+    query: EventSearchQuery,
+    page: WorkflowPageRequest,
+    options: RequestOptions
+  ): Promise<WorkflowPage<EventSearchResult>> {
+    const response = await this.request<EventSearchResponse>(
+      AW_REST_CONTRACT.endpoints.eventSearch,
+      AW_REST_CONTRACT.methods.eventSearch,
+      options,
+      this.buildEventSearchBody(query, page, options.namespace)
+    );
+
+    return normalizeEventSearch(response, page.limit ?? DEFAULT_LIMIT);
+  }
+
   async listNamespaces(options?: Pick<RequestOptions, 'credentials'>): Promise<Namespace[]> {
     const response = await this.request<NamespacesResponse>(
       AW_REST_CONTRACT.endpoints.namespaces,
@@ -162,9 +190,33 @@ export class ApiClient {
       { namespace: '' as Namespace, credentials: options?.credentials }
     );
 
-    return Array.isArray(response)
-      ? response
-      : readArray<Namespace>(response, AW_REST_CONTRACT.responseKeys.namespaces);
+    return normalizeNamespaces(response);
+  }
+
+  async getWorkflowsPlain(options: RequestOptions): Promise<WorkflowSummary[]> {
+    const response = await this.request<WorkflowSummary[] | { items?: WorkflowSummary[] }>(
+      `${AW_REST_CONTRACT.endpoints.workflowsPlain}?${AW_REST_CONTRACT.requestKeys.namespace}=${encodeURIComponent(options.namespace)}`,
+      AW_REST_CONTRACT.methods.workflowsPlain,
+      options
+    );
+
+    return Array.isArray(response) ? response : (response.items ?? []);
+  }
+
+  async countWorkflows(options: RequestOptions): Promise<number> {
+    const response = await this.request<{ count?: number } | number>(
+      `${AW_REST_CONTRACT.endpoints.workflowsCount}?${AW_REST_CONTRACT.requestKeys.namespace}=${encodeURIComponent(options.namespace)}`,
+      AW_REST_CONTRACT.methods.workflowsCount,
+      options
+    );
+
+    const count = typeof response === 'number' ? response : response.count;
+
+    if (typeof count !== 'number') {
+      throw new ApiError(200, 'workflows/count response missing numeric count');
+    }
+
+    return count;
   }
 
   private buildWorkflowQueryBody(
@@ -186,6 +238,19 @@ export class ApiClient {
       [AW_REST_CONTRACT.requestKeys.workflowId]: workflowId,
       [AW_REST_CONTRACT.requestKeys.runId]: null,
       [AW_REST_CONTRACT.requestKeys.includeHistory]: true,
+    };
+  }
+
+  private buildEventSearchBody(
+    query: EventSearchQuery,
+    page: WorkflowPageRequest,
+    namespace: Namespace
+  ): JsonRecord {
+    return {
+      [AW_REST_CONTRACT.requestKeys.namespace]: namespace,
+      [AW_REST_CONTRACT.requestKeys.query]: query,
+      [AW_REST_CONTRACT.requestKeys.pagination.cursor]: page.cursor ?? null,
+      [AW_REST_CONTRACT.requestKeys.pagination.limit]: page.limit ?? DEFAULT_LIMIT,
     };
   }
 
@@ -236,94 +301,6 @@ export function createApiClient(options?: ApiClientOptions): ApiClient {
   return new ApiClient(options);
 }
 
-function normalizeWorkflowPage(
-  response: WorkflowQueryResponse,
-  requestedLimit: number
-): WorkflowPage<WorkflowSummary> {
-  if (Array.isArray(response)) {
-    return {
-      items: response,
-      nextCursor: null,
-      hasMore: response.length >= requestedLimit,
-    };
-  }
-
-  const items = response.items ?? readEnvelopeArray<WorkflowSummary>(response.summaries ?? []);
-
-  return {
-    items,
-    nextCursor: response.next_cursor ?? null,
-    hasMore: response.has_more ?? response.next_cursor !== undefined,
-  };
-}
-
-function normalizeHistory(response: HistoryResponse): Event[] {
-  const events = Array.isArray(response)
-    ? response
-    : (response.events ?? readEnvelopeArray<Event>(response.history ?? []));
-
-  return ([...events] as Event[]).sort(
-    (left, right) => left.data.envelope.seq - right.data.envelope.seq
-  );
-}
-
-function readEnvelopeArray<T>(values: unknown[]): T[] {
-  return values.map((value) => readEnvelopePayload<T>(value));
-}
-
-function readEnvelopePayload<T>(value: unknown): T {
-  if (!isRecord(value)) {
-    return value as T;
-  }
-
-  const payload = value[AW_REST_CONTRACT.responseKeys.payload];
-
-  if (!isRecord(payload)) {
-    return value as T;
-  }
-
-  const bytes = payload[AW_REST_CONTRACT.responseKeys.payloadBytes];
-
-  if (Array.isArray(bytes)) {
-    return JSON.parse(String.fromCharCode(...bytes)) as T;
-  }
-
-  if (typeof bytes === 'string') {
-    return JSON.parse(decodeBase64(bytes)) as T;
-  }
-
-  return value as T;
-}
-
-function readArray<T>(record: JsonRecord, key: string): T[] {
-  const value = record[key];
-  return Array.isArray(value) ? (value as T[]) : [];
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  const text = await response.text();
-
-  if (text.length === 0) {
-    return null;
-  }
-
-  return JSON.parse(text) as unknown;
-}
-
-function apiErrorFromResponse(status: number, body: unknown): ApiError {
-  if (isRecord(body)) {
-    const maybeCode = body.code;
-    const maybeMessage = body.message;
-    const message =
-      typeof maybeMessage === 'string' ? maybeMessage : `Request failed with ${status}`;
-    const code = typeof maybeCode === 'string' ? maybeCode : null;
-
-    return new ApiError(status, message, code);
-  }
-
-  return new ApiError(status, `Request failed with ${status}`);
-}
-
 function buildUrl(baseUrl: string, path: string): string {
   return `${baseUrl}${path}`;
 }
@@ -368,16 +345,4 @@ function appendHeaders(headers: Headers, input: HeadersInit | undefined): void {
   new Headers(input).forEach((value, key) => {
     headers.set(key, value);
   });
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function decodeBase64(value: string): string {
-  if (typeof atob === 'function') {
-    return atob(value);
-  }
-
-  return Buffer.from(value, 'base64').toString('utf8');
 }

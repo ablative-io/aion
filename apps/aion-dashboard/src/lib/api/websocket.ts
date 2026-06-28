@@ -7,14 +7,17 @@ import {
   buildUnsubscribeMessage,
   buildWebSocketUrl,
   consoleWarn,
+  frameDecodeError,
   matchesSubscription,
   parseFrame,
+  reconnectExhaustedError,
   stripTrailingSlash,
 } from './websocket-protocol';
 import {
   type AionEventHandler,
   type AionEventSubscriptionFilter,
   type AionEventWebSocketManagerOptions,
+  type AionSocketError,
   type ConnectionStatus,
   DEFAULT_RECONNECT,
   type ManagedWebSocket,
@@ -22,6 +25,7 @@ import {
   type Scheduler,
   SOCKET_CLOSING,
   SOCKET_OPEN,
+  type SocketErrorListener,
   type StatusListener,
   type SubscribeOptions,
   type SubscriptionRecord,
@@ -37,6 +41,8 @@ export type {
   AionEventHandler,
   AionEventSubscriptionFilter,
   AionEventWebSocketManagerOptions,
+  AionSocketError,
+  AionSocketErrorKind,
   ConnectionStatus,
   FilteredEventSubscriptionFilter,
   FirehoseEventSubscriptionFilter,
@@ -56,8 +62,10 @@ export class AionEventWebSocketManager {
   private readonly statusListeners = new Set<StatusListener>();
   private readonly connectListeners = new Set<TransitionListener>();
   private readonly disconnectListeners = new Set<TransitionListener>();
+  private readonly errorListeners = new Set<SocketErrorListener>();
   private socket: ManagedWebSocket | null = null;
   private status: ConnectionStatus = 'disconnected';
+  private lastError: AionSocketError | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: TimeoutHandle | null = null;
   private intentionalClose = false;
@@ -164,6 +172,24 @@ export class AionEventWebSocketManager {
     };
   }
 
+  /**
+   * Subscribe to typed live-socket errors (M1: no-silent-failure). The manager
+   * emits a non-null {@link AionSocketError} when a frame fails to decode or
+   * reconnection is exhausted, and emits `null` once a healthy connection is
+   * (re)established so a view can clear the error from visible state.
+   */
+  onError(listener: SocketErrorListener): Unsubscribe {
+    this.errorListeners.add(listener);
+
+    return () => {
+      this.errorListeners.delete(listener);
+    };
+  }
+
+  getLastError(): AionSocketError | null {
+    return this.lastError;
+  }
+
   updateLastSeenSequence(subscriptionId: string, sequence: number): void {
     const subscription = this.subscriptions.get(subscriptionId);
 
@@ -177,6 +203,8 @@ export class AionEventWebSocketManager {
     this.statusListeners.clear();
     this.connectListeners.clear();
     this.disconnectListeners.clear();
+    this.errorListeners.clear();
+    this.lastError = null;
     this.close();
   }
 
@@ -191,6 +219,7 @@ export class AionEventWebSocketManager {
 
       const recoveredFromDrop = this.status === 'reconnecting';
       this.reconnectAttempts = 0;
+      this.clearError();
       this.setStatus('connected');
       this.notifyListeners(this.connectListeners);
       this.resendActiveSubscriptions();
@@ -233,6 +262,7 @@ export class AionEventWebSocketManager {
 
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= this.reconnect.maxAttempts) {
+      this.emitError(reconnectExhaustedError(this.reconnect.maxAttempts));
       this.setStatus('disconnected');
       return;
     }
@@ -284,7 +314,10 @@ export class AionEventWebSocketManager {
       const frame = parseFrame(data);
       this.dispatch(frame.namespace, frame.event);
     } catch (error) {
+      // No-silent-failure (M1): surface a typed error to listeners so the UI can
+      // show that the feed dropped a frame. The console trail is secondary.
       this.warn('Unable to parse Aion event WebSocket frame', error);
+      this.emitError(frameDecodeError(error));
     }
   }
 
@@ -298,6 +331,26 @@ export class AionEventWebSocketManager {
           filter: subscription.filter,
         });
       }
+    }
+  }
+
+  private emitError(error: AionSocketError): void {
+    this.lastError = error;
+
+    for (const listener of this.errorListeners) {
+      listener(error);
+    }
+  }
+
+  private clearError(): void {
+    if (this.lastError === null) {
+      return;
+    }
+
+    this.lastError = null;
+
+    for (const listener of this.errorListeners) {
+      listener(null);
     }
   }
 

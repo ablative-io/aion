@@ -11,6 +11,8 @@ export type ScheduleId = string;
 
 export type ActivityId = number;
 
+export type TimerIdKind = { "Named": string } | { "Anonymous": number };
+
 export type TimerId = TimerIdKind;
 
 export type Namespace = string;
@@ -156,6 +158,8 @@ recorded_at: string,
  */
 workflow_id: WorkflowId, };
 
+export type WithTimeoutOutcome = "OperationCompleted" | "TimedOut";
+
 export type Event = { "type": "WorkflowStarted", "data": { 
 /**
  * Recording metadata for this event.
@@ -281,7 +285,32 @@ activity_type: string,
 /**
  * Opaque activity input payload.
  */
-input: Payload, } } | { "type": "ActivityStarted", "data": { 
+input: Payload, 
+/**
+ * Pool/flavour selector this activity dispatches to within the workflow's namespace
+ * (NSTQ-3). This is the durable source-of-truth for re-targeting the **same** task queue
+ * on reopen/recovery, mirroring how the namespace is recovered from history but recorded
+ * **per-activity** rather than as a workflow-level search attribute.
+ *
+ * Replay-safety: histories recorded before this field existed have no `task_queue` on
+ * their `ActivityScheduled` events. Decode defaults the missing value to
+ * [`DEFAULT_TASK_QUEUE`] (`"default"`) via `#[serde(default = ...)]`, so an old history
+ * deterministically re-derives `task_queue = "default"` — never panics, never differs
+ * run-to-run. The encoding of the existing fields is untouched.
+ */
+task_queue: string, 
+/**
+ * OPTIONAL node affinity this activity dispatches to (NODE-3). `None` = no affinity (the
+ * genuine current value; SDK-level node selection is NODE-4). This is the durable
+ * source-of-truth for re-targeting the **same** node on reopen/recovery, recorded
+ * **per-activity** alongside `task_queue`.
+ *
+ * Replay-safety: histories recorded before this field existed have no `node` key on their
+ * `ActivityScheduled` events. serde's `Option` default is `None`, so `#[serde(default)]`
+ * decodes a missing `node` deterministically to `None` — never a sentinel, never panics,
+ * never differs run-to-run. The encoding of the existing fields is untouched.
+ */
+node: string | null, } } | { "type": "ActivityStarted", "data": { 
 /**
  * Recording metadata for this event.
  */

@@ -2,7 +2,11 @@ import { expect, test } from 'bun:test';
 
 import type { Event as AionEvent } from '@/types';
 
-import { createAionEventWebSocketManager, type ResyncContext } from './websocket';
+import {
+  type AionSocketError,
+  createAionEventWebSocketManager,
+  type ResyncContext,
+} from './websocket';
 
 const namespace = 'default';
 const workflowId = '00000000-0000-0000-0000-000000000001';
@@ -21,6 +25,9 @@ const event: AionEvent = {
       content_type: 'Json',
       bytes: [123, 125],
     },
+    run_id: '00000000-0000-0000-0000-0000000000a1',
+    parent_run_id: null,
+    package_version: '1.0.0',
   },
 };
 
@@ -169,6 +176,68 @@ test('unexpected close reconnects with bounded backoff, re-sends subscriptions, 
       mode: 'after-sequence',
     },
   ]);
+});
+
+test('malformed frame emits a typed decode error to listeners (no silent failure)', () => {
+  const socketFactory = new FakeSocketFactory();
+  const errors: (AionSocketError | null)[] = [];
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    warn: () => undefined,
+  });
+  manager.onError((error) => errors.push(error));
+
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined);
+  const socket = socketFactory.sockets[0] as FakeSocket;
+  socket.open();
+  socket.message('{not-json');
+
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.kind).toBe('frame-decode');
+  expect(manager.getLastError()?.kind).toBe('frame-decode');
+});
+
+test('reconnect exhaustion emits a typed error then a healthy reconnect clears it', () => {
+  const scheduler = new FakeScheduler();
+  const socketFactory = new FakeSocketFactory();
+  const errors: (AionSocketError | null)[] = [];
+  const manager = createAionEventWebSocketManager({
+    webSocketImpl: socketFactory.ctor,
+    scheduler,
+    reconnect: { initialDelayMs: 10, maxAttempts: 1 },
+  });
+  manager.onError((error) => errors.push(error));
+
+  manager.subscribe({ kind: 'workflow', namespace, workflowId }, () => undefined);
+  (socketFactory.sockets[0] as FakeSocket).open();
+  (socketFactory.sockets[0] as FakeSocket).drop();
+  scheduler.runNext();
+  (socketFactory.sockets[1] as FakeSocket).drop();
+
+  expect(errors.map((error) => error?.kind ?? null)).toEqual(['reconnect-exhausted']);
+  expect(manager.getLastError()?.kind).toBe('reconnect-exhausted');
+
+  manager.connect();
+  (socketFactory.sockets[2] as FakeSocket).open();
+
+  expect(errors.at(-1)).toBeNull();
+  expect(manager.getLastError()).toBeNull();
+});
+
+test('a single subscription sends exactly one subscribe frame (no double-subscribe)', () => {
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
+
+  manager.subscribe({ kind: 'firehose', namespace }, () => undefined);
+  const socket = socketFactory.sockets[0] as FakeSocket;
+  socket.open();
+
+  const subscribeFrames = socket.sent
+    .map((message) => JSON.parse(message) as { type?: string })
+    .filter((frame) => frame.type === 'subscribe');
+
+  expect(subscribeFrames).toHaveLength(1);
+  expect(socketFactory.sockets).toHaveLength(1);
 });
 
 test('socket error schedules a single reconnect attempt', () => {

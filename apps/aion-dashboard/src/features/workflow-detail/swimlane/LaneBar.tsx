@@ -1,0 +1,89 @@
+import { cn } from '@/lib/utils';
+
+import type { BarStatus, SwimlaneBar } from './laneLayout';
+
+type LaneBarProps = {
+  bar: SwimlaneBar;
+  /** Column width in px (one dense rank). */
+  columnWidth: number;
+  selected: boolean;
+  onSelect: (bar: SwimlaneBar) => void;
+};
+
+/**
+ * One bar in a lane. Status is conveyed by COLOR + SHAPE + POSITION only (no
+ * gradients/glass — VISION §1). An activity bar with retries is segmented at each
+ * `ActivityFailed.attempt`. A child bar carries a drill-link affordance. Markers
+ * (lifecycle/signal/generic single-seq points) render as a small node, spans as a
+ * bar from startRank→endRank.
+ */
+function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
+  const left = bar.startRank * columnWidth;
+  const span = Math.max(1, bar.endRank - bar.startRank + 1);
+  const width = bar.isMarker ? Math.min(columnWidth, 14) : span * columnWidth - 4;
+
+  return (
+    <button
+      aria-current={selected ? 'true' : undefined}
+      aria-label={`${bar.label} (seq ${bar.sequence})`}
+      className={cn(
+        'absolute top-1 flex h-7 items-center overflow-hidden rounded-md border text-left',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-cyan)]',
+        STATUS_CLASSES[bar.status],
+        selected && 'ring-2 ring-[var(--accent-cyan)]'
+      )}
+      data-bar-status={bar.status}
+      data-marker={bar.isMarker ? 'true' : undefined}
+      onClick={() => onSelect(bar)}
+      style={{ left, width }}
+      title={bar.label}
+      type="button"
+    >
+      {bar.isMarker ? null : <AttemptSegments bar={bar} columnWidth={columnWidth} />}
+      <span className="relative z-10 truncate px-2 text-[11px] text-[var(--text-primary)]">
+        {bar.isMarker ? '' : bar.label}
+        {bar.childWorkflowId ? <span className="ml-1 opacity-70">↳</span> : null}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Render attempt boundaries inside an activity bar as thin dividers so a retried
+ * activity reads as segmented attempts (one-based `ActivityFailed.attempt`).
+ */
+function AttemptSegments({ bar, columnWidth }: { bar: SwimlaneBar; columnWidth: number }) {
+  if (bar.attemptRanks.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {bar.attemptRanks.map((rank) => {
+        const offset = (rank - bar.startRank) * columnWidth;
+
+        return (
+          <span
+            aria-hidden="true"
+            className="absolute top-0 bottom-0 w-px bg-[var(--border-default)]"
+            data-attempt-divider="true"
+            key={`${bar.id}:attempt:${rank}`}
+            style={{ left: Math.max(1, offset) }}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+const STATUS_CLASSES: Record<BarStatus, string> = {
+  running: 'border-sky-400/40 bg-sky-500/20',
+  completed: 'border-emerald-400/40 bg-emerald-500/20',
+  failed: 'border-red-400/50 bg-red-500/25',
+  cancelled: 'border-amber-400/40 bg-amber-500/20',
+  'timed-out': 'border-amber-400/50 bg-amber-500/25',
+  fired: 'border-sky-400/40 bg-sky-500/15',
+  marker: 'border-zinc-400/40 bg-[var(--surface-hover)]',
+};
+
+export { LaneBar };

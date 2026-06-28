@@ -38,7 +38,7 @@ pub mod status;
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
 pub use event::{DEFAULT_TASK_QUEUE, Event, EventEnvelope, WithTimeoutOutcome};
 pub use filter::{WorkflowFilter, WorkflowSummary};
-pub use ids::{ActivityId, IdError, PackageVersion, RunId, TimerId, WorkflowId};
+pub use ids::{ActivityId, IdError, PackageVersion, RunId, TimerId, TimerIdKind, WorkflowId};
 pub use payload::{ContentType, Payload, PayloadError};
 pub use schedule::{CatchUpPolicy, OverlapPolicy, ScheduleConfig, ScheduleId, TriggerSpec};
 pub use search::{

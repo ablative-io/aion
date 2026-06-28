@@ -152,7 +152,7 @@ impl fmt::Display for TimerId {
 
 /// Backing representation for timer identifiers.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq, Hash)]
-enum TimerIdKind {
+pub enum TimerIdKind {
     /// Author-assigned timer name.
     Named(String),
     /// Engine-assigned timer sequence position.

@@ -1,6 +1,8 @@
 import type { Event, EventEnvelope, WorkflowId } from '@/types';
 
-export type TimelineEntryKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child';
+import type { EventVariantFamily, KnownEventType } from './lib/timelineVariants';
+
+export type TimelineEntryKind = 'lifecycle' | 'activity' | 'timer' | 'signal' | 'child' | 'generic';
 
 export type TimelineEvent = Event;
 
@@ -49,13 +51,24 @@ export type TimerTimelineEntry = TimelineBase & {
   started: Extract<Event, { type: 'TimerStarted' }> | null;
   fired: Extract<Event, { type: 'TimerFired' }> | null;
   cancelled: Extract<Event, { type: 'TimerCancelled' }> | null;
-  status: 'started' | 'fired' | 'cancelled';
+  /**
+   * Close event for a `with_timeout` operation that this timer bounded. When
+   * present the timer represents a bounded operation (completed-before-deadline
+   * or timed-out), not a bare timer.
+   */
+  withTimeout: Extract<Event, { type: 'WithTimeoutCompleted' }> | null;
+  status: 'started' | 'fired' | 'cancelled' | 'completed' | 'timed-out';
 };
+
+export type SignalDirection = 'received' | 'sent';
 
 export type SignalTimelineEntry = TimelineBase & {
   kind: 'signal';
   signalName: string;
-  event: Extract<Event, { type: 'SignalReceived' }>;
+  direction: SignalDirection;
+  /** Target workflow for an outbound `SignalSent`; null for an inbound signal. */
+  targetWorkflowId: WorkflowId | null;
+  event: Extract<Event, { type: 'SignalReceived' | 'SignalSent' }>;
 };
 
 export type ChildWorkflowTimelineEntry = TimelineBase & {
@@ -69,12 +82,32 @@ export type ChildWorkflowTimelineEntry = TimelineBase & {
   status: 'started' | 'completed' | 'failed' | 'cancelled';
 };
 
+/**
+ * Typed row for event variants without their own swimlane (continue-as-new,
+ * reopened, search-attribute updates, the six schedule lifecycle variants) AND
+ * for any future-unknown variant. `family`/`subKind` are populated from the
+ * compile-time variant classifier for KNOWN variants so the row labels itself
+ * precisely; both are `null` for a genuinely-unknown future variant, which still
+ * renders (humanised type label) and never throws. This is what keeps the
+ * timeline total over the full 29-variant union.
+ */
+export type GenericTimelineEntry = TimelineBase & {
+  kind: 'generic';
+  eventType: Event['type'];
+  /** Coarse family from the variant classifier; null for an unknown variant. */
+  family: EventVariantFamily | null;
+  /** Specific known discriminant; null for an unknown variant. */
+  subKind: KnownEventType | null;
+  event: Event;
+};
+
 export type TimelineEntry =
   | LifecycleTimelineEntry
   | ActivityTimelineEntry
   | TimerTimelineEntry
   | SignalTimelineEntry
-  | ChildWorkflowTimelineEntry;
+  | ChildWorkflowTimelineEntry
+  | GenericTimelineEntry;
 
 export type WorkflowDetailProps = {
   workflowId: WorkflowId;

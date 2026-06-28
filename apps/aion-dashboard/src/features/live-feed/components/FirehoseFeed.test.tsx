@@ -15,6 +15,25 @@ test('FirehoseFeedContent renders explicit empty and disconnected states', () =>
   expect(markup).toContain('Live socket is disconnected');
 });
 
+test('FirehoseFeedContent surfaces a socket error message as visible state', () => {
+  const markup = renderToStaticMarkup(
+    <FirehoseFeedContent
+      error={{
+        kind: 'reconnect-exhausted',
+        message: 'Live connection lost after 5 reconnect attempts. Reload to retry.',
+        cause: null,
+      }}
+      events={[]}
+      namespace={namespace}
+      status="disconnected"
+    />
+  );
+
+  expect(markup).toContain('Live connection lost after 5 reconnect attempts');
+  expect(markup).toContain('data-socket-error="reconnect-exhausted"');
+  expect(markup).toContain('role="alert"');
+});
+
 test('FirehoseFeedContent renders streamed events in newest-first order', () => {
   const markup = renderToStaticMarkup(
     <FirehoseFeedContent
@@ -37,6 +56,9 @@ function workflowStarted(seq: number): Event {
       envelope: { seq, recorded_at: '2026-06-05T20:00:00Z', workflow_id: 'workflow-1' },
       input: { content_type: 'Json', bytes: [123, 125] },
       workflow_type: 'checkout',
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      parent_run_id: null,
+      package_version: '1.0.0',
     },
   };
 }

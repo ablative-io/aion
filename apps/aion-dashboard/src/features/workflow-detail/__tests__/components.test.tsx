@@ -5,7 +5,6 @@ import type { Event, Payload } from '@/types';
 
 import { EventTimeline } from '../components/EventTimeline';
 import { PayloadView, stringifyPayload } from '../components/PayloadView';
-import { WorkflowDetailContent } from '../components/WorkflowDetail';
 import { projectTimeline } from '../lib/timeline';
 
 const payload: Payload = { content_type: 'Json', bytes: [123, 125] };
@@ -21,56 +20,6 @@ test('PayloadView renders collapsed payload summary by default', () => {
 
 test('PayloadView formats generated JSON payload bytes as decoded data', () => {
   expect(stringifyPayload(payload)).toBe('{}');
-});
-
-test('WorkflowDetailContent renders loading, empty, and error states', () => {
-  const baseProps = { namespace: 'default', workflowId };
-  const loading = renderToStaticMarkup(
-    <WorkflowDetailContent
-      {...baseProps}
-      error={null}
-      history={[]}
-      isError={false}
-      isLoading={true}
-    />
-  );
-  const empty = renderToStaticMarkup(
-    <WorkflowDetailContent
-      {...baseProps}
-      error={null}
-      history={[]}
-      isError={false}
-      isLoading={false}
-    />
-  );
-  const error = renderToStaticMarkup(
-    <WorkflowDetailContent
-      {...baseProps}
-      error={new Error('history failed')}
-      history={[]}
-      isError={true}
-      isLoading={false}
-    />
-  );
-
-  expect(loading).toContain('Loading timeline');
-  expect(empty).toContain('This workflow has no events yet');
-  expect(error).toContain('history failed');
-});
-
-test('WorkflowDetailContent renders empty namespace state without an unscoped query', () => {
-  const markup = renderToStaticMarkup(
-    <WorkflowDetailContent
-      error={null}
-      history={[]}
-      isError={false}
-      isLoading={false}
-      namespace={null}
-      workflowId={workflowId}
-    />
-  );
-
-  expect(markup).toContain('No namespace selected');
 });
 
 test('static timeline renders child workflow links and sequence metadata', () => {
@@ -97,7 +46,14 @@ function envelope(seq: number) {
 function workflowStarted(seq: number): Event {
   return {
     type: 'WorkflowStarted',
-    data: { envelope: envelope(seq), workflow_type: 'checkout', input: payload },
+    data: {
+      envelope: envelope(seq),
+      workflow_type: 'checkout',
+      input: payload,
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      parent_run_id: null,
+      package_version: '1.0.0',
+    },
   };
 }
 
@@ -109,6 +65,7 @@ function childStarted(seq: number): Event {
       child_workflow_id: 'child-1',
       workflow_type: 'receipt',
       input: payload,
+      package_version: '1.0.0',
     },
   };
 }

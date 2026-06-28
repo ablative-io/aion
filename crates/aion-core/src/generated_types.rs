@@ -8,8 +8,8 @@ use ts_rs::{Config, TS};
 use crate::{
     ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType, Event, EventEnvelope,
     OverlapPolicy, PackageVersion, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
-    SearchAttributeValue, TimerId, TriggerSpec, WorkflowError, WorkflowFilter, WorkflowId,
-    WorkflowStatus, WorkflowSummary,
+    SearchAttributeValue, TimerId, TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkflowError,
+    WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
 const DASHBOARD_GENERATED_DIR: &str = "../../apps/aion-dashboard/src/types/generated";
@@ -42,6 +42,7 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<PackageVersion>(&config, &mut output)?;
     push_type::<ScheduleId>(&config, &mut output)?;
     push_type::<ActivityId>(&config, &mut output)?;
+    push_type::<TimerIdKind>(&config, &mut output)?;
     push_type::<TimerId>(&config, &mut output)?;
     output.push_str("export type Namespace = string;\n\n");
     push_type::<ContentType>(&config, &mut output)?;
@@ -59,6 +60,7 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<SearchAttributeType>(&config, &mut output)?;
     push_type::<SearchAttributeValue>(&config, &mut output)?;
     push_type::<EventEnvelope>(&config, &mut output)?;
+    push_type::<WithTimeoutOutcome>(&config, &mut output)?;
     push_type::<Event>(&config, &mut output)?;
 
     Ok(output)

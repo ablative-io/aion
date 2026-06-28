@@ -2,6 +2,7 @@ import type { Event, Namespace, WorkflowStatus } from '@/types';
 
 import {
   type AionEventSubscriptionFilter,
+  type AionSocketError,
   AW_WEBSOCKET_CONTRACT,
   type ConsoleLike,
   type JsonRecord,
@@ -78,6 +79,24 @@ function withAfterSequence(record: JsonRecord, sequence: number | null): JsonRec
   return {
     ...record,
     [AW_WEBSOCKET_CONTRACT.requestKeys.afterSequence]: sequence,
+  };
+}
+
+export function frameDecodeError(cause: unknown): AionSocketError {
+  return {
+    kind: 'frame-decode',
+    message: 'A live event could not be decoded; the feed may be missing entries.',
+    cause,
+  };
+}
+
+export function reconnectExhaustedError(attempts: number): AionSocketError {
+  return {
+    kind: 'reconnect-exhausted',
+    message: `Live connection lost after ${attempts} reconnect attempt${
+      attempts === 1 ? '' : 's'
+    }. Reload to retry.`,
+    cause: null,
   };
 }
 
