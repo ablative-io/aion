@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use aion_store::{
-    Event, OutboxRow, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
+    ClaimScope, Event, OutboxRow, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
     ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
     WorkflowSummary, WritableEventStore, WriteToken,
 };
@@ -224,6 +224,15 @@ impl OutboxStore for LibSqlStore {
     async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
         let _guard = self.transaction_lock.lock().await;
         crate::outbox::claim_outbox_rows(self.connection(), limit).await
+    }
+
+    async fn claim_outbox_rows_scoped(
+        &self,
+        scope: &ClaimScope,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::claim_outbox_rows_scoped(self.connection(), scope, limit).await
     }
 
     async fn rearm_stale_claimed_outbox_rows(

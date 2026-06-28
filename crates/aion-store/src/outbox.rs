@@ -78,6 +78,76 @@ impl OutboxStatus {
     }
 }
 
+/// Pool scope for a node-affinity-aware outbox claim (LSUB-1a).
+///
+/// A scope restricts a claim to the rows servable by one worker pool: the `(namespace, task_queue)`
+/// the pool serves, plus the optional `node` locality of the claiming node. It is the additive,
+/// opt-in counterpart to the unscoped [`OutboxStore::claim_outbox_rows`] — passing no scope keeps
+/// the legacy single-server behaviour of claiming any visible row.
+///
+/// # Node predicate
+///
+/// `node` is the *claiming node's* id, not a row filter that demands an exact match. A row is in
+/// scope for node `N` when its own `node` affinity is **either** `Some(N)` (explicitly pinned to
+/// `N`) **or** `None` (unpinned — no affinity, servable by any node in the pool). Rows pinned to a
+/// *different* node `Some(M)` where `M != N` are excluded.
+///
+/// This matches the NODE-AFFINITY model where `node` on a row is OPTIONAL locality
+/// ([`OutboxRow::node`]): unpinned rows (`None`) are the genuine current behaviour — claimable by
+/// anyone in the pool — so a node-scoped claim must keep serving them, otherwise enabling affinity
+/// for some rows would silently strand every unpinned row. A `node: None` scope (a pool that
+/// advertises no locality) claims only unpinned rows, never another node's pinned rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimScope {
+    /// Namespace the pool serves; only rows with this exact `namespace` are in scope.
+    pub namespace: String,
+    /// Task queue the pool serves; only rows with this exact `task_queue` are in scope.
+    pub task_queue: String,
+    /// Claiming node's locality id, or `None` for a pool that advertises no node affinity.
+    ///
+    /// `Some(n)` claims rows with `node == Some(n)` AND unpinned rows (`node == None`). `None` claims
+    /// only unpinned rows (`node == None`).
+    pub node: Option<String>,
+}
+
+impl ClaimScope {
+    /// Builds a scope for the `(namespace, task_queue)` pool with no node locality.
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, task_queue: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            task_queue: task_queue.into(),
+            node: None,
+        }
+    }
+
+    /// Sets the claiming node's locality id on this scope.
+    #[must_use]
+    pub fn with_node(mut self, node: Option<String>) -> Self {
+        self.node = node;
+        self
+    }
+
+    /// Returns whether `row` is servable under this scope.
+    ///
+    /// True iff the namespace and task queue match exactly AND the node predicate holds: the row is
+    /// unpinned (`node == None`) or pinned to this scope's node (`row.node == self.node` when
+    /// `self.node` is `Some`). See the [type docs](ClaimScope#node-predicate) for the rationale.
+    #[must_use]
+    pub fn admits(&self, row: &OutboxRow) -> bool {
+        row.namespace == self.namespace
+            && row.task_queue == self.task_queue
+            && match (&self.node, &row.node) {
+                // Unpinned rows are servable by any node in the pool.
+                (_, None) => true,
+                // A pinned row is servable only by the node it is pinned to.
+                (Some(scope_node), Some(row_node)) => scope_node == row_node,
+                // A pool with no locality cannot serve another node's pinned row.
+                (None, Some(_)) => false,
+            }
+    }
+}
+
 /// One durable fan-out dispatch staged for a worker.
 ///
 /// The row carries everything the out-of-band dispatcher needs to send the activity without
@@ -228,6 +298,28 @@ pub trait OutboxStore: Send + Sync + 'static {
     /// [`StoreError::Serialization`] when a stored row cannot be decoded.
     async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError>;
 
+    /// Atomically claims up to `limit` pending rows that are due AND in `scope` (LSUB-1a).
+    ///
+    /// This is the node-affinity-aware counterpart to [`OutboxStore::claim_outbox_rows`]: it adds a
+    /// `(namespace, task_queue, node)` predicate to the same atomic, single-writer claim and is
+    /// otherwise byte-identical (same due/order/limit/claim semantics). The unscoped method is left
+    /// exactly as it was — passing no scope is still "claim any visible row" — so the existing
+    /// single-server poll loop is unaffected.
+    ///
+    /// A row is in scope when its `namespace` and `task_queue` match `scope` exactly and the node
+    /// predicate holds: the row is unpinned (`node == None`, servable by any node in the pool) or
+    /// pinned to `scope.node`. See [`ClaimScope`] for the full node-predicate rationale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn claim_outbox_rows_scoped(
+        &self,
+        scope: &ClaimScope,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError>;
+
     /// Re-arms stale claimed rows so a live dispatcher can claim them again without restart.
     ///
     /// Implementations atomically select up to `limit` rows whose `status` is
@@ -290,11 +382,55 @@ pub trait OutboxStore: Send + Sync + 'static {
 mod tests {
     use std::sync::Arc;
 
-    use super::{OutboxRow, OutboxStatus, OutboxStore};
+    use aion_core::{ContentType, Payload, WorkflowId};
+    use chrono::Utc;
+
+    use super::{ClaimScope, OutboxRow, OutboxStatus, OutboxStore};
 
     #[test]
     fn outbox_store_is_object_safe() {
         let _: Option<Arc<dyn OutboxStore>> = None;
+    }
+
+    fn row(namespace: &str, task_queue: &str, node: Option<&str>) -> OutboxRow {
+        OutboxRow::pending(
+            WorkflowId::new_v4(),
+            0,
+            String::from("charge"),
+            Payload::new(ContentType::Json, b"{}".to_vec()),
+            Utc::now(),
+        )
+        .with_namespace(namespace)
+        .with_task_queue(task_queue)
+        .with_node(node.map(ToOwned::to_owned))
+    }
+
+    #[test]
+    fn scope_admits_matching_namespace_task_queue_and_unpinned_or_matching_node() {
+        let scope = ClaimScope::new("remote", "gpu").with_node(Some("box-7".to_owned()));
+        // Pinned to the scope's node: admitted.
+        assert!(scope.admits(&row("remote", "gpu", Some("box-7"))));
+        // Unpinned (no affinity): admitted by any node in the pool.
+        assert!(scope.admits(&row("remote", "gpu", None)));
+    }
+
+    #[test]
+    fn scope_rejects_other_namespace_task_queue_or_pinned_to_other_node() {
+        let scope = ClaimScope::new("remote", "gpu").with_node(Some("box-7".to_owned()));
+        // Wrong namespace.
+        assert!(!scope.admits(&row("default", "gpu", None)));
+        // Wrong task queue.
+        assert!(!scope.admits(&row("remote", "cpu", None)));
+        // Pinned to a different node.
+        assert!(!scope.admits(&row("remote", "gpu", Some("box-9"))));
+    }
+
+    #[test]
+    fn node_less_scope_admits_only_unpinned_rows() {
+        let scope = ClaimScope::new("remote", "gpu");
+        assert!(scope.admits(&row("remote", "gpu", None)));
+        // A node-less pool cannot serve a row pinned to a specific node.
+        assert!(!scope.admits(&row("remote", "gpu", Some("box-7"))));
     }
 
     #[test]

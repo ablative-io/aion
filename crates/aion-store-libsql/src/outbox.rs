@@ -6,7 +6,8 @@
 //! and returned in one atomic step so no two dispatchers observe the same row as claimable.
 
 use aion_store::{
-    DEFAULT_OUTBOX_ROUTE, OutboxRow, OutboxStatus, Payload, RunId, StoreError, WorkflowId,
+    ClaimScope, DEFAULT_OUTBOX_ROUTE, OutboxRow, OutboxStatus, Payload, RunId, StoreError,
+    WorkflowId,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use libsql::{Connection, Row, Transaction, TransactionBehavior, params};
@@ -33,6 +34,23 @@ FROM outbox
 WHERE status = 'pending' AND visible_after <= ?1
 ORDER BY visible_after ASC, dispatch_key ASC
 LIMIT ?2";
+
+// Scoped claim (LSUB-1a): additionally constrain by the pool's `(namespace, task_queue)` and the
+// node predicate. The node clause is appended per-scope: a node-bearing scope claims rows pinned to
+// that node OR unpinned rows (`node IS NULL`); a node-less scope claims only unpinned rows. This is
+// the byte-identical due/order/limit claim with an extra WHERE conjunction.
+const SELECT_CLAIMABLE_SCOPED_PREFIX_SQL: &str = "
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id, namespace, task_queue, node
+FROM outbox
+WHERE status = 'pending' AND visible_after <= ?1 AND namespace = ?3 AND task_queue = ?4";
+
+const SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL: &str = "
+ORDER BY visible_after ASC, dispatch_key ASC
+LIMIT ?2";
+
+// Node predicate fragments spliced between the prefix and suffix above. `?5` binds the scope node.
+const NODE_CLAUSE_PINNED_OR_UNPINNED: &str = " AND (node IS NULL OR node = ?5)";
+const NODE_CLAUSE_UNPINNED_ONLY: &str = " AND node IS NULL";
 
 const CLAIM_ROW_SQL: &str = "
 UPDATE outbox SET status = 'claimed', claimed_at = ?2 WHERE dispatch_key = ?1 AND status = 'pending'";
@@ -220,6 +238,113 @@ async fn select_and_claim(tx: &Transaction, limit: u32) -> Result<Vec<OutboxRow>
         .query(SELECT_CLAIMABLE_SQL, params![now.clone(), i64::from(limit)])
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let mut claimed = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let decoded = decode_row(&row)?;
+        tx.execute(
+            CLAIM_ROW_SQL,
+            params![decoded.dispatch_key.clone(), now.clone()],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+        claimed.push(OutboxRow {
+            status: OutboxStatus::Claimed,
+            claimed_at: Some(claimed_at),
+            ..decoded
+        });
+    }
+
+    Ok(claimed)
+}
+
+/// Claim up to `limit` due pending rows that are in `scope`, atomically (LSUB-1a).
+///
+/// Identical to [`claim_outbox_rows`] but with an additional `(namespace, task_queue, node)` filter
+/// pushed into the SELECT WHERE clause. The unscoped path is untouched.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn claim_outbox_rows_scoped(
+    conn: &Connection,
+    scope: &ClaimScope,
+    limit: u32,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let claimed = match select_and_claim_scoped(&tx, scope, limit).await {
+        Ok(claimed) => claimed,
+        Err(error) => {
+            rollback(tx).await?;
+            return Err(error);
+        }
+    };
+
+    tx.commit()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    Ok(claimed)
+}
+
+async fn select_and_claim_scoped(
+    tx: &Transaction,
+    scope: &ClaimScope,
+    limit: u32,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    let claimed_at = Utc::now();
+    let now = encode_instant(claimed_at);
+
+    // Splice the node predicate into the scoped SELECT. A node-bearing scope serves rows pinned to
+    // that node OR unpinned rows; a node-less scope serves only unpinned rows.
+    let node_clause = if scope.node.is_some() {
+        NODE_CLAUSE_PINNED_OR_UNPINNED
+    } else {
+        NODE_CLAUSE_UNPINNED_ONLY
+    };
+    let sql = format!(
+        "{SELECT_CLAIMABLE_SCOPED_PREFIX_SQL}{node_clause}{SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL}"
+    );
+
+    // `?5` is bound only when the scope carries a node; the node-less clause references no `?5`.
+    let mut rows = if let Some(node) = scope.node.as_deref() {
+        tx.query(
+            &sql,
+            params![
+                now.clone(),
+                i64::from(limit),
+                scope.namespace.clone(),
+                scope.task_queue.clone(),
+                node.to_string()
+            ],
+        )
+        .await
+    } else {
+        tx.query(
+            &sql,
+            params![
+                now.clone(),
+                i64::from(limit),
+                scope.namespace.clone(),
+                scope.task_queue.clone()
+            ],
+        )
+        .await
+    }
+    .map_err(|error| crate::error::libsql_error(&error))?;
 
     let mut claimed = Vec::new();
     while let Some(row) = rows

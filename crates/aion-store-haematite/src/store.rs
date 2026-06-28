@@ -46,8 +46,9 @@ use aion_core::{
     Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
 };
 use aion_store::{
-    OutboxRow, OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
-    ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
+    ClaimScope, OutboxRow, OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord,
+    PackageStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore,
+    WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -1311,6 +1312,66 @@ impl OutboxStore for HaematiteStore {
         .await
     }
 
+    async fn claim_outbox_rows_scoped(
+        &self,
+        claim_scope: &ClaimScope,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let shard_scope = self.owned_shard_scope();
+        let claim_scope = claim_scope.clone();
+        self.blocking(move |store| {
+            let now = Utc::now();
+            let mut claimable: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                shard_scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?
+            .into_iter()
+            // Identical to the unscoped claim filter, plus the pool predicate (LSUB-1a):
+            // namespace + task_queue match and the node predicate (unpinned OR pinned to scope).
+            .filter(|row| {
+                row.status == OutboxStatus::Pending
+                    && row.visible_after <= now
+                    && claim_scope.admits(row)
+            })
+            .collect();
+            // Match the libSQL claim order: visible_after ASC, dispatch_key ASC.
+            claimable.sort_by(|left, right| {
+                left.visible_after
+                    .cmp(&right.visible_after)
+                    .then_with(|| left.dispatch_key.cmp(&right.dispatch_key))
+            });
+            let take = usize::try_from(limit).unwrap_or(usize::MAX);
+            claimable.truncate(take);
+
+            let database = store.database();
+            let mut claimed = Vec::with_capacity(claimable.len());
+            for row in claimable {
+                let updated = OutboxRow {
+                    status: OutboxStatus::Claimed,
+                    claimed_at: Some(now),
+                    ..row
+                };
+                let route_key = keyspace::event_stream_key(&updated.workflow_id);
+                database
+                    .put_routed(
+                        &route_key,
+                        keyspace::outbox_key(&updated.dispatch_key),
+                        encode_outbox(&updated)?,
+                    )
+                    .map_err(|error| database_error(&error))?;
+                claimed.push(updated);
+            }
+            database.commit().map_err(|error| database_error(&error))?;
+            Ok(claimed)
+        })
+        .await
+    }
+
     async fn rearm_stale_claimed_outbox_rows(
         &self,
         older_than: DateTime<Utc>,
@@ -1848,8 +1909,8 @@ mod tests {
 
     use aion_core::{ContentType, Payload, WorkflowId};
     use aion_store::{
-        OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, StoreError, WritableEventStore,
-        WriteToken,
+        ClaimScope, OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, StoreError,
+        WritableEventStore, WriteToken,
     };
     use chrono::{Duration, Utc};
 
@@ -1902,6 +1963,105 @@ mod tests {
         let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].node.as_deref(), Some("box-7"));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scoped_claim_matches_namespace_task_queue_and_node_predicate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // LSUB-1a: scoped claim for (remote, gpu, box-7) claims ONLY rows whose
+        // (namespace, task_queue) match AND whose node is Some("box-7") or None.
+        let store = store("scoped-claim")?;
+        let workflow_id = WorkflowId::new_v4();
+        let past = Utc::now() - Duration::hours(1);
+        let in_pinned = pending_row(&workflow_id, 0, "pinned", past)
+            .with_namespace("remote")
+            .with_task_queue("gpu")
+            .with_node(Some("box-7".to_owned()));
+        let in_unpinned = pending_row(&workflow_id, 1, "unpinned", past)
+            .with_namespace("remote")
+            .with_task_queue("gpu");
+        let other_ns = pending_row(&workflow_id, 2, "other-ns", past)
+            .with_namespace("default")
+            .with_task_queue("gpu");
+        let other_tq = pending_row(&workflow_id, 3, "other-tq", past)
+            .with_namespace("remote")
+            .with_task_queue("cpu");
+        let other_node = pending_row(&workflow_id, 4, "other-node", past)
+            .with_namespace("remote")
+            .with_task_queue("gpu")
+            .with_node(Some("box-9".to_owned()));
+
+        store
+            .append_outbox_batch(&[
+                in_pinned.clone(),
+                in_unpinned.clone(),
+                other_ns,
+                other_tq,
+                other_node,
+            ])
+            .await?;
+
+        let scope = ClaimScope::new("remote", "gpu").with_node(Some("box-7".to_owned()));
+        let claimed = store.claim_outbox_rows_scoped(&scope, 100).await?;
+
+        let mut keys: Vec<String> = claimed.into_iter().map(|row| row.dispatch_key).collect();
+        keys.sort();
+        let mut expected = vec![
+            in_pinned.dispatch_key.clone(),
+            in_unpinned.dispatch_key.clone(),
+        ];
+        expected.sort();
+        assert_eq!(
+            keys, expected,
+            "scoped claim returns exactly the in-pool rows"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_less_scoped_claim_excludes_pinned_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // LSUB-1a: a scope with no node locality claims only unpinned rows.
+        let store = store("scoped-claim-no-node")?;
+        let workflow_id = WorkflowId::new_v4();
+        let past = Utc::now() - Duration::hours(1);
+        let unpinned = pending_row(&workflow_id, 0, "unpinned", past)
+            .with_namespace("remote")
+            .with_task_queue("gpu");
+        let pinned = pending_row(&workflow_id, 1, "pinned", past)
+            .with_namespace("remote")
+            .with_task_queue("gpu")
+            .with_node(Some("box-7".to_owned()));
+        store
+            .append_outbox_batch(&[unpinned.clone(), pinned])
+            .await?;
+
+        let scope = ClaimScope::new("remote", "gpu");
+        let claimed = store.claim_outbox_rows_scoped(&scope, 100).await?;
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].dispatch_key, unpinned.dispatch_key);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unscoped_claim_still_claims_any_row() -> Result<(), Box<dyn std::error::Error>> {
+        // LSUB-1a regression guard: the unscoped path claims EVERY visible row.
+        let store = store("unscoped-claims-all")?;
+        let workflow_id = WorkflowId::new_v4();
+        let past = Utc::now() - Duration::hours(1);
+        let a = pending_row(&workflow_id, 0, "a", past)
+            .with_namespace("remote")
+            .with_task_queue("gpu")
+            .with_node(Some("box-7".to_owned()));
+        let b = pending_row(&workflow_id, 1, "b", past)
+            .with_namespace("default")
+            .with_task_queue("cpu");
+        let c = pending_row(&workflow_id, 2, "c", past).with_node(Some("box-9".to_owned()));
+        store.append_outbox_batch(&[a, b, c]).await?;
+
+        let claimed = store.claim_outbox_rows(100).await?;
+        assert_eq!(claimed.len(), 3, "unscoped claim takes all visible rows");
         Ok(())
     }
 
