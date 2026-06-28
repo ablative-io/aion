@@ -235,9 +235,9 @@ dependencies = [
 
 [[package]]
 name = "beamr"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "984cc69d5f7c5e3b6f97254bd98783974c73cd7c79baa11668ff2b8eba0c5563"
+checksum = "0347be985ae9cc2291819b79f7b2336ec0b2390b6edbbbad57d08239a7f789b6"
 dependencies = [
  "base64",
  "cranelift-codegen",
@@ -261,6 +261,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "unicode-segmentation",
+ "web-time",
  "zstd",
 ]
 
@@ -1332,7 +1333,7 @@ name = "liminal"
 version = "0.2.0"
 dependencies = [
  "async-trait",
- "beamr 0.10.0",
+ "beamr 0.11.0",
  "chrono",
  "haematite",
  "jsonschema",
@@ -2599,6 +2600,16 @@ dependencies = [
  "libc",
  "wasmtime-internal-core",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

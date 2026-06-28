@@ -63,6 +63,7 @@ use crate::config::WorkerConfig;
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::ActivityTask;
+use crate::runtime::liminal_redial::ServeResult;
 use crate::runtime::loop_::{ActivityDispatcher, DispatchOutcome};
 
 /// Wire request carrying one scheduled activity from the server to this worker.
@@ -193,6 +194,32 @@ impl LiminalActivityWorker {
             self.serve_one().await?;
         }
         Ok(())
+    }
+
+    /// Serves pushed dispatches until `stop` fires (a clean stop) or the
+    /// connection drops with a transport error (the owner died), reporting which
+    /// occurred and whether any dispatch was served on this connection.
+    ///
+    /// This is the per-connection step the candidate-cycling redial driver
+    /// (`serve_with_redial`) runs: a clean stop ends the worker, a drop tells the
+    /// driver to redial the next candidate, and `served_work` lets the driver
+    /// reset its backoff after a connection that did useful work.
+    pub(crate) async fn serve_until_drop<Stop>(&self, mut stop: Stop) -> ServeResult
+    where
+        Stop: FnMut() -> bool + Send,
+    {
+        let mut served_work = false;
+        while !stop() {
+            match self.serve_one().await {
+                Ok(true) => served_work = true,
+                Ok(false) => {}
+                // A transport drop (the connected server died) is the redial
+                // trigger, not a fatal worker error: surface it so the driver
+                // migrates to the next candidate and re-registers there.
+                Err(_) => return ServeResult::Dropped { served_work },
+            }
+        }
+        ServeResult::Stopped
     }
 
     /// Decodes one pushed frame into a [`DispatchRequest`], executes the activity,
