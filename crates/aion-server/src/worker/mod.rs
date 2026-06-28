@@ -29,8 +29,7 @@ pub use heartbeat::{
 #[cfg(feature = "liminal-transport")]
 pub use liminal_transport::{
     DispatchRequest, DispatchResponse, LiminalCompletionSource, LiminalConnectionNotifier,
-    LiminalOutboxDispatch, LiminalWorkerDelivery, RegistryLiminalDispatch, attempt_idempotency_key,
-    channel_for_row, dispatch_channel_name,
+    LiminalWorkerDelivery, RegistryLiminalDispatch, channel_for_row, dispatch_channel_name,
 };
 pub use outbox_delivery::ServerOutboxDeliveryCallback;
 pub use outbox_dispatcher::{

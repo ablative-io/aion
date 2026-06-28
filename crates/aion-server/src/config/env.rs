@@ -145,6 +145,9 @@ fn overlay_outbox(config: &mut ServerConfig, name: &str, value: &str) -> Result<
         "AION_OUTBOX_RECONCILE_STALE_AFTER_MS" => {
             config.outbox.reconcile_stale_after_ms = Some(parse_positive_u64(name, value)?);
         }
+        "AION_OUTBOX_LIMINAL_LISTEN_ADDRESS" => {
+            config.outbox.liminal_listen_address = Some(value.to_owned());
+        }
         _ => {}
     }
     Ok(())

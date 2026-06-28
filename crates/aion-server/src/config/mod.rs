@@ -461,13 +461,22 @@ pub struct OutboxConfig {
     /// when the `liminal-transport` Cargo feature is enabled; selecting it in a
     /// build without that feature is a configuration error surfaced at spawn.
     pub transport: OutboxTransport,
-    /// Liminal server address (`host:port`), used only when
-    /// `transport = liminal`. REQUIRED in that mode; ignored otherwise. The
-    /// dispatch *channel* is no longer configured here: it is derived per-row
-    /// from each row's durable `(namespace, task_queue)` via
-    /// `dispatch_channel_name` (NSTQ-5), so one dispatcher routes different
-    /// worker pools to different channels.
-    pub liminal_server_address: Option<String>,
+    /// Address (`host:port`) the aion-server LISTENS on for inbound liminal
+    /// worker connections, used only when `transport = liminal`. REQUIRED in that
+    /// mode; ignored otherwise.
+    ///
+    /// The aion-server HOSTS the liminal listener: a remote `LiminalActivityWorker`
+    /// connects IN to this address and self-registers in-band, so the server's
+    /// [`ConnectionSupervisor`](liminal_server::server::connection::ConnectionSupervisor)
+    /// owns the worker's connection and can push a dispatch out on it
+    /// (`push_to_connection`). This replaces the superseded 13-0 spike's
+    /// client-connect address: the dispatcher no longer *connects out* to publish
+    /// to a channel — it pushes to a connected worker the server already owns.
+    ///
+    /// The dispatch *channel* is not configured here: it is derived per-row from
+    /// each row's durable `(namespace, task_queue)` via `dispatch_channel_name`
+    /// (NSTQ-5), so one listener fans different worker pools out by selection.
+    pub liminal_listen_address: Option<String>,
 }
 
 /// Wire transport selected for outbox dispatch.

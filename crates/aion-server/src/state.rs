@@ -361,6 +361,26 @@ impl ServerState {
         &self.inner.worker_registry
     }
 
+    /// Clone the live engine handle the completion path records terminals through.
+    ///
+    /// This is the SAME `Arc<Engine>` the gRPC completion callback is built over
+    /// (state.rs installs `ServerOutboxDeliveryCallback::new(engine)` on the
+    /// pending tracker when `outbox.enabled`), so the liminal completion path
+    /// re-enters worker results through the identical `record_fan_out_completion`
+    /// seam rather than inventing a second one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when the namespace resolver has no engine handle
+    /// (a state built from parts without an engine).
+    pub fn engine(&self) -> Result<Arc<aion::Engine>, ServerError> {
+        self.inner
+            .namespace_guard
+            .resolver()
+            .engine()
+            .map(Arc::clone)
+    }
+
     /// Borrow the pending-activities tracker shared by the NIF bridge and worker stream handler.
     #[must_use]
     pub fn pending_activities(&self) -> &PendingActivities {

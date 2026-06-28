@@ -1,79 +1,61 @@
-//! Cross-node outbox dispatch over the liminal bus (#13-0 spike).
+//! Cross-node outbox dispatch over the liminal bus (LSUB push transport).
 //!
-//! # What this is (bounded spike)
+//! # What this is (production push path)
 //!
-//! This module wires ONE outbox fan-out dispatch over liminal to a worker and
-//! returns the worker's result through the existing
+//! This module wires the durable outbox's fan-out dispatch over liminal to a
+//! REAL remote aion worker and returns the worker's result through the existing
 //! [`OutboxDeliveryCallback`](super::bridge::OutboxDeliveryCallback), behind the
 //! `liminal-transport` Cargo feature and the `outbox.transport = liminal`
-//! runtime flag. It is deliberately the smallest useful slice:
+//! runtime flag. The aion-server HOSTS the liminal listener: a remote worker
+//! connects IN and self-describes in-band, the server registers it in the SAME
+//! connected-worker registry a gRPC worker joins, and a claimed row is PUSHED out
+//! on the worker's existing connection (the LSUB-0 server-push primitive).
 //!
-//! - **Per-row channel addressing (13-3 / NSTQ-5).** One liminal server address,
-//!   provided to [`LiminalOutboxDispatch::new`]; the channel is derived
-//!   **per dispatch** from the row's `(namespace, task_queue)` via
-//!   [`dispatch_channel_name`] — the worker-pool address. `activity_type` is NOT
-//!   a routing dimension: it rides inside the [`DispatchRequest`] payload and is
-//!   matched by the worker after delivery (see `DispatchRequest::activity_type`),
-//!   exactly as the gRPC registry pushes `activity_type` in the task body while
-//!   selecting the worker by pool key. See
-//!   `docs/NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md` §4.2 for why the earlier
-//!   `(namespace, activity_type)` channel proposal was wrong.
-//! - **Happy path, one worker.** A single dispatch + result round-trip. Retry
-//!   through the honest delivery ack is exercised (the dispatch-out contract)
-//!   but the wider retry/backoff/dead-letter proof is 13-1.
-//! - **Per-attempt idempotency key.** A PER-ATTEMPT idempotency key
-//!   (`{dispatch_key}#{attempt}`, both already on the row) keys liminal
-//!   dedup-on-delivery. The `namespace` + `task_queue` columns the channel
-//!   derivation reads were added by NSTQ-2 (the original "no `namespace` column"
-//!   note predates that landed schema change).
+//! # Routing (NSTQ-5 / NODE-5)
 //!
-//! # The two seams it implements
+//! A worker is selected by the row's `(namespace, task_queue, activity_type,
+//! node)` pool key through the EXISTING registry `select_worker` — the same
+//! selection the gRPC path uses, so routing semantics are shared. `activity_type`
+//! is NOT a routing dimension at the wire: it rides inside the [`DispatchRequest`]
+//! payload and is matched by the worker after delivery, exactly as the gRPC
+//! registry pushes `activity_type` in the task body while selecting the worker by
+//! pool key. See `docs/NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md` §4.2. The
+//! [`dispatch_channel_name`] derivation remains the single source of truth for the
+//! pool-channel string, pinned for any future channel-subscription subscriber so
+//! the two sides cannot drift.
 //!
-//! - [`LiminalOutboxDispatch`] implements
-//!   [`OutboxRowDispatch`](super::outbox_dispatcher::OutboxRowDispatch): it maps
-//!   an [`OutboxRow`] to a [`DispatchRequest`] and publishes it over liminal with
-//!   a per-attempt idempotency key (`{dispatch_key}#{attempt}`, see
-//!   [`attempt_idempotency_key`]), via `publish_with_idempotency_key`. It returns
-//!   `Ok(())` ONLY when the returned
-//!   [`DeliveryAck::is_accepted`] is `true` (a worker genuinely received it);
-//!   otherwise it returns a [`ServerError::WorkerDispatch`] so the outbox's
-//!   existing retry/backoff/dead-letter path drives the row, exactly as the gRPC
-//!   path does on a failed push.
-//! - [`LiminalCompletionSource`] receives the worker's [`DispatchResponse`] over
-//!   the liminal conversation request-reply path and calls
-//!   [`OutboxDeliveryCallback::deliver_completion`] /
-//!   [`OutboxDeliveryCallback::deliver_failure`], threading `run_id` end-to-end
-//!   so the existing continue-as-new run gates apply unchanged.
+//! # The seams it implements
 //!
-//! # Honest scope note on the liminal wire (the integration gap)
+//! - [`RegistryLiminalDispatch`] implements
+//!   [`OutboxRowDispatch`](super::outbox_dispatcher::OutboxRowDispatch): for each
+//!   claimed row it selects a worker from the connected-worker registry, pushes
+//!   the [`DispatchRequest`] to that worker's liminal connection via its
+//!   [`LiminalWorkerDelivery`], and re-enters the worker's [`DispatchResponse`]
+//!   through the SAME [`LiminalCompletionSource`] / [`OutboxDeliveryCallback`] the
+//!   gRPC completion path uses. A row that reaches no matching worker, or whose
+//!   worker is not liminal-delivered, returns an error so the outbox's unchanged
+//!   retry/backoff drives it — the same honest no-worker contract as the gRPC
+//!   path.
+//! - [`LiminalConnectionNotifier`] is the SERVER half of in-band registration:
+//!   when a worker connects with a [`WorkerRegistration`](WireWorkerRegistration)
+//!   the notifier inserts a [`WorkerDelivery::Liminal`] into the registry, and
+//!   drops it on disconnect.
+//! - [`LiminalCompletionSource`] maps a [`DispatchResponse`] onto the delivery
+//!   callback, threading `run_id` end-to-end so the existing continue-as-new run
+//!   gates apply unchanged.
 //!
-//! Liminal's 13-L0 request-reply round-trip is served by an in-server echo
-//! participant (`liminal-server`'s conversation supervisor spawns an
-//! `EchoBehaviour` responder); there is no API yet to register an *external*
-//! aion-worker process as the conversation responder over the wire. So in 13-0
-//! the "worker" that returns the result is liminal's echo participant: the WIRE
-//! is genuine (real TCP, real correlation, real dedup-on-delivery, real delivery
-//! ack), but the responder identity is liminal's echo, not a separate aion
-//! worker binary. Registering a real remote aion worker as the responder is the
-//! deferred work tracked by 13-6 and a corresponding liminal worker-pool seam.
-//! This module's types and contracts are written so that swap is a change of
-//! responder, not of the aion-side wiring.
+//! # The channel-subscription seam (documented, distinct from the push path)
 //!
-//! # The worker-subscription seam (out of scope here, documented)
-//!
-//! This module owns the DISPATCHER side: it publishes a row to the channel
-//! [`dispatch_channel_name`] derives from the row's `(namespace, task_queue)`
-//! and its optional `node` (NODE-2/NODE-5). The SUBSCRIBER side — a remote
-//! aion-worker pool joining the liminal pg group for the channel it serves —
-//! lives in the worker/liminal layer, not here, and does not exist yet (13-0
-//! uses liminal's in-server echo responder). When that worker-pool transport is
-//! built, the subscriber MUST derive its channel(s) from **this same**
-//! [`dispatch_channel_name`] function so the dispatcher and subscriber strings
-//! cannot drift. The precise subscriber contract:
+//! [`dispatch_channel_name`] derives the pool channel a `(namespace, task_queue)`
+//! pool addresses, optionally pinned to a `node` (NODE-2/NODE-5). The production
+//! path above does not publish to that channel — it pushes to a connected worker
+//! the server already owns — but the derivation is retained as the pinned contract
+//! any future channel-subscription transport MUST honour so the dispatcher and a
+//! subscriber cannot drift:
 //!
 //! - An UNPINNED worker pool addressed `(namespace, task_queue)` subscribes to
 //!   `dispatch_channel_name(namespace, task_queue, None)`.
-//! - A NODE-PINNED dispatch (the row carries `Some(node)`) is published to
+//! - A NODE-PINNED dispatch (the row carries `Some(node)`) maps to
 //!   `dispatch_channel_name(namespace, task_queue, Some(node))` — a DISTINCT
 //!   channel that a worker on that node must ALSO subscribe to in order to serve
 //!   pinned work; the unpinned channel alone never delivers a pinned dispatch.
@@ -88,10 +70,7 @@ use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
 use aion_store::OutboxRow;
 use async_trait::async_trait;
 use liminal::protocol::WorkerRegistration as WireWorkerRegistration;
-use liminal_sdk::{
-    ConnectionPoolConfig, DeliveryAck, RemoteChannelHandle, RemoteConfig, SchemaMetadata,
-    SchemaValidate,
-};
+use liminal_sdk::{SchemaMetadata, SchemaValidate};
 use liminal_server::ServerError as LiminalServerError;
 use liminal_server::server::connection::{ConnectionNotifier, ConnectionSupervisor};
 use serde::{Deserialize, Serialize};
@@ -106,12 +85,6 @@ use crate::error::ServerError;
 /// outbox retries. Generous because an activity may legitimately run a while; the
 /// outbox's own retry/reconcile loop is the real liveness backstop.
 const PUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Default connection-pool sizing for the spike's single hard-coded connection.
-///
-/// One connection is enough for the one-worker happy path; the timeout and
-/// buffer mirror the values liminal's own TCP e2e test uses.
-const SPIKE_POOL: ConnectionPoolConfig = ConnectionPoolConfig::new(1, 10, 16);
 
 /// Wire request carrying one scheduled activity to a liminal worker.
 ///
@@ -185,23 +158,6 @@ pub fn request_for_row(row: &OutboxRow) -> DispatchRequest {
         run_id: row.run_id.clone(),
         input: row.input.bytes().to_vec(),
     }
-}
-
-/// Builds the per-attempt liminal idempotency key for one outbox row.
-///
-/// The outbox `dispatch_key` is stable across every retry of the same row, but
-/// liminal's dedup-on-delivery claims a key at the first publish. Composing the
-/// stable key with the row's zero-based `attempt` (`{dispatch_key}#{attempt}`)
-/// gives each retry a distinct key, so a legitimate re-dispatch is a fresh,
-/// non-suppressed publish while a true duplicate of the same attempt is still
-/// deduped. The exactly-once authority remains aion's terminal dedup, not this
-/// key.
-///
-/// Kept free-standing (not a method) so both the dispatch path and tests derive
-/// the key identically.
-#[must_use]
-pub fn attempt_idempotency_key(row: &OutboxRow) -> String {
-    format!("{}#{}", row.dispatch_key, row.attempt)
 }
 
 /// The single reserved character that separates channel segments. Because
@@ -320,104 +276,16 @@ pub fn channel_for_row(row: &OutboxRow) -> String {
     dispatch_channel_name(&row.namespace, &row.task_queue, row.node.as_deref())
 }
 
-/// Cross-node [`OutboxRowDispatch`] that places a claimed row over liminal.
-///
-/// Holds the liminal server address; the channel is derived **per dispatch**
-/// from each row's `(namespace, task_queue)` via [`channel_for_row`], so a row
-/// for `(remote, gpu)` and a row for `(local, norn)` publish to distinct pool
-/// channels through one dispatcher. Each dispatch opens a fresh
-/// [`RemoteChannelHandle`] (one connection, happy path); connection
-/// pooling/reuse is a later increment.
-pub struct LiminalOutboxDispatch {
-    server_address: String,
-}
-
-impl std::fmt::Debug for LiminalOutboxDispatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LiminalOutboxDispatch")
-            .field("server_address", &self.server_address)
-            .finish()
-    }
-}
-
-impl LiminalOutboxDispatch {
-    /// Build a liminal dispatch over a server address; the channel is derived
-    /// per-row at dispatch time, not fixed at construction.
-    #[must_use]
-    pub fn new(server_address: impl Into<String>) -> Self {
-        Self {
-            server_address: server_address.into(),
-        }
-    }
-
-    /// Connects a remote channel handle to the configured liminal server on the
-    /// row-derived `channel`.
-    fn connect(&self, channel: &str) -> Result<RemoteChannelHandle, ServerError> {
-        let config = RemoteConfig::new(
-            self.server_address.clone(),
-            channel.to_owned(),
-            channel.to_owned(),
-            SPIKE_POOL,
-        )
-        .map_err(|error| dispatch_error(channel, format!("remote config invalid: {error}")))?;
-        let connected = config
-            .connect_tcp()
-            .map_err(|error| dispatch_error(channel, format!("connect failed: {error}")))?;
-        RemoteChannelHandle::new(&connected)
-            .map_err(|error| dispatch_error(channel, format!("handle build failed: {error}")))
-    }
-}
-
-/// Wraps a reason in the existing worker-dispatch error so a non-accepted send
-/// drives the outbox's unchanged retry/backoff/dead-letter path. The row-derived
-/// `channel` is surfaced as the `activity_type` field for operator diagnostics
-/// (the field is a free-form context string on this transport's error).
+/// Wraps a reason in the existing worker-dispatch error so a non-deliverable
+/// dispatch drives the outbox's unchanged retry/backoff/dead-letter path. The
+/// row-derived `channel` is surfaced as the `activity_type` field for operator
+/// diagnostics (the field is a free-form context string on this transport's
+/// error).
 fn dispatch_error(channel: &str, reason: String) -> ServerError {
     ServerError::WorkerDispatch {
         namespace: "liminal".to_owned(),
         activity_type: channel.to_owned(),
         reason,
-    }
-}
-
-#[async_trait]
-impl OutboxRowDispatch for LiminalOutboxDispatch {
-    async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
-        // Derive the worker-pool channel from the row's durable
-        // (namespace, task_queue) — the single addressing source (NSTQ-5).
-        let channel = channel_for_row(row);
-        let handle = self.connect(&channel)?;
-        let request = request_for_row(row);
-        // Use a PER-ATTEMPT idempotency key (`{dispatch_key}#{attempt}`) so each
-        // outbox retry is a fresh liminal publish that dedup-on-delivery does NOT
-        // suppress. The stable `dispatch_key` alone would be claimed at the first
-        // attempt and every legitimate retry would come back non-accepted —
-        // indistinguishable from "reached no worker" — burning the attempt budget
-        // and dead-lettering a row that should have re-run (13-0's known trap).
-        //
-        // This does not weaken correctness: liminal dedup still suppresses a true
-        // duplicate of the SAME attempt (e.g. a transport-level resend), and the
-        // exactly-once authority is aion's terminal dedup
-        // (`record_fan_out_completion`, idempotent on the dispatch_key/ordinal),
-        // which never moves to liminal. Net contract: at-least-once delivery to
-        // the worker, effectively-once terminal recording — unchanged from today.
-        let idempotency_key = attempt_idempotency_key(row);
-        let ack: DeliveryAck = handle
-            .publish_with_idempotency_key(&request, &idempotency_key)
-            .map_err(|error| dispatch_error(&channel, format!("publish failed: {error}")))?;
-        // The load-bearing contract: treat the send as done ONLY on a genuine
-        // delivery ack (a worker received it). With per-attempt keys a non-accept
-        // now means an empty channel (no worker), so the outbox's retry/backoff is
-        // the correct response — a legitimate retry is no longer self-suppressed.
-        if ack.is_accepted() {
-            Ok(())
-        } else {
-            Err(dispatch_error(
-                &channel,
-                "liminal delivery ack reported the publish reached no worker (empty channel)"
-                    .to_owned(),
-            ))
-        }
     }
 }
 
