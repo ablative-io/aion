@@ -12,7 +12,7 @@ use std::{net::SocketAddr, process::ExitCode};
 
 use tokio::net::TcpListener;
 use tonic::transport::Server as TonicServer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use std::sync::Arc;
 
@@ -99,10 +99,23 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
         "aion-server startup banner"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // LSUB-4-1: a distributed haematite boot carries a `[store.cluster]` section.
+    // The single outbox dispatcher task is spawned in BOTH modes; the difference
+    // is only how ownership is enforced. Single-node (`None`) owns all shards by
+    // construction (`owned_shard_scope() == None`), so its claim sweeps see every
+    // row. Clustered (`Some`) relies on `claim_outbox_rows`' `owned_shard_scope()`
+    // filter — already seeded by `set_owned_shards` during `ServerState::build`,
+    // which runs before this point — so each node only ever claims rows on the
+    // shards it owns. Compute the flag here where the (feature-gated) cluster
+    // section is in scope; pass it to the gate so the boot banner records the mode.
+    #[cfg(feature = "haematite-backend")]
+    let outbox_clustered = cluster_config.is_some();
+    #[cfg(not(feature = "haematite-backend"))]
+    let outbox_clustered = false;
     // Dormant by default: only when `outbox.enabled` is set does the
     // non-replayed outbox dispatcher task start. With the flag off (the
     // default) nothing here runs and server behaviour is unchanged.
-    maybe_spawn_outbox_dispatcher(&state, &outbox_config, &shutdown_rx)?;
+    maybe_spawn_outbox_dispatcher(&state, &outbox_config, outbox_clustered, &shutdown_rx)?;
     // SS-5b: a distributed boot whose peers declare owned shards runs the cluster
     // supervisor — automatic failover detection. A single-node boot spawns
     // nothing here (the method returns `false`), so default behaviour is
@@ -256,33 +269,56 @@ fn reject_auth_without_feature(config: &ServerConfig) -> Result<(), ServerError>
 fn maybe_spawn_outbox_dispatcher(
     state: &ServerState,
     outbox_config: &OutboxConfig,
+    clustered: bool,
     shutdown_rx: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), ServerError> {
     if !outbox_config.enabled {
         return Ok(());
     }
     let dispatcher_config = resolve_outbox_config(outbox_config)?;
-    // Share the engine's already-opened libSQL store: one `Arc<LibSqlStore>`,
-    // one `libsql::Connection`. The dispatcher's `claim_outbox_rows` writes then
-    // serialize against the engine's `append_with_outbox` on that single
-    // connection instead of contending across a second one (no `SQLITE_BUSY`).
-    // The in-memory backend has no outbox table, so `outbox_store()` is `None`
-    // and commissioning the dispatcher against it is a configuration error.
+    // Share the engine's already-opened store: one backing connection. The
+    // dispatcher's `claim_outbox_rows` writes then serialize against the engine's
+    // `append_with_outbox` on that single connection instead of contending across
+    // a second one. Both the libSQL and the haematite backends provide an
+    // `OutboxStore` (the haematite leaf is wired as the outbox store at boot); the
+    // in-memory backend has no outbox table, so `outbox_store()` is `None` and
+    // commissioning the dispatcher against it is a configuration error (LSUB-4-2).
     let outbox_store = state.outbox_store().ok_or_else(|| ServerError::Config {
-        message: "outbox.enabled=true requires store.backend=libsql: the durable outbox \
-                  dispatcher claims rows from the libSQL outbox table, which the in-memory \
-                  store does not provide"
+        message: "outbox.enabled=true requires store.backend=libsql or store.backend=haematite: \
+                  the durable outbox dispatcher claims rows from the store's outbox table, which \
+                  the in-memory store does not provide"
             .to_owned(),
     })?;
     let row_dispatch = select_outbox_row_dispatch(state, outbox_config)?;
     let dispatcher =
         OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config);
     tokio::spawn(dispatcher.run(shutdown_rx.clone()));
-    info!("outbox dispatcher commissioned");
+    // LSUB-4-1: the single dispatcher task is spawned in both modes. In a
+    // single-node boot it owns all shards by construction; in an active-active
+    // clustered boot it claims ONLY the shards this node owns, enforced by
+    // `claim_outbox_rows`' owned-shard scope (already seeded before this point).
+    info!(
+        clustered,
+        "outbox dispatcher commissioned (active-active per-shard ownership enforced by claim scope \
+         when clustered; single-node owns all shards)"
+    );
+    // LSUB-4-4: the stale-claim reconciler is the in-flight recovery backstop. It
+    // is only configured when BOTH reconcile knobs are set, so on a clustered boot
+    // that left them unset, owner-kill in-flight recovery latency is bounded only
+    // by re-residency replay (a survivor adopting the shard re-residents from
+    // history and re-arms via `rearm_outbox_pending`), NOT by `stale_after`. Warn
+    // so the operator knows the backstop is absent.
     if let Some(reconciler_config) = resolve_outbox_reconciler_config(outbox_config)? {
         let reconciler = OutboxReconciler::new(outbox_store, reconciler_config);
         tokio::spawn(reconciler.run(shutdown_rx.clone()));
         info!("outbox reconciler commissioned");
+    } else if clustered {
+        warn!(
+            "outbox reconciler is UNCONFIGURED on a clustered boot (outbox.reconcile_interval_ms \
+             and outbox.reconcile_stale_after_ms are both unset): in-flight recovery after an \
+             owner is killed is then bounded only by re-residency replay on the adopting node, \
+             not by a stale-claim backstop; set both knobs to bound stale-claim recovery latency"
+        );
     }
     Ok(())
 }
@@ -475,5 +511,147 @@ where
         transport,
         address,
         message: source.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::{
+        OutboxConfig, OutboxTransport, maybe_spawn_outbox_dispatcher,
+        resolve_outbox_reconciler_config,
+    };
+    use crate::ServerState;
+    use crate::config::RuntimeConfig;
+    use aion_store::InMemoryStore;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    /// A minimal `RuntimeConfig` for building an in-memory `ServerState` in unit
+    /// tests (mirrors `state.rs`'s test `runtime_config`).
+    fn runtime_config() -> RuntimeConfig {
+        use crate::config::{
+            AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
+            DevConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode,
+            WebSocketConfig, WorkerConfig,
+        };
+        RuntimeConfig {
+            listen: ListenConfig {
+                grpc: SocketAddr::from(([127, 0, 0, 1], 50051)),
+                http: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            },
+            tls: None,
+            auth: AuthConfig {
+                enabled: false,
+                jwks_url: None,
+                jwks_refresh_seconds: 300,
+            },
+            dashboard: DashboardConfig {
+                source: DashboardAssetSource::Embedded,
+            },
+            namespace: NamespaceConfig {
+                mode: NamespaceMode::SharedEngine,
+            },
+            worker: WorkerConfig {
+                heartbeat_window: Duration::from_millis(30_000),
+            },
+            websocket: WebSocketConfig {
+                outbound_buffer_bound: 32,
+                event_broadcast_capacity: Some(64),
+            },
+            workflow_packages: Vec::new(),
+            deploy: DeployConfig::default(),
+            authoring: AuthoringConfig::default(),
+            dev: DevConfig::default(),
+            outbox: OutboxConfig::default(),
+            scheduler_threads: 1,
+            query_timeout: Some(Duration::from_millis(10_000)),
+            default_namespace: "default".to_owned(),
+            drain_timeout: Duration::from_secs(30),
+            metrics: MetricsConfig { enabled: true },
+            owned_shards: Vec::new(),
+        }
+    }
+
+    /// An `OutboxConfig` with `enabled = true` and every required knob present, so
+    /// the only remaining gate is the store-backend / outbox-table availability.
+    fn enabled_outbox_config() -> OutboxConfig {
+        OutboxConfig {
+            enabled: true,
+            poll_interval_ms: Some(250),
+            batch_size: Some(64),
+            max_attempts: Some(5),
+            backoff_base_ms: Some(100),
+            backoff_multiplier: Some(2),
+            backoff_max_ms: Some(30_000),
+            reconcile_interval_ms: None,
+            reconcile_stale_after_ms: None,
+            transport: OutboxTransport::Grpc,
+            liminal_server_address: None,
+        }
+    }
+
+    /// LSUB-4-2 / LSUB-4-6 (Memory-backend guard): commissioning the outbox
+    /// dispatcher against the in-memory backend (which has no outbox table, so
+    /// `outbox_store()` is `None`) is a configuration error, and the message names
+    /// BOTH supported backends (libsql / haematite), not just libsql.
+    #[tokio::test]
+    async fn outbox_enabled_on_memory_backend_is_a_config_error() {
+        let state = ServerState::build_with_store(InMemoryStore::default(), runtime_config())
+            .await
+            .expect("build in-memory state");
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let error = maybe_spawn_outbox_dispatcher(&state, &enabled_outbox_config(), false, &rx)
+            .expect_err("outbox.enabled on the memory backend must be a config error");
+        assert!(
+            error.is_config(),
+            "memory-backend outbox error must be Config"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("libsql") && message.contains("haematite"),
+            "corrected message must name both supported backends, got: {message}"
+        );
+    }
+
+    /// LSUB-4-1 (Fork-B fast path): with the outbox disabled (the default), the
+    /// gate is a no-op even on a memory backend — nothing is spawned and no error
+    /// is produced, so a default single-node boot is unchanged.
+    #[tokio::test]
+    async fn disabled_outbox_is_a_noop_on_any_backend() {
+        let state = ServerState::build_with_store(InMemoryStore::default(), runtime_config())
+            .await
+            .expect("build in-memory state");
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        maybe_spawn_outbox_dispatcher(&state, &OutboxConfig::default(), false, &rx)
+            .expect("disabled outbox gate must be an infallible no-op");
+    }
+
+    /// LSUB-4-4: the reconciler config resolves to `None` unless BOTH knobs are
+    /// set — the condition under which the clustered-boot WARN fires.
+    #[test]
+    fn reconciler_config_absent_unless_both_knobs_set() {
+        let mut config = enabled_outbox_config();
+        // Neither knob: absent.
+        assert!(
+            resolve_outbox_reconciler_config(&config)
+                .expect("resolve")
+                .is_none()
+        );
+        // Only interval: still absent (the silent-backstop-absent default).
+        config.reconcile_interval_ms = Some(1_000);
+        assert!(
+            resolve_outbox_reconciler_config(&config)
+                .expect("resolve")
+                .is_none()
+        );
+        // Both set: present.
+        config.reconcile_stale_after_ms = Some(60_000);
+        assert!(
+            resolve_outbox_reconciler_config(&config)
+                .expect("resolve")
+                .is_some()
+        );
     }
 }

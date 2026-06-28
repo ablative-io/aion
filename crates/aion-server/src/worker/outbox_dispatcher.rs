@@ -248,6 +248,15 @@ impl OutboxDispatcher {
 
     /// Claim one batch of pending rows and drive each to its terminal state.
     async fn sweep_once(&self) {
+        // LSUB-4-3 / Fork-A2 seam: ownership is NOT enforced on this claim. The
+        // claim path is an UNFENCED local `put_routed` scoped by `owned_shard_scope()`
+        // — it simply returns `Ok` with only the rows on shards this node owns and
+        // never surfaces a `NotOwner`. Deposition is surfaced (and the owned set
+        // narrowed by re-residency) on the FENCED stamped event-append a deposed
+        // owner attempts when recording a terminal (aion-store-haematite store.rs
+        // ~622/1110: `DatabaseError::Fenced => StoreError::NotOwner`), not here. So
+        // this sweep has nothing ownership-specific to handle: a claim error is a
+        // genuine backend failure, retried next tick.
         let rows = match self.store.claim_outbox_rows(self.config.batch_size).await {
             Ok(rows) => rows,
             Err(error) => {
@@ -518,6 +527,108 @@ mod tests {
         );
         // A dead-lettered row is never claimable again.
         assert!(store.claim_outbox_rows(10).await?.is_empty());
+        Ok(())
+    }
+
+    /// LSUB-4-6 (`mark_done` write failure): dispatch SUCCEEDS but `complete_outbox_row`
+    /// fails — the row must stay `Claimed` (never silently dropped, never retried or
+    /// dead-lettered), so a later rearm/reconcile can re-dispatch it (deduped to one
+    /// terminal in history). Driven through a mock so the post-condition is asserted
+    /// deterministically; `retry`/`fail` record a flag (never reached) instead of
+    /// panicking, keeping the test free of the restriction lints.
+    #[tokio::test]
+    async fn mark_done_failure_leaves_row_claimed_for_later_rearm()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::{ClaimScope, StoreError};
+        use chrono::{DateTime, Utc};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// Hands out exactly one claimable row, then fails `complete_outbox_row`.
+        /// Records whether `complete` was attempted and whether any other terminal
+        /// transition was reached (it must not be) so the test proves the row is
+        /// left `Claimed`.
+        struct CompleteFailsStore {
+            row: OutboxRow,
+            claimed: AtomicBool,
+            completed: AtomicBool,
+            other_terminal: AtomicBool,
+        }
+
+        #[async_trait]
+        impl OutboxStore for CompleteFailsStore {
+            async fn append_outbox_batch(&self, _rows: &[OutboxRow]) -> Result<(), StoreError> {
+                Ok(())
+            }
+            async fn claim_outbox_rows(&self, _limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
+                // Hand out the row exactly once (compare-and-swap false -> true).
+                if self
+                    .claimed
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    Ok(vec![self.row.clone()])
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            async fn claim_outbox_rows_scoped(
+                &self,
+                _scope: &ClaimScope,
+                _limit: u32,
+            ) -> Result<Vec<OutboxRow>, StoreError> {
+                Ok(Vec::new())
+            }
+            async fn rearm_stale_claimed_outbox_rows(
+                &self,
+                _older_than: DateTime<Utc>,
+                _visible_after: DateTime<Utc>,
+                _limit: u32,
+            ) -> Result<Vec<OutboxRow>, StoreError> {
+                Ok(Vec::new())
+            }
+            async fn complete_outbox_row(&self, _dispatch_key: &str) -> Result<(), StoreError> {
+                // The write fails AFTER dispatch already happened; the row stays Claimed.
+                self.completed.store(true, Ordering::SeqCst);
+                Err(StoreError::Backend("mark-done write failed".to_owned()))
+            }
+            async fn retry_outbox_row(
+                &self,
+                _dispatch_key: &str,
+                _next_attempt: u32,
+                _visible_after: DateTime<Utc>,
+            ) -> Result<(), StoreError> {
+                self.other_terminal.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            async fn fail_outbox_row(&self, _dispatch_key: &str) -> Result<(), StoreError> {
+                self.other_terminal.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let workflow_id = WorkflowId::new_v4();
+        let store = Arc::new(CompleteFailsStore {
+            row: pending_row(&workflow_id, 0),
+            claimed: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            other_terminal: AtomicBool::new(false),
+        });
+        let dispatch = Arc::new(RecordingDispatch::new(true));
+        let dispatcher = OutboxDispatcher::new(store.clone(), dispatch.clone(), config());
+        // Sweep: claims the row, dispatches it (succeeds), then complete fails.
+        dispatcher.sweep_once().await;
+
+        assert_eq!(dispatch.count()?, 1, "the row was dispatched exactly once");
+        assert!(
+            store.completed.load(Ordering::SeqCst),
+            "mark_done was attempted (and failed) after the successful dispatch"
+        );
+        // The row is left Claimed: NOT retried, NOT dead-lettered. A later rearm /
+        // reconcile re-dispatches it, deduped to one terminal in history.
+        assert!(
+            !store.other_terminal.load(Ordering::SeqCst),
+            "a mark_done failure must not retry or dead-letter the row (it stays Claimed)"
+        );
         Ok(())
     }
 

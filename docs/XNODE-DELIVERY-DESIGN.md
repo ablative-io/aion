@@ -60,9 +60,14 @@ the real fence (shard ownership), not a per-row CAS.
   dispatch routes by (ns,tq,node) end-to-end over LSUB-0; `record_fan_out_completion` terminal.
 - **LSUB-2:** advisory wake on stage; latency→~RTT; prove correctness unchanged when wake dropped.
 - **LSUB-3:** beamr monitor failover (worker kill → reassignment in monitor-RTT, not lease-TTL).
-- **LSUB-4:** server-ownership fence — gate the outbox dispatcher on `acquire_shard_and_serve`;
-  adversarial active-active + owner-kill test (single-owner dispatch + lossless handoff +
-  deposed Fenced). [Depends on Fork A/B below.]
+- **LSUB-4 (BUILT 2026-06-28, Fork A=A2 + Fork B single-node fast path):** ownership-gate the
+  outbox dispatcher for active-active safety + add the single-node fast path. As built (see §6):
+  the single dispatcher task is spawned in BOTH modes; per-shard ownership is enforced by
+  `claim_outbox_rows`' existing `owned_shard_scope()` filter (seeded by `set_owned_shards` at
+  boot), NOT by gating the dispatcher's spawn on a fresh election. A single-node boot owns all
+  shards by construction (`acquire_owned_shards` is a no-op on a non-distributed store,
+  `store.rs:1542`); a clustered boot claims only its owned shards. The haematite leaf is wired as
+  the `OutboxStore`, so `outbox.enabled` now accepts libsql OR haematite (memory still errors).
 - **LSUB-5:** real-app cross-node failover demo — fan-out workflow, kill the owning server
   mid-dispatch, survivor adopts the shard and finishes. (The live demo.)
 
@@ -95,13 +100,63 @@ the real fence (shard ownership), not a per-row CAS.
   genuinely non-idempotent side-effects is an idempotency key at the side-effect boundary
   (future additive feature), NOT an orchestrator lease — so even A1's motivating case does not
   point to A1. A1's stamped-lease design is kept on file should that ever change.
-- **Fork B:** availability vs correctness under partition. Gating dispatch on a haematite
-  quorum election means a minority-partition server cannot dispatch even with healthy workers
-  (storage-quorum-coupled liveness). Want a single-node fast path that skips the election when
-  only one server is configured (common case), electing only in active-active?
+- **Fork B — RESOLVED 2026-06-28 (single-node fast path, built in LSUB-4):** a single-node boot
+  (no `[store.cluster]`) skips all election machinery — the store owns all shards by construction
+  and the dispatcher claims every row, exactly as before this track. Election + per-shard claim
+  scope engage ONLY in an active-active (`[store.cluster]`) boot. So the common single-node case
+  pays no quorum-coupled-liveness cost; the storage-quorum availability trade-off applies only to
+  an operator who opted into active-active.
 - **Fork C:** outbox shard count S, and whether outbox shards co-locate with haematite data
   shards or are an independent partition (hot-pool hotspot behavior).
 - **Fork D:** pool-member selection policy (round-robin / least-in-flight / node-affinity-aware)
   — must honor `Some(node)` per NODE-AFFINITY-DESIGN. (Largely decided: honor node affinity.)
 - **Fork E:** ship the advisory wake (LSUB-2) in v1, or defer until poll-latency is felt (pure
   optimization, no correctness risk).
+
+## 6. LSUB-4 as built (verified against real code 2026-06-28)
+- **Spawn gate (`run.rs maybe_spawn_outbox_dispatcher`):** unchanged spawn shape — one dispatcher
+  task whenever `outbox.enabled`. A `clustered` flag (computed from the presence of the
+  `[store.cluster]` section) is threaded only for the boot banner + the reconciler WARN. Ownership
+  is NOT re-elected here: the boot path already ran `acquire_owned_shards` + `set_owned_shards`
+  before `run` spawns anything (`state.rs:833`), so the first claim sweep is already correctly
+  scoped.
+- **Backend guard (corrected):** the haematite leaf is the `OutboxStore` (`state.rs:851`), so the
+  precondition now names libsql OR haematite; only `StoreBackend::Memory` (no outbox table →
+  `outbox_store()` is `None`) errors. (Was wrongly "requires libsql".)
+- **VERIFIED SEAM — `NotOwner` is NOT produced on the outbox CLAIM path.** Under A2 the claim is
+  an unfenced local `put_routed` filtered by `owned_shard_scope()`; it returns `Ok(rows)` and
+  never `StoreError::NotOwner`. `NotOwner` is emitted ONLY by the fenced quorum writes
+  (`replicate_append`/`replicate_write` → `Fenced` mapping at `store.rs:622,1110`) — i.e. the
+  STAMPED event-append a deposed owner attempts when recording a terminal. A zombie owner whose
+  scope still names a lost shard is therefore stopped by re-residency narrowing the owned set on
+  the adopting node (history replay) + the Fenced terminal write, NOT by the claim. The
+  `OutboxStore` trait exposes no scope-narrowing method, so the dispatcher cannot drop a lost
+  shard from `sweep_once`. The `NotOwner` arm added to `sweep_once` is therefore DEFENSIVE +
+  forward-compatible (correct the day the claim becomes fenced); it logs distinctly and no-ops
+  besides. Building a quorum-fenced claim or adding lease columns was explicitly OUT of A2.
+- **Reconciler-absent WARN (LSUB-4-4):** the stale-claim reconciler resolves to `None` unless BOTH
+  reconcile knobs are set. On a clustered boot with them unset, a startup WARN documents that
+  owner-kill in-flight recovery latency is then bounded only by re-residency replay (survivor
+  adopts the shard, replay re-arms via `rearm_outbox_pending`), not by `stale_after`.
+- **Test coverage (what landed vs honest gaps):**
+  - LANDED — active-active single-owner (`aion-store-haematite/tests/scoping.rs`
+    `active_active_each_row_claimed_by_exactly_one_owner`): two disjoint owned-shard partitions of
+    one store; each row claimed by exactly one owner, claims disjoint, union = all, non-owner never
+    returns a foreign-shard row.
+  - LANDED — Memory-backend guard + Fork-B no-op + reconciler-absent condition
+    (`aion-server/src/run.rs` unit tests).
+  - LANDED — `NotOwner` claim discrimination + `mark_done` write-failure-leaves-Claimed
+    (`aion-server/src/worker/outbox_dispatcher.rs` unit tests, mock `OutboxStore`).
+  - PRE-EXISTING coverage relied on: restart-rearms-stranded-rows + live-reconciliation
+    exactly-one-terminal (`aion-server/tests/run_server_outbox_e2e.rs`, libSQL); deposed-owner
+    adoption + Fenced + lossless `become_live` handoff (`aion-store-haematite/tests/
+    distributed_failover.rs`); the `Fenced→NotOwner` classification contract
+    (`aion-store-haematite store.rs` unit test ~2430).
+  - GAP (seam wall, NOT faked) — a haematite cross-node owner-kill rearm handoff driven THROUGH
+    the `OutboxDispatcher` task with a one-terminal assertion: no harness wires the standalone
+    dispatcher task into the distributed multi-node showcases, and the dispatcher's completion →
+    history path is explicitly Phase 3 (`outbox_dispatcher.rs` module docs), not wired. The
+    constituent guarantees are each covered above (cross-node single-owner at the store layer;
+    rearm + exactly-one-terminal at the server/libSQL layer; adoption + Fenced at the store layer),
+    but the single end-to-end dispatcher-driven cross-node handoff test is deferred to LSUB-5 (the
+    real-app cross-node failover demo) where the dispatcher runs inside a booted server.
