@@ -124,3 +124,11 @@ haematite-backend = ["dep:aion-store-haematite"]
 [[example]]
 name = "failover_demo"
 required-features = ["haematite-backend"]
+
+# The runnable LSUB-5 capstone demo: boots an in-process haematite cluster + a
+# real liminal worker, kills the fan-out shard owner MID-DISPATCH, and narrates
+# the survivor adopting the shard and re-driving the fan-out to an exactly-once
+# completion. Requires both the haematite backend and the liminal transport.
+[[example]]
+name = "lsub5_xnode_failover_demo"
+required-features = ["haematite-backend", "liminal-transport"]

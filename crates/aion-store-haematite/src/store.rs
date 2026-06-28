@@ -1466,6 +1466,49 @@ impl OutboxStore for HaematiteStore {
 }
 
 impl HaematiteStore {
+    /// Read back the durable status of the outbox row at `dispatch_key`, or
+    /// `None` when no such row exists.
+    ///
+    /// This is an out-of-band inspection helper symmetric with
+    /// [`LibSqlStore::outbox_row_state`](aion_store_libsql::LibSqlStore::outbox_row_state):
+    /// the [`OutboxStore`] dispatch contract keys terminal transitions off
+    /// `dispatch_key` and never needs to read a row back, so this is used by tests
+    /// and by operators auditing dead-lettered (`failed`) or drained (`done`)
+    /// rows. The row is co-located on its workflow's shard, so the lookup derives
+    /// the route key from the `dispatch_key`'s workflow-id prefix exactly as
+    /// [`Self::transition_outbox`] does and reads the locally-applied replica.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] when the `dispatch_key` is malformed (no
+    /// `':'` separator or a non-workflow-id prefix) or the local read fails, and
+    /// any decode error for a corrupt stored row.
+    pub async fn outbox_row_status(
+        &self,
+        dispatch_key: &str,
+    ) -> Result<Option<OutboxStatus>, StoreError> {
+        let dispatch_key = dispatch_key.to_owned();
+        self.blocking(move |store| {
+            let database = store.database();
+            let (workflow_text, _ordinal) = dispatch_key.rsplit_once(':').ok_or_else(|| {
+                StoreError::Backend(format!(
+                    "outbox dispatch_key missing ':' separator: {dispatch_key}"
+                ))
+            })?;
+            let workflow_id = parse_workflow_id(workflow_text)?;
+            let route_key = keyspace::event_stream_key(&workflow_id);
+            let key = keyspace::outbox_key(&dispatch_key);
+            let Some(existing) = database
+                .get_routed(&route_key, &key)
+                .map_err(|error| database_error(&error))?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(decode_outbox(&existing)?.status))
+        })
+        .await
+    }
+
     /// Apply `transition` to the row at `dispatch_key`; an absent key is a no-op.
     async fn transition_outbox<F>(
         &self,
