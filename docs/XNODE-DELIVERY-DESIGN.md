@@ -1,0 +1,92 @@
+# Cross-node work delivery — design (chosen via first-principles bake-off)
+
+> Status: chosen 2026-06-28 via an adversarial design panel (4 approaches × 2 judges
+> × 1 critic + synthesis). Supersedes the naive "copy Temporal long-poll" and the
+> "per-row haematite CAS claim" ideas — both were verified WRONG against real code
+> (see §4). This is the build plan for the LSUB track (aion task #13).
+
+## 1. The corrected premise
+Aion is modeled on Temporal but is NOT constrained like it. Temporal long-polls because
+it has stateless workers + a stateless matching service and no live mesh. We have:
+- **beamr** — live actor mesh with **monitors** (`monitor_pid` local / `monitor_remote`
+  cross-node): instant, exact worker/server death detection, not poll-timeouts.
+- **liminal** — pub/sub over that mesh: a worker pool is a process group (pg).
+- **haematite** — **epoch-fenced shard ownership** (the landed AA-3 stack:
+  `acquire_shard_and_serve`/`become_live`/`merge_adopt`, `actor.rs` fence at
+  `stamp.epoch < promised => Fenced`).
+
+CRITICAL correction (verified in code): haematite's `Database::cas`/`EventStore::cas`
+(`db.rs:191`, `event_store.rs:219`) are **unfenced, single-shard, single-node scalar-u64
+atomics** — the epoch fence lives ONLY on the stamped value-hash path
+(`apply_durable_kind`, `actor.rs:687`). So "fenced per-row claim CAS" does not exist and
+would be split-brain-unsafe across active-active servers. Mutual exclusion must come from
+the real fence (shard ownership), not a per-row CAS.
+
+## 2. The chosen design — server-arbitrated push, fence at outbox-shard ownership
+- **Fence the rare event, not the hot path.** Partition the outbox key-space into shards
+  (hash of `dispatch_channel_name`). An aion-server instance runs the outbox dispatcher for
+  a shard ONLY if it holds that shard via `acquire_shard_and_serve` (epoch-fenced, quorum).
+  A deposed/zombie server is `Fenced` on its next stamped write. This is the real cross-node
+  mutual exclusion, at **server** granularity (rare, stable) — NOT per worker, NOT per row.
+- **Per-row one-of-N is free.** Single-owner-per-shard (guaranteed by the fence) means the
+  server's existing LOCAL `claim_outbox_rows` (`outbox.rs:229`) is already one-of-N — no
+  quorum, no CAS race, no worker contention. (Needs a `(ns,tq,node)` scope predicate added.)
+- **Workers never touch haematite** (preserves the no-inbreeding rule). The owning server is
+  the arbiter; it selects a worker from the beamr pg group for the channel and **pushes** the
+  DispatchRequest.
+- **Advisory wake (latency only).** On staging, the owner publishes a body-less generation
+  wake on the liminal channel (reuse existing broadcast). Lost wake → degrade to the existing
+  outbox poll. Correctness never rests on the wake or on liminal.
+- **Instant failover via beamr monitors.** The owner monitors the chosen worker; on `Down`
+  it re-arms the row and re-selects with no lease-timeout wait.
+- **Result path unchanged.** Worker replies via liminal request/reply correlation →
+  `LiminalCompletionSource::deliver` → the SAME `ServerOutboxDeliveryCallback` →
+  `record_fan_out_completion` (idempotent on dispatch_key/ordinal) = exactly-once terminal.
+- **Three-layer failover, fastest wins:** (1) worker death → monitor → local re-arm/re-select
+  (~RTT); (2) server death → survivor wins `acquire_shard_and_serve` for the orphaned shard,
+  `become_live`/`merge_adopt` restores committed dispatch baseline losslessly, deposed owner
+  Fenced; (3) double-fault backstop → `rearm_stale_claimed_outbox_rows`.
+
+## 3. Decomposition (spike-first; default build byte-identical; full clippy bar; no shims)
+- **LSUB-0 (Spike 0, GATING, fork-independent):** liminal inbound server→client PUSH frame +
+  worker-SDK background reader + correlated reply. (Today: connection is request→response,
+  `process.rs:307-320`; remote subscribe empty, `handles.rs:185`.) Every design needs this.
+- **LSUB-1:** add `(ns,tq,node)` scope to `claim_outbox_rows`; single-server cross-node
+  dispatch routes by (ns,tq,node) end-to-end over LSUB-0; `record_fan_out_completion` terminal.
+- **LSUB-2:** advisory wake on stage; latency→~RTT; prove correctness unchanged when wake dropped.
+- **LSUB-3:** beamr monitor failover (worker kill → reassignment in monitor-RTT, not lease-TTL).
+- **LSUB-4:** server-ownership fence — gate the outbox dispatcher on `acquire_shard_and_serve`;
+  adversarial active-active + owner-kill test (single-owner dispatch + lossless handoff +
+  deposed Fenced). [Depends on Fork A/B below.]
+- **LSUB-5:** real-app cross-node failover demo — fan-out workflow, kill the owning server
+  mid-dispatch, survivor adopts the shard and finishes. (The live demo.)
+
+## 4. Rejected (and why) — all verified against real code
+- **long-poll-claim (Temporal copy):** brief says don't default to it; also server-side HOLD
+  is impossible (`ParticipantBehaviour::process` synchronous, `participant.rs:38`), poll capped
+  at 5s `IO_TIMEOUT`, cites the non-existent fenced CAS, `claim_outbox_rows` unscoped.
+- **notify-cas-claim (my reframe):** headline "epoch-fenced per-row claim CAS" doesn't exist
+  (§1); and it forces a worker→haematite path (breaks no-inbreeding) or re-adds a server hop.
+  Good kernel (wake + monitor + degrade-to-poll) salvaged into the chosen design.
+- **credit-push:** largest unbuilt liminal surface (async push + per-subscriber credit + broker
+  one-of-N, all scaffolding-only); rests on the same miscited fence; pg death detection is
+  node-granular not per-pid. Credit is a worthwhile LATER optimization, not the foundation.
+- **shard-owned-queues (worker = shard owner):** cardinality mismatch — elastic/scale-to-zero
+  worker churn can't map onto fixed quorum-elected shards (every join/leave = an election). But
+  its correctness backbone is adopted at the RIGHT granularity (server-owns-shard).
+
+## 5. Open forks for the owner (needed before LSUB-4; LSUB-0..3 do not depend on them)
+- **Fork A (biggest):** does the per-row dispatch LEASE live in the haematite-owned shard (so
+  `become_live`/`merge_adopt` reconstructs in-flight leases LOSSLESSLY on server failover —
+  "best for all time") or stay in the existing aion-store outbox (simpler; on owner death the
+  survivor relies on `rearm_stale` + re-dispatch rather than exact lease reconstruction)?
+- **Fork B:** availability vs correctness under partition. Gating dispatch on a haematite
+  quorum election means a minority-partition server cannot dispatch even with healthy workers
+  (storage-quorum-coupled liveness). Want a single-node fast path that skips the election when
+  only one server is configured (common case), electing only in active-active?
+- **Fork C:** outbox shard count S, and whether outbox shards co-locate with haematite data
+  shards or are an independent partition (hot-pool hotspot behavior).
+- **Fork D:** pool-member selection policy (round-robin / least-in-flight / node-affinity-aware)
+  — must honor `Some(node)` per NODE-AFFINITY-DESIGN. (Largely decided: honor node affinity.)
+- **Fork E:** ship the advisory wake (LSUB-2) in v1, or defer until poll-latency is felt (pure
+  optimization, no correctness risk).
