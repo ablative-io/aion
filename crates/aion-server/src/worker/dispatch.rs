@@ -138,13 +138,18 @@ impl ActivityDispatcher {
                 self.drain_state
                     .ensure_accepting(&activity.namespace, &activity.activity_type)?;
                 span_fields.record("worker_id", format!("{:?}", worker.id()));
-                if worker
-                    .sender()
-                    .send(WorkerMessage::ActivityTask(activity.to_task()))
-                    .await
-                    .is_ok()
-                {
-                    return Ok(());
+                // The gRPC dispatch path only registers gRPC-delivery workers, so
+                // a worker here always carries a stream sender; a missing one means
+                // a non-gRPC-transport worker leaked into this path and cannot be
+                // served over it, so it is deregistered like a closed stream.
+                if let Some(sender) = worker.sender() {
+                    if sender
+                        .send(WorkerMessage::ActivityTask(activity.to_task()))
+                        .await
+                        .is_ok()
+                    {
+                        return Ok(());
+                    }
                 }
                 self.registry.deregister(worker.id())?;
             }

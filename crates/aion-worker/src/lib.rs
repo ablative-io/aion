@@ -70,6 +70,8 @@ pub use protocol::{
     WorkerTaskStream, connect_registered_grpc_session, re_report_unacked, reconnect_with_backoff,
     reconnect_with_sleep, register_connected_session, validate_activity_handlers,
 };
+#[cfg(feature = "liminal-transport")]
+pub use runtime::liminal::{DispatchRequest, DispatchResponse, LiminalActivityWorker};
 pub use runtime::{
     ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, SessionHealth,
     TypedActivityDispatcher, decode_payload, encode_payload, serve_activity_tasks,

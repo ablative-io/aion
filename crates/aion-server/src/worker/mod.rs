@@ -29,11 +29,14 @@ pub use heartbeat::{
 #[cfg(feature = "liminal-transport")]
 pub use liminal_transport::{
     DispatchRequest, DispatchResponse, LiminalCompletionSource, LiminalOutboxDispatch,
-    attempt_idempotency_key, channel_for_row, dispatch_channel_name,
+    LiminalWorkerDelivery, RegistryLiminalDispatch, attempt_idempotency_key, channel_for_row,
+    dispatch_channel_name,
 };
 pub use outbox_delivery::ServerOutboxDeliveryCallback;
 pub use outbox_dispatcher::{
     OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch, WorkerOutboxDispatch,
 };
 pub use outbox_reconciler::{OutboxReconciler, OutboxReconcilerConfig};
-pub use registry::{ConnectedWorkerRegistry, WorkerHandle, WorkerId, WorkerRegistration};
+pub use registry::{
+    ConnectedWorkerRegistry, WorkerDelivery, WorkerHandle, WorkerId, WorkerRegistration,
+};
