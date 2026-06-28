@@ -23,11 +23,16 @@ would be split-brain-unsafe across active-active servers. Mutual exclusion must 
 the real fence (shard ownership), not a per-row CAS.
 
 ## 2. The chosen design — server-arbitrated push, fence at outbox-shard ownership
-- **Fence the rare event, not the hot path.** Partition the outbox key-space into shards
-  (hash of `dispatch_channel_name`). An aion-server instance runs the outbox dispatcher for
-  a shard ONLY if it holds that shard via `acquire_shard_and_serve` (epoch-fenced, quorum).
-  A deposed/zombie server is `Fenced` on its next stamped write. This is the real cross-node
-  mutual exclusion, at **server** granularity (rare, stable) — NOT per worker, NOT per row.
+- **Fence the rare event, not the hot path.** The outbox is co-located with its workflow's
+  event stream — rows route by `keyspace::event_stream_key(workflow_id)` (`aion-store-haematite
+  store.rs:1299`), so a server owns a workflow's outbox rows exactly when it owns that workflow's
+  shard. An aion-server instance runs the outbox dispatcher for a shard ONLY if it holds that
+  shard via `acquire_shard_and_serve` (epoch-fenced, quorum). The fence lives on the **stamped
+  event-append-to-history** path (a deposed/zombie server is `Fenced` on its next history write,
+  `store.rs:1110`) — the local outbox CLAIM write is an unfenced `put_routed` (`store.rs:1301`);
+  cross-node safety comes from ownership-gating the dispatcher + the exactly-once terminal in
+  history, NOT from a fenced claim. This is the real cross-node mutual exclusion, at **server**
+  granularity (rare, stable) — NOT per worker, NOT per row.
 - **Per-row one-of-N is free.** Single-owner-per-shard (guaranteed by the fence) means the
   server's existing LOCAL `claim_outbox_rows` (`outbox.rs:229`) is already one-of-N — no
   quorum, no CAS race, no worker contention. (Needs a `(ns,tq,node)` scope predicate added.)
@@ -76,10 +81,20 @@ the real fence (shard ownership), not a per-row CAS.
   its correctness backbone is adopted at the RIGHT granularity (server-owns-shard).
 
 ## 5. Open forks for the owner (needed before LSUB-4; LSUB-0..3 do not depend on them)
-- **Fork A (biggest):** does the per-row dispatch LEASE live in the haematite-owned shard (so
-  `become_live`/`merge_adopt` reconstructs in-flight leases LOSSLESSLY on server failover —
-  "best for all time") or stay in the existing aion-store outbox (simpler; on owner death the
-  survivor relies on `rearm_stale` + re-dispatch rather than exact lease reconstruction)?
+- **Fork A (biggest) — RESOLVED 2026-06-28 = A2 (outbox-resident lease + ownership-gate).** The
+  per-row dispatch lease stays in the existing aion-store outbox; on owner death the survivor
+  re-residents from quorum-replicated history, replay re-arms via `rearm_outbox_pending`
+  (`fan_out.rs:182`) and re-dispatches. Rationale (verified in code, not asserted): the
+  exactly-once *terminal* is already enforced by `record_fan_out_completion`'s
+  `ordinal_is_resolved` dedup against replicated history (`fan_out.rs:240/252/296`), so
+  re-dispatch yields at most a duplicate *execution* (the contract is already at-least-once +
+  idempotent-terminal — worker death, `mark_done` write failure, and retry backoff already
+  redeliver). A1's "lossless lease" cannot deliver exactly-once *execution* either (the
+  worker-died-after-side-effect window remains) and would impose a permanent ~2× quorum write
+  tax on every dispatch to shrink the rarest redelivery cause. The correct escape hatch for
+  genuinely non-idempotent side-effects is an idempotency key at the side-effect boundary
+  (future additive feature), NOT an orchestrator lease — so even A1's motivating case does not
+  point to A1. A1's stamped-lease design is kept on file should that ever change.
 - **Fork B:** availability vs correctness under partition. Gating dispatch on a haematite
   quorum election means a minority-partition server cannot dispatch even with healthy workers
   (storage-quorum-coupled liveness). Want a single-node fast path that skips the election when
