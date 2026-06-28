@@ -42,12 +42,23 @@ async fn run_server_outbox_happy_path_fan_out_completes_once() -> Result<(), Tes
         }) == FAN_OUT
     })
     .await?;
+    // Rows are staged and not yet dispatched/done while no worker is connected.
+    // LSUB-2 collapses the stage->claim latency: the advisory wake fires the
+    // dispatcher the instant `append_with_outbox` commits, so the rows may already
+    // be `Claimed` (rather than lingering `Pending` for up to a poll interval) by
+    // the time this read lands. Either pre-dispatch state proves "staged before
+    // worker registration"; the dedicated `Claimed` wait below pins that the
+    // dispatcher then claims them while waiting for a worker.
     wait_for_rows(
         &reader,
         &workflow_id,
         &[0, 1, 2, 3],
-        "rows staged pending before worker registration",
-        |statuses| statuses.contains(&OutboxStatus::Pending),
+        "rows staged (pending or claimed) before worker registration",
+        |statuses| {
+            statuses
+                .iter()
+                .all(|status| matches!(status, OutboxStatus::Pending | OutboxStatus::Claimed))
+        },
     )
     .await?;
     wait_for_rows(

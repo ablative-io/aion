@@ -290,8 +290,13 @@ fn maybe_spawn_outbox_dispatcher(
             .to_owned(),
     })?;
     let row_dispatch = select_outbox_row_dispatch(state, outbox_config)?;
+    // LSUB-2: share the engine's advisory wake so the stage seam pulses this
+    // dispatcher the instant a fan-out row commits, dispatching in ~RTT instead of
+    // up to one poll interval. The wake is always-on and free; the interval poll is
+    // untouched, so it remains the correctness backstop for any lost wake.
     let dispatcher =
-        OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config);
+        OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config)
+            .with_wake(state.outbox_wake());
     tokio::spawn(dispatcher.run(shutdown_rx.clone()));
     // LSUB-4-1: the single dispatcher task is spawned in both modes. In a
     // single-node boot it owns all shards by construction; in an active-active

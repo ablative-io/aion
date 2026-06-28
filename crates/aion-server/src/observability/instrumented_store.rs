@@ -18,17 +18,42 @@ pub struct InstrumentedEventStore {
     inner: Arc<dyn EventStore>,
     metrics: Metrics,
     namespace: String,
+    /// Advisory outbox wake (LSUB-2): pulsed when an `append_with_outbox` commits
+    /// a non-empty outbox-row batch, so the in-process [`OutboxDispatcher`] sweeps
+    /// promptly instead of waiting for its next poll tick. Body-less and
+    /// best-effort: the dispatcher's interval poll remains the correctness
+    /// backstop, so a lost wake only costs poll latency.
+    ///
+    /// [`OutboxDispatcher`]: crate::worker::OutboxDispatcher
+    outbox_wake: Arc<tokio::sync::Notify>,
 }
 
 impl InstrumentedEventStore {
     /// Wrap an event store with server-side metrics.
+    ///
+    /// The store is given a private, never-pulsed outbox wake; callers that share
+    /// the engine's stage seam with the dispatcher install the shared handle with
+    /// [`Self::with_outbox_wake`].
     #[must_use]
     pub fn new(inner: Arc<dyn EventStore>, metrics: Metrics, namespace: impl Into<String>) -> Self {
         Self {
             inner,
             metrics,
             namespace: namespace.into(),
+            outbox_wake: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Install the shared advisory outbox wake (LSUB-2).
+    ///
+    /// The supplied `Notify` is the same handle the [`OutboxDispatcher`] awaits,
+    /// so a committed outbox-row batch wakes the dispatcher's run loop directly.
+    ///
+    /// [`OutboxDispatcher`]: crate::worker::OutboxDispatcher
+    #[must_use]
+    pub fn with_outbox_wake(mut self, outbox_wake: Arc<tokio::sync::Notify>) -> Self {
+        self.outbox_wake = outbox_wake;
+        self
     }
 
     fn record_events(&self, events: &[Event]) {
@@ -131,6 +156,17 @@ impl WritableEventStore for InstrumentedEventStore {
         self.observe_since("append", started);
         if result.is_ok() {
             self.record_events(events);
+            // LSUB-2 advisory wake: a successful commit that staged at least one
+            // outbox row pulses the dispatcher so it sweeps in ~RTT rather than on
+            // its next poll tick. Body-less and best-effort — `notify_one`
+            // coalesces, which is the desired advisory semantics: the dispatcher's
+            // poll is the correctness backstop, so a lost or merged wake only costs
+            // poll latency, never a dropped dispatch. Skip the wake when nothing was
+            // staged (no fan-out to dispatch) or the append failed (nothing
+            // committed).
+            if !outbox_rows.is_empty() {
+                self.outbox_wake.notify_one();
+            }
         }
         result
     }
@@ -274,5 +310,165 @@ impl PackageStore for InstrumentedEventStore {
         let result = self.inner.list_package_routes().await;
         self.observe_since("list_package_routes", started);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use aion_core::{
+        ContentType, Event, EventEnvelope, PackageVersion, Payload, RunId, WorkflowId,
+    };
+    use aion_store::{OutboxRow, WritableEventStore, WriteToken};
+    use aion_store_libsql::LibSqlStore;
+    use chrono::Utc;
+
+    use super::InstrumentedEventStore;
+    use crate::observability::Metrics;
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        std::env::temp_dir().join(format!(
+            "aion-server-instrumented-store-{name}-{}-{nanos}.db",
+            std::process::id()
+        ))
+    }
+
+    fn workflow_started(workflow_id: &WorkflowId) -> Event {
+        Event::WorkflowStarted {
+            envelope: EventEnvelope {
+                seq: 1,
+                recorded_at: Utc::now(),
+                workflow_id: workflow_id.clone(),
+            },
+            workflow_type: String::from("checkout"),
+            input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            run_id: RunId::new_v4(),
+            parent_run_id: None,
+            package_version: PackageVersion::new("a".repeat(64)),
+        }
+    }
+
+    /// `notified()` resolves only if the wake has a stored permit (or one arrives);
+    /// returns whether it fired inside a short deadline.
+    async fn wake_fired(wake: &tokio::sync::Notify) -> bool {
+        tokio::time::timeout(Duration::from_millis(200), wake.notified())
+            .await
+            .is_ok()
+    }
+
+    /// LSUB-2 seam: a successful `append_with_outbox` carrying a non-empty outbox
+    /// slice pulses the shared advisory wake exactly once.
+    #[tokio::test]
+    async fn append_with_outbox_fires_wake_on_successful_non_empty_stage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = Arc::new(LibSqlStore::open(unique_temp_path("fires")).await?);
+        let metrics = Metrics::new()?;
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let instrumented = InstrumentedEventStore::new(store, metrics, "default")
+            .with_outbox_wake(Arc::clone(&wake));
+
+        let workflow_id = WorkflowId::new_v4();
+        let event = workflow_started(&workflow_id);
+        let row = OutboxRow::pending(
+            workflow_id.clone(),
+            0,
+            String::from("charge"),
+            Payload::new(ContentType::Json, b"{}".to_vec()),
+            Utc::now(),
+        );
+        instrumented
+            .append_with_outbox(
+                WriteToken::recorder(),
+                &workflow_id,
+                std::slice::from_ref(&event),
+                0,
+                std::slice::from_ref(&row),
+            )
+            .await?;
+
+        assert!(
+            wake_fired(&wake).await,
+            "a successful non-empty outbox stage must pulse the advisory wake"
+        );
+        Ok(())
+    }
+
+    /// LSUB-2 seam: a successful append with an EMPTY outbox slice does NOT pulse
+    /// the wake — there is nothing for the dispatcher to sweep.
+    #[tokio::test]
+    async fn append_with_outbox_does_not_fire_wake_on_empty_slice()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = Arc::new(LibSqlStore::open(unique_temp_path("empty")).await?);
+        let metrics = Metrics::new()?;
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let instrumented = InstrumentedEventStore::new(store, metrics, "default")
+            .with_outbox_wake(Arc::clone(&wake));
+
+        let workflow_id = WorkflowId::new_v4();
+        let event = workflow_started(&workflow_id);
+        // Empty outbox slice: the override delegates to a plain append; no wake.
+        instrumented
+            .append_with_outbox(
+                WriteToken::recorder(),
+                &workflow_id,
+                std::slice::from_ref(&event),
+                0,
+                &[],
+            )
+            .await?;
+
+        assert!(
+            !wake_fired(&wake).await,
+            "an empty outbox slice must not pulse the wake (nothing to dispatch)"
+        );
+        Ok(())
+    }
+
+    /// LSUB-2 seam: a FAILED append (here a sequence conflict — wrong expected
+    /// head, so nothing commits) does NOT pulse the wake. Without a committed row
+    /// there is nothing to dispatch, so a wake would be a spurious sweep at best
+    /// and misleading at worst.
+    #[tokio::test]
+    async fn append_with_outbox_does_not_fire_wake_on_failed_append()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = Arc::new(LibSqlStore::open(unique_temp_path("failed")).await?);
+        let metrics = Metrics::new()?;
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let instrumented = InstrumentedEventStore::new(store, metrics, "default")
+            .with_outbox_wake(Arc::clone(&wake));
+
+        let workflow_id = WorkflowId::new_v4();
+        let event = workflow_started(&workflow_id);
+        let row = OutboxRow::pending(
+            workflow_id.clone(),
+            0,
+            String::from("charge"),
+            Payload::new(ContentType::Json, b"{}".to_vec()),
+            Utc::now(),
+        );
+        // expected_seq = 9 against an empty history is a sequence conflict: the
+        // append fails and nothing commits, so the wake must stay silent.
+        let result = instrumented
+            .append_with_outbox(
+                WriteToken::recorder(),
+                &workflow_id,
+                std::slice::from_ref(&event),
+                9,
+                std::slice::from_ref(&row),
+            )
+            .await;
+        assert!(result.is_err(), "the seq-conflict append must fail");
+
+        assert!(
+            !wake_fired(&wake).await,
+            "a failed append commits nothing, so it must not pulse the wake"
+        );
+        Ok(())
     }
 }

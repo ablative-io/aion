@@ -48,6 +48,13 @@ struct ServerStateInner {
     /// `EventStore` so the outbox dispatcher writes through the same single
     /// `libsql::Connection`. `None` for the in-memory backend (no outbox table).
     outbox_store: Option<Arc<dyn OutboxStore>>,
+    /// Advisory outbox wake (LSUB-2): the in-process `Notify` shared by the
+    /// engine's stage seam (the `InstrumentedEventStore`'s `append_with_outbox`)
+    /// and the [`OutboxDispatcher`](crate::worker::OutboxDispatcher) run loop, so
+    /// a committed fan-out row wakes the dispatcher in ~RTT instead of waiting up
+    /// to one poll interval. Always present (cheap, no `Option`): the handle is
+    /// harmless when the outbox is not commissioned, since nothing pulses it.
+    outbox_wake: Arc<tokio::sync::Notify>,
     /// Owns the distributed haematite inbound-write responder thread, kept alive
     /// for the server's lifetime so a cluster node keeps answering peers'
     /// replication/election traffic. `None` for non-distributed boots. Dropping
@@ -130,11 +137,19 @@ impl ServerState {
         );
         let (event_broadcast_capacity, query_timeout) = required_engine_seams(&runtime)?;
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
-        let instrumented_store = Arc::new(InstrumentedEventStore::new(
-            store.clone(),
-            metrics.clone(),
-            runtime.default_namespace.clone(),
-        ));
+        // LSUB-2 advisory wake: one process-wide `Notify` shared by the engine's
+        // stage seam and the outbox dispatcher. A single handle is correct here
+        // because there is exactly one in-process dispatcher that sweeps all owned
+        // shards per tick — a wake just means "something was staged; sweep".
+        let outbox_wake = Arc::new(tokio::sync::Notify::new());
+        let instrumented_store = Arc::new(
+            InstrumentedEventStore::new(
+                store.clone(),
+                metrics.clone(),
+                runtime.default_namespace.clone(),
+            )
+            .with_outbox_wake(Arc::clone(&outbox_wake)),
+        );
         let exported_metrics = runtime.metrics.enabled.then_some(metrics.clone());
         let worker_registry = ConnectedWorkerRegistry::default();
         let active_registry = Arc::new(aion::Registry::default());
@@ -198,6 +213,7 @@ impl ServerState {
                 health: Some(HealthState::new(instrumented_store, true)),
                 activity_mock_registry,
                 outbox_store,
+                outbox_wake,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder,
                 #[cfg(feature = "haematite-backend")]
@@ -230,6 +246,7 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
                 #[cfg(feature = "haematite-backend")]
@@ -271,6 +288,7 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
                 #[cfg(feature = "haematite-backend")]
@@ -302,6 +320,7 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
                 #[cfg(feature = "haematite-backend")]
@@ -389,6 +408,16 @@ impl ServerState {
     #[must_use]
     pub fn outbox_store(&self) -> Option<Arc<dyn OutboxStore>> {
         self.inner.outbox_store.clone()
+    }
+
+    /// Clone the advisory outbox wake (LSUB-2) shared with the engine's stage
+    /// seam. The outbox dispatcher installs this handle so a committed fan-out row
+    /// wakes its run loop in ~RTT rather than waiting for the next poll tick. The
+    /// handle is always present; it is simply never pulsed when the outbox is not
+    /// commissioned, so wiring it is free and behaviour is unchanged.
+    #[must_use]
+    pub fn outbox_wake(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.inner.outbox_wake)
     }
 
     /// Whether this server is a node in a distributed haematite cluster.
