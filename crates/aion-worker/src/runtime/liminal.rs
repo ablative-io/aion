@@ -35,26 +35,31 @@
 //! on the server), so the contract is pinned by the shared field set and a wire
 //! round-trip test here; any divergence is a wire-compatibility break.
 //!
-//! # Honest scope note (the registration seam)
+//! # In-band self-registration (LSUB-L2)
 //!
-//! LSUB-0's push primitive gives the server a way to push to a connection it
-//! already knows by pid, and gives the worker a way to receive + reply. It does
-//! NOT (yet) give the worker an inbound REGISTRATION frame by which it announces
-//! its `(namespaces, task_queue, node)` over the socket. For LSUB-1 (one server,
-//! one worker) the server learns the worker's connection pid out-of-band (via the
-//! supervisor's `active_connection_pids`) and inserts the registry handle itself;
-//! the worker's [`WorkerConfig`] carries the routing dimensions for that
-//! server-side registration. A self-describing registration frame is the next
-//! liminal increment.
+//! The worker is SELF-DESCRIBING over the socket. [`LiminalActivityWorker::connect`]
+//! builds a [`liminal::protocol::WorkerRegistration`] from the worker's
+//! [`WorkerConfig`] (its `namespaces`, `task_queue`, `node`, `identity`) and the
+//! activity-type names it binds in its [`ActivityRegistry`], then connects via the
+//! SDK's `connect_with_registration`: a synchronous `WorkerRegister` ->
+//! `WorkerRegisterAck` round-trip runs before the push reader spawns. The server's
+//! installed connection-notifier turns that into a first-class connected-worker
+//! registry membership, so the worker is selected the SAME way a gRPC worker is —
+//! retiring the LSUB-1 out-of-band `active_connection_pids()` + hard-coded
+//! server-side registration. A `Rejected` ack surfaces as a connect error
+//! (the rejection reason is carried), so a worker the server declines never
+//! believes it is registered.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
+use liminal::protocol::WorkerRegistration;
 use liminal_sdk::{PushClient, PushedFrame};
 use serde::{Deserialize, Serialize};
 
 use crate::activity::ActivityRegistry;
+use crate::config::WorkerConfig;
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::ActivityTask;
@@ -123,15 +128,29 @@ impl std::fmt::Debug for LiminalActivityWorker {
 }
 
 impl LiminalActivityWorker {
-    /// Connects a server-push client to `address` and starts its background
-    /// reader, binding this worker's typed activity registry.
+    /// Connects a server-push client to `address`, SELF-REGISTERS in-band, and
+    /// starts its background reader, binding this worker's typed activity registry.
+    ///
+    /// The registration is built from `config` (its `namespaces`, `task_queue`,
+    /// `node`, `identity`) and the activity-type names bound in `registry`, then
+    /// driven through the SDK's `connect_with_registration`: the
+    /// `WorkerRegister` -> `WorkerRegisterAck` round-trip completes synchronously
+    /// before the push reader spawns. The server's connection-notifier turns the
+    /// accepted registration into a connected-worker registry membership.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkerError::Transport`] when the push connection or handshake
-    /// fails.
-    pub fn connect(address: &str, registry: Arc<ActivityRegistry>) -> Result<Self, WorkerError> {
-        let client = PushClient::connect(address).map_err(|error| transport_error(&error))?;
+    /// Returns [`WorkerError::Transport`] when the push connection, handshake, or
+    /// registration fails — INCLUDING a server-side `Rejected` registration, whose
+    /// reason is carried in the error so the worker never serves while unregistered.
+    pub fn connect(
+        address: &str,
+        config: &WorkerConfig,
+        registry: Arc<ActivityRegistry>,
+    ) -> Result<Self, WorkerError> {
+        let registration = registration_from(config, &registry);
+        let client = PushClient::connect_with_registration(address, registration)
+            .map_err(|error| transport_error(&error))?;
         Ok(Self { client, registry })
     }
 
@@ -260,6 +279,30 @@ fn is_recv_timeout(error: &liminal_sdk::SdkError) -> bool {
         .contains("no server push arrived within the timeout")
 }
 
+/// Builds the in-band [`WorkerRegistration`] this worker announces over the
+/// socket, from its [`WorkerConfig`] routing dimensions and the activity-type
+/// names bound in its [`ActivityRegistry`].
+///
+/// `node` follows the SAME none-convention the aion registry applies on the
+/// server side: an empty `config.node` carries no locality affinity (`None`), so
+/// it is semantically unpinned rather than registering a distinct empty-node
+/// affinity no pinned dispatch could match; a non-empty value (the default
+/// hostname, or an operator-set node) is the worker's advertised node.
+fn registration_from(config: &WorkerConfig, registry: &ActivityRegistry) -> WorkerRegistration {
+    let node = if config.node.is_empty() {
+        None
+    } else {
+        Some(config.node.clone())
+    };
+    WorkerRegistration {
+        namespaces: config.namespaces.clone(),
+        task_queue: config.task_queue.clone(),
+        node,
+        activity_types: registry.activity_types().into_iter().collect(),
+        identity: config.identity.clone(),
+    }
+}
+
 /// Wraps a liminal SDK error as a retryable worker transport error.
 fn transport_error(error: &liminal_sdk::SdkError) -> WorkerError {
     WorkerError::Transport {
@@ -269,9 +312,79 @@ fn transport_error(error: &liminal_sdk::SdkError) -> WorkerError {
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchRequest, DispatchResponse};
+    use std::time::Duration;
+
+    use super::{DispatchRequest, DispatchResponse, registration_from};
+    use crate::activity::ActivityRegistry;
+    use crate::config::WorkerConfig;
     use aion_core::{RunId, WorkflowId};
     use uuid::Uuid;
+
+    fn worker_config(node: &str) -> Result<WorkerConfig, Box<dyn std::error::Error>> {
+        Ok(WorkerConfig::builder()
+            .endpoint("127.0.0.1:0")
+            .task_queue("gpu")
+            .identity("worker-a")
+            .max_concurrency(1)
+            .reconnect_initial_backoff(Duration::from_millis(5))
+            .reconnect_max_backoff(Duration::from_millis(20))
+            .reconnect_max_attempts(3)
+            .namespaces([String::from("remote"), String::from("payments")])
+            .node(node)
+            .build()?)
+    }
+
+    fn two_activity_registry() -> Result<ActivityRegistry, Box<dyn std::error::Error>> {
+        let registry = ActivityRegistry::new()
+            .register_activity("charge-card", |_input: serde_json::Value, _ctx| {
+                Box::pin(async move { Ok(serde_json::json!({})) })
+            })?
+            .register_activity("refund", |_input: serde_json::Value, _ctx| {
+                Box::pin(async move { Ok(serde_json::json!({})) })
+            })?;
+        Ok(registry)
+    }
+
+    /// The in-band registration is built from the worker config's routing
+    /// dimensions and the activity-type names the registry binds, so the worker
+    /// announces exactly what it serves. The activity types come from the same
+    /// registry the worker executes through (deterministic, sorted).
+    #[test]
+    fn registration_carries_config_and_registry_activity_types()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = worker_config("box-7")?;
+        let registry = two_activity_registry()?;
+
+        let registration = registration_from(&config, &registry);
+
+        assert_eq!(
+            registration.namespaces,
+            vec![String::from("remote"), String::from("payments")]
+        );
+        assert_eq!(registration.task_queue, "gpu");
+        assert_eq!(registration.node, Some(String::from("box-7")));
+        assert_eq!(registration.identity, "worker-a");
+        assert_eq!(
+            registration.activity_types,
+            vec![String::from("charge-card"), String::from("refund")],
+            "activity types come from the bound registry, sorted"
+        );
+        Ok(())
+    }
+
+    /// An empty config node carries NO locality affinity (`None`), the same
+    /// none-convention the server-side registry applies — a worker with no node is
+    /// unpinned, not pinned to an empty node.
+    #[test]
+    fn registration_empty_node_is_unpinned() -> Result<(), Box<dyn std::error::Error>> {
+        let config = worker_config("")?;
+        let registry = two_activity_registry()?;
+
+        let registration = registration_from(&config, &registry);
+
+        assert_eq!(registration.node, None);
+        Ok(())
+    }
 
     /// The wire request round-trips through serde JSON with stable field names —
     /// the contract that keeps it byte-compatible with the server's struct.

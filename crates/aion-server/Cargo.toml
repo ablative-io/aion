@@ -71,6 +71,12 @@ liminal-sdk = { version = "0.2.0", path = "../../../liminal/crates/liminal-sdk",
 # liminal server over loopback TCP (the spike's worker-side endpoint). Optional
 # and enabled only by `liminal-transport`, so a default build never pulls it.
 liminal-server = { version = "0.2.0", path = "../../../liminal/crates/liminal-server", optional = true }
+# Liminal core protocol types (LSUB-L2): the connection-keyed `ConnectionNotifier`
+# receives a `liminal::protocol::WorkerRegistration` to build a registry entry from.
+# Already in the dependency graph transitively (liminal-sdk/liminal-server depend
+# on it); named directly only so the in-band registration notifier can reference
+# the wire type. Optional, enabled only by `liminal-transport`.
+liminal = { version = "0.2.0", path = "../../../liminal/crates/liminal", optional = true }
 
 [dev-dependencies]
 # The LSUB-1 cross-node dispatch e2e drives a REAL aion-worker over the liminal
@@ -105,7 +111,7 @@ auth = ["dep:jsonwebtoken", "dep:reqwest"]
 # Cross-node outbox dispatch over liminal (#13-0 spike). OFF by default so a
 # default build is byte-identical and never links liminal-sdk/beamr. When on,
 # `outbox.transport = liminal` selects the liminal dispatch + completion path.
-liminal-transport = ["dep:liminal-sdk", "dep:liminal-server"]
+liminal-transport = ["dep:liminal-sdk", "dep:liminal-server", "dep:liminal"]
 # Selectable haematite event-store backend. OFF by default so a default build is
 # byte-identical and never links aion-store-haematite/haematite. When on,
 # `store.backend = haematite` constructs a single-node HaematiteStore rooted at

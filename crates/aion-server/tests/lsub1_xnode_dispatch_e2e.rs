@@ -1,20 +1,29 @@
-//! LSUB-1: the first real END-TO-END cross-node work dispatch over liminal.
+//! LSUB-L2: in-band cross-node work dispatch over liminal (end-to-end).
 //!
 //! The whole file is gated on `liminal-transport`, so a default build never
 //! compiles it and never links liminal. It stands up a REAL `liminal-server` over
-//! loopback TCP and a REAL remote `aion-worker` (`LiminalActivityWorker`) that
-//! connects over the LSUB-0 server-push transport, registers into the EXISTING
-//! connected-worker registry as a liminal-delivered member, executes a pushed
-//! `DispatchRequest` through the worker's real activity registry, and replies with
-//! a correlated `DispatchResponse` that re-enters aion through the SAME
-//! `OutboxDeliveryCallback` the gRPC completion path uses.
+//! loopback TCP with the aion `LiminalConnectionNotifier` installed, and a REAL
+//! remote `aion-worker` (`LiminalActivityWorker`) that connects WITH an in-band
+//! `WorkerRegistration` (`connect_with_registration`). The server's notifier
+//! auto-registers the worker into the EXISTING connected-worker registry as a
+//! liminal-delivered member, a pushed `DispatchRequest` is executed through the
+//! worker's real activity registry, and the correlated `DispatchResponse`
+//! re-enters aion through the SAME `OutboxDeliveryCallback` the gRPC completion
+//! path uses. On worker disconnect the notifier deregisters it.
+//!
+//! This RETIRES the LSUB-1 out-of-band registration hack: there is no
+//! `active_connection_pids()` loop and no hard-coded `register_liminal_worker`
+//! helper — the worker self-describes and the server reacts in-band.
 //!
 //! The proof:
 //!
-//! - `xnode_dispatch_routes_executes_and_completes` — a staged outbox row for the
-//!   worker's `(namespace, task_queue, node)` pool is claimed (scoped), pushed to
-//!   the worker, executed, and its terminal completion is recorded exactly once
-//!   through the delivery callback; the worker observably ran the activity.
+//! - `xnode_inband_dispatch_routes_executes_and_completes` — the worker connects
+//!   with a registration, the installed notifier registers it, a staged outbox
+//!   row for the worker's `(namespace, task_queue, node)` pool is claimed
+//!   (scoped), pushed to the worker, executed, and its terminal completion is
+//!   recorded exactly once through the delivery callback; the worker observably
+//!   ran the activity. On worker disconnect the server deregisters it (the
+//!   registry no longer routes to its pool).
 //! - `dispatch_for_a_different_pool_is_not_delivered` — a row for a DIFFERENT pool
 //!   selects no worker, so the dispatch returns an honest no-worker error (the
 //!   outbox would retry) and the worker never runs it; routing selection is the
@@ -30,12 +39,12 @@ use std::time::{Duration, Instant};
 use aion_core::{ActivityId, RunId, WorkflowId};
 use aion_server::ServerError;
 use aion_server::worker::{
-    ConnectedWorkerRegistry, LiminalWorkerDelivery, OutboxDeliveryCallback, OutboxRowDispatch,
-    RegistryLiminalDispatch, WorkerDelivery, WorkerRegistration,
+    ConnectedWorkerRegistry, LiminalConnectionNotifier, OutboxDeliveryCallback, OutboxRowDispatch,
+    RegistryLiminalDispatch,
 };
 use aion_store::{ClaimScope, OutboxRow, OutboxStatus, OutboxStore};
 use aion_store_libsql::LibSqlStore;
-use aion_worker::{ActivityRegistry, LiminalActivityWorker};
+use aion_worker::{ActivityRegistry, LiminalActivityWorker, WorkerConfig};
 use chrono::Utc;
 use liminal_server::config::{ChannelDef, ServerConfig};
 use liminal_server::server::connection::ConnectionSupervisor;
@@ -110,10 +119,11 @@ impl OutboxDeliveryCallback for RecordingCallback {
     }
 }
 
-/// Holds the running liminal server bound for the lifetime of a test.
+/// Holds the running liminal server bound for the lifetime of a test, with the
+/// aion in-band registration notifier installed.
 struct RunningServer {
     listener: Option<ServerListener>,
-    supervisor: ConnectionSupervisor,
+    registry: ConnectedWorkerRegistry,
     address: SocketAddr,
 }
 
@@ -130,29 +140,56 @@ impl RunningServer {
             cluster: None,
             drain_timeout_ms: 30_000,
         };
-        let supervisor = ConnectionSupervisor::from_config(&config).map_err(test_error)?;
+
+        // The aion-side connected-worker registry the notifier registers into and
+        // the dispatch path selects from — the SAME registry, the SAME selection,
+        // as a gRPC worker.
+        let registry = ConnectedWorkerRegistry::default();
+
+        // Resolve the notifier <-> supervisor construction cycle: build the
+        // notifier (it does not yet hold a supervisor), construct the supervisor
+        // WITH the notifier, then immediately bind the supervisor into the
+        // notifier so its in-band registrations can build a push delivery.
+        let notifier = Arc::new(LiminalConnectionNotifier::new(registry.clone()));
+        let supervisor = build_supervisor_with_notifier(&config, notifier.clone())?;
+        if !notifier.bind_supervisor(supervisor.clone()) {
+            return Err(test_error("notifier supervisor was already bound"));
+        }
+
         let listener = ServerListener::bind(&config, supervisor).map_err(test_error)?;
-        let supervisor = listener.supervisor();
         let address = listener.local_addr();
         Ok(Self {
             listener: Some(listener),
-            supervisor,
+            registry,
             address,
         })
     }
 
-    /// Waits until the server tracks at least one live connection and returns its
-    /// pid — the worker's connection, addressed by the server-push primitive.
-    fn wait_for_worker_pid(&self) -> Result<u64, TestError> {
+    /// Waits until the registry has a worker for the test pool (the notifier
+    /// registered the connected worker in-band) and returns its handle's presence.
+    fn wait_for_registered_worker(&self) -> Result<(), TestError> {
+        self.wait_until(true, "server never registered the in-band worker")
+    }
+
+    /// Waits until the registry NO LONGER has a worker for the test pool (the
+    /// notifier deregistered it on disconnect).
+    fn wait_for_deregistered_worker(&self) -> Result<(), TestError> {
+        self.wait_until(false, "server never deregistered the worker on disconnect")
+    }
+
+    fn wait_until(&self, present: bool, on_timeout: &str) -> Result<(), TestError> {
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         while Instant::now() < deadline {
-            let pids = self.supervisor.active_connection_pids();
-            if let Some(pid) = pids.first() {
-                return Ok(*pid);
+            let selected = self
+                .registry
+                .select_worker(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE, Some(NODE))
+                .map_err(test_error)?;
+            if selected.is_some() == present {
+                return Ok(());
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        Err(test_error("server never observed a worker connection"))
+        Err(test_error(on_timeout))
     }
 
     fn shutdown(mut self) -> Result<(), TestError> {
@@ -161,6 +198,19 @@ impl RunningServer {
         }
         Ok(())
     }
+}
+
+/// Builds a connection supervisor that carries the aion in-band registration
+/// notifier, sourcing its connection services the same way
+/// [`ConnectionSupervisor::from_config`] does for the test's channel-free config.
+fn build_supervisor_with_notifier(
+    config: &ServerConfig,
+    notifier: Arc<LiminalConnectionNotifier>,
+) -> Result<ConnectionSupervisor, TestError> {
+    use liminal_server::server::connection::LiminalConnectionServices;
+
+    let services = Arc::new(LiminalConnectionServices::from_config(config).map_err(test_error)?);
+    ConnectionSupervisor::with_services_and_notifier(services, notifier).map_err(test_error)
 }
 
 fn reserve_loopback_port() -> Result<SocketAddr, TestError> {
@@ -188,6 +238,23 @@ fn worker_registry(executions: Arc<AtomicUsize>) -> Result<Arc<ActivityRegistry>
     Ok(Arc::new(registry))
 }
 
+/// The worker config the remote worker self-describes with: it registers into the
+/// test pool `(NAMESPACE, TASK_QUEUE, NODE)` with the activity it serves.
+fn worker_config() -> Result<WorkerConfig, TestError> {
+    WorkerConfig::builder()
+        .endpoint("unused-direct-address")
+        .namespace(NAMESPACE)
+        .task_queue(TASK_QUEUE)
+        .node(NODE)
+        .identity("lsub-l2-worker")
+        .max_concurrency(1)
+        .reconnect_initial_backoff(Duration::from_millis(5))
+        .reconnect_max_backoff(Duration::from_millis(20))
+        .reconnect_max_attempts(3)
+        .build()
+        .map_err(test_error)
+}
+
 /// Spawns the liminal worker on a dedicated OS thread with its own current-thread
 /// runtime. The push client's receive is a blocking call, so the worker is driven
 /// off the test's runtime; the returned flag stops it.
@@ -197,7 +264,11 @@ struct WorkerThread {
 }
 
 impl WorkerThread {
-    fn spawn(address: String, registry: Arc<ActivityRegistry>) -> Self {
+    fn spawn(
+        address: String,
+        config: WorkerConfig,
+        registry: Arc<ActivityRegistry>,
+    ) -> Self {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
@@ -212,7 +283,9 @@ impl WorkerThread {
                 }
             };
             runtime.block_on(async move {
-                let worker = match LiminalActivityWorker::connect(&address, registry) {
+                // SELF-REGISTER in-band: connect_with_registration runs the
+                // WorkerRegister -> WorkerRegisterAck round-trip before serving.
+                let worker = match LiminalActivityWorker::connect(&address, &config, registry) {
                     Ok(worker) => worker,
                     Err(error) => {
                         eprintln!("worker connect failed: {error}");
@@ -283,45 +356,26 @@ async fn open_store(name: &str) -> Result<Arc<LibSqlStore>, TestError> {
         .map_err(test_error)
 }
 
-/// Registers the connected liminal worker into the registry as a liminal-delivered
-/// member for its `(namespaces, task_queue, node)` pool.
-fn register_liminal_worker(
-    registry: &ConnectedWorkerRegistry,
-    supervisor: &ConnectionSupervisor,
-    pid: u64,
-) -> Result<WorkerRegistration, TestError> {
-    let delivery = WorkerDelivery::Liminal(LiminalWorkerDelivery::new(supervisor.clone(), pid));
-    // The returned registration token is RETAINED by the caller: dropping it
-    // deregisters the worker, so the test must hold it for the dispatch's lifetime.
-    registry
-        .register_delivery(
-            [NAMESPACE.to_owned()],
-            TASK_QUEUE,
-            Some(NODE.to_owned()),
-            std::iter::once(&ACTIVITY_TYPE.to_owned()),
-            delivery,
-        )
-        .map_err(test_error)
-}
-
-/// THE LOAD-BEARING TEST: a staged outbox row for the worker's pool is claimed
-/// (scoped), pushed to the REAL remote worker over liminal, executed, and its
-/// terminal completion recorded exactly once through the shared callback.
+/// THE LOAD-BEARING TEST: a remote worker self-registers IN-BAND, the installed
+/// notifier auto-registers it, a staged outbox row for the worker's pool is
+/// claimed (scoped), pushed to the worker over liminal, executed, and its
+/// terminal completion recorded exactly once through the shared callback. On
+/// worker disconnect the notifier deregisters it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn xnode_dispatch_routes_executes_and_completes() -> Result<(), TestError> {
+async fn xnode_inband_dispatch_routes_executes_and_completes() -> Result<(), TestError> {
     let server = RunningServer::start()?;
     let address = server.address.to_string();
 
-    // A REAL remote worker connects over the liminal push transport.
+    // A REAL remote worker connects over the liminal push transport WITH an
+    // in-band registration; the server's notifier auto-registers it.
     let executions = Arc::new(AtomicUsize::new(0));
     let registry_for_worker = worker_registry(Arc::clone(&executions))?;
-    let worker = WorkerThread::spawn(address.clone(), registry_for_worker);
-    let pid = server.wait_for_worker_pid()?;
+    let worker = WorkerThread::spawn(address.clone(), worker_config()?, registry_for_worker);
 
-    // The server inserts the connected worker into the EXISTING registry as a
-    // liminal-delivered member for (remote, gpu, box-7).
-    let registry = ConnectedWorkerRegistry::default();
-    let _registration = register_liminal_worker(&registry, &server.supervisor, pid)?;
+    // The installed notifier inserted the worker into the EXISTING registry as a
+    // liminal-delivered member for (remote, gpu, box-7) — entirely in-band.
+    server.wait_for_registered_worker()?;
+    let registry = server.registry.clone();
 
     // Stage one pending row for that pool in a real durable outbox, then claim it
     // SCOPED to the pool (LSUB-1a) — only the owned pool's rows are claimed.
@@ -362,30 +416,43 @@ async fn xnode_dispatch_routes_executes_and_completes() -> Result<(), TestError>
 
     // The worker's result re-entered aion through the shared callback, correlated
     // to the exact workflow / ordinal / run that was dispatched — the terminal.
-    let completions = callback
-        .completions
-        .lock()
-        .map_err(|_| test_error("completions lock poisoned"))?;
-    assert_eq!(completions.len(), 1, "exactly one terminal completion");
-    let (workflow_id, activity_id, run_id, result) = completions
-        .first()
-        .ok_or_else(|| test_error("no completion recorded"))?;
-    assert_eq!(workflow_id, &row.workflow_id);
-    assert_eq!(
-        activity_id,
-        &ActivityId::from_sequence_position(row.ordinal)
-    );
-    assert_eq!(
-        run_id, &row.run_id,
-        "run_id survived the liminal round trip"
-    );
-    // The activity genuinely ran the handler (charged: true, amount echoed).
-    let output: ChargeOutput = serde_json::from_str(result).map_err(test_error)?;
-    assert!(output.charged, "the handler ran and charged");
-    assert_eq!(output.amount, 42, "the handler saw the dispatched input");
-    drop(completions);
+    {
+        let completions = callback
+            .completions
+            .lock()
+            .map_err(|_| test_error("completions lock poisoned"))?;
+        assert_eq!(completions.len(), 1, "exactly one terminal completion");
+        let (workflow_id, activity_id, run_id, result) = completions
+            .first()
+            .ok_or_else(|| test_error("no completion recorded"))?;
+        assert_eq!(workflow_id, &row.workflow_id);
+        assert_eq!(
+            activity_id,
+            &ActivityId::from_sequence_position(row.ordinal)
+        );
+        assert_eq!(
+            run_id, &row.run_id,
+            "run_id survived the liminal round trip"
+        );
+        // The activity genuinely ran the handler (charged: true, amount echoed).
+        let output: ChargeOutput = serde_json::from_str(result).map_err(test_error)?;
+        assert!(output.charged, "the handler ran and charged");
+        assert_eq!(output.amount, 42, "the handler saw the dispatched input");
+    }
 
+    // DEREGISTRATION: when the worker disconnects, the server's notifier fires
+    // on_worker_unregistered and drops the registration guard, so the registry no
+    // longer routes to the worker's pool.
     worker.stop();
+    server.wait_for_deregistered_worker()?;
+    assert!(
+        registry
+            .select_worker(NAMESPACE, TASK_QUEUE, ACTIVITY_TYPE, Some(NODE))
+            .map_err(test_error)?
+            .is_none(),
+        "the disconnected worker must be deregistered from the registry"
+    );
+
     server.shutdown()?;
     Ok(())
 }
@@ -393,7 +460,7 @@ async fn xnode_dispatch_routes_executes_and_completes() -> Result<(), TestError>
 /// ROUTING CHECK: a row for a DIFFERENT pool selects no worker, so the dispatch
 /// returns an honest no-worker error (the outbox would retry) and the worker never
 /// runs it. This reuses the registry's selection semantics: the worker registered
-/// only for (remote, gpu, box-7) is not a candidate for (other, cpu).
+/// (in-band) only for (remote, gpu, box-7) is not a candidate for (other, cpu).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_for_a_different_pool_is_not_delivered() -> Result<(), TestError> {
     let server = RunningServer::start()?;
@@ -401,11 +468,9 @@ async fn dispatch_for_a_different_pool_is_not_delivered() -> Result<(), TestErro
 
     let executions = Arc::new(AtomicUsize::new(0));
     let registry_for_worker = worker_registry(Arc::clone(&executions))?;
-    let worker = WorkerThread::spawn(address.clone(), registry_for_worker);
-    let pid = server.wait_for_worker_pid()?;
-
-    let registry = ConnectedWorkerRegistry::default();
-    let _registration = register_liminal_worker(&registry, &server.supervisor, pid)?;
+    let worker = WorkerThread::spawn(address.clone(), worker_config()?, registry_for_worker);
+    server.wait_for_registered_worker()?;
+    let registry = server.registry.clone();
 
     // A row for a DIFFERENT (namespace, task_queue) pool than the worker serves.
     let other_row = pending_row("other", "cpu", None, 0)?;
