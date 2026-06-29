@@ -123,7 +123,7 @@ name = "aion-nif"
 version = "0.8.0"
 dependencies = [
  "aion-core",
- "beamr 0.11.0",
+ "beamr",
  "serde",
  "serde_json",
 ]
@@ -183,12 +183,12 @@ dependencies = [
  "aion-store-haematite",
  "aion-store-libsql",
  "async-trait",
- "beamr 0.11.0",
+ "beamr",
  "chrono",
  "dashmap",
  "fs4",
  "futures",
- "haematite 0.3.0",
+ "haematite",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "saffron",
@@ -224,11 +224,11 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite 0.3.0",
+ "haematite",
  "http-body-util",
  "jsonwebtoken",
  "libsql",
- "liminal",
+ "liminal-rs",
  "liminal-sdk",
  "liminal-server",
  "prometheus",
@@ -275,7 +275,7 @@ dependencies = [
  "aion-store",
  "async-trait",
  "chrono",
- "haematite 0.3.0",
+ "haematite",
  "serde",
  "serde_json",
  "tempfile",
@@ -321,7 +321,7 @@ dependencies = [
  "async-trait",
  "futures",
  "hostname",
- "liminal",
+ "liminal-rs",
  "liminal-sdk",
  "prost 0.14.3",
  "serde",
@@ -613,34 +613,6 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
-
-[[package]]
-name = "beamr"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dfbd8e4b5a5391d907986b8d3b5ca3c26d4a524f35297fd451ef595b54554d4"
-dependencies = [
- "cranelift-codegen",
- "cranelift-frontend",
- "cranelift-jit",
- "cranelift-module",
- "cranelift-native",
- "crossbeam-channel",
- "crossbeam-deque",
- "crossbeam-queue",
- "dashmap",
- "flate2",
- "gleam-types",
- "io-uring",
- "libc",
- "md5",
- "num_cpus",
- "rand 0.10.1",
- "rustix 1.1.4",
- "tokio",
- "unicode-segmentation",
- "zstd",
-]
 
 [[package]]
 name = "beamr"
@@ -1901,26 +1873,11 @@ dependencies = [
 
 [[package]]
 name = "haematite"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18dc7a0f86c29c1a2aa3b4ad743393276d48dfb98dea788b0da2cab4be1d186d"
-dependencies = [
- "beamr 0.8.2",
- "blake3",
- "crc32fast",
- "log",
- "lru",
- "serde",
- "serde_json",
- "tempfile",
- "zstd",
-]
-
-[[package]]
-name = "haematite"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f1cfc3c46cb57bd4f3b945a8714ce0c74341ad0ee63a968bb160ba895df5de"
 dependencies = [
- "beamr 0.11.0",
+ "beamr",
  "blake3",
  "crc32fast",
  "dashmap",
@@ -2823,13 +2780,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "liminal"
+name = "liminal-rs"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62ba8baf73b1fae00e4611fa08edd9ef60a9a95b17ff469b241941dde28f0e4a"
 dependencies = [
  "async-trait",
- "beamr 0.11.0",
+ "beamr",
  "chrono",
- "haematite 0.1.0",
+ "haematite",
  "jsonschema",
  "rand 0.10.1",
  "serde_json",
@@ -2841,9 +2800,11 @@ dependencies = [
 [[package]]
 name = "liminal-sdk"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31a8cf55fe768169bed19e53fb2278c68f2d737d08823b0d6c7f5f81c790aec4"
 dependencies = [
  "futures-core",
- "liminal",
+ "liminal-rs",
  "serde",
  "serde_json",
  "spin",
@@ -2853,12 +2814,14 @@ dependencies = [
 [[package]]
 name = "liminal-server"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "497229ebeedf8be32a7a65d99ba0131eb1bbc0492434b4d65d69ceae75a5e9c9"
 dependencies = [
  "anyhow",
- "beamr 0.11.0",
+ "beamr",
  "clap",
- "haematite 0.1.0",
- "liminal",
+ "haematite",
+ "liminal-rs",
  "serde",
  "serde_json",
  "signal-hook",

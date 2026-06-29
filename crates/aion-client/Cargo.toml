@@ -20,9 +20,9 @@ aion-core = { version = "0.8.0", path = "../aion-core" }
 aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
-rustls = { version = "0.23.40", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
-rustls-pemfile = "2.2.0"
-webpki-roots = "1.0.7"
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+webpki-roots = { workspace = true }
 tonic = { workspace = true, features = ["transport", "tls-webpki-roots"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
@@ -30,7 +30,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
-http = "1.4.1"
+http = { workspace = true }
 chrono.workspace = true
 uuid.workspace = true
 aion = { version = "0.8.0", path = "../aion", optional = true, package = "aion-rs" }

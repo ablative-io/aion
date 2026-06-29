@@ -44,50 +44,50 @@ uuid.workspace = true
 futures.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 prost.workspace = true
-tokio-stream = "0.1"
+tokio-stream = { workspace = true }
 # Names the typed body length-limit error so the deploy archive upload can
 # distinguish "over deploy.max_archive_bytes" (413) from transport read
 # failures; same version axum already uses internally.
-http-body-util = "0.1"
+http-body-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 # Provides the CorsLayer the public HTTP router applies so a browser dashboard
 # served from a different origin (e.g. the Vite dev server) can call the API.
 # CORS is config-driven and secure-by-default: with no configured origins the
 # layer is not installed and no cross-origin request is allowed.
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { workspace = true }
 # Embeds the built dashboard bundle into the binary. OPTIONAL and OFF by
 # default: a default `cargo build -p aion-server` does NOT pull rust-embed and
 # does NOT require the dashboard to be built (no bun needed). Enabled only by
 # the `embed-dashboard` feature, which release builds turn on so the single
 # binary ships the real web UI. With the feature off, `/` serves a branded
 # placeholder page documenting how to build/run the dashboard.
-rust-embed = { version = "8.11.0", optional = true }
+rust-embed = { workspace = true, optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-toml = "1.1.2"
-prometheus = "0.14.0"
+toml = { workspace = true }
+prometheus = { workspace = true }
 async-trait.workspace = true
-base64 = "0.22.1"
+base64 = { workspace = true }
 # jsonwebtoken 10 panics at validation time unless exactly one crypto-provider
 # feature is selected; rust_crypto is the pure-Rust provider.
-jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"], optional = true }
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"], optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 # Cross-node outbox dispatch over the liminal bus (#13). OPTIONAL and OFF by
 # default: a default aion build does not link liminal-sdk (nor its transitive
-# beamr distribution). Enabled only by the `liminal-transport` feature. Path
-# dependency on the sibling repo; the default `std` feature carries the real TCP
+# beamr distribution). Enabled only by the `liminal-transport` feature. Resolved
+# from crates.io (liminal-sdk); the default `std` feature carries the real TCP
 # transport and the canonical wire codec.
-liminal-sdk = { version = "0.2.0", path = "../../../liminal/crates/liminal-sdk", optional = true }
+liminal-sdk = { workspace = true, optional = true }
 # Used only by the feature-gated #13-0 integration test to stand up a real
 # liminal server over loopback TCP (the spike's worker-side endpoint). Optional
 # and enabled only by `liminal-transport`, so a default build never pulls it.
-liminal-server = { version = "0.2.0", path = "../../../liminal/crates/liminal-server", optional = true }
+liminal-server = { workspace = true, optional = true }
 # Liminal core protocol types (LSUB-L2): the connection-keyed `ConnectionNotifier`
 # receives a `liminal::protocol::WorkerRegistration` to build a registry entry from.
 # Already in the dependency graph transitively (liminal-sdk/liminal-server depend
 # on it); named directly only so the in-band registration notifier can reference
 # the wire type. Optional, enabled only by `liminal-transport`.
-liminal = { version = "0.2.0", path = "../../../liminal/crates/liminal", optional = true }
+liminal = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The LSUB-1 cross-node dispatch e2e drives a REAL aion-worker over the liminal
@@ -102,16 +102,16 @@ aion-core = { version = "0.8.0", path = "../aion-core" }
 aion-package = { version = "0.8.0", path = "../aion-package", features = ["test-support"] }
 fs4 = { workspace = true }
 libsql = { workspace = true }
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
-tempfile = "3.27.0"
-tokio-stream = { version = "0.1", features = ["net"] }
-tokio-tungstenite = "0.29.0"
+reqwest = { workspace = true }
+tempfile = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
+tokio-tungstenite = { workspace = true }
 # Used ONLY by the feature-gated SS-5b auto-failover integration test, which
 # stands up a real 3-node loopback haematite cluster through the raw
 # DistributionEndpoint/Database harness (mirroring the aion-rs SS-5 demo). The
 # test file is `#![cfg(feature = "haematite-backend")]`, so without that feature
 # it compiles to nothing; this dev-dep only links for the haematite test build.
-haematite = { path = "../../../haematite/crates/haematite" }
+haematite = { workspace = true }
 # Deploy e2e builds hostile DEFLATE-bomb archives; PackageBuilder writes
 # Stored entries only, so it cannot produce one.
 zip = { workspace = true }
