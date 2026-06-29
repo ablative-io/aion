@@ -45,7 +45,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use aion_core::{ContentType, Event, EventEnvelope, Payload, RunId, TimerId, WorkflowId};
-use aion_store::{ReadableEventStore, WritableEventStore, WriteToken};
+use aion_store::{ReadableEventStore, StoreError, WritableEventStore, WriteToken};
 use aion_store_haematite::HaematiteStore;
 use haematite::db::respond_to_inbound_writes;
 use haematite::sync::membership::WriteMembership;
@@ -71,6 +71,8 @@ fn block_on<F: Future>(future: F) -> F::Output {
 const NODE_A: &str = "node-a@127.0.0.1";
 const NODE_B: &str = "node-b@127.0.0.1";
 const NODE_C: &str = "node-c@127.0.0.1";
+const NODE_D: &str = "node-d@127.0.0.1";
+const NODE_E: &str = "node-e@127.0.0.1";
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -585,6 +587,87 @@ fn durable_timer_survives_shard_adoption() -> TestResult {
     assert_eq!(
         recovered[0].timer_id, timer_id,
         "the recovered timer's id round-trips through replicate + merge unchanged"
+    );
+    Ok(())
+}
+
+// ===========================================================================
+// ADR-021 — DOUBLE-ADOPTION FENCE: a survivor deposed by a HIGHER-ballot owner
+// gets the typed fence on `publish_shard_owner` (→ StoreError::NotOwner), the
+// abort signal the engine's clean-partial adopt order keys off to drop the shard
+// WITHOUT widening scope or recovering it.
+// ===========================================================================
+
+/// Store-layer proof of the publish-fence abort. In a FIVE-node cluster, B adopts
+/// the shard (acquire + publish), then C wins a STRICTLY HIGHER-ballot election
+/// over a quorum that EXCLUDES B ({C,D,E}) — deposing B without raising B's own
+/// local promised epoch. B's NEXT fenced directory write is therefore
+/// quorum-REJECTED (not locally self-fenced) and surfaces as the typed
+/// `StoreError::NotOwner`, exactly the signal `adopt_shards_inner` keys off to
+/// drop a deposed survivor's shard.
+///
+/// A five-node topology is load-bearing: in a 3-node cluster with one dead node,
+/// any deposing election MUST use the deposed survivor itself as a promiser
+/// (raising its local epoch), so its later publish fails at LOCAL commit rather
+/// than via the typed quorum fence. Five nodes let C form a majority {C,D,E}
+/// WITHOUT B, isolating the typed `Fenced` quorum-reject path the design targets.
+///
+/// NON-VACUOUS: B's FIRST publish (before C's election) succeeds, proving B was a
+/// real owner whose authority was revoked by C's higher ballot — not a publish
+/// that never had a chance.
+#[test]
+fn deposed_survivor_publish_is_fenced_to_not_owner() -> TestResult {
+    let dir_a = tempfile::tempdir()?;
+    let dir_b = tempfile::tempdir()?;
+    let dir_c = tempfile::tempdir()?;
+    let dir_d = tempfile::tempdir()?;
+    let dir_e = tempfile::tempdir()?;
+
+    // Five nodes, quorum = 3. A is the doomed declared owner.
+    let node_a = Node::spawn(NODE_A, dir_a.path(), 5, &[NODE_B, NODE_C, NODE_D])?;
+    // B replicates its publish to {C,D,E}: a quorum that, once it has promised C's
+    // higher ballot, deterministically REJECTS B's fenced write.
+    let node_b = Node::spawn(NODE_B, dir_b.path(), 5, &[NODE_C, NODE_D, NODE_E])?;
+    // C deposes B over {D,E} (a majority {C,D,E}) — B is NOT a promiser, so B's
+    // own local promised epoch is never raised by C's election.
+    let node_c = Node::spawn(NODE_C, dir_c.path(), 5, &[NODE_D, NODE_E])?;
+    let node_d = Node::spawn(NODE_D, dir_d.path(), 5, &[NODE_C, NODE_E])?;
+    let node_e = Node::spawn(NODE_E, dir_e.path(), 5, &[NODE_C, NODE_D])?;
+
+    // Full mesh so every Prepare/WriteProposal reaches its targets.
+    let nodes = [&node_a, &node_b, &node_c, &node_d, &node_e];
+    for (i, from) in nodes.iter().enumerate() {
+        for to in nodes.iter().skip(i + 1) {
+            link_both(from, to)?;
+        }
+    }
+
+    // A is the original fenced owner; then "dies".
+    node_a
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(5, &[NODE_B, NODE_C, NODE_D]), OP_TIMEOUT)?;
+
+    // B adopts: wins the election over {C,D} and publishes itself. The first
+    // publish SUCCEEDS — B is a real owner (load-bearing non-vacuity).
+    node_b
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(5, &[NODE_C, NODE_D]), OP_TIMEOUT)?;
+    node_b.store.publish_shard_owner(SHARD)?;
+
+    // C now wins a STRICTLY HIGHER-ballot election over {D,E} — a majority {C,D,E}
+    // that EXCLUDES B, so B's local promised epoch is untouched.
+    node_c
+        .database()
+        .acquire_shard_and_serve(SHARD, &membership(5, &[NODE_D, NODE_E]), OP_TIMEOUT)?;
+
+    // B's NEXT fenced publish proposes to {C,D,E} — all of which promised C's
+    // higher ballot — so it is quorum-REJECTED (typed Fenced) and the store maps
+    // it to the retryable NotOwner: the ABORT signal the adopt order drops on.
+    let outcome = node_b.store.publish_shard_owner(SHARD);
+    assert_eq!(
+        outcome,
+        Err(StoreError::NotOwner { shard: SHARD }),
+        "a deposed survivor's fenced publish must surface as NotOwner (the adopt-abort signal)"
     );
     Ok(())
 }

@@ -44,12 +44,29 @@ use aion::Engine;
 pub trait PeerLiveness: Send + Sync + 'static {
     /// Whether the peer named `peer_name` currently holds a live replication link.
     fn peer_connected(&self, peer_name: &str) -> bool;
+
+    /// The distribution name currently RECORDED as `shard`'s owner in the cluster
+    /// shard-owner directory (SS-3), or `None` when no record exists. Used by the
+    /// adopt pre-check to detect a shard already adopted-and-published by another
+    /// survivor, so this supervisor does not race a second adoption of it. Mirrors
+    /// `routing::directory::resolve_from_record`'s down-owner detection: a record
+    /// naming a LIVE peer means handled-elsewhere (skip); a record naming a peer
+    /// that is itself down is adoptable (the recorded owner has since died).
+    ///
+    /// A failed read returns `None` ("no directory opinion") so a transient read
+    /// failure never strands a dead peer's shards.
+    fn read_shard_owner(&self, shard: usize) -> Option<String>;
 }
 
 #[cfg(feature = "haematite-backend")]
 impl PeerLiveness for aion_store_haematite::HaematiteStore {
     fn peer_connected(&self, peer_name: &str) -> bool {
         Self::peer_connected(self, peer_name)
+    }
+
+    fn read_shard_owner(&self, shard: usize) -> Option<String> {
+        // A failed read is "no directory opinion": fall through to adoption.
+        Self::read_shard_owner(self, shard).ok().flatten()
     }
 }
 
@@ -171,6 +188,27 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
             if entry.adopted || entry.consecutive_down < self.config.confirmations {
                 continue;
             }
+            // Pre-check: skip any of this peer's shards already published to a
+            // DIFFERENT live owner — another survivor has adopted them, so racing
+            // a second adoption would be wasted work (the fence would drop us
+            // anyway). A record naming a peer that is itself down is adoptable (the
+            // recorded owner has since died); no record is adoptable too. Mirrors
+            // routing::directory::resolve_from_record's down-owner detection.
+            if Self::all_shards_handled_elsewhere(
+                self.liveness.as_ref(),
+                &peer.name,
+                &peer.owned_shards,
+            ) {
+                // Every shard is already served by a live owner: mark handled so
+                // the supervisor does NOT retry-loop on shards another node owns.
+                entry.adopted = true;
+                tracing::info!(
+                    peer = %peer.name,
+                    shards = ?peer.owned_shards,
+                    "downed peer's shards already adopted by another live owner; skipping"
+                );
+                continue;
+            }
             match self.adopter.adopt_shards(&peer.owned_shards).await {
                 Ok(()) => {
                     entry.adopted = true;
@@ -182,9 +220,14 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                     );
                 }
                 Err(error) => {
-                    // Leave `adopted` false so the next tick retries: a failed
-                    // election (e.g. quorum not yet reachable) must not strand the
-                    // dead peer's shards forever.
+                    // Leave `adopted` false so the next tick retries: a
+                    // quorum-unavailable / transport adopt error must not strand
+                    // the dead peer's shards forever (the retry contract). Note a
+                    // fenced (NotOwner) shard is NOT surfaced here — the engine's
+                    // clean-partial adopt drops a deposed shard internally and
+                    // returns Ok, and the pre-check above already short-circuits a
+                    // shard another LIVE owner holds, so this arm is reached only
+                    // for genuinely retryable faults.
                     tracing::warn!(
                         peer = %peer.name,
                         shards = ?peer.owned_shards,
@@ -195,6 +238,25 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
             }
         }
         adopted_now
+    }
+
+    /// Whether EVERY shard in `shards` is already published to a DIFFERENT live
+    /// owner — i.e. another survivor has adopted them, so this supervisor has
+    /// nothing left to do for the dead `peer_name`. A shard is "handled elsewhere"
+    /// only when its directory record names a peer that is BOTH not the dead peer
+    /// AND currently connected; a record naming the dead peer (or a peer now down)
+    /// or no record at all means the shard is still adoptable. Empty `shards`
+    /// is vacuously handled, but such peers are filtered out at construction.
+    fn all_shards_handled_elsewhere(liveness: &L, peer_name: &str, shards: &[usize]) -> bool {
+        !shards.is_empty()
+            && shards.iter().all(|&shard| {
+                liveness.read_shard_owner(shard).is_some_and(|owner| {
+                    // The recorded owner is a LIVE third party (not the dead peer):
+                    // that survivor serves it. A record naming the dead peer itself
+                    // is stale (it has since died) and remains adoptable.
+                    owner != peer_name && liveness.peer_connected(&owner)
+                })
+            })
     }
 
     /// Drive the poll loop until `shutdown` flips true, ticking every
@@ -224,25 +286,64 @@ mod tests {
 
     use super::*;
 
-    /// A liveness fake whose verdict is flipped by the test.
+    /// A liveness fake whose verdict is flipped by the test. `connected` is the
+    /// verdict for ALL queried peers EXCEPT names explicitly registered as live
+    /// third-party owners via `set_live_owner`, which always report connected and
+    /// can be recorded as a shard's owner via `publish`.
     struct FakeLiveness {
         connected: AtomicBool,
+        /// shard -> recorded owner name (the SS-3 directory record).
+        owners: Mutex<std::collections::BTreeMap<usize, String>>,
+        /// peer names that always report connected (live third-party survivors).
+        live_owners: Mutex<std::collections::BTreeSet<String>>,
     }
 
     impl FakeLiveness {
         fn new(connected: bool) -> Self {
             Self {
                 connected: AtomicBool::new(connected),
+                owners: Mutex::new(std::collections::BTreeMap::new()),
+                live_owners: Mutex::new(std::collections::BTreeSet::new()),
             }
         }
         fn set(&self, connected: bool) {
             self.connected.store(connected, Ordering::SeqCst);
         }
+        /// Record `owner` as `shard`'s directory owner and (if `live`) mark it as
+        /// a connected third-party survivor.
+        fn publish(&self, shard: usize, owner: &str, live: bool) {
+            self.owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(shard, owner.to_owned());
+            if live {
+                self.live_owners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(owner.to_owned());
+            }
+        }
     }
 
     impl PeerLiveness for FakeLiveness {
-        fn peer_connected(&self, _peer_name: &str) -> bool {
+        fn peer_connected(&self, peer_name: &str) -> bool {
+            if self
+                .live_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(peer_name)
+            {
+                return true;
+            }
             self.connected.load(Ordering::SeqCst)
+        }
+
+        fn read_shard_owner(&self, shard: usize) -> Option<String> {
+            self.owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&shard)
+                .cloned()
         }
     }
 
@@ -382,5 +483,71 @@ mod tests {
         assert!(!sup.watches_any());
         assert!(sup.tick().await.is_empty());
         assert!(adopter.calls().is_empty());
+    }
+
+    /// PRE-CHECK: a downed peer whose shard is ALREADY published to a DIFFERENT
+    /// LIVE owner is NOT adopted — another survivor holds it. The supervisor marks
+    /// the peer handled (no retry-loop) and never calls the adopter.
+    #[tokio::test]
+    async fn shard_already_published_to_live_owner_is_not_adopted() {
+        let liveness = Arc::new(FakeLiveness::new(false));
+        // Shard 1 (the watched peer's shard) is recorded as owned by a live third
+        // party, node-9 — it adopted the shard already.
+        liveness.publish(1, "node-9@127.0.0.1", true);
+        let adopter = Arc::new(FakeAdopter::new(false));
+        let mut sup = supervisor(Arc::clone(&liveness), Arc::clone(&adopter), 1);
+
+        // The peer is down past the threshold, but its shard is handled elsewhere.
+        assert!(
+            sup.tick().await.is_empty(),
+            "no adoption fires for a shard a live owner already holds"
+        );
+        assert!(
+            adopter.calls().is_empty(),
+            "the adopter is never invoked for an already-handled shard"
+        );
+        // Subsequent ticks stay quiet: marked handled, no retry-loop.
+        for _ in 0..3 {
+            assert!(sup.tick().await.is_empty());
+        }
+        assert!(adopter.calls().is_empty());
+    }
+
+    /// A directory record naming a peer that is itself DOWN is NOT "handled
+    /// elsewhere": the recorded owner has since died, so the shard remains
+    /// adoptable and the supervisor adopts it.
+    #[tokio::test]
+    async fn shard_published_to_a_down_owner_is_still_adopted() {
+        let liveness = Arc::new(FakeLiveness::new(false));
+        // Shard 1 recorded as owned by node-9, but node-9 is NOT live (not
+        // registered as a live owner) — `connected=false` applies to it.
+        liveness.publish(1, "node-9@127.0.0.1", false);
+        let adopter = Arc::new(FakeAdopter::new(false));
+        let mut sup = supervisor(Arc::clone(&liveness), Arc::clone(&adopter), 1);
+
+        assert_eq!(
+            sup.tick().await.len(),
+            1,
+            "a shard whose recorded owner is itself down is adoptable"
+        );
+        assert_eq!(adopter.calls(), vec![vec![1]]);
+    }
+
+    /// A record naming the DEAD peer itself (the steady-state declared owner) is
+    /// stale and does NOT block adoption.
+    #[tokio::test]
+    async fn shard_published_to_the_dead_peer_itself_is_adopted() {
+        let liveness = Arc::new(FakeLiveness::new(false));
+        // The directory still names the (now dead) declared owner of shard 1.
+        liveness.publish(1, "node-1@127.0.0.1", false);
+        let adopter = Arc::new(FakeAdopter::new(false));
+        let mut sup = supervisor(Arc::clone(&liveness), Arc::clone(&adopter), 1);
+
+        assert_eq!(
+            sup.tick().await.len(),
+            1,
+            "a record naming the dead peer itself is stale and still adoptable"
+        );
+        assert_eq!(adopter.calls(), vec![vec![1]]);
     }
 }
