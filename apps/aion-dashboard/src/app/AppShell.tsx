@@ -6,6 +6,7 @@ import { ConnectionIndicator } from '@/features/live-feed';
 import { NamespaceSelector } from '@/features/namespace';
 
 import {
+  actionsPath,
   failoverPath,
   incidentsPath,
   searchPath,
@@ -17,6 +18,7 @@ import {
 const NAV_ITEMS: readonly AppNavItem[] = [
   { href: workflowListPath, label: 'Workflows', activePrefix: workflowListPath },
   { href: searchPath, label: 'Search', activePrefix: searchPath },
+  { href: actionsPath, label: 'Actions', activePrefix: actionsPath },
   { href: incidentsPath, label: 'Incidents', activePrefix: incidentsPath },
   { href: failoverPath, label: 'Failover', activePrefix: failoverPath },
 ];

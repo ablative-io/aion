@@ -3,10 +3,15 @@ export type {
   ApiCredentials,
   EventSearchQuery,
   EventSearchResult,
+  JsonRecord,
+  LoadPackageResult,
   RequestOptions,
   ServerErrorBody,
+  StartWorkflowParams,
+  StartWorkflowResult,
   WorkflowPage,
   WorkflowPageRequest,
+  WorkflowVersion,
 } from './client';
 export {
   ApiClient,

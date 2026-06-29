@@ -336,6 +336,79 @@ mod tests {
         Ok(())
     }
 
+    /// WS3 live-data path: a cluster subscription WITH the deployment-wide deploy
+    /// grant supplied as the `x-aion-deploy=true` query param (exactly what a
+    /// browser console sends, since it cannot set the handshake header) is
+    /// authorized and receives the priming `cluster_snapshot` frame. This is the
+    /// contract the dashboard's deploy-credential fix relies on: without the
+    /// grant the cluster socket is denied and the failover view reconnect-loops
+    /// to "disconnected".
+    #[tokio::test]
+    async fn cluster_subscription_with_deploy_query_param_streams_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(workflow_id(), NAMESPACE)?;
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router.into_make_service()).await {
+                tracing::warn!(%error, "test websocket server exited with error");
+            }
+        });
+
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token_with_deploy("alice", NAMESPACE, true)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = TOKEN.to_owned();
+        // The deploy grant rides as a query param (x-aion-deploy=true) exactly as
+        // a browser WebSocket must send it; the server promotes it to the dev
+        // deploy grant. Under the auth feature the grant rides in the token.
+        let url = format!(
+            "ws://{address}/events/stream\
+             ?x-aion-namespaces={NAMESPACE}&x-aion-subject=alice\
+             &access_token={bearer}&x-aion-deploy=true"
+        );
+        let (mut socket, response) = connect_async(url.into_client_request()?).await?;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+        let cluster = json!({ "subscription": { "cluster": { "after_seq": 0 } } });
+        socket
+            .send(ClientMessage::Text(cluster.to_string().into()))
+            .await?;
+
+        let Some(frame) = socket.next().await else {
+            return Err("deploy-granted cluster socket closed before the snapshot frame".into());
+        };
+        let ClientMessage::Text(text) = frame? else {
+            return Err("expected a cluster snapshot text frame".into());
+        };
+        let body: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(
+            body["kind"],
+            json!("cluster_snapshot"),
+            "deploy-granted cluster subscription must receive the priming snapshot: {body}"
+        );
+
+        server.abort();
+        Ok(())
+    }
+
     async fn assert_terminal_ws_error(
         address: SocketAddr,
         subscription: &serde_json::Value,

@@ -106,3 +106,23 @@ test('buildCredentials carries bearer token without namespaces when only token i
 
   expect(buildCredentials(config)).toEqual({ bearerToken: 'jwt' });
 });
+
+test('buildCredentials carries the deploy grant when VITE_AION_DEPLOY=true', () => {
+  const config = parseDashboardConfig({
+    VITE_AION_NAMESPACES: 'default',
+    VITE_AION_SUBJECT: 'operator',
+    VITE_AION_DEPLOY: 'true',
+  });
+
+  expect(buildCredentials(config)).toEqual({
+    namespaces: ['default'],
+    subject: 'operator',
+    deployGranted: true,
+  });
+});
+
+test('buildCredentials omits the deploy grant when it is not granted', () => {
+  const config = parseDashboardConfig({ VITE_AION_NAMESPACES: 'default' });
+
+  expect(buildCredentials(config)).toEqual({ namespaces: ['default'] });
+});

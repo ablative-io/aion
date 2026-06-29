@@ -42,6 +42,68 @@ export type HistoryResponse =
 
 export type NamespacesResponse = Namespace[] | { namespaces?: Namespace[] };
 
+/**
+ * Normalized result of a `POST /workflows/start`. The server returns plain UUID
+ * strings; this is the camelCase shape the UI consumes. Provenance is honest:
+ * these ids exist only because the server confirmed the run was created.
+ */
+export type StartWorkflowResult = {
+  workflowId: WorkflowId;
+  runId: string;
+};
+
+type RawStartWorkflowResponse = {
+  workflow_id?: unknown;
+  run_id?: unknown;
+};
+
+/**
+ * Normalized result of a `POST /deploy/packages` upload
+ * (`ProtoLoadPackageResponse`). `freshlyLoaded === false` means the content hash
+ * was already resident (idempotent re-upload); `routeChanged` reports whether
+ * the call re-pointed the active route.
+ */
+export type LoadPackageResult = {
+  workflowType: string;
+  contentHash: string;
+  deployedEntryModule: string;
+  entryFunction: string;
+  freshlyLoaded: boolean;
+  routeChanged: boolean;
+};
+
+type RawLoadPackageResponse = {
+  workflow_type?: unknown;
+  content_hash?: unknown;
+  deployed_entry_module?: unknown;
+  entry_function?: unknown;
+  freshly_loaded?: unknown;
+  route_changed?: unknown;
+};
+
+/** Normalized listing row from `GET /deploy/versions` (`ProtoWorkflowVersion`). */
+export type WorkflowVersion = {
+  workflowType: string;
+  contentHash: string;
+  deployedEntryModule: string;
+  entryFunction: string;
+  manifestVersion: string;
+  loadedAt: string;
+  routeActive: boolean;
+};
+
+type RawWorkflowVersion = {
+  workflow_type?: unknown;
+  content_hash?: unknown;
+  deployed_entry_module?: unknown;
+  entry_function?: unknown;
+  manifest_version?: unknown;
+  loaded_at?: unknown;
+  route_active?: unknown;
+};
+
+export type ListVersionsResponse = RawWorkflowVersion[] | { versions?: RawWorkflowVersion[] };
+
 type RawEventSearchResult = {
   event?: unknown;
   workflow_id?: WorkflowId;
@@ -109,6 +171,65 @@ export function normalizeEventSearch(
 
 export function normalizeNamespaces(response: NamespacesResponse): Namespace[] {
   return Array.isArray(response) ? response : readArray<Namespace>(response, NAMESPACES_KEY);
+}
+
+export function normalizeStartWorkflow(response: unknown): StartWorkflowResult {
+  if (!isRecord(response)) {
+    throw new ApiError(200, 'workflows/start response was not an object');
+  }
+
+  const raw = response as RawStartWorkflowResponse;
+  const workflowId = requireString(raw.workflow_id, 'workflow_id');
+  const runId = requireString(raw.run_id, 'run_id');
+
+  return { workflowId: workflowId as WorkflowId, runId };
+}
+
+export function normalizeLoadPackage(response: unknown): LoadPackageResult {
+  if (!isRecord(response)) {
+    throw new ApiError(200, 'deploy/packages response was not an object');
+  }
+
+  const raw = response as RawLoadPackageResponse;
+
+  return {
+    workflowType: requireString(raw.workflow_type, 'workflow_type'),
+    contentHash: requireString(raw.content_hash, 'content_hash'),
+    deployedEntryModule: asString(raw.deployed_entry_module),
+    entryFunction: asString(raw.entry_function),
+    freshlyLoaded: raw.freshly_loaded === true,
+    routeChanged: raw.route_changed === true,
+  };
+}
+
+export function normalizeWorkflowVersions(response: ListVersionsResponse): WorkflowVersion[] {
+  const rows = Array.isArray(response) ? response : (response.versions ?? []);
+
+  return rows.map(toWorkflowVersion);
+}
+
+function toWorkflowVersion(raw: RawWorkflowVersion): WorkflowVersion {
+  return {
+    workflowType: asString(raw.workflow_type),
+    contentHash: asString(raw.content_hash),
+    deployedEntryModule: asString(raw.deployed_entry_module),
+    entryFunction: asString(raw.entry_function),
+    manifestVersion: asString(raw.manifest_version),
+    loadedAt: asString(raw.loaded_at),
+    routeActive: raw.route_active === true,
+  };
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new ApiError(200, `response field "${field}" was missing or not a string`);
+  }
+
+  return value;
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function toEventSearchResult(raw: RawEventSearchResult): EventSearchResult {

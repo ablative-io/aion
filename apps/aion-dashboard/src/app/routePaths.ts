@@ -9,6 +9,7 @@ export const workflowDetailPath = '/workflows/:id';
 export const searchPath = '/search';
 export const incidentsPath = '/incidents';
 export const failoverPath = '/failover';
+export const actionsPath = '/actions';
 
 export function workflowListHref() {
   return workflowListPath;
@@ -29,6 +30,10 @@ export function incidentsHref() {
 
 export function failoverHref() {
   return failoverPath;
+}
+
+export function actionsHref() {
+  return actionsPath;
 }
 
 export function routerBasenameFromBaseUrl(baseUrl = import.meta.env.BASE_URL ?? '/') {

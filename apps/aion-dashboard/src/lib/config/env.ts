@@ -112,6 +112,12 @@ export function buildCredentials(
   if (config.bearerToken !== undefined) {
     credentials.bearerToken = config.bearerToken;
   }
+  // The deploy grant rides on REST credentials too (deploy package upload /
+  // versions are deploy-scoped, mirroring the WS3 cluster stream). Only carry it
+  // when actually granted so an unconfigured console stays bare.
+  if (config.deployGranted) {
+    credentials.deployGranted = true;
+  }
 
   return Object.keys(credentials).length === 0 ? undefined : credentials;
 }

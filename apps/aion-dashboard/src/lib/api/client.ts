@@ -15,73 +15,53 @@ import {
   type EventSearchResult,
   type HistoryResponse,
   type JsonRecord,
+  type ListVersionsResponse,
+  type LoadPackageResult,
   type NamespacesResponse,
   normalizeEventSearch,
   normalizeHistory,
+  normalizeLoadPackage,
   normalizeNamespaces,
+  normalizeStartWorkflow,
   normalizeWorkflowPage,
+  normalizeWorkflowVersions,
   readJson,
+  type StartWorkflowResult,
   type WorkflowPage,
   type WorkflowQueryResponse,
+  type WorkflowVersion,
 } from './client-normalize';
+import {
+  type ApiCredentials,
+  AW_REST_CONTRACT,
+  appendHeaders,
+  buildUrl,
+  mergeCredentials,
+  stripTrailingSlash,
+  toBinaryBody,
+} from './client-transport';
 
 export type { ServerErrorBody } from './api-error';
 export { ApiError } from './api-error';
-export type { EventSearchResult, WorkflowPage } from './client-normalize';
+export type {
+  EventSearchResult,
+  JsonRecord,
+  LoadPackageResult,
+  StartWorkflowResult,
+  WorkflowPage,
+  WorkflowVersion,
+} from './client-normalize';
+export type { ApiCredentials } from './client-transport';
 
 const DEFAULT_LIMIT = 50;
 
-// AW REST contract surface: update this one object when cluster AW pins endpoint paths,
-// methods, request body keys, pagination names, or envelope response shapes.
-const AW_REST_CONTRACT = {
-  endpoints: {
-    workflows: '/workflows/list',
-    workflowsPlain: '/workflows',
-    workflowsCount: '/workflows/count',
-    history: '/workflows/describe',
-    namespaces: '/namespaces',
-    eventSearch: '/events/search',
-    clusterCommand: '/cluster/command',
-  },
-  methods: {
-    workflows: 'POST',
-    history: 'POST',
-    namespaces: 'GET',
-    workflowsPlain: 'GET',
-    workflowsCount: 'GET',
-    eventSearch: 'POST',
-  },
-  requestKeys: {
-    namespace: 'namespace',
-    filter: 'filter',
-    workflowId: 'workflow_id',
-    runId: 'run_id',
-    includeHistory: 'include_history',
-    query: 'query',
-    pagination: {
-      cursor: 'cursor',
-      limit: 'limit',
-    },
-  },
-  responseKeys: {
-    items: 'items',
-    summaries: 'summaries',
-    events: 'events',
-    history: 'history',
-    namespaces: 'namespaces',
-    results: 'results',
-    nextCursor: 'next_cursor',
-    hasMore: 'has_more',
-    payload: 'payload',
-    payloadBytes: 'bytes',
-  },
-} as const;
-
-export type ApiCredentials = {
-  bearerToken?: string;
-  subject?: string;
-  namespaces?: readonly Namespace[];
-  headers?: HeadersInit;
+/** Start-workflow inputs (camelCase); the body is built server-shaped below. */
+export type StartWorkflowParams = {
+  workflowType: string;
+  /** Plain JSON input, auto-wrapped server-side as an `application/json` payload. */
+  input?: JsonRecord | undefined;
+  /** Optional R-4 steered-start routing key. */
+  routingKey?: string | undefined;
 };
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -268,6 +248,64 @@ export class ApiClient {
     return count;
   }
 
+  /**
+   * Start a workflow run (`POST /workflows/start`). Namespace-scoped: it carries
+   * the per-namespace command authority (ADR-022), NOT the deploy grant. The
+   * returned ids exist only because the server confirmed the run was created —
+   * provenance is never fabricated; a 404 `WorkflowTypeNotFound` (type not
+   * deployed) or 403 `namespace_denied` propagates as a typed {@link ApiError}.
+   */
+  async startWorkflow(
+    params: StartWorkflowParams,
+    options: RequestOptions
+  ): Promise<StartWorkflowResult> {
+    const body: JsonRecord = {
+      [AW_REST_CONTRACT.requestKeys.namespace]: options.namespace,
+      workflow_type: params.workflowType,
+    };
+    if (params.input !== undefined) {
+      body.input = params.input;
+    }
+    if (params.routingKey !== undefined) {
+      body.routing_key = params.routingKey;
+    }
+
+    const response = await this.request<unknown>(
+      AW_REST_CONTRACT.endpoints.workflowStart,
+      AW_REST_CONTRACT.methods.workflowStart,
+      options,
+      body
+    );
+
+    return normalizeStartWorkflow(response);
+  }
+
+  /**
+   * Upload a `.aion` package archive (`POST /deploy/packages`). The whole request
+   * body IS the archive bytes (raw `application/octet-stream`), not multipart or
+   * JSON. Deployment-scoped: it carries the deploy grant (no namespace header).
+   * When the cluster runs with `[deploy] enabled=false` this is a real 404; the
+   * caller surfaces that honestly rather than pretending it succeeded.
+   */
+  async deployPackage(archive: ArrayBuffer | Uint8Array | Blob): Promise<LoadPackageResult> {
+    const response = await this.requestDeployBinary<unknown>(
+      AW_REST_CONTRACT.endpoints.deployPackages,
+      toBinaryBody(archive)
+    );
+
+    return normalizeLoadPackage(response);
+  }
+
+  /** List loaded package versions (`GET /deploy/versions`). Deployment-scoped. */
+  async listVersions(): Promise<WorkflowVersion[]> {
+    const response = await this.requestDeployScoped<ListVersionsResponse>(
+      AW_REST_CONTRACT.endpoints.deployVersions,
+      AW_REST_CONTRACT.methods.deployVersions
+    );
+
+    return normalizeWorkflowVersions(response);
+  }
+
   private buildWorkflowQueryBody(
     filter: WorkflowFilter,
     page: WorkflowPageRequest,
@@ -339,7 +377,30 @@ export class ApiClient {
     method: string,
     body?: RequestBody
   ): Promise<T> {
-    const headers = new Headers({ 'content-type': 'application/json' });
+    const headers = this.buildDeployHeaders('application/json');
+
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+
+    return this.sendDeploy<T>(path, init);
+  }
+
+  /**
+   * Issue a deployment-scoped request whose body is a raw binary archive
+   * (`application/octet-stream`) — used by the package upload. The archive is sent
+   * verbatim (no `JSON.stringify`); the same deploy credentials as
+   * {@link requestDeployScoped} apply (deploy grant, no namespace header).
+   */
+  private async requestDeployBinary<T>(path: string, archive: BodyInit): Promise<T> {
+    const headers = this.buildDeployHeaders('application/octet-stream');
+
+    return this.sendDeploy<T>(path, { method: 'POST', headers, body: archive });
+  }
+
+  private buildDeployHeaders(contentType: string): Headers {
+    const headers = new Headers({ 'content-type': contentType });
 
     appendHeaders(headers, this.credentials?.headers);
     if (this.credentials?.bearerToken !== undefined) {
@@ -348,12 +409,16 @@ export class ApiClient {
     if (this.credentials?.subject !== undefined) {
       headers.set('x-aion-subject', this.credentials.subject);
     }
-
-    const init: RequestInit = { method, headers };
-    if (body !== undefined) {
-      init.body = JSON.stringify(body);
+    // Dev/no-auth grant. Under real auth the server validates the bearer's
+    // `deploy` claim and ignores this header, so emitting it is harmless there.
+    if (this.credentials?.deployGranted === true) {
+      headers.set('x-aion-deploy', 'true');
     }
 
+    return headers;
+  }
+
+  private async sendDeploy<T>(path: string, init: RequestInit): Promise<T> {
     const response = await this.fetchImpl(buildUrl(this.baseUrl, path), init);
 
     if (!response.ok) {
@@ -389,50 +454,4 @@ export class ApiClient {
 
 export function createApiClient(options?: ApiClientOptions): ApiClient {
   return new ApiClient(options);
-}
-
-function buildUrl(baseUrl: string, path: string): string {
-  return `${baseUrl}${path}`;
-}
-
-function stripTrailingSlash(value: string): string {
-  return value.endsWith('/') ? value.slice(0, -1) : value;
-}
-
-function mergeCredentials(
-  base: ApiCredentials | undefined,
-  override: ApiCredentials | undefined
-): ApiCredentials | undefined {
-  if (base === undefined) {
-    return override;
-  }
-
-  if (override === undefined) {
-    return base;
-  }
-
-  return {
-    ...base,
-    ...override,
-    headers: mergeHeaderInputs(base.headers, override.headers),
-  };
-}
-
-function mergeHeaderInputs(
-  base: HeadersInit | undefined,
-  override: HeadersInit | undefined
-): Headers {
-  const headers = new Headers(base);
-  appendHeaders(headers, override);
-  return headers;
-}
-
-function appendHeaders(headers: Headers, input: HeadersInit | undefined): void {
-  if (input === undefined) {
-    return;
-  }
-
-  new Headers(input).forEach((value, key) => {
-    headers.set(key, value);
-  });
 }

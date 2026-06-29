@@ -12,6 +12,7 @@ import { AppShell } from './AppShell';
 import { NotFound } from './NotFound';
 import { RouteError } from './RouteError';
 import {
+  actionsPath,
   failoverPath,
   incidentsPath,
   routerBasenameFromBaseUrl,
@@ -23,6 +24,8 @@ import {
 // Re-export the path contract + href helpers so existing importers of './routes'
 // keep working; the canonical, dependency-free source is './routePaths'.
 export {
+  actionsHref,
+  actionsPath,
   failoverHref,
   failoverPath,
   incidentsHref,
@@ -39,6 +42,10 @@ export {
 // Lazy view roots for slices that land later (S7 triage, S8 search). Lazy-loading
 // isolates each feature module so a build failure in one cannot break unrelated
 // routes. The list/detail/failover roots ship today and load eagerly.
+const ActionsView = lazyNamed(
+  () => import('@/features/actions'),
+  (mod) => mod.ActionsView
+);
 const SearchView = lazyNamed(
   () => import('@/features/search'),
   (mod) => mod.SearchView
@@ -61,6 +68,7 @@ export const appRoutes: RouteObject[] = [
       { path: workflowListPath, element: <WorkflowListRoute /> },
       { path: workflowDetailPath, element: <WorkflowDetailRoute /> },
       { path: searchPath, element: <SearchRoute /> },
+      { path: actionsPath, element: <ActionsRoute /> },
       { path: incidentsPath, element: <IncidentsRoute /> },
       { path: failoverPath, element: <FailoverRoute /> },
       // Catch-all: an unknown URL renders the branded 404 inside the shell so
@@ -93,6 +101,16 @@ function SearchRoute() {
   return (
     <Suspense fallback={<LoadingSkeleton />}>
       <SearchView namespace={selectedNamespace} />
+    </Suspense>
+  );
+}
+
+function ActionsRoute() {
+  const { selectedNamespace } = useNamespace();
+
+  return (
+    <Suspense fallback={<LoadingSkeleton />}>
+      <ActionsView namespace={selectedNamespace} />
     </Suspense>
   );
 }

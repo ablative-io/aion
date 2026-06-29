@@ -214,6 +214,179 @@ test('default fetch path invokes the global fetch with correct receiver (no ille
   }
 });
 
+test('startWorkflow posts the server-shaped body and normalizes the run ids', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    credentials: { subject: 'operator', namespaces: [namespace] },
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({
+        workflow_id: '00000000-0000-0000-0000-0000000000aa',
+        run_id: '00000000-0000-0000-0000-0000000000bb',
+      });
+    },
+  });
+
+  const result = await client.startWorkflow(
+    { workflowType: 'EmailDigest', input: { to: 'ops' }, routingKey: 'shard-1' },
+    { namespace }
+  );
+
+  expect(result).toEqual({
+    workflowId: '00000000-0000-0000-0000-0000000000aa',
+    runId: '00000000-0000-0000-0000-0000000000bb',
+  });
+  expect(calls[0]?.url).toBe('https://aion.example/workflows/start');
+  expect(calls[0]?.headers.get('x-aion-namespaces')).toBe(namespace);
+  await expect(calls[0]?.json()).resolves.toEqual({
+    namespace,
+    workflow_type: 'EmailDigest',
+    input: { to: 'ops' },
+    routing_key: 'shard-1',
+  });
+});
+
+test('startWorkflow omits routing_key when not provided', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({ workflow_id: 'w', run_id: 'r' });
+    },
+  });
+
+  await client.startWorkflow({ workflowType: 'T', input: {} }, { namespace });
+
+  await expect(calls[0]?.json()).resolves.toEqual({
+    namespace,
+    workflow_type: 'T',
+    input: {},
+  });
+});
+
+test('startWorkflow throws a typed ApiError on WorkflowTypeNotFound', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () =>
+      jsonResponse(
+        { code: 'not_found', message: 'workflow type T is not registered' },
+        { status: 404 }
+      ),
+  });
+
+  try {
+    await client.startWorkflow({ workflowType: 'T', input: {} }, { namespace });
+    throw new Error('expected startWorkflow to throw');
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(404);
+    expect((error as ApiError).code).toBe('not_found');
+  }
+});
+
+test('deployPackage sends the raw archive as octet-stream with the deploy grant', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    credentials: { subject: 'operator', namespaces: [namespace], deployGranted: true },
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({
+        workflow_type: 'EmailDigest',
+        content_hash: 'blake3:abc',
+        deployed_entry_module: 'mod',
+        entry_function: 'main',
+        freshly_loaded: true,
+        route_changed: true,
+      });
+    },
+  });
+
+  const archive = new Uint8Array([1, 2, 3, 4]);
+  const result = await client.deployPackage(archive);
+
+  expect(result).toEqual({
+    workflowType: 'EmailDigest',
+    contentHash: 'blake3:abc',
+    deployedEntryModule: 'mod',
+    entryFunction: 'main',
+    freshlyLoaded: true,
+    routeChanged: true,
+  });
+  expect(calls[0]?.url).toBe('https://aion.example/deploy/packages');
+  expect(calls[0]?.method).toBe('POST');
+  expect(calls[0]?.headers.get('content-type')).toBe('application/octet-stream');
+  // Deploy is deployment-scoped: deploy grant, no namespace header.
+  expect(calls[0]?.headers.get('x-aion-deploy')).toBe('true');
+  expect(calls[0]?.headers.get('x-aion-namespaces')).toBeNull();
+  const sent = new Uint8Array(await (calls[0] as Request).arrayBuffer());
+  expect(Array.from(sent)).toEqual([1, 2, 3, 4]);
+});
+
+test('deployPackage omits x-aion-deploy when the grant is absent', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    credentials: { subject: 'operator' },
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({ workflow_type: 'T', content_hash: 'h' });
+    },
+  });
+
+  await client.deployPackage(new ArrayBuffer(2));
+
+  expect(calls[0]?.headers.get('x-aion-deploy')).toBeNull();
+});
+
+test('listVersions normalizes the deploy versions listing', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    credentials: { subject: 'operator', deployGranted: true },
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({
+        versions: [
+          {
+            workflow_type: 'EmailDigest',
+            content_hash: 'blake3:abc',
+            deployed_entry_module: 'mod',
+            entry_function: 'main',
+            manifest_version: '1.0.0',
+            loaded_at: '2026-06-12T00:00:00Z',
+            route_active: true,
+          },
+        ],
+      });
+    },
+  });
+
+  const versions = await client.listVersions();
+
+  expect(versions).toHaveLength(1);
+  expect(versions[0]?.workflowType).toBe('EmailDigest');
+  expect(versions[0]?.routeActive).toBe(true);
+  expect(calls[0]?.method).toBe('GET');
+  expect(calls[0]?.headers.get('x-aion-deploy')).toBe('true');
+});
+
+test('listVersions surfaces a 404 (deploy disabled) as a typed ApiError', async () => {
+  const client = new ApiClient({
+    credentials: { deployGranted: true },
+    fetchImpl: async () => jsonResponse({ message: 'not found' }, { status: 404 }),
+  });
+
+  try {
+    await client.listVersions();
+    throw new Error('expected listVersions to throw');
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(404);
+  }
+});
+
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
     headers: { 'content-type': 'application/json' },
