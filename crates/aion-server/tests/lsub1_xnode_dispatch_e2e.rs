@@ -264,11 +264,7 @@ struct WorkerThread {
 }
 
 impl WorkerThread {
-    fn spawn(
-        address: String,
-        config: WorkerConfig,
-        registry: Arc<ActivityRegistry>,
-    ) -> Self {
+    fn spawn(address: String, config: WorkerConfig, registry: Arc<ActivityRegistry>) -> Self {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {

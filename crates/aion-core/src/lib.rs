@@ -16,6 +16,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+/// Cluster topology and ownership events for the dashboard real-time channel (WS3).
+pub mod cluster_event;
 /// Describe-workflow response projection (summary + event history).
 pub mod describe;
 /// Error types shared by workflow engines, callers, and activities.
@@ -37,6 +39,10 @@ pub mod search;
 /// Workflow lifecycle status derivation.
 pub mod status;
 
+pub use cluster_event::{
+    ClusterCommand, ClusterEvent, ClusterEventMeta, ClusterPeer, ClusterShard, ClusterSnapshot,
+    ClusterStreamError, ClusterWorker, WorkerDeathReason, WorkerTransport,
+};
 pub use describe::DescribeWorkflowResponse;
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
 pub use event::{DEFAULT_TASK_QUEUE, Event, EventEnvelope, WithTimeoutOutcome};

@@ -423,6 +423,15 @@ impl<'a> SubscriptionScope<'a> {
             Some(subscription_request::Subscription::Firehose(subscription)) => {
                 Ok(Self::Firehose(subscription))
             }
+            // The cluster subscription is deployment-scoped, not namespace-scoped:
+            // it is authorized by the deploy grant in the cluster channel, never
+            // through this namespace `SubscriptionScope`. It is dispatched before
+            // the workflow guard path runs, so reaching here is a routing bug.
+            Some(subscription_request::Subscription::Cluster(_)) => {
+                Err(ServerError::namespace_denied(
+                    "cluster subscription is deployment-scoped and not served by the namespace guard",
+                ))
+            }
             None => Err(ServerError::namespace_denied(
                 "subscription request must name a namespace",
             )),

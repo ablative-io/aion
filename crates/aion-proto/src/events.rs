@@ -9,7 +9,7 @@ use crate::error::WireError;
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct SubscriptionRequest {
     /// Requested subscription model.
-    #[prost(oneof = "subscription_request::Subscription", tags = "1, 2, 3")]
+    #[prost(oneof = "subscription_request::Subscription", tags = "1, 2, 3, 4")]
     pub subscription: Option<subscription_request::Subscription>,
 }
 
@@ -27,6 +27,88 @@ pub mod subscription_request {
         /// All events visible in the caller's namespace.
         #[prost(message, tag = "3")]
         Firehose(super::FirehoseSubscription),
+        /// Cluster topology/ownership deltas (WS3). Deployment-scoped, not
+        /// namespace-scoped: authorized by the caller's deploy grant, not a
+        /// namespace grant. This is a NEW ARM of the existing single
+        /// subscription frame — the socket remains one-subscription-per-socket;
+        /// a client wanting both workflow and cluster streams opens two
+        /// `/events/stream` sockets (the second socket is honest and trivially
+        /// supported, unlike a non-existent multiplexing layer).
+        #[prost(message, tag = "4")]
+        Cluster(super::ClusterSubscription),
+    }
+}
+
+/// Subscribe to the cluster topology/ownership delta stream (WS3).
+///
+/// Carries an `after_seq` resume cursor that suppresses the in-flight broadcast
+/// backlog on reconnect (cluster history is non-durable; a long disconnect
+/// surfaces `cluster_lagged` and the client re-requests a snapshot). Unlike the
+/// workflow subscriptions this carries no namespace — cluster topology is
+/// deployment-scoped.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ClusterSubscription {
+    /// Highest `cluster_seq` the client has already applied; the server drops
+    /// buffered deltas with `cluster_seq <= after_seq` so a reconnect does not
+    /// re-deliver them. `0` (the default) requests the full in-flight backlog.
+    #[prost(uint64, tag = "1")]
+    pub after_seq: u64,
+}
+
+/// Server -> client frame wrapping a single [`aion_core::ClusterEvent`] on the
+/// cluster channel.
+///
+/// Mirrors [`StreamedEvent`] for the cluster path: the inner `aion-core` type is
+/// the only thing that crosses the ts-rs boundary; this outer envelope is
+/// hand-decoded on the TS side (same contract as the workflow path).
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StreamedClusterEvent {
+    /// Frame discriminator pinned to `"cluster_event"` so the dashboard's
+    /// hand-written frame parser can branch a cluster delta apart from a
+    /// `cluster_snapshot` priming reply or an `{"error": ...}` terminal frame.
+    pub kind: String,
+    /// The cluster delta.
+    pub event: aion_core::ClusterEvent,
+}
+
+impl StreamedClusterEvent {
+    /// Frame discriminator value for a live cluster delta.
+    pub const KIND: &'static str = "cluster_event";
+
+    /// Wrap a cluster event in its server->client frame.
+    #[must_use]
+    pub fn new(event: aion_core::ClusterEvent) -> Self {
+        Self {
+            kind: Self::KIND.to_owned(),
+            event,
+        }
+    }
+}
+
+/// Server -> client priming frame carrying the calm-state [`aion_core::ClusterSnapshot`].
+///
+/// Sent once at the head of a cluster subscription before any live delta so the
+/// dashboard can render the "all clear" baseline (ADR-019) and apply only deltas
+/// with `cluster_seq > snapshot.as_of_seq`.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StreamedClusterSnapshot {
+    /// Frame discriminator pinned to `"cluster_snapshot"`.
+    pub kind: String,
+    /// The calm-state baseline.
+    pub snapshot: aion_core::ClusterSnapshot,
+}
+
+impl StreamedClusterSnapshot {
+    /// Frame discriminator value for the priming snapshot.
+    pub const KIND: &'static str = "cluster_snapshot";
+
+    /// Wrap a snapshot in its server->client priming frame.
+    #[must_use]
+    pub fn new(snapshot: aion_core::ClusterSnapshot) -> Self {
+        Self {
+            kind: Self::KIND.to_owned(),
+            snapshot,
+        }
     }
 }
 

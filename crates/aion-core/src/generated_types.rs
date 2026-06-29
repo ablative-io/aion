@@ -6,11 +6,12 @@ use std::path::PathBuf;
 use ts_rs::{Config, TS};
 
 use crate::{
-    ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType,
-    DescribeWorkflowResponse, Event, EventEnvelope, OverlapPolicy, PackageVersion, Payload, RunId,
-    ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, TimerId, TimerIdKind,
-    TriggerSpec, WithTimeoutOutcome, WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus,
-    WorkflowSummary,
+    ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ClusterCommand, ClusterEvent,
+    ClusterEventMeta, ClusterPeer, ClusterShard, ClusterSnapshot, ClusterStreamError,
+    ClusterWorker, ContentType, DescribeWorkflowResponse, Event, EventEnvelope, OverlapPolicy,
+    PackageVersion, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
+    SearchAttributeValue, TimerId, TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason,
+    WorkerTransport, WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
 const DASHBOARD_GENERATED_DIR: &str = "../../apps/aion-dashboard/src/types/generated";
@@ -64,6 +65,21 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<WithTimeoutOutcome>(&config, &mut output)?;
     push_type::<Event>(&config, &mut output)?;
     push_type::<DescribeWorkflowResponse>(&config, &mut output)?;
+
+    // WS3 cluster real-time channel wire types. The aion-proto frame envelopes
+    // (StreamedClusterEvent etc.) are intentionally NOT exported here — like StreamedEvent on the
+    // workflow path, the outer frame wrappers are hand-decoded on the TS side; only these inner
+    // aion-core payload types cross the ts-rs boundary.
+    push_type::<ClusterEventMeta>(&config, &mut output)?;
+    push_type::<WorkerTransport>(&config, &mut output)?;
+    push_type::<WorkerDeathReason>(&config, &mut output)?;
+    push_type::<ClusterEvent>(&config, &mut output)?;
+    push_type::<ClusterPeer>(&config, &mut output)?;
+    push_type::<ClusterShard>(&config, &mut output)?;
+    push_type::<ClusterWorker>(&config, &mut output)?;
+    push_type::<ClusterSnapshot>(&config, &mut output)?;
+    push_type::<ClusterCommand>(&config, &mut output)?;
+    push_type::<ClusterStreamError>(&config, &mut output)?;
 
     Ok(output)
 }

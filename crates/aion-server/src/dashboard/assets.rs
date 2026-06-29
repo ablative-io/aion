@@ -32,7 +32,9 @@ use crate::{
 
 #[derive(Clone)]
 enum DashboardAssets {
-    FileSystem { root: PathBuf },
+    FileSystem {
+        root: PathBuf,
+    },
     /// The compile-time embedded bundle. Only constructible when the
     /// `embed-dashboard` feature is enabled.
     #[cfg(feature = "embed-dashboard")]
@@ -129,10 +131,11 @@ async fn path_asset(State(assets): State<DashboardAssets>, uri: Uri) -> Response
 }
 
 async fn serve_asset(assets: &DashboardAssets, path: &str) -> Response {
-    read_asset(assets, path).await.map_or_else(
-        index_missing_response,
-        |asset| asset_response(assets, path, asset),
-    )
+    read_asset(assets, path)
+        .await
+        .map_or_else(index_missing_response, |asset| {
+            asset_response(assets, path, asset)
+        })
 }
 
 async fn read_asset(assets: &DashboardAssets, path: &str) -> Option<Cow<'static, [u8]>> {

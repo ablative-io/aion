@@ -17,6 +17,7 @@
 mod auth;
 mod authoring;
 mod clean_dtos;
+mod cluster_command;
 mod deploy;
 mod dev_ui;
 mod error;

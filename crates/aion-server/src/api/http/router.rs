@@ -9,6 +9,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
+use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
 use super::dev_ui::{dev_register_mock, dev_replay_run, dev_trigger_run};
 use super::events::subscribe_events_socket;
@@ -179,6 +180,7 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/workflows/list", post(post_list_workflows))
         .route("/workflows/describe", post(describe_workflow))
         .route("/events/stream", get(subscribe_events_socket))
+        .route("/cluster/command", post(cluster_command))
         .route("/schedules", post(create_schedule).get(list_schedules))
         .route(
             "/schedules/{id}",

@@ -702,6 +702,7 @@ mod tests {
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
                 event_broadcast_capacity: Some(64),
+                cluster_broadcast_capacity: Some(64),
             },
             workflow_packages: Vec::new(),
             deploy: DeployConfig::default(),
@@ -839,6 +840,7 @@ mod tests {
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
                 event_broadcast_capacity: Some(64),
+                cluster_broadcast_capacity: Some(64),
             },
             outbox: outbox.clone(),
             ..ServerConfig::default()
@@ -994,6 +996,7 @@ mod lsub_prod_xnode_e2e {
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
                 event_broadcast_capacity: Some(64),
+                cluster_broadcast_capacity: Some(64),
             },
             workflow_packages: vec![package_path],
             outbox: OutboxConfig {

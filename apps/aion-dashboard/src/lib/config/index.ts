@@ -1,7 +1,9 @@
 export type { ConfiguredClientOptions } from './clients';
 export {
+  configuredClusterStream,
   configuredEventSocket,
   createConfiguredApiClient,
+  createConfiguredClusterStream,
   createConfiguredWebSocketManager,
 } from './clients';
 export type {

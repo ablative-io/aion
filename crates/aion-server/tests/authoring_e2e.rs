@@ -151,6 +151,7 @@ fn runtime_config(authoring: AuthoringConfig) -> RuntimeConfig {
         websocket: WebSocketConfig {
             outbound_buffer_bound: 32,
             event_broadcast_capacity: Some(64),
+            cluster_broadcast_capacity: Some(64),
         },
         workflow_packages: Vec::new(),
         deploy: DeployConfig::default(),

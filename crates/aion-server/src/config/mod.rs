@@ -361,10 +361,22 @@ pub struct WebSocketConfig {
     /// there is no default. Lag is filter-blind, so size this for global event
     /// volume across all namespaces, not per-subscription volume.
     pub event_broadcast_capacity: Option<usize>,
+    /// Capacity of the deployment-global cluster topology/ownership broadcast
+    /// channel that backs the WS3 `cluster` subscription on `/events/stream`.
+    /// REQUIRED with the same non-zero startup guard as
+    /// [`Self::event_broadcast_capacity`]: the cluster channel uses the same
+    /// lag -> one-error-frame -> close contract, which has no defined buffer to
+    /// lag against unless a capacity is configured. Cluster events are low-rate
+    /// (peer/shard/worker topology deltas), so this is typically far smaller
+    /// than the workflow event capacity.
+    pub cluster_broadcast_capacity: Option<usize>,
 }
 
 /// Operator-facing message for an absent or zero `event_broadcast_capacity`.
 pub(crate) const EVENT_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.event_broadcast_capacity is required and has no default: the server always mounts /events/stream, so live event streaming capacity must be configured explicitly; set websocket.event_broadcast_capacity (or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY) to a positive integer sized for global event volume across all namespaces";
+
+/// Operator-facing message for an absent or zero `cluster_broadcast_capacity`.
+pub(crate) const CLUSTER_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.cluster_broadcast_capacity is required and has no default: the server always mounts the WS3 cluster subscription on /events/stream, so the cluster topology broadcast capacity must be configured explicitly; set websocket.cluster_broadcast_capacity (or AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY) to a positive integer (cluster events are low-rate, so this is typically small)";
 
 /// Operator deploy API settings from `[deploy]`.
 ///
@@ -780,13 +792,7 @@ impl ServerConfig {
         if self.worker.heartbeat_window.is_zero() {
             return config_error("worker.heartbeat_window must be greater than zero");
         }
-        if self.websocket.outbound_buffer_bound == 0 {
-            return config_error("websocket.outbound_buffer_bound must be greater than zero");
-        }
-        match self.websocket.event_broadcast_capacity {
-            None | Some(0) => return config_error(EVENT_BROADCAST_CAPACITY_REQUIRED),
-            Some(_) => {}
-        }
+        self.websocket.validate()?;
         match self.runtime.query_timeout_ms {
             None | Some(0) => return config_error(QUERY_TIMEOUT_REQUIRED),
             Some(_) => {}
@@ -1046,6 +1052,29 @@ impl Default for WorkerConfig {
     }
 }
 
+impl WebSocketConfig {
+    /// Validate the three unconditionally-mounted WebSocket seams: the
+    /// per-connection buffer bound, the workflow event broadcast capacity, and
+    /// the WS3 cluster broadcast capacity. The two broadcast capacities are
+    /// explicit-no-default with a non-zero guard, since both back a lag ->
+    /// one-error-frame -> close contract that needs a defined buffer to lag
+    /// against.
+    fn validate(&self) -> Result<(), ServerError> {
+        if self.outbound_buffer_bound == 0 {
+            return config_error("websocket.outbound_buffer_bound must be greater than zero");
+        }
+        match self.event_broadcast_capacity {
+            None | Some(0) => return config_error(EVENT_BROADCAST_CAPACITY_REQUIRED),
+            Some(_) => {}
+        }
+        match self.cluster_broadcast_capacity {
+            None | Some(0) => return config_error(CLUSTER_BROADCAST_CAPACITY_REQUIRED),
+            Some(_) => {}
+        }
+        Ok(())
+    }
+}
+
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
@@ -1053,6 +1082,9 @@ impl Default for WebSocketConfig {
             // Deliberately absent: validation fails loudly until the operator
             // sizes the engine-global broadcast channel for the deployment.
             event_broadcast_capacity: None,
+            // Deliberately absent for the same reason: the cluster channel has
+            // no defined lag buffer until sized.
+            cluster_broadcast_capacity: None,
         }
     }
 }
@@ -1169,6 +1201,7 @@ mod tests {
                 [websocket]
                 outbound_buffer_bound = 16
                 event_broadcast_capacity = 1024
+                cluster_broadcast_capacity = 1024
             "#,
         )?;
 
@@ -1221,6 +1254,58 @@ mod tests {
     }
 
     #[test]
+    fn missing_cluster_broadcast_capacity_fails_startup_validation_naming_the_key() {
+        // The server unconditionally mounts the WS3 cluster subscription on
+        // /events/stream; a config that sizes the workflow channel but omits the
+        // cluster channel must still fail loudly (the cluster lag contract has no
+        // buffer to lag against unless sized).
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                scheduler_threads = 1
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("websocket.cluster_broadcast_capacity"),
+            "validation message must name the missing cluster key: {message}"
+        );
+        assert!(
+            message.contains("AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY"),
+            "validation message must name the cluster environment override: {message}"
+        );
+    }
+
+    #[test]
+    fn zero_cluster_broadcast_capacity_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 0
+            ",
+        );
+
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("websocket.cluster_broadcast_capacity"),
+            "validation message must name the zero-valued cluster key: {message}"
+        );
+    }
+
+    #[test]
     fn missing_query_timeout_fails_startup_validation_naming_the_key() {
         // The server unconditionally mounts /workflows/query; a configuration
         // without an explicit query reply deadline must fail loudly at
@@ -1232,6 +1317,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         );
 
@@ -1257,6 +1343,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         );
 
@@ -1282,6 +1369,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [deploy]
                 enabled = true
@@ -1310,6 +1398,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [deploy]
                 enabled = true
@@ -1339,6 +1428,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [deploy]
                 enabled = true
@@ -1368,6 +1458,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [deploy]
                 enabled = true
@@ -1396,6 +1487,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [deploy]
                 enabled = true
@@ -1425,6 +1517,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         )?;
 
@@ -1443,6 +1536,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [deploy]
                 enabled = true
@@ -1469,6 +1563,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         )?;
 
@@ -1492,6 +1587,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             "#,
         )?;
 
@@ -1543,6 +1639,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         )?;
 
@@ -1561,6 +1658,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [dev]
                 enabled = true
@@ -1582,6 +1680,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         )?;
 
@@ -1601,6 +1700,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [authoring]
                 gleam_path = "/usr/local/bin/gleam"
@@ -1636,6 +1736,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [authoring]
                 gleam_path = "/usr/local/bin/gleam"
@@ -1666,6 +1767,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
 
                 [authoring]
                 gleam_path = ""
@@ -1695,6 +1797,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             ",
         )?;
         let cli = CliOverrides {
@@ -1745,6 +1848,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             "#,
         )?;
         let cli = CliOverrides {
@@ -1776,8 +1880,10 @@ mod tests {
         // defaultless values: defaults validate only once the operator
         // supplies them.
         assert_eq!(config.websocket.event_broadcast_capacity, None);
+        assert_eq!(config.websocket.cluster_broadcast_capacity, None);
         assert_eq!(config.runtime.query_timeout_ms, None);
         config.websocket.event_broadcast_capacity = Some(64);
+        config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
         config.validate()?;
         Ok(())
@@ -1788,6 +1894,7 @@ mod tests {
     {
         let mut config = ServerConfig::default();
         config.websocket.event_broadcast_capacity = Some(64);
+        config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
 
         // The dispatcher is dark by default and its operational knobs are all
@@ -1809,6 +1916,7 @@ mod tests {
     fn outbox_enabled_base() -> ServerConfig {
         let mut config = ServerConfig::default();
         config.websocket.event_broadcast_capacity = Some(64);
+        config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
         config.outbox.enabled = true;
         config.outbox.poll_interval_ms = Some(250);
@@ -1986,6 +2094,7 @@ mod tests {
         // AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY /
         // AION_RUNTIME_QUERY_TIMEOUT_MS environment overrides).
         config.websocket.event_broadcast_capacity = Some(64);
+        config.websocket.cluster_broadcast_capacity = Some(64);
         config.runtime.query_timeout_ms = Some(10_000);
         config.load_discovered_workflow_packages(&cli, temp_dir.path())?;
 
@@ -2011,6 +2120,7 @@ mod tests {
 
                 [websocket]
                 event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
             "#,
         )?;
         let cli = CliOverrides {

@@ -286,7 +286,9 @@ impl HeartbeatTracker {
         // unbounded completion wait always gets a lost-worker failure. (The
         // reverse order leaves a window where a task tracked between the
         // collection and the deregistration is never failed by anyone.)
-        registry.deregister(worker_id)?;
+        // This is the liveness-timeout sweep: the proven reason is Timeout, the
+        // one finer-grained WS3 distinction this call site can honestly assert.
+        registry.deregister_with_reason(worker_id, aion_core::WorkerDeathReason::Timeout)?;
         let tasks = self.remove_worker_tasks(worker_id)?;
         for task in &tasks {
             sink.complete_activity(ActivityCompletion {

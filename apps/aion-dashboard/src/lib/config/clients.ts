@@ -1,5 +1,6 @@
 import type { ApiClientOptions } from '@/lib/api';
 import { ApiClient } from '@/lib/api';
+import { AionClusterStreamManager } from '@/lib/api/cluster-stream';
 import { AionEventWebSocketManager, type SocketCredentials } from '@/lib/api/websocket';
 import type { Namespace } from '@/types';
 
@@ -63,3 +64,27 @@ export function createConfiguredWebSocketManager(
 
 /** The app-wide singleton WS manager, bound to the configured WS base URL. */
 export const configuredEventSocket = createConfiguredWebSocketManager();
+
+/**
+ * Build the WS3 cluster-stream manager bound to the configured WS base URL.
+ *
+ * This opens a DEDICATED `/events/stream` socket carrying the cluster
+ * subscription arm (the server keeps the socket one-subscription-per-socket, so
+ * the cluster channel is its own socket, not a multiplexed second subscription
+ * on the workflow socket). Cluster topology is deployment-scoped and deploy-gated
+ * server-side; the full configured credential set authorizes the handshake.
+ */
+export function createConfiguredClusterStream(
+  config: DashboardConfig = getDashboardConfig()
+): AionClusterStreamManager {
+  const credentials: SocketCredentials = {
+    namespaces: config.namespaces,
+    ...(config.subject === undefined ? {} : { subject: config.subject }),
+    ...(config.bearerToken === undefined ? {} : { bearerToken: config.bearerToken }),
+  };
+
+  return new AionClusterStreamManager({ baseUrl: config.wsBaseUrl, credentials });
+}
+
+/** The app-wide singleton cluster-stream manager. */
+export const configuredClusterStream = createConfiguredClusterStream();

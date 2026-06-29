@@ -177,6 +177,7 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
         websocket: WebSocketConfig {
             outbound_buffer_bound: 32,
             event_broadcast_capacity: Some(64),
+            cluster_broadcast_capacity: Some(64),
         },
         workflow_packages: vec![package_path],
         deploy: DeployConfig::default(),

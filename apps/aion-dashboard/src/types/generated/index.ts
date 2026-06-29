@@ -559,3 +559,303 @@ summary: WorkflowSummary | null,
  */
 history: Array<Event>, };
 
+export type ClusterEventMeta = { 
+/**
+ * Monotonic sequence number assigned by the cluster publisher (a single deployment-global
+ * `AtomicU64`). The client uses this for gap detection and `after_seq` reconnect dedup, the
+ * cluster analog of [`crate::EventEnvelope::seq`].
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted `2^53` ceiling.
+ */
+cluster_seq: number, 
+/**
+ * UTC wall-clock instant at which the originating subsystem observed the state change.
+ */
+observed_at: string, };
+
+export type WorkerTransport = { "transport": "Grpc" } | { "transport": "Liminal" };
+
+export type WorkerDeathReason = { "reason": "Disconnect" } | { "reason": "Timeout" } | { "reason": "Deregistered" };
+
+export type ClusterEvent = { "type": "PeerAdded", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * The newly-watched peer's node name.
+ */
+peer_name: string, 
+/**
+ * The peer's forwarding address, when known.
+ */
+forward_addr: string | null, } | { "type": "PeerConnected", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * The recovered peer's node name.
+ */
+peer_name: string, 
+/**
+ * The peer's forwarding address, when known.
+ */
+forward_addr: string | null, } | { "type": "PeerDisconnected", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * The down peer's node name.
+ */
+peer_name: string, 
+/**
+ * Consecutive ticks this peer has been observed down.
+ */
+consecutive_down: number, 
+/**
+ * Whether the debounce threshold has been crossed (adoption-eligible).
+ */
+confirmed: boolean, } | { "type": "ShardAdopted", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * Shard indices adopted in this transition.
+ */
+shards: Array<number>, 
+/**
+ * The peer the shards were adopted from.
+ */
+from_peer: string, 
+/**
+ * This node's name (the new owner).
+ */
+adopted_by: string, } | { "type": "ShardAdoptionFailed", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * Shard indices the failed attempt targeted.
+ */
+shards: Array<number>, 
+/**
+ * The peer the shards would have been adopted from.
+ */
+from_peer: string, 
+/**
+ * Human-readable adoption error.
+ */
+error: string, } | { "type": "ShardAdoptionSkipped", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * Shard indices that were skipped.
+ */
+shards: Array<number>, 
+/**
+ * The peer the shards would have been adopted from.
+ */
+from_peer: string, 
+/**
+ * The live node currently holding the shards.
+ */
+held_by: string, } | { "type": "WorkerConnected", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * Stable worker identifier.
+ */
+worker_id: string, 
+/**
+ * Namespaces this worker serves.
+ */
+namespaces: Array<string>, 
+/**
+ * Task-queue pool this worker serves within its namespaces.
+ */
+task_queue: string, 
+/**
+ * Delivery transport for this worker.
+ */
+transport: WorkerTransport, 
+/**
+ * Locality/node label, when the worker reported one.
+ */
+node: string | null, } | { "type": "WorkerDisconnected", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * Stable worker identifier.
+ */
+worker_id: string, 
+/**
+ * Namespaces this worker served.
+ */
+namespaces: Array<string>, 
+/**
+ * Why the worker left (see [`WorkerDeathReason`] wiring note).
+ */
+reason: WorkerDeathReason, } | { "type": "SupervisorStarted", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * This node's name.
+ */
+node: string, } | { "type": "SupervisorStopped", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * This node's name.
+ */
+node: string, };
+
+export type ClusterPeer = { 
+/**
+ * The peer's node name.
+ */
+peer_name: string, 
+/**
+ * The peer's forwarding address, when known.
+ */
+forward_addr: string | null, 
+/**
+ * Whether the peer is currently observed connected.
+ */
+connected: boolean, 
+/**
+ * Consecutive ticks observed down (0 when connected).
+ */
+consecutive_down: number, };
+
+export type ClusterShard = { 
+/**
+ * Shard index.
+ */
+shard: number, 
+/**
+ * The node that currently owns the shard.
+ */
+owner: string, 
+/**
+ * The epoch fence value at which the owner holds the shard.
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted `2^53` ceiling.
+ */
+epoch: number, };
+
+export type ClusterWorker = { 
+/**
+ * Stable worker identifier.
+ */
+worker_id: string, 
+/**
+ * Namespaces this worker serves (already intersected with the caller's grants by the gate).
+ */
+namespaces: Array<string>, 
+/**
+ * Task-queue pool this worker serves.
+ */
+task_queue: string, 
+/**
+ * Delivery transport for this worker.
+ */
+transport: WorkerTransport, 
+/**
+ * Locality/node label, when reported.
+ */
+node: string | null, };
+
+export type ClusterSnapshot = { 
+/**
+ * The reading node's own name (self-identity; baselines the `Peer*` deltas which describe
+ * *other* nodes).
+ */
+node: string, 
+/**
+ * The `cluster_seq` this snapshot is consistent as-of; the client applies only deltas with a
+ * strictly greater `cluster_seq`.
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted `2^53` ceiling.
+ */
+as_of_seq: number, 
+/**
+ * Watched peers and their current liveness.
+ */
+peers: Array<ClusterPeer>, 
+/**
+ * Shards owned by (or visible to) the reading node.
+ */
+shards: Array<ClusterShard>, 
+/**
+ * Connected workers, already gated to the caller's namespaces.
+ */
+workers: Array<ClusterWorker>, };
+
+export type ClusterCommand = { "command": "RequestClusterSnapshot", } | { "command": "CancelWorkflow", 
+/**
+ * Owning namespace.
+ */
+namespace: string, 
+/**
+ * Target workflow.
+ */
+workflow_id: string, } | { "command": "ReopenWorkflow", 
+/**
+ * Owning namespace.
+ */
+namespace: string, 
+/**
+ * Target workflow.
+ */
+workflow_id: string, } | { "command": "RedriveOutboxRow", 
+/**
+ * Owning namespace.
+ */
+namespace: string, 
+/**
+ * Target workflow.
+ */
+workflow_id: string, 
+/**
+ * Outbox row ordinal.
+ */
+ordinal: number, } | { "command": "DrainNode", 
+/**
+ * Target node name.
+ */
+node: string, } | { "command": "PlannedHandoff", 
+/**
+ * Shard to move.
+ */
+shard: number, 
+/**
+ * Destination node.
+ */
+target_node: string, } | { "command": "ChaosKillNode", 
+/**
+ * Target node name.
+ */
+node: string, };
+
+export type ClusterStreamError = { "kind": "ClusterLagged", 
+/**
+ * Number of cluster events dropped because the subscriber fell behind.
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted `2^53` ceiling.
+ */
+skipped: number, };
+

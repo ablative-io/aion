@@ -283,7 +283,10 @@ mod tests {
         }
         // Exactly one extend, carrying exactly the survivors.
         assert_eq!(
-            calls.iter().filter(|c| matches!(c, Call::Extend(_))).count(),
+            calls
+                .iter()
+                .filter(|c| matches!(c, Call::Extend(_)))
+                .count(),
             1,
             "extend runs exactly once"
         );

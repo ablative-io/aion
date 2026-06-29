@@ -363,8 +363,12 @@ impl Engine {
         // The returned survivor set is already reflected in the store's widened
         // owned-shard scope (the planner's single `extend`), which is what recovery
         // enumerates over; the value is bound only to make that contract explicit.
-        let _recoverable =
-            super::fence::plan_adopted_shards(&super::fence::StoreFenceSeam { store: &*self.store }, shards)?;
+        let _recoverable = super::fence::plan_adopted_shards(
+            &super::fence::StoreFenceSeam {
+                store: &*self.store,
+            },
+            shards,
+        )?;
         // 4. Re-resident the adopted workflows through the production recovery
         //    seam (idempotent: this node's own workflows are skipped). Recovery
         //    enumerates over the owned scope, which now contains only shards that

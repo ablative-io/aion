@@ -1,121 +1,56 @@
-import { useQueries } from '@tanstack/react-query';
+import { useMemo } from 'react';
 
 import type { ClusterNode } from '../lib/clusterConfig';
+import type { ClusterTopology } from './useClusterStream';
 
 /**
- * Per-node `/metrics` poll. Scrapes the Prometheus `aion_connected_workers` gauge.
+ * Per-node connected-worker counts derived from the LIVE cluster stream — NOT a
+ * `/metrics` scrape. (WS3 deleted the 2 s Prometheus poll: it was
+ * polling-dressed-as-realtime.) The count is reduced from the
+ * `WorkerConnected`/`WorkerDisconnected` deltas in {@link useClusterStream}
+ * (`topology.workersByNode`), keyed by the worker's reported `node` label.
  *
- * Degradation contract (DEMO-VIEW-PLAN §1.1): a node whose metrics are missing or
- * unparseable has its worker row HIDDEN (`workers: null`), never zeroed — a hidden
- * row is honest about "we don't know", a `0` would lie that no workers are connected.
- * The error is surfaced on the row (`error`), never swallowed to a console warning.
+ * Degradation contract (§1.1): before the priming snapshot is applied a node's
+ * worker count is HIDDEN (`workers: null`), never zeroed — a hidden row is honest
+ * about "not yet observed", a `0` would lie that no workers are connected. Once
+ * primed, a node with no workers truthfully shows `0`.
  */
-
-const METRICS_PATH = '/metrics';
-const WORKER_GAUGE = 'aion_connected_workers';
-const POLL_INTERVAL_MS = 2000;
-const REQUEST_TIMEOUT_MS = 1500;
 
 export type NodeMetrics = {
   nodeIndex: number;
-  /** Connected-worker count, or null when the gauge is missing/unparseable. */
+  /** Connected-worker count, or null when not yet observed (pre-prime). */
   workers: number | null;
-  /** Human-readable error when the scrape failed; null on success. */
+  /** Human-readable note when the count is unavailable; null otherwise. */
   error: string | null;
 };
 
-type FetchFn = typeof fetch;
-
 export type UseNodeMetricsOptions = {
   nodes: readonly ClusterNode[];
-  fetchImpl?: FetchFn;
-  /** Set false to pause polling (e.g. when the tab is hidden). */
-  enabled?: boolean;
+  /** Live topology from {@link useClusterStream}. */
+  topology: ClusterTopology;
+  /** True once a priming snapshot has been applied. */
+  primed: boolean;
 };
 
-/** Parse a Prometheus text-exposition body for the `aion_connected_workers` gauge. */
-export function parseConnectedWorkers(body: string): number | null {
-  for (const rawLine of body.split('\n')) {
-    const line = rawLine.trim();
-
-    if (line.length === 0 || line.startsWith('#') || !line.startsWith(WORKER_GAUGE)) {
-      continue;
-    }
-
-    // Forms: `aion_connected_workers 3` or `aion_connected_workers{label="x"} 3`.
-    const value = line.slice(line.lastIndexOf(' ') + 1);
-    const parsed = Number.parseFloat(value);
-
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-async function fetchNodeMetrics(node: ClusterNode, fetchImpl: FetchFn): Promise<NodeMetrics> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  try {
-    const response = await fetchImpl(`${node.baseUrl}${METRICS_PATH}`, {
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      return { nodeIndex: node.index, workers: null, error: `metrics HTTP ${response.status}` };
-    }
-
-    const workers = parseConnectedWorkers(await response.text());
-
-    if (workers === null) {
-      return { nodeIndex: node.index, workers: null, error: `${WORKER_GAUGE} gauge not present` };
-    }
-
-    return { nodeIndex: node.index, workers, error: null };
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : 'metrics request failed';
-    return { nodeIndex: node.index, workers: null, error: reason };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export function nodeMetricsQueryKey(nodeIndex: number, baseUrl: string) {
-  return ['failover', 'node-metrics', nodeIndex, baseUrl] as const;
-}
-
 /**
- * Poll every node's `/metrics` independently. Returns one `NodeMetrics` per node,
- * indexed parallel to `nodes`. A failing node never throws — it resolves to a row
- * with `workers: null` and a populated `error` so the UI can hide the row visibly.
+ * Project per-node worker counts from the reduced cluster topology. Workers
+ * report a `node` label; counts are tallied per label. A node with no observed
+ * workers reads `0` once primed (the stream has authoritatively said so).
  */
-export function useNodeMetrics({
-  nodes,
-  fetchImpl = fetch,
-  enabled = true,
-}: UseNodeMetricsOptions): NodeMetrics[] {
-  const results = useQueries({
-    queries: nodes.map((node) => ({
-      queryKey: nodeMetricsQueryKey(node.index, node.baseUrl),
-      queryFn: () => fetchNodeMetrics(node, fetchImpl),
-      refetchInterval: POLL_INTERVAL_MS,
-      enabled,
-      // fetchNodeMetrics never rejects, so no retry storm; one shot per interval.
-      retry: false,
-    })),
-  });
+export function useNodeMetrics({ nodes, topology, primed }: UseNodeMetricsOptions): NodeMetrics[] {
+  return useMemo<NodeMetrics[]>(
+    () =>
+      nodes.map((node) => {
+        if (!primed) {
+          return { nodeIndex: node.index, workers: null, error: 'awaiting cluster snapshot' };
+        }
 
-  return results.map((result, index) => {
-    const node = nodes[index];
-
-    return (
-      result.data ?? {
-        nodeIndex: node?.index ?? index,
-        workers: null,
-        error: result.error instanceof Error ? result.error.message : null,
-      }
-    );
-  });
+        return {
+          nodeIndex: node.index,
+          workers: topology.workersByNode.get(node.label) ?? 0,
+          error: null,
+        };
+      }),
+    [nodes, topology, primed]
+  );
 }

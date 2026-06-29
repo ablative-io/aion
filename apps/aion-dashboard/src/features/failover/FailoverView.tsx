@@ -6,12 +6,14 @@ import { eventSequence } from '@/features/workflow-detail/lib/timeline';
 import type { Event, Namespace } from '@/types';
 
 import { AdoptionStrip } from './components/AdoptionStrip';
+import { ClusterProvenance } from './components/ClusterProvenance';
 import { EventLog, type SyntheticRow } from './components/EventLog';
 import { ExactlyOnceCounter } from './components/ExactlyOnceCounter';
 import { FanOutBar } from './components/FanOutBar';
 import { HeaderBar } from './components/HeaderBar';
 import { NodeGrid } from './components/NodeGrid';
 import { useAdoptionMoment } from './hooks/useAdoptionMoment';
+import { useClusterStream } from './hooks/useClusterStream';
 import { useDiscoveredWorkflowId } from './hooks/useDiscoveredWorkflowId';
 import { useFanOutProgress } from './hooks/useFanOutProgress';
 import { useNodeLiveness } from './hooks/useNodeLiveness';
@@ -69,11 +71,21 @@ function FailoverViewInner({
     [config, namespace]
   );
 
+  // WS3: liveness + worker counts now flow from the LIVE cluster stream (a
+  // dedicated `/events/stream` cluster socket), not `/health/live` + `/metrics`
+  // polling. The stream is the single push source for topology.
+  const clusterStream = useClusterStream();
   const { liveness, activeTarget, activeBaseUrl, failedOver } = useNodeLiveness({
     nodes: cluster.nodes,
     preferredTargetIndex: cluster.ownerIndex,
+    topology: clusterStream.topology,
+    primed: clusterStream.primed,
   });
-  const metrics = useNodeMetrics({ nodes: cluster.nodes });
+  const metrics = useNodeMetrics({
+    nodes: cluster.nodes,
+    topology: clusterStream.topology,
+    primed: clusterStream.primed,
+  });
 
   // When no `?workflow=` is seeded, discover the most recent workflow so the
   // exactly-once counter back-fills from describe even without live WS events.
@@ -147,6 +159,17 @@ function FailoverViewInner({
         metrics={metrics}
         nodes={cluster.nodes}
         preKill={preKill}
+      />
+
+      <ClusterProvenance
+        error={clusterStream.error}
+        failedOver={failedOver}
+        lastObservedAt={clusterStream.lastObservedAt}
+        lastSeq={clusterStream.lastSeq}
+        primed={clusterStream.primed}
+        readingNodeLabel={activeTarget?.label ?? null}
+        selfNode={clusterStream.topology.selfNode}
+        status={clusterStream.status}
       />
 
       <AdoptionStrip moment={moment} newOwnerLabel={newOwnerLabel} oldOwnerLabel={oldOwnerLabel} />
@@ -226,7 +249,7 @@ function useSyntheticRows({
           kind: 'health',
           glyph: '⚠',
           label: `${ownerLabel} went dark`,
-          detail: '(health poll)',
+          detail: '(cluster: peer down)',
         },
       ]);
     }

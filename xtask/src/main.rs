@@ -46,33 +46,28 @@ fn build_dashboard() -> Result<()> {
     let embed_dir = root.join("crates/aion-server/dashboard-embed");
 
     if !dashboard_dir.is_dir() {
-        bail!(
-            "dashboard app not found at `{}`",
-            dashboard_dir.display()
-        );
+        bail!("dashboard app not found at `{}`", dashboard_dir.display());
     }
 
     // (a) Regenerate the ts-rs wire types from Rust-owned types. This is the
     // existing exporter test; it writes apps/aion-dashboard/src/types/generated/.
     step("regenerating ts-rs wire types");
-    run(
-        Command::new("cargo")
-            .args(["test", "-p", "aion-core", "export_dashboard_wire_types"])
-            .current_dir(&root),
-    )
+    run(Command::new("cargo")
+        .args(["test", "-p", "aion-core", "export_dashboard_wire_types"])
+        .current_dir(&root))
     .context("ts-rs wire type export failed")?;
 
     // (b) Build the dashboard bundle with bun.
     step("bun install");
-    run(Command::new("bun").arg("install").current_dir(&dashboard_dir))
-        .context("`bun install` failed (is bun installed?)")?;
+    run(Command::new("bun")
+        .arg("install")
+        .current_dir(&dashboard_dir))
+    .context("`bun install` failed (is bun installed?)")?;
 
     step("bun run build");
-    run(
-        Command::new("bun")
-            .args(["run", "build"])
-            .current_dir(&dashboard_dir),
-    )
+    run(Command::new("bun")
+        .args(["run", "build"])
+        .current_dir(&dashboard_dir))
     .context("`bun run build` failed")?;
 
     if !dist_dir.is_dir() {
@@ -134,9 +129,7 @@ fn sync_embed(dist_dir: &Path, embed_dir: &Path) -> Result<()> {
 /// Recursively copy every entry under `src` into `dst`.
 fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst).with_context(|| format!("creating `{}`", dst.display()))?;
-    for entry in
-        std::fs::read_dir(src).with_context(|| format!("reading `{}`", src.display()))?
-    {
+    for entry in std::fs::read_dir(src).with_context(|| format!("reading `{}`", src.display()))? {
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());

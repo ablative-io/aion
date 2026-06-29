@@ -1,5 +1,7 @@
 export type { AdoptionStripProps } from './components/AdoptionStrip';
 export { AdoptionStrip } from './components/AdoptionStrip';
+export type { ClusterProvenanceProps } from './components/ClusterProvenance';
+export { ClusterProvenance } from './components/ClusterProvenance';
 export type { EventLogProps, SyntheticRow } from './components/EventLog';
 export { EventLog } from './components/EventLog';
 export type { ExactlyOnceCounterProps } from './components/ExactlyOnceCounter';
@@ -19,6 +21,13 @@ export { FailoverView } from './FailoverView';
 export type { AdoptionMoment, UseAdoptionMomentOptions } from './hooks/useAdoptionMoment';
 export { useAdoptionMoment } from './hooks/useAdoptionMoment';
 export type {
+  ClusterPeerState,
+  ClusterStreamResult,
+  ClusterTopology,
+  UseClusterStreamOptions,
+} from './hooks/useClusterStream';
+export { useClusterStream } from './hooks/useClusterStream';
+export type {
   FanOutConnection,
   FanOutProgress,
   UseFanOutProgressOptions,
@@ -32,7 +41,7 @@ export type {
 } from './hooks/useNodeLiveness';
 export { useNodeLiveness } from './hooks/useNodeLiveness';
 export type { NodeMetrics, UseNodeMetricsOptions } from './hooks/useNodeMetrics';
-export { parseConnectedWorkers, useNodeMetrics } from './hooks/useNodeMetrics';
+export { useNodeMetrics } from './hooks/useNodeMetrics';
 export type {
   ClusterConfig,
   ClusterConfigInput,

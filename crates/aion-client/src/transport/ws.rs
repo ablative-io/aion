@@ -198,6 +198,13 @@ fn subscription_frame(
             reject_live_only_cursor("firehose", resume_from_sequence)?;
             ("firehose", encode_subscription(&firehose)?)
         }
+        Some(subscription_request::Subscription::Cluster(cluster)) => {
+            // The WS3 cluster channel carries its own `after_seq` cursor in the
+            // subscription body; it does not use the per-workflow resume-cursor
+            // argument, which is per-workflow-seq-only.
+            reject_live_only_cursor("cluster", resume_from_sequence)?;
+            ("cluster", encode_subscription(&cluster)?)
+        }
         None => {
             return Err(ClientError::invalid_argument(
                 "subscription request is missing its subscription variant",

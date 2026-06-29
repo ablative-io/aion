@@ -73,10 +73,6 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
             "AION_WEBSOCKET_OUTBOUND_BUFFER_BOUND" => {
                 config.websocket.outbound_buffer_bound = parse_positive_usize(&name, &value)?;
             }
-            "AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY" => {
-                config.websocket.event_broadcast_capacity =
-                    Some(parse_positive_usize(&name, &value)?);
-            }
             "AION_DEPLOY_ENABLED" => {
                 config.deploy.enabled = parse_bool(&name, &value)?;
             }
@@ -107,8 +103,30 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
                 }
                 config.namespaces.default = value;
             }
-            other => overlay_outbox(config, other, &value)?,
+            other => overlay_websocket(config, other, &value)?,
         }
+    }
+    Ok(())
+}
+
+/// Apply the WS3/streaming broadcast-capacity `AION_WEBSOCKET_*` overrides.
+///
+/// Split out of [`overlay`] so the broadcast-capacity knobs live together and
+/// `overlay` stays within the per-function line budget. Unknown names fall
+/// through to [`overlay_outbox`] and ultimately the silent-ignore default.
+fn overlay_websocket(
+    config: &mut ServerConfig,
+    name: &str,
+    value: &str,
+) -> Result<(), ServerError> {
+    match name {
+        "AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY" => {
+            config.websocket.event_broadcast_capacity = Some(parse_positive_usize(name, value)?);
+        }
+        "AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY" => {
+            config.websocket.cluster_broadcast_capacity = Some(parse_positive_usize(name, value)?);
+        }
+        other => overlay_outbox(config, other, value)?,
     }
     Ok(())
 }

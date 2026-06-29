@@ -52,8 +52,9 @@ pub use deploy::{
 };
 pub use error::{ProtoWireError, ProtoWireErrorCode, WireError, WireErrorCode};
 pub use events::{
-    FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, StreamedEvent,
-    SubscriptionRequest, encode_streamed_event, subscription_request,
+    ClusterSubscription, FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription,
+    StreamedClusterEvent, StreamedClusterSnapshot, StreamedEvent, SubscriptionRequest,
+    encode_streamed_event, subscription_request,
 };
 pub use schedule::{
     ProtoCreateScheduleRequest, ProtoCreateScheduleResponse, ProtoDeleteScheduleResponse,

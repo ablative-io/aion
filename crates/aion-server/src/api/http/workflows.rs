@@ -495,13 +495,11 @@ mod tests {
             "summary exposes started_at, matching the generated TS type"
         );
         assert_eq!(
-            body["history"][0]["type"],
-            "WorkflowStarted",
+            body["history"][0]["type"], "WorkflowStarted",
             "history entries are plain Event JSON the dashboard decodes directly"
         );
         assert_eq!(
-            body["history"][0]["data"]["workflow_type"],
-            "fixture",
+            body["history"][0]["data"]["workflow_type"], "fixture",
             "the decoded WorkflowStarted event carries its workflow_type"
         );
         Ok(())

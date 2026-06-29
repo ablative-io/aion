@@ -3,9 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use aion_core::{ClusterEvent, WorkerDeathReason, WorkerTransport};
 use aion_proto::{ProtoActivityTask, ProtoRegisterWorker};
 use tokio::sync::{Notify, mpsc};
 
+use crate::cluster_publisher::ClusterEventPublisher;
 use crate::error::ServerError;
 use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
 use crate::observability::Metrics;
@@ -238,6 +240,10 @@ impl Default for RegistryState {
 pub struct ConnectedWorkerRegistry {
     inner: Arc<Mutex<RegistryState>>,
     metrics: Option<Metrics>,
+    /// WS3 cluster-event publisher: emits `WorkerConnected`/`WorkerDisconnected`
+    /// topology deltas on register/deregister. `None` keeps existing
+    /// constructions (and every test) silent, exactly like `metrics`.
+    cluster_publisher: Option<ClusterEventPublisher>,
     worker_arrived: Arc<Notify>,
 }
 
@@ -246,6 +252,7 @@ impl Default for ConnectedWorkerRegistry {
         Self {
             inner: Arc::new(Mutex::new(RegistryState::default())),
             metrics: None,
+            cluster_publisher: None,
             worker_arrived: Arc::new(Notify::new()),
         }
     }
@@ -258,8 +265,17 @@ impl ConnectedWorkerRegistry {
         Self {
             inner: Arc::new(Mutex::new(RegistryState::default())),
             metrics: Some(metrics),
+            cluster_publisher: None,
             worker_arrived: Arc::new(Notify::new()),
         }
+    }
+
+    /// Attach the WS3 cluster-event publisher so worker topology changes are
+    /// pushed to the dashboard. Pure builder addition.
+    #[must_use]
+    pub fn with_cluster_publisher(mut self, publisher: ClusterEventPublisher) -> Self {
+        self.cluster_publisher = Some(publisher);
+        self
     }
 
     /// Authorize a worker registration and insert it into the connected-worker registry.
@@ -392,6 +408,9 @@ impl ConnectedWorkerRegistry {
         let worker_id = WorkerId(state.next_worker_id);
         state.next_worker_id = state.next_worker_id.saturating_add(1);
 
+        // Capture the node affinity for the WS3 WorkerConnected delta before the
+        // handle moves it.
+        let node_for_event = node.clone();
         let handle = WorkerHandle {
             id: worker_id,
             namespaces: namespaces.clone(),
@@ -411,6 +430,7 @@ impl ConnectedWorkerRegistry {
                     .insert(worker_id, handle.clone());
             }
         }
+        let transport = transport_of(&handle.delivery);
         state.workers.insert(worker_id, handle);
         drop(state);
 
@@ -418,6 +438,22 @@ impl ConnectedWorkerRegistry {
             for namespace in &namespaces {
                 metrics.worker_connected(namespace);
             }
+        }
+
+        // WS3: one WorkerConnected delta carrying the full namespace set (the
+        // event is namespace-list-valued; the deploy-scoped cluster channel sees
+        // it whole). Edge-triggered by the real insert, never a poll.
+        if let Some(publisher) = &self.cluster_publisher {
+            let namespaces_vec: Vec<String> = namespaces.iter().cloned().collect();
+            let task_queue_owned = task_queue.clone();
+            drop(publisher.emit(|meta| ClusterEvent::WorkerConnected {
+                meta,
+                worker_id: worker_id.value().to_string(),
+                namespaces: namespaces_vec,
+                task_queue: task_queue_owned,
+                transport,
+                node: node_for_event,
+            }));
         }
 
         self.worker_arrived.notify_waiters();
@@ -573,21 +609,66 @@ impl ConnectedWorkerRegistry {
 
     /// Remove a worker by id from every namespace/activity index it advertised.
     ///
+    /// Emits a WS3 [`WorkerDeathReason::Disconnect`] delta — the truthful default
+    /// for a removed worker whose stream/registration went away. Callers that can
+    /// PROVE a finer reason (a liveness-timeout sweep) call
+    /// [`Self::deregister_with_reason`] instead, so the dashboard never sees a
+    /// fabricated distinction.
+    ///
     /// # Errors
     ///
     /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
     pub fn deregister(&self, worker_id: WorkerId) -> Result<(), ServerError> {
+        self.deregister_with_reason(worker_id, WorkerDeathReason::Disconnect)
+    }
+
+    /// Remove a worker by id, attributing the departure to an explicit
+    /// [`WorkerDeathReason`] the caller can prove at its call site (for example a
+    /// heartbeat sweep passes [`WorkerDeathReason::Timeout`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn deregister_with_reason(
+        &self,
+        worker_id: WorkerId,
+        reason: WorkerDeathReason,
+    ) -> Result<(), ServerError> {
         let mut state = self.state()?;
         let removed_namespaces = Self::remove_worker(&mut state, worker_id);
         drop(state);
 
-        if let (Some(namespaces), Some(metrics)) = (removed_namespaces, &self.metrics) {
+        let Some(namespaces) = removed_namespaces else {
+            // Already gone: no metrics double-count, no duplicate delta.
+            return Ok(());
+        };
+
+        if let Some(metrics) = &self.metrics {
             for namespace in &namespaces {
                 metrics.worker_disconnected(namespace);
             }
         }
+        self.emit_worker_disconnected(worker_id, &namespaces, reason);
 
         Ok(())
+    }
+
+    /// Emit a WS3 `WorkerDisconnected` delta if a publisher is attached.
+    fn emit_worker_disconnected(
+        &self,
+        worker_id: WorkerId,
+        namespaces: &BTreeSet<String>,
+        reason: WorkerDeathReason,
+    ) {
+        if let Some(publisher) = &self.cluster_publisher {
+            let namespaces_vec: Vec<String> = namespaces.iter().cloned().collect();
+            drop(publisher.emit(|meta| ClusterEvent::WorkerDisconnected {
+                meta,
+                worker_id: worker_id.value().to_string(),
+                namespaces: namespaces_vec,
+                reason,
+            }));
+        }
     }
 
     /// Remove a worker from every `(namespace, task_queue, activity_type)` index
@@ -623,6 +704,16 @@ impl ConnectedWorkerRegistry {
         self.inner
             .lock()
             .map_err(|_| ServerError::lock_poisoned("connected worker registry"))
+    }
+}
+
+/// Map a held [`WorkerDelivery`] to the wire [`WorkerTransport`] discriminant for
+/// the WS3 `WorkerConnected` delta.
+const fn transport_of(delivery: &WorkerDelivery) -> WorkerTransport {
+    match delivery {
+        WorkerDelivery::Grpc(_) => WorkerTransport::Grpc,
+        #[cfg(feature = "liminal-transport")]
+        WorkerDelivery::Liminal(_) => WorkerTransport::Liminal,
     }
 }
 
@@ -709,15 +800,23 @@ impl Drop for WorkerRegistration {
         let Some(parts) = self.parts.take() else {
             return;
         };
-        if let Ok(mut state) = self.registry.inner.lock() {
-            let removed_namespaces =
-                ConnectedWorkerRegistry::remove_worker(&mut state, parts.worker_id);
-            if let (Some(namespaces), Some(metrics)) = (removed_namespaces, &self.registry.metrics)
-            {
+        let removed_namespaces = self.registry.inner.lock().ok().and_then(|mut state| {
+            ConnectedWorkerRegistry::remove_worker(&mut state, parts.worker_id)
+        });
+        if let Some(namespaces) = removed_namespaces {
+            if let Some(metrics) = &self.registry.metrics {
                 for namespace in &namespaces {
                     metrics.worker_disconnected(namespace);
                 }
             }
+            // A dropped registration token means the worker's stream/connection
+            // went away — the truthful reason is Disconnect, not a fabricated
+            // timeout/deregister distinction this path cannot prove.
+            self.registry.emit_worker_disconnected(
+                parts.worker_id,
+                &namespaces,
+                WorkerDeathReason::Disconnect,
+            );
         }
     }
 }

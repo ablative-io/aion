@@ -148,6 +148,15 @@ pub fn map_subscription_request(
                 resume_from: None,
             })
         }
+        // The cluster subscription is dispatched to `cluster_stream` before the
+        // workflow path is reached (see `events::serve_subscription_socket`), so
+        // it never flows through this workflow mapper. Reaching here is a routing
+        // bug, surfaced loudly rather than silently mishandled.
+        Some(subscription_request::Subscription::Cluster(_)) => Err(ServerError::Wire {
+            wire: aion_proto::WireError::backend(
+                "cluster subscription must be served by the cluster channel, not the workflow path",
+            ),
+        }),
         None => Err(ServerError::Wire {
             wire: aion_proto::WireError::backend("subscription variant is missing"),
         }),

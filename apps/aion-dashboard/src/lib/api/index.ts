@@ -14,6 +14,15 @@ export {
   createApiClient,
 } from './client';
 export type {
+  AionClusterStreamManager as AionClusterStreamManagerType,
+  ClusterStreamListener,
+  ClusterStreamManagerOptions,
+} from './cluster-stream';
+export {
+  AionClusterStreamManager,
+  createAionClusterStreamManager,
+} from './cluster-stream';
+export type {
   AionEventContext,
   AionEventHandler,
   AionEventSubscriptionFilter,

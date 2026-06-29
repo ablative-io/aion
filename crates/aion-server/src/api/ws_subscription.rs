@@ -7,8 +7,8 @@
 //! `{"subscription": ...}`).
 
 use aion_proto::{
-    FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoWorkflowId,
-    SubscriptionRequest, WireError, subscription_request,
+    ClusterSubscription, FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription,
+    ProtoWorkflowId, SubscriptionRequest, WireError, subscription_request,
 };
 use axum::extract::ws::{Message, WebSocket};
 use serde_json::{Map, Value};
@@ -102,9 +102,16 @@ fn decode_subscription_value(value: &Value) -> Result<SubscriptionRequest, Serve
             )),
         });
     }
+    if let Some(value) = subscription.get("cluster") {
+        return Ok(SubscriptionRequest {
+            subscription: Some(subscription_request::Subscription::Cluster(
+                decode_cluster_subscription(value)?,
+            )),
+        });
+    }
 
     Err(WireError::invalid_input(
-        "websocket subscription must contain per_workflow, filtered, or firehose",
+        "websocket subscription must contain per_workflow, filtered, firehose, or cluster",
     )
     .into())
 }
@@ -157,6 +164,22 @@ fn decode_filtered_subscription(value: &Value) -> Result<FilteredSubscription, S
             .and_then(Value::as_str)
             .map(str::to_owned),
     })
+}
+
+/// Decode the WS3 cluster subscription. The only field is the optional
+/// `after_seq` resume cursor (presence-only; `0`/absent both request the full
+/// in-flight backlog). The cluster subscription carries no namespace — it is
+/// deployment-scoped and authorized by the caller's deploy grant.
+fn decode_cluster_subscription(value: &Value) -> Result<ClusterSubscription, ServerError> {
+    // An empty object `{}` is valid (after_seq defaults to 0). A bare absent
+    // value object is also accepted.
+    let after_seq = match value.as_object().and_then(|object| object.get("after_seq")) {
+        None | Some(Value::Null) => 0,
+        Some(seq) => seq.as_u64().ok_or_else(|| {
+            WireError::invalid_input("cluster subscription after_seq must be an unsigned integer")
+        })?,
+    };
+    Ok(ClusterSubscription { after_seq })
 }
 
 fn decode_firehose_subscription(value: &Value) -> Result<FirehoseSubscription, ServerError> {

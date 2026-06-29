@@ -39,6 +39,18 @@ async fn serve_subscription_socket(
             return Err(error);
         }
     };
+    // WS3: the cluster subscription is a NEW ARM of the single subscription
+    // frame, not a workflow subscription. It is deployment-scoped (deploy-grant
+    // authorized), reads supervisor/registry/store state rather than a namespace
+    // engine, and carries its own snapshot + lag contract — so it is dispatched
+    // to its own server before the workflow `subscribe_events` path. Every other
+    // arm flows through the unchanged workflow path.
+    if let Some(aion_proto::subscription_request::Subscription::Cluster(cluster)) =
+        &request.subscription
+    {
+        let after_seq = cluster.after_seq;
+        return crate::stream::serve_cluster_socket(socket, &state, &caller, after_seq).await;
+    }
     handle_subscription_socket(socket, &state, &caller, &request).await
 }
 
@@ -274,6 +286,47 @@ mod tests {
             }
         });
         assert_terminal_ws_error(address, &foreign_workflow, "not_found").await?;
+
+        server.abort();
+        Ok(())
+    }
+
+    /// WS3 anti-leak: a cluster subscription from a caller WITHOUT the
+    /// deployment-wide deploy grant is denied with exactly one terminal
+    /// `namespace_denied` frame then close — never a snapshot, never topology.
+    /// The standard event-stream credentials (namespace grant, no deploy claim)
+    /// are sufficient to reach the gate and prove it denies.
+    #[tokio::test]
+    async fn cluster_subscription_without_deploy_grant_is_denied()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(workflow_id(), NAMESPACE)?;
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router.into_make_service()).await {
+                tracing::warn!(%error, "test websocket server exited with error");
+            }
+        });
+
+        let cluster = json!({ "subscription": { "cluster": { "after_seq": 0 } } });
+        assert_terminal_ws_error(address, &cluster, "namespace_denied").await?;
 
         server.abort();
         Ok(())

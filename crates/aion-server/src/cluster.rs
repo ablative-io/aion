@@ -37,6 +37,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aion::Engine;
+use aion_core::ClusterEvent;
+
+use crate::cluster_publisher::ClusterEventPublisher;
 
 /// The liveness signal the supervisor polls. Implemented by [`HaematiteStore`]
 /// in production and by a fake in tests, so the debounce/adopt logic is verified
@@ -123,6 +126,15 @@ pub struct ClusterSupervisor<L: PeerLiveness, A: ShardAdopter> {
     peers: Vec<WatchedPeer>,
     config: SupervisorConfig,
     state: BTreeMap<String, PeerState>,
+    /// WS3 cluster-event sink. `None` keeps every existing test compiling and
+    /// keeps a non-dashboard boot silent; when present, `tick()` emits a delta at
+    /// each of its existing branch points. The publisher fans out to live
+    /// dashboard subscribers and is a no-op with none attached.
+    publisher: Option<Arc<ClusterEventPublisher>>,
+    /// This node's distribution name, stamped into `ShardAdopted.adopted_by` and
+    /// the supervisor lifecycle events. Empty when unknown (no emit honesty cost:
+    /// the field is still the real configured value or absent).
+    self_node: String,
 }
 
 impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
@@ -150,6 +162,34 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
             peers,
             config,
             state,
+            publisher: None,
+            self_node: String::new(),
+        }
+    }
+
+    /// Attach the WS3 cluster-event publisher and this node's name so `tick()`
+    /// emits topology deltas. Pure builder addition — a supervisor without it
+    /// behaves exactly as before (every existing test passes `new` only).
+    #[must_use]
+    pub fn with_publisher(
+        mut self,
+        publisher: Arc<ClusterEventPublisher>,
+        self_node: impl Into<String>,
+    ) -> Self {
+        self.publisher = Some(publisher);
+        self.self_node = self_node.into();
+        self
+    }
+
+    /// Emit a cluster event through the attached publisher, if any. The `build`
+    /// closure receives the publisher-stamped meta; with no publisher attached
+    /// this is a no-op.
+    fn emit<F>(&self, build: F)
+    where
+        F: FnOnce(aion_core::ClusterEventMeta) -> ClusterEvent,
+    {
+        if let Some(publisher) = &self.publisher {
+            drop(publisher.emit(build));
         }
     }
 
@@ -176,16 +216,42 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
     /// loop so the debounce decision is unit-testable without real time.
     pub async fn tick(&mut self) -> Vec<String> {
         let mut adopted_now = Vec::new();
+        // Collect emits to fire AFTER the borrow of `self.state` ends: the emit
+        // path borrows `&self` (for the publisher) while the loop holds `&mut
+        // self.state` via `entry`, so deltas are queued and flushed post-loop.
+        let mut pending: Vec<ClusterEvent> = Vec::new();
+        let confirmations = self.config.confirmations;
         for peer in &self.peers {
             let connected = self.liveness.peer_connected(&peer.name);
             let entry = self.state.entry(peer.name.clone()).or_default();
             if connected {
+                // RECOVERY EMIT: capture the prior-down signal BEFORE the reset,
+                // or every tick would look freshly connected and no recovery
+                // event would ever fire.
+                let was_down = entry.consecutive_down > 0 || entry.adopted;
                 entry.consecutive_down = 0;
                 entry.adopted = false;
+                if was_down {
+                    pending.push(ClusterEvent::PeerConnected {
+                        meta: placeholder_meta(),
+                        peer_name: peer.name.clone(),
+                        forward_addr: None,
+                    });
+                }
                 continue;
             }
             entry.consecutive_down = entry.consecutive_down.saturating_add(1);
-            if entry.adopted || entry.consecutive_down < self.config.confirmations {
+            let consecutive_down = entry.consecutive_down;
+            let confirmed = consecutive_down >= confirmations;
+            // Every tick a peer is observed down is a delta; `confirmed` flips
+            // once the debounce threshold authorizes adoption.
+            pending.push(ClusterEvent::PeerDisconnected {
+                meta: placeholder_meta(),
+                peer_name: peer.name.clone(),
+                consecutive_down,
+                confirmed,
+            });
+            if entry.adopted || consecutive_down < confirmations {
                 continue;
             }
             // Pre-check: skip any of this peer's shards already published to a
@@ -202,6 +268,14 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                 // Every shard is already served by a live owner: mark handled so
                 // the supervisor does NOT retry-loop on shards another node owns.
                 entry.adopted = true;
+                let held_by = Self::live_owner_of(self.liveness.as_ref(), &peer.owned_shards)
+                    .unwrap_or_default();
+                pending.push(ClusterEvent::ShardAdoptionSkipped {
+                    meta: placeholder_meta(),
+                    shards: peer.owned_shards.clone(),
+                    from_peer: peer.name.clone(),
+                    held_by,
+                });
                 tracing::info!(
                     peer = %peer.name,
                     shards = ?peer.owned_shards,
@@ -213,6 +287,12 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                 Ok(()) => {
                     entry.adopted = true;
                     adopted_now.push(peer.name.clone());
+                    pending.push(ClusterEvent::ShardAdopted {
+                        meta: placeholder_meta(),
+                        shards: peer.owned_shards.clone(),
+                        from_peer: peer.name.clone(),
+                        adopted_by: self.self_node.clone(),
+                    });
                     tracing::info!(
                         peer = %peer.name,
                         shards = ?peer.owned_shards,
@@ -220,6 +300,12 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                     );
                 }
                 Err(error) => {
+                    pending.push(ClusterEvent::ShardAdoptionFailed {
+                        meta: placeholder_meta(),
+                        shards: peer.owned_shards.clone(),
+                        from_peer: peer.name.clone(),
+                        error: error.clone(),
+                    });
                     // Leave `adopted` false so the next tick retries: a
                     // quorum-unavailable / transport adopt error must not strand
                     // the dead peer's shards forever (the retry contract). Note a
@@ -237,7 +323,24 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                 }
             }
         }
+        // Flush queued deltas now that the `&mut self.state` borrow is released:
+        // each is re-stamped with a real publisher seq+instant (the placeholder
+        // meta is discarded). With no publisher attached this is a no-op.
+        for event in pending {
+            self.emit(|meta| with_meta(event, meta));
+        }
         adopted_now
+    }
+
+    /// The live owner currently recorded for the first of `shards` that names a
+    /// connected third party, for the `ShardAdoptionSkipped.held_by` field. Reads
+    /// only real directory records; returns `None` if none is live-held.
+    fn live_owner_of(liveness: &L, shards: &[usize]) -> Option<String> {
+        shards.iter().find_map(|&shard| {
+            liveness
+                .read_shard_owner(shard)
+                .filter(|owner| liveness.peer_connected(owner))
+        })
     }
 
     /// Whether EVERY shard in `shards` is already published to a DIFFERENT live
@@ -262,6 +365,13 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
     /// Drive the poll loop until `shutdown` flips true, ticking every
     /// `poll_interval`. Consumes `self`; spawn it as a background task.
     pub async fn run(mut self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+        // Lifecycle EMIT: the supervisor is running on this node (ADR-019 calm
+        // state distinguishes "running, all healthy" from "not running").
+        let self_node = self.self_node.clone();
+        self.emit(|meta| ClusterEvent::SupervisorStarted {
+            meta,
+            node: self_node.clone(),
+        });
         let mut interval = tokio::time::interval(self.config.poll_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -275,6 +385,123 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                     }
                 }
             }
+        }
+        // Lifecycle EMIT: clean drain/shutdown — the dashboard can distinguish a
+        // stopped supervisor from "all peers healthy" (ADR-019).
+        let self_node = self.self_node.clone();
+        self.emit(|meta| ClusterEvent::SupervisorStopped {
+            meta,
+            node: self_node.clone(),
+        });
+    }
+}
+
+/// A placeholder meta used while a [`ClusterEvent`] is queued inside `tick()`'s
+/// `&mut self.state` borrow; it is ALWAYS replaced by the publisher-stamped meta
+/// in [`with_meta`] at flush time, so a placeholder seq never reaches the wire.
+fn placeholder_meta() -> aion_core::ClusterEventMeta {
+    aion_core::ClusterEventMeta {
+        cluster_seq: 0,
+        observed_at: chrono::Utc::now(),
+    }
+}
+
+/// Replace a queued event's placeholder meta with the publisher-stamped one.
+fn with_meta(event: ClusterEvent, meta: aion_core::ClusterEventMeta) -> ClusterEvent {
+    match event {
+        ClusterEvent::PeerAdded {
+            peer_name,
+            forward_addr,
+            ..
+        } => ClusterEvent::PeerAdded {
+            meta,
+            peer_name,
+            forward_addr,
+        },
+        ClusterEvent::PeerConnected {
+            peer_name,
+            forward_addr,
+            ..
+        } => ClusterEvent::PeerConnected {
+            meta,
+            peer_name,
+            forward_addr,
+        },
+        ClusterEvent::PeerDisconnected {
+            peer_name,
+            consecutive_down,
+            confirmed,
+            ..
+        } => ClusterEvent::PeerDisconnected {
+            meta,
+            peer_name,
+            consecutive_down,
+            confirmed,
+        },
+        ClusterEvent::ShardAdopted {
+            shards,
+            from_peer,
+            adopted_by,
+            ..
+        } => ClusterEvent::ShardAdopted {
+            meta,
+            shards,
+            from_peer,
+            adopted_by,
+        },
+        ClusterEvent::ShardAdoptionFailed {
+            shards,
+            from_peer,
+            error,
+            ..
+        } => ClusterEvent::ShardAdoptionFailed {
+            meta,
+            shards,
+            from_peer,
+            error,
+        },
+        ClusterEvent::ShardAdoptionSkipped {
+            shards,
+            from_peer,
+            held_by,
+            ..
+        } => ClusterEvent::ShardAdoptionSkipped {
+            meta,
+            shards,
+            from_peer,
+            held_by,
+        },
+        ClusterEvent::WorkerConnected {
+            worker_id,
+            namespaces,
+            task_queue,
+            transport,
+            node,
+            ..
+        } => ClusterEvent::WorkerConnected {
+            meta,
+            worker_id,
+            namespaces,
+            task_queue,
+            transport,
+            node,
+        },
+        ClusterEvent::WorkerDisconnected {
+            worker_id,
+            namespaces,
+            reason,
+            ..
+        } => ClusterEvent::WorkerDisconnected {
+            meta,
+            worker_id,
+            namespaces,
+            reason,
+        },
+        ClusterEvent::SupervisorStarted { node, .. } => {
+            ClusterEvent::SupervisorStarted { meta, node }
+        }
+        ClusterEvent::SupervisorStopped { node, .. } => {
+            ClusterEvent::SupervisorStopped { meta, node }
         }
     }
 }
@@ -531,6 +758,114 @@ mod tests {
             "a shard whose recorded owner is itself down is adoptable"
         );
         assert_eq!(adopter.calls(), vec![vec![1]]);
+    }
+
+    /// WS3 EMIT: with a publisher attached, a down tick emits `PeerDisconnected`
+    /// (confirmed flipping at the threshold) and the adoption tick emits
+    /// `ShardAdopted` carrying this node's name. The recovery EMIT then fires
+    /// `PeerConnected` — proving the capture-before-reset: a freshly-reconnected
+    /// peer that was previously down/adopted yields exactly one recovery event.
+    #[tokio::test]
+    async fn tick_emits_topology_deltas_through_the_publisher()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::num::NonZeroUsize;
+
+        use aion_core::ClusterEvent;
+        use futures::StreamExt;
+
+        use crate::cluster_publisher::ClusterEventPublisher;
+
+        let capacity = NonZeroUsize::new(64).ok_or("non-zero")?;
+        let publisher = Arc::new(ClusterEventPublisher::new(capacity));
+        let mut subscription = publisher.subscribe(0);
+
+        let liveness = Arc::new(FakeLiveness::new(true));
+        let adopter = Arc::new(FakeAdopter::new(false));
+        let mut sup = supervisor(Arc::clone(&liveness), Arc::clone(&adopter), 2)
+            .with_publisher(Arc::clone(&publisher), "node-self@127.0.0.1");
+
+        // Tick 1 down: PeerDisconnected{confirmed=false} (below threshold 2).
+        liveness.set(false);
+        drop(sup.tick().await);
+        // Tick 2 down: PeerDisconnected{confirmed=true} then ShardAdopted.
+        let fired = sup.tick().await;
+        assert_eq!(fired, vec!["node-1@127.0.0.1".to_owned()]);
+
+        // Drain the three emitted deltas in order.
+        let first = next_event(&mut subscription).await?;
+        assert!(
+            matches!(
+                &first,
+                ClusterEvent::PeerDisconnected {
+                    confirmed: false,
+                    consecutive_down: 1,
+                    ..
+                }
+            ),
+            "first delta must be an unconfirmed down: {first:?}"
+        );
+        let second = next_event(&mut subscription).await?;
+        assert!(
+            matches!(
+                &second,
+                ClusterEvent::PeerDisconnected {
+                    confirmed: true,
+                    consecutive_down: 2,
+                    ..
+                }
+            ),
+            "second delta must be the confirmed down: {second:?}"
+        );
+        let third = next_event(&mut subscription).await?;
+        let ClusterEvent::ShardAdopted {
+            shards,
+            adopted_by,
+            from_peer,
+            ..
+        } = &third
+        else {
+            return Err(format!("third delta must be ShardAdopted: {third:?}").into());
+        };
+        assert_eq!(shards, &vec![1]);
+        assert_eq!(adopted_by, "node-self@127.0.0.1");
+        assert_eq!(from_peer, "node-1@127.0.0.1");
+
+        // RECOVERY: peer comes back up. The capture-before-reset must fire exactly
+        // one PeerConnected for the now-recovered (previously adopted) peer.
+        liveness.set(true);
+        drop(sup.tick().await);
+        let recovery = next_event(&mut subscription).await?;
+        assert!(
+            matches!(&recovery, ClusterEvent::PeerConnected { .. }),
+            "recovery delta must be PeerConnected: {recovery:?}"
+        );
+
+        // A second connected tick (already reset) must NOT re-emit recovery: the
+        // next delta is whatever a subsequent down produces, never a duplicate
+        // PeerConnected. Quiet tick yields nothing.
+        let quiet = sup.tick().await;
+        assert!(quiet.is_empty());
+        // No further event is buffered (no spurious recovery re-emit).
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), subscription.next())
+                .await
+                .is_err(),
+            "a steady connected peer must not re-emit PeerConnected every tick"
+        );
+        Ok(())
+    }
+
+    async fn next_event(
+        subscription: &mut futures::stream::BoxStream<
+            'static,
+            Result<aion_core::ClusterEvent, crate::cluster_publisher::ClusterStreamLagged>,
+        >,
+    ) -> Result<aion_core::ClusterEvent, Box<dyn std::error::Error>> {
+        use futures::StreamExt;
+        tokio::time::timeout(std::time::Duration::from_secs(1), subscription.next())
+            .await?
+            .ok_or("cluster subscription ended")?
+            .map_err(|lag| format!("unexpected lag: {lag:?}").into())
     }
 
     /// A record naming the DEAD peer itself (the steady-state declared owner) is

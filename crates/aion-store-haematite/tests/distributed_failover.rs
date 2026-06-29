@@ -643,22 +643,28 @@ fn deposed_survivor_publish_is_fenced_to_not_owner() -> TestResult {
     }
 
     // A is the original fenced owner; then "dies".
-    node_a
-        .database()
-        .acquire_shard_and_serve(SHARD, &membership(5, &[NODE_B, NODE_C, NODE_D]), OP_TIMEOUT)?;
+    node_a.database().acquire_shard_and_serve(
+        SHARD,
+        &membership(5, &[NODE_B, NODE_C, NODE_D]),
+        OP_TIMEOUT,
+    )?;
 
     // B adopts: wins the election over {C,D} and publishes itself. The first
     // publish SUCCEEDS — B is a real owner (load-bearing non-vacuity).
-    node_b
-        .database()
-        .acquire_shard_and_serve(SHARD, &membership(5, &[NODE_C, NODE_D]), OP_TIMEOUT)?;
+    node_b.database().acquire_shard_and_serve(
+        SHARD,
+        &membership(5, &[NODE_C, NODE_D]),
+        OP_TIMEOUT,
+    )?;
     node_b.store.publish_shard_owner(SHARD)?;
 
     // C now wins a STRICTLY HIGHER-ballot election over {D,E} — a majority {C,D,E}
     // that EXCLUDES B, so B's local promised epoch is untouched.
-    node_c
-        .database()
-        .acquire_shard_and_serve(SHARD, &membership(5, &[NODE_D, NODE_E]), OP_TIMEOUT)?;
+    node_c.database().acquire_shard_and_serve(
+        SHARD,
+        &membership(5, &[NODE_D, NODE_E]),
+        OP_TIMEOUT,
+    )?;
 
     // B's NEXT fenced publish proposes to {C,D,E} — all of which promised C's
     // higher ballot — so it is quorum-REJECTED (typed Fenced) and the store maps

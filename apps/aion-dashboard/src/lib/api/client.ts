@@ -1,4 +1,12 @@
-import type { Event, Namespace, WorkflowFilter, WorkflowId, WorkflowSummary } from '@/types';
+import type {
+  ClusterCommand,
+  ClusterSnapshot,
+  Event,
+  Namespace,
+  WorkflowFilter,
+  WorkflowId,
+  WorkflowSummary,
+} from '@/types';
 
 import { ApiError } from './api-error';
 import {
@@ -33,6 +41,7 @@ const AW_REST_CONTRACT = {
     history: '/workflows/describe',
     namespaces: '/namespaces',
     eventSearch: '/events/search',
+    clusterCommand: '/cluster/command',
   },
   methods: {
     workflows: 'POST',
@@ -190,6 +199,39 @@ export class ApiClient {
     return normalizeEventSearch(response, page.limit ?? DEFAULT_LIMIT);
   }
 
+  /**
+   * Send an ADR-020 cluster command to `/cluster/command` (WS3 command seam).
+   *
+   * Cluster commands are deployment-scoped: the server deploy-gates them on the
+   * caller's bearer/subject credentials (header-based — a browser CAN set headers
+   * on a POST, so no query-param promotion is needed), never on a namespace
+   * grant. Phase 1 ships exactly one real command — `RequestClusterSnapshot`, a
+   * read returning the calm-state {@link ClusterSnapshot}. The mutating variants
+   * compile so the contract exists, but the server runs the deploy gate first and
+   * then returns a typed `Unimplemented` {@link ApiError} (zero blast radius); the
+   * caller surfaces that to visible state rather than silently swallowing it.
+   */
+  async sendClusterCommand(command: ClusterCommand): Promise<ClusterSnapshot | null> {
+    const response = await this.requestDeployScoped<ClusterSnapshot | null>(
+      AW_REST_CONTRACT.endpoints.clusterCommand,
+      'POST',
+      command as unknown as JsonRecord
+    );
+
+    return response;
+  }
+
+  /** Convenience wrapper for the only Phase-1 mutating-free command. */
+  async requestClusterSnapshot(): Promise<ClusterSnapshot> {
+    const snapshot = await this.sendClusterCommand({ command: 'RequestClusterSnapshot' });
+
+    if (snapshot === null) {
+      throw new ApiError(200, 'cluster snapshot command returned an empty body');
+    }
+
+    return snapshot;
+  }
+
   async listNamespaces(options?: Pick<RequestOptions, 'credentials'>): Promise<Namespace[]> {
     const response = await this.request<NamespacesResponse>(
       AW_REST_CONTRACT.endpoints.namespaces,
@@ -272,6 +314,42 @@ export class ApiClient {
       headers: this.buildHeaders(options),
     };
 
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+
+    const response = await this.fetchImpl(buildUrl(this.baseUrl, path), init);
+
+    if (!response.ok) {
+      const errorBody = await readJson(response).catch(() => null);
+      throw apiErrorFromResponse(response.status, errorBody);
+    }
+
+    const json = await readJson(response);
+    return json as T;
+  }
+
+  /**
+   * Issue a deployment-scoped request (no namespace). Used by the cluster
+   * command seam: authorization is the deploy grant carried by the bearer/subject
+   * credentials, so the namespace header is intentionally omitted.
+   */
+  private async requestDeployScoped<T>(
+    path: string,
+    method: string,
+    body?: RequestBody
+  ): Promise<T> {
+    const headers = new Headers({ 'content-type': 'application/json' });
+
+    appendHeaders(headers, this.credentials?.headers);
+    if (this.credentials?.bearerToken !== undefined) {
+      headers.set('authorization', `Bearer ${this.credentials.bearerToken}`);
+    }
+    if (this.credentials?.subject !== undefined) {
+      headers.set('x-aion-subject', this.credentials.subject);
+    }
+
+    const init: RequestInit = { method, headers };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }

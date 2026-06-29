@@ -55,6 +55,15 @@ struct ServerStateInner {
     /// to one poll interval. Always present (cheap, no `Option`): the handle is
     /// harmless when the outbox is not commissioned, since nothing pulses it.
     outbox_wake: Arc<tokio::sync::Notify>,
+    /// WS3 cluster topology/ownership publisher. Always present: the dashboard's
+    /// cluster channel is served on every boot (calm state with no peers on a
+    /// single-node server). Sized from `websocket.cluster_broadcast_capacity`.
+    cluster_publisher: crate::cluster_publisher::ClusterEventPublisher,
+    /// This node's distribution name for the WS3 cluster snapshot self-identity.
+    /// `Some` on a distributed haematite boot (the configured `store.cluster.node_id`),
+    /// `None` on a single-node boot — the snapshot then reports the standalone
+    /// self-label so the dashboard still has a node to render.
+    cluster_self_node: Option<String>,
     /// Owns the distributed haematite inbound-write responder thread, kept alive
     /// for the server's lifetime so a cluster node keeps answering peers'
     /// replication/election traffic. `None` for non-distributed boots. Dropping
@@ -85,6 +94,20 @@ struct ServerStateInner {
 }
 
 impl ServerState {
+    /// Fallback cluster broadcast capacity for the `from_parts*` embedder/test
+    /// constructors, which bypass config validation. The config-driven
+    /// [`Self::build`] path always sizes the publisher from the validated
+    /// `websocket.cluster_broadcast_capacity` instead.
+    ///
+    /// `NonZeroUsize::new(64)` is statically non-`None`, so the
+    /// [`Option::unwrap`]-free `match` keeps the value `const` without tripping
+    /// the workspace `unwrap_used`/`expect_used` deny lints.
+    const FALLBACK_CLUSTER_BROADCAST_CAPACITY: std::num::NonZeroUsize =
+        match std::num::NonZeroUsize::new(64) {
+            Some(value) => value,
+            None => std::num::NonZeroUsize::MIN,
+        };
+
     /// Build shared state from operator configuration.
     ///
     /// # Errors
@@ -123,6 +146,12 @@ impl ServerState {
         let cluster_store = connected.cluster_store;
         #[cfg(feature = "haematite-backend")]
         let watched_peers = connected.watched_peers;
+        // Capture this node's self-identity for the WS3 cluster snapshot before
+        // `self_node_id` is moved into the routing-state builder below.
+        #[cfg(feature = "haematite-backend")]
+        let cluster_self_node = connected.self_node_id.clone();
+        #[cfg(not(feature = "haematite-backend"))]
+        let cluster_self_node: Option<String> = None;
         // Build the R-2 directory + R-3 forwarder over the (live, failover-aware)
         // cluster store and static peer config. Both present only for a
         // distributed boot; `None` otherwise leaves the routing edge a no-op.
@@ -136,6 +165,9 @@ impl ServerState {
             connected.self_node_id,
         );
         let (event_broadcast_capacity, query_timeout) = required_engine_seams(&runtime)?;
+        let cluster_broadcast_capacity = required_cluster_broadcast_capacity(&runtime)?;
+        let cluster_publisher =
+            crate::cluster_publisher::ClusterEventPublisher::new(cluster_broadcast_capacity);
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
         // LSUB-2 advisory wake: one process-wide `Notify` shared by the engine's
         // stage seam and the outbox dispatcher. A single handle is correct here
@@ -151,7 +183,10 @@ impl ServerState {
             .with_outbox_wake(Arc::clone(&outbox_wake)),
         );
         let exported_metrics = runtime.metrics.enabled.then_some(metrics.clone());
-        let worker_registry = ConnectedWorkerRegistry::default();
+        // WS3: the worker registry emits WorkerConnected/WorkerDisconnected
+        // topology deltas into the cluster channel on register/deregister.
+        let worker_registry =
+            ConnectedWorkerRegistry::default().with_cluster_publisher(cluster_publisher.clone());
         let active_registry = Arc::new(aion::Registry::default());
         let pending_activities = PendingActivities::default();
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
@@ -164,18 +199,8 @@ impl ServerState {
         .with_pending(pending_activities.clone())
         .with_drain_state(drain_state.clone())
         .with_tokio_handle(tokio::runtime::Handle::current());
-        // Dark by default: only when the dev surface is commissioned does the
-        // engine receive the per-run activity-mock decorator. With it off the
-        // engine gets the bare production dispatcher, so a production server has
-        // no mocking path at all (CN4).
-        let (activity_dispatcher, activity_mock_registry): (Arc<dyn ActivityDispatcher>, _) =
-            if runtime.dev.enabled {
-                let registry = ActivityMockRegistry::new();
-                let decorated = DevMockingDispatcher::new(Arc::new(dispatcher), registry.clone());
-                (Arc::new(decorated), Some(registry))
-            } else {
-                (Arc::new(dispatcher), None)
-            };
+        let (activity_dispatcher, activity_mock_registry) =
+            decorate_activity_dispatcher(dispatcher, runtime.dev.enabled);
 
         let engine = build_engine(EngineAssembly {
             instrumented_store: &instrumented_store,
@@ -188,16 +213,7 @@ impl ServerState {
         })
         .await?;
         let engine = Arc::new(engine);
-        // Outbox ON: route unmatched worker completions arriving at the sink
-        // into the live workflow's mailbox. Flag-off this callback is never
-        // installed, so the sink's unmatched branch stays a silent drop. The
-        // dispatcher is not rebuilt — it shares this exact pending tracker.
-        if runtime.outbox.enabled {
-            let callback = Arc::new(crate::worker::ServerOutboxDeliveryCallback::new(
-                Arc::clone(&engine),
-            ));
-            pending_activities.set_outbox_delivery(callback);
-        }
+        install_outbox_delivery(&pending_activities, &engine, runtime.outbox.enabled);
         let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
         #[cfg(feature = "auth")]
         let jwks_cache = build_jwks_cache(&runtime).await?;
@@ -214,6 +230,8 @@ impl ServerState {
                 activity_mock_registry,
                 outbox_store,
                 outbox_wake,
+                cluster_publisher,
+                cluster_self_node,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder,
                 #[cfg(feature = "haematite-backend")]
@@ -247,6 +265,10 @@ impl ServerState {
                 activity_mock_registry: None,
                 outbox_store: None,
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
+                cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
+                cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
                 #[cfg(feature = "haematite-backend")]
@@ -289,6 +311,10 @@ impl ServerState {
                 activity_mock_registry: None,
                 outbox_store: None,
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
+                cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
+                cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
                 #[cfg(feature = "haematite-backend")]
@@ -325,6 +351,10 @@ impl ServerState {
                 activity_mock_registry: None,
                 outbox_store: None,
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
+                cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
+                cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
                 #[cfg(feature = "haematite-backend")]
@@ -363,6 +393,22 @@ impl ServerState {
     #[must_use]
     pub fn worker_registry(&self) -> &ConnectedWorkerRegistry {
         &self.inner.worker_registry
+    }
+
+    /// Borrow the WS3 cluster-event publisher shared by the cluster state-change
+    /// sites (supervisor, worker registry) and the cluster subscription endpoint.
+    /// Always present, on every boot.
+    #[must_use]
+    pub fn cluster_publisher(&self) -> &crate::cluster_publisher::ClusterEventPublisher {
+        &self.inner.cluster_publisher
+    }
+
+    /// This node's configured cluster distribution name for the WS3 snapshot
+    /// self-identity, or `None` on a single-node boot (the snapshot then reports
+    /// the standalone self-label).
+    #[must_use]
+    pub fn cluster_self_node(&self) -> Option<&str> {
+        self.inner.cluster_self_node.as_deref()
     }
 
     /// Clone the live engine handle the completion path records terminals through.
@@ -510,12 +556,18 @@ impl ServerState {
             return Ok(false);
         }
         let engine = Arc::clone(self.inner.namespace_guard.resolver().engine()?);
+        // WS3: feed cluster topology deltas from the supervisor's existing
+        // decision points into the dashboard channel. `self_node` is the
+        // configured distribution name (already captured for the snapshot).
+        let publisher = Arc::new(self.inner.cluster_publisher.clone());
+        let self_node = self.inner.cluster_self_node.clone().unwrap_or_default();
         let supervisor = crate::cluster::ClusterSupervisor::new(
             cluster_store,
             engine,
             self.inner.watched_peers.clone(),
             config,
-        );
+        )
+        .with_publisher(publisher, self_node);
         if !supervisor.watches_any() {
             return Ok(false);
         }
@@ -656,6 +708,60 @@ fn required_engine_seams(
             message: crate::config::QUERY_TIMEOUT_REQUIRED.to_owned(),
         })?;
     Ok((event_broadcast_capacity, query_timeout))
+}
+
+/// Install the outbox delivery callback when the durable outbox is commissioned.
+///
+/// Routes unmatched worker completions arriving at the sink into the live
+/// workflow's mailbox. Flag-off, no callback is installed and the sink's
+/// unmatched branch stays a silent drop. The dispatcher is not rebuilt — it
+/// shares this exact pending tracker.
+fn install_outbox_delivery(
+    pending_activities: &PendingActivities,
+    engine: &Arc<aion::Engine>,
+    outbox_enabled: bool,
+) {
+    if outbox_enabled {
+        let callback = Arc::new(crate::worker::ServerOutboxDeliveryCallback::new(
+            Arc::clone(engine),
+        ));
+        pending_activities.set_outbox_delivery(callback);
+    }
+}
+
+/// Decorate the worker activity dispatcher with the per-run activity-mock layer
+/// when the dev surface is commissioned, returning the dispatcher and the shared
+/// mock registry (if any).
+///
+/// Dark by default: with the dev surface off the engine gets the bare production
+/// dispatcher and there is no mocking path at all (CN4).
+fn decorate_activity_dispatcher(
+    dispatcher: WorkerActivityDispatcher,
+    dev_enabled: bool,
+) -> (Arc<dyn ActivityDispatcher>, Option<ActivityMockRegistry>) {
+    if dev_enabled {
+        let registry = ActivityMockRegistry::new();
+        let decorated = DevMockingDispatcher::new(Arc::new(dispatcher), registry.clone());
+        (Arc::new(decorated), Some(registry))
+    } else {
+        (Arc::new(dispatcher), None)
+    }
+}
+
+/// Validate the WS3 cluster broadcast capacity the server unconditionally mounts
+/// (the `cluster` subscription on `/events/stream`). Explicit-no-default with the
+/// same non-zero startup guard as the workflow event channel: the lag contract
+/// has no buffer to lag against unless sized.
+fn required_cluster_broadcast_capacity(
+    runtime: &RuntimeConfig,
+) -> Result<std::num::NonZeroUsize, ServerError> {
+    runtime
+        .websocket
+        .cluster_broadcast_capacity
+        .and_then(std::num::NonZeroUsize::new)
+        .ok_or_else(|| ServerError::Config {
+            message: crate::config::CLUSTER_BROADCAST_CAPACITY_REQUIRED.to_owned(),
+        })
 }
 
 /// The request-routing pieces built from the cluster store + peer config.
@@ -1009,6 +1115,7 @@ mod tests {
             websocket: WebSocketConfig {
                 outbound_buffer_bound: 32,
                 event_broadcast_capacity: Some(64),
+                cluster_broadcast_capacity: Some(64),
             },
             workflow_packages: Vec::new(),
             deploy: DeployConfig::default(),

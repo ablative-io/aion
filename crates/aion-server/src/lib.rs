@@ -24,6 +24,10 @@ pub mod authoring;
 /// meaningful for a distributed haematite boot, so gated behind the backend.
 #[cfg(feature = "haematite-backend")]
 pub mod cluster;
+/// WS3 cluster topology/ownership broadcast publisher (not backend-gated: the
+/// dashboard's cluster channel is served on every boot, showing calm state with
+/// no peers on a single-node server).
+pub mod cluster_publisher;
 /// Runtime configuration loading and validation.
 pub mod config;
 /// Dashboard asset serving helpers.

@@ -1,5 +1,7 @@
 //! Event subscription streaming surfaces.
 
+/// WS3 cluster topology/ownership subscription serving.
+pub mod cluster_stream;
 /// Namespace-aware event gating at the broadcast/encode seam.
 pub mod namespace_filter;
 /// Replay/live splice for per-workflow subscription resumption.
@@ -11,6 +13,7 @@ pub mod socket;
 /// Event subscription request mapping and store subscription helpers.
 pub mod subscribe;
 
+pub use cluster_stream::serve_cluster_socket;
 pub use namespace_filter::{GateVerdict, NamespaceEventGate};
 pub use resume::RESUME_CURSOR_AHEAD_OF_HISTORY;
 pub use selector::SubscriptionSelector;
