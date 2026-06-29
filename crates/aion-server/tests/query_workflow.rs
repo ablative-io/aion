@@ -165,6 +165,7 @@ async fn start_parked(
             workflow_type: QUERY_MODULE.to_owned(),
             input: Some(Payload::from_json(&json!({ "fixture": "input" }))?.into()),
             routing_key: None,
+            task_queue: None,
         },
     )
     .await?;

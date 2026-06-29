@@ -652,6 +652,14 @@ async fn build_engine(assembly: EngineAssembly<'_>) -> Result<aion::Engine, Serv
         .map_err(|error| ServerError::Config {
             message: format!("failed to register namespace search attribute: {error}"),
         })?;
+    search_attribute_schema
+        .register(
+            crate::namespace::TASK_QUEUE_ATTRIBUTE,
+            aion_core::SearchAttributeType::String,
+        )
+        .map_err(|error| ServerError::Config {
+            message: format!("failed to register task_queue search attribute: {error}"),
+        })?;
     let runtime = assembly.runtime;
     let builder = EngineBuilder::new()
         .store_arc(assembly.instrumented_store.clone())

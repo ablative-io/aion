@@ -177,6 +177,7 @@ async fn forward_start_relays_owner_reply() -> Result<(), TestError> {
             bytes: b"{}".to_vec(),
         }),
         routing_key: Some("tenant-a/order-1".to_owned()),
+        task_queue: None,
     });
 
     let result = forwarder.forward(addr, metadata, request).await;

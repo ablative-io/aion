@@ -37,6 +37,10 @@ pub struct StartOptions {
     /// `shard_for(routing_key)`'s owner (forwarding there when the dialed node is
     /// not the owner). `None` keeps the default unsteered placement.
     pub routing_key: Option<String>,
+    /// Optional default task queue for this workflow's activities. When set, the
+    /// server records it durably on the start (the namespace × `task_queue`
+    /// targeting story); `None` keeps the namespace's default queue.
+    pub task_queue: Option<String>,
 }
 
 /// Pagination options accepted by [`Client::list`].
@@ -78,6 +82,7 @@ impl Client {
         validate_start_options(&opts)?;
         let idempotency_key = opts.idempotency_key.clone();
         let routing_key = opts.routing_key.clone();
+        let task_queue = opts.task_queue.clone();
         let namespace = operation_namespace(self, opts.namespace);
         let workflow_type = workflow_type.into();
         let fingerprint = idempotency_key.as_ref().map(|key| {
@@ -100,6 +105,7 @@ impl Client {
                 workflow_type,
                 input: Some(ProtoPayload::from(input)),
                 routing_key,
+                task_queue,
             })
             .await?;
         let workflow_id = decode_required_workflow_id(response.workflow_id, "start response")?;
@@ -728,6 +734,7 @@ mod tests {
             namespace: None,
             idempotency_key: Some(String::from("retry-key")),
             routing_key: None,
+            task_queue: None,
         };
 
         let original = client

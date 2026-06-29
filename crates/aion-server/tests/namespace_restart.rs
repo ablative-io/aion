@@ -37,7 +37,9 @@ use aion_proto::{
 };
 use aion_server::api::{handlers, schedule_handlers};
 use aion_server::config::{NamespaceConfig, NamespaceMode};
-use aion_server::{CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceResolver};
+use aion_server::{
+    CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceResolver, TASK_QUEUE_ATTRIBUTE,
+};
 use aion_store::EventStore;
 use aion_store_libsql::LibSqlStore;
 use serde_json::json;
@@ -70,6 +72,7 @@ impl Server {
         let store: Arc<dyn EventStore> = Arc::new(LibSqlStore::open(db_path.to_path_buf()).await?);
         let mut schema = SearchAttributeSchema::new();
         schema.register(NAMESPACE_ATTRIBUTE, SearchAttributeType::String)?;
+        schema.register(TASK_QUEUE_ATTRIBUTE, SearchAttributeType::String)?;
         let mut builder = EngineBuilder::new()
             .store_arc(store)
             .in_memory_visibility()
@@ -155,6 +158,24 @@ fn start_request(
         workflow_type: workflow_type.to_owned(),
         input: Some(Payload::from_json(input)?.into()),
         routing_key: None,
+        task_queue: None,
+    })
+}
+
+/// A start request that selects an explicit default `task_queue` for the new
+/// workflow — the start half of the namespace × `task_queue` targeting story.
+fn start_request_on_task_queue(
+    namespace: &str,
+    workflow_type: &str,
+    task_queue: &str,
+    input: &serde_json::Value,
+) -> Result<ProtoStartWorkflowRequest, TestError> {
+    Ok(ProtoStartWorkflowRequest {
+        namespace: namespace.to_owned(),
+        workflow_type: workflow_type.to_owned(),
+        input: Some(Payload::from_json(input)?.into()),
+        routing_key: None,
+        task_queue: Some(task_queue.to_owned()),
     })
 }
 
@@ -544,6 +565,63 @@ async fn child_workflow_namespace_enforcement_survives_restart() -> Result<(), T
         .await,
     )?;
     assert_eq!(denied.code, WireErrorCode::NamespaceDenied);
+
+    restarted.shutdown()?;
+    Ok(())
+}
+
+/// The start half of the namespace × `task_queue` targeting story: a workflow
+/// started with an explicit `task_queue` records that selection durably as the
+/// `aion.task_queue` search attribute, in the SAME atomic `WorkflowStarted`
+/// append as the namespace stamp — so the start-time queue selection survives a
+/// process restart (and, by the same mechanism, failover) and is never tracked
+/// only in memory. A start with no `task_queue` records no such attribute, so it
+/// falls back to the namespace's default queue.
+#[tokio::test]
+async fn workflow_task_queue_selection_survives_restart() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let db_path = dir.path().join("namespace-restart-task-queue.db");
+    let alice = caller_for("alice", TENANT_A);
+
+    // First instance: one start pins `task_queue = "gpu"`, one leaves it unset.
+    let first = Server::over(&db_path, vec![fixture_package("complete")?]).await?;
+    let pinned = handlers::start(
+        &first.guard,
+        &alice,
+        start_request_on_task_queue(TENANT_A, FIXTURE_MODULE, "gpu", &json!({ "k": "v" }))?,
+    )
+    .await?;
+    let pinned_id: WorkflowId = pinned
+        .workflow_id
+        .ok_or("start response missing workflow id")?
+        .try_into()?;
+    let unpinned_id = start_and_complete(&first, &alice, TENANT_A).await?;
+    first.shutdown()?;
+
+    // Fresh engine over the same database: the recorded attributes are the only
+    // thing the task_queue selection can be re-derived from after restart.
+    let restarted = Server::over(&db_path, vec![fixture_package("complete")?]).await?;
+
+    let pinned_history = restarted.engine.store().read_history(&pinned_id).await?;
+    let pinned_attributes = search_attributes_from_events(&pinned_history);
+    // The selected task_queue rides the same recorded map as the namespace.
+    assert_eq!(
+        pinned_attributes.get(NAMESPACE_ATTRIBUTE),
+        Some(&SearchAttributeValue::String(TENANT_A.to_owned()))
+    );
+    assert_eq!(
+        pinned_attributes.get(TASK_QUEUE_ATTRIBUTE),
+        Some(&SearchAttributeValue::String("gpu".to_owned()))
+    );
+
+    // The unpinned start records the namespace but NO task_queue attribute.
+    let unpinned_history = restarted.engine.store().read_history(&unpinned_id).await?;
+    let unpinned_attributes = search_attributes_from_events(&unpinned_history);
+    assert_eq!(
+        unpinned_attributes.get(NAMESPACE_ATTRIBUTE),
+        Some(&SearchAttributeValue::String(TENANT_A.to_owned()))
+    );
+    assert_eq!(unpinned_attributes.get(TASK_QUEUE_ATTRIBUTE), None);
 
     restarted.shutdown()?;
     Ok(())

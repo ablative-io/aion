@@ -930,6 +930,7 @@ mod tests {
             workflow_type: String::from("checkout"),
             input: None,
             routing_key: None,
+            task_queue: None,
         };
 
         let scoped = guard

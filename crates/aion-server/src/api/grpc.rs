@@ -804,6 +804,7 @@ fn decode_start_request(value: generated::StartWorkflowRequest) -> ProtoStartWor
         workflow_type: value.workflow_type,
         input: value.input.map(decode_payload),
         routing_key: value.routing_key,
+        task_queue: value.task_queue,
     }
 }
 
@@ -1123,6 +1124,7 @@ mod tests {
             workflow_type: "missing-workflow".to_owned(),
             input: Some(encode_payload(proto_payload()?)),
             routing_key: None,
+            task_queue: None,
         });
         apply_metadata(start.metadata_mut())?;
         let start_error = service.start_workflow(start).await;

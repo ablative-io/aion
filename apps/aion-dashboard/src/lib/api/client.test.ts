@@ -266,6 +266,45 @@ test('startWorkflow omits routing_key when not provided', async () => {
   });
 });
 
+test('startWorkflow forwards the selected task_queue to the server body', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({ workflow_id: 'w', run_id: 'r' });
+    },
+  });
+
+  await client.startWorkflow(
+    { workflowType: 'T', input: {}, taskQueue: 'gpu' },
+    { namespace }
+  );
+
+  await expect(calls[0]?.json()).resolves.toEqual({
+    namespace,
+    workflow_type: 'T',
+    input: {},
+    task_queue: 'gpu',
+  });
+});
+
+test('startWorkflow omits task_queue when not provided', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({ workflow_id: 'w', run_id: 'r' });
+    },
+  });
+
+  await client.startWorkflow({ workflowType: 'T', input: {} }, { namespace });
+
+  const body = (await calls[0]?.json()) as Record<string, unknown>;
+  expect('task_queue' in body).toBe(false);
+});
+
 test('startWorkflow throws a typed ApiError on WorkflowTypeNotFound', async () => {
   const client = new ApiClient({
     fetchImpl: async () =>

@@ -32,6 +32,7 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
   const ids = useFieldIds();
   const [workflowType, setWorkflowType] = useState('');
   const [routingKey, setRoutingKey] = useState('');
+  const [taskQueue, setTaskQueue] = useState('');
   const [inputText, setInputText] = useState('');
   const [inputError, setInputError] = useState<string | null>(null);
 
@@ -50,10 +51,12 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
     }
 
     const trimmedRoutingKey = routingKey.trim();
+    const trimmedTaskQueue = taskQueue.trim();
     start.mutate({
       workflowType: trimmedType,
       input: parsed.value,
       ...(trimmedRoutingKey.length === 0 ? {} : { routingKey: trimmedRoutingKey }),
+      ...(trimmedTaskQueue.length === 0 ? {} : { taskQueue: trimmedTaskQueue }),
     });
   }
 
@@ -103,6 +106,16 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
             placeholder="steers placement; blank = unsteered"
             value={routingKey}
             onChange={(event) => setRoutingKey(event.currentTarget.value)}
+          />
+        </label>
+        <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={ids.taskQueue}>
+          Task queue (optional)
+          <input
+            className={FIELD_CLASS}
+            id={ids.taskQueue}
+            placeholder="default activity queue; blank = namespace default"
+            value={taskQueue}
+            onChange={(event) => setTaskQueue(event.currentTarget.value)}
           />
         </label>
         <div className="flex items-center gap-3">
@@ -175,5 +188,6 @@ function useFieldIds() {
     workflowType: `${prefix}-workflow-type`,
     input: `${prefix}-input`,
     routingKey: `${prefix}-routing-key`,
+    taskQueue: `${prefix}-task-queue`,
   };
 }

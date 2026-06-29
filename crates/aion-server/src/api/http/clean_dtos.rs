@@ -34,6 +34,10 @@ pub(crate) struct StartWorkflowRequest {
     /// R-4 steered-start routing key (optional; absent keeps unsteered placement).
     #[serde(default)]
     routing_key: Option<String>,
+    /// Optional default task queue for this workflow's activities (absent =
+    /// the namespace's default queue). Recorded durably on the start.
+    #[serde(default)]
+    task_queue: Option<String>,
 }
 
 impl TryFrom<StartWorkflowRequest> for ProtoStartWorkflowRequest {
@@ -45,6 +49,7 @@ impl TryFrom<StartWorkflowRequest> for ProtoStartWorkflowRequest {
             workflow_type: request.workflow_type,
             input: request.input.map(http_input_payload).transpose()?,
             routing_key: request.routing_key,
+            task_queue: request.task_queue,
         })
     }
 }
