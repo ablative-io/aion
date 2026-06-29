@@ -336,25 +336,39 @@ impl Engine {
         result
     }
 
-    /// Body of [`Self::adopt_shards`]: elect + union-merge, widen scope, recover.
+    /// Body of [`Self::adopt_shards`]: acquire+publish each shard as a UNIT under
+    /// the double-adoption fence (ADR-021 clean-partial), then widen scope and
+    /// recover over EXACTLY the shards that survived BOTH steps.
+    ///
+    /// ## Ordering invariant (the fix)
+    ///
+    /// For each shard the publish-fence happens BEFORE the shard contributes to
+    /// `extend_owned_shards` AND before it is recovered. The pre-fix order
+    /// (extend → publish) let a survivor that won the election but was then
+    /// deposed at publish-time still widen its scope and recover the shard, so two
+    /// survivors could both execute its workflows. Here, a `NotOwner` from EITHER
+    /// `acquire_owned_shard` OR `publish_shard_owner` DROPS that shard: it never
+    /// reaches `extend_owned_shards`, is never recovered, and is NEVER a hard
+    /// `Durability` error. A deposed survivor therefore leaves ZERO widened
+    /// owned-shards scope and recovers nothing.
     async fn adopt_shards_inner(&self, shards: &[usize]) -> Result<(), EngineError> {
-        // 1. Win the election for each shard and union-merge its committed
-        //    history locally (fences the dead owner). Off-runtime inside the seam.
-        self.store.acquire_owned_shards(shards)?;
-        // 2. Widen this node's enumeration scope to include the adopted shards
-        //    without dropping its own — recovery enumerates over the union.
-        self.store.extend_owned_shards(shards);
-        // 2b. Publish this node as each adopted shard's CURRENT owner in the
-        //     cluster's shard-owner directory (SS-3), so a request reaching a
-        //     DIFFERENT survivor resolves the shard to THIS adopter rather than
-        //     mis-routing to the dead declared owner (gap #2). The publish is
-        //     fenced by the election just won, so only the true adopter writes it.
-        //     A single-node / non-distributed store no-ops this.
-        for &shard in shards {
-            self.store.publish_shard_owner(shard)?;
-        }
-        // 3. Re-resident the adopted workflows through the production recovery
-        //    seam (idempotent: this node's own workflows are skipped).
+        // 1-3. Drive the double-adoption fence in the FIXED order (acquire →
+        //      publish per shard as a UNIT, then re-assert ownership and widen the
+        //      enumeration scope ONCE) and learn which shards survived it. A shard
+        //      deposed at acquire OR publish (or in the residual window) is dropped
+        //      cleanly — never extended, never recovered, never a hard error. The
+        //      planner GUARANTEES each survivor's publish-fence precedes both the
+        //      scope widening and (below) recovery. A single-node store no-ops
+        //      every step, so this path stays byte-identical there.
+        // The returned survivor set is already reflected in the store's widened
+        // owned-shard scope (the planner's single `extend`), which is what recovery
+        // enumerates over; the value is bound only to make that contract explicit.
+        let _recoverable =
+            super::fence::plan_adopted_shards(&super::fence::StoreFenceSeam { store: &*self.store }, shards)?;
+        // 4. Re-resident the adopted workflows through the production recovery
+        //    seam (idempotent: this node's own workflows are skipped). Recovery
+        //    enumerates over the owned scope, which now contains only shards that
+        //    survived the fence.
         super::startup::recover_adopted_shards(super::startup::StartupRecoveryContext {
             store: Arc::clone(&self.store),
             visibility_store: Arc::clone(&self.visibility_store),

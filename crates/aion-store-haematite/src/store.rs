@@ -58,7 +58,10 @@ use haematite::sync::{DistributionEndpoint, ProposeWrite, SyncNodeId};
 use haematite::{Database, DatabaseConfig, DatabaseError, Hash};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{api_error, database_error, join_error, serde_error};
+use crate::error::{
+    acquire_election_error, api_error, database_error, join_error, resolve_cas_conflict,
+    serde_error,
+};
 use crate::keyspace;
 
 /// Quorum-replication routing for a distributed [`HaematiteStore`].
@@ -618,8 +621,20 @@ impl HaematiteStore {
         });
         match result {
             Ok(_) => Ok(()),
-            // Out-voted by the shard's promised ballot: this node is not the owner.
+            // Out-voted by the shard's promised ballot: a higher-ballot owner
+            // deposed this node. This is the authoritative supersession signal —
+            // ABORT (the typed variants, not the value-hash CAS, discriminate
+            // supersession now).
             Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner { shard }),
+            // Value-CAS mismatch alone: this node is still the live owner, but a
+            // concurrent re-publish raced the value-hash precondition. This is
+            // benign and idempotent — re-read the directory and treat an
+            // identical/own owner record as success; only surface an error if a
+            // DIFFERENT live owner is recorded (a genuine ownership disagreement).
+            Err(DatabaseError::CasConflict { .. }) => {
+                let recorded = self.read_shard_owner(shard)?;
+                resolve_cas_conflict(recorded.as_deref(), &routing.node_id, shard)
+            }
             Err(error) => Err(database_error(&error)),
         }
     }
@@ -650,6 +665,62 @@ impl HaematiteStore {
         String::from_utf8(bytes)
             .map(Some)
             .map_err(|error| StoreError::Backend(format!("corrupt shard-owner record: {error}")))
+    }
+
+    /// Win the per-shard election and become the live owner of a SINGLE `shard`
+    /// BEFORE the engine recovers over it (SS-2, per-shard seam).
+    ///
+    /// This is the per-shard primitive [`Self::acquire_owned_shards`] loops over,
+    /// exposed on its own so the adoption path can drive a per-shard abort seam:
+    /// a clean election loss on one shard ([`StoreError::NotOwner`]) must DROP only
+    /// that shard rather than failing the whole batch (ADR-021 clean-partial).
+    ///
+    /// Only a DISTRIBUTED store elects; a single-node store owns everything
+    /// unconditionally, so this is a no-op returning `Ok(())` there — boot and
+    /// adoption stay byte-identical to the non-distributed path. The election is
+    /// blocking and runs off the tokio runtime, like the replication write path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotOwner`] when a strictly higher ballot deposed this
+    /// candidate (the acquire-time twin of a fenced publish — a clean, droppable
+    /// loss), and [`StoreError::Backend`] for a quorum-unavailable election or any
+    /// transport/replication fault (retryable; ownership unknown).
+    pub fn acquire_owned_shard(&self, shard: usize) -> Result<(), StoreError> {
+        let Some(routing) = self.distribution.as_ref() else {
+            // Single-node mode: nothing to elect, owns everything already.
+            return Ok(());
+        };
+        let database = self.inner.database();
+        run_off_runtime(|| {
+            database.acquire_shard_and_serve(shard, &routing.membership, routing.timeout)
+        })
+        .map(|_outcome| ())
+        .map_err(|error| acquire_election_error(&error, shard))
+    }
+
+    /// Whether this node currently holds LIVE serve-authority for `shard` — it won
+    /// the election THIS process lifetime and has not been deposed in-process.
+    ///
+    /// A distribution-gated seam over haematite's
+    /// [`haematite::Database::is_current_owner`]: it reads the in-memory live epoch
+    /// the per-write fence stamps against, so a `true` answer is consistent with
+    /// the write-time fence at the instant it is read. This is the residual-window
+    /// re-assertion the adoption path uses to exclude a survivor that lost its
+    /// epoch between winning acquire+publish and widening its scope.
+    ///
+    /// POINT-IN-TIME ADVISORY: ownership can be lost concurrently, so callers must
+    /// NOT treat `true` as a durable lock — the authoritative gate remains the
+    /// per-write CAS fence. A single-node / non-distributed store owns everything
+    /// unconditionally, so this returns `true` (the existing owns-everything no-op),
+    /// keeping the non-distributed path byte-identical.
+    #[must_use]
+    pub fn is_current_owner(&self, shard: usize) -> bool {
+        if self.distribution.is_none() {
+            // Single-node: owns everything unconditionally.
+            return true;
+        }
+        self.inner.database().is_current_owner(shard)
     }
 
     /// Snapshot the owned-shard scope as an owned `Option<Vec<usize>>` suitable
@@ -1582,18 +1653,27 @@ impl ReadableEventStore for HaematiteStore {
     /// like the replication write path — which is what lets the async engine
     /// builder drive it directly.
     fn acquire_owned_shards(&self, shards: &[usize]) -> Result<(), StoreError> {
-        let Some(routing) = self.distribution.as_ref() else {
-            // Single-node mode: nothing to elect, owns everything already.
-            return Ok(());
-        };
-        let database = self.inner.database();
+        // A thin loop over the per-shard primitive so the slice and per-shard
+        // forms classify a clean election loss identically (ElectionLost ->
+        // NotOwner; quorum/transport -> Backend). A single-node store no-ops.
         for &shard in shards {
-            run_off_runtime(|| {
-                database.acquire_shard_and_serve(shard, &routing.membership, routing.timeout)
-            })
-            .map_err(|error| database_error(&error))?;
+            self.acquire_owned_shard(shard)?;
         }
         Ok(())
+    }
+
+    /// Win the per-shard election for a SINGLE `shard` via the inherent
+    /// [`Self::acquire_owned_shard`], so the adoption path can drive a per-shard
+    /// abort seam through the type-erased `dyn ReadableEventStore` it holds.
+    fn acquire_owned_shard(&self, shard: usize) -> Result<(), StoreError> {
+        Self::acquire_owned_shard(self, shard)
+    }
+
+    /// Whether this node currently holds live serve-authority for `shard` via the
+    /// inherent [`Self::is_current_owner`], so the adoption path can re-assert
+    /// ownership through the type-erased `dyn ReadableEventStore` it holds.
+    fn is_current_owner(&self, shard: usize) -> bool {
+        Self::is_current_owner(self, shard)
     }
 
     /// Widen the owned-enumeration scope by `shards`, unioning with the current
@@ -2527,6 +2607,40 @@ mod tests {
             ));
         };
         assert_eq!(store.shard_for_workflow(&minted), target);
+        Ok(())
+    }
+
+    /// ADR-021 single-node / non-distributed path stays byte-identical: every
+    /// fence seam is a no-op. `acquire_owned_shard` and `publish_shard_owner`
+    /// return `Ok(())`, `read_shard_owner` is `None` (no directory), `extend` does
+    /// not collapse the own-all scope, and `is_current_owner` is `true` (owns
+    /// everything unconditionally).
+    #[test]
+    fn single_node_fence_seam_is_a_noop() -> Result<(), StoreError> {
+        let store = HaematiteStore::create_with_shard_count(unique_dir("noop"), 4)?;
+        // Owns everything: scope is None and stays None through extend.
+        assert_eq!(store.owned_shards(), None, "single-node owns all shards");
+        store.acquire_owned_shard(2)?; // no election, Ok
+        store.publish_shard_owner(2)?; // no directory, Ok
+        assert_eq!(
+            store.read_shard_owner(2)?,
+            None,
+            "no directory on a single-node store"
+        );
+        ReadableEventStore::extend_owned_shards(&store, &[2]);
+        assert_eq!(
+            store.owned_shards(),
+            None,
+            "extend must not collapse the own-all scope to a finite set"
+        );
+        assert!(
+            store.is_current_owner(2),
+            "single-node owns every shard unconditionally"
+        );
+        assert!(
+            ReadableEventStore::is_current_owner(&store, 9),
+            "the trait method agrees: own-all reports current owner of any shard"
+        );
         Ok(())
     }
 }

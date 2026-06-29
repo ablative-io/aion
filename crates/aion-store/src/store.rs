@@ -160,6 +160,47 @@ pub trait ReadableEventStore: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Acquire-and-serve ownership of a SINGLE distribution `shard` — the
+    /// per-shard primitive [`Self::acquire_owned_shards`] is a loop over, exposed
+    /// so the failover path can drive a per-shard abort seam: a clean election
+    /// loss on one shard ([`StoreError::NotOwner`]) drops only that shard rather
+    /// than failing the whole adoption batch (ADR-021 clean-partial).
+    ///
+    /// The default implementation is a deliberate no-op returning `Ok(())` —
+    /// single-shard / non-distributed backends own everything unconditionally and
+    /// elect nothing. Only a DISTRIBUTED sharded backend (haematite) overrides it.
+    /// Decorators that wrap another store must forward this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotOwner`] when a strictly higher ballot deposed this
+    /// candidate (a clean, droppable election loss), and [`StoreError::Backend`]
+    /// for a quorum-unavailable election or any transport fault (retryable).
+    fn acquire_owned_shard(&self, shard: usize) -> Result<(), StoreError> {
+        let _ = shard;
+        Ok(())
+    }
+
+    /// Whether this node currently holds LIVE serve-authority for `shard` — it won
+    /// the per-shard election THIS process lifetime and has not been deposed
+    /// in-process.
+    ///
+    /// This is the residual-window re-assertion the failover path uses to exclude
+    /// a survivor that lost its epoch between winning acquire+publish and widening
+    /// its enumeration scope (ADR-021 clean-partial). It is a POINT-IN-TIME
+    /// ADVISORY, not a durable lock — the authoritative gate remains the per-write
+    /// CAS fence.
+    ///
+    /// The default implementation returns `true` — single-shard / non-distributed
+    /// backends own everything unconditionally, so the failover path's
+    /// re-assertion is a no-op there and behaviour stays byte-identical. Only a
+    /// DISTRIBUTED sharded backend (haematite) overrides it. Decorators that wrap
+    /// another store must forward this call.
+    fn is_current_owner(&self, shard: usize) -> bool {
+        let _ = shard;
+        true
+    }
+
     /// Add `shards` to this node's owned-enumeration scope, UNIONING them with
     /// the shards it already owns rather than replacing the set.
     ///

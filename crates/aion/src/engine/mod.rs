@@ -8,6 +8,8 @@ mod api_schedule;
 pub mod builder;
 /// Delegated signal, query, and event-publishing seams.
 pub mod delegated;
+/// Double-adoption fence-ordering planner (ADR-021 clean-partial).
+mod fence;
 /// Runtime package-load seam: live load, routing, listing, unload.
 mod reload;
 /// `EngineHandle` seam implementation for the engine.
