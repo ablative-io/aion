@@ -62,6 +62,11 @@ export type StartWorkflowParams = {
   input?: JsonRecord | undefined;
   /** Optional R-4 steered-start routing key. */
   routingKey?: string | undefined;
+  /**
+   * Optional default task queue for this workflow's activities (the namespace ×
+   * task_queue targeting story). Empty/absent = the namespace's default queue.
+   */
+  taskQueue?: string | undefined;
 };
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -268,6 +273,9 @@ export class ApiClient {
     }
     if (params.routingKey !== undefined) {
       body.routing_key = params.routingKey;
+    }
+    if (params.taskQueue !== undefined) {
+      body.task_queue = params.taskQueue;
     }
 
     const response = await this.request<unknown>(

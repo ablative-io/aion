@@ -23,6 +23,14 @@ use super::schedule_source::{HistoryScheduleNamespaceSource, ScheduleNamespaceSo
 /// started through this server.
 pub const NAMESPACE_ATTRIBUTE: &str = "aion.namespace";
 
+/// Search attribute name that records the default task queue a workflow was
+/// started against (the namespace × `task_queue` targeting story). Recorded
+/// durably in the same atomic append as `WorkflowStarted`, mirroring
+/// [`NAMESPACE_ATTRIBUTE`], so the start-time queue selection survives replay
+/// and failover. Absent when the start did not select a task queue (the
+/// workflow falls back to the namespace's default queue).
+pub const TASK_QUEUE_ATTRIBUTE: &str = "aion.task_queue";
+
 /// Where a caller's grants came from, so a denial message can point the
 /// operator at the knob that actually carries the grant (the development
 /// headers, or the validated token's claims).

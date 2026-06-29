@@ -30,6 +30,11 @@ message StartWorkflowRequest {
   // to shard_for(routing_key)'s owner (forwarded there if this node is not the
   // owner). Empty/absent keeps the unsteered (R-1 remint) behaviour.
   optional string routing_key = 4;
+  // Optional task queue this workflow defaults its activities to (the
+  // namespace x task_queue targeting story). When set, it is recorded durably
+  // on the start so it survives replay/failover. Empty/absent keeps the
+  // namespace's default queue.
+  optional string task_queue = 5;
 }
 
 message StartWorkflowResponse {

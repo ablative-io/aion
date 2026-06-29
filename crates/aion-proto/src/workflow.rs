@@ -20,6 +20,12 @@ pub struct ProtoStartWorkflowRequest {
     /// owner). `None`/empty keeps the unsteered R-1 remint behaviour.
     #[prost(string, optional, tag = "4")]
     pub routing_key: Option<String>,
+    /// Optional task queue this workflow defaults its activities to (the
+    /// namespace × `task_queue` targeting story). When set, the server records it
+    /// durably on the start so it survives replay/failover. `None`/empty keeps
+    /// the namespace's default queue.
+    #[prost(string, optional, tag = "5")]
+    pub task_queue: Option<String>,
 }
 
 /// Proto representation of `StartWorkflowResponse`.
@@ -250,6 +256,7 @@ mod tests {
             workflow_type: String::from("checkout"),
             input: Some(payload("input")?),
             routing_key: Some(String::from("tenant-a/order-1")),
+            task_queue: Some(String::from("gpu")),
         };
         let response = ProtoStartWorkflowResponse {
             workflow_id: Some(ProtoWorkflowId::from(workflow_id())),

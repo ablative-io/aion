@@ -53,6 +53,13 @@ pub async fn start_with_placement(
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
     let input = required_payload(request.input.clone())?;
+    // An empty task_queue means "not selected": fall back to the namespace's
+    // default queue rather than recording an empty selection.
+    let task_queue = request
+        .task_queue
+        .as_deref()
+        .map(str::trim)
+        .filter(|queue| !queue.is_empty());
     let span = info_span!(
         "engine_operation",
         operation = "start",
@@ -60,7 +67,7 @@ pub async fn start_with_placement(
         workflow_id = tracing::field::Empty,
         workflow_type = %request.workflow_type,
     );
-    let search_attributes = namespace_search_attributes(&namespace);
+    let search_attributes = start_search_attributes(&namespace, task_queue);
     let handle = async {
         scoped
             .engine()
@@ -89,14 +96,28 @@ pub async fn start_with_placement(
     })
 }
 
-/// Search attribute map stamping the authorized namespace onto an execution.
-fn namespace_search_attributes(
+/// Search attribute map stamping the authorized namespace — and, when the start
+/// selected one, the default task queue — onto an execution.
+///
+/// Both are recorded in the same atomic append as `WorkflowStarted`, so the
+/// `(namespace, task_queue)` targeting selection survives restarts/failover and
+/// is never tracked only in memory. `task_queue` is omitted when the start did
+/// not select one (the workflow falls back to the namespace's default queue).
+fn start_search_attributes(
     namespace: &str,
+    task_queue: Option<&str>,
 ) -> std::collections::HashMap<String, aion_core::SearchAttributeValue> {
-    std::collections::HashMap::from([(
+    let mut attributes = std::collections::HashMap::from([(
         crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
         aion_core::SearchAttributeValue::String(namespace.to_owned()),
-    )])
+    )]);
+    if let Some(task_queue) = task_queue {
+        attributes.insert(
+            crate::namespace::TASK_QUEUE_ATTRIBUTE.to_owned(),
+            aion_core::SearchAttributeValue::String(task_queue.to_owned()),
+        );
+    }
+    attributes
 }
 
 /// Handles a decoded signal request.
@@ -259,6 +280,7 @@ mod tests {
             workflow_type: "missing-workflow".to_owned(),
             input: Some(proto_payload()?),
             routing_key: None,
+            task_queue: None,
         };
 
         let error = start(&context.guard, &context.caller, request).await;
@@ -273,6 +295,42 @@ mod tests {
             "workflow type missing-workflow is not registered"
         );
         Ok(())
+    }
+
+    #[test]
+    fn start_records_namespace_only_when_no_task_queue_selected() {
+        use crate::namespace::{NAMESPACE_ATTRIBUTE, TASK_QUEUE_ATTRIBUTE};
+
+        let attributes = start_search_attributes("tenant-a", None);
+        assert_eq!(
+            attributes.get(NAMESPACE_ATTRIBUTE),
+            Some(&aion_core::SearchAttributeValue::String(
+                "tenant-a".to_owned()
+            ))
+        );
+        // No selection => no task_queue attribute is recorded, so the workflow
+        // falls back to the namespace's default queue.
+        assert!(!attributes.contains_key(TASK_QUEUE_ATTRIBUTE));
+    }
+
+    #[test]
+    fn start_records_selected_task_queue_durably_like_namespace() {
+        use crate::namespace::{NAMESPACE_ATTRIBUTE, TASK_QUEUE_ATTRIBUTE};
+
+        let attributes = start_search_attributes("tenant-a", Some("gpu"));
+        assert_eq!(
+            attributes.get(NAMESPACE_ATTRIBUTE),
+            Some(&aion_core::SearchAttributeValue::String(
+                "tenant-a".to_owned()
+            ))
+        );
+        // The selected task_queue rides the SAME search-attribute map as the
+        // namespace, so it lands in the same atomic WorkflowStarted append and
+        // survives replay/failover exactly as the namespace does.
+        assert_eq!(
+            attributes.get(TASK_QUEUE_ATTRIBUTE),
+            Some(&aion_core::SearchAttributeValue::String("gpu".to_owned()))
+        );
     }
 
     #[tokio::test]
@@ -526,6 +584,7 @@ mod tests {
             workflow_type: "fixture".to_owned(),
             input: None,
             routing_key: None,
+            task_queue: None,
         };
 
         let error = start(&guard, &caller, request).await;

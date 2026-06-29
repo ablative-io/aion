@@ -389,6 +389,7 @@ async fn execute_start(input: &Value, context: &mut ScenarioContext) -> Result<V
                 namespace: input_str(input, "namespace").map(ToOwned::to_owned),
                 idempotency_key: input_str(input, "idempotencyKey").map(ToOwned::to_owned),
                 routing_key: input_str(input, "routingKey").map(ToOwned::to_owned),
+                task_queue: input_str(input, "taskQueue").map(ToOwned::to_owned),
             },
         )
         .await?;
