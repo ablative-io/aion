@@ -55,7 +55,13 @@ tower = { workspace = true, features = ["util"] }
 # CORS is config-driven and secure-by-default: with no configured origins the
 # layer is not installed and no cross-origin request is allowed.
 tower-http = { version = "0.6", features = ["cors"] }
-rust-embed = "8.11.0"
+# Embeds the built dashboard bundle into the binary. OPTIONAL and OFF by
+# default: a default `cargo build -p aion-server` does NOT pull rust-embed and
+# does NOT require the dashboard to be built (no bun needed). Enabled only by
+# the `embed-dashboard` feature, which release builds turn on so the single
+# binary ships the real web UI. With the feature off, `/` serves a branded
+# placeholder page documenting how to build/run the dashboard.
+rust-embed = { version = "8.11.0", optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 toml = "1.1.2"
@@ -113,6 +119,13 @@ zip = { workspace = true }
 [features]
 default = []
 auth = ["dep:jsonwebtoken", "dep:reqwest"]
+# Embeds the built dashboard bundle (rust_embed over `dashboard-embed/`) into the
+# binary so the single `aion server` process serves the real web UI at `/`. OFF
+# by default to keep `cargo build -p aion-server` bun-free for backend-only devs;
+# with it off, `/` serves a branded placeholder page that documents the dev-server
+# URL and the build command. Release builds enable it (via aion-cli's `release`
+# feature). Build the bundle first with `cargo xtask build-dashboard`.
+embed-dashboard = ["dep:rust-embed"]
 # Cross-node outbox dispatch over liminal (#13-0 spike). OFF by default so a
 # default build is byte-identical and never links liminal-sdk/beamr. When on,
 # `outbox.transport = liminal` selects the liminal dispatch + completion path.

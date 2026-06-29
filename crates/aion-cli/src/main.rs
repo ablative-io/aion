@@ -335,7 +335,15 @@ async fn main() -> ExitCode {
     match cli.command {
         // The server owns its own reporting contract: tracing-logged errors
         // and the operations exit codes (2 = config, 130 = forced).
-        Command::Server(ref args) => aion_server::run(args.clone().into()).await,
+        Command::Server(ref args) => {
+            // `--open` is a CLI-only nicety: resolve the served URL from the
+            // effective config and, once the listener is reachable, open it in
+            // the browser. Best-effort — a failure to open never blocks the run.
+            if args.open() {
+                server::spawn_browser_open(&args.clone().into());
+            }
+            aion_server::run(args.clone().into()).await
+        }
         Command::Dev(ref args) => {
             // The dev loop runs locally and drives the running server over the
             // same operator deploy RPC `aion deploy` uses; it reports through

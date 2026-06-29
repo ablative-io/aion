@@ -1,0 +1,56 @@
+name: dashboard-embed
+
+# WS5: ship the real dashboard inside the aion-server binary.
+#
+# Three DISTINCT guards (kept separate so there is no write-then-assert
+# contradiction):
+#   1. wire-types-no-diff  — regenerate the ts-rs wire types and assert the
+#      committed generated files match (read-only assertion on already-committed
+#      output). Does NOT build the dashboard.
+#   2. embed-build         — run the full embed pipeline (regenerate types, build
+#      the dashboard with bun, sync into dashboard-embed/) THEN build with
+#      --features embed-dashboard, and smoke-check that a release artifact does
+#      NOT serve the committed placeholder stub.
+#   3. release-feature-guard — a release that FORGOT the embed feature is caught
+#      loudly: the release build always passes the feature, and the smoke check
+#      fails if `/` serves the placeholder marker.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # GUARD 1: committed generated wire types match the exporter. Read-only assert.
+  wire-types-no-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate ts-rs wire types
+        run: cargo test -p aion-core export_dashboard_wire_types
+      - name: Assert no diff (committed generated types are up to date)
+        run: |
+          if ! git diff --exit-code -- apps/aion-dashboard/src/types/generated/; then
+            echo "::error::Generated wire types are stale. Run: cargo test -p aion-core export_dashboard_wire_types, then commit." >&2
+            exit 1
+          fi
+
+  # GUARD 2 + 3: build the real bundle, embed it, build with the feature, and
+  # smoke-check that the embedded binary does NOT serve the placeholder stub.
+  embed-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - name: Run the embed pipeline (regen types + bun build + sync)
+        run: cargo xtask build-dashboard
+      - name: Build with the dashboard embedded
+        run: cargo build -p aion-server --features embed-dashboard
+      # The release artifact ALWAYS carries the embed feature (guard against a
+      # release that forgot it).
+      - name: Build the release binary with the dashboard embedded
+        run: cargo build -p aion-cli --release --features release
+      - name: Smoke check — released binary serves the real dashboard, not the stub
+        run: bash ci/smoke-embed.sh
