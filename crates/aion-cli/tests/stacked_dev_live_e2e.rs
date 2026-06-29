@@ -196,8 +196,9 @@ fn build_worker_binary(repo: &Path) -> Result<PathBuf, TestError> {
 }
 
 /// Write the dev-config the server boots from, mirroring the shared template
-/// with reserved loopback ports. The store stays the relative `aion.db`,
-/// which lands in `project` because the server runs from there.
+/// with reserved loopback ports. The store uses the default durable ablative
+/// backend (haematite) rooted at a relative `aion-data`, which lands in
+/// `project` because the server runs from there.
 fn write_server_config(project: &Path, http_port: u16, grpc_port: u16) -> Result<(), TestError> {
     let config = format!(
         r#"[server]
@@ -205,14 +206,15 @@ listen_address = "127.0.0.1:{http_port}"
 grpc_address = "127.0.0.1:{grpc_port}"
 
 [store]
-backend = "libsql"
-url = "aion.db"
+backend = "haematite"
+data_dir = "aion-data"
 
 [runtime]
 query_timeout_ms = 10000
 
 [websocket]
 event_broadcast_capacity = 1024
+cluster_broadcast_capacity = 64
 
 [deploy]
 enabled = true

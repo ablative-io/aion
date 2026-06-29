@@ -9,8 +9,17 @@ listen_address = "127.0.0.1:8080"   # HTTP/JSON API + dashboard
 grpc_address = "127.0.0.1:50051"    # gRPC API + worker protocol
 
 [store]
-backend = "libsql"                  # durable; "memory" loses state on stop
-url = "aion.db"                     # embedded libSQL file, created on start
+backend = "haematite"               # durable ablative event store (the default)
+data_dir = "aion-data"              # haematite database directory, created on start
+# shard_count = 1                   # shards on a fresh database (default 1)
+#
+# Lightweight alternative — embedded libSQL (requires the `libsql-backend`
+# feature: build with `cargo install aion-cli --features libsql-backend`):
+#   backend = "libsql"
+#   url = "aion.db"                 # embedded libSQL file, created on start
+#
+# Ephemeral only — in-memory store, loses all state on stop:
+#   backend = "memory"
 
 [runtime]
 # REQUIRED, no default: reply deadline for workflow queries, in milliseconds.
@@ -19,6 +28,9 @@ query_timeout_ms = 10000
 [websocket]
 # REQUIRED, no default: capacity of the global live-event broadcast channel.
 event_broadcast_capacity = 1024
+# REQUIRED, no default: capacity of the WS3 cluster topology broadcast channel
+# (always mounted on /events/stream). Cluster events are low-rate, so keep small.
+cluster_broadcast_capacity = 64
 
 [deploy]
 # Runtime package deploy/route/unload. Dark by default; both ceilings are

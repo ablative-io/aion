@@ -347,6 +347,18 @@ fn embedded_subscription_target(
             aion_proto::subscription_request::Subscription::Filtered(_)
             | aion_proto::subscription_request::Subscription::Firehose(_),
         ) => Ok((None, aion::EventFilter::default())),
+        Some(aion_proto::subscription_request::Subscription::Cluster(_)) => {
+            // The WS3 cluster topology/ownership channel is a server-side
+            // projection of distributed cluster state. The embedded in-process
+            // transport drives a single local engine with no cluster topology to
+            // project, so a cluster subscription is not serviceable here; reject it
+            // cleanly rather than silently degrading to a workflow event stream.
+            Err(ClientError::invalid_argument(
+                "cluster topology subscriptions are not supported by the embedded in-process \
+                 transport; connect to an aion-server over gRPC/WebSocket to subscribe to the \
+                 cluster channel",
+            ))
+        }
         None => Err(ClientError::invalid_argument(
             "subscription request is missing its subscription variant",
         )),

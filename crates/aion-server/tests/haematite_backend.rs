@@ -30,6 +30,7 @@ query_timeout_ms = 10000
 
 [websocket]
 event_broadcast_capacity = 64
+cluster_broadcast_capacity = 64
 "#
     )
 }
@@ -49,7 +50,12 @@ fn haematite_config_parses_and_validates() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
-fn haematite_config_rejects_missing_data_dir() -> Result<(), Box<dyn std::error::Error>> {
+fn haematite_backend_defaults_data_dir_when_absent() -> Result<(), Box<dyn std::error::Error>> {
+    // The ablative stack is the out-of-box durable default, so the haematite
+    // backend now carries a sensible default `data_dir` ("aion-data"): selecting
+    // `backend = "haematite"` without a data_dir is valid and uses the default
+    // rather than failing validation. (An EXPLICITLY empty `data_dir = ""` is
+    // still rejected — see `haematite_config_rejects_empty_data_dir`.)
     let toml = r#"
 [server]
 listen_address = "127.0.0.1:8080"
@@ -57,13 +63,46 @@ grpc_address = "127.0.0.1:50051"
 
 [store]
 backend = "haematite"
+
+[runtime]
+query_timeout_ms = 10000
+
+[websocket]
+event_broadcast_capacity = 64
+cluster_broadcast_capacity = 64
+"#;
+    let config = ServerConfig::from_slice(toml.as_bytes())?;
+    assert_eq!(config.store.backend, StoreBackend::Haematite);
+    assert_eq!(config.store.data_dir.as_deref(), Some("aion-data"));
+    Ok(())
+}
+
+#[test]
+fn haematite_config_rejects_empty_data_dir() -> Result<(), Box<dyn std::error::Error>> {
+    // An explicitly empty data_dir is a misconfiguration, not "use the default":
+    // the operator named the key, so validate() rejects the empty value.
+    let toml = r#"
+[server]
+listen_address = "127.0.0.1:8080"
+grpc_address = "127.0.0.1:50051"
+
+[store]
+backend = "haematite"
+data_dir = ""
+
+[runtime]
+query_timeout_ms = 10000
+
+[websocket]
+event_broadcast_capacity = 64
+cluster_broadcast_capacity = 64
 "#;
     match ServerConfig::from_slice(toml.as_bytes()) {
-        Ok(_) => Err("haematite backend without data_dir must be rejected".into()),
+        Ok(_) => Err("haematite backend with an empty data_dir must be rejected".into()),
         Err(error) => {
             assert!(
                 error.to_string().contains("data_dir"),
-                "error should name the missing data_dir: {error}"
+                "error should name the empty data_dir: {error}"
             );
             Ok(())
         }
@@ -117,6 +156,7 @@ query_timeout_ms = 10000
 
 [websocket]
 event_broadcast_capacity = 64
+cluster_broadcast_capacity = 64
 "#
     )
 }
@@ -162,6 +202,7 @@ query_timeout_ms = 10000
 
 [websocket]
 event_broadcast_capacity = 64
+cluster_broadcast_capacity = 64
 "#;
     match ServerConfig::from_slice(toml.as_bytes()) {
         Ok(_) => Err("[store.cluster] on a non-haematite backend must be rejected".into()),

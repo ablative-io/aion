@@ -5,6 +5,12 @@
 //! bootstrap intact (config load, `ServerState::build`, outbox dispatcher gate,
 //! HTTP/gRPC transports) without adding public test APIs or manually spawning an
 //! `OutboxDispatcher`.
+//!
+//! The libSQL store is now an opt-in backend (`libsql-backend`); this end-to-end
+//! boots a real server over `store.backend = libsql`, so it compiles and runs
+//! only under that feature. Run it with
+//! `cargo test -p aion-server --features libsql-backend`.
+#![cfg(feature = "libsql-backend")]
 
 #[path = "run_server_outbox_support/helpers.rs"]
 mod helpers;

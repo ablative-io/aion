@@ -479,11 +479,12 @@ pub struct OutboxConfig {
     /// attempt count.
     pub reconcile_stale_after_ms: Option<u64>,
     /// Wire transport the dispatcher uses to place a claimed row with a worker.
-    /// Defaults to [`OutboxTransport::Grpc`] (the connected-worker registry), so
-    /// a default server is byte-identical to before this field existed. Setting
-    /// `liminal` selects the cross-node liminal transport, which is only built
-    /// when the `liminal-transport` Cargo feature is enabled; selecting it in a
-    /// build without that feature is a configuration error surfaced at spawn.
+    /// Defaults to [`OutboxTransport::Liminal`] whenever the `liminal-transport`
+    /// Cargo feature is compiled (the default ablative-stack build), so an
+    /// outbox-enabled server uses the liminal cross-node transport out of the box;
+    /// a slim build without that feature defaults to [`OutboxTransport::Grpc`].
+    /// Selecting `liminal` in a build without the feature is a configuration error
+    /// surfaced at spawn. The transport only matters when `outbox.enabled = true`.
     pub transport: OutboxTransport,
     /// Address (`host:port`) the aion-server LISTENS on for inbound liminal
     /// worker connections, used only when `transport = liminal`. REQUIRED in that
@@ -505,16 +506,26 @@ pub struct OutboxConfig {
 
 /// Wire transport selected for outbox dispatch.
 ///
-/// `grpc` (the default) keeps the existing connected-worker registry path
-/// unchanged. `liminal` routes the dispatch over the liminal cross-node bus and
-/// is gated behind the `liminal-transport` Cargo feature (#13-0 spike).
+/// `liminal` (the default whenever the `liminal-transport` feature is compiled —
+/// which it is in the default ablative-stack build) routes the dispatch over the
+/// liminal cross-node bus. `grpc` keeps the connected-worker registry path. A
+/// slim build compiled WITHOUT `liminal-transport` falls back to `grpc` as the
+/// default so the default is always constructible under the active feature set.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutboxTransport {
-    /// Dispatch over the in-process connected-worker gRPC registry (default).
-    #[default]
+    /// Dispatch over the in-process connected-worker gRPC registry. The default
+    /// in a slim build compiled WITHOUT `liminal-transport`, which cannot
+    /// construct the liminal path.
+    // The default variant is feature-selected: gRPC when the liminal transport is
+    // absent (it is the only constructible path), liminal otherwise.
+    #[cfg_attr(not(feature = "liminal-transport"), default)]
     Grpc,
     /// Dispatch over the liminal cross-node bus (requires `liminal-transport`).
+    /// The out-of-box default whenever `liminal-transport` is compiled (the
+    /// default ablative-stack feature set), so an outbox-enabled server uses the
+    /// ablative messaging transport without extra configuration.
+    #[cfg_attr(feature = "liminal-transport", default)]
     Liminal,
 }
 
@@ -713,7 +724,16 @@ impl ServerConfig {
         }
         if let Some(url) = &cli.store_url {
             self.store.url = Some(url.clone());
-            if self.store.backend == StoreBackend::Memory {
+            // `--store-url` names an embedded libSQL database file, so it is an
+            // explicit libSQL selection: coerce the implicit durable defaults
+            // (memory, or the new haematite default) to libsql. An operator who
+            // explicitly set `backend = "libsql"` already lands here too. The
+            // haematite backend ignores `store.url`, so the only way `--store-url`
+            // is meaningful is as a libSQL choice.
+            if matches!(
+                self.store.backend,
+                StoreBackend::Memory | StoreBackend::Haematite
+            ) {
                 self.store.backend = StoreBackend::LibSql;
             }
         }
@@ -963,13 +983,27 @@ impl Default for ServerSection {
     }
 }
 
+/// Default haematite data directory for the unconfigured durable backend.
+///
+/// An empty `[store]` section (or no config file at all) now selects the ablative
+/// stack's haematite event store rooted here, so a stock server is durable out of
+/// the box. `validate()` requires a non-empty `data_dir` when the backend is
+/// haematite, so the default must supply one or an otherwise-empty config would
+/// fail validation. Operators override it with `store.data_dir` /
+/// `AION_STORE_DATA_DIR`, or opt out with `backend = "memory"` / `"libsql"`.
+pub const DEFAULT_HAEMATITE_DATA_DIR: &str = "aion-data";
+
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            backend: StoreBackend::Memory,
+            // The ablative stack is the out-of-box durable default: an empty
+            // config selects the haematite backend rooted at
+            // `DEFAULT_HAEMATITE_DATA_DIR`. `memory` (ephemeral) and `libsql`
+            // (lightweight, opt-in feature) remain explicit operator choices.
+            backend: StoreBackend::Haematite,
             url: None,
             owned_shards: Vec::new(),
-            data_dir: None,
+            data_dir: Some(DEFAULT_HAEMATITE_DATA_DIR.to_owned()),
             shard_count: 1,
             cluster: None,
         }
@@ -1869,7 +1903,14 @@ mod tests {
     fn default_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = ServerConfig::default();
 
-        assert_eq!(config.store.backend, StoreBackend::Memory);
+        // The ablative stack is the out-of-box durable default: an empty config
+        // selects the haematite backend rooted at the default data_dir, so a stock
+        // server is durable without any [store] configuration. The default MUST
+        // carry data_dir or validate() would reject it (data_dir is required for
+        // haematite).
+        assert_eq!(config.store.backend, StoreBackend::Haematite);
+        assert_eq!(config.store.data_dir.as_deref(), Some("aion-data"));
+        assert_eq!(config.store.shard_count, 1);
         assert_eq!(config.store.url, None);
         assert_eq!(config.server.grpc_address.to_string(), "127.0.0.1:50051");
         assert_eq!(config.server.listen_address.to_string(), "127.0.0.1:8080");
@@ -2089,6 +2130,11 @@ mod tests {
             ..CliOverrides::default()
         };
         let mut config = ServerConfig::default();
+        // This test exercises CLI workflow-package discovery against the ephemeral
+        // in-memory store, so it opts OUT of the new durable haematite default
+        // explicitly (the default would otherwise carry a haematite data_dir).
+        config.store.backend = StoreBackend::Memory;
+        config.store.data_dir = None;
         // Even zero-config development runs must size event streaming and the
         // query reply deadline explicitly (config keys or the
         // AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY /

@@ -47,5 +47,9 @@ tokio = { workspace = true, features = [
 ] }
 
 [features]
-default = []
+# The in-process ablative engine is the out-of-box client path: a default
+# `aion-client` embeds the aion-rs engine so callers run workflows in-process.
+# The gRPC/tonic transport stays available (it is always compiled) but is no
+# longer the sole default. A slim caller can opt out with `--no-default-features`.
+default = ["embedded"]
 embedded = ["dep:aion"]

@@ -60,9 +60,19 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 tokio-stream = { workspace = true, features = ["net"] }
 
 [features]
+# The ablative stack is the out-of-box default for the `aion` binary, mirroring
+# aion-server: a stock `cargo build -p aion-cli` links the haematite event-store
+# backend and the liminal transport, so `backend = "haematite"` is selectable
+# without a special flag and the runtime default backend is haematite. The slim
+# opt-out is `--no-default-features --features libsql-backend`.
+default = ["haematite-backend", "liminal-transport"]
 # Forwarded to the embedded server. Off by default, matching the feature set
 # the standalone `aion-server` binary shipped with.
 auth = ["aion-server/auth"]
+# Forwarded to the embedded server: compiles the libSQL event-store backend so
+# `store.backend = libsql` is selectable. The lightweight opt-out path; pair it
+# with `--no-default-features` to build a slim `aion` without haematite/liminal.
+libsql-backend = ["aion-server/libsql-backend"]
 # The release profile of the `aion` binary: turns on the embedded dashboard so a
 # shipped binary serves the real web UI at the server's HTTP port. OFF by default
 # so a plain debug `cargo build -p aion-cli` stays bun-free (no dashboard build

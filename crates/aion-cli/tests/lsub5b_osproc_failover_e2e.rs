@@ -85,6 +85,7 @@ default = "default"
 
 [websocket]
 event_broadcast_capacity = 1024
+cluster_broadcast_capacity = 64
 
 [outbox]
 enabled = true

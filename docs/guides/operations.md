@@ -50,8 +50,15 @@ grpc_address = "127.0.0.1:50051"        # default; gRPC API + worker protocol
                                         # both need explicit non-zero ports
 
 [store]
-backend = "memory"                      # default; "libsql" for durability
-url = "aion.db"                         # REQUIRED when backend = "libsql":
+backend = "haematite"                   # default; durable ablative event store.
+                                        # "libsql" = lightweight embedded backend
+                                        # (libsql-backend feature); "memory" =
+                                        # ephemeral, loses state on stop
+data_dir = "aion-data"                  # default ("aion-data"); REQUIRED when
+                                        # backend = "haematite": database dir,
+                                        # created on start
+shard_count = 1                         # default; shards on a fresh haematite db
+# url = "aion.db"                       # REQUIRED when backend = "libsql":
                                         # embedded libSQL file, created on start
 
 [runtime]
@@ -101,8 +108,9 @@ Every key: `AION_<SECTION>_<KEY>`, uppercase, underscores. Examples:
 
 ```sh
 AION_SERVER_GRPC_ADDRESS=127.0.0.1:60051
-AION_STORE_BACKEND=libsql
-AION_STORE_URL=aion.db
+AION_STORE_BACKEND=haematite            # default; "libsql" or "memory" to opt out
+AION_STORE_DATA_DIR=aion-data           # haematite database directory
+# AION_STORE_BACKEND=libsql AION_STORE_URL=aion.db   # lightweight embedded opt-out
 AION_RUNTIME_QUERY_TIMEOUT_MS=10000
 AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024
 AION_DEPLOY_ENABLED=true
@@ -185,7 +193,8 @@ Metrics (Prometheus text at `GET /metrics` when `[metrics] enabled`):
 ## Persistence and recovery
 
 Status is a projection of event history; there is no mutable run state to
-lose. With the **libsql** store:
+lose. With a durable store — the **haematite** event store (the default,
+first-class ablative backend) or the lightweight embedded **libsql** store:
 
 1. Every workflow event (start, activity scheduled/completed, timer fired,
    signal, terminal) is appended durably as it happens.
@@ -238,8 +247,8 @@ On SIGINT/SIGTERM the server drains: it stops accepting mutations
 explicit message; the versions read model keeps serving), asks workers to
 finish in-flight tasks (`DrainRequest`), and waits up to
 `[drain] timeout_seconds`. `kill -9` skips all of that and is still safe
-with the libsql store — that is the point of event sourcing — but in-flight
-activities will re-dispatch on recovery.
+with a durable store (haematite or libsql) — that is the point of event
+sourcing — but in-flight activities will re-dispatch on recovery.
 
 ## Operating runs
 
