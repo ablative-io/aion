@@ -372,11 +372,23 @@ pub struct WebSocketConfig {
     pub cluster_broadcast_capacity: Option<usize>,
 }
 
-/// Operator-facing message for an absent or zero `event_broadcast_capacity`.
-pub(crate) const EVENT_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.event_broadcast_capacity is required and has no default: the server always mounts /events/stream, so live event streaming capacity must be configured explicitly; set websocket.event_broadcast_capacity (or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY) to a positive integer sized for global event volume across all namespaces";
+/// Default `event_broadcast_capacity` applied when omitted, so a minimal/empty
+/// config boots without forcing the operator to size a tuning knob. Sized for
+/// global event volume across namespaces; override for high-throughput fleets.
+pub const DEFAULT_EVENT_BROADCAST_CAPACITY: usize = 256;
 
-/// Operator-facing message for an absent or zero `cluster_broadcast_capacity`.
-pub(crate) const CLUSTER_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.cluster_broadcast_capacity is required and has no default: the server always mounts the WS3 cluster subscription on /events/stream, so the cluster topology broadcast capacity must be configured explicitly; set websocket.cluster_broadcast_capacity (or AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY) to a positive integer (cluster events are low-rate, so this is typically small)";
+/// Default `cluster_broadcast_capacity` applied when omitted. Cluster topology
+/// events are low-rate, so a small lag buffer is ample.
+pub const DEFAULT_CLUSTER_BROADCAST_CAPACITY: usize = 64;
+
+/// Operator-facing message for an explicitly zero `event_broadcast_capacity`
+/// (omitting the key uses [`DEFAULT_EVENT_BROADCAST_CAPACITY`]; an explicit zero
+/// is a genuine misconfiguration — a zero-capacity channel streams nothing).
+pub(crate) const EVENT_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.event_broadcast_capacity must be a positive integer when set (the server always mounts /events/stream, so a zero-capacity channel would stream nothing); omit websocket.event_broadcast_capacity (or AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY) to use the default, or set it to a positive integer";
+
+/// Operator-facing message for an explicitly zero `cluster_broadcast_capacity`
+/// (omitting the key uses [`DEFAULT_CLUSTER_BROADCAST_CAPACITY`]).
+pub(crate) const CLUSTER_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.cluster_broadcast_capacity must be a positive integer when set (the server always mounts the WS3 cluster subscription on /events/stream); omit websocket.cluster_broadcast_capacity (or AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY) to use the default, or set it to a positive integer";
 
 /// Operator deploy API settings from `[deploy]`.
 ///
@@ -407,8 +419,14 @@ pub(crate) const DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED: &str = "deploy.max_archive_b
 /// Operator-facing message for an absent or zero `deploy.max_inflated_bytes`.
 pub(crate) const DEPLOY_MAX_INFLATED_BYTES_REQUIRED: &str = "deploy.max_inflated_bytes is required and has no default when deploy.enabled is true: the decompressed-contents ceiling for uploaded archives must be an explicit operator decision (a compressed upload under deploy.max_archive_bytes can inflate ~1000:1); set deploy.max_inflated_bytes (or AION_DEPLOY_MAX_INFLATED_BYTES) to a positive number of bytes no smaller than deploy.max_archive_bytes";
 
-/// Operator-facing message for an absent or zero `query_timeout_ms`.
-pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms is required and has no default: the server always mounts /workflows/query, so the workflow query reply deadline must be configured explicitly; set runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to a positive number of milliseconds";
+/// Default `query_timeout_ms` applied when omitted, so a minimal/empty config
+/// boots with a sane workflow-query reply deadline instead of failing startup.
+pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 10_000;
+
+/// Operator-facing message for an explicitly zero `query_timeout_ms` (omitting
+/// the key uses [`DEFAULT_QUERY_TIMEOUT_MS`]; an explicit zero is a genuine
+/// misconfiguration — a zero deadline would fail every query immediately).
+pub(crate) const QUERY_TIMEOUT_REQUIRED: &str = "runtime.query_timeout_ms must be a positive integer when set (the server always mounts /workflows/query, so a zero deadline would fail every query immediately); omit runtime.query_timeout_ms (or AION_RUNTIME_QUERY_TIMEOUT_MS) to use the default, or set it to a positive number of milliseconds";
 
 /// Local dev-server surface settings from `[dev]`.
 ///
@@ -648,8 +666,26 @@ impl ServerConfig {
         env::overlay(&mut config)?;
         config.apply_cli_overrides(cli);
         config.load_discovered_workflow_packages(cli, Path::new("."))?;
+        config.fill_operational_defaults();
         config.validate()?;
         Ok(config)
+    }
+
+    /// Fill operational tuning knobs that have a sane default when omitted, so a
+    /// minimal or empty config boots without forcing the operator to hand-author
+    /// values that are pure tuning. Uses `get_or_insert`, so an explicitly set
+    /// value (including a misconfigured `0`, which [`Self::validate`] still
+    /// rejects) is left untouched; only an absent (`None`) field is defaulted.
+    fn fill_operational_defaults(&mut self) {
+        self.runtime
+            .query_timeout_ms
+            .get_or_insert(DEFAULT_QUERY_TIMEOUT_MS);
+        self.websocket
+            .event_broadcast_capacity
+            .get_or_insert(DEFAULT_EVENT_BROADCAST_CAPACITY);
+        self.websocket
+            .cluster_broadcast_capacity
+            .get_or_insert(DEFAULT_CLUSTER_BROADCAST_CAPACITY);
     }
 
     fn load_discovered_workflow_packages(
@@ -672,9 +708,10 @@ impl ServerConfig {
     ///
     /// Returns [`ServerError::Config`] when parsing fails or values are invalid.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ServerError> {
-        let config: Self = toml::from_slice(bytes).map_err(|source| ServerError::Config {
+        let mut config: Self = toml::from_slice(bytes).map_err(|source| ServerError::Config {
             message: format!("invalid server config: {source}"),
         })?;
+        config.fill_operational_defaults();
         config.validate()?;
         Ok(config)
     }
@@ -1198,7 +1235,8 @@ mod duration_millis {
 #[cfg(test)]
 mod tests {
     use super::{
-        CliOverrides, ServerConfig, StoreBackend, discover_workflow_packages,
+        CliOverrides, DEFAULT_CLUSTER_BROADCAST_CAPACITY, DEFAULT_EVENT_BROADCAST_CAPACITY,
+        DEFAULT_QUERY_TIMEOUT_MS, ServerConfig, StoreBackend, discover_workflow_packages,
         merge_workflow_packages,
     };
 
@@ -1250,23 +1288,25 @@ mod tests {
     }
 
     #[test]
-    fn missing_event_broadcast_capacity_fails_startup_validation_naming_the_key() {
-        // The server unconditionally mounts /events/stream; a configuration
-        // without explicit broadcast capacity must fail loudly at startup
-        // instead of leaving streaming dark.
-        let result = ServerConfig::default().validate();
+    fn missing_event_broadcast_capacity_uses_default() -> Result<(), Box<dyn std::error::Error>> {
+        // The server unconditionally mounts /events/stream, but the channel
+        // capacity is a tuning knob: omitting it must resolve to the default and
+        // boot, not fail startup.
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
 
-        let message = result
-            .err()
-            .map_or_else(String::new, |error| error.to_string());
-        assert!(
-            message.contains("websocket.event_broadcast_capacity"),
-            "validation message must name the missing key: {message}"
+                [websocket]
+                cluster_broadcast_capacity = 64
+            ",
+        )?;
+        assert_eq!(
+            config.websocket.event_broadcast_capacity,
+            Some(DEFAULT_EVENT_BROADCAST_CAPACITY),
+            "omitted event_broadcast_capacity must resolve to the default"
         );
-        assert!(
-            message.contains("AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY"),
-            "validation message must name the environment override: {message}"
-        );
+        Ok(())
     }
 
     #[test]
@@ -1288,12 +1328,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_cluster_broadcast_capacity_fails_startup_validation_naming_the_key() {
-        // The server unconditionally mounts the WS3 cluster subscription on
-        // /events/stream; a config that sizes the workflow channel but omits the
-        // cluster channel must still fail loudly (the cluster lag contract has no
-        // buffer to lag against unless sized).
-        let result = ServerConfig::from_slice(
+    fn missing_cluster_broadcast_capacity_uses_default() -> Result<(), Box<dyn std::error::Error>> {
+        // A config that sizes the workflow channel but omits the low-rate cluster
+        // channel must resolve the cluster capacity to its default and boot, not
+        // fail loudly.
+        let config = ServerConfig::from_slice(
             br"
                 [runtime]
                 scheduler_threads = 1
@@ -1302,19 +1341,13 @@ mod tests {
                 [websocket]
                 event_broadcast_capacity = 64
             ",
+        )?;
+        assert_eq!(
+            config.websocket.cluster_broadcast_capacity,
+            Some(DEFAULT_CLUSTER_BROADCAST_CAPACITY),
+            "omitted cluster_broadcast_capacity must resolve to the default"
         );
-
-        let message = result
-            .err()
-            .map_or_else(String::new, |error| error.to_string());
-        assert!(
-            message.contains("websocket.cluster_broadcast_capacity"),
-            "validation message must name the missing cluster key: {message}"
-        );
-        assert!(
-            message.contains("AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY"),
-            "validation message must name the cluster environment override: {message}"
-        );
+        Ok(())
     }
 
     #[test]
@@ -1340,11 +1373,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_query_timeout_fails_startup_validation_naming_the_key() {
-        // The server unconditionally mounts /workflows/query; a configuration
-        // without an explicit query reply deadline must fail loudly at
-        // startup instead of mounting an unanswerable surface.
-        let result = ServerConfig::from_slice(
+    fn missing_query_timeout_uses_default() -> Result<(), Box<dyn std::error::Error>> {
+        // The server unconditionally mounts /workflows/query, but the reply
+        // deadline is a tuning knob: omitting it must resolve to the default and
+        // boot, not fail startup.
+        let config = ServerConfig::from_slice(
             br"
                 [runtime]
                 scheduler_threads = 1
@@ -1353,19 +1386,36 @@ mod tests {
                 event_broadcast_capacity = 64
                 cluster_broadcast_capacity = 64
             ",
+        )?;
+        assert_eq!(
+            config.runtime.query_timeout_ms,
+            Some(DEFAULT_QUERY_TIMEOUT_MS),
+            "omitted query_timeout_ms must resolve to the default"
         );
+        Ok(())
+    }
 
-        let message = result
-            .err()
-            .map_or_else(String::new, |error| error.to_string());
-        assert!(
-            message.contains("runtime.query_timeout_ms"),
-            "validation message must name the missing key: {message}"
+    #[test]
+    fn empty_config_boots_on_operational_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        // The headline zero-config contract: an empty TOML must parse, fill every
+        // operational tuning knob with its default, and validate — so `aion
+        // server` runs with no hand-authored file. The durable default backend
+        // (haematite under its default data_dir) carries the store side.
+        let config = ServerConfig::from_slice(b"")?;
+        assert_eq!(config.store.backend, StoreBackend::Haematite);
+        assert_eq!(
+            config.runtime.query_timeout_ms,
+            Some(DEFAULT_QUERY_TIMEOUT_MS)
         );
-        assert!(
-            message.contains("AION_RUNTIME_QUERY_TIMEOUT_MS"),
-            "validation message must name the environment override: {message}"
+        assert_eq!(
+            config.websocket.event_broadcast_capacity,
+            Some(DEFAULT_EVENT_BROADCAST_CAPACITY)
         );
+        assert_eq!(
+            config.websocket.cluster_broadcast_capacity,
+            Some(DEFAULT_CLUSTER_BROADCAST_CAPACITY)
+        );
+        Ok(())
     }
 
     #[test]
