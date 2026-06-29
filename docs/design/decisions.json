@@ -1,6 +1,6 @@
 {
   "project": "aion",
-  "updated": "2026-06-21",
+  "updated": "2026-06-29",
   "decisions": [
     {
       "id": "ADR-001",
@@ -253,6 +253,95 @@
       ],
       "supersedes": [],
       "superseded_by": ""
+    },
+    {
+      "id": "ADR-015",
+      "scope": "aion-dashboard",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: URL is state — every meaningful view state is deep-linkable",
+      "context": "Operators hand off incidents mid-triage. A console whose view state lives in ephemeral component memory cannot be shared, bookmarked, or restored — the receiver re-navigates from scratch, and back/forward break. Temporal's console is the negative example: little of its view state is URL-addressable. The fork: keep view state in component memory (simpler to build) or make every meaningful state URL-encoded and router-driven (more constraint, but shareable).",
+      "decision": "Every meaningful view state — namespace, selected workflow, selected event/bar, scrub seq, active search query and filters, active view — is URL-encoded and router-driven; component-local state holds only ephemeral UI (hover, transient focus). Rejected: ephemeral in-memory view state — it forfeits shareable/bookmarkable/back-forward-correct navigation, which is the 3 a.m. handoff primitive (paste a link in Slack, land on the exact bar at the exact scrub point).",
+      "quote": "Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.",
+      "consequences": [
+        "The router is the single source of view state; every new view must define its URL schema as part of its design.",
+        "Operator-action URLs (reopen/cancel) may address a target but never auto-execute — the action still requires an explicit confirm (ADR-013 / VISION §7).",
+        "VISION §1 (professional-console bar) and §6.5 (URL as state) are bound by this; reviewers check that no shareable state is trapped in component memory."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-016",
+      "scope": "aion-dashboard",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: the console never lies about its own provenance/freshness",
+      "context": "After a read fails over to a survivor, or when a socket drops, a console that silently shows stale or wrong-node data misleads an operator under pressure — the most dangerous moment to be misled. The fork: assume-fresh (simpler UI, no provenance plumbing) vs always-surface provenance + freshness.",
+      "decision": "The dashboard always surfaces its own data provenance and freshness: which node it is reading from, the last seq it has applied, and an explicit 'viewing a survivor' signal after a read fails over. A silently stale or post-failover view is a defect, not a graceful degradation. Rejected: assume-fresh / render data without provenance — under failover that turns the console into a confident liar exactly when truth matters most.",
+      "quote": "Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.",
+      "consequences": [
+        "Every read path carries source-node + last-applied-seq provenance through to the UI; the connection/staleness indicator is non-negotiable (VISION §6.3).",
+        "Depends on the server exposing source-node identity and a seq cursor on reads/streams (coordinate with the AW contract and the §8 failover-event promotion).",
+        "Reviewers check that no view can present stale/old-node data without an honest indicator."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-017",
+      "scope": "aion-dashboard",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: keyboard-first with a command palette as the spine",
+      "context": "The consoles operators reach for under pressure — k9s, Linear, Superhuman — are dense and keyboard-driven; Temporal is sparse and mouse-bound. The fork: mouse-primary with keyboard as an accessibility afterthought, or keyboard-first with a command palette as the universal entry point.",
+      "decision": "Keyboard-first: a command palette (universal Cmd-K / '/' entry) is the fastest path to everything — jump to a workflow, run a search, switch namespace, issue an action — and every primary surface is fully keyboard-navigable, with context-sensitive palette actions. Mouse stays fully supported, but keyboard is never a second-class path. Rejected: mouse-primary / keyboard-as-afterthought — it cedes speed-of-triage, a direct outclass vector over Temporal.",
+      "quote": "Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.",
+      "consequences": [
+        "A global command-palette + keybinding system is core architecture from the start, not bolted on later (VISION §4.6).",
+        "Every view defines its keyboard navigation model and its palette action contributions as part of its design.",
+        "Palette actions that mutate state route through the command API and the confirm boundary (VISION §7), never direct writes."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-018",
+      "scope": "aion-dashboard",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: performance is a budgeted, measured feature",
+      "context": "'Faster than logs' is meaningless without numbers. A console that janks at 10k events, or blocks on first paint, loses operator trust precisely when speed matters. The fork: best-effort performance vs committed, measured budgets treated as correctness.",
+      "decision": "Performance is a committed contract: the swimlane stays smooth at 10k+ events via virtualized lanes while live events append; the triage surface paints the top incident within one screen on first load; list and search results stream/virtualize rather than block. Budgets are measured, not merely asserted, and a regression past them is treated as a defect. Rejected: best-effort performance — it lets the console degrade into a slower-than-logs tool under real load, defeating its entire premise.",
+      "quote": "Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.",
+      "consequences": [
+        "Virtualized rendering is required for the swimlane, list, and search from the start (not retrofitted); large-history handling is designed in.",
+        "Performance budgets become explicit review/CI criteria (VISION §6.6).",
+        "The swimlane/scrubber bespoke rendering layer must be built against these budgets."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-019",
+      "scope": "aion-dashboard",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: the healthy/calm state is designed, not an empty page",
+      "context": "A triage-first console risks shipping only the broken-state design and leaving the healthy 99% case as an empty or spinning page; the tool then only feels finished when something is on fire. The fork: triage-only, or an equally-designed ambient healthy state.",
+      "decision": "The healthy/ambient cluster-heartbeat state — nodes live, shards owned, workers connected, throughput nominal — gets the same design care as the incident cards; the operator who glances at a calm cluster sees a legible 'all clear', not emptiness. Rejected: triage-only / undesigned healthy state — it leaves the console feeling unfinished in its most common condition and erodes trust in the quiet.",
+      "quote": "Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.",
+      "consequences": [
+        "The three-AM view (VISION §4.4) must render a designed calm state, reading the same topology/throughput signals positively.",
+        "Empty/healthy is a first-class design state alongside loading/error/incident; reviewers check it exists and is legible."
+      ],
+      "superseded_by": "",
+      "supersedes": []
     }
   ]
 }

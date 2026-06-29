@@ -33,13 +33,13 @@ type NamespaceScopedSubscriptionInput<TFilter extends AionEventSubscriptionFilte
    * how callers gate subscriptions on terminal workflows or an unselected
    * namespace without reaching for a non-null assertion.
    */
-  enabled?: boolean;
-  afterSeq?: number;
-  lastSeenSequence?: number;
+  enabled?: boolean | undefined;
+  afterSeq?: number | undefined;
+  lastSeenSequence?: number | undefined;
   filter: Omit<TFilter, 'namespace'> | null;
-  manager?: EventSubscriptionManager;
+  manager?: EventSubscriptionManager | undefined;
   onEvent: (event: Event) => void;
-  onResync?: (context: ResyncContext) => void;
+  onResync?: ((context: ResyncContext) => void) | undefined;
 };
 
 export function namespaceSubscriptionFilter<TFilter extends AionEventSubscriptionFilter>(
@@ -56,7 +56,10 @@ export function subscribeToNamespaceFilter<TFilter extends AionEventSubscription
   namespace: Namespace,
   filter: Omit<TFilter, 'namespace'>,
   onEvent: (event: Event) => void,
-  options: { afterSeq?: number; onResync?: (context: ResyncContext) => void } = {}
+  options: {
+    afterSeq?: number | undefined;
+    onResync?: ((context: ResyncContext) => void) | undefined;
+  } = {}
 ) {
   const handler: AionEventHandler = (event) => onEvent(event);
 

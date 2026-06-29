@@ -27,11 +27,11 @@ const RUNNING_FILTER: WorkflowFilter = { ...FAILED_FILTER, status: 'Running' };
 
 export type UseIncidentsOptions = {
   /** Override for tests; defaults to the slice's own default ApiClient. */
-  apiClient?: ApiClient;
+  apiClient?: ApiClient | undefined;
   /** Injectable clock for deterministic stuck-detection tests. */
-  now?: number;
+  now?: number | undefined;
   /** Override the stuck-running age threshold (ms). */
-  stuckThresholdMs?: number;
+  stuckThresholdMs?: number | undefined;
 };
 
 export type IncidentsState = {

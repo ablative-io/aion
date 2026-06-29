@@ -11,7 +11,7 @@ import { IncidentCard } from './IncidentCard';
 export type TriageViewProps = {
   namespace: Namespace | null;
   /** Override for tests; defaults to the hook's own default ApiClient. */
-  client?: ApiClient;
+  client?: ApiClient | undefined;
 };
 
 /**
@@ -34,7 +34,7 @@ export function TriageView({ namespace, client }: TriageViewProps) {
   return <TriageViewInner client={client} />;
 }
 
-function TriageViewInner({ client }: { client?: ApiClient }) {
+function TriageViewInner({ client }: { client?: ApiClient | undefined }) {
   const { incidents, isLoading, isError, error, refetch, gatedFeeds } = useIncidents({
     apiClient: client,
   });

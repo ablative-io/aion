@@ -20,12 +20,12 @@ const STATUS_STYLES: Record<ConnectionStatus, string> = {
 
 export type ConnectionIndicatorContentProps = {
   status: ConnectionStatus;
-  className?: string;
+  className?: string | undefined;
   /**
    * Last typed socket error (M1). When present it is rendered as visible state
    * below the badge so a stranger can read *why* the stream is degraded.
    */
-  error?: AionSocketError | null;
+  error?: AionSocketError | null | undefined;
 };
 
 /**

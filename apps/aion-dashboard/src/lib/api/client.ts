@@ -85,12 +85,12 @@ export type ApiClientOptions = {
 
 export type RequestOptions = {
   namespace: Namespace;
-  credentials?: ApiCredentials;
+  credentials?: ApiCredentials | undefined;
 };
 
 export type WorkflowPageRequest = {
-  cursor?: string;
-  limit?: number;
+  cursor?: string | undefined;
+  limit?: number | undefined;
 };
 
 /**
@@ -122,8 +122,15 @@ export class ApiClient {
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = stripTrailingSlash(options.baseUrl ?? '');
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.credentials = options.credentials;
+    // Default to a fetch whose `this` is bound to the realm's global. Storing the
+    // bare global `fetch` and calling it as `this.fetchImpl(...)` would invoke it
+    // with the wrong receiver and throw `TypeError: Illegal invocation` at runtime;
+    // an explicitly-bound wrapper keeps the default correct while still allowing an
+    // injected fetchImpl (e.g. in tests).
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+    if (options.credentials !== undefined) {
+      this.credentials = options.credentials;
+    }
   }
 
   async queryWorkflows(
@@ -260,11 +267,16 @@ export class ApiClient {
     options: RequestOptions,
     body?: RequestBody
   ): Promise<T> {
-    const response = await this.fetchImpl(buildUrl(this.baseUrl, path), {
+    const init: RequestInit = {
       method,
       headers: this.buildHeaders(options),
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    };
+
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+
+    const response = await this.fetchImpl(buildUrl(this.baseUrl, path), init);
 
     if (!response.ok) {
       const errorBody = await readJson(response).catch(() => null);

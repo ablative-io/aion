@@ -48,12 +48,12 @@ export type UseFanOutProgressOptions = {
   namespace: Namespace;
   workflowId: WorkflowId | null;
   /** Read target base URL; a change (own-read failover) rebuilds the client. */
-  baseUrl?: string;
-  apiClient?: HistoryClient;
-  manager?: Manager;
+  baseUrl?: string | undefined;
+  apiClient?: HistoryClient | undefined;
+  manager?: Manager | undefined;
   /** Seed arity when no ActivityScheduled events are present yet (e.g. collect_four → 4). */
-  seedArity?: number | null;
-  enabled?: boolean;
+  seedArity?: number | null | undefined;
+  enabled?: boolean | undefined;
 };
 
 export function deriveArity(events: readonly Event[], seedArity: number | null): number | null {

@@ -28,8 +28,8 @@ export function WorkflowRow({ workflow }: WorkflowRowProps) {
   );
 }
 
-function formatWorkflowTimestamp(value: string | null): string {
-  if (value === null || value.length === 0) {
+function formatWorkflowTimestamp(value: string | null | undefined): string {
+  if (value === null || value === undefined || value.length === 0) {
     return '—';
   }
 

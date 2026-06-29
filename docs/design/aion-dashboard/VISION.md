@@ -82,14 +82,49 @@ rather than fight them:
    version a run was pinned to (from `WorkflowStarted.package_version`), never a
    re-resolved "latest", because that pinned version is what replay uses.
 
+**The professional-console bar.** Beyond the hand-plane aesthetic, five
+operational disciplines separate a tool an on-call engineer trusts from a
+workflow *viewer*. They are first-class, not polish, and each is recorded as a
+binding decision (ADR-015..ADR-019). They are Phase-1 obligations (§9), not
+deferred refinements:
+
+- **Deep-linkable by construction (ADR-015).** Every meaningful view state — the
+  selected workflow, the selected swimlane bar, the scrub position, the active
+  search query, the namespace — is encoded in the URL. A URL *is* an app state:
+  an operator pastes a link into Slack at 3 a.m. and the responder lands on the
+  exact same bar at the exact same scrub point. State lives in the URL, not in
+  ephemeral component memory. This is the single strongest "professional
+  software" tell and the thing Temporal does worst. (§6.5)
+- **The console never lies about itself (ADR-016).** It always surfaces its own
+  data provenance and freshness: which node it is reading from, the last `seq`
+  it has applied, and — after a read fails over to a survivor — an explicit "you
+  are viewing a survivor" signal. Under pressure the operator must never have to
+  wonder whether the screen is stale or post-failover. A silently stale view is
+  a defect, not a degradation. (§6.3)
+- **Keyboard-first and dense (ADR-017).** The consoles operators reach for under
+  pressure — k9s, Linear, Superhuman — are dense and keyboard-driven; Temporal
+  is sparse and mouse-bound. A command palette (jump to a workflow, run a
+  search, issue an action) and real keyboard navigation are core interaction,
+  not an accessibility afterthought. (§4.6)
+- **Performance is a feature with a budget (ADR-018).** "Faster than logs" has
+  teeth: the swimlane stays smooth at 10k+ events via virtualized rendering, the
+  triage surface paints the one broken thing within a single screen without
+  scrolling, and primary views reach useful content faster than opening a log
+  tail. These budgets are stated and measured, not aspirational. (§6.6)
+- **The calm state is designed too (ADR-019).** The console is triage-first, but
+  the 99% case is an operator glancing at a healthy cluster. The ambient
+  "everything is fine — here is the heartbeat" state earns the same design care
+  as the incident surface; the tool must feel finished when nothing is on fire,
+  not only when something is. (§4.4)
+
 ---
 
 ## 2. The two shifts
 
 The dashboard's ambition is defined by two simultaneous capability shifts in
 the stack, both rooted in beamr 0.11.0's cooperative wasm-runtime and its
-hardened 3+-peer mesh handshake. These are the conceptual foundation; the five
-concepts (§5) are how they become a tool.
+hardened 3+-peer mesh handshake. These are the conceptual foundation; the core
+concepts (§4) are how they become a tool.
 
 ### Shift 1 — A distributed-system ops console, not just a workflow viewer
 
@@ -257,7 +292,7 @@ Source: shard ownership (`crates/aion-server/src/run.rs`,
 
 ---
 
-## 4. The five concepts (specced as final form)
+## 4. The core concepts (specced as final form)
 
 These are the validated centerpiece concepts. Each is specified here as its
 *end-state*, not a first cut.
@@ -359,8 +394,16 @@ died, survivor B adopted shard 3, worker redialed, 4 items re-dispatched, all
 terminal-once" — the failover story as a live, legible incident, not a log
 archaeology dig.
 
+**The calm state.** Triage-first does not mean broken-only. When nothing is
+wrong, this surface is the ambient cluster heartbeat — nodes live, shards owned,
+workers connected, throughput nominal — designed with the same care as the
+incident cards (ADR-019). The operator who glances at a healthy cluster sees a
+legible "all clear", not an empty page; the tool feels finished when nothing is
+on fire, not only when something is.
+
 **Data it reads.** §3.1 (failures), §3.2 (`Failed` rows), §3.3 (worker death),
-§3.4 (node/shard/fenced).
+§3.4 (node/shard/fenced); the healthy-state heartbeat reads the same topology
+and throughput signals, read positively.
 
 ### 4.5 Event-level search
 
@@ -378,6 +421,29 @@ core can also search OPFS-persisted history offline.
 bug for 20+ months. Because Aion's events are uniform, envelope-keyed, and
 server-queryable, event-level search is essentially free for us and a genuine
 differentiator.
+
+### 4.6 Command palette & keyboard control
+
+**What it shows.** A single keyboard-summoned palette (the universal `⌘K` / `/`
+entry) that is the fastest path to everything: jump to a workflow by id or type,
+run an event search, switch namespace, open the three-AM view, or issue an
+operator action (reopen / cancel) on the focused workflow. Every primary surface
+is reachable and operable without the mouse.
+
+**How it behaves.** The palette is fuzzy, recency-aware, and context-sensitive —
+its action list reflects the current selection (a focused failed workflow offers
+"reopen"/"cancel"; a worker offers "inspect"). Keyboard navigation moves between
+lanes and bars in the swimlane, between incidents in triage, and between results
+in search, with consistent bindings surfaced inline. Mouse stays fully
+supported; keyboard is simply never a second-class path.
+
+**Why it's an outclass.** The consoles operators trust under pressure are
+keyboard-first; Temporal's is mouse-driven and sparse. Making the whole console
+operable from the keyboard, with a palette as the spine, is a direct
+speed-of-triage advantage at 3 a.m. (ADR-017).
+
+**Data it reads.** No new sources — it is an interaction layer over §3.1–§3.4
+and the existing views.
 
 ---
 
@@ -447,6 +513,12 @@ silently stale view. Namespace selection scopes every query and subscription.
 These are non-negotiable: an operator who left the console open overnight must
 wake to a live view.
 
+Beyond liveness, the console is honest about its own **provenance**: it always
+shows which node it is reading from and the last `seq` it has applied, and when
+reads fail over to a survivor it says so explicitly ("viewing a survivor"). A
+stale or post-failover view is never silent — the operator can always trust what
+the screen claims to be (ADR-016).
+
 ### 6.4 House stack
 
 React 19 + TypeScript + Vite + Tailwind v4 + Bun + Biome (100-char), shadcn/
@@ -456,6 +528,26 @@ scaffold, so the dashboard reads as part of the same codebase. Wire types are
 generated, never hand-defined. The swimlane/scrubber rendering layer is the one
 place that warrants bespoke, carefully-built visualization code; everything
 around it stays house-conventional.
+
+### 6.5 URL as state (deep-linking)
+
+Every meaningful view state is URL-encoded so that a link reproduces it exactly:
+namespace, selected workflow, selected event/bar, scrub `seq`, active search
+query and filters, and the active view. Navigation is driven through the router;
+component-local state holds only ephemeral UI (hover, transient focus), never
+anything an operator would want to share or restore. This makes the console
+shareable, bookmarkable, and back/forward-correct — the 3 a.m. handoff primitive
+(ADR-015). Operator-action URLs (reopen/cancel) address the target but never
+auto-execute; the action still requires an explicit confirm (§7).
+
+### 6.6 Performance budgets
+
+Performance is a committed contract, not best-effort. The swimlane renders large
+histories (10k+ events) with virtualized lanes and stays interactive while live
+events append; the triage surface paints the top incident within one screen on
+first load; list and search results stream/virtualize rather than block. These
+budgets are measured (not merely asserted) and a regression past them is treated
+as a defect, not a tuning opportunity (ADR-018).
 
 ---
 
@@ -528,14 +620,18 @@ single writer. The dashboard requests; it never writes history. The reopen-diff
 Phasing here is **sequencing**. The end-state is the whole of §1–§7; neither
 phase narrows it.
 
-**Phase 1 — Ops console (server-side, shippable now).**
+**Phase 1 — Ops console (server-side, the always-available baseline).**
 The swimlane timeline as the core view; the workflow list, detail, and live
 feed; the full Shift-1 observable surface (outbox, worker topology, node/shard,
 fenced/death signals — modulo the failover-event promotion of §8); the
-three-AM triage view over a real cluster; event-level search; the scrubber and
-reopen-diff in their *server-reconstructed* form; reopen/cancel commands. This
-phase needs no WASM. It showcases the failover work and is the baseline for
-every deployment.
+three-AM triage view over a real cluster *including its designed calm state*
+(§4.4); event-level search; the command palette and full keyboard control
+(§4.6); the scrubber and reopen-diff in their *server-reconstructed* form;
+reopen/cancel commands. The five professional-console disciplines of §1 —
+deep-linking (§6.5), self-provenance (§6.3), keyboard-first interaction,
+performance budgets (§6.6), and the designed calm state — are Phase-1
+obligations, not later polish. This phase needs no WASM. It showcases the
+failover work and is the baseline for every deployment.
 
 **Phase 2 — In-browser replay engine (the novel bet).**
 Host the WASM engine + Haematite storage in the tab. Upgrade the scrubber to

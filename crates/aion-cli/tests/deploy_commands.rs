@@ -78,6 +78,7 @@ fn runtime_config() -> RuntimeConfig {
             http: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
         },
         tls: None,
+        cors_allowed_origins: Vec::new(),
         auth: AuthConfig {
             enabled: true,
             jwks_url: Some(SECRET.to_owned()),

@@ -548,3 +548,14 @@ workflow_id: WorkflowId,
  */
 run_id: RunId, } };
 
+export type DescribeWorkflowResponse = { 
+/**
+ * Workflow summary projected from authoritative history, when the workflow
+ * exists.
+ */
+summary: WorkflowSummary | null, 
+/**
+ * The run's event history as plain serialized events.
+ */
+history: Array<Event>, };
+

@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use ts_rs::{Config, TS};
 
 use crate::{
-    ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType, Event, EventEnvelope,
-    OverlapPolicy, PackageVersion, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
-    SearchAttributeValue, TimerId, TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkflowError,
-    WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ContentType,
+    DescribeWorkflowResponse, Event, EventEnvelope, OverlapPolicy, PackageVersion, Payload, RunId,
+    ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, TimerId, TimerIdKind,
+    TriggerSpec, WithTimeoutOutcome, WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus,
+    WorkflowSummary,
 };
 
 const DASHBOARD_GENERATED_DIR: &str = "../../apps/aion-dashboard/src/types/generated";
@@ -62,6 +63,7 @@ fn dashboard_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<EventEnvelope>(&config, &mut output)?;
     push_type::<WithTimeoutOutcome>(&config, &mut output)?;
     push_type::<Event>(&config, &mut output)?;
+    push_type::<DescribeWorkflowResponse>(&config, &mut output)?;
 
     Ok(output)
 }

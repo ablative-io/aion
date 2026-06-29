@@ -1,32 +1,12 @@
 //! HTTP body/payload encode-decode shapes and conversions.
 
+use aion_core::DescribeWorkflowResponse;
 use aion_proto::{ProtoDescribeWorkflowResponse, WireEnvelope, WireError};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 use super::error::HttpWireError;
 
 pub(crate) const JSON_CONTENT_TYPE: &str = "application/json";
-
-#[derive(Debug, Serialize)]
-pub(crate) struct HttpDescribeWorkflowResponse {
-    summary: Option<HttpEnvelope>,
-    history: Vec<HttpEnvelope>,
-}
-
-#[derive(Debug, Serialize)]
-struct HttpEnvelope {
-    namespace: String,
-    request_id: Option<String>,
-    payload: Option<HttpPayload>,
-}
-
-#[derive(Debug, Serialize)]
-struct HttpPayload {
-    content_type: String,
-    data: Value,
-}
 
 pub(super) fn http_input_payload(
     input: Value,
@@ -57,109 +37,36 @@ fn invalid_start_input() -> WireError {
     )
 }
 
-impl TryFrom<ProtoDescribeWorkflowResponse> for HttpDescribeWorkflowResponse {
-    type Error = HttpWireError;
-
-    fn try_from(response: ProtoDescribeWorkflowResponse) -> Result<Self, Self::Error> {
-        Ok(Self {
-            summary: response.summary.map(HttpEnvelope::try_from).transpose()?,
-            history: response
-                .history
-                .into_iter()
-                .map(HttpEnvelope::try_from)
-                .collect::<Result<Vec<_>, _>>()?,
-        })
-    }
+/// Convert the proto describe response into the dashboard-facing
+/// [`DescribeWorkflowResponse`]: the summary is decoded into the generated
+/// [`aion_core::WorkflowSummary`] shape and each history envelope is decoded
+/// into a plain [`aion_core::Event`], so the wire matches the generated
+/// TypeScript bindings field-for-field (no protobuf-derived `{content_type,
+/// data}` payload wrappers).
+pub(crate) fn describe_response_to_dashboard(
+    response: &ProtoDescribeWorkflowResponse,
+) -> Result<DescribeWorkflowResponse, HttpWireError> {
+    let summary = response
+        .summary
+        .as_ref()
+        .map(decode_summary_envelope)
+        .transpose()?;
+    let history = response
+        .history
+        .iter()
+        .map(decode_event_envelope)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DescribeWorkflowResponse { summary, history })
 }
 
-impl TryFrom<WireEnvelope> for HttpEnvelope {
-    type Error = HttpWireError;
-
-    fn try_from(envelope: WireEnvelope) -> Result<Self, Self::Error> {
-        Ok(Self {
-            namespace: envelope.namespace,
-            request_id: envelope.request_id,
-            payload: envelope.payload.map(HttpPayload::try_from).transpose()?,
-        })
-    }
+fn decode_summary_envelope(
+    envelope: &WireEnvelope,
+) -> Result<aion_core::WorkflowSummary, HttpWireError> {
+    aion_proto::decode_core_value::<aion_core::WorkflowSummary>(envelope).map_err(HttpWireError)
 }
 
-impl TryFrom<aion_proto::convert::ProtoPayload> for HttpPayload {
-    type Error = HttpWireError;
-
-    fn try_from(payload: aion_proto::convert::ProtoPayload) -> Result<Self, Self::Error> {
-        let content_type = payload.content_type;
-        Ok(Self {
-            data: payload_data(&content_type, &payload.bytes)?,
-            content_type,
-        })
-    }
-}
-
-fn http_payload_content_type(content_type: &str) -> &str {
-    if content_type == "Json" {
-        JSON_CONTENT_TYPE
-    } else {
-        content_type
-    }
-}
-
-fn is_json_content_type(content_type: &str) -> bool {
-    let normalized = http_payload_content_type(content_type);
-    normalized
-        .split_once(';')
-        .map_or(normalized, |(media_type, _parameters)| media_type)
-        .trim()
-        .eq_ignore_ascii_case(JSON_CONTENT_TYPE)
-}
-
-fn payload_data(content_type: &str, bytes: &[u8]) -> Result<Value, HttpWireError> {
-    if is_json_content_type(content_type) {
-        let value = serde_json::from_slice(bytes).map_err(|_error| {
-            HttpWireError(WireError::backend(
-                "application/json payload contains invalid JSON",
-            ))
-        })?;
-        rewrite_payload_values(value)
-    } else {
-        Ok(Value::String(BASE64_STANDARD.encode(bytes)))
-    }
-}
-
-fn rewrite_payload_values(value: Value) -> Result<Value, HttpWireError> {
-    match value {
-        Value::Array(values) => values
-            .into_iter()
-            .map(rewrite_payload_values)
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Array),
-        Value::Object(object)
-            if object.contains_key("content_type") && object.contains_key("bytes") =>
-        {
-            rewrite_payload_object(object)
-        }
-        Value::Object(object) => object
-            .into_iter()
-            .map(|(key, value)| rewrite_payload_values(value).map(|value| (key, value)))
-            .collect::<Result<Map<_, _>, _>>()
-            .map(Value::Object),
-        scalar => Ok(scalar),
-    }
-}
-
-fn rewrite_payload_object(object: Map<String, Value>) -> Result<Value, HttpWireError> {
-    let mut payload: aion_proto::convert::ProtoPayload =
-        serde_json::from_value(Value::Object(object)).map_err(|_error| {
-            HttpWireError(WireError::backend("stored payload envelope is malformed"))
-        })?;
-    if payload.content_type == "Json" {
-        JSON_CONTENT_TYPE.clone_into(&mut payload.content_type);
-    }
-    let payload = HttpPayload::try_from(payload)?;
-    Ok(json!({
-        "content_type": payload.content_type,
-        "data": payload.data,
-    }))
+fn decode_event_envelope(envelope: &WireEnvelope) -> Result<aion_core::Event, HttpWireError> {
+    aion_proto::decode_event(envelope).map_err(HttpWireError)
 }
 
 #[cfg(test)]
@@ -195,23 +102,6 @@ mod tests {
         );
         assert!(matches!(malformed, Err(error) if error.code == WireErrorCode::InvalidInput));
 
-        Ok(())
-    }
-
-    #[test]
-    fn http_payload_base64_encodes_non_json_bytes() -> Result<(), Box<dyn std::error::Error>> {
-        let data = payload_data("application/octet-stream", &[0, 1, 2])
-            .map_err(|error| std::io::Error::other(error.0.message))?;
-        assert_eq!(data, json!("AAEC"));
-        Ok(())
-    }
-
-    #[test]
-    fn http_payload_decodes_json_content_type_with_parameters()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let data = payload_data("application/json; charset=utf-8", br#"{"name":"Ada"}"#)
-            .map_err(|error| std::io::Error::other(error.0.message))?;
-        assert_eq!(data, json!({ "name": "Ada" }));
         Ok(())
     }
 }

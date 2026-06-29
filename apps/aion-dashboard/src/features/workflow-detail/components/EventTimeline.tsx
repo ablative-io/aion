@@ -5,10 +5,10 @@ import type { TimelineEntry as TimelineEntryModel } from '../types';
 import { TimelineEntry } from './TimelineEntry';
 
 type EventTimelineProps = {
-  events?: readonly Event[];
-  entries?: readonly TimelineEntryModel[];
-  selectedSequence?: number | null;
-  onSelect?: (entry: TimelineEntryModel) => void;
+  events?: readonly Event[] | undefined;
+  entries?: readonly TimelineEntryModel[] | undefined;
+  selectedSequence?: number | null | undefined;
+  onSelect?: ((entry: TimelineEntryModel) => void) | undefined;
 };
 
 function EventTimeline({ events, entries, selectedSequence = null, onSelect }: EventTimelineProps) {

@@ -1,0 +1,83 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/tomWhiting/aion.git",
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "brief_id": "OBX-012",
+  "reviewers": ["Waffles the Terrible"],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "OBX-012",
+    "cluster": "outbox",
+    "title": "run_server bootstrap integration test with outbox.enabled",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [],
+    "purpose": "The durable-outbox fan-out path already exists (OutboxStore trait + libsql impl, append_with_outbox, the OutboxDispatcher task in aion-server, and crash-recovery rearm_outbox_pending). What is missing is an end-to-end integration test that boots run_server with outbox.enabled=true and proves a fan-out workflow dispatches its members THROUGH the outbox table and the OutboxDispatcher and completes exactly once — including across a mid-flight restart. This locks in the outbox contract before the remaining outbox hardening (#9-11) and the later liminal swap (#13) build on it. See docs/AION-OUTBOX-BUILD-PLAN.md Phase 4.",
+    "task": "Add a black-box integration test that starts a real run_server (or the closest existing test harness) configured with outbox.enabled=true and outbox.batch_size set, runs a fan-out workflow (collect_all over N children), and asserts the members are dispatched via the outbox (rows transition pending -> claimed -> done) and all complete exactly once. Add a second scenario that restarts the server mid-flight (between dispatch and completion) and asserts recovery re-arms the pending outbox rows and the workflow still completes with no duplicate terminal events and no double-wake. Reuse existing server/test harnesses and the existing ConnectedWorkerRegistry path; do not re-implement the outbox.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Happy-path outbox fan-out integration test",
+        "spec": "WHEN run_server is started with outbox.enabled=true and a valid outbox.batch_size, and a fan-out workflow (collect over N members) is executed, THE SYSTEM SHALL dispatch every member through the outbox table and the OutboxDispatcher, and all N members SHALL complete exactly once. THE TEST SHALL observe the outbox row lifecycle (pending -> claimed -> done) via the store, not via internal mocks.",
+        "acceptance": [
+          "A new integration test (tests/ in aion-server or the appropriate crate) boots run_server with outbox.enabled=true + an explicit outbox.batch_size.",
+          "A fan-out workflow over N>=3 members runs to completion through the outbox path.",
+          "The test asserts outbox rows reach status=done for all members and the workflow's terminal/collected result is correct.",
+          "No duplicate terminal events are recorded in history for any member."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Restart-mid-flight recovery scenario",
+        "spec": "WHEN the server restarts after outbox rows are appended but before all members complete, THE SYSTEM SHALL re-arm the pending outbox rows on recovery (rearm_outbox_pending) and the fan-out SHALL still complete exactly once, with no duplicate terminal events and no double-wake of the workflow.",
+        "acceptance": [
+          "A test scenario restarts (or simulates restart of) the server between member dispatch and completion.",
+          "After restart, pending outbox rows are re-armed and the remaining members complete.",
+          "The collected result is correct and the history contains exactly one terminal per member (duplicate completion is Dropped, not double-recorded)."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "TEST-ONLY: SHALL NOT change outbox logic, the OutboxStore trait, the dispatcher, or the Recorder. If a genuine bug is found, REPORT it clearly in the result; do not silently work around it.",
+      "SHALL reuse existing run_server / test harnesses and the existing worker registry; do not re-implement dispatch.",
+      "SHALL NOT introduce flaky timing: use deterministic waits / store polling, not fixed sleeps where avoidable.",
+      "SHALL keep no production unwrap()/expect()/panic! outside tests; respect the aion workspace lint policy (deny).",
+      "SHALL NOT add new public API surface."
+    ],
+    "verification": [
+      "cargo fmt --check clean for changed files.",
+      "cargo clippy --workspace --all-targets -- -D warnings clean.",
+      "cargo test passes in full including the new integration test(s); zero failures, no ignored-without-reason.",
+      "The happy-path test genuinely exercises outbox.enabled (fails if the outbox path is disabled/broken).",
+      "The restart scenario genuinely exercises recovery re-arm (fails if rearm is removed)."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      { "id": "CN1", "text": "No file over 500 lines; extract submodules if approaching the limit." },
+      { "id": "CN2", "text": "No panics in production code; unwrap()/expect() only in tests." },
+      { "id": "CN3", "text": "mod.rs contains only pub mod / pub use; no logic." },
+      { "id": "CN4", "text": "All public types implement Debug; all error types implement std::error::Error." }
+    ],
+    "intention": "Lock in the durable-outbox fan-out contract with an end-to-end test before further outbox hardening (#9-11) and the liminal dispatch swap (#13). The outbox machinery already exists; this proves it under run_server + restart. See ABLATIVE-STACK-ROADMAP.md and docs/AION-OUTBOX-BUILD-PLAN.md.",
+    "provenance": { "quote": "keep on going on those things so long as everything is properly documented", "requested_by": "Tom" },
+    "design_path": "docs/design/outbox",
+    "stories": []
+  }
+}

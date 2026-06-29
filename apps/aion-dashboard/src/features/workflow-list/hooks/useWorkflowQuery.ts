@@ -7,9 +7,9 @@ import { createConfiguredApiClient } from '@/lib/config';
 import type { Namespace, WorkflowFilter } from '@/types';
 
 export type WorkflowQueryOptions = {
-  apiClient?: Pick<ApiClient, 'queryWorkflows'>;
+  apiClient?: Pick<ApiClient, 'queryWorkflows'> | undefined;
   filter: WorkflowFilter;
-  page?: WorkflowPageRequest;
+  page?: WorkflowPageRequest | undefined;
 };
 
 export function workflowListQueryKey(

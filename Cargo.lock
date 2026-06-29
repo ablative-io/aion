@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "aion-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-client",
  "aion-core",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "aion-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-proto",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "aion-nif"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "beamr 0.11.0",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "aion-package"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "serde",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-proto-generated",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto-generated"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "prost 0.14.3",
  "protoc-bin-vendored",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "aion-rs"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "aion-server"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-package",
@@ -245,6 +245,7 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tonic 0.14.6",
  "tower 0.5.3",
+ "tower-http 0.6.11",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -253,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "async-trait",
@@ -268,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-haematite"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -285,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "aion-store-libsql"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-store",
@@ -302,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "aion-toolchain"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-package",
  "serde",
@@ -313,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-proto",

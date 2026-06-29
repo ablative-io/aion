@@ -140,6 +140,10 @@ workflow_packages = ["$package"]
 [server]
 listen_address = "$self_host:$h_http"
 grpc_address = "$self_host:$h_grpc"
+# Allow the browser dashboard (served from the Vite dev server on a different
+# origin) to call this node's HTTP API cross-origin. Secure-by-default: only
+# these exact origins are permitted; unset means no cross-origin access.
+cors_allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 [store]
 backend = "haematite"

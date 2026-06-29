@@ -1,9 +1,9 @@
 //! Workflow management handlers.
 
+use aion_core::WorkflowSummary;
 use aion_proto::{
     ProtoCancelResponse, ProtoCountWorkflowsRequest, ProtoListWorkflowsRequest, ProtoSignalResponse,
 };
-use aion_store::visibility::WorkflowSummary;
 use axum::{
     Json,
     extract::{Query, State},
@@ -13,10 +13,10 @@ use super::auth::HttpCaller;
 use super::clean_dtos::{
     CancelWorkflowRequest, DescribeWorkflowRequest, ListWorkflowsRequest, ListWorkflowsResponse,
     QueryWorkflowRequest, QueryWorkflowResponse, SignalWorkflowRequest, StartWorkflowRequest,
-    StartWorkflowResponse,
+    StartWorkflowResponse, core_summary_from_store,
 };
 use super::error::{HttpStartError, HttpWireError};
-use super::payload::HttpDescribeWorkflowResponse;
+use super::payload::describe_response_to_dashboard;
 use super::visibility::{VisibilityQuery, scope_visibility_filter};
 use crate::{NamespaceOperation, ServerError, ServerState, api::handlers};
 
@@ -116,6 +116,10 @@ pub(crate) async fn get_workflows(
         .await
         .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
     crate::internal_workflow::retain_user_workflows(&mut summaries);
+    let summaries = summaries
+        .into_iter()
+        .map(core_summary_from_store)
+        .collect::<Vec<WorkflowSummary>>();
     Ok(Json(summaries))
 }
 
@@ -157,12 +161,12 @@ pub(crate) async fn describe_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
     Json(request): Json<DescribeWorkflowRequest>,
-) -> Result<Json<HttpDescribeWorkflowResponse>, HttpWireError> {
+) -> Result<Json<aion_core::DescribeWorkflowResponse>, HttpWireError> {
     let request = request.try_into().map_err(HttpWireError)?;
     let response = handlers::describe(state.namespace_guard(), &caller, request)
         .await
         .map_err(HttpWireError)?;
-    HttpDescribeWorkflowResponse::try_from(response).map(Json)
+    describe_response_to_dashboard(&response).map(Json)
 }
 
 /// List the namespaces the caller is authorized for, sorted.
@@ -180,11 +184,11 @@ pub(crate) async fn list_namespaces(
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::WorkflowStatus;
+    use aion_core::{WorkflowStatus, WorkflowSummary};
     use aion_proto::{WireError, WireErrorCode};
     use aion_store::{
         WriteToken,
-        visibility::{VisibilityRecord, VisibilityStore, WorkflowSummary},
+        visibility::{VisibilityRecord, VisibilityStore},
     };
     use axum::{Router, http::StatusCode};
     use chrono::Utc;
@@ -475,18 +479,30 @@ mod tests {
             .await?;
         assert_eq!(response.status(), StatusCode::OK);
 
+        // Clean wire contract: the describe response is the generated
+        // `DescribeWorkflowResponse` shape — a `WorkflowSummary` projection
+        // (workflow_id/workflow_type/status/started_at/ended_at/parent) plus a
+        // plain `Event[]` history the dashboard decodes directly.
         let body: serde_json::Value = read_json(response).await?;
         assert_eq!(
-            body["summary"]["payload"]["content_type"],
-            "application/json"
+            body["summary"]["workflow_id"],
+            workflow_id().to_string(),
+            "summary carries the generated WorkflowSummary fields, not a proto envelope"
+        );
+        assert_eq!(body["summary"]["workflow_type"], "fixture");
+        assert!(
+            body["summary"]["started_at"].is_string(),
+            "summary exposes started_at, matching the generated TS type"
         );
         assert_eq!(
-            body["summary"]["payload"]["data"]["workflow_id"],
-            workflow_id().to_string()
+            body["history"][0]["type"],
+            "WorkflowStarted",
+            "history entries are plain Event JSON the dashboard decodes directly"
         );
         assert_eq!(
-            body["history"][0]["payload"]["data"]["data"]["input"],
-            json!({"content_type": "application/json", "data": {"fixture": "input"}})
+            body["history"][0]["data"]["workflow_type"],
+            "fixture",
+            "the decoded WorkflowStarted event carries its workflow_type"
         );
         Ok(())
     }

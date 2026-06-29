@@ -12,6 +12,7 @@ import { FanOutBar } from './components/FanOutBar';
 import { HeaderBar } from './components/HeaderBar';
 import { NodeGrid } from './components/NodeGrid';
 import { useAdoptionMoment } from './hooks/useAdoptionMoment';
+import { useDiscoveredWorkflowId } from './hooks/useDiscoveredWorkflowId';
 import { useFanOutProgress } from './hooks/useFanOutProgress';
 import { useNodeLiveness } from './hooks/useNodeLiveness';
 import { useNodeMetrics } from './hooks/useNodeMetrics';
@@ -31,7 +32,7 @@ const SEED_ARITY = 4;
 export type FailoverViewProps = {
   namespace: Namespace | null;
   /** Override for tests; defaults to the live URL-derived cluster config. */
-  config?: ClusterConfig;
+  config?: ClusterConfig | undefined;
 };
 
 export function FailoverView({ namespace, config }: FailoverViewProps) {
@@ -56,7 +57,7 @@ function FailoverViewInner({
   config,
 }: {
   namespace: Namespace;
-  config?: ClusterConfig;
+  config?: ClusterConfig | undefined;
 }) {
   const cluster = useMemo<ClusterConfig>(
     () =>
@@ -74,9 +75,17 @@ function FailoverViewInner({
   });
   const metrics = useNodeMetrics({ nodes: cluster.nodes });
 
+  // When no `?workflow=` is seeded, discover the most recent workflow so the
+  // exactly-once counter back-fills from describe even without live WS events.
+  const { workflowId, error: discoveryError } = useDiscoveredWorkflowId({
+    namespace,
+    seeded: cluster.workflowId,
+    baseUrl: activeBaseUrl ?? undefined,
+  });
+
   const progress = useFanOutProgress({
     namespace,
-    workflowId: cluster.workflowId,
+    workflowId,
     baseUrl: activeBaseUrl ?? undefined,
     seedArity: SEED_ARITY,
   });
@@ -115,9 +124,11 @@ function FailoverViewInner({
   });
 
   const overCount =
-    cluster.workflowId !== null && progress.arity !== null
+    workflowId !== null && progress.arity !== null
       ? hasOverCount(progress.events, progress.arity)
       : false;
+
+  const surfacedError = progress.error ?? discoveryError;
 
   return (
     <div className="flex flex-col gap-4">
@@ -154,9 +165,9 @@ function FailoverViewInner({
         stale={progress.stale}
       />
 
-      {progress.error !== null ? (
+      {surfacedError !== null ? (
         <p className="rounded-md border border-[var(--destructive)]/40 bg-[var(--destructive)]/5 px-4 py-2 text-[var(--destructive)] text-sm">
-          back-fill error: {progress.error}
+          back-fill error: {surfacedError}
         </p>
       ) : null}
 

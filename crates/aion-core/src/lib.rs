@@ -16,6 +16,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+/// Describe-workflow response projection (summary + event history).
+pub mod describe;
 /// Error types shared by workflow engines, callers, and activities.
 pub mod error;
 /// Durable workflow history events and envelopes.
@@ -35,6 +37,7 @@ pub mod search;
 /// Workflow lifecycle status derivation.
 pub mod status;
 
+pub use describe::DescribeWorkflowResponse;
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
 pub use event::{DEFAULT_TASK_QUEUE, Event, EventEnvelope, WithTimeoutOutcome};
 pub use filter::{WorkflowFilter, WorkflowSummary};
