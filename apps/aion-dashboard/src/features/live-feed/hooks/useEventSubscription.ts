@@ -1,12 +1,13 @@
 import { useEffect } from 'react';
 
 import { isSelectedNamespace, requireSelectedNamespace, useNamespace } from '@/features/namespace';
-import { type AionEventWebSocketManager, aionEventSocket } from '@/lib/api';
+import type { AionEventWebSocketManager } from '@/lib/api';
 import type {
   AionEventHandler,
   AionEventSubscriptionFilter,
   ResyncContext,
 } from '@/lib/api/websocket';
+import { configuredEventSocket } from '@/lib/config';
 import type { Event, Namespace } from '@/types';
 
 /**
@@ -70,7 +71,7 @@ export function useEventSubscription<TFilter extends AionEventSubscriptionFilter
   afterSeq,
   lastSeenSequence,
   filter,
-  manager = aionEventSocket,
+  manager = configuredEventSocket,
   onEvent,
   onResync,
 }: NamespaceScopedSubscriptionInput<TFilter>): EventSubscriptionState {

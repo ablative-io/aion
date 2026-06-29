@@ -16,14 +16,12 @@ use std::time::Duration;
 
 use aion::signal::ConcreteSignalRouter;
 use aion::{Engine, EngineBuilder, RuntimeHandle, SignalRouter};
-use aion_core::{Payload, RunId, WorkflowId};
+use aion_core::{RunId, WorkflowId};
 use aion_package::{
     BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ExtractionLimits, Manifest, ManifestVersion,
     Package, PackageBuilder,
 };
-use aion_proto::{
-    ProtoListVersionsResponse, ProtoLoadPackageResponse, ProtoSignalRequest, WireErrorCode,
-};
+use aion_proto::{ProtoListVersionsResponse, ProtoLoadPackageResponse, WireErrorCode};
 use aion_server::api::http::http_router;
 use aion_server::config::{
     AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
@@ -206,12 +204,13 @@ async fn start_over_http(router: &axum::Router) -> Result<(WorkflowId, RunId), T
     }))?))?;
     let response = router.clone().oneshot(request).await?;
     assert_eq!(response.status(), StatusCode::OK, "start must succeed");
+    // Clean wire contract: start response exposes plain UUID strings.
     let body: serde_json::Value = read_json(response).await?;
-    let workflow_id = body["workflow_id"]["uuid"]
+    let workflow_id = body["workflow_id"]
         .as_str()
         .ok_or("start response missing workflow id")?
         .parse::<uuid::Uuid>()?;
-    let run_id = body["run_id"]["uuid"]
+    let run_id = body["run_id"]
         .as_str()
         .ok_or("start response missing run id")?
         .parse::<uuid::Uuid>()?;
@@ -224,13 +223,14 @@ async fn signal_over_http(
     run_id: &RunId,
     signal_name: &str,
 ) -> Result<Response, TestError> {
-    let request_body = ProtoSignalRequest {
-        namespace: NAMESPACE.to_owned(),
-        workflow_id: Some(workflow_id.clone().into()),
-        run_id: Some(run_id.clone().into()),
-        signal_name: signal_name.to_owned(),
-        payload: Some(Payload::from_json(&json!({}))?.into()),
-    };
+    // Clean wire contract: ids are plain UUID strings, payload is plain JSON.
+    let request_body = json!({
+        "namespace": NAMESPACE,
+        "workflow_id": workflow_id.to_string(),
+        "run_id": run_id.to_string(),
+        "signal_name": signal_name,
+        "payload": {},
+    });
     let request = granted_headers(
         Request::builder()
             .uri("/workflows/signal")

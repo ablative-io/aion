@@ -295,6 +295,10 @@ impl ServerState {
                 cluster_store: None,
                 #[cfg(feature = "haematite-backend")]
                 watched_peers: Vec::new(),
+                #[cfg(feature = "haematite-backend")]
+                shard_directory: None,
+                #[cfg(feature = "haematite-backend")]
+                request_forwarder: None,
                 jwks_cache: Some(jwks_cache),
             }),
         }

@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use aion::{Engine, EngineBuilder};
 use aion_core::{Event, EventEnvelope, Payload, WorkflowId};
-use aion_proto::convert::ProtoPayload;
 use aion_store::{EventStore, InMemoryStore, visibility::VisibilityStore};
 use axum::{body, http::Request, response::Response};
 use chrono::Utc;
@@ -173,10 +172,6 @@ pub(crate) fn started_event() -> Result<Event, aion_core::PayloadError> {
         parent_run_id: None,
         package_version: aion_core::PackageVersion::new("a".repeat(64)),
     })
-}
-
-pub(crate) fn proto_payload() -> Result<ProtoPayload, aion_core::PayloadError> {
-    Ok(payload()?.into())
 }
 
 fn payload() -> Result<Payload, aion_core::PayloadError> {

@@ -177,12 +177,13 @@ pub async fn start_over_http(
 fn workflow_ids_from_start_body(
     bytes: &[u8],
 ) -> Result<(aion_core::WorkflowId, aion_core::RunId), TestError> {
+    // Clean wire contract: start response exposes plain UUID strings.
     let body: serde_json::Value = serde_json::from_slice(bytes)?;
-    let workflow_id = body["workflow_id"]["uuid"]
+    let workflow_id = body["workflow_id"]
         .as_str()
         .ok_or_else(|| test_error("start response missing workflow id"))?
         .parse::<uuid::Uuid>()?;
-    let run_id = body["run_id"]["uuid"]
+    let run_id = body["run_id"]
         .as_str()
         .ok_or_else(|| test_error("start response missing run id"))?
         .parse::<uuid::Uuid>()?;

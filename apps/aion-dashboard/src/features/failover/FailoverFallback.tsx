@@ -1,7 +1,8 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 
-import { ApiClient } from '@/lib/api';
+import type { ApiClient } from '@/lib/api';
+import { createConfiguredApiClient } from '@/lib/config';
 import type { Event, Namespace } from '@/types';
 
 import { buildClusterConfig, type ClusterConfig } from './lib/clusterConfig';
@@ -61,7 +62,7 @@ export function FailoverFallback({
       config ??
       buildClusterConfig({
         search: typeof window === 'undefined' ? '' : window.location.search,
-        namespace: namespace ?? 'demo',
+        ...(namespace !== null && { namespace }),
       }),
     [config, namespace]
   );
@@ -93,7 +94,12 @@ export function FailoverFallback({
       if (workflowId === null) {
         throw new Error('history poll requires a seeded workflow id');
       }
-      const client = apiClient ?? new ApiClient(target ? { baseUrl: target.baseUrl } : {});
+      const client =
+        apiClient ??
+        createConfiguredApiClient({
+          namespace: cluster.namespace,
+          ...(target && { baseUrl: target.baseUrl }),
+        });
       return client.getHistory(workflowId, { namespace: cluster.namespace });
     },
   });

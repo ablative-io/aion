@@ -2,7 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { NamespaceProvider } from '@/features/namespace';
-import { type AionEventWebSocketManager, type ApiClient, aionEventSocket } from '@/lib/api';
+import type { AionEventWebSocketManager, ApiClient } from '@/lib/api';
+import { configuredEventSocket } from '@/lib/config';
 import type { Namespace } from '@/types';
 
 const QUERY_STALE_TIME_MS = 30_000;
@@ -21,7 +22,7 @@ export function AppProviders({
   children,
   initialNamespace,
   queryClient,
-  websocketManager = aionEventSocket,
+  websocketManager = configuredEventSocket,
 }: AppProvidersProps) {
   const [client] = useState(() => queryClient ?? createDashboardQueryClient());
 
