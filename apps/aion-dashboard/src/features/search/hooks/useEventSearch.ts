@@ -1,11 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 
 import { useNamespace } from '@/features/namespace';
-import type { EventSearchResult, WorkflowPage } from '@/lib/api';
-import { ApiClient, type EventSearchQuery, type WorkflowPageRequest } from '@/lib/api';
+import type {
+  ApiClient,
+  EventSearchQuery,
+  EventSearchResult,
+  WorkflowPage,
+  WorkflowPageRequest,
+} from '@/lib/api';
+import { createConfiguredApiClient } from '@/lib/config';
 import type { Namespace } from '@/types';
-
-const defaultApiClient = new ApiClient();
 
 /**
  * The form's raw string state. Distinct from {@link EventSearchQuery}: this is
@@ -76,7 +81,7 @@ export type EventSearchOptions = {
  * swallowed, never faked.
  */
 export function useEventSearch({
-  apiClient = defaultApiClient,
+  apiClient,
   query,
   page = {},
   enabled = true,
@@ -84,12 +89,16 @@ export function useEventSearch({
   const { selectedNamespace } = useNamespace();
   const hasNamespace = selectedNamespace !== null && selectedNamespace.trim().length > 0;
   const hasQuery = Object.keys(query).length > 0;
+  const client = useMemo<Pick<ApiClient, 'searchEvents'>>(
+    () => apiClient ?? createConfiguredApiClient({ namespace: selectedNamespace }),
+    [apiClient, selectedNamespace]
+  );
 
   return useQuery<WorkflowPage<EventSearchResult>>({
     enabled: enabled && hasNamespace && hasQuery,
     queryKey: eventSearchQueryKey(selectedNamespace, query, page),
     queryFn: () =>
-      apiClient.searchEvents(query, page, {
+      client.searchEvents(query, page, {
         namespace: requireSearchNamespace(selectedNamespace),
       }),
   });

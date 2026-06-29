@@ -97,10 +97,15 @@ aion list --endpoint http://127.0.0.1:50051
 # "ActivityCompleted" events (climbs 0 -> 4 as the fleet progresses):
 aion describe <WORKFLOW_ID> --endpoint http://127.0.0.1:50051
 
-# HTTP/JSON equivalents (for a browser dashboard):
-#   POST http://127.0.0.1:8090/workflows/list      (body: {"status": null})
-#   POST http://127.0.0.1:8090/workflows/describe   (body: {"workflow_id": "..."})
-#   GET  http://127.0.0.1:8090/workflows/count
+# HTTP/JSON equivalents (for a browser dashboard). ALL requests must carry the
+# caller's authorized namespace as a header: `-H "x-aion-namespaces: default"`
+# (anonymous callers declare their namespaces this way; without it the server
+# replies namespace_denied). Request bodies are clean JSON with string ids:
+#   GET  http://127.0.0.1:8090/namespaces                      -> ["default"]
+#   GET  http://127.0.0.1:8090/workflows?namespace=default     (clean WorkflowSummary[])
+#   GET  http://127.0.0.1:8090/workflows/count?namespace=default
+#   POST http://127.0.0.1:8090/workflows/describe
+#        (body: {"namespace":"default","workflow_id":"<uuid-string>","include_history":true})
 ```
 
 The `summary.status` field is the run state (`Running` -> `Completed`); the
@@ -139,6 +144,37 @@ curl -s http://127.0.0.1:8090/metrics   # Prometheus exposition
 ```
 
 Activity durations, workflow counts, store latencies — per namespace/activity.
+
+## Web dashboard (the `/failover` view)
+
+A React dashboard ships in `apps/aion-dashboard`; its `/failover` route is the
+visual front-end for this demo — node-liveness grid, owner/adoption strip,
+fan-out bar, the headline exactly-once counter, and a live event log.
+
+```bash
+cd apps/aion-dashboard
+# Defaults already target http://127.0.0.1:8090 + ws://127.0.0.1:8090 (demo node 0),
+# so for the stock single-laptop demo only the namespace grant is required:
+VITE_AION_NAMESPACES=default bun run dev
+# open the printed URL at /failover   (Tier-1 bulletproof floor: /failover?mode=fallback)
+```
+
+Environment (parsed once at startup; all optional except the namespace grant):
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `VITE_AION_NAMESPACES` | (empty) | Comma list the caller is authorized for; sent as `x-aion-namespaces`. REQUIRED — without it every read is `namespace_denied`. |
+| `VITE_AION_API_BASE` | `http://127.0.0.1:8090` | REST base URL (any live node). |
+| `VITE_AION_WS_BASE` | derived from API base | WebSocket base for `/events/stream`. |
+| `VITE_AION_SUBJECT` | (none) | `x-aion-subject` (dev auth). |
+| `VITE_AION_BEARER_TOKEN` | (none) | `authorization: Bearer …` (JWT auth). |
+
+The view uses only the status surface above (HTTP + WS, no gRPC): `/namespaces`,
+`/health/live` per node, `/metrics`, `GET /workflows` + `/workflows/count`,
+`POST /workflows/describe`, and the `/events/stream` firehose. After a kill it
+fails its own reads over to a survivor automatically. The exactly-once counter is
+derived from `ActivityCompleted` events deduped by history sequence, so a
+WebSocket reconnect during the kill can never double-count.
 
 ## Components
 

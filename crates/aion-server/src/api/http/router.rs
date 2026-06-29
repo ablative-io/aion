@@ -16,8 +16,8 @@ use super::schedules::{
     resume_schedule, update_schedule,
 };
 use super::workflows::{
-    cancel_workflow, count_workflows, describe_workflow, get_workflows, post_list_workflows,
-    query_workflow, signal_workflow, start_workflow,
+    cancel_workflow, count_workflows, describe_workflow, get_workflows, list_namespaces,
+    post_list_workflows, query_workflow, signal_workflow, start_workflow,
 };
 use crate::{ServerError, ServerState, dashboard::assets, observability};
 
@@ -118,6 +118,7 @@ pub fn workflow_router(state: ServerState) -> Router {
     deploy
         .merge(authoring)
         .merge(dev)
+        .route("/namespaces", get(list_namespaces))
         .route("/workflows", get(get_workflows))
         .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))
@@ -144,8 +145,7 @@ mod tests {
     use std::{fs, sync::Arc};
 
     use aion::EngineBuilder;
-    use aion_proto::{ProtoListWorkflowsRequest, ProtoListWorkflowsResponse};
-    use aion_store::{EventStore, InMemoryStore, visibility::ListWorkflowsFilter};
+    use aion_store::{EventStore, InMemoryStore};
     use axum::{body, http::Request, http::StatusCode};
     use tower::ServiceExt;
 
@@ -220,23 +220,21 @@ mod tests {
         assert_eq!(spa.status(), StatusCode::OK);
         assert!(read_text(spa).await?.contains("<title>Aion</title>"));
 
-        let list = ProtoListWorkflowsRequest {
-            namespace: NAMESPACE.to_owned(),
-            filter: Some(aion_proto::encode_core_value(
-                NAMESPACE,
-                None,
-                &ListWorkflowsFilter {
-                    workflow_type: Some(String::from("nonexistent")),
-                    ..ListWorkflowsFilter::default()
-                },
-            )?),
-        };
+        let list = serde_json::json!({
+            "namespace": NAMESPACE,
+            "filter": { "workflow_type": "nonexistent" },
+        });
         let list_response = router
             .oneshot(json_request("/workflows/list", &list)?)
             .await?;
         assert_eq!(list_response.status(), StatusCode::OK);
-        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
-        assert!(list_body.summaries.is_empty());
+        let list_body: serde_json::Value = read_json(list_response).await?;
+        assert!(
+            list_body["summaries"]
+                .as_array()
+                .ok_or("summaries missing")?
+                .is_empty()
+        );
         Ok(())
     }
 

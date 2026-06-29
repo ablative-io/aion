@@ -124,6 +124,15 @@ impl CallerIdentity {
         &self.subject
     }
 
+    /// Namespaces this caller is authorized for, in sorted order.
+    ///
+    /// Backed by a [`BTreeSet`], so the returned vector is already
+    /// lexicographically ordered with no duplicates.
+    #[must_use]
+    pub fn namespaces(&self) -> Vec<String> {
+        self.namespaces.iter().cloned().collect()
+    }
+
     fn can_access(&self, namespace: &str) -> bool {
         self.namespaces.contains(namespace)
     }

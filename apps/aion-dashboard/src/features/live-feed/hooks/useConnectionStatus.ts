@@ -1,11 +1,12 @@
 import { useSyncExternalStore } from 'react';
 
-import { type AionSocketError, aionEventSocket, type ConnectionStatus } from '@/lib/api';
+import type { AionSocketError, ConnectionStatus } from '@/lib/api';
+import { configuredEventSocket } from '@/lib/config';
 
 export function useConnectionStatus(): ConnectionStatus {
   return useSyncExternalStore(
-    (notify) => aionEventSocket.onStatusChange(notify),
-    () => aionEventSocket.getStatus(),
+    (notify) => configuredEventSocket.onStatusChange(notify),
+    () => configuredEventSocket.getStatus(),
     () => 'disconnected'
   );
 }
@@ -17,8 +18,8 @@ export function useConnectionStatus(): ConnectionStatus {
  */
 export function useSocketError(): AionSocketError | null {
   return useSyncExternalStore(
-    (notify) => aionEventSocket.onError(() => notify()),
-    () => aionEventSocket.getLastError(),
+    (notify) => configuredEventSocket.onError(() => notify()),
+    () => configuredEventSocket.getLastError(),
     () => null
   );
 }

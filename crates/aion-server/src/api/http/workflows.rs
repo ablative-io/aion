@@ -1,44 +1,50 @@
 //! Workflow management handlers.
 
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
-    ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowResponse,
+    ProtoCancelResponse, ProtoCountWorkflowsRequest, ProtoListWorkflowsRequest, ProtoSignalResponse,
 };
 use aion_store::visibility::WorkflowSummary;
 use axum::{
     Json,
-    body::Bytes,
     extract::{Query, State},
 };
 
 use super::auth::HttpCaller;
+use super::clean_dtos::{
+    CancelWorkflowRequest, DescribeWorkflowRequest, ListWorkflowsRequest, ListWorkflowsResponse,
+    QueryWorkflowRequest, QueryWorkflowResponse, SignalWorkflowRequest, StartWorkflowRequest,
+    StartWorkflowResponse,
+};
 use super::error::{HttpStartError, HttpWireError};
-use super::payload::{HttpDescribeWorkflowResponse, decode_start_workflow_request};
+use super::payload::HttpDescribeWorkflowResponse;
 use super::visibility::{VisibilityQuery, scope_visibility_filter};
 use crate::{NamespaceOperation, ServerError, ServerState, api::handlers};
 
 pub(crate) async fn start_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
-    body: Bytes,
-) -> Result<Json<ProtoStartWorkflowResponse>, HttpStartError> {
+    Json(request): Json<StartWorkflowRequest>,
+) -> Result<Json<StartWorkflowResponse>, HttpStartError> {
     if state.drain_state().is_draining() {
         return Err(HttpStartError::Draining);
     }
-    let request = decode_start_workflow_request(&body).map_err(HttpStartError::Wire)?;
-    handlers::start(state.namespace_guard(), &caller, request)
+    let request = request
+        .try_into()
+        .map_err(|error| HttpStartError::Wire(HttpWireError(error)))?;
+    let response = handlers::start(state.namespace_guard(), &caller, request)
         .await
+        .map_err(|error| HttpStartError::Wire(HttpWireError(error)))?;
+    StartWorkflowResponse::try_from(response)
         .map(Json)
-        .map_err(|error| HttpStartError::Wire(HttpWireError(error)))
+        .map_err(HttpStartError::Wire)
 }
 
 pub(crate) async fn signal_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
-    Json(request): Json<ProtoSignalRequest>,
+    Json(request): Json<SignalWorkflowRequest>,
 ) -> Result<Json<ProtoSignalResponse>, HttpWireError> {
+    let request = request.try_into().map_err(HttpWireError)?;
     handlers::signal(state.namespace_guard(), &caller, request)
         .await
         .map(Json)
@@ -48,19 +54,21 @@ pub(crate) async fn signal_workflow(
 pub(crate) async fn query_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
-    Json(request): Json<ProtoQueryRequest>,
-) -> Result<Json<ProtoQueryResponse>, HttpWireError> {
-    handlers::query(state.namespace_guard(), &caller, request)
+    Json(request): Json<QueryWorkflowRequest>,
+) -> Result<Json<QueryWorkflowResponse>, HttpWireError> {
+    let request = request.try_into().map_err(HttpWireError)?;
+    let response = handlers::query(state.namespace_guard(), &caller, request)
         .await
-        .map(Json)
-        .map_err(HttpWireError)
+        .map_err(HttpWireError)?;
+    QueryWorkflowResponse::try_from(response).map(Json)
 }
 
 pub(crate) async fn cancel_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
-    Json(request): Json<ProtoCancelRequest>,
+    Json(request): Json<CancelWorkflowRequest>,
 ) -> Result<Json<ProtoCancelResponse>, HttpWireError> {
+    let request = request.try_into().map_err(HttpWireError)?;
     handlers::cancel(state.namespace_guard(), &caller, request)
         .await
         .map(Json)
@@ -70,12 +78,13 @@ pub(crate) async fn cancel_workflow(
 pub(crate) async fn post_list_workflows(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
-    Json(request): Json<ProtoListWorkflowsRequest>,
-) -> Result<Json<ProtoListWorkflowsResponse>, HttpWireError> {
-    handlers::list(state.namespace_guard(), &caller, request)
+    Json(request): Json<ListWorkflowsRequest>,
+) -> Result<Json<ListWorkflowsResponse>, HttpWireError> {
+    let request = request.try_into().map_err(HttpWireError)?;
+    let response = handlers::list(state.namespace_guard(), &caller, request)
         .await
-        .map(Json)
-        .map_err(HttpWireError)
+        .map_err(HttpWireError)?;
+    ListWorkflowsResponse::try_from(response).map(Json)
 }
 
 pub(crate) async fn get_workflows(
@@ -147,12 +156,24 @@ pub(crate) async fn count_workflows(
 pub(crate) async fn describe_workflow(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
-    Json(request): Json<ProtoDescribeWorkflowRequest>,
+    Json(request): Json<DescribeWorkflowRequest>,
 ) -> Result<Json<HttpDescribeWorkflowResponse>, HttpWireError> {
+    let request = request.try_into().map_err(HttpWireError)?;
     let response = handlers::describe(state.namespace_guard(), &caller, request)
         .await
         .map_err(HttpWireError)?;
     HttpDescribeWorkflowResponse::try_from(response).map(Json)
+}
+
+/// List the namespaces the caller is authorized for, sorted.
+///
+/// Backs the dashboard's namespace discovery (`client.listNamespaces()` ->
+/// `GET /namespaces`). The server returns exactly the caller's authorized
+/// namespaces, mirroring the auth model.
+pub(crate) async fn list_namespaces(
+    HttpCaller(caller): HttpCaller,
+) -> Result<Json<Vec<String>>, HttpWireError> {
+    Ok(Json(caller.namespaces()))
 }
 
 #[cfg(test)]
@@ -160,13 +181,10 @@ mod tests {
     use std::sync::Arc;
 
     use aion_core::WorkflowStatus;
-    use aion_proto::{
-        ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoListWorkflowsResponse,
-        ProtoStartWorkflowRequest, WireError, WireErrorCode,
-    };
+    use aion_proto::{WireError, WireErrorCode};
     use aion_store::{
         WriteToken,
-        visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore, WorkflowSummary},
+        visibility::{VisibilityRecord, VisibilityStore, WorkflowSummary},
     };
     use axum::{Router, http::StatusCode};
     use chrono::Utc;
@@ -175,7 +193,7 @@ mod tests {
 
     use super::super::router::workflow_router;
     use super::super::test_support::{
-        NAMESPACE, get_request, json_request, proto_payload, read_json, run_id, runtime_config,
+        NAMESPACE, get_request, json_request, read_json, read_text, run_id, runtime_config,
         server_state, shared_engine, started_event, workflow_id,
     };
     use crate::{
@@ -206,27 +224,26 @@ mod tests {
                 )]),
             })
             .await?;
-        let filter = aion_proto::encode_core_value(
-            NAMESPACE,
-            None,
-            &ListWorkflowsFilter {
-                workflow_type: Some(String::from("fixture")),
-                status: Some(WorkflowStatus::Running),
-                ..ListWorkflowsFilter::default()
-            },
-        )?;
-        let list = ProtoListWorkflowsRequest {
-            namespace: NAMESPACE.to_owned(),
-            filter: Some(filter),
-        };
+        // Clean wire contract: filter is plain JSON with string-keyed
+        // predicates, and the response carries clean summaries (string ids).
+        let list = json!({
+            "namespace": NAMESPACE,
+            "filter": { "workflow_type": "fixture", "status": "Running" },
+        });
         let list_response = router
             .oneshot(json_request("/workflows/list", &list)?)
             .await?;
         assert_eq!(list_response.status(), StatusCode::OK);
-        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
-        assert_eq!(list_body.summaries.len(), 1);
-        let summary = aion_proto::decode_core_value::<WorkflowSummary>(&list_body.summaries[0])?;
-        assert_eq!(summary.workflow_id, workflow_id());
+        let list_body: serde_json::Value = read_json(list_response).await?;
+        let summaries = list_body["summaries"]
+            .as_array()
+            .ok_or("summaries missing")?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0]["workflow_id"],
+            workflow_id().to_string(),
+            "list summaries must expose clean string ids"
+        );
         Ok(())
     }
 
@@ -254,12 +271,12 @@ mod tests {
     async fn assert_start_missing_workflow(
         router: &Router,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let start = ProtoStartWorkflowRequest {
-            namespace: NAMESPACE.to_owned(),
-            workflow_type: "missing-workflow".to_owned(),
-            input: Some(proto_payload()?),
-            routing_key: None,
-        };
+        // Clean wire contract: input is plain domain JSON.
+        let start = json!({
+            "namespace": NAMESPACE,
+            "workflow_type": "missing-workflow",
+            "input": { "fixture": "input" },
+        });
         let response = router
             .clone()
             .oneshot(json_request("/workflows/start", &start)?)
@@ -369,21 +386,17 @@ mod tests {
             "GET /workflows/count must exclude engine-internal workflows"
         );
 
-        let list = ProtoListWorkflowsRequest {
-            namespace: NAMESPACE.to_owned(),
-            filter: Some(aion_proto::encode_core_value(
-                NAMESPACE,
-                None,
-                &ListWorkflowsFilter::default(),
-            )?),
-        };
+        let list = json!({ "namespace": NAMESPACE });
         let list_response = router
             .oneshot(json_request("/workflows/list", &list)?)
             .await?;
         assert_eq!(list_response.status(), StatusCode::OK);
-        let list_body: ProtoListWorkflowsResponse = read_json(list_response).await?;
+        let list_body: serde_json::Value = read_json(list_response).await?;
         assert_eq!(
-            list_body.summaries.len(),
+            list_body["summaries"]
+                .as_array()
+                .ok_or("summaries missing")?
+                .len(),
             1,
             "POST /workflows/list must hide engine-internal workflows"
         );
@@ -410,12 +423,13 @@ mod tests {
         );
         let router = workflow_router(server_state(resolver, runtime_config()).await?);
 
-        let describe = ProtoDescribeWorkflowRequest {
-            namespace: NAMESPACE.to_owned(),
-            workflow_id: Some(coordinator_id.into()),
-            run_id: None,
-            include_history: false,
-        };
+        // Clean wire contract: workflow_id is a plain UUID string.
+        let describe = json!({
+            "namespace": NAMESPACE,
+            "workflow_id": coordinator_id.to_string(),
+            "run_id": null,
+            "include_history": false,
+        });
         let response = router
             .oneshot(json_request("/workflows/describe", &describe)?)
             .await?;
@@ -448,12 +462,14 @@ mod tests {
         );
         let router = workflow_router(server_state(resolver, runtime_config()).await?);
 
-        let describe = ProtoDescribeWorkflowRequest {
-            namespace: NAMESPACE.to_owned(),
-            workflow_id: Some(workflow_id().into()),
-            run_id: Some(run_id().into()),
-            include_history: true,
-        };
+        // Clean wire contract: ids are plain UUID strings (matches the
+        // dashboard's getHistory request body).
+        let describe = json!({
+            "namespace": NAMESPACE,
+            "workflow_id": workflow_id().to_string(),
+            "run_id": run_id().to_string(),
+            "include_history": true,
+        });
         let response = router
             .oneshot(json_request("/workflows/describe", &describe)?)
             .await?;
@@ -473,5 +489,72 @@ mod tests {
             json!({"content_type": "application/json", "data": {"fixture": "input"}})
         );
         Ok(())
+    }
+
+    /// `GET /namespaces` returns the caller's authorized namespaces as sorted
+    /// JSON, resolving against the api router rather than falling through to the
+    /// dashboard SPA catch-all (which would answer with HTML).
+    #[tokio::test]
+    async fn http_list_namespaces_returns_sorted_json() -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn aion_store::EventStore> = Arc::new(aion_store::InMemoryStore::default());
+        let engine = Arc::new(
+            aion::EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
+
+        let response = router.oneshot(namespaces_request()?).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "GET /namespaces must return JSON, not the dashboard SPA HTML"
+        );
+        let body = read_text(response).await?;
+        assert!(
+            !body.contains('<'),
+            "GET /namespaces must not return HTML: {body}"
+        );
+        let namespaces: Vec<String> = serde_json::from_str(&body)?;
+        assert_eq!(namespaces, EXPECTED_NAMESPACES);
+        Ok(())
+    }
+
+    /// Under the development header path the comma-separated `x-aion-namespaces`
+    /// header yields both grants; under the JWT path the token carries a single
+    /// namespace claim. Either way the response is the caller's sorted grants.
+    #[cfg(not(feature = "auth"))]
+    const EXPECTED_NAMESPACES: &[&str] = &["alpha", "beta"];
+    #[cfg(feature = "auth")]
+    const EXPECTED_NAMESPACES: &[&str] = &["beta"];
+
+    fn namespaces_request()
+    -> Result<axum::http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
+        #[cfg(feature = "auth")]
+        // The JWT path derives grants from the signed `namespace` claim; mint a
+        // token granting `beta` so the header is irrelevant to the outcome.
+        let bearer = crate::auth::test_support::mint_token("alice", "beta")?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = super::super::test_support::TOKEN.to_owned();
+        Ok(axum::http::Request::builder()
+            .uri("/namespaces")
+            .method("GET")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-aion-subject", "alice")
+            .header("x-aion-namespaces", "beta,alpha")
+            .body(axum::body::Body::empty())?)
     }
 }

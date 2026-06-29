@@ -9,7 +9,8 @@ import {
   useState,
 } from 'react';
 
-import { ApiClient, type ApiCredentials } from '@/lib/api';
+import type { ApiClient, ApiCredentials } from '@/lib/api';
+import { buildCredentials, createConfiguredApiClient, getDashboardConfig } from '@/lib/config';
 import type { Namespace } from '@/types';
 
 export const namespaceQueryKey = ['namespaces'] as const;
@@ -32,11 +33,10 @@ type NamespaceProviderProps = {
   initialNamespace?: Namespace;
 };
 
-const defaultApiClient = new ApiClient();
 const NamespaceContext = createContext<NamespaceContextValue | null>(null);
 
 export function NamespaceProvider({
-  apiClient = defaultApiClient,
+  apiClient,
   children,
   credentials,
   initialNamespace,
@@ -44,9 +44,20 @@ export function NamespaceProvider({
   const [selectedNamespace, setSelectedNamespaceState] = useState<Namespace | null>(
     isSelectedNamespace(initialNamespace) ? initialNamespace : null
   );
+  // listNamespaces must carry credentials (x-aion-namespaces) or the server
+  // replies namespace_denied. The env-derived config supplies the grant; an
+  // explicit `credentials` prop (tests) overrides it.
+  const listCredentials = useMemo<ApiCredentials | undefined>(
+    () => credentials ?? buildCredentials(getDashboardConfig()),
+    [credentials]
+  );
+  const client = useMemo<Pick<ApiClient, 'listNamespaces'>>(
+    () => apiClient ?? createConfiguredApiClient(),
+    [apiClient]
+  );
   const namespaceQuery = useQuery<Namespace[], Error>({
     queryKey: namespaceQueryKey,
-    queryFn: () => apiClient.listNamespaces({ credentials }),
+    queryFn: () => client.listNamespaces({ credentials: listCredentials }),
   });
   const namespaces = namespaceQuery.data ?? [];
 

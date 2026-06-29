@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 
 import { requireSelectedNamespace, useNamespace } from '@/features/namespace';
-import { ApiClient, type WorkflowPageRequest } from '@/lib/api';
+import type { ApiClient, WorkflowPageRequest } from '@/lib/api';
+import { createConfiguredApiClient } from '@/lib/config';
 import type { Namespace, WorkflowFilter } from '@/types';
-
-const defaultApiClient = new ApiClient();
 
 export type WorkflowQueryOptions = {
   apiClient?: Pick<ApiClient, 'queryWorkflows'>;
@@ -39,17 +39,17 @@ export function workflowQueryRequestOptions(namespace: Namespace | null | undefi
   return { namespace: requireWorkflowQueryNamespace(namespace) };
 }
 
-export function useWorkflowQuery({
-  apiClient = defaultApiClient,
-  filter,
-  page = {},
-}: WorkflowQueryOptions) {
+export function useWorkflowQuery({ apiClient, filter, page = {} }: WorkflowQueryOptions) {
   const { selectedNamespace } = useNamespace();
+  const client = useMemo<Pick<ApiClient, 'queryWorkflows'>>(
+    () => apiClient ?? createConfiguredApiClient({ namespace: selectedNamespace }),
+    [apiClient, selectedNamespace]
+  );
 
   return useQuery({
     enabled: selectedNamespace !== null && selectedNamespace.trim().length > 0,
     queryKey: workflowListQueryKey(selectedNamespace, filter, page),
     queryFn: () =>
-      queryWorkflowPage(apiClient, requireWorkflowQueryNamespace(selectedNamespace), filter, page),
+      queryWorkflowPage(client, requireWorkflowQueryNamespace(selectedNamespace), filter, page),
   });
 }

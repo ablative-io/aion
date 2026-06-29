@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { eventSequence, mergeEventsBySequence } from '@/features/workflow-detail/lib/timeline';
-import { type AionEventWebSocketManager, ApiClient, aionEventSocket } from '@/lib/api';
+import type { AionEventWebSocketManager, ApiClient } from '@/lib/api';
 import type { FirehoseEventSubscriptionFilter, ResyncContext } from '@/lib/api/websocket';
+import { configuredEventSocket, createConfiguredApiClient } from '@/lib/config';
 import type { Event, Namespace, WorkflowId, WorkflowStatus } from '@/types';
 
 import { tallyExactlyOnce } from '../lib/exactlyOnce';
@@ -18,7 +19,7 @@ import { tallyExactlyOnce } from '../lib/exactlyOnce';
  * `connection` to a visible non-`connected` state and sets `stale`.
  */
 
-const FIREHOSE_SUBSCRIPTION_MANAGER = aionEventSocket;
+const FIREHOSE_SUBSCRIPTION_MANAGER = configuredEventSocket;
 const ACTIVITY_SCHEDULED = 'ActivityScheduled';
 
 export type FanOutConnection = 'connected' | 'reconnecting' | 'disconnected';
@@ -111,9 +112,12 @@ export function useFanOutProgress({
   const [error, setError] = useState<string | null>(null);
 
   // A new client per baseUrl so own-read failover repoints describe at the survivor.
+  // Credentials (x-aion-namespaces) come from config, scoped to this namespace.
   const client = useMemo<HistoryClient>(
-    () => apiClient ?? new ApiClient(baseUrl !== undefined ? { baseUrl } : {}),
-    [apiClient, baseUrl]
+    () =>
+      apiClient ??
+      createConfiguredApiClient({ namespace, ...(baseUrl !== undefined && { baseUrl }) }),
+    [apiClient, baseUrl, namespace]
   );
 
   const liveSeqs = useRef<Set<number>>(new Set());

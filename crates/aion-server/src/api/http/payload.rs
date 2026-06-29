@@ -1,25 +1,13 @@
 //! HTTP body/payload encode-decode shapes and conversions.
 
-use aion_proto::{
-    ProtoDescribeWorkflowResponse, ProtoStartWorkflowRequest, WireEnvelope, WireError,
-};
+use aion_proto::{ProtoDescribeWorkflowResponse, WireEnvelope, WireError};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use super::error::HttpWireError;
 
 pub(crate) const JSON_CONTENT_TYPE: &str = "application/json";
-
-#[derive(Debug, Deserialize)]
-struct HttpStartWorkflowRequest {
-    namespace: String,
-    workflow_type: String,
-    input: Option<Value>,
-    /// R-4 steered-start routing key (optional; absent keeps unsteered placement).
-    #[serde(default)]
-    routing_key: Option<String>,
-}
 
 #[derive(Debug, Serialize)]
 pub(crate) struct HttpDescribeWorkflowResponse {
@@ -40,29 +28,9 @@ struct HttpPayload {
     data: Value,
 }
 
-pub(crate) fn decode_start_workflow_request(
-    body: &[u8],
-) -> Result<ProtoStartWorkflowRequest, HttpWireError> {
-    serde_json::from_slice::<HttpStartWorkflowRequest>(body)
-        .map_err(|_error| HttpWireError(invalid_start_input()))?
-        .try_into()
-        .map_err(HttpWireError)
-}
-
-impl TryFrom<HttpStartWorkflowRequest> for ProtoStartWorkflowRequest {
-    type Error = WireError;
-
-    fn try_from(request: HttpStartWorkflowRequest) -> Result<Self, Self::Error> {
-        Ok(Self {
-            namespace: request.namespace,
-            workflow_type: request.workflow_type,
-            input: request.input.map(http_input_payload).transpose()?,
-            routing_key: request.routing_key,
-        })
-    }
-}
-
-fn http_input_payload(input: Value) -> Result<aion_proto::convert::ProtoPayload, WireError> {
+pub(super) fn http_input_payload(
+    input: Value,
+) -> Result<aion_proto::convert::ProtoPayload, WireError> {
     if is_payload_envelope(&input) {
         serde_json::from_value(input).map_err(|_error| invalid_start_input())
     } else {

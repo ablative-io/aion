@@ -1,3 +1,4 @@
+import { getDashboardConfig } from '@/lib/config';
 import type { Namespace, WorkflowId } from '@/types';
 
 /**
@@ -10,7 +11,17 @@ import type { Namespace, WorkflowId } from '@/types';
 export const HTTP_BASE_PORT = 8090;
 export const GRPC_BASE_PORT = 50051;
 export const DEFAULT_NODE_COUNT = 3;
-export const DEFAULT_NAMESPACE: Namespace = 'demo';
+
+/**
+ * Fallback namespace when none is supplied by the caller (selected namespace or
+ * `?namespace=`). Reads the first configured namespace from the env-driven config
+ * (the demo cluster uses `default`); only falls back to the literal `default`
+ * when nothing is configured. No hardcoded `demo`.
+ */
+export function defaultClusterNamespace(): Namespace {
+  const [first] = getDashboardConfig().namespaces;
+  return first ?? ('default' as Namespace);
+}
 
 export type ClusterNode = {
   /** Stable zero-based index; also the seeded shard this node owns pre-kill. */
@@ -75,6 +86,8 @@ export type ClusterConfigInput = {
   search?: string;
   host?: string;
   namespace?: Namespace;
+  /** Fallback when `namespace` is absent; defaults to {@link defaultClusterNamespace}. */
+  fallbackNamespace?: Namespace;
 };
 
 /**
@@ -89,7 +102,7 @@ export function buildClusterConfig(input: ClusterConfigInput = {}): ClusterConfi
 
   return {
     nodes,
-    namespace: input.namespace ?? DEFAULT_NAMESPACE,
+    namespace: input.namespace ?? input.fallbackNamespace ?? defaultClusterNamespace(),
     workflowId: parseWorkflowId(params.get('workflow')),
     ownerIndex: 0,
   };

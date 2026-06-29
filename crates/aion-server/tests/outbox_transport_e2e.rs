@@ -417,12 +417,13 @@ async fn start_over_http(
         String::from_utf8_lossy(&last_body)
     );
     let bytes = last_body;
+    // Clean wire contract: start response exposes plain UUID strings.
     let body: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let workflow_id = body["workflow_id"]["uuid"]
+    let workflow_id = body["workflow_id"]
         .as_str()
         .ok_or("start response missing workflow id")?
         .parse::<uuid::Uuid>()?;
-    let run_id = body["run_id"]["uuid"]
+    let run_id = body["run_id"]
         .as_str()
         .ok_or("start response missing run id")?
         .parse::<uuid::Uuid>()?;

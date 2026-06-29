@@ -40,8 +40,8 @@ export type {
 } from './lib/clusterConfig';
 export {
   buildClusterConfig,
-  DEFAULT_NAMESPACE,
   DEFAULT_NODE_COUNT,
+  defaultClusterNamespace,
   GRPC_BASE_PORT,
   HTTP_BASE_PORT,
   parseNodeCount,
