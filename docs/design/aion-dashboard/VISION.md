@@ -445,6 +445,73 @@ speed-of-triage advantage at 3 a.m. (ADR-017).
 **Data it reads.** No new sources — it is an interaction layer over §3.1–§3.4
 and the existing views.
 
+### 4.7 Cluster map — the live work view
+
+> **Status marker (read this first).** This concept is specified at its
+> end-state. Its **observe/navigate layer (Tier 0)** and **cluster time-scrub
+> (Tier 1)** are an *already-true direction* that rides directly on the Shift-1
+> push channels (§8 / the cluster-event promotion); they need no new engine
+> capability beyond that promotion. Its **operator-action layer (Tier 2)** is
+> **aspirational**: every action below that mutates cluster state requires a
+> *new, named server command that does not exist today* (drain, planned shard
+> handoff, dead-letter redrive). Tier 2 is a designed direction, not a shipped
+> fact, and Phase 1 must not depend on it. The decision to build the map and to
+> design its command seam alongside the event seam is recorded as ADR-020.
+
+**What it shows.** The cluster as a **deliberate map** (not a force-directed
+hairball): nodes as fixed positions, the shards each owns as tiles, workers
+docked to their node (tagged by `namespace × task_queue × node` and transport),
+in-flight workflows as **tokens flowing along the edges** that are the real
+Liminal dispatch channels. The exactly-once fan-out *spreads* before your eyes;
+a dedup-suppressed duplicate is rendered as a token *absorbed at the boundary*
+(the safety property made visible, not asserted). The failover beat becomes
+**motion**: kill a node, its shard tile slides to the survivor, the in-flight
+tokens re-route to the new owner and complete. This elevates today's
+single-purpose `/failover` view into the general cluster view; `/failover`
+becomes a focused preset of it.
+
+**Tier 0 — navigate & drill (already-true direction).** Every element is a
+deep-linked doorway (ADR-015): a workflow token → its swimlane (§4.1) at the
+matching event; a node → its shards/workers/load/adoption history; a shard →
+owner + adoption timeline; a worker → affinity, transport, in-flight tasks, and
+*why* it died (the typed disconnect-vs-timeout signal, §3.3); an edge → the
+channel + throughput + dedup-rejection count. Plus filter/heat overlays (load,
+error-rate, dispatch latency; scope by namespace). All fed by the §3.2–§3.4
+signals once they are pushed (§8).
+
+**Tier 1 — scrub the cluster through time (direction).** The execution scrubber
+(§4.2) applied to the whole cluster: drag back to *replay a failover* — node
+dies, shard adopts, work re-routes — in the past. Leverages the recorded event
+history; honest by the determinism boundary (§1, invariant 2).
+
+**Tier 2 — act from the map (aspirational; engine-gated).** Operator actions,
+strictly as *commands* the engine's single writer enacts (invariant 3 / §7),
+each behind an explicit confirm and a **blast-radius preview** (hovering "drain
+node 0" lights up exactly what will happen — which shard hands where, which
+in-flight workflows re-dispatch — *before* you commit; the reopen-diff idea
+(§4.3) applied to cluster ops). Spanning: cancel/reopen a workflow (§7, already
+spec'd); **redrive** a dead-letter outbox row; **drain** a node (stop new work,
+let in-flight finish, then safe to take down — graceful vs `kill -9`); **planned
+shard handoff** (deliberately move a shard A→B using the existing epoch-fence /
+`AcquireShard` machinery, rather than waiting for a crash); and a chaos
+**kill-node** control for failover validation/demos. Drain and planned handoff
+are the **control-plane north-star** — they turn the map from a monitor into the
+operator surface for durable agents as infrastructure — but each is gated on a
+new server command and is therefore *not* part of the Phase-1 baseline.
+
+**Data it reads (and the seam this creates).** Tier 0/1 read §3.2–§3.4 over the
+cluster-event push channel (§8). Tier 2 additionally requires a **command seam**
+on the server. Because the push channels are being built now, the cluster-event
+*event seam* and the operator-action *command seam* are designed **together**
+(ADR-020) so the map is fed and operable from one coherent contract rather than
+retrofitted later. The command seam itself ships incrementally as each named
+command lands; until then Tier 2 surfaces are spec'd-but-disabled (§8).
+
+**Why it's an outclass.** No existing engine console gives the operator a live,
+legible model of the whole distributed system *with the consequence of an action
+shown before it is taken*. Temporal et al. are observe-mostly; a map that
+previews blast radius and drives drain/handoff is a different class of tool.
+
 ---
 
 ## 5. Why these concepts (the evidence)
@@ -630,8 +697,17 @@ three-AM triage view over a real cluster *including its designed calm state*
 reopen/cancel commands. The five professional-console disciplines of §1 —
 deep-linking (§6.5), self-provenance (§6.3), keyboard-first interaction,
 performance budgets (§6.6), and the designed calm state — are Phase-1
-obligations, not later polish. This phase needs no WASM. It showcases the
-failover work and is the baseline for every deployment.
+obligations, not later polish. The cluster map (§4.7) at its **Tier-0/1**
+(observe, navigate, cluster time-scrub) is Phase 1 too — it rides on the §8
+cluster-event push promotion and elevates the `/failover` view. This phase needs
+no WASM. It showcases the failover work and is the baseline for every deployment.
+
+**Phase 1.5 — Control plane (engine-gated, not WASM).**
+The cluster map's **Tier-2** operator actions (§4.7) — drain, planned shard
+handoff, dead-letter redrive — each gated on a *new server command* and shipped
+incrementally as those commands land, behind confirm + blast-radius preview.
+Distinct from Phase 1 only because it needs new engine surface, not because it is
+less wanted; distinct from Phase 2 because it needs no WASM.
 
 **Phase 2 — In-browser replay engine (the novel bet).**
 Host the WASM engine + Haematite storage in the tab. Upgrade the scrubber to
@@ -676,15 +752,20 @@ The existing `apps/aion-dashboard` scaffold (React 19 / Vite 7 / Tailwind v4)
 is **architecturally a valid Phase-1 foundation and is carried forward, not
 discarded** — the WebSocket manager design, the contract-pinning pattern, the
 skeleton/error/empty components, and the history+live `seq`-dedup are genuinely
-good. But a code audit (2026-06-29) found it is **currently red across all three
-gates** (`tsc`, Biome, tests): the timeline projection engine covers only 18 of
-the 29 event variants and **throws at runtime** on the other 11; the generated
-types are broken (truncated codegen); and the headline live-update path is
-**dead-wired** (the live hooks are referenced by no component). Building the
-full dashboard on it is therefore preceded by a **named reconciliation pass** —
-regenerate and re-align to the current Rust types, complete the timeline to all
-29 variants behind a compile-time exhaustiveness guard (§3.1), finish the
-half-applied live-feed refactor and wire the live hooks in, add a top-level
-error boundary, and surface WebSocket failures to the operator (never just
-`console.warn`). This is days of focused work, not a rewrite, and it is a
-prerequisite tracked alongside the AU-brief reconciliation above.
+good. A code audit (2026-06-29) found it was at that time **red across all three
+gates** (`tsc`, Biome, tests): the timeline covered only 18 of 29 event variants
+and threw at runtime on the rest; the generated types were truncated; and the
+live-update path was dead-wired.
+
+**Status update (2026-06-29, landed).** The named reconciliation pass has since
+landed and is on `main`: the generated types are regenerated and the server now
+serializes *exactly* the ts-rs-exported wire contract (list/detail/failover/
+search/triage all render real data, no mocks); the live WebSocket feed works in a
+real browser (the handshake-auth fix — credentials as query params, since
+browsers can't set WS headers — ADR-016's provenance line and the `WsCaller`
+server seam); a top-level/route error boundary + branded 404 exist; and the
+dashboard gates are green (`tsc`/Biome/tests/build all pass). **One item from the
+original pass remains open and is *not* yet done:** completing the timeline to all
+29 event variants behind a compile-time `assertNever` exhaustiveness guard (§3.1)
+— tracked in the console-disciplines work (ADR-018). Do not read the green gates
+as proof of 29-variant exhaustiveness; that guard is still to be added.
