@@ -487,9 +487,14 @@ mod tests {
             for key in [
                 "listen_address",
                 "grpc_address",
-                "backend = \"libsql\"",
+                // The scaffold ships the durable ablative default backend.
+                "backend = \"haematite\"",
+                "data_dir = \"aion-data\"",
                 "query_timeout_ms",
                 "event_broadcast_capacity",
+                // Required since WS3: the cluster topology broadcast capacity, so
+                // the scaffolded config boots without further edits.
+                "cluster_broadcast_capacity",
                 "enabled = true",
                 "max_archive_bytes",
                 "max_inflated_bytes",

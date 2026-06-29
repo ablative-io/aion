@@ -414,9 +414,15 @@ enabled = false
 [websocket]
 outbound_buffer_bound = 32
 event_broadcast_capacity = 64
+cluster_broadcast_capacity = 64
 
 [outbox]
 enabled = true
+# The default build compiles liminal-transport, which makes the outbox transport
+# default to liminal; this test exercises the gRPC connected-worker path, so it
+# selects grpc explicitly (otherwise an enabled outbox would require a liminal
+# listen address).
+transport = "grpc"
 poll_interval_ms = 1000
 batch_size = 16
 max_attempts = 5

@@ -809,7 +809,10 @@ mod tests {
     /// only exists with `liminal-transport` on; in a feature-off build the same
     /// selection is the missing-feature error instead, covered by the type system
     /// rather than this test.)
-    #[cfg(feature = "liminal-transport")]
+    // Also gated on `libsql-backend`: it boots a real libSQL-backed `ServerState`
+    // to obtain an outbox-bearing store, and the libSQL connect path is now an
+    // opt-in feature. The listen-address guard itself is backend-agnostic.
+    #[cfg(all(feature = "liminal-transport", feature = "libsql-backend"))]
     #[tokio::test]
     async fn liminal_transport_requires_listen_address() {
         use crate::config::{
@@ -886,7 +889,10 @@ mod tests {
 /// executed the activities, AND the terminals were recorded in history (four
 /// `ActivityCompleted` + one `WorkflowCompleted`), which the stub's
 /// publish-and-mark-done path never achieved.
-#[cfg(all(test, feature = "liminal-transport"))]
+// Also gated on `libsql-backend`: this production-boot round-trip stands up a
+// real libSQL-backed server (the durable outbox path it exercises), and the
+// libSQL connect path is now an opt-in feature.
+#[cfg(all(test, feature = "liminal-transport", feature = "libsql-backend"))]
 mod lsub_prod_xnode_e2e {
     #![allow(clippy::expect_used)]
 

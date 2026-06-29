@@ -18,7 +18,11 @@ workspace = true
 [dependencies]
 aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
 aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
-aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
+# libSQL durable backend. Now OPTIONAL: the ablative stack (haematite + liminal)
+# is the default, so a stock build no longer links libSQL. Enabled only by the
+# `libsql-backend` feature, which lights up the `backend = libsql` arm for a
+# lightweight/embedded opt-out build.
+aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql", optional = true }
 aion-store = { version = "0.8.0", path = "../aion-store" }
 # Single-node haematite event-store backend. OPTIONAL and OFF by default: a
 # default aion-server build does not link aion-store-haematite (nor its
@@ -90,6 +94,12 @@ liminal-server = { workspace = true, optional = true }
 liminal = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The libSQL backend is now optional in the production graph (behind
+# `libsql-backend`), but several integration tests (the LSUB-PROD cross-node
+# round-trip, the libSQL outbox e2e) construct a `LibSqlStore` directly. Listing
+# it here keeps it available for ALL `cargo test` builds without forcing the
+# production default to link it.
+aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
 # The LSUB-1 cross-node dispatch e2e drives a REAL aion-worker over the liminal
 # push transport, so the test build enables the worker's `liminal-transport`
 # feature. A default (non-test) build never pulls this; the worker feature is OFF
@@ -117,8 +127,18 @@ haematite = { workspace = true }
 zip = { workspace = true }
 
 [features]
-default = []
+# The ablative stack is the out-of-box default: a stock `aion-server` build links
+# the haematite event-store backend and the liminal cross-node transport, and the
+# runtime default backend is haematite (with `outbox.transport = liminal` selected
+# whenever the transport is compiled). `libsql-backend` is the lightweight opt-out
+# (`--no-default-features --features libsql-backend`); `haematite-backend` and
+# `liminal-transport` remain named features so a slim build can opt out of either.
+default = ["haematite-backend", "liminal-transport"]
 auth = ["dep:jsonwebtoken", "dep:reqwest"]
+# Selectable libSQL event-store backend. Now an explicit OPT-IN (it was a
+# non-optional dep before): with it on, `store.backend = libsql` constructs an
+# embedded `LibSqlStore` over `store.url`. A default build does not link it.
+libsql-backend = ["dep:aion-store-libsql"]
 # Embeds the built dashboard bundle (rust_embed over `dashboard-embed/`) into the
 # binary so the single `aion server` process serves the real web UI at `/`. OFF
 # by default to keep `cargo build -p aion-server` bun-free for backend-only devs;

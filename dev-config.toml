@@ -7,7 +7,8 @@
 #   workflow_packages = ["examples/hello-world/hello-world.aion"]
 #
 # You can also load a package without editing this file. `--config` is optional
-# for local development; no-config mode uses in-memory local defaults, but
+# for local development; no-config mode uses the durable ablative defaults
+# (haematite event store under ./aion-data), but
 # `websocket.event_broadcast_capacity` and `runtime.query_timeout_ms` have no
 # defaults and must then come from the environment:
 #   AION_WEBSOCKET_EVENT_BROADCAST_CAPACITY=1024 \
@@ -22,7 +23,11 @@ listen_address = "127.0.0.1:8080"
 grpc_address = "127.0.0.1:50051"
 
 [store]
-backend = "memory"
+# Durable ablative event store (the default). Use backend = "memory" for an
+# ephemeral local run that loses all state on stop, or backend = "libsql" with
+# url = "aion.db" for the lightweight embedded backend (libsql-backend feature).
+backend = "haematite"
+data_dir = "aion-data"
 
 [runtime]
 # REQUIRED, no default: engine reply deadline for /workflows/query, in

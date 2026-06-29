@@ -33,7 +33,16 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
                     return config_error("AION_STORE_URL must not be empty");
                 }
                 config.store.url = Some(value);
-                if config.store.backend == StoreBackend::Memory {
+                // AION_STORE_URL names an embedded libSQL database file, so it is
+                // an explicit libSQL selection: coerce the implicit durable
+                // defaults (memory, or the new haematite default) to libsql. The
+                // haematite backend ignores store.url, so a URL is only meaningful
+                // as a libSQL choice. See `apply_cli_overrides` for the matching
+                // `--store-url` path.
+                if matches!(
+                    config.store.backend,
+                    StoreBackend::Memory | StoreBackend::Haematite
+                ) {
                     config.store.backend = StoreBackend::LibSql;
                 }
             }

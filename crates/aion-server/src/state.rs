@@ -6,6 +6,7 @@ use aion::{
     ActivityDispatcher, EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter,
 };
 use aion_store::{EventStore, OutboxStore};
+#[cfg(feature = "libsql-backend")]
 use aion_store_libsql::LibSqlStore;
 
 use crate::dev_ui::{ActivityMockRegistry, DevMockingDispatcher};
@@ -870,29 +871,15 @@ async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerErro
             None,
         )),
         StoreBackend::LibSql => {
-            let Some(url) = config.url else {
-                return Err(ServerError::Config {
-                    message: "store.url must not be empty when store.backend is libsql".to_owned(),
-                });
-            };
-            let store = LibSqlStore::open(url.clone())
-                .await
-                .map_err(ServerError::from)?;
-            store
-                .validate_event_compatibility()
-                .await
-                .map_err(|error| match error {
-                    aion_store::StoreError::Serialization(_) => ServerError::Config {
-                        message: format!(
-                            "Database schema mismatch — delete {url} and restart, or run migrations."
-                        ),
-                    },
-                    other => ServerError::from(other),
-                })?;
-            let leaf = Arc::new(store);
-            let event_store: Arc<dyn EventStore> = leaf.clone();
-            let outbox_store: Arc<dyn OutboxStore> = leaf;
-            Ok(ConnectedStore::local(event_store, Some(outbox_store)))
+            #[cfg(feature = "libsql-backend")]
+            {
+                connect_libsql_store(config).await
+            }
+            #[cfg(not(feature = "libsql-backend"))]
+            {
+                let _ = config;
+                connect_libsql_store_unavailable()
+            }
         }
         StoreBackend::Haematite => {
             #[cfg(feature = "haematite-backend")]
@@ -906,6 +893,47 @@ async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerErro
             }
         }
     }
+}
+
+/// Connect the libSQL backend, opening the embedded database at `store.url` and
+/// sharing the SAME leaf `Arc<LibSqlStore>` (one `libsql::Connection`) as both the
+/// engine's [`EventStore`] and the dispatcher's [`OutboxStore`].
+#[cfg(feature = "libsql-backend")]
+async fn connect_libsql_store(config: StoreConfig) -> Result<ConnectedStore, ServerError> {
+    let Some(url) = config.url else {
+        return Err(ServerError::Config {
+            message: "store.url must not be empty when store.backend is libsql".to_owned(),
+        });
+    };
+    let store = LibSqlStore::open(url.clone())
+        .await
+        .map_err(ServerError::from)?;
+    store
+        .validate_event_compatibility()
+        .await
+        .map_err(|error| match error {
+            aion_store::StoreError::Serialization(_) => ServerError::Config {
+                message: format!(
+                    "Database schema mismatch — delete {url} and restart, or run migrations."
+                ),
+            },
+            other => ServerError::from(other),
+        })?;
+    let leaf = Arc::new(store);
+    let event_store: Arc<dyn EventStore> = leaf.clone();
+    let outbox_store: Arc<dyn OutboxStore> = leaf;
+    Ok(ConnectedStore::local(event_store, Some(outbox_store)))
+}
+
+/// Reject `backend = libsql` cleanly when the optional `libsql-backend` feature
+/// is not compiled in, so a default (ablative-stack) build gives a precise
+/// operator error instead of a silent fallthrough.
+#[cfg(not(feature = "libsql-backend"))]
+fn connect_libsql_store_unavailable() -> Result<ConnectedStore, ServerError> {
+    Err(ServerError::Config {
+        message: "store.backend = libsql requires the aion-server `libsql-backend` feature"
+            .to_owned(),
+    })
 }
 
 /// Connect the haematite backend, opening the on-disk database if `store.data_dir`
@@ -1211,7 +1239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_store_shares_outbox_store_only_for_libsql()
+    async fn connect_store_memory_backend_exposes_no_outbox_store()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::config::{StoreBackend, StoreConfig};
 
@@ -1230,6 +1258,17 @@ mod tests {
             connected.outbox_store.is_none(),
             "the in-memory backend exposes no outbox store"
         );
+        Ok(())
+    }
+
+    // The libSQL connect path is now an opt-in backend (`libsql-backend`), so this
+    // libSQL-specific outbox-sharing assertion compiles and runs only under that
+    // feature. The memory case is covered above, unconditionally.
+    #[cfg(feature = "libsql-backend")]
+    #[tokio::test]
+    async fn connect_store_shares_outbox_store_only_for_libsql()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::config::{StoreBackend, StoreConfig};
 
         // LibSql backend: the leaf Arc<LibSqlStore> is shared as BOTH the engine's
         // EventStore and the dispatcher's OutboxStore (one libsql::Connection), so
