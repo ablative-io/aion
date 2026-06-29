@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "aion-package"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "serde",
