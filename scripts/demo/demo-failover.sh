@@ -75,11 +75,16 @@ trap teardown EXIT
 
 # ----------------------------------------------------------------------------
 say "build (aion cluster binary + worker + packager)"
-( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport ) \
+# `release` turns on the embedded dashboard (rust_embed over dashboard-embed/, which
+# `cargo xtask build-dashboard` populates) so each node serves the real ops console
+# at its HTTP port — the live cluster map + failover feed watch this demo. The
+# bundle must be built first (xtask); if dashboard-embed/ is empty the build still
+# succeeds and serves the placeholder page.
+( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport,release ) \
   || die "aion CLI build failed"
 ( cd "$WORKER_DIR" && cargo build ) || die "liminal-fan-worker build failed"
 ( cd "$PACKAGER_DIR" && cargo build ) || die "fleet-packager build failed"
-ok "built aion (+haematite-backend,+liminal-transport), worker, packager"
+ok "built aion (+haematite-backend,+liminal-transport,+embedded dashboard), worker, packager"
 
 say "clean stale processes + state"
 pkill -9 -f "$AION server" 2>/dev/null || true

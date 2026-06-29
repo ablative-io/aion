@@ -166,6 +166,9 @@ default = "default"
 
 [websocket]
 event_broadcast_capacity = 1024
+# WS3 cluster topology push channel (always mounted on /events/stream). Cluster
+# events are low-rate, so a modest capacity is plenty.
+cluster_broadcast_capacity = 256
 
 [outbox]
 enabled = true
