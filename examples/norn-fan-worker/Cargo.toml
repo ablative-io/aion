@@ -1,0 +1,33 @@
+# Real-AI liminal PUSH fan-out worker: the durable-agent demo counterpart of
+# `spike/liminal-fan-worker`.
+#
+# Identical transport/registration/redial wiring as `liminal-fan-worker` (it
+# serves the same `collect_four` `fan:N` activities over the liminal server-push
+# path and migrates to a survivor on owner kill -9), but each activity body runs
+# a REAL Norn AI agent step via the `norn` CLI instead of returning a canned
+# string. This is what turns the proven exactly-once failover demo into a
+# "real AI work fans out across the cluster and survives a node kill" demo.
+#
+# Standalone (NOT a workspace member) for the same reason as `liminal-fan-worker`:
+# it consumes the worktree's local `aion-worker` by path with the
+# `liminal-transport` feature so the push-client API matches production exactly.
+[package]
+name = "norn-fan-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Real-AI (Norn) liminal push fan-out worker for the durable-agent failover demo."
+
+[[bin]]
+name = "norn-fan-worker"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+aion-worker = { path = "../../crates/aion-worker", features = ["liminal-transport"] }
+anyhow = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

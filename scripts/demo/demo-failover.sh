@@ -48,14 +48,33 @@ done
 STATE_DIR="${DEMO_STATE_DIR:-/tmp/aion-failover-demo}"
 DEMO_BOOT_STAGGER="${DEMO_BOOT_STAGGER:-3}"
 AION="$ROOT/target/debug/aion"
-WORKER_DIR="$ROOT/spike/liminal-fan-worker"
-WORKER_BIN="$WORKER_DIR/target/debug/liminal-fan-worker"
+# DEMO_WORKER selects the fan-out workload's worker:
+#   synthetic (default) — spike/liminal-fan-worker: returns a canned per-ordinal
+#                         string after an artificial delay. Deterministic; the
+#                         proven exactly-once failover gate.
+#   norn               — examples/norn-fan-worker: each fan:N runs a REAL Norn AI
+#                         agent step via the ChatGPT login. Same transport/redial,
+#                         same exactly-once guarantee, but the fan-out is real AI.
+DEMO_WORKER="${DEMO_WORKER:-synthetic}"
+if [ "$DEMO_WORKER" = norn ]; then
+  WORKER_DIR="$ROOT/examples/norn-fan-worker"
+  WORKER_BIN="$WORKER_DIR/target/debug/norn-fan-worker"
+  WORKER_NAME="norn-fan-worker"
+  # Default to the sibling norn checkout's release binary; override with NORN_BIN.
+  NORN_BIN="${NORN_BIN:-$ROOT/../norn/target/release/norn}"
+else
+  WORKER_DIR="$ROOT/spike/liminal-fan-worker"
+  WORKER_BIN="$WORKER_DIR/target/debug/liminal-fan-worker"
+  WORKER_NAME="liminal-fan-worker"
+fi
 PACKAGER_DIR="$ROOT/demo/fleet-packager"
 PACKAGER_BIN="$PACKAGER_DIR/target/debug/fleet-packager"
 PACKAGE="$STATE_DIR/fleet.aion"
 FAN_OUT=4   # collect_four fans four agent-ish tasks; exactly-once total = 4
-# Per-activity delay so the fan-out stays in flight across the kill (4 ordinals
-# served serially through the single push loop => ~4x this in-flight window).
+# Per-activity delay so the synthetic fan-out stays in flight across the kill (4
+# ordinals served serially through the single push loop => ~4x this in-flight
+# window). The norn worker needs no artificial delay: a real agent step's natural
+# latency is the in-flight window.
 export LIMINAL_FAN_DELAY_MS="${LIMINAL_FAN_DELAY_MS:-1500}"
 
 NODE_PIDS=()
@@ -67,7 +86,7 @@ teardown() {
   for pid in "${NODE_PIDS[@]:-}"; do [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true; done
   [ -n "$WORKER_PID" ] && kill -9 "$WORKER_PID" 2>/dev/null || true
   pkill -9 -f "$AION server" 2>/dev/null || true
-  pkill -9 -f "liminal-fan-worker" 2>/dev/null || true
+  pkill -9 -f "fan-worker" 2>/dev/null || true   # matches liminal- and norn-fan-worker
   note "stopped all demo processes"
   return "$rc"
 }
@@ -92,13 +111,23 @@ say "build (dashboard bundle + aion cluster binary + worker + packager)"
 # each node serves the real ops console at its HTTP port.
 ( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport,release ) \
   || die "aion CLI build failed"
-( cd "$WORKER_DIR" && cargo build ) || die "liminal-fan-worker build failed"
+( cd "$WORKER_DIR" && cargo build ) || die "$WORKER_NAME build failed"
 ( cd "$PACKAGER_DIR" && cargo build ) || die "fleet-packager build failed"
-ok "built aion (+haematite-backend,+liminal-transport,+embedded dashboard), worker, packager"
+ok "built aion (+haematite-backend,+liminal-transport,+embedded dashboard), $WORKER_NAME, packager"
+
+# Real-AI worker preflight: the Norn binary must exist and be logged in (the
+# project uses the ChatGPT OAuth login, not an API key), or every fan:N step
+# fails. Fail fast here with a clear message rather than mid-demo.
+if [ "$DEMO_WORKER" = norn ]; then
+  [ -x "$NORN_BIN" ] || die "norn binary not found/executable at $NORN_BIN (build it or set NORN_BIN)"
+  env -u OPENAI_API_KEY "$NORN_BIN" auth status >/dev/null 2>&1 \
+    || die "norn is not logged in — run '$NORN_BIN auth login' (ChatGPT login) first"
+  ok "norn ready: $NORN_BIN (ChatGPT login active)"
+fi
 
 say "clean stale processes + state"
 pkill -9 -f "$AION server" 2>/dev/null || true
-pkill -9 -f "liminal-fan-worker" 2>/dev/null || true
+pkill -9 -f "fan-worker" 2>/dev/null || true   # matches liminal- and norn-fan-worker
 sleep 1
 rm -rf "$STATE_DIR"
 mkdir -p "$STATE_DIR/logs"
@@ -141,9 +170,14 @@ for ((i=0; i<NODES; i++)); do
   WORKER_ARGS+=("--address" "127.0.0.1:$(liminal_port "$i")")
 done
 WORKER_ARGS+=("--identity" "fleet-worker" "--ready-file" "$STATE_DIR/worker.ready")
+[ "$DEMO_WORKER" = norn ] && WORKER_ARGS+=("--norn-bin" "$NORN_BIN")
 RUST_LOG=info "$WORKER_BIN" "${WORKER_ARGS[@]}" > "$STATE_DIR/logs/worker.log" 2>&1 &
 WORKER_PID=$!
-note "worker pid=$WORKER_PID (per-task delay ${LIMINAL_FAN_DELAY_MS}ms so progress is visible)"
+if [ "$DEMO_WORKER" = norn ]; then
+  note "worker pid=$WORKER_PID ($WORKER_NAME — each fan:N is a REAL Norn agent step)"
+else
+  note "worker pid=$WORKER_PID ($WORKER_NAME — per-task delay ${LIMINAL_FAN_DELAY_MS}ms so progress is visible)"
+fi
 i=0; while [ "$i" -lt 120 ] && [ ! -f "$STATE_DIR/worker.ready" ]; do sleep 0.25; i=$((i+1)); done
 [ -f "$STATE_DIR/worker.ready" ] || die "worker never registered against a node's liminal listener"
 ok "worker connected + registered (ready file present)"
@@ -202,6 +236,6 @@ note "VIOLENTLY KILL the work-owning node + assert EXACTLY-ONCE on a survivor:"
 note "  scripts/demo/kill-owner.sh --state-dir $STATE_DIR"
 note ""
 note "TEARDOWN when done:"
-note "  pkill -9 -f '$AION server'; pkill -9 -f liminal-fan-worker"
+note "  pkill -9 -f '$AION server'; pkill -9 -f fan-worker"
 note ""
 note "(logs: $STATE_DIR/logs/)"
