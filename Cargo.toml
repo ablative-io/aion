@@ -16,6 +16,7 @@ members = [
     "crates/aion-client",
     "crates/aion-cli",
     "benchmarks/million-processes",
+    "xtask",
 ]
 
 [workspace.package]

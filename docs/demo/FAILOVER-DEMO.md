@@ -176,6 +176,30 @@ fails its own reads over to a survivor automatically. The exactly-once counter i
 derived from `ActivityCompleted` events deduped by history sequence, so a
 WebSocket reconnect during the kill can never double-count.
 
+### Single binary serves the dashboard (no separate web server)
+
+The `aion` binary can serve the built dashboard itself at its **HTTP port** — the
+same port as the API. No vite server, no static host: one process.
+
+* **Dev (live, hot reload):** run the vite dev server (`bun run dev` above). It
+  talks to the API via `VITE_*` config and **CORS** (configure
+  `cors_allowed_origins` on the server to include the vite origin, e.g.
+  `http://localhost:5173`).
+* **Shipped (single binary):** build the bundle into the binary, then run it:
+
+  ```bash
+  cargo xtask build-dashboard                       # regen wire types + bun build + sync into dashboard-embed/
+  cargo build -p aion-cli --release --features release
+  ./target/release/aion server --open              # serves the dashboard at the HTTP port; --open launches a browser
+  ```
+
+  The dashboard is then at `http://<listen_address>/` (e.g. `http://127.0.0.1:8090/`).
+
+The embed is gated by the `embed-dashboard` cargo feature (forwarded from aion-cli's
+`release` feature). A **plain** `cargo build` (feature off) needs no bun and serves a
+branded placeholder at `/` that documents the dev URL and build command — never a
+blank page. See `apps/aion-dashboard/README.md` for the pipeline and CI guards.
+
 ## Components
 
 | Path | Purpose | Lines |

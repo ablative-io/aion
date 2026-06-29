@@ -188,7 +188,7 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite 0.2.0",
+ "haematite 0.3.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "saffron",
@@ -224,7 +224,7 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite 0.2.0",
+ "haematite 0.3.0",
  "http-body-util",
  "jsonwebtoken",
  "libsql",
@@ -275,7 +275,7 @@ dependencies = [
  "aion-store",
  "async-trait",
  "chrono",
- "haematite 0.2.0",
+ "haematite 0.3.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -1918,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "haematite"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "beamr 0.11.0",
  "blake3",
@@ -5980,6 +5980,13 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+]
 
 [[package]]
 name = "yoke"
