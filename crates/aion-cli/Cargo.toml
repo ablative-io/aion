@@ -55,9 +55,9 @@ uuid = { workspace = true }
 aion-store = { version = "0.8.0", path = "../aion-store" }
 chrono = { workspace = true }
 fs4 = { workspace = true }
-tempfile = "3.27.0"
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
-tokio-stream = { version = "0.1", features = ["net"] }
+tokio-stream = { workspace = true, features = ["net"] }
 
 [features]
 # Forwarded to the embedded server. Off by default, matching the feature set

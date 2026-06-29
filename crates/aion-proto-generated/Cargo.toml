@@ -24,6 +24,6 @@ serde = { workspace = true, features = ["derive"] }
 tonic-prost = "=0.14.5"
 
 [build-dependencies]
-protoc-bin-vendored = "3.2.0"
+protoc-bin-vendored = { workspace = true }
 tonic-build = { workspace = true }
 tonic-prost-build = "=0.14.5"

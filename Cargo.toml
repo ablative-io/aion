@@ -24,7 +24,7 @@ version = "0.8.0"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
-repository = "https://github.com/tomWhiting/aion"
+repository = "https://github.com/ablative-io/aion"
 authors = ["Tom Whiting <tom@ablative.com.au>"]
 
 [workspace.lints.rust]
@@ -72,3 +72,22 @@ notify = "8.2"
 saffron = { version = "0.1", features = ["std"] }
 hostname = "0.4"
 beamr = { version = "0.11.0", features = ["json"] }
+haematite = "0.3.0"
+liminal = { package = "liminal-rs", version = "0.2.0" }
+liminal-sdk = "0.2.0"
+liminal-server = "0.2.0"
+tempfile = "3.27.0"
+tokio-stream = "0.1.18"
+ts-rs = { version = "12.0.1", features = ["chrono-impl", "uuid-impl", "no-serde-warnings"] }
+protoc-bin-vendored = "3.2.0"
+rustls = { version = "0.23.40", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
+rustls-pemfile = "2.2.0"
+webpki-roots = "1.0.7"
+http = "1.4.1"
+http-body-util = "0.1"
+tower-http = { version = "0.6", features = ["cors"] }
+rust-embed = "8.11.0"
+prometheus = "0.14.0"
+base64 = "0.22.1"
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

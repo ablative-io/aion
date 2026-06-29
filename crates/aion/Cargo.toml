@@ -43,8 +43,8 @@ saffron.workspace = true
 aion-package = { version = "0.8.0", path = "../aion-package", features = ["test-support"] }
 aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
 aion-store-haematite = { version = "0.8.0", path = "../aion-store-haematite" }
-haematite = { path = "../../../haematite/crates/haematite" }
+haematite = { workspace = true }
 beamr = { workspace = true, features = ["test-support"] }
 fs4.workspace = true
-tempfile = "3"
+tempfile = { workspace = true }
 tracing-subscriber.workspace = true

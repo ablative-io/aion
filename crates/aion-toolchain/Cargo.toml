@@ -31,4 +31,4 @@ toml = { workspace = true }
 # sibling copy of the read-only project template, removed on drop), so
 # concurrent submissions never share an entry-file, build/ dir, or .aion output.
 # It is a filesystem utility, not a compiler dependency.
-tempfile = "3.27.0"
+tempfile = { workspace = true }
