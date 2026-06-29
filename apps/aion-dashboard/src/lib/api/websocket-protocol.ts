@@ -6,10 +6,15 @@ import {
   AW_WEBSOCKET_CONTRACT,
   type ConsoleLike,
   type JsonRecord,
+  type ManagedWebSocket,
   type ResyncContext,
+  type SocketCredentials,
   type SubscriptionRecord,
   type WarningLogger,
+  type WebSocketClose,
   type WebSocketConstructor,
+  type WebSocketEventHandler,
+  type WebSocketMessage,
 } from './websocket-types';
 
 export const globalConsole = globalThis.console as ConsoleLike;
@@ -266,9 +271,14 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function buildWebSocketUrl(baseUrl: string): string {
-  const endpoint = AW_WEBSOCKET_CONTRACT.endpoint;
+export function buildWebSocketUrl(baseUrl: string, credentials?: SocketCredentials): string {
+  const base = resolveSocketBase(baseUrl, AW_WEBSOCKET_CONTRACT.endpoint);
+  const query = buildCredentialQuery(credentials);
 
+  return query.length === 0 ? base : `${base}?${query}`;
+}
+
+function resolveSocketBase(baseUrl: string, endpoint: string): string {
   if (baseUrl.length === 0 && typeof window !== 'undefined') {
     return `${window.location.origin.replace(/^http/, 'ws')}${endpoint}`;
   }
@@ -278,6 +288,34 @@ export function buildWebSocketUrl(baseUrl: string): string {
   }
 
   return `${baseUrl.replace(/^http/, 'ws')}${endpoint}`;
+}
+
+/**
+ * Encode connection-level credentials as query parameters. Browsers cannot set
+ * request headers on a WebSocket handshake, so the server accepts these on the
+ * URL and promotes them back to header form (`WsCaller`). The bearer token is
+ * sent as `access_token`, which the server wraps in the `Bearer` scheme.
+ */
+function buildCredentialQuery(credentials?: SocketCredentials): string {
+  if (credentials === undefined) {
+    return '';
+  }
+
+  const params = new URLSearchParams();
+
+  if (credentials.namespaces !== undefined && credentials.namespaces.length > 0) {
+    params.set('x-aion-namespaces', credentials.namespaces.join(','));
+  }
+
+  if (credentials.subject !== undefined && credentials.subject.length > 0) {
+    params.set('x-aion-subject', credentials.subject);
+  }
+
+  if (credentials.bearerToken !== undefined && credentials.bearerToken.length > 0) {
+    params.set('access_token', credentials.bearerToken);
+  }
+
+  return params.toString();
 }
 
 export function stripTrailingSlash(value: string): string {
@@ -294,5 +332,75 @@ export function browserWebSocketConstructor(): WebSocketConstructor {
     throw new Error('Aion event WebSocket manager requires a WebSocket implementation');
   }
 
-  return WebSocket as unknown as WebSocketConstructor;
+  // The DOM `WebSocket` is structurally wider than {@link ManagedWebSocket}: its
+  // handler slots are typed with the full DOM event types, which makes the raw
+  // constructor non-assignable to `WebSocketConstructor` under strict function
+  // variance. Rather than cast through `unknown`, we adapt the instance — the
+  // wrapper exposes exactly the narrowed surface the manager uses, forwarding the
+  // DOM events (which structurally satisfy the narrowed event shapes) to the
+  // manager's handlers and delegating `send`/`close`/`readyState` to the socket.
+  return class implements ManagedWebSocket {
+    private readonly socket: WebSocket;
+    // The manager only ever *assigns* handlers; it never reads them back. We keep
+    // each assigned handler in our own narrowed-typed field (the source of truth
+    // for the getter) and forward the DOM event — which structurally satisfies the
+    // narrowed shape — into it. This makes the getter return our exact type while
+    // the DOM socket still drives the callback.
+    #onopen: WebSocketEventHandler<globalThis.Event> = null;
+    #onmessage: WebSocketEventHandler<WebSocketMessage> = null;
+    #onclose: WebSocketEventHandler<WebSocketClose> = null;
+    #onerror: WebSocketEventHandler<globalThis.Event> = null;
+
+    constructor(url: string) {
+      this.socket = new WebSocket(url);
+    }
+
+    get readyState(): number {
+      return this.socket.readyState;
+    }
+
+    get onopen(): WebSocketEventHandler<globalThis.Event> {
+      return this.#onopen;
+    }
+
+    set onopen(handler: WebSocketEventHandler<globalThis.Event>) {
+      this.#onopen = handler;
+      this.socket.onopen = handler;
+    }
+
+    get onmessage(): WebSocketEventHandler<WebSocketMessage> {
+      return this.#onmessage;
+    }
+
+    set onmessage(handler: WebSocketEventHandler<WebSocketMessage>) {
+      this.#onmessage = handler;
+      this.socket.onmessage = handler === null ? null : (event) => handler(event);
+    }
+
+    get onclose(): WebSocketEventHandler<WebSocketClose> {
+      return this.#onclose;
+    }
+
+    set onclose(handler: WebSocketEventHandler<WebSocketClose>) {
+      this.#onclose = handler;
+      this.socket.onclose = handler === null ? null : (event) => handler(event);
+    }
+
+    get onerror(): WebSocketEventHandler<globalThis.Event> {
+      return this.#onerror;
+    }
+
+    set onerror(handler: WebSocketEventHandler<globalThis.Event>) {
+      this.#onerror = handler;
+      this.socket.onerror = handler;
+    }
+
+    send(data: string): void {
+      this.socket.send(data);
+    }
+
+    close(): void {
+      this.socket.close();
+    }
+  };
 }

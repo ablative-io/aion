@@ -18,7 +18,7 @@ import { SearchForm } from './SearchForm';
 
 export type SearchViewProps = {
   namespace: Namespace | null;
-  client?: ApiClient;
+  client?: ApiClient | undefined;
 };
 
 /**

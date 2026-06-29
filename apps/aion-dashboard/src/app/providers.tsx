@@ -10,11 +10,11 @@ const QUERY_STALE_TIME_MS = 30_000;
 const QUERY_GC_TIME_MS = 5 * 60_000;
 
 export type AppProvidersProps = {
-  apiClient?: Pick<ApiClient, 'listNamespaces'>;
+  apiClient?: Pick<ApiClient, 'listNamespaces'> | undefined;
   children: ReactNode;
-  initialNamespace?: Namespace;
-  queryClient?: QueryClient;
-  websocketManager?: Pick<AionEventWebSocketManager, 'close' | 'connect'>;
+  initialNamespace?: Namespace | undefined;
+  queryClient?: QueryClient | undefined;
+  websocketManager?: Pick<AionEventWebSocketManager, 'close' | 'connect'> | undefined;
 };
 
 export function AppProviders({

@@ -16,29 +16,29 @@ categories = ["asynchronous", "development-tools"]
 workspace = true
 
 [dependencies]
-aion = { package = "aion-rs", version = "0.7.0", path = "../aion" }
-aion-proto = { version = "0.7.0", path = "../aion-proto", features = ["generated"] }
-aion-store-libsql = { version = "0.7.0", path = "../aion-store-libsql" }
-aion-store = { version = "0.7.0", path = "../aion-store" }
+aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
+aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
+aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
+aion-store = { version = "0.8.0", path = "../aion-store" }
 # Single-node haematite event-store backend. OPTIONAL and OFF by default: a
 # default aion-server build does not link aion-store-haematite (nor its
 # transitive haematite engine), so the default dependency surface and backend
 # selection are byte-identical to before. Enabled only by the
 # `haematite-backend` feature, which lights up the `backend = haematite` arm.
-aion-store-haematite = { version = "0.7.0", path = "../aion-store-haematite", optional = true }
-aion-package = { version = "0.7.0", path = "../aion-package" }
+aion-store-haematite = { version = "0.8.0", path = "../aion-store-haematite", optional = true }
+aion-package = { version = "0.8.0", path = "../aion-package" }
 # Server-side authoring toolchain. It embeds NO Gleam compiler — it only
 # spawns the external `gleam` binary — so depending on it adds no compiler to
 # aion-server (CN7/C15). The authoring endpoints stay dark unless
 # `[authoring].gleam_path` is configured.
-aion-toolchain = { version = "0.7.0", path = "../aion-toolchain" }
+aion-toolchain = { version = "0.8.0", path = "../aion-toolchain" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-aion-core = { version = "0.7.0", path = "../aion-core" }
+aion-core = { version = "0.8.0", path = "../aion-core" }
 dashmap = { workspace = true }
 uuid.workspace = true
 futures.workspace = true
@@ -50,6 +50,11 @@ tokio-stream = "0.1"
 # failures; same version axum already uses internally.
 http-body-util = "0.1"
 tower = { workspace = true, features = ["util"] }
+# Provides the CorsLayer the public HTTP router applies so a browser dashboard
+# served from a different origin (e.g. the Vite dev server) can call the API.
+# CORS is config-driven and secure-by-default: with no configured origins the
+# layer is not installed and no cross-origin request is allowed.
+tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8.11.0"
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -84,11 +89,11 @@ liminal = { version = "0.2.0", path = "../../../liminal/crates/liminal", optiona
 # feature. A default (non-test) build never pulls this; the worker feature is OFF
 # in the production dependency graph.
 aion-worker = { path = "../aion-worker", features = ["liminal-transport"] }
-aion-core = { version = "0.7.0", path = "../aion-core" }
+aion-core = { version = "0.8.0", path = "../aion-core" }
 # The SS-5b auto-failover test reuses the aion-rs SS-5 example-build helper,
 # which rebuilds the `hello-world` archive from source and advisory-locks the
 # build dir; these dev-deps back that helper for the haematite test build.
-aion-package = { version = "0.7.0", path = "../aion-package", features = ["test-support"] }
+aion-package = { version = "0.8.0", path = "../aion-package", features = ["test-support"] }
 fs4 = { workspace = true }
 libsql = { workspace = true }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

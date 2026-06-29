@@ -201,6 +201,7 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: false },
         owned_shards: Vec::new(),
+        cors_allowed_origins: Vec::new(),
     }
 }
 

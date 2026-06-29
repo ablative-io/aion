@@ -3,9 +3,10 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
     routing::{any, get, post},
 };
+use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
@@ -29,6 +30,7 @@ use crate::{ServerError, ServerState, dashboard::assets, observability};
 /// Returns [`ServerError::Config`] when dashboard assets are misconfigured.
 pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
     let dashboard = assets::dashboard_router(&state.runtime_config().dashboard)?;
+    let cors = cors_layer(&state.runtime_config().cors_allowed_origins)?;
     let metrics = state.metrics().cloned();
     let health = state.health().cloned();
     let mut router = workflow_router(state);
@@ -48,7 +50,56 @@ pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
                 ),
         );
     }
-    Ok(router.merge(dashboard))
+    let router = router.merge(dashboard);
+    // CORS is applied last so it wraps every public route the browser dashboard
+    // calls (the workflow API, /metrics, /health/*, the dashboard fallback).
+    // With no configured origins `cors_layer` returns None and the router is
+    // byte-identical to before — no cross-origin request is allowed (the secure
+    // default). With origins set the layer also answers OPTIONS preflight.
+    Ok(match cors {
+        Some(cors) => router.layer(cors),
+        None => router,
+    })
+}
+
+/// Build the CORS layer for the public HTTP router from the operator-configured
+/// allowed origins.
+///
+/// Returns `Ok(None)` when no origins are configured — the secure default:
+/// the layer is not installed and no cross-origin request is permitted. When
+/// origins are configured the layer is scoped to exactly those origins (never
+/// `Any`, so it is safe to pair with credentialed requests), permits the
+/// methods the dashboard uses (GET, POST, and OPTIONS preflight), and allows
+/// exactly the request headers the API consumes.
+///
+/// # Errors
+///
+/// Returns [`ServerError::Config`] when a configured origin is not a valid HTTP
+/// header value. Startup validation already rejects malformed origins, so this
+/// is defense in depth.
+fn cors_layer(allowed_origins: &[String]) -> Result<Option<CorsLayer>, ServerError> {
+    if allowed_origins.is_empty() {
+        return Ok(None);
+    }
+    let mut origins = Vec::with_capacity(allowed_origins.len());
+    for origin in allowed_origins {
+        let value = origin
+            .parse::<HeaderValue>()
+            .map_err(|source| ServerError::Config {
+                message: format!("invalid CORS origin `{origin}`: {source}"),
+            })?;
+        origins.push(value);
+    }
+    let layer = CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-aion-namespaces"),
+            HeaderName::from_static("x-aion-subject"),
+        ]);
+    Ok(Some(layer))
 }
 
 /// Disabled deploy surface: a plain 404 with no body, indistinguishable
@@ -234,6 +285,109 @@ mod tests {
                 .as_array()
                 .ok_or("summaries missing")?
                 .is_empty()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_and_actual_request_carry_allow_headers_for_configured_origin()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(Arc::clone(&store))
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let mut config = runtime_config();
+        config.cors_allowed_origins = vec!["http://localhost:5173".to_owned()];
+        let router = http_router(server_state(resolver, config).await?)?;
+
+        // Preflight: the browser sends OPTIONS with the requested method/header;
+        // the layer must answer with the matching allow-origin and allow-methods.
+        let preflight = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/workflows/list")
+                    .header("origin", "http://localhost:5173")
+                    .header("access-control-request-method", "POST")
+                    .header("access-control-request-headers", "x-aion-namespaces")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(
+            preflight
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("http://localhost:5173")
+        );
+
+        // Actual request from the allowed origin echoes the allow-origin header.
+        let actual = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health/live")
+                    .header("origin", "http://localhost:5173")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(actual.status(), StatusCode::OK);
+        assert_eq!(
+            actual
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("http://localhost:5173")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cors_absent_origins_install_no_layer() -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(Arc::clone(&store))
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        // runtime_config() leaves cors_allowed_origins empty (the secure default).
+        let router = http_router(server_state(resolver, runtime_config()).await?)?;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health/live")
+                    .header("origin", "http://localhost:5173")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "no CorsLayer must be installed when no origins are configured"
         );
         Ok(())
     }

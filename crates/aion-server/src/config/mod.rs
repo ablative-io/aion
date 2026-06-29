@@ -95,6 +95,18 @@ pub struct ServerSection {
     pub listen_address: SocketAddr,
     /// gRPC API and worker-protocol listener.
     pub grpc_address: SocketAddr,
+    /// Browser origins allowed to make cross-origin (CORS) requests to the
+    /// public HTTP API. Empty (the default) is the SECURE default: no
+    /// cross-origin request is permitted and no `CorsLayer` is installed, so a
+    /// same-origin deployment behaves byte-identically to before this field
+    /// existed. When set, each entry is an exact origin (scheme + host + port,
+    /// e.g. `http://localhost:5173`) the browser dashboard is served from; the
+    /// router then answers preflight and emits `Access-Control-Allow-Origin`
+    /// for exactly those origins. There is no wildcard/allow-all default
+    /// (ADR-001): cross-origin access is an explicit operator decision, and the
+    /// layer never pairs `Any` with credentials.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 /// Supported event-store backend names.
@@ -594,6 +606,11 @@ pub struct RuntimeConfig {
     /// byte-identical to today); a non-empty set scopes engine recovery and
     /// enumeration to exactly those shards. No election: assignment is static.
     pub owned_shards: Vec<usize>,
+    /// Browser origins allowed cross-origin access to the public HTTP API (from
+    /// `[server] cors_allowed_origins`). Empty means no cross-origin access and
+    /// no `CorsLayer` is installed (secure default); a non-empty set installs
+    /// the layer scoped to exactly those origins.
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl ServerConfig {
@@ -673,6 +690,7 @@ impl ServerConfig {
             drain_timeout: Duration::from_secs(self.drain.timeout_seconds),
             metrics: self.metrics,
             owned_shards: self.store.owned_shards.clone(),
+            cors_allowed_origins: self.server.cors_allowed_origins.clone(),
         };
         (self.store, runtime)
     }
@@ -708,6 +726,7 @@ impl ServerConfig {
         if self.server.grpc_address.port() == 0 {
             return config_error("server.grpc_address must use an explicit non-zero port");
         }
+        validate_cors_origins(&self.server.cors_allowed_origins)?;
         if self.runtime.scheduler_threads == 0 {
             return config_error("runtime.scheduler_threads must be greater than zero");
         }
@@ -880,6 +899,43 @@ fn validate_cluster(cluster: &ClusterConfig) -> Result<(), ServerError> {
     Ok(())
 }
 
+/// Operator-facing message for an empty or malformed `cors_allowed_origins`
+/// entry.
+pub(crate) const CORS_ALLOWED_ORIGIN_INVALID: &str = "server.cors_allowed_origins entries must each be a valid HTTP origin (scheme://host[:port], e.g. http://localhost:5173) with no path or trailing slash";
+
+/// Validate every `[server] cors_allowed_origins` entry.
+fn validate_cors_origins(origins: &[String]) -> Result<(), ServerError> {
+    for origin in origins {
+        validate_cors_origin(origin)?;
+    }
+    Ok(())
+}
+
+/// Validate one `[server] cors_allowed_origins` entry: it must be a non-empty,
+/// parseable HTTP origin so the `CorsLayer` can match it against the browser's
+/// `Origin` header. A malformed origin can never match a real request, so it is
+/// a misconfiguration caught at startup rather than silently never matching.
+fn validate_cors_origin(origin: &str) -> Result<(), ServerError> {
+    if origin.is_empty() {
+        return config_error(CORS_ALLOWED_ORIGIN_INVALID);
+    }
+    // An origin is scheme + host + optional port and carries no path: reject a
+    // trailing slash or any path segment, which would never equal a browser
+    // `Origin` header value.
+    let scheme_split = origin.split_once("://");
+    let Some((scheme, authority)) = scheme_split else {
+        return config_error(CORS_ALLOWED_ORIGIN_INVALID);
+    };
+    if scheme.is_empty() || authority.is_empty() || authority.contains('/') {
+        return config_error(CORS_ALLOWED_ORIGIN_INVALID);
+    }
+    // It must parse as an HTTP header value (the form the CorsLayer compares).
+    if origin.parse::<axum::http::HeaderValue>().is_err() {
+        return config_error(CORS_ALLOWED_ORIGIN_INVALID);
+    }
+    Ok(())
+}
+
 /// Refuses byte-ceiling values that cannot index memory on this platform.
 fn ensure_fits_usize(key: &str, value: u64) -> Result<(), ServerError> {
     if usize::try_from(value).is_err() {
@@ -896,6 +952,7 @@ impl Default for ServerSection {
         Self {
             listen_address: DEFAULT_HTTP_ADDRESS,
             grpc_address: DEFAULT_GRPC_ADDRESS,
+            cors_allowed_origins: Vec::new(),
         }
     }
 }
@@ -1398,6 +1455,82 @@ mod tests {
         assert_eq!(config.deploy.max_archive_bytes, Some(16_777_216));
         assert_eq!(config.deploy.max_inflated_bytes, Some(67_108_864));
         Ok(())
+    }
+
+    /// With no `[server] cors_allowed_origins` the list is empty: the secure
+    /// default, where no cross-origin request is permitted and no `CorsLayer`
+    /// is installed.
+    #[test]
+    fn cors_allowed_origins_default_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            ",
+        )?;
+
+        assert!(config.server.cors_allowed_origins.is_empty());
+        let (_, runtime) = config.into_parts();
+        assert!(runtime.cors_allowed_origins.is_empty());
+        Ok(())
+    }
+
+    /// A configured `[server] cors_allowed_origins` list parses and round-trips
+    /// into `RuntimeConfig` (the value the `CorsLayer` is built from).
+    #[test]
+    fn cors_allowed_origins_parse_and_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [server]
+                cors_allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+            "#,
+        )?;
+
+        assert_eq!(
+            config.server.cors_allowed_origins,
+            vec![
+                "http://localhost:5173".to_owned(),
+                "http://127.0.0.1:5173".to_owned()
+            ]
+        );
+        let (_, runtime) = config.into_parts();
+        assert_eq!(
+            runtime.cors_allowed_origins,
+            vec![
+                "http://localhost:5173".to_owned(),
+                "http://127.0.0.1:5173".to_owned()
+            ]
+        );
+        Ok(())
+    }
+
+    /// A malformed CORS origin (no scheme, or a trailing path) can never match a
+    /// browser `Origin` header, so it fails startup validation rather than
+    /// silently never matching.
+    #[test]
+    fn cors_allowed_origins_reject_malformed() {
+        for bad in ["", "localhost:5173", "http://localhost:5173/"] {
+            let toml = format!(
+                "[server]\ncors_allowed_origins = [\"{bad}\"]\n\n[runtime]\nquery_timeout_ms = 10000\n\n[websocket]\nevent_broadcast_capacity = 64\n"
+            );
+            let result = ServerConfig::from_slice(toml.as_bytes());
+            let message = result
+                .err()
+                .map_or_else(String::new, |error| error.to_string());
+            assert!(
+                message.contains("cors_allowed_origins"),
+                "malformed origin `{bad}` must be rejected naming the key: {message}"
+            );
+        }
     }
 
     /// An absent `[dev]` section leaves the dev surface dark.

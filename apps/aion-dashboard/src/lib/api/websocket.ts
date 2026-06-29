@@ -24,7 +24,9 @@ import {
   type ReconnectOptions,
   type Scheduler,
   SOCKET_CLOSING,
+  SOCKET_CONNECTING,
   SOCKET_OPEN,
+  type SocketCredentials,
   type SocketErrorListener,
   type StatusListener,
   type SubscribeOptions,
@@ -48,12 +50,14 @@ export type {
   FirehoseEventSubscriptionFilter,
   ResyncContext,
   ResyncMode,
+  SocketCredentials,
   SubscribeOptions,
   WorkflowEventSubscriptionFilter,
 } from './websocket-types';
 
 export class AionEventWebSocketManager {
   private readonly baseUrl: string;
+  private readonly credentials: SocketCredentials | undefined;
   private readonly webSocketImpl: WebSocketConstructor;
   private readonly scheduler: Scheduler;
   private readonly reconnect: ReconnectOptions;
@@ -73,6 +77,7 @@ export class AionEventWebSocketManager {
 
   constructor(options: AionEventWebSocketManagerOptions = {}) {
     this.baseUrl = stripTrailingSlash(options.baseUrl ?? '');
+    this.credentials = options.credentials;
     this.webSocketImpl = options.webSocketImpl ?? browserWebSocketConstructor();
     this.scheduler = options.scheduler ?? {
       setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -104,7 +109,7 @@ export class AionEventWebSocketManager {
     this.socket = null;
 
     if (currentSocket !== null) {
-      currentSocket.close();
+      closeWhenSafe(currentSocket);
     }
 
     this.setStatus('disconnected');
@@ -210,7 +215,7 @@ export class AionEventWebSocketManager {
 
   private openSocket(): void {
     this.clearReconnectTimer();
-    const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl));
+    const socket = new this.webSocketImpl(buildWebSocketUrl(this.baseUrl, this.credentials));
     this.socket = socket;
     socket.onopen = () => {
       if (this.socket !== socket) {
@@ -386,6 +391,34 @@ export class AionEventWebSocketManager {
     this.nextSubscriptionId += 1;
     return id;
   }
+}
+
+/**
+ * Close a socket without ever calling `close()` while it is still CONNECTING.
+ *
+ * Browsers throw `DOMException: WebSocket is closed before the connection is
+ * established` (logged as a console error) when `close()` is invoked on a socket
+ * in the CONNECTING state — which happens under React StrictMode's double-mount,
+ * where the cleanup runs before the just-opened socket has finished connecting.
+ *
+ * To tear down cleanly we defer the close to the `onopen` transition, then close
+ * once the socket is OPEN. We overwrite the socket's listeners with no-op/closing
+ * handlers so the abandoned socket can neither dispatch frames nor trigger the
+ * manager's reconnect logic. If the connection never opens (it errors/closes
+ * first), the deferred close is a harmless no-op on an already-closed socket.
+ */
+function closeWhenSafe(socket: ManagedWebSocket): void {
+  if (socket.readyState === SOCKET_CONNECTING) {
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    socket.onopen = () => {
+      socket.close();
+    };
+    return;
+  }
+
+  socket.close();
 }
 
 export function createAionEventWebSocketManager(

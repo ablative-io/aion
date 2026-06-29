@@ -3,9 +3,9 @@ import { Button } from '@/components/ui';
 type ErrorStateProps = {
   title: string;
   error?: unknown;
-  message?: string;
-  actionLabel?: string;
-  onRetry?: () => void;
+  message?: string | undefined;
+  actionLabel?: string | undefined;
+  onRetry?: (() => void) | undefined;
 };
 
 function ErrorState({ title, error, message, actionLabel = 'Retry', onRetry }: ErrorStateProps) {

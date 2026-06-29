@@ -8,13 +8,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use super::auth::HttpCaller;
+use super::auth::WsCaller;
 use crate::{CallerIdentity, ServerError, ServerState, stream::handle_subscription_socket};
 
 pub(crate) async fn subscribe_events_socket(
     websocket: WebSocketUpgrade,
     State(state): State<ServerState>,
-    HttpCaller(caller): HttpCaller,
+    WsCaller(caller): WsCaller,
 ) -> Response {
     websocket
         .on_upgrade(move |socket| async move {
@@ -139,6 +139,85 @@ mod tests {
         };
         let frame = frame?;
         let ClientMessage::Text(text) = frame else {
+            return Err("expected websocket text frame".into());
+        };
+        let streamed: StreamedEvent = serde_json::from_str(&text)?;
+        assert_eq!(streamed.namespace, NAMESPACE);
+        assert_eq!(streamed.decode_event()?.workflow_id(), &workflow_id());
+
+        server.abort();
+        Ok(())
+    }
+
+    /// A browser cannot set `x-aion-namespaces` / `x-aion-subject` / the bearer
+    /// `Authorization` header on a WebSocket handshake, so the same credentials
+    /// must authorize the stream when supplied as query parameters. Without this
+    /// the live feed is `namespace_denied` and reconnect-loops in every browser.
+    #[tokio::test]
+    async fn websocket_authorizes_via_query_params_when_headers_absent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let publisher = Arc::new(TestEventPublisher::new());
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .event_publisher(publisher.clone())
+                .build()
+                .await?,
+        );
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(workflow_id(), NAMESPACE)?;
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router.into_make_service()).await {
+                tracing::warn!(%error, "test websocket server exited with error");
+            }
+        });
+
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = TOKEN.to_owned();
+        // Credentials ride the query string; NO request headers are set — exactly
+        // what a browser WebSocket can do.
+        let url = format!(
+            "ws://{address}/events/stream\
+             ?x-aion-namespaces={NAMESPACE}&x-aion-subject=alice&access_token={bearer}"
+        );
+        let request = url.into_client_request()?;
+        let (mut socket, response) = connect_async(request).await?;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+        let subscription = json!({
+            "type": "subscribe",
+            "subscription_id": "dashboard-test",
+            "subscription": {
+                "per_workflow": {
+                    "namespace": NAMESPACE,
+                    "workflow_id": workflow_id().to_string()
+                }
+            }
+        });
+        socket
+            .send(ClientMessage::Text(subscription.to_string().into()))
+            .await?;
+        publisher.wait_for_subscription().await;
+        publisher.publish(started_event()?)?;
+
+        let Some(frame) = socket.next().await else {
+            return Err("query-authorized websocket closed before streaming an event".into());
+        };
+        let ClientMessage::Text(text) = frame? else {
             return Err("expected websocket text frame".into());
         };
         let streamed: StreamedEvent = serde_json::from_str(&text)?;

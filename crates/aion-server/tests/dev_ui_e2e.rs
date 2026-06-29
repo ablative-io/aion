@@ -81,6 +81,7 @@ fn runtime_config(dev_enabled: bool) -> RuntimeConfig {
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
         owned_shards: Vec::new(),
+        cors_allowed_origins: Vec::new(),
     }
 }
 

@@ -1,0 +1,87 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/tomWhiting/aion.git",
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "brief_id": "OBX-011",
+  "reviewers": ["Waffles the Terrible"],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "OBX-011",
+    "cluster": "outbox",
+    "title": "Thread RunId through the outbox dispatch/completion path to close the continue-as-new window",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [],
+    "purpose": "A workflow can continue-as-new (CAN): the same workflow_id continues under a NEW run_id with a fresh history segment, and the fan-out ordinal space resets to 0. The outbox dispatch identity is workflow_id+ordinal with NO run_id, and the completion dedup ordinal_is_resolved (crates/aion/src/durability/recorder/fan_out.rs) scans the ENTIRE shared history for the workflow_id without run awareness. So a late completion belonging to the OLD run's ordinal N can falsely resolve — and silently DROP — the NEW run's ordinal N (and symmetrically, an old terminal in shared history makes the new run's dispatch look already-resolved). Close this window by threading run_id through the dispatch->worker->completion path and scoping the completion resolution to the run that actually dispatched it, so a completion only ever resolves the ordinal within its own run.",
+    "task": "Thread RunId end-to-end so an outbox dispatch carries the run that issued it and a completion only resolves that run's ordinal. (1) Carry run_id on the OutboxRow (add an Option<RunId> field; additive nullable column in libsql schema + the haematite outbox encoding; legacy rows decode as None). (2) Carry run_id on the wire: add run_id to the worker ActivityTask (dispatch) and ActivityResult (completion) proto messages as a NEW optional field with a NEW field number — DO NOT renumber or repurpose any existing proto field (that breaks wire compatibility); the worker echoes the run_id back on completion. (3) Populate run_id when the dispatcher stages/sends a row (the run that owns the ordinal) and thread it through ScheduledActivity/ActivityCompletion and deliver_outbox_completion. (4) Make completion resolution RUN-SCOPED: ordinal_is_resolved / record_fan_out_completion SHALL only treat an ordinal as resolved by a terminal that belongs to the CURRENT run segment (use the WorkflowContinuedAsNew / WorkflowStarted run boundaries in the shared history, or compare the completion's run_id to the active run), so a completion from a prior run does NOT resolve the new run's ordinal and vice-versa. Exactly-once WITHIN a run is preserved exactly as today. Backward compatible: a missing/None run_id (legacy rows, old workers, pre-CAN single-run workflows) MUST behave exactly as today (resolve by workflow_id+ordinal) so nothing regresses.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "RunId carried on the row and the wire (additive, backward-compatible)",
+        "spec": "THE OutboxRow SHALL carry an optional run_id; the worker ActivityTask and ActivityResult proto messages SHALL each carry run_id as a NEW optional field (new field number, no renumbering of existing fields); the dispatcher SHALL populate it from the dispatching run and the worker SHALL echo it back. Persistence SHALL be additive: a nullable run_id column in the libsql outbox schema (migration safe on an existing DB) and an Option<RunId> in the haematite outbox encoding; legacy rows/messages without run_id decode as None.",
+        "acceptance": [
+          "OutboxRow has an Option<RunId> field; libsql schema adds a nullable run_id column via an additive/idempotent migration; haematite outbox encode/decode round-trips Option<RunId>; both backends stay in sync.",
+          "ActivityTask + ActivityResult protos each gain run_id as a new optional field with a new field number; NO existing field number is changed or repurposed; generated code regenerated.",
+          "The dispatcher sets run_id on dispatch and the worker echoes it on completion; the value flows through ScheduledActivity -> ActivityTask and ActivityResult -> ActivityCompletion -> deliver_outbox_completion.",
+          "A None run_id (legacy row, old worker, pre-CAN run) is handled gracefully and preserves today's behaviour."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Run-scoped completion resolution closes the cross-run window",
+        "spec": "Completion resolution SHALL be scoped to the run that dispatched the ordinal: a terminal belonging to a PRIOR run SHALL NOT mark the current run's ordinal resolved, and a late completion for a prior run's ordinal SHALL NOT resolve/drop the current run's ordinal. Within a single run, exactly-once dedup behaviour is unchanged. When run_id is absent (legacy/single-run), behaviour is exactly as today.",
+        "acceptance": [
+          "ordinal_is_resolved / record_fan_out_completion only count terminals from the current run segment (bounded by WorkflowContinuedAsNew / WorkflowStarted boundaries) or match on run_id; cross-run terminals are ignored.",
+          "An integration test reproduces the hazard: a workflow continues-as-new reusing ordinal N; a late completion for the OLD run's ordinal N arriving after the new run started does NOT resolve/drop the new run's ordinal N, and the new run's ordinal N still completes exactly once.",
+          "Within one run, duplicate/late completions for the same ordinal are still de-duplicated (no duplicate terminal, no double-wake).",
+          "Existing fan-out / outbox / reconciliation / continue-as-new tests pass unchanged."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "EXACTLY-ONCE WITHIN A RUN IS THE INVARIANT and MUST be preserved; this brief ADDS run-scoping, it must not weaken intra-run dedup.",
+      "Proto changes MUST be additive: add run_id as a NEW optional field with a NEW field number on ActivityTask + ActivityResult. DO NOT renumber, remove, or repurpose any existing field (wire-breaking).",
+      "Schema/encoding changes MUST be additive + backward-compatible: nullable run_id column (libsql) + Option<RunId> (haematite); legacy rows/messages without run_id MUST behave exactly as today.",
+      "SHALL NOT change the continue-as-new guard semantics (guard_no_pending_work) or the claim/complete/retry/fail/rearm/settle outbox transitions.",
+      "Keep dispatch_key format unchanged unless strictly necessary; if the UNIQUE-key collision across runs is a real reachable path (verify against guard_no_pending_work, which today rejects CAN while activities are pending), report it — do not silently change the key format without need.",
+      "Both store backends in sync; clippy --workspace -D warnings (all/pedantic + unwrap/expect/panic denied); no unsafe; files under 500 lines; mod.rs pub-use only; proto is generated (no hand edits to generated code).",
+      "SENSITIVE distributed code: if a clean run-scoping cannot be achieved without risking intra-run exactly-once, REPORT rather than weaken it."
+    ],
+    "verification": [
+      "cargo fmt --check clean for changed files (rustfmt edition 2024; --config skip_children=true).",
+      "cargo clippy --workspace --all-targets -- -D warnings clean.",
+      "cargo test passes in full including the new continue-as-new cross-run completion test; zero failures.",
+      "The new test genuinely exercises the run boundary (fails if run-scoping is removed: an old-run completion would resolve/drop the new run's ordinal).",
+      "Proto change is additive (old workers still interoperate; run_id absent => today's behaviour); schema migration applies cleanly to a pre-existing outbox DB.",
+      "Both backends stay in sync; no existing proto field renumbered."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      { "id": "CN1", "text": "No file over 500 lines; extract submodules if approaching the limit." },
+      { "id": "CN2", "text": "No panics in production code; unwrap()/expect() only in tests." },
+      { "id": "CN3", "text": "mod.rs contains only pub mod / pub use; no logic." },
+      { "id": "CN4", "text": "All public types implement Debug; all error types implement std::error::Error." }
+    ],
+    "intention": "Outbox hardening #11: thread RunId through the dispatch/completion wire + persist it on the OutboxRow, and scope completion resolution (ordinal_is_resolved / record_fan_out_completion in crates/aion/src/durability/recorder/fan_out.rs) to the current run segment, so a continue-as-new (new run_id, reset ordinal space, shared history) cannot mis-attribute a completion across the run boundary. Additive + backward-compatible (None run_id = today's behaviour). Builds on OBX-012/013/010. RunId is aion-core/src/ids.rs; CAN is crates/aion/src/lifecycle/continue_as_new.rs; proto is aion-proto worker.proto ActivityTask/ActivityResult. SENSITIVE — correctness over cleverness. See docs/AION-OUTBOX-BUILD-PLAN.md + ABLATIVE-STACK-ROADMAP.md.",
+    "provenance": { "quote": "keep on going on those things so long as everything is properly documented", "requested_by": "Tom" },
+    "design_path": "docs/design/outbox",
+    "stories": []
+  }
+}

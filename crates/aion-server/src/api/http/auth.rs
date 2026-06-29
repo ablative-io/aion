@@ -1,10 +1,12 @@
 //! Caller-identity extraction from HTTP request headers.
 
+use std::collections::HashMap;
+
 #[cfg(feature = "auth")]
 use axum::http::header;
 use axum::{
-    extract::FromRequestParts,
-    http::{StatusCode, request::Parts},
+    extract::{FromRequestParts, Query},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, request::Parts},
     response::{IntoResponse, Response},
 };
 
@@ -23,6 +25,66 @@ impl FromRequestParts<ServerState> for HttpCaller {
             .await
             .map_err(axum::response::IntoResponse::into_response)?;
         Ok(Self(caller))
+    }
+}
+
+/// Caller identity for the `/events/stream` WebSocket handshake.
+///
+/// Browsers cannot attach custom request headers (`x-aion-namespaces`,
+/// `x-aion-subject`, `Authorization`) to a WebSocket handshake, so the same
+/// credentials the REST API takes as headers are also accepted here as query
+/// parameters and promoted to their header form before the single shared
+/// header-based resolution ([`caller_from_headers`]) runs. An explicit header,
+/// when present, always wins over its query-parameter fallback. This is the
+/// standard browser-WebSocket authorization pattern; it introduces no second
+/// auth code path.
+pub(crate) struct WsCaller(pub(crate) CallerIdentity);
+
+impl FromRequestParts<ServerState> for WsCaller {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ServerState,
+    ) -> Result<Self, Self::Rejection> {
+        let query = Query::<HashMap<String, String>>::from_request_parts(parts, state)
+            .await
+            .map_or_else(|_error| HashMap::new(), |Query(params)| params);
+        let mut headers = parts.headers.clone();
+        promote_query_credentials(&query, &mut headers);
+        let caller = caller_from_headers(&headers, state)
+            .await
+            .map_err(axum::response::IntoResponse::into_response)?;
+        Ok(Self(caller))
+    }
+}
+
+/// Promote recognized credential query parameters into their request-header
+/// equivalents so [`caller_from_headers`] resolves the caller identically to a
+/// header-bearing REST request. A header already present on the handshake is
+/// never overwritten. `access_token` / `token` are wrapped in the `Bearer`
+/// scheme to match the `Authorization` header form.
+fn promote_query_credentials(params: &HashMap<String, String>, headers: &mut HeaderMap) {
+    for (key, value) in params {
+        let header_name: &'static str = match key.as_str() {
+            "x-aion-namespaces" | "namespaces" => "x-aion-namespaces",
+            "x-aion-subject" | "subject" => "x-aion-subject",
+            "x-aion-deploy" => "x-aion-deploy",
+            "authorization" | "access_token" | "token" => "authorization",
+            _ => continue,
+        };
+        if headers.contains_key(header_name) {
+            continue;
+        }
+        let header_value = if matches!(key.as_str(), "access_token" | "token") {
+            format!("Bearer {value}")
+        } else {
+            value.clone()
+        };
+        let Ok(header_value) = HeaderValue::from_str(&header_value) else {
+            continue;
+        };
+        headers.insert(HeaderName::from_static(header_name), header_value);
     }
 }
 

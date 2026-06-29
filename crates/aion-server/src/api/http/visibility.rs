@@ -124,10 +124,10 @@ mod tests {
     use std::sync::Arc;
 
     use aion::EngineBuilder;
-    use aion_core::{SearchAttributeValue, WorkflowId, WorkflowStatus};
+    use aion_core::{SearchAttributeValue, WorkflowId, WorkflowStatus, WorkflowSummary};
     use aion_store::{
         EventStore, InMemoryStore,
-        visibility::{VisibilityRecord, VisibilityStore, WorkflowSummary},
+        visibility::{VisibilityRecord, VisibilityStore},
     };
     use axum::http::StatusCode;
     use chrono::Utc;

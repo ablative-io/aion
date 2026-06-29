@@ -304,6 +304,27 @@ test('filtered subscriptions only dispatch matching namespace and workflow filte
   expect(received).toEqual([otherNamespaceEvent, event]);
 });
 
+test('closing a still-connecting socket defers the close until it opens (no premature close)', () => {
+  const socketFactory = new FakeSocketFactory();
+  const manager = createAionEventWebSocketManager({ webSocketImpl: socketFactory.ctor });
+
+  // subscribe() opens the socket; it is CONNECTING (readyState 0) until open().
+  manager.subscribe({ kind: 'firehose', namespace }, () => undefined);
+  const socket = socketFactory.sockets[0] as FakeSocket;
+  expect(socket.readyState).toBe(0);
+
+  // Mirrors StrictMode double-mount cleanup firing while the socket is connecting.
+  manager.close();
+
+  // Must NOT have called close() on a connecting socket (that throws in browsers).
+  expect(socket.closeCalls).toBe(0);
+
+  // Once the connection establishes, the deferred close runs cleanly.
+  socket.open();
+  expect(socket.closeCalls).toBe(1);
+  expect(socket.readyState).toBe(3);
+});
+
 class FakeSocketFactory {
   readonly sockets: FakeSocket[] = [];
   readonly ctor: new (
@@ -325,6 +346,7 @@ class FakeSocketFactory {
 class FakeSocket {
   readonly sent: string[] = [];
   readyState = 0;
+  closeCalls = 0;
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onclose: ((event: { wasClean: boolean }) => void) | null = null;
@@ -337,6 +359,15 @@ class FakeSocket {
   }
 
   close(): void {
+    this.closeCalls += 1;
+
+    if (this.readyState === 0) {
+      // Mirror the browser: calling close() while CONNECTING is the illegal
+      // teardown this manager must avoid. Surfacing it lets a test catch a
+      // regression that re-introduces the premature close.
+      throw new Error('WebSocket is closed before the connection is established');
+    }
+
     this.readyState = 3;
     this.onclose?.({ wasClean: true });
   }

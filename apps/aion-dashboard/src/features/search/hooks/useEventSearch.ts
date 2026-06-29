@@ -65,12 +65,12 @@ export function eventSearchQueryKey(
 }
 
 export type EventSearchOptions = {
-  apiClient?: Pick<ApiClient, 'searchEvents'>;
+  apiClient?: Pick<ApiClient, 'searchEvents'> | undefined;
   /** Pruned wire query; empty queries are not run (see `enabled`). */
   query: EventSearchQuery;
-  page?: WorkflowPageRequest;
+  page?: WorkflowPageRequest | undefined;
   /** Caller gate (e.g. the user pressed Search). Defaults to true. */
-  enabled?: boolean;
+  enabled?: boolean | undefined;
 };
 
 /**

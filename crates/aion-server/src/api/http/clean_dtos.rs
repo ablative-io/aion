@@ -8,14 +8,14 @@
 //! the `aion-proto` message definitions untouched — this is an HTTP-layer wire
 //! change only.
 
-use aion_core::WorkflowStatus;
+use aion_core::{WorkflowStatus, WorkflowSummary};
 use aion_proto::{
     ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest,
     ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoRunId,
     ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, ProtoWorkflowId,
     WireError, proto_query_response,
 };
-use aion_store::visibility::{ListWorkflowsFilter, WorkflowSummary};
+use aion_store::visibility::{ListWorkflowsFilter, WorkflowSummary as StoreWorkflowSummary};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -234,8 +234,11 @@ impl TryFrom<ProtoStartWorkflowResponse> for StartWorkflowResponse {
     }
 }
 
-/// Clean list response: a plain array of workflow summaries (string ids),
-/// decoded from the proto `WireEnvelope` list, consistent with GET /workflows.
+/// Clean list response: a plain array of [`WorkflowSummary`] projections whose
+/// field names match the generated TypeScript bindings exactly
+/// (`workflow_id`/`workflow_type`/`status`/`started_at`/`ended_at`/`parent`),
+/// decoded from the proto `WireEnvelope` list and converted from the store's
+/// visibility projection at the HTTP boundary. Consistent with GET /workflows.
 #[derive(Debug, Serialize)]
 pub(crate) struct ListWorkflowsResponse {
     summaries: Vec<WorkflowSummary>,
@@ -248,10 +251,26 @@ impl TryFrom<ProtoListWorkflowsResponse> for ListWorkflowsResponse {
         let summaries = response
             .summaries
             .iter()
-            .map(aion_proto::decode_core_value::<WorkflowSummary>)
+            .map(aion_proto::decode_core_value::<StoreWorkflowSummary>)
+            .map(|summary| summary.map(core_summary_from_store))
             .collect::<Result<Vec<_>, _>>()
             .map_err(HttpWireError)?;
         Ok(Self { summaries })
+    }
+}
+
+/// Convert the store's visibility projection into the dashboard-facing
+/// [`WorkflowSummary`] wire shape. `start_time`/`close_time` map to
+/// `started_at`/`ended_at`; `parent` is not carried in the visibility
+/// projection, so it is `None` (matching `from_history`).
+pub(crate) fn core_summary_from_store(summary: StoreWorkflowSummary) -> WorkflowSummary {
+    WorkflowSummary {
+        workflow_id: summary.workflow_id,
+        workflow_type: summary.workflow_type,
+        status: summary.status,
+        started_at: summary.start_time,
+        ended_at: summary.close_time,
+        parent: None,
     }
 }
 

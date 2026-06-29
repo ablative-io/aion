@@ -1,0 +1,86 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/tomWhiting/aion.git",
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "brief_id": "OBX-010",
+  "reviewers": ["Waffles the Terrible"],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "OBX-010",
+    "cluster": "outbox",
+    "title": "Settle the outbox row when a collect cancels an ordinal (cancel-settle, reconciler-safe, exactly-once)",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [],
+    "purpose": "When a collect/fan-out cancels an ordinal (collect settlement abandons an unresolved member via cancel_pending -> Recorder::record_activity_cancelled, which appends ActivityCancelled), the corresponding durable outbox row is left in Pending/Claimed and is never settled. The OutboxDispatcher keeps (re-)dispatching it and the new OutboxReconciler keeps re-arming the stale Claimed row indefinitely — wasteful and noisy, though exactly-once still holds (the Recorder dedup treats ActivityCancelled as terminal and drops late completions). Close the gap: settle the outbox row(s) for a cancelled ordinal to a terminal Cancelled status so the dispatcher/reconciler never touch them again. Exactly-once must be preserved.",
+    "task": "Add cancel-settle for the durable outbox. (1) Add a terminal Cancelled variant to OutboxStatus (enum + as_str/parse_token + any libsql token mapping); a Cancelled row is terminal like Done/Failed — never claimed, never re-armed. (2) Add an OutboxStore method to settle a row for a cancelled ordinal by dispatch_key (dispatch_key = \"{workflow_id}:{ordinal}\"), e.g. settle_outbox_row_cancelled(&dispatch_key) — IDEMPOTENT (no-op if the row is absent or already terminal), in the OutboxStore trait and EVERY backend that implements it (libsql today; if aion-store-haematite implements OutboxStore, keep it in sync). (3) Wire it into the cancellation-recording path so that recording ActivityCancelled for a fan-out ordinal also settles that ordinal's outbox row, consistently — a recorded ActivityCancelled MUST NOT leave a re-dispatchable/re-armable outbox row. (4) Confirm/ensure the OutboxReconciler's stale-claim re-arm only touches status='claimed' rows so a settled Cancelled row is naturally excluded. Do NOT change existing claim/complete/retry/fail/rearm semantics or the exactly-once Recorder dedup.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Cancelled terminal status + idempotent settle method (all backends)",
+        "spec": "OutboxStatus SHALL gain a terminal Cancelled variant. THE OutboxStore SHALL expose an idempotent method to settle a row to Cancelled by dispatch_key (no-op if absent or already terminal), implemented in the trait and every backend that implements OutboxStore. A Cancelled row SHALL never be claimed by the dispatcher nor re-armed by the reconciler.",
+        "acceptance": [
+          "OutboxStatus has a Cancelled terminal variant with round-trip token mapping (as_str/parse_token + libsql persistence).",
+          "settle_outbox_row_cancelled(dispatch_key) (or batch equivalent) exists on the trait + all implementing backends; calling it twice, or on a Done/Failed/absent row, is a safe no-op (idempotent).",
+          "claim_outbox_rows never returns a Cancelled row; rearm_stale_claimed_outbox_rows never re-arms a Cancelled row (the claim/rearm predicates are status='pending'/'claimed' only).",
+          "Store-level unit tests cover: settle a Pending row -> Cancelled (not claimable); settle a Claimed row -> Cancelled (not re-armable); settle absent/Done/Failed -> no-op."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Cancelling a collect ordinal settles its outbox row, exactly-once preserved",
+        "spec": "WHEN a collect cancels an ordinal (record_activity_cancelled for a fan-out member), THE SYSTEM SHALL settle that ordinal's outbox row to Cancelled as part of recording the cancellation, such that the dispatcher does not re-dispatch and the reconciler does not re-arm it. A late completion for the cancelled ordinal SHALL still be dropped by the existing Recorder dedup (no duplicate terminal, no double-wake).",
+        "acceptance": [
+          "record_activity_cancelled (or the collect cancel_pending path) settles the outbox row for the cancelled ordinal via the new method; a recorded ActivityCancelled never leaves a Pending/Claimed row for that ordinal.",
+          "An integration/e2e test runs a collect that cancels an ordinal, then asserts: (a) the ordinal's outbox row reaches Cancelled, (b) it is NOT re-dispatched and NOT re-armed by the reconciler, and (c) a late completion for that ordinal is dropped (exactly one terminal in history).",
+          "Existing outbox + collect + reconciliation tests pass unchanged."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "EXACTLY-ONCE INVARIANT: do NOT weaken the Recorder dedup (record_fan_out_completion / ordinal_is_resolved already treats ActivityCancelled as terminal). The settle only prevents wasteful re-dispatch; it must not change completion/cancellation recording semantics.",
+      "SHALL NOT change existing claim/complete/retry/fail/rearm_outbox_pending/rearm_stale_claimed semantics beyond making them ignore Cancelled rows.",
+      "settle MUST be idempotent (safe on retry / double-call / absent row) — keyed off the UNIQUE dispatch_key.",
+      "Recording an ActivityCancelled for a fan-out ordinal MUST NOT leave a re-dispatchable or re-armable outbox row (consistency between the history terminal and the outbox row).",
+      "Keep all OutboxStore backends in sync (trait + libsql + aion-store-haematite if it implements OutboxStore). Any schema/token change must be additive + backward-compatible.",
+      "SCOPE: this is the COLLECT-cancels-an-ordinal path. Workflow-level engine.cancel() settling all members is a possible follow-up — NOT required here; if you touch it, keep it minimal and report.",
+      "SHALL NOT introduce unsafe code; no production unwrap()/expect()/panic!() (workspace denies); files under 500 lines; mod.rs only pub use."
+    ],
+    "verification": [
+      "cargo fmt --check clean for changed files (rustfmt edition 2024; --config skip_children=true).",
+      "cargo clippy --workspace --all-targets -- -D warnings clean.",
+      "cargo test passes in full including new store unit tests + the collect-cancel-settle e2e test; zero failures.",
+      "The e2e test genuinely exercises cancel-settle (fails if the settle is removed: the row would be re-dispatched/re-armed) and exactly-once (fails if a duplicate terminal is recorded).",
+      "Status/token change is additive + backward-compatible; both store backends stay in sync.",
+      "No new public API surface beyond the OutboxStore settle method + the Cancelled status."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      { "id": "CN1", "text": "No file over 500 lines; extract submodules if approaching the limit." },
+      { "id": "CN2", "text": "No panics in production code; unwrap()/expect() only in tests." },
+      { "id": "CN3", "text": "mod.rs contains only pub mod / pub use; no logic." },
+      { "id": "CN4", "text": "All public types implement Debug; all error types implement std::error::Error." }
+    ],
+    "intention": "Outbox hardening #10: settle the outbox row when a collect cancels an ordinal, so a cancelled member is not endlessly re-dispatched (OutboxDispatcher) and re-armed (the new OBX-013 OutboxReconciler). Add a terminal Cancelled status + an idempotent settle method, wired into Recorder::record_activity_cancelled (collect cancel_pending path). Exactly-once is preserved by the existing dedup (ActivityCancelled is already terminal). SENSITIVE distributed code — correctness over cleverness. See docs/AION-OUTBOX-BUILD-PLAN.md + ABLATIVE-STACK-ROADMAP.md; builds on OBX-012 (e2e) + OBX-013 (reconciler).",
+    "provenance": { "quote": "keep on going on those things so long as everything is properly documented", "requested_by": "Tom" },
+    "design_path": "docs/design/outbox",
+    "stories": []
+  }
+}

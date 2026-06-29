@@ -24,23 +24,23 @@ path = "src/main.rs"
 # what_if_from) the `aion inspect` surface drives. Already in the CLI's graph
 # transitively via aion-server; naming it directly keeps WA-004's projection in
 # the engine where the brief places it, not duplicated in the CLI.
-aion = { package = "aion-rs", version = "0.7.0", path = "../aion" }
-aion-client = { version = "0.7.0", path = "../aion-client" }
-aion-core = { version = "0.7.0", path = "../aion-core" }
-aion-package = { version = "0.7.0", path = "../aion-package" }
-aion-server = { version = "0.7.0", path = "../aion-server" }
+aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
+aion-client = { version = "0.8.0", path = "../aion-client" }
+aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-package = { version = "0.8.0", path = "../aion-package" }
+aion-server = { version = "0.8.0", path = "../aion-server" }
 # The instant authoring loop (`aion dev`) reuses the toolchain's external
 # `gleam build` shell-out (build_project) instead of reinventing it. The
 # toolchain embeds no compiler — it only spawns the operator-named gleam
 # binary — so naming it here adds no compiler to the CLI.
-aion-toolchain = { version = "0.7.0", path = "../aion-toolchain" }
+aion-toolchain = { version = "0.8.0", path = "../aion-toolchain" }
 # Event-driven filesystem watcher for `aion dev`. No poll interval: notify
 # delivers OS change events; the watch loop never spins on a timer (ADR-001).
 notify = { workspace = true }
 # Deploy is an operator API: its gRPC stub comes from aion-proto's generated
 # module, never from aion-client (the caller SDK is contract-bound and must
 # not grow operator operations).
-aion-proto = { version = "0.7.0", path = "../aion-proto", features = ["generated"] }
+aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
 prost = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 anyhow = { workspace = true }
@@ -52,7 +52,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
-aion-store = { version = "0.7.0", path = "../aion-store" }
+aion-store = { version = "0.8.0", path = "../aion-store" }
 chrono = { workspace = true }
 fs4 = { workspace = true }
 tempfile = "3.27.0"

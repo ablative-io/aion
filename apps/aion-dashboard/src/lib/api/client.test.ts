@@ -184,6 +184,36 @@ test('searchEvents surfaces an absent endpoint as ApiError (no silent empty resu
   }
 });
 
+test('default fetch path invokes the global fetch with correct receiver (no illegal invocation)', async () => {
+  // Regression guard: storing the bare global `fetch` and calling it as
+  // `this.fetchImpl(...)` strips its `this` binding and throws
+  // `TypeError: Illegal invocation` in the browser. The client must default to a
+  // properly-bound fetch. We replace globalThis.fetch with a spy (not passing
+  // fetchImpl) so the default code path is exercised.
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+
+  // A naive global that throws if invoked with the wrong receiver, mirroring the
+  // browser's illegal-invocation behaviour.
+  const guardedFetch = function fetch(this: unknown, input: RequestInfo | URL): Promise<Response> {
+    if (this !== globalThis) {
+      throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+    }
+    calls.push(String(input));
+    return Promise.resolve(jsonResponse({ namespaces: ['default'] }));
+  };
+
+  globalThis.fetch = guardedFetch as typeof globalThis.fetch;
+
+  try {
+    const client = new ApiClient({ baseUrl: 'https://aion.example' });
+    await expect(client.listNamespaces()).resolves.toEqual(['default']);
+    expect(calls).toEqual(['https://aion.example/namespaces']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
     headers: { 'content-type': 'application/json' },

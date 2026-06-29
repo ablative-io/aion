@@ -22,6 +22,9 @@ pub fn overlay(config: &mut ServerConfig) -> Result<(), ServerError> {
             "AION_SERVER_GRPC_ADDRESS" => {
                 config.server.grpc_address = parse_socket_addr(&name, &value)?;
             }
+            "AION_SERVER_CORS_ALLOWED_ORIGINS" => {
+                config.server.cors_allowed_origins = parse_csv_origins(&value);
+            }
             "AION_STORE_BACKEND" => {
                 config.store.backend = parse_store_backend(&name, &value)?;
             }
@@ -151,6 +154,19 @@ fn overlay_outbox(config: &mut ServerConfig, name: &str, value: &str) -> Result<
         _ => {}
     }
     Ok(())
+}
+
+/// Parse a comma-separated `AION_SERVER_CORS_ALLOWED_ORIGINS` list into the
+/// per-origin vector. Entries are trimmed and empties dropped, so an empty
+/// value clears the list (back to the secure no-cross-origin default); the
+/// resulting origins are validated for shape by `ServerConfig::validate`.
+fn parse_csv_origins(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn parse_socket_addr(name: &str, value: &str) -> Result<SocketAddr, ServerError> {

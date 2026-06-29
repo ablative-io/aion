@@ -42,6 +42,7 @@ export const DEFAULT_RECONNECT: ReconnectOptions = {
   maxAttempts: 5,
 };
 
+export const SOCKET_CONNECTING = 0;
 export const SOCKET_OPEN = 1;
 export const SOCKET_CLOSING = 2;
 
@@ -106,12 +107,27 @@ export type ResyncContext = AionEventContext & {
 };
 
 export type SubscribeOptions = {
-  lastSeenSequence?: number;
-  onResync?: (context: ResyncContext) => void;
+  lastSeenSequence?: number | undefined;
+  onResync?: ((context: ResyncContext) => void) | undefined;
+};
+
+/**
+ * Connection-level credentials for the live-events WebSocket. Browsers cannot
+ * set request headers on a WebSocket handshake, so these are sent as query
+ * parameters on the socket URL and the server promotes them back to their header
+ * form (see `WsCaller` in aion-server). The connection authorizes the full set
+ * of namespaces the caller may view; per-subscription filters narrow within it,
+ * so switching the selected namespace never requires a reconnect.
+ */
+export type SocketCredentials = {
+  namespaces?: readonly Namespace[];
+  subject?: string;
+  bearerToken?: string;
 };
 
 export type AionEventWebSocketManagerOptions = {
   baseUrl?: string;
+  credentials?: SocketCredentials;
   webSocketImpl?: WebSocketConstructor;
   scheduler?: Scheduler;
   reconnect?: Partial<ReconnectOptions>;
@@ -152,5 +168,5 @@ export type SubscriptionRecord = {
   filter: AionEventSubscriptionFilter;
   handler: AionEventHandler;
   lastSeenSequence: number | null;
-  onResync?: (context: ResyncContext) => void;
+  onResync?: ((context: ResyncContext) => void) | undefined;
 };

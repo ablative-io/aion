@@ -156,6 +156,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         drain_timeout: std::time::Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
         owned_shards: Vec::new(),
+        cors_allowed_origins: Vec::new(),
     }
 }
 

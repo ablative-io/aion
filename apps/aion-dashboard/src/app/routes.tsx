@@ -9,6 +9,8 @@ import { WorkflowList } from '@/features/workflow-list';
 import type { Namespace } from '@/types';
 
 import { AppShell } from './AppShell';
+import { NotFound } from './NotFound';
+import { RouteError } from './RouteError';
 import {
   failoverPath,
   incidentsPath,
@@ -51,12 +53,19 @@ const TriageView = lazyNamed(
 export const appRoutes: RouteObject[] = [
   {
     element: <AppShell />,
+    // Branded route error element: a thrown route render, a route-error
+    // response, or an unmatched URL renders inside the app chrome via
+    // RouteError, never React Router's default developer page.
+    errorElement: <RouteError />,
     children: [
       { path: workflowListPath, element: <WorkflowListRoute /> },
       { path: workflowDetailPath, element: <WorkflowDetailRoute /> },
       { path: searchPath, element: <SearchRoute /> },
       { path: incidentsPath, element: <IncidentsRoute /> },
       { path: failoverPath, element: <FailoverRoute /> },
+      // Catch-all: an unknown URL renders the branded 404 inside the shell so
+      // the nav persists, instead of falling through to the RR default.
+      { path: '*', element: <NotFound /> },
     ],
   },
 ];

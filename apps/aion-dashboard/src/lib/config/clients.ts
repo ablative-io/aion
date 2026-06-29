@@ -1,6 +1,6 @@
 import type { ApiClientOptions } from '@/lib/api';
 import { ApiClient } from '@/lib/api';
-import { AionEventWebSocketManager } from '@/lib/api/websocket';
+import { AionEventWebSocketManager, type SocketCredentials } from '@/lib/api/websocket';
 import type { Namespace } from '@/types';
 
 import { buildCredentials, type DashboardConfig, getDashboardConfig } from './env';
@@ -40,14 +40,25 @@ export function createConfiguredApiClient(options: ConfiguredClientOptions = {})
 
 /**
  * Build the live-events WebSocket manager bound to the configured WS base URL.
- * The browser carries cookies/origin; `x-aion-*` headers cannot be set on a WS
- * handshake from the browser, so namespace scoping for the stream is enforced by
- * the per-subscription `namespace` filter, not a header.
+ *
+ * A browser cannot set `x-aion-*` headers on a WebSocket handshake, so the
+ * caller's credentials authorize the socket as query parameters instead (the
+ * server promotes them back to headers — see `WsCaller` in aion-server). The
+ * connection authorizes the *full* configured namespace set so switching the
+ * selected namespace re-filters the subscription without reconnecting; the
+ * per-subscription filter narrows within the authorized set, it does not
+ * authorize on its own.
  */
 export function createConfiguredWebSocketManager(
   config: DashboardConfig = getDashboardConfig()
 ): AionEventWebSocketManager {
-  return new AionEventWebSocketManager({ baseUrl: config.wsBaseUrl });
+  const credentials: SocketCredentials = {
+    namespaces: config.namespaces,
+    ...(config.subject === undefined ? {} : { subject: config.subject }),
+    ...(config.bearerToken === undefined ? {} : { bearerToken: config.bearerToken }),
+  };
+
+  return new AionEventWebSocketManager({ baseUrl: config.wsBaseUrl, credentials });
 }
 
 /** The app-wide singleton WS manager, bound to the configured WS base URL. */

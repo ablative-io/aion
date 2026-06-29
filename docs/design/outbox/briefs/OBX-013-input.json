@@ -1,0 +1,87 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/tomWhiting/aion.git",
+  "workspace_id": "2d5fdd51-1f25-45a4-8f86-4d4c978d1355",
+  "brief_id": "OBX-013",
+  "reviewers": ["Waffles the Terrible"],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "OBX-013",
+    "cluster": "outbox",
+    "title": "Live outbox reconciliation sweep: no-restart re-arm of stranded claimed rows",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [],
+    "purpose": "The durable outbox re-arms stranded rows ONLY on server restart (rearm_outbox_pending during recovery). If a row is flipped to 'claimed' by the OutboxDispatcher and then its dispatch target dies (worker crash / network partition) without reaching done/failed/retry, the row stays 'claimed' indefinitely until the next restart — delivery for that ordinal stalls. Add a LIVE, in-process reconciliation sweep that detects stranded 'claimed' rows past a threshold and re-arms them (back to pending) WITHOUT a restart, preserving exactly-once. NOTE (verified): the outbox table currently has NO claimed_at/lease timestamp, so staleness is not yet detectable — adding that is the first prerequisite. The OBX-012 e2e harness already proves the happy-path + restart-recovery contract this builds on.",
+    "task": "Add a live reconciliation sweep for the durable outbox. (1) Add a durable claim timestamp to the outbox table (e.g. claimed_at, RFC3339), set when a row is claimed, via a backward-compatible DDL migration (ADD COLUMN IF NOT EXISTS or equivalent) in the libsql schema. (2) Add an OutboxStore method to find/re-arm rows in 'claimed' status whose claim is older than a threshold (e.g. reclaim_claimed_before(as_of) or list_claimed_before(as_of)), reusing the existing rearm semantics (status -> pending, visible_after = now, attempt PRESERVED). (3) Spawn a reconciliation task as a SIBLING of the OutboxDispatcher in run_server's outbox bootstrap (maybe_spawn_outbox_dispatcher), sharing the shutdown watch and the engine's single libsql connection, gated behind explicit config (reconciliation interval + staleness threshold, following the existing opt-in outbox.enabled / no-silent-default pattern). The sweep SHALL scan ONLY 'claimed' rows (never racing the dispatcher's pending-claim path) and re-arm stale ones. Exactly-once MUST be preserved: a re-armed + re-dispatched ordinal whose original in-flight attempt later completes is safely de-duplicated by the existing Recorder completion-dedup (record_fan_out_completion drops a terminal for an already-resolved ordinal). Do NOT implement cross-node completion routing (that is a separate later item); this is recovery of stranded in-flight dispatch only.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Durable claim timestamp + stale-claim store method",
+        "spec": "THE outbox row SHALL carry a durable claim timestamp set when the row is claimed. THE OutboxStore SHALL expose a method to re-arm (or list for re-arming) rows in 'claimed' status whose claim timestamp is older than a caller-supplied instant, using the existing re-arm semantics (status -> pending, visible_after = now, attempt preserved). The schema change SHALL be backward-compatible (additive, IF NOT EXISTS).",
+        "acceptance": [
+          "outbox table has a claim timestamp column set on claim_outbox_rows; migration is additive and safe on an existing DB.",
+          "A new OutboxStore method re-arms (or lists) 'claimed' rows older than a given instant; attempt count is preserved across re-arm.",
+          "Rows in done/failed are NEVER touched by the sweep; only stale 'claimed' rows are re-armed.",
+          "Unit/store tests cover: a fresh claim is NOT reclaimed; a claim older than threshold IS reclaimed; a done/failed row is untouched."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Live reconciliation task wired into run_server, exactly-once preserved",
+        "spec": "WHEN outbox + reconciliation are enabled, THE SYSTEM SHALL run a periodic in-process sweep (no restart) that re-arms stranded 'claimed' rows past the staleness threshold, and the stranded fan-out members SHALL still complete EXACTLY ONCE (a late completion from the original in-flight attempt is dropped by the Recorder dedup; no duplicate terminal events, no double-wake).",
+        "acceptance": [
+          "A reconciliation task is spawned beside the OutboxDispatcher in run_server's outbox bootstrap, sharing the shutdown watch + libsql connection, gated by explicit config (interval + threshold; opt-in, no silent default).",
+          "The sweep scans only 'claimed' rows and does not race / contend with the dispatcher's pending-claim transaction.",
+          "An integration test simulates a stranded claim (a claimed row whose dispatch never completes), runs the live sweep (no restart), and asserts the member is re-dispatched and completes exactly once with exactly one terminal in history.",
+          "A duplicate/late completion for an already-resolved ordinal is dropped (not double-recorded)."
+        ],
+        "files": { "create": [], "modify": [], "delete": [] },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "EXACTLY-ONCE IS THE INVARIANT: re-arm + re-dispatch MUST NOT produce duplicate terminal events or double-wake; rely on the existing Recorder completion-dedup (record_fan_out_completion / ordinal_is_resolved). If you cannot preserve it, REPORT rather than weaken it.",
+      "SHALL NOT change the existing claim/complete/retry/fail semantics or the restart-path rearm_outbox_pending behaviour; the live sweep reuses the same re-arm transition.",
+      "SHALL NOT implement cross-node completion routing / the continue-as-new RunId-on-wire work (separate items #10/#11); scope is stranded in-flight DISPATCH recovery only.",
+      "The sweep SHALL scan only 'claimed' rows and MUST NOT contend with or duplicate the dispatcher's pending-claim path (single shared libsql connection; keep sweep queries minimal).",
+      "Schema migration MUST be additive + safe on an existing populated DB (no destructive change).",
+      "Reconciliation MUST be opt-in via explicit config (interval + threshold), following the existing outbox.enabled no-silent-default pattern; disabled by default.",
+      "SHALL NOT introduce unsafe code; SHALL keep no production unwrap()/expect()/panic!() (workspace denies); files under 500 lines; mod.rs only pub use."
+    ],
+    "verification": [
+      "cargo fmt --check clean for changed files (rustfmt edition 2024; --config skip_children=true).",
+      "cargo clippy --workspace --all-targets -- -D warnings clean.",
+      "cargo test passes in full including new store unit tests + the live-sweep integration test; zero failures.",
+      "The integration test genuinely exercises the live sweep (fails if the reconciler is disabled/removed) and the exactly-once dedup (fails if a duplicate terminal is recorded).",
+      "The schema migration applies cleanly to a pre-existing outbox DB (no data loss).",
+      "No new public API surface beyond the OutboxStore method + opt-in config the reconciler needs."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      { "id": "CN1", "text": "No file over 500 lines; extract submodules if approaching the limit." },
+      { "id": "CN2", "text": "No panics in production code; unwrap()/expect() only in tests." },
+      { "id": "CN3", "text": "mod.rs contains only pub mod / pub use; no logic." },
+      { "id": "CN4", "text": "All public types implement Debug; all error types implement std::error::Error." }
+    ],
+    "intention": "Outbox hardening #9: a no-restart, live reconciliation sweep that re-arms stranded 'claimed' outbox rows (dead worker / partition) so delivery does not stall until a restart — exactly-once preserved via the Recorder dedup. Prerequisite (verified): the outbox table has no claim timestamp today, so add one. Builds on the OBX-012 e2e contract. See docs/AION-OUTBOX-BUILD-PLAN.md and ABLATIVE-STACK-ROADMAP.md. SENSITIVE distributed code — correctness over cleverness.",
+    "provenance": { "quote": "keep on going on those things so long as everything is properly documented", "requested_by": "Tom" },
+    "design_path": "docs/design/outbox",
+    "stories": []
+  }
+}

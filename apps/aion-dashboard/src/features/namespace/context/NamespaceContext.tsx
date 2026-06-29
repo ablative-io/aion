@@ -28,9 +28,9 @@ export type NamespaceContextValue = NamespaceQueryState & {
 
 type NamespaceProviderProps = {
   children: ReactNode;
-  apiClient?: Pick<ApiClient, 'listNamespaces'>;
-  credentials?: ApiCredentials;
-  initialNamespace?: Namespace;
+  apiClient?: Pick<ApiClient, 'listNamespaces'> | undefined;
+  credentials?: ApiCredentials | undefined;
+  initialNamespace?: Namespace | undefined;
 };
 
 const NamespaceContext = createContext<NamespaceContextValue | null>(null);

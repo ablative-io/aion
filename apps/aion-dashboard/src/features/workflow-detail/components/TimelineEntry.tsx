@@ -8,8 +8,8 @@ import { PayloadView } from './PayloadView';
 
 type TimelineEntryProps = {
   entry: TimelineEntryModel;
-  selected?: boolean;
-  onSelect?: (entry: TimelineEntryModel) => void;
+  selected?: boolean | undefined;
+  onSelect?: ((entry: TimelineEntryModel) => void) | undefined;
 };
 
 function TimelineEntry({ entry, selected = false, onSelect }: TimelineEntryProps) {
