@@ -99,10 +99,27 @@ emit_cluster_config() {
   }
 
   for ((i=0; i<count; i++)); do
-    local h_http h_grpc h_bind h_lim self_host
+    local h_http h_grpc h_bind h_lim self_host cors
     self_host="$(node_host "$i")"
     h_http="$(http_port "$i")"; h_grpc="$(grpc_port "$i")"
     h_bind="$(bind_port "$i")"; h_lim="$(liminal_port "$i")"
+
+    # CORS origins the browser dashboard is served from. Defaults to the local
+    # Vite dev server (unchanged single-laptop demo). For a multi-host mesh where
+    # the dashboard runs on a routable host, set DEMO_DASHBOARD_ORIGINS to a
+    # space-separated origin list, e.g.
+    #   DEMO_DASHBOARD_ORIGINS="http://100.0.0.9:5173 https://dash.example"
+    if [ -n "${DEMO_DASHBOARD_ORIGINS:-}" ]; then
+      local origin arr_o
+      read -r -a arr_o <<< "$DEMO_DASHBOARD_ORIGINS"
+      cors=""
+      for origin in "${arr_o[@]}"; do
+        cors+="\"$origin\", "
+      done
+      cors="${cors%, }"
+    else
+      cors="\"http://localhost:5173\", \"http://127.0.0.1:5173\""
+    fi
 
     local members="" peers=""
     for ((j=0; j<count; j++)); do
@@ -143,7 +160,8 @@ grpc_address = "$self_host:$h_grpc"
 # Allow the browser dashboard (served from the Vite dev server on a different
 # origin) to call this node's HTTP API cross-origin. Secure-by-default: only
 # these exact origins are permitted; unset means no cross-origin access.
-cors_allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+# Override via DEMO_DASHBOARD_ORIGINS for a dashboard on a routable host.
+cors_allowed_origins = [$cors]
 
 [store]
 backend = "haematite"
@@ -180,6 +198,17 @@ backoff_multiplier = 2
 backoff_max_ms = 1000
 transport = "liminal"
 liminal_listen_address = "$self_host:$h_lim"
+
+[deploy]
+# Mount the operator deploy surface so the dashboard's "deploy package" action
+# works against the demo. Dark-by-default in the server (absent section => the
+# /deploy/* HTTP routes and the gRPC DeployService are not mounted), so the demo
+# opts in explicitly here. Both ceilings are REQUIRED when enabled (no server
+# defaults) and max_inflated_bytes must be >= max_archive_bytes. Override per
+# node without regenerating via AION_DEPLOY_* env vars.
+enabled = true
+max_archive_bytes = 67108864
+max_inflated_bytes = 268435456
 TOML
   done
 }
