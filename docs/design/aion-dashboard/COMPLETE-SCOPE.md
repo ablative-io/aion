@@ -135,6 +135,7 @@ Effort: S (<0.5d) / M (0.5–2d) / L (2d+). Severity: Critical / High / Medium /
 - **U13 — Motion as a designed system + reduced-motion + non-jarring live inserts.** AC: motion tokens reserved for meaning (adoption, token dispatch, bar extension, scrub); `prefers-reduced-motion` fallback for all meaning-bearing motion; new-row highlight-fade + "N new above" pill. Effort M. Severity Medium. Deps C9/C10.
 - **U14 — Responsive/full-bleed layout.** `max-w-7xl` starves swimlane/map/tables on large monitors. AC: per-view width strategy (reading constrained, map/swimlane/table full-bleed), ≥1920 tested; defined narrow-width behavior. Effort M. Severity Medium. Deps none.
 - **U15 — App chrome: favicon, per-route `<title>`, OG metadata.** AC: favicon set; dynamic title ("wf-1234 · Failed · Aion"); shareable link preview (3am-handoff). Effort S. Severity Low. Deps none.
+- **U16 — Migrate hardcoded component palettes to the semantic status registry (LaneBar, IncidentCard, ConnectionIndicator, ActivityGroup, FirehoseFeed, NamespaceSelector, swimlane) — precondition for light-theme safety + hand-plane compliance.** AC: each listed component names only §2.2 semantic intents (no Tailwind palette primitives, no opacity color-modifiers, no inline status palette); swimlane status→color map reads the single registry; `data-theme="light"` renders them correctly; DESIGN-TOKENS.md §8 guard passes on all of them. This is the §0.1 conformance-debt precondition that makes the "zero component edits to add light" property real rather than aspirational. Effort M. Severity High (binding precondition for U3/U4/U5). Deps none.
 
 ### Accessibility (WCAG 2.2 AA)
 
@@ -268,18 +269,28 @@ M2 starts after M1's command transport + RBAC foundations (S4) and each Tier-2 s
 
 ---
 
-## Open decisions for review
+## Decisions (resolved 2026-06-29)
 
 1. **RBAC / capability model (S4).** Today authorization is `deploy: bool` + namespace grants. ADR-020's spec would conflate "can deploy a package" with "can drain/kill a node." Recommend a three-tier capability split (read / per-workflow-command / cluster-control) with per-workflow commands reusing the namespace ownership guard. Needs sign-off before any M2 command lands, because it shapes claim fields and the command-seam contract.
+   - **Resolved (ADR-022):** Three-tier capability split — READ / PER-WORKFLOW-COMMAND (cancel/reopen, reuses the namespace-ownership guard) / CLUSTER-CONTROL (drain/handoff/kill, a separate high grant). A deploy token must NOT imply cluster-kill authority; this replaces the flat `deploy: bool` + namespace grants. Lands before any M2 command.
 2. **Control-action safety model.** Idempotency-key + wait-for-effect-event reconciliation (never optimistic history write), server-computed blast-radius pinned to `cluster_seq` with optimistic-concurrency commit-block. Confirm this is the round-trip discipline before building the command client — it's hard to retrofit.
+   - **Resolved (ADR-023):** Idempotency-key + WAIT-FOR-EFFECT-EVENT reconciliation (the UI never optimistically writes history — it waits for the server's effect event), plus a server-computed BLAST-RADIUS preview pinned to `cluster_seq` with optimistic-concurrency so a stale preview cannot execute. Mirrors the engine's fencing/CAS model.
 3. **Swimlane axis: seq-rank vs temporal (U6).** Seq-rank preserves the ShiViz partial-order argument but makes duration meaningless; operators expect width to mean time. Recommend dual-mode (logical default, temporal toggle) — confirm priority, as it's L effort on the centerpiece.
+   - **Resolved (ADR-024):** DUAL-MODE — logical seq-rank default (preserves the partial-order/ShiViz correctness argument) + a temporal-width toggle (operator-expected duration). L effort accepted on the centerpiece.
 4. **Freshness/staleness mechanism (D4).** Server keepalive frames (preferred, needs server work) vs client last-frame-time heuristic. Decide before S9, and confirm whether AW can add keepalive + resync-floor-seq + node/seq response stamping (D3/A6 depend on it).
+   - **Resolved (ADR-027):** Server KEEPALIVE FRAMES (+ server stamps node + last-applied seq on responses) over a client heuristic; feeds ADR-016 provenance — a connected-but-silent socket downgrades freshness.
 5. **Virtualization library (D7/D8).** Recommend `@tanstack/react-virtual` (house-stack-aligned). Alternatively, accept strict server-paging as the list "virtualization story" — but the 10k-event swimlane needs real windowing regardless. Confirm the dependency add.
+   - **Resolved (ADR-028):** `@tanstack/react-virtual` (house-stack aligned). The 10k-event swimlane needs real client-side windowing regardless of server-paging.
 6. **Theme scope (U4).** Is light theme a Phase-1 obligation (Temporal ships both) or deferrable? Token set already exists; the work is the toggle + a light-theme audit of status colors.
+   - **Resolved (ADR-025):** Light-theme DELIVERY deferred to Phase 1.5 (ship dark-first, polished); but the design-TOKEN ARCHITECTURE is built to best practice NOW (multi-tier semantic tokens, fully theme-swappable) so adding light mode later is a token-map addition, never a component refactor. Both theme maps live at the token layer (dark = shipped, light = defined-now/delivered-1.5). See DESIGN-TOKENS.md.
 7. **Phase-1 boundary for the cluster map.** Tier-0/1 ride WS3; if WS3 slips, do we ship the failover view as the cluster surface and defer the general map, or block? Recommend: ship coarse cluster state derived from existing query data with honest "last-known" provenance (C7), upgrade when WS3 lands.
+   - **Resolved (ADR-029):** If WS3 slips, ship coarse LAST-KNOWN cluster state from existing query data with honest provenance (C7), upgrade to the live map when WS3 lands; never block the console on it.
 8. **TLS posture (S12).** Implement in-process rustls vs hard-require a TLS-terminating proxy. Recommend proxy-required + refuse non-loopback plaintext in prod for M1, with rustls as a later option.
+   - **Resolved (ADR-026):** Proxy-required for M1 + refuse non-loopback plaintext in prod; in-process rustls kept as a later option.
 9. **Audit durability (S6).** `tracing::info!` is not an audit store. Decide the durable sink (dedicated stream / `audit` namespace / hash-chained log) before M2 commands carry real authority.
+   - **Resolved (ADR-030):** A real DURABLE sink (dedicated `audit` namespace or hash-chained log) before any M2 command carries authority; record DENIALS too. `tracing::info!` is not an audit store.
 10. **Event-reference generation (G3).** Auto-generate from ts-rs doc-comments (no drift, recommended) vs hand-curate (richer prose, drifts). Recommend generation wired into the existing wire-types CI guard.
+    - **Resolved (ADR-031):** AUTO-GENERATE from ts-rs doc-comments, wired into the existing wire-types CI guard (zero drift).
 
 ---
 

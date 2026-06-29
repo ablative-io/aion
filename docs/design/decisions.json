@@ -379,6 +379,186 @@
       ],
       "superseded_by": "",
       "supersedes": []
+    },
+    {
+      "id": "ADR-022",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: three-tier RBAC capability model (read / per-workflow-command / cluster-control)",
+      "context": "Today authorization is `deploy: bool` + namespace grants. ADR-020's control-plane spec would conflate 'can deploy a package' with 'can drain/kill a node' — a deploy token would imply cluster-kill authority, which is wrong. The fork: keep the flat deploy-bool model and overload it, or split authorization into capability tiers before any M2 command can land. This shapes claim fields and the command-seam contract, so it must be settled first.",
+      "decision": "Adopt a three-tier capability split: READ (observe everything), PER-WORKFLOW-COMMAND (cancel/reopen — reuses the existing namespace-ownership guard), and CLUSTER-CONTROL (drain/handoff/kill — a separate, high grant). A deploy token must NOT imply cluster-kill authority; this replaces the flat `deploy: bool` + namespace-grants model. The split shapes claim fields and the command-seam contract and must land before any M2 command. Rejected: overloading the existing deploy boolean — it conflates package deployment with node-destroying cluster control, the exact authority leak this model exists to prevent.",
+      "quote": "",
+      "consequences": [
+        "Claim fields are reshaped to carry the three capability tiers; the flat deploy-bool is removed (ADR-002 clean replace).",
+        "Per-workflow commands reuse the namespace-ownership guard already in the engine; cluster-control is a distinct high grant.",
+        "Must land before any M2 command lands, because it defines the command-seam contract (couples to ADR-020's command seam and S4)."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-023",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: control-action safety via idempotency-key + wait-for-effect-event + pinned blast-radius",
+      "context": "A command client that optimistically writes history or executes against a stale view is dangerous under failover and concurrency. The fork: optimistic UI (write the effect locally, reconcile later) vs a strict round-trip discipline that mirrors the engine's fencing/CAS model. This is hard to retrofit once the command client is built.",
+      "decision": "Control actions use an idempotency-key plus WAIT-FOR-EFFECT-EVENT reconciliation: the UI NEVER optimistically writes history — it waits for the server's event confirming the effect. Additionally, a server-computed BLAST-RADIUS preview is pinned to `cluster_seq` with optimistic-concurrency so a stale preview cannot execute. This mirrors the engine's fencing/CAS model. Rejected: optimistic history writes in the UI — under failover and concurrency they make the console assert effects that may not have happened, the opposite of ADR-016's provenance honesty.",
+      "quote": "",
+      "consequences": [
+        "The command client is built around idempotency-keys and effect-event reconciliation from the start (no optimistic local history).",
+        "Blast-radius previews are pinned to `cluster_seq`; a stale preview is rejected by optimistic-concurrency at execute time.",
+        "Couples to ADR-020 (blast-radius before any state-mutating action) and ADR-016 (provenance/freshness)."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-024",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: dual-mode swimlane axis (logical seq-rank default + temporal-width toggle)",
+      "context": "The swimlane is the centerpiece view. Seq-rank ordering preserves the partial-order / ShiViz correctness argument but makes bar width meaningless; operators instinctively expect width to mean elapsed time. The fork: pick one axis (correctness vs operator expectation) or support both. This is L effort but it is the centerpiece, so the choice matters.",
+      "decision": "DUAL-MODE: logical seq-rank is the default (preserves the partial-order / ShiViz correctness argument), with a temporal-width toggle that maps width to operator-expected duration. Both modes are first-class. Rejected: a single fixed axis — seq-rank-only forfeits the duration intuition operators reach for; temporal-only forfeits the partial-order correctness guarantee that makes the swimlane trustworthy.",
+      "quote": "",
+      "consequences": [
+        "The swimlane rendering layer supports two axis mappings and a toggle; URL-encodes the active mode (ADR-015).",
+        "L effort accepted on the centerpiece view; both modes must hold the ADR-018 performance budget at 10k+ events.",
+        "Relates to U6 in the scope doc."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-025",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: light theme delivery deferred to Phase 1.5; token architecture built to best practice now",
+      "context": "Temporal ships both themes; light theme is real work (toggle + a light-theme audit of status colors under the hand-plane constraint). The fork: ship light theme in Phase 1, or defer delivery while still ensuring the token architecture can absorb it later without a component refactor. Tom's explicit, strong requirement: adding light mode later must be a token-map addition, never a component rewrite.",
+      "decision": "Light-theme DELIVERY is deferred to Phase 1.5 (ship dark-first, polished). BUT the design-TOKEN ARCHITECTURE is built to best practice NOW: multi-tier semantic tokens, fully theme-swappable, so adding light mode later is a TOKEN-MAP ADDITION, never a component refactor. Both theme maps live at the token layer — dark = shipped, light = defined-now / delivered-1.5. Rejected: a quick dark-only token setup that hardcodes theme decisions into components — it would turn light mode into a painful refactor later, which Tom explicitly forbade ('I really don't want it to become a nightmare later').",
+      "quote": "I really don't want it to become a nightmare later.",
+      "consequences": [
+        "Token architecture is three-tier (primitives → semantic → optional component), single-source-of-truth, theme-swappable, authored now and documented in DESIGN-TOKENS.md.",
+        "The light theme map is DEFINED now (at the token layer) but DELIVERED in Phase 1.5; dark ships first.",
+        "Components reference semantic tokens only (no raw hex, no opacity modifiers); a CI guard enforces it. Relates to U4."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-026",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: TLS via required terminating proxy for M1; refuse non-loopback plaintext in prod",
+      "context": "The console serves operator-facing control surfaces; plaintext over a network is unacceptable in production. The fork: implement in-process rustls termination now, or require a TLS-terminating proxy in front and refuse to serve plaintext on non-loopback addresses in prod. In-process rustls is more self-contained but more surface to own at M1.",
+      "decision": "For M1: TLS is proxy-required (a TLS-terminating proxy in front), and the server REFUSES non-loopback plaintext in production. In-process rustls is kept as a later option, not an M1 obligation. Rejected: building in-process rustls termination for M1 — it adds TLS-management surface to own at exactly the moment the priority is shipping the console safely; a required proxy + plaintext refusal achieves the safety guarantee now.",
+      "quote": "",
+      "consequences": [
+        "Production refuses to bind plaintext on non-loopback addresses; a TLS-terminating proxy is a documented deployment requirement.",
+        "In-process rustls remains a deferred option for a later phase.",
+        "Relates to S12 in the scope doc."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-027",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: server keepalive frames drive freshness (connected-but-silent downgrades freshness)",
+      "context": "After a socket goes quiet, a client cannot distinguish 'healthy and idle' from 'silently stale' without a signal. The fork: a client-side last-frame-time heuristic (no server work, but guesses) vs server KEEPALIVE FRAMES plus the server stamping node + last-applied seq on responses (needs server work, but authoritative). This feeds ADR-016's provenance promise.",
+      "decision": "Use server KEEPALIVE FRAMES (plus the server stamping node + last-applied seq on responses) rather than a client heuristic. This feeds ADR-016 provenance: a connected-but-silent socket DOWNGRADES freshness, so the console is honest about going stale even when the connection is technically alive. Rejected: a client last-frame-time heuristic — it guesses at staleness instead of being told, and cannot reliably distinguish idle-healthy from silently-stale, undermining the ADR-016 honesty guarantee.",
+      "quote": "",
+      "consequences": [
+        "AW contract must add server keepalive frames + node/last-applied-seq response stamping (couples to D3/A6 resync-floor work).",
+        "A connected-but-silent socket is rendered as degraded freshness, not 'fresh' (ADR-016).",
+        "Relates to D4 in the scope doc; decide before S9."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-028",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: virtualization via @tanstack/react-virtual",
+      "context": "The 10k-event swimlane and large lists/search results need real windowing to hold the ADR-018 performance budget; server-paging alone does not solve the swimlane. The fork: adopt a virtualization library, or rely on strict server-paging as the list 'virtualization story'. A library aligned with the existing TanStack stack reduces integration risk.",
+      "decision": "Use `@tanstack/react-virtual` (house-stack aligned with the existing TanStack Query usage). Rejected: strict server-paging as the sole virtualization story — it does not window the 10k-event swimlane, which needs real client-side virtualization regardless to meet the ADR-018 budget.",
+      "quote": "",
+      "consequences": [
+        "`@tanstack/react-virtual` is added as a dependency; the swimlane, list, and search use it for windowing.",
+        "Aligns with ADR-018 (virtualized rendering required from the start) and D7.",
+        "Confirmed dependency add."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-029",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: cluster-map fallback ships last-known state with honest provenance if WS3 slips",
+      "context": "The live cluster map (ADR-020 Tier 0/1) rides the WS3 cluster-event push channel, which is in flight. If WS3 slips, the console must not block on it. The fork: block the console until WS3 lands, ship the single-purpose failover view as the cluster surface, or ship coarse last-known cluster state derived from existing query data with honest provenance and upgrade later.",
+      "decision": "If WS3 slips, ship COARSE LAST-KNOWN cluster state derived from existing query data with honest 'last-known' provenance, and UPGRADE to the live map when WS3 lands. Never block the console on WS3. Rejected: blocking the console on WS3 (forfeits a usable cluster surface for an external dependency) and shipping the bare failover view alone (less general, and still leaves the healthy cluster view undesigned).",
+      "quote": "",
+      "consequences": [
+        "A last-known cluster surface is built from existing query data with explicit provenance (ADR-016) and upgrades to the live map (ADR-020) when WS3 lands.",
+        "The console's Phase-1 boundary does not depend on WS3 landing on time.",
+        "Relates to C7 and the Phase-1 cluster-map boundary in the scope doc."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-030",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: audit goes to a real durable sink before any M2 command carries authority",
+      "context": "`tracing::info!` is not an audit store — it is lossy, unstructured, and not queryable as a record of who did what. Once M2 commands carry real authority (cancel/reopen/drain/kill), there must be a durable, tamper-evident record, including denials. The fork: keep logging-as-audit, or stand up a real durable sink before commands carry authority.",
+      "decision": "Audit goes to a real DURABLE sink — a dedicated `audit` namespace or a hash-chained log — before any M2 command carries authority; DENIALS are recorded too, not just successes. `tracing::info!` is explicitly not an audit store. Rejected: logging as the audit store — it is lossy and not a trustworthy record, unacceptable once the console can mutate cluster state.",
+      "quote": "",
+      "consequences": [
+        "A durable audit sink (dedicated `audit` namespace or hash-chained log) is built before M2 commands carry authority.",
+        "Denied actions are audited alongside successful ones (RBAC denials per ADR-022 are recorded).",
+        "Relates to S6 in the scope doc."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-031",
+      "scope": "aion-dashboard",
+      "status": "accepted",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: event-reference docs auto-generated from ts-rs doc-comments, CI-guarded for zero drift",
+      "context": "The event reference can be hand-curated (richer prose) or auto-generated from the ts-rs doc-comments that already define the wire types. Hand-curated docs drift from the actual types; generated docs stay in sync but need wiring. The wire-types CI guard already exists to prevent type drift.",
+      "decision": "AUTO-GENERATE the event reference from ts-rs doc-comments, wired into the existing wire-types CI guard so there is ZERO drift between the documented events and the actual wire types. Rejected: hand-curated event docs — richer prose is not worth the inevitable drift from the real types, especially when the wire-types guard already gives us a zero-drift mechanism to hook into.",
+      "quote": "",
+      "consequences": [
+        "Event-reference generation reads ts-rs doc-comments and is wired into the existing `wire-types-no-diff` CI guard.",
+        "Documented events cannot drift from the wire types; a drift fails CI.",
+        "Relates to G3 in the scope doc."
+      ],
+      "superseded_by": "",
+      "supersedes": []
     }
   ]
 }
