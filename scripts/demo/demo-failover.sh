@@ -74,12 +74,17 @@ teardown() {
 trap teardown EXIT
 
 # ----------------------------------------------------------------------------
-say "build (aion cluster binary + worker + packager)"
-# `release` turns on the embedded dashboard (rust_embed over dashboard-embed/, which
-# `cargo xtask build-dashboard` populates) so each node serves the real ops console
-# at its HTTP port — the live cluster map + failover feed watch this demo. The
-# bundle must be built first (xtask); if dashboard-embed/ is empty the build still
-# succeeds and serves the placeholder page.
+say "build (dashboard bundle + aion cluster binary + worker + packager)"
+# Build the embedded console FIRST, with the demo's namespace grant baked in so the
+# console's REST/WS calls carry x-aion-namespaces (without it the server replies
+# namespace_denied and the UI shows "namespaces unavailable"). API/WS base is left
+# unset = same origin, so each node serves a console that talks to ITSELF (correct
+# for the failover own-read view). Requires bun; if absent, the `release` build
+# below still succeeds and serves the placeholder page.
+( cd "$ROOT" && VITE_AION_NAMESPACES=default VITE_AION_SUBJECT=operator cargo xtask build-dashboard ) \
+  || note "dashboard bundle build skipped/failed (need bun) — nodes will serve the placeholder"
+# `release` turns on the embedded dashboard (rust_embed over dashboard-embed/) so
+# each node serves the real ops console at its HTTP port.
 ( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport,release ) \
   || die "aion CLI build failed"
 ( cd "$WORKER_DIR" && cargo build ) || die "liminal-fan-worker build failed"

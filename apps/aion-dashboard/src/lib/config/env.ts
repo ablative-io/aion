@@ -36,7 +36,16 @@ export type DashboardEnv = {
   VITE_AION_BEARER_TOKEN?: string;
 };
 
-/** Localhost defaults matching `scripts/demo/demo-failover.sh` node 0. */
+/**
+ * Localhost references for `scripts/demo/demo-failover.sh` node 0. NOT the unset
+ * default: when no `VITE_AION_API_BASE` is provided the config resolves to the
+ * empty string = SAME ORIGIN, so the embedded single-binary console talks to the
+ * node that served it (each node serves its own console; killing the owner and
+ * viewing a survivor keeps working). A hardcoded host would point every node's
+ * console at node 0 and break the failover own-read view, and would also trip the
+ * localhost-vs-127.0.0.1 cross-origin trap. Dev (Vite on :5173) sets
+ * `VITE_AION_API_BASE` explicitly.
+ */
 export const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8090';
 export const DEFAULT_WS_BASE_URL = 'ws://127.0.0.1:8090';
 
@@ -51,7 +60,9 @@ export const DEFAULT_WS_BASE_URL = 'ws://127.0.0.1:8090';
  *   visible config gap, not a silent default.
  */
 export function parseDashboardConfig(env: DashboardEnv): DashboardConfig {
-  const apiBaseUrl = stripTrailingSlash(nonBlank(env.VITE_AION_API_BASE) ?? DEFAULT_API_BASE_URL);
+  // Unset => '' (same origin). See DEFAULT_API_BASE_URL note: the embedded console
+  // must call the node that served it, not a hardcoded host.
+  const apiBaseUrl = stripTrailingSlash(nonBlank(env.VITE_AION_API_BASE) ?? '');
   const wsBaseUrl = stripTrailingSlash(resolveWsBaseUrl(env.VITE_AION_WS_BASE, apiBaseUrl));
   const namespaces = parseNamespaceList(env.VITE_AION_NAMESPACES);
   const subject = nonBlank(env.VITE_AION_SUBJECT);
@@ -118,7 +129,9 @@ function resolveWsBaseUrl(wsBase: string | undefined, apiBaseUrl: string): strin
     return `ws://${apiBaseUrl.slice('http://'.length)}`;
   }
 
-  return DEFAULT_WS_BASE_URL;
+  // No explicit WS base and a same-origin (empty) API base => '' = same origin
+  // (buildWebSocketUrl derives ws(s)://window.location.host).
+  return '';
 }
 
 function parseNamespaceList(raw: string | undefined): readonly Namespace[] {

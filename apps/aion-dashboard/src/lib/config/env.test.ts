@@ -1,18 +1,13 @@
 import { expect, test } from 'bun:test';
 
-import {
-  buildCredentials,
-  type DashboardEnv,
-  DEFAULT_API_BASE_URL,
-  DEFAULT_WS_BASE_URL,
-  parseDashboardConfig,
-} from './env';
+import { buildCredentials, type DashboardEnv, parseDashboardConfig } from './env';
 
-test('parseDashboardConfig falls back to localhost demo defaults when env is empty', () => {
+test('parseDashboardConfig defaults to same origin (empty bases) when env is empty', () => {
   const config = parseDashboardConfig({});
 
-  expect(config.apiBaseUrl).toBe(DEFAULT_API_BASE_URL);
-  expect(config.wsBaseUrl).toBe(DEFAULT_WS_BASE_URL);
+  // Unset => same origin: the embedded console must call the node that served it.
+  expect(config.apiBaseUrl).toBe('');
+  expect(config.wsBaseUrl).toBe('');
   expect(config.namespaces).toEqual([]);
   expect(config.subject).toBeUndefined();
   expect(config.bearerToken).toBeUndefined();
@@ -55,7 +50,8 @@ test('parseDashboardConfig treats blank values as unset (no silent empty credent
     VITE_AION_NAMESPACES: '   ,  ',
   });
 
-  expect(config.apiBaseUrl).toBe(DEFAULT_API_BASE_URL);
+  // Blank == unset == same origin (empty base).
+  expect(config.apiBaseUrl).toBe('');
   expect(config.subject).toBeUndefined();
   expect(config.bearerToken).toBeUndefined();
   expect(config.namespaces).toEqual([]);

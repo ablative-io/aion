@@ -16,7 +16,15 @@ const filter: WorkflowFilter = {
 function captureFetch() {
   const calls: Request[] = [];
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    calls.push(new Request(input, init));
+    // Same-origin config yields relative URLs (e.g. `/namespaces`). A browser
+    // resolves those against the document origin; `new Request` in the test
+    // runtime has no document, so resolve against a stand-in origin to mirror
+    // browser behaviour (absolute-URL configs are unaffected).
+    const resolved =
+      typeof input === 'string' && input.startsWith('/')
+        ? `http://same-origin.test${input}`
+        : input;
+    calls.push(new Request(resolved, init));
     return new Response(JSON.stringify({ items: [], next_cursor: null, has_more: false }), {
       headers: { 'content-type': 'application/json' },
     });
@@ -50,7 +58,8 @@ test('configured client sends the full grant on listNamespaces (no selected name
   const client = createConfiguredApiClient({ config, fetchImpl });
   await client.listNamespaces();
 
-  expect(calls[0]?.url).toBe('http://127.0.0.1:8090/namespaces');
+  // No VITE_AION_API_BASE => same origin => relative URL.
+  expect(calls[0]?.url).toMatch(/\/namespaces$/);
   expect(calls[0]?.headers.get('x-aion-namespaces')).toBe('default,ops');
 });
 
