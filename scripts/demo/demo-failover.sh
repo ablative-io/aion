@@ -77,11 +77,16 @@ trap teardown EXIT
 say "build (dashboard bundle + aion cluster binary + worker + packager)"
 # Build the embedded console FIRST, with the demo's namespace grant baked in so the
 # console's REST/WS calls carry x-aion-namespaces (without it the server replies
-# namespace_denied and the UI shows "namespaces unavailable"). API/WS base is left
-# unset = same origin, so each node serves a console that talks to ITSELF (correct
-# for the failover own-read view). Requires bun; if absent, the `release` build
-# below still succeeds and serves the placeholder page.
-( cd "$ROOT" && VITE_AION_NAMESPACES=default VITE_AION_SUBJECT=operator cargo xtask build-dashboard ) \
+# namespace_denied and the UI shows "namespaces unavailable"). VITE_AION_DEPLOY=true
+# bakes the deployment-wide deploy grant the WS3 cluster (failover topology) stream
+# requires: that subscription is deploy-gated server-side even in no-auth mode, so
+# without the grant the cluster socket is denied and the failover view shows
+# "disconnected" (carried as x-aion-deploy=true on the WS handshake; the server
+# promotes it to the dev deploy grant). API/WS base is left unset = same origin, so
+# each node serves a console that talks to ITSELF (correct for the failover own-read
+# view). Requires bun; if absent, the `release` build below still succeeds and serves
+# the placeholder page.
+( cd "$ROOT" && VITE_AION_NAMESPACES=default VITE_AION_SUBJECT=operator VITE_AION_DEPLOY=true cargo xtask build-dashboard ) \
   || note "dashboard bundle build skipped/failed (need bun) — nodes will serve the placeholder"
 # `release` turns on the embedded dashboard (rust_embed over dashboard-embed/) so
 # each node serves the real ops console at its HTTP port.

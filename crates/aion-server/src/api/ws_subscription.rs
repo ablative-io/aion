@@ -17,22 +17,29 @@ use crate::error::ServerError;
 
 /// Read the first subscription frame from an accepted WebSocket.
 ///
-/// Ping/pong frames are ignored while waiting; a close, socket error, or
-/// malformed frame is a decode failure the caller reports as one terminal
-/// error frame.
+/// Ping/pong frames are ignored while waiting. A malformed frame or a socket
+/// error is a decode failure the caller reports as one terminal error frame.
+///
+/// A clean close *before* any subscribe frame arrives — either an explicit
+/// `Close` frame or the stream ending (`recv` returns `None`) — is NOT an error:
+/// it is the normal lifecycle of a client that disconnects before subscribing
+/// (e.g. a React `StrictMode` double-mount whose first socket is torn down before
+/// it can send, or a page navigated away during the handshake). It is returned
+/// as `Ok(None)` so the caller ends the connection gracefully without logging a
+/// spurious warning or trying to write an error frame to an already-closing
+/// socket.
 ///
 /// # Errors
 ///
-/// Returns [`ServerError::Wire`] (`invalid_input`) when the socket closes
-/// before a request arrives or the request cannot be decoded.
+/// Returns [`ServerError::Wire`] (`invalid_input`) only when the request frame
+/// is present but cannot be read or decoded.
 pub async fn read_subscription_request(
     socket: &mut WebSocket,
-) -> Result<SubscriptionRequest, ServerError> {
+) -> Result<Option<SubscriptionRequest>, ServerError> {
     loop {
+        // Stream ended before any subscribe frame: a benign pre-subscribe close.
         let Some(message) = socket.recv().await else {
-            return Err(
-                WireError::invalid_input("websocket subscription request is missing").into(),
-            );
+            return Ok(None);
         };
         let message = message.map_err(|source| {
             WireError::invalid_input(format!(
@@ -41,15 +48,11 @@ pub async fn read_subscription_request(
         })?;
 
         match message {
-            Message::Text(text) => return decode_subscription_request(text.as_bytes()),
-            Message::Binary(bytes) => return decode_subscription_request(&bytes),
+            Message::Text(text) => return decode_subscription_request(text.as_bytes()).map(Some),
+            Message::Binary(bytes) => return decode_subscription_request(&bytes).map(Some),
             Message::Ping(_) | Message::Pong(_) => {}
-            Message::Close(_) => {
-                return Err(WireError::invalid_input(
-                    "websocket closed before subscription request",
-                )
-                .into());
-            }
+            // Explicit clean close before subscribing: benign, not an error.
+            Message::Close(_) => return Ok(None),
         }
     }
 }

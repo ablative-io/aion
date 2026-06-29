@@ -315,6 +315,14 @@ function buildCredentialQuery(credentials?: SocketCredentials): string {
     params.set('access_token', credentials.bearerToken);
   }
 
+  // Deploy-scoped cluster sockets carry the deployment-wide grant. In dev/no-auth
+  // mode the server promotes `x-aion-deploy=true` to the dev deploy grant; under
+  // real auth it ignores this param and reads the bearer token's `deploy` claim,
+  // so sending it is harmless there. Only set when explicitly granted.
+  if (credentials.deploy === true) {
+    params.set('x-aion-deploy', 'true');
+  }
+
   return params.toString();
 }
 

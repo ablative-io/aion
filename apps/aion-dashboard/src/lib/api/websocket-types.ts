@@ -123,6 +123,18 @@ export type SocketCredentials = {
   namespaces?: readonly Namespace[];
   subject?: string;
   bearerToken?: string;
+  /**
+   * Deployment-wide deploy grant. The cluster topology subscription is
+   * deploy-scoped server-side (`cluster_stream.rs`), so its socket must carry
+   * this grant or the server denies it with one terminal `namespace_denied`
+   * frame and the stream reconnect-loops to "disconnected". In dev/no-auth mode
+   * the grant rides as the `x-aion-deploy=true` query param (a browser cannot
+   * set the header on a WS handshake); under real auth the grant lives in the
+   * bearer token's `deploy` claim and the server ignores this param. Only the
+   * cluster socket sets this — the workflow event socket is namespace-scoped and
+   * must NOT carry it.
+   */
+  deploy?: boolean;
 };
 
 export type AionEventWebSocketManagerOptions = {

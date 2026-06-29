@@ -57,6 +57,18 @@ test('parseDashboardConfig treats blank values as unset (no silent empty credent
   expect(config.namespaces).toEqual([]);
 });
 
+test('parseDashboardConfig reads the deploy grant strictly (only literal true grants)', () => {
+  // Off by default — the deploy-scoped cluster stream must not be implicitly granted.
+  expect(parseDashboardConfig({}).deployGranted).toBe(false);
+  // Strict true (case-insensitive, trimmed), mirroring the server's x-aion-deploy parsing.
+  expect(parseDashboardConfig({ VITE_AION_DEPLOY: 'true' }).deployGranted).toBe(true);
+  expect(parseDashboardConfig({ VITE_AION_DEPLOY: ' TRUE ' }).deployGranted).toBe(true);
+  // Anything else is no grant.
+  expect(parseDashboardConfig({ VITE_AION_DEPLOY: 'false' }).deployGranted).toBe(false);
+  expect(parseDashboardConfig({ VITE_AION_DEPLOY: '1' }).deployGranted).toBe(false);
+  expect(parseDashboardConfig({ VITE_AION_DEPLOY: '' }).deployGranted).toBe(false);
+});
+
 test('buildCredentials returns undefined when nothing is configured', () => {
   const config = parseDashboardConfig({});
 

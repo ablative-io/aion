@@ -31,7 +31,11 @@ async fn serve_subscription_socket(
     caller: CallerIdentity,
 ) -> Result<(), ServerError> {
     let request = match crate::api::ws_subscription::read_subscription_request(&mut socket).await {
-        Ok(request) => request,
+        // A clean close before any subscribe frame (e.g. a StrictMode
+        // double-mount tearing down its first socket) is a benign end, not an
+        // error: return without an error frame or a logged warning.
+        Ok(None) => return Ok(()),
+        Ok(Some(request)) => request,
         Err(error) => {
             // Pre-stream rejections are sent as one terminal `{"error": ...}`
             // frame plus close, never a silent socket drop.

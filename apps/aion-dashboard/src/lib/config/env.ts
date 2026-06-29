@@ -25,6 +25,15 @@ export type DashboardConfig = {
   subject?: string;
   /** Optional bearer token for `authorization` (JWT auth). */
   bearerToken?: string;
+  /**
+   * Deployment-wide deploy grant for the deploy-scoped cluster (WS3) stream.
+   * The cluster topology subscription is deploy-gated server-side, so without
+   * this the cluster socket is denied and the failover view shows
+   * "disconnected". In dev/no-auth mode it is carried as `x-aion-deploy=true`;
+   * under real auth the grant lives in the bearer token's `deploy` claim. Off by
+   * default — only the operator console sets `VITE_AION_DEPLOY=true`.
+   */
+  deployGranted: boolean;
 };
 
 /** The subset of `import.meta.env` this module reads; injectable for tests. */
@@ -34,6 +43,7 @@ export type DashboardEnv = {
   VITE_AION_NAMESPACES?: string;
   VITE_AION_SUBJECT?: string;
   VITE_AION_BEARER_TOKEN?: string;
+  VITE_AION_DEPLOY?: string;
 };
 
 /**
@@ -67,11 +77,13 @@ export function parseDashboardConfig(env: DashboardEnv): DashboardConfig {
   const namespaces = parseNamespaceList(env.VITE_AION_NAMESPACES);
   const subject = nonBlank(env.VITE_AION_SUBJECT);
   const bearerToken = nonBlank(env.VITE_AION_BEARER_TOKEN);
+  const deployGranted = parseBooleanFlag(env.VITE_AION_DEPLOY);
 
   return {
     apiBaseUrl,
     wsBaseUrl,
     namespaces,
+    deployGranted,
     ...(subject === undefined ? {} : { subject }),
     ...(bearerToken === undefined ? {} : { bearerToken }),
   };
@@ -143,6 +155,15 @@ function parseNamespaceList(raw: string | undefined): readonly Namespace[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0) as Namespace[];
+}
+
+/**
+ * Parse a boolean env flag. Only a literal `true` (case-insensitive, trimmed)
+ * grants; anything else (unset, blank, `false`, `0`) is `false`. Mirrors the
+ * server's strict `x-aion-deploy` parsing (`deploy_header_granted` in auth.rs).
+ */
+function parseBooleanFlag(value: string | undefined): boolean {
+  return value !== undefined && value.trim().toLowerCase() === 'true';
 }
 
 function nonBlank(value: string | undefined): string | undefined {
