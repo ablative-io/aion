@@ -385,6 +385,20 @@ impl Engine {
             bootstrap_schedule_coordinator: false,
         })
         .await?;
+        // 5. Re-arm durable timers for the adopted workflows — the SAME step the
+        //    boot path runs after `recover_active_workflows_on_startup` (see
+        //    `EngineBuilder::build`). This is LOAD-BEARING for a workflow PARKED on
+        //    a durable timer (#119): step 4 replays it and re-parks it, but the
+        //    replay of a not-yet-fired sleep does NOT re-arm the live wheel (only a
+        //    first, non-replay arrival does — see `nif_timer::sleep`'s `ResumeLive`
+        //    branch). Without this call the adopted workflow stays parked forever:
+        //    `recover_due` fires already-expired timers and
+        //    `rearm_future_from_active_histories` re-arms still-future ones onto the
+        //    now-resident process. Removing it reproduces the #119 symptom (a
+        //    survivor adopts the shard but the parked timer never reaches the
+        //    resumed workflow). Guarded by `tests/adoption_parked_timer_e2e.rs`
+        //    (single-process) and `tests/adoption_parked_timer_xnode_e2e.rs`
+        //    (real cross-node failover).
         super::startup::recover_timers_on_startup(self.runtime.nif_state(), Arc::clone(&self.store))
             .await
     }
@@ -658,6 +672,14 @@ impl Engine {
         // task registry the moment shutdown begins.
         self.runtime.shutdown()?;
         self.runtime.nif_state().shutdown_child_tasks();
+        // Abort armed live-wheel timer tasks (#119): they run on the tokio
+        // runtime, not the beamr scheduler, so `runtime.shutdown()` does not
+        // reach them. A timer this engine armed must NOT fire after the engine
+        // has stopped owning the workflow — otherwise, across a failover, the
+        // dead owner's orphaned wheel task races the survivor's adoption-armed
+        // timer and can record the one durable `TimerFired` first, leaving the
+        // survivor's resident sleeper parked forever.
+        self.runtime.nif_state().shutdown_timer_wheel();
         Ok(())
     }
 }

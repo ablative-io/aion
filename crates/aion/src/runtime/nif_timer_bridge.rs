@@ -101,6 +101,37 @@ impl TimerNifBridge {
         TimerService::new(engine, store)
     }
 
+    /// Abort every armed live-wheel timer task this engine owns.
+    ///
+    /// Called from engine shutdown (and shard relinquishment) so a timer this
+    /// engine armed cannot fire AFTER it has stopped owning the workflow. The
+    /// armed tasks run on the tokio runtime, not the beamr scheduler, so
+    /// `RuntimeHandle::shutdown` (which stops the scheduler and the
+    /// wake-confirmation worker) does NOT reach them: without this, a still
+    /// pending wheel task fires `TimerService::fire_timer` against the
+    /// torn-down engine — recording `TimerFired` for a process that no longer
+    /// runs here and (post-shutdown) with no wake-confirmation ladder to heal a
+    /// lost wake. That is the #119 failover race: the dead owner's orphaned
+    /// timer task races the survivor's adoption-armed timer, and when the dead
+    /// owner wins it records the one durable `TimerFired` first, so the
+    /// survivor's wheel fire sees the timer already retired and never wakes the
+    /// adopted, resident sleeper — which then parks forever. Aborting here
+    /// hands the fire cleanly to the new owner; exactly-once is preserved
+    /// because the durable `TimerFired` is still recorded exactly once, by
+    /// whichever engine actually owns the workflow when the timer elapses.
+    pub(super) fn shutdown_timer_wheel(&self) {
+        let keys: Vec<(WorkflowProcessHandle, TimerId)> = self
+            .pending_timers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in keys {
+            if let Some((_, pending)) = self.pending_timers.remove(&key) {
+                pending.handle.abort();
+            }
+        }
+    }
+
     fn workflow_id_for_process(
         &self,
         process: WorkflowProcessHandle,

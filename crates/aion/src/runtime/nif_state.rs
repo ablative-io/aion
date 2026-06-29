@@ -242,6 +242,26 @@ impl EngineNifState {
         }
     }
 
+    /// Abort the engine's armed live-wheel timer tasks on shutdown.
+    ///
+    /// The wheel tasks run on the tokio runtime, so the scheduler shutdown in
+    /// `RuntimeHandle::shutdown` does not stop them; an armed timer would
+    /// otherwise fire against this torn-down engine after it has relinquished
+    /// the workflow. See [`TimerNifBridge::shutdown_timer_wheel`] for why this
+    /// is load-bearing for exactly-once timer firing across a failover (#119).
+    pub(crate) fn shutdown_timer_wheel(&self) {
+        if let Some(bridge) = self.installed_timer_bridge() {
+            bridge.shutdown_timer_wheel();
+        }
+    }
+
+    fn installed_timer_bridge(&self) -> Option<Arc<TimerNifBridge>> {
+        match self.timer_bridge.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
     fn installed_child_bridge(&self) -> Option<Arc<ChildNifBridge>> {
         match self.child_bridge.read() {
             Ok(slot) => slot.clone(),
