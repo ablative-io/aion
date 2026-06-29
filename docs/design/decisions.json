@@ -342,6 +342,43 @@
       ],
       "superseded_by": "",
       "supersedes": []
+    },
+    {
+      "id": "ADR-020",
+      "scope": "aion-dashboard",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Dashboard: a live cluster map is a first-class view; design its command seam alongside the event seam",
+      "context": "Operators need a whole-system mental model of the distributed cluster, and the failover beat today is a counter, not motion. The push-channel work (#128/WS3) is being designed right now, so the question is whether to (a) build only an observe map fed by those events, or (b) also design a command seam now so the map can DRIVE operator actions later. A force-directed graph is the tempting-but-wrong default. Temporal-class consoles are observe-mostly; a map that previews the consequence of an action before it is taken is a different class of tool.",
+      "decision": "Build a deliberate-layout (NOT force-directed) live cluster map as VISION concept 4.7 — nodes/shards/workers/in-flight workflows, with work as tokens flowing along the real Liminal dispatch edges and failover rendered as motion. It elevates the single-purpose /failover view into the general view. Tier 0 (navigate/drill, deep-linked) and Tier 1 (cluster time-scrub) ride on the cluster-event push channel and are Phase 1. Tier 2 (operator actions: cancel/reopen, dead-letter redrive, DRAIN a node, PLANNED shard handoff, chaos kill-node) is the control-plane north-star but is ASPIRATIONAL: each action mutating cluster state requires a NEW named server command that does not exist today, runs strictly as a command the engine's single writer enacts (invariant 3), and is gated behind explicit confirm + a blast-radius preview. Decision: design the event seam (animates the map) AND the command seam (acts from it) TOGETHER in WS3 so the map is fed and operable from one coherent contract, even though Tier-2 commands ship incrementally as each lands. Rejected: a force-directed graph as the primary layout (decorative, illegible under pressure, violates the hand-plane principle); and an observe-only map (forgoes the control-plane leap that is the actual durable-agents-as-infrastructure vision).",
+      "quote": "I think I agree with you for your sort of assessment. I just would like it all captured and you make sure that we don't confuse it with the final state.",
+      "consequences": [
+        "WS3 (#128) must carry BOTH a cluster-event push channel and a command seam; the push-channel design is no longer event-only.",
+        "Tier-2 actions are spec'd-but-disabled until their named server commands (drain, planned handoff, redrive) exist; they are explicitly NOT part of the Phase-1 baseline (VISION s9 'Phase 1.5 — Control plane').",
+        "Blast-radius preview before any state-mutating action is a requirement, not polish (the reopen-diff idea applied to cluster ops); reuses the s7 command boundary and s6.3 provenance.",
+        "VISION s4.7 carries an explicit status marker separating already-true direction (Tier 0/1) from aspirational (Tier 2) so the spec is never mistaken for the shipped state."
+      ],
+      "superseded_by": "",
+      "supersedes": []
+    },
+    {
+      "id": "ADR-021",
+      "scope": "aion",
+      "status": "decided",
+      "date": "2026-06-29",
+      "decided_by": "Tom",
+      "title": "Adoption: clean-partial multi-shard adoption (commit what you won)",
+      "context": "Fixing the double-adoption race (#122/WS2), a survivor adopting multiple shards after an owner dies can win the fenced publish for some shards and be deposed (NotOwner) on others within the same adoption. The behavior for that mixed outcome must be defined; it shapes the failover semantics demonstrated to others.",
+      "decision": "Clean-partial: recover and serve the shards whose fenced publish succeeded, and cleanly drop (do NOT recover/serve, leave owned_shards scope unwidened for) the shards that were fenced, retrying those on a later supervisor tick. A typed deposition (NotOwner) is a clean drop, never a hard error; only quorum-unavailable (ElectionTimeout/QuorumTimeout) stays a retryable error. Rejected: all-or-nothing fail-closed (any single fenced shard aborts the entire adoption with no recovery) — it trades availability for atomic simplicity, and the whole point of failover is that work keeps flowing.",
+      "quote": "I think I agree with you for your sort of assessment.",
+      "consequences": [
+        "adopt_shards_inner becomes a per-shard acquire+publish pipeline with a committed accumulator; extend_owned_shards + recover run only over committed shards, after a re-assert of is_current_owner.",
+        "The WS2 test matrix must prove win-A/fenced-B leaves B absent from owned_shards, unrecovered, and not re-spawned, while A is recovered.",
+        "Requires the haematite typed-fence split (Fenced vs CasConflict) + is_current_owner from haematite 0.3.0 so 'deposed' is distinguishable from a benign value-CAS race."
+      ],
+      "superseded_by": "",
+      "supersedes": []
     }
   ]
 }
