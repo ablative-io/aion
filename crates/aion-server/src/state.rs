@@ -201,11 +201,10 @@ impl ServerState {
             .with_outbox_wake(Arc::clone(&outbox_wake)),
         );
         let exported_metrics = runtime.metrics.enabled.then_some(metrics.clone());
-        // WS3: the worker registry emits WorkerConnected/WorkerDisconnected
-        // topology deltas into the cluster channel on register/deregister.
-        let worker_registry =
-            ConnectedWorkerRegistry::default().with_cluster_publisher(cluster_publisher.clone());
-        let active_registry = Arc::new(aion::Registry::default());
+        // WS3 topology deltas + Control-Plane Phase 1 mint hook (`with_namespace_minting`).
+        let worker_registry = ConnectedWorkerRegistry::default()
+            .with_cluster_publisher(cluster_publisher.clone())
+            .with_namespace_minting(connected.namespace_store.clone(), runtime.auto_create);
         let pending_activities = PendingActivities::default();
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         let drain_state = DrainState::default();
@@ -225,7 +224,7 @@ impl ServerState {
             event_broadcast_capacity,
             query_timeout,
             activity_dispatcher,
-            active_registry,
+            active_registry: Arc::new(aion::Registry::default()),
             bootstrap_coordinator,
             runtime: &runtime,
         })
@@ -1236,6 +1235,7 @@ mod tests {
             scheduler_threads: 1,
             query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),
+            auto_create: crate::config::AutoCreate::Open,
             drain_timeout: Duration::from_secs(30),
             metrics: MetricsConfig { enabled: true },
             owned_shards: Vec::new(),

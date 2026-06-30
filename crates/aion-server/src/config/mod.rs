@@ -290,6 +290,30 @@ pub struct MetricsConfig {
 pub struct NamespacesConfig {
     /// Default namespace used for local callers and worker dispatch.
     pub default: String,
+    /// Minted-on-use policy: whether referencing an unseen namespace at worker
+    /// registration durably mints it ([`AutoCreate::Open`], the zero-config
+    /// default) or is rejected ([`AutoCreate::Closed`]).
+    pub auto_create: AutoCreate,
+}
+
+/// Minted-on-use namespace policy (Control-Plane Phase 1).
+///
+/// Governs what happens when a worker registers for a namespace that has no
+/// durable registry record. Defaults to [`AutoCreate::Open`] to preserve the
+/// zero-ceremony, no-pre-provision model: a namespace comes into being on first
+/// reference.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoCreate {
+    /// A worker registering for an unseen namespace durably mints it (an
+    /// idempotent upsert through the registry). Zero-config default.
+    #[default]
+    Open,
+    /// A worker registering for a namespace with no durable registry record is
+    /// rejected; the namespace is never created at the registration hook. The
+    /// escape hatch for locked-down deployments is an explicit create
+    /// (`POST /namespaces`).
+    Closed,
 }
 
 /// Public transport listener addresses retained for existing adapter code.
@@ -701,6 +725,10 @@ pub struct RuntimeConfig {
     pub query_timeout: Option<Duration>,
     /// Default namespace used by worker dispatch and unauthenticated local callers.
     pub default_namespace: String,
+    /// Minted-on-use policy applied at the worker-registration mint hook
+    /// (`[namespaces] auto_create`). [`AutoCreate::Open`] (the default) mints an
+    /// unseen namespace durably; [`AutoCreate::Closed`] rejects it.
+    pub auto_create: AutoCreate,
     /// Graceful drain timeout.
     pub drain_timeout: Duration,
     /// Metrics endpoint settings.
@@ -863,6 +891,7 @@ impl ServerConfig {
             scheduler_threads: self.runtime.scheduler_threads,
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
+            auto_create: self.namespaces.auto_create,
             drain_timeout: Duration::from_secs(self.drain.timeout_seconds),
             metrics: self.metrics,
             owned_shards: self.store.owned_shards.clone(),
@@ -1202,6 +1231,7 @@ impl Default for NamespacesConfig {
     fn default() -> Self {
         Self {
             default: "default".to_owned(),
+            auto_create: AutoCreate::default(),
         }
     }
 }
@@ -1401,9 +1431,51 @@ mod tests {
         assert_eq!(config.runtime.scheduler_threads, 2);
         assert_eq!(config.runtime.query_timeout_ms, Some(10_000));
         assert_eq!(config.namespaces.default, "production");
+        // `auto_create` is omitted above, so it resolves to the Open default.
+        assert_eq!(config.namespaces.auto_create, super::AutoCreate::Open);
         assert_eq!(config.websocket.outbound_buffer_bound, 16);
         assert_eq!(config.websocket.event_broadcast_capacity, Some(1024));
         Ok(())
+    }
+
+    #[test]
+    fn namespaces_auto_create_closed_parses() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [namespaces]
+                default = "production"
+                auto_create = "closed"
+            "#,
+        )?;
+        assert_eq!(config.namespaces.default, "production");
+        assert_eq!(config.namespaces.auto_create, super::AutoCreate::Closed);
+        Ok(())
+    }
+
+    #[test]
+    fn namespaces_auto_create_open_parses() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [namespaces]
+                auto_create = "open"
+            "#,
+        )?;
+        assert_eq!(config.namespaces.auto_create, super::AutoCreate::Open);
+        Ok(())
+    }
+
+    #[test]
+    fn namespaces_auto_create_rejects_unknown_variant() {
+        let result = ServerConfig::from_slice(
+            br#"
+                [namespaces]
+                auto_create = "sometimes"
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "an unknown auto_create variant must fail to parse"
+        );
     }
 
     #[test]
@@ -2137,6 +2209,10 @@ mod tests {
         assert_eq!(config.server.grpc_address.to_string(), "127.0.0.1:50051");
         assert_eq!(config.server.listen_address.to_string(), "127.0.0.1:8080");
         assert_eq!(config.namespaces.default, "default");
+        // Minted-on-use is OPEN by default to preserve the zero-config,
+        // no-pre-provision model: a namespace comes into being on first
+        // worker reference.
+        assert_eq!(config.namespaces.auto_create, super::AutoCreate::Open);
         assert!(!config.auth.enabled);
         assert!(config.metrics.enabled);
         // event_broadcast_capacity and query_timeout_ms are the deliberately

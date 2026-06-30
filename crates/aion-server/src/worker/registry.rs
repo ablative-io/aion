@@ -5,9 +5,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use aion_core::{ClusterEvent, WorkerDeathReason, WorkerTransport};
 use aion_proto::{ProtoActivityTask, ProtoRegisterWorker};
+use aion_store::{MintOutcome, NamespaceOrigin, NamespaceStore};
 use tokio::sync::{Notify, mpsc};
 
 use crate::cluster_publisher::ClusterEventPublisher;
+use crate::config::AutoCreate;
 use crate::error::ServerError;
 use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
 use crate::observability::Metrics;
@@ -235,6 +237,28 @@ impl Default for RegistryState {
     }
 }
 
+/// Optional minted-on-use hook installed on the worker registry.
+///
+/// Pairs the durable namespace registry with its [`AutoCreate`] policy. `None`
+/// (every default/test construction) disables minting entirely, keeping
+/// registration behaviour byte-identical to before the registry existed; the
+/// server boot path installs a `Some` so each authorized namespace is durably
+/// recorded (open) or gated (closed) at registration time.
+#[derive(Clone)]
+struct NamespaceMinter {
+    store: Arc<dyn NamespaceStore>,
+    policy: AutoCreate,
+}
+
+impl std::fmt::Debug for NamespaceMinter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NamespaceMinter")
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Cloneable registry of currently connected worker streams.
 #[derive(Clone, Debug)]
 pub struct ConnectedWorkerRegistry {
@@ -244,6 +268,10 @@ pub struct ConnectedWorkerRegistry {
     /// topology deltas on register/deregister. `None` keeps existing
     /// constructions (and every test) silent, exactly like `metrics`.
     cluster_publisher: Option<ClusterEventPublisher>,
+    /// Minted-on-use hook (Control-Plane Phase 1). `None` disables minting, so
+    /// registration is byte-identical to before the registry existed; `Some`
+    /// durably records (open) or gates (closed) each authorized namespace.
+    minter: Option<NamespaceMinter>,
     worker_arrived: Arc<Notify>,
 }
 
@@ -253,6 +281,7 @@ impl Default for ConnectedWorkerRegistry {
             inner: Arc::new(Mutex::new(RegistryState::default())),
             metrics: None,
             cluster_publisher: None,
+            minter: None,
             worker_arrived: Arc::new(Notify::new()),
         }
     }
@@ -266,6 +295,7 @@ impl ConnectedWorkerRegistry {
             inner: Arc::new(Mutex::new(RegistryState::default())),
             metrics: Some(metrics),
             cluster_publisher: None,
+            minter: None,
             worker_arrived: Arc::new(Notify::new()),
         }
     }
@@ -275,6 +305,24 @@ impl ConnectedWorkerRegistry {
     #[must_use]
     pub fn with_cluster_publisher(mut self, publisher: ClusterEventPublisher) -> Self {
         self.cluster_publisher = Some(publisher);
+        self
+    }
+
+    /// Install the minted-on-use namespace hook (Control-Plane Phase 1).
+    ///
+    /// After a registration is authorized and its namespace set scoped, each
+    /// authorized namespace is durably recorded ([`AutoCreate::Open`]) or gated
+    /// ([`AutoCreate::Closed`]) through `store`. Without this builder the
+    /// registry never touches the namespace registry, so registration stays
+    /// byte-identical to before the registry existed. Pure builder addition,
+    /// mirroring [`Self::with_cluster_publisher`].
+    #[must_use]
+    pub fn with_namespace_minting(
+        mut self,
+        store: Arc<dyn NamespaceStore>,
+        policy: AutoCreate,
+    ) -> Self {
+        self.minter = Some(NamespaceMinter { store, policy });
         self
     }
 
@@ -299,6 +347,14 @@ impl ConnectedWorkerRegistry {
             .scope(caller, &NamespaceOperation::register_worker(registration))
             .await?;
         let namespaces = guard.scope_worker_namespaces(caller, &registration.namespaces)?;
+        // MINT HOOK (Control-Plane Phase 1). This runs strictly AFTER the
+        // per-namespace authorization above (`scope` + `scope_worker_namespaces`),
+        // so it can only ever mint a namespace the caller is already authorized
+        // for — the mint is auth-scoped by construction (CVE-2025-14986: open
+        // minting and namespace isolation only coexist when minting is
+        // auth-gated). It runs BEFORE the worker is inserted, so a `closed`
+        // rejection never leaves a half-registered worker behind.
+        self.mint_or_gate_namespaces(&namespaces).await?;
         let node = optional_node(&registration.node);
         self.register_namespaces(
             namespaces,
@@ -307,6 +363,71 @@ impl ConnectedWorkerRegistry {
             registration.activity_types.iter(),
             sender,
         )
+    }
+
+    /// Apply the minted-on-use policy to an already-authorized namespace set.
+    ///
+    /// A no-op when no minter is installed (every default/test registry), so
+    /// registration stays byte-identical. With a minter:
+    ///
+    /// - [`AutoCreate::Open`]: each namespace is durably upserted via
+    ///   [`NamespaceStore::register_namespace`] with
+    ///   [`NamespaceOrigin::WorkerMint`]; a [`MintOutcome::Created`] (first mint)
+    ///   emits a loud structured `tracing` event — the Phase-1 "namespace
+    ///   created" signal (the socket-delta surfacing lands in a later slice). An
+    ///   [`MintOutcome::AlreadyExisted`] is silent (idempotent re-register).
+    /// - [`AutoCreate::Closed`]: a namespace with no registry row is rejected
+    ///   with a namespace-denied error; nothing is created.
+    ///
+    /// A [`aion_store::StoreError::NotOwner`] from a quorum mint (this node is not the
+    /// namespace shard's owner) propagates unchanged through `?` as
+    /// [`ServerError::StoreBackend`], which surfaces as the typed, *retryable*
+    /// `NotOwner` wire code — never a silent success.
+    ///
+    /// **Closed-policy existence check (Phase 1).** Existence is probed by
+    /// registry-row presence ([`NamespaceStore::get_namespace`]). In a fresh
+    /// Phase-1 deployment every used namespace already has a row minted on first
+    /// register/start, so a missing row correctly means "never referenced".
+    /// The blueprint's stronger "exists if durable STATE too" anchor is
+    /// belt-and-suspenders for the future inference/reap paths, which Phase 1
+    /// does not have; it lands with those paths rather than scanning full
+    /// history here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::StoreBackend`] if a durable upsert/lookup fails
+    /// (including a retryable `NotOwner` fence), or [`ServerError::Namespace`]
+    /// when `closed` rejects an unknown namespace.
+    async fn mint_or_gate_namespaces(&self, namespaces: &[String]) -> Result<(), ServerError> {
+        let Some(minter) = &self.minter else {
+            return Ok(());
+        };
+        for namespace in namespaces {
+            match minter.policy {
+                AutoCreate::Open => {
+                    if minter
+                        .store
+                        .register_namespace(namespace, NamespaceOrigin::WorkerMint)
+                        .await?
+                        == MintOutcome::Created
+                    {
+                        tracing::info!(
+                            namespace = %namespace,
+                            origin = "worker_mint",
+                            "namespace created"
+                        );
+                    }
+                }
+                AutoCreate::Closed => {
+                    if minter.store.get_namespace(namespace).await?.is_none() {
+                        return Err(ServerError::namespace_denied(format!(
+                            "namespace {namespace} does not exist and auto_create is closed"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Insert an already-authorized worker stream into the default task queue of
@@ -1302,5 +1423,200 @@ mod tests {
 
     fn missing_id() -> ServerError {
         ServerError::lock_poisoned("registration unexpectedly missing a worker id")
+    }
+
+    // ---- Minted-on-use (Control-Plane Phase 1) -----------------------------
+
+    fn namespace_store() -> Arc<dyn NamespaceStore> {
+        Arc::new(aion_store::InMemoryStore::default())
+    }
+
+    fn minting_registry(
+        store: &Arc<dyn NamespaceStore>,
+        policy: AutoCreate,
+    ) -> ConnectedWorkerRegistry {
+        ConnectedWorkerRegistry::default().with_namespace_minting(Arc::clone(store), policy)
+    }
+
+    #[tokio::test]
+    async fn open_register_mints_durable_record_and_is_idempotent() -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = minting_registry(&store, AutoCreate::Open);
+
+        // First registration mints the namespace.
+        let (tx_one, _rx_one) = mpsc::channel(1);
+        let first = registry
+            .accept_registration(
+                &guard(),
+                &caller("orders"),
+                &registration("orders", &["charge"]),
+                tx_one,
+            )
+            .await?;
+        let record = store
+            .get_namespace("orders")
+            .await?
+            .ok_or_else(|| ServerError::namespace_denied("expected a minted record"))?;
+        assert_eq!(record.name, "orders");
+        assert_eq!(record.origin, NamespaceOrigin::WorkerMint);
+
+        // Re-registering the same namespace is idempotent: no duplicate row,
+        // and the prior worker is unaffected.
+        let (tx_two, _rx_two) = mpsc::channel(1);
+        registry
+            .accept_registration(
+                &guard(),
+                &caller("orders"),
+                &registration("orders", &["refund"]),
+                tx_two,
+            )
+            .await?;
+        let all = store.list_namespaces().await?;
+        assert_eq!(
+            all.iter().filter(|r| r.name == "orders").count(),
+            1,
+            "re-register must not create a duplicate namespace row"
+        );
+        drop(first);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_register_mints_each_namespace_in_a_multi_namespace_worker()
+    -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = minting_registry(&store, AutoCreate::Open);
+        let (tx, _rx) = mpsc::channel(1);
+
+        registry
+            .accept_registration(
+                &guard(),
+                &multi_caller(&["alpha", "beta"]),
+                &registration_full(&["alpha", "beta"], "", "", &["charge"]),
+                tx,
+            )
+            .await?;
+
+        assert!(store.get_namespace("alpha").await?.is_some());
+        assert!(store.get_namespace("beta").await?.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_registrations_for_a_new_namespace_create_exactly_one_record()
+    -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = minting_registry(&store, AutoCreate::Open);
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let registry = registry.clone();
+            handles.push(tokio::spawn(async move {
+                let (tx, rx) = mpsc::channel(1);
+                let outcome = registry
+                    .accept_registration(
+                        &guard(),
+                        &caller("rush"),
+                        &registration("rush", &["charge"]),
+                        tx,
+                    )
+                    .await;
+                // Keep the receiver alive for the duration of the registration.
+                drop(rx);
+                outcome.map(|registration| registration.worker_id())
+            }));
+        }
+        for handle in handles {
+            handle
+                .await
+                .map_err(|_| ServerError::lock_poisoned("registration task panicked"))??;
+        }
+
+        let all = store.list_namespaces().await?;
+        assert_eq!(
+            all.iter().filter(|r| r.name == "rush").count(),
+            1,
+            "racing registrations must converge on exactly one durable record"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_rejects_unknown_namespace_and_does_not_create_it() -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = minting_registry(&store, AutoCreate::Closed);
+        let (tx, _rx) = mpsc::channel(1);
+
+        let denied = registry
+            .accept_registration(
+                &guard(),
+                &caller("ghost"),
+                &registration("ghost", &["charge"]),
+                tx,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(ServerError::Namespace { .. })),
+            "closed policy must reject an unknown namespace"
+        );
+        assert!(
+            store.get_namespace("ghost").await?.is_none(),
+            "closed policy must NOT create the namespace it rejected"
+        );
+        let tq = DEFAULT_TASK_QUEUE;
+        assert!(
+            registry
+                .workers_for("ghost", tq, "charge", None)?
+                .is_empty(),
+            "a rejected registration must not insert a worker"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_admits_a_known_namespace() -> Result<(), ServerError> {
+        let store = namespace_store();
+        // Pre-mint the namespace (the POST /namespaces escape hatch's effect).
+        store
+            .register_namespace("known", NamespaceOrigin::Explicit)
+            .await?;
+        let registry = minting_registry(&store, AutoCreate::Closed);
+        let (tx, _rx) = mpsc::channel(1);
+
+        // Bind the registration token: dropping it deregisters the worker.
+        let _registration = registry
+            .accept_registration(
+                &guard(),
+                &caller("known"),
+                &registration("known", &["charge"]),
+                tx,
+            )
+            .await?;
+        let tq = DEFAULT_TASK_QUEUE;
+        assert_eq!(
+            registry.workers_for("known", tq, "charge", None)?.len(),
+            1,
+            "a known namespace must register under closed policy"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_minter_leaves_registration_untouched() -> Result<(), ServerError> {
+        // The default registry installs no minter: registration succeeds and
+        // never touches any namespace registry (byte-identical legacy path).
+        let registry = ConnectedWorkerRegistry::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let _registration = registry
+            .accept_registration(
+                &guard(),
+                &caller("orders"),
+                &registration("orders", &["charge"]),
+                tx,
+            )
+            .await?;
+        let tq = DEFAULT_TASK_QUEUE;
+        assert_eq!(registry.workers_for("orders", tq, "charge", None)?.len(), 1);
+        Ok(())
     }
 }
