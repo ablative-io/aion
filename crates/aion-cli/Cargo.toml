@@ -73,12 +73,6 @@ auth = ["aion-server/auth"]
 # `store.backend = libsql` is selectable. The lightweight opt-out path; pair it
 # with `--no-default-features` to build a slim `aion` without haematite/liminal.
 libsql-backend = ["aion-server/libsql-backend"]
-# The release profile of the `aion` binary: turns on the embedded dashboard so a
-# shipped binary serves the real web UI at the server's HTTP port. OFF by default
-# so a plain debug `cargo build -p aion-cli` stays bun-free (no dashboard build
-# needed). Build the dashboard bundle first with `cargo xtask build-dashboard`,
-# then `cargo build -p aion-cli --release --features release`.
-release = ["aion-server/embed-dashboard"]
 # Forwarded to the embedded server: compiles the haematite event-store backend
 # (single-node or distributed `[store.cluster]`) and, for a distributed boot,
 # the SS-5b cluster supervisor that auto-recovers a dead peer's shards. OFF by

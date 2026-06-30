@@ -1,12 +1,13 @@
-# The built dashboard bundle is a generated artifact: it is produced by
-# `cargo xtask build-dashboard` (Vite output synced from apps/aion-dashboard/dist)
-# and embedded only by the `embed-dashboard` feature. CI/release runs the
-# pipeline before the embed build, so the built assets are never committed.
+# The built dashboard bundle is COMMITTED. The ops console is part of the
+# product and is ALWAYS embedded in the `aion-server`/`aion` binary (rust_embed
+# over this directory, no cargo feature). A plain `cargo build` / `cargo install`
+# therefore ships the real UI at `/`.
 #
-# We commit ONLY the placeholder index.html below: it keeps the rust_embed
-# `#[folder]` non-empty so an `embed-dashboard` build compiles even on a fresh
-# checkout, and it is what the (rare) "embed-on-but-pipeline-not-run" build would
-# serve — a state the release guard catches loudly.
-*
-!.gitignore
-!index.html
+# Regenerate this bundle with `cargo xtask build-dashboard` and commit the
+# result. CI's `cargo xtask verify-dashboard` fails if the committed bundle is
+# stale against a clean rebuild of the dashboard source.
+#
+# We commit index.html, assets/**, and favicon.svg. Only stray sourcemaps are
+# ignored as a belt-and-braces guard against accidental .map bloat (the Vite
+# config builds with sourcemap: false, so none should appear).
+*.map

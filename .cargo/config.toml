@@ -1,6 +1,7 @@
 # `cargo xtask <task>` runs the repo automation crate. Used by
 # `cargo xtask build-dashboard` to regenerate wire types, build the dashboard
-# bundle, and sync it into crates/aion-server/dashboard-embed/ for the
-# `embed-dashboard` feature.
+# bundle, and sync it into the committed crates/aion-server/dashboard-embed/
+# bundle (always embedded — no cargo feature), and by `cargo xtask
+# verify-dashboard` to assert that committed bundle matches a clean rebuild.
 [alias]
 xtask = "run --package xtask --"
