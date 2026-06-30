@@ -1245,6 +1245,7 @@ mod tests {
             query_timeout: Some(std::time::Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),
             auto_create: crate::config::AutoCreate::Open,
+            max_in_flight_activities: crate::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
             drain_timeout: std::time::Duration::from_secs(30),
             metrics: MetricsConfig { enabled: true },
             owned_shards: Vec::new(),

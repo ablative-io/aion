@@ -294,7 +294,26 @@ pub struct NamespacesConfig {
     /// registration durably mints it ([`AutoCreate::Open`], the zero-config
     /// default) or is rejected ([`AutoCreate::Closed`]).
     pub auto_create: AutoCreate,
+    /// Platform-wide default for a namespace's **cluster-wide** concurrent
+    /// in-flight-activity ceiling, applied when a namespace record carries no
+    /// explicit `max_in_flight_activities` override (Control-Plane Phase 2,
+    /// P2-Q1). This is the GENEROUS platform default, NOT a low hard cap: it is
+    /// a cluster-wide tenant contract (never "per-node × N"), so a tenant is
+    /// promised ≈this many concurrent activities across the whole cluster.
+    /// Defaults to [`DEFAULT_MAX_IN_FLIGHT_ACTIVITIES`].
+    ///
+    /// **Stored-only in this slice.** Nothing enforces it yet — the outbox
+    /// dispatcher's keyed backpressure (P2-Q2) consults it in a later slice.
+    pub max_in_flight_activities: u32,
 }
+
+/// Generous platform default for `[namespaces] max_in_flight_activities`: the
+/// cluster-wide concurrent in-flight-activity ceiling applied to a namespace
+/// that sets no explicit override. A generous power-of-two (Control-Plane
+/// Phase 2 §6.1 / Open Decision 4) so the default is HEADROOM, not a low hard
+/// cap — a tenant only ever hits a ceiling it (or the operator) raised. Nothing
+/// enforces it yet (P2-Q1 is config + record field only).
+pub const DEFAULT_MAX_IN_FLIGHT_ACTIVITIES: u32 = 1024;
 
 /// Minted-on-use namespace policy (Control-Plane Phase 1).
 ///
@@ -729,6 +748,13 @@ pub struct RuntimeConfig {
     /// (`[namespaces] auto_create`). [`AutoCreate::Open`] (the default) mints an
     /// unseen namespace durably; [`AutoCreate::Closed`] rejects it.
     pub auto_create: AutoCreate,
+    /// Platform-wide default for a namespace's cluster-wide concurrent
+    /// in-flight-activity ceiling (`[namespaces] max_in_flight_activities`),
+    /// applied when a namespace record carries no explicit override. Carried in
+    /// runtime state so the later P2-Q2 keyed-backpressure dispatcher can read
+    /// it without reloading config. Stored-only in this slice — nothing reads it
+    /// yet.
+    pub max_in_flight_activities: u32,
     /// Graceful drain timeout.
     pub drain_timeout: Duration,
     /// Metrics endpoint settings.
@@ -892,6 +918,7 @@ impl ServerConfig {
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
             auto_create: self.namespaces.auto_create,
+            max_in_flight_activities: self.namespaces.max_in_flight_activities,
             drain_timeout: Duration::from_secs(self.drain.timeout_seconds),
             metrics: self.metrics,
             owned_shards: self.store.owned_shards.clone(),
@@ -1232,6 +1259,7 @@ impl Default for NamespacesConfig {
         Self {
             default: "default".to_owned(),
             auto_create: AutoCreate::default(),
+            max_in_flight_activities: DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
         }
     }
 }
@@ -1433,6 +1461,12 @@ mod tests {
         assert_eq!(config.namespaces.default, "production");
         // `auto_create` is omitted above, so it resolves to the Open default.
         assert_eq!(config.namespaces.auto_create, super::AutoCreate::Open);
+        // `max_in_flight_activities` is omitted above, so it resolves to the
+        // generous platform default.
+        assert_eq!(
+            config.namespaces.max_in_flight_activities,
+            super::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES
+        );
         assert_eq!(config.websocket.outbound_buffer_bound, 16);
         assert_eq!(config.websocket.event_broadcast_capacity, Some(1024));
         Ok(())
@@ -1461,6 +1495,41 @@ mod tests {
             "#,
         )?;
         assert_eq!(config.namespaces.auto_create, super::AutoCreate::Open);
+        Ok(())
+    }
+
+    #[test]
+    fn namespaces_max_in_flight_activities_override_parses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [namespaces]
+                default = "production"
+                max_in_flight_activities = 32
+            "#,
+        )?;
+        assert_eq!(config.namespaces.max_in_flight_activities, 32);
+        // The override also propagates into the runtime view.
+        let (_store, runtime) = config.into_parts();
+        assert_eq!(runtime.max_in_flight_activities, 32);
+        Ok(())
+    }
+
+    #[test]
+    fn namespaces_max_in_flight_activities_defaults_when_omitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An old/minimal config that predates the field omits it entirely and
+        // resolves to the generous platform default (additive, not a migration).
+        let config = ServerConfig::from_slice(
+            br#"
+                [namespaces]
+                default = "production"
+            "#,
+        )?;
+        assert_eq!(
+            config.namespaces.max_in_flight_activities,
+            super::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES
+        );
         Ok(())
     }
 
@@ -2213,6 +2282,13 @@ mod tests {
         // no-pre-provision model: a namespace comes into being on first
         // worker reference.
         assert_eq!(config.namespaces.auto_create, super::AutoCreate::Open);
+        // The cluster-wide in-flight ceiling defaults to the generous platform
+        // headroom value (P2-Q1); nothing enforces it yet.
+        assert_eq!(
+            config.namespaces.max_in_flight_activities,
+            super::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES
+        );
+        assert_eq!(config.namespaces.max_in_flight_activities, 1024);
         assert!(!config.auth.enabled);
         assert!(config.metrics.enabled);
         // event_broadcast_capacity and query_timeout_ms are the deliberately

@@ -17,6 +17,8 @@
 //! trait in later slices; the store treats the record as opaque truth and only
 //! decodes it to satisfy `list`.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -105,19 +107,54 @@ pub struct NamespaceConfig {
     /// tenant⊃namespace split can be introduced later as a policy flip, not a
     /// record-shape migration.
     pub kind: Option<String>,
+    /// Per-tenant **cluster-wide** concurrent-in-flight-activity ceiling — the
+    /// quota dimension that maps onto the scarce agent/LLM resource (every
+    /// model/tool call is an activity). This is a CLUSTER-WIDE contract, never
+    /// per-node: a tenant who sets `Some(256)` is promised ≈256 concurrent
+    /// activities across the whole cluster, not `256 × node_count` (CP-Phase-2
+    /// §3.6). `None` (the default) means the generous platform default applies
+    /// (`[namespaces] max_in_flight_activities`, NOT a low hard cap); `Some(n)`
+    /// is an explicit per-tenant override.
+    ///
+    /// **Stored-only in this slice (P2-Q1).** Nothing reads it yet — the outbox
+    /// dispatcher's keyed backpressure (P2-Q2) consults it in a later slice. It
+    /// is carried day-one with additive serde so enforcement is a policy flip,
+    /// not a record-shape migration.
+    pub max_in_flight_activities: Option<u32>,
 }
 
-/// Reserved placement directive for a namespace.
+/// Placement directive for a namespace, over the existing within-pool `node`
+/// routing axis (`(namespace, task_queue, node)`).
 ///
-/// Phase 1 is always [`NamespacePlacement::Unplaced`]. Later phases add
-/// node-affinity / shard-range variants so physical isolation becomes a policy
-/// rather than a record-shape migration.
+/// [`NamespacePlacement::Unplaced`] remains the default and today's behaviour.
+/// [`NamespacePlacement::Prefer`] is a SOFT default node-label set (spill to any
+/// worker when none of the preferred labels are live); [`NamespacePlacement::Pinned`]
+/// is a HARD required node-label set (wait when none are live — opt-in isolation).
+///
+/// `nodes` are **free-form node labels** matched against a worker's advertised
+/// `node` (a locality, not a process). [`BTreeSet`] gives deterministic ordering
+/// so the encoded form is stable. This slice (P2-P1) is **storage only** —
+/// nothing reads `Prefer`/`Pinned` yet; the dispatch-time two-tier spill (P2-P3)
+/// and admission gate (P2-I1) consult them in later slices.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NamespacePlacement {
     /// No placement directive — the namespace's records scatter across shards
-    /// by name-hash like all other durable state.
+    /// by name-hash like all other durable state, and its activities dispatch
+    /// to any live worker (today's behaviour).
     #[default]
     Unplaced,
+    /// SOFT placement: prefer workers whose advertised `node` is in `nodes`,
+    /// spilling to any live worker when none of the preferred labels are live.
+    Prefer {
+        /// The preferred free-form node-label set.
+        nodes: BTreeSet<String>,
+    },
+    /// HARD placement: require a worker whose advertised `node` is in `nodes`,
+    /// waiting when none are live (opt-in tenant isolation).
+    Pinned {
+        /// The required free-form node-label set.
+        nodes: BTreeSet<String>,
+    },
 }
 
 impl NamespaceRecord {
@@ -166,6 +203,7 @@ impl NamespaceRecord {
             last_seen: encode_instant(self.last_seen),
             origin: self.origin,
             kind: self.config.kind.clone(),
+            max_in_flight_activities: self.config.max_in_flight_activities,
             placement: self.placement.clone(),
             state: self.state,
         };
@@ -186,7 +224,10 @@ impl NamespaceRecord {
             created_at: decode_instant(&stored.created_at)?,
             last_seen: decode_instant(&stored.last_seen)?,
             origin: stored.origin,
-            config: NamespaceConfig { kind: stored.kind },
+            config: NamespaceConfig {
+                kind: stored.kind,
+                max_in_flight_activities: stored.max_in_flight_activities,
+            },
             placement: stored.placement,
             state: stored.state,
         })
@@ -204,17 +245,44 @@ struct StoredNamespace {
     last_seen: String,
     origin: NamespaceOrigin,
     kind: Option<String>,
+    /// Additive Phase-2 quota field: an old record encoded before this key
+    /// existed decodes to `None` via `#[serde(default)]`, so the addition is a
+    /// policy flip, not a record-shape migration (CP-Phase-2 §3.3).
+    #[serde(default)]
+    max_in_flight_activities: Option<u32>,
     placement: NamespacePlacement,
     state: NamespaceState,
 }
+
+/// Serde tag for the `Unplaced` variant, preserved as a BARE STRING so a record
+/// encoded before `Prefer`/`Pinned` existed decodes byte-identically.
+const PLACEMENT_UNPLACED_TAG: &str = "unplaced";
+/// Serde tag for the soft `Prefer` variant (single-key map `{prefer: [..]}`).
+const PLACEMENT_PREFER_TAG: &str = "prefer";
+/// Serde tag for the hard `Pinned` variant (single-key map `{pinned: [..]}`).
+const PLACEMENT_PINNED_TAG: &str = "pinned";
 
 impl Serialize for NamespacePlacement {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
+        use serde::ser::SerializeMap;
+
         match self {
-            Self::Unplaced => serializer.serialize_str("unplaced"),
+            // Bare string, exactly the pre-Phase-2 encoding (back-compat).
+            Self::Unplaced => serializer.serialize_str(PLACEMENT_UNPLACED_TAG),
+            // Single-key map carrying the deterministically-ordered label set.
+            Self::Prefer { nodes } => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(PLACEMENT_PREFER_TAG, nodes)?;
+                map.end()
+            }
+            Self::Pinned { nodes } => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(PLACEMENT_PINNED_TAG, nodes)?;
+                map.end()
+            }
         }
     }
 }
@@ -224,13 +292,59 @@ impl<'de> Deserialize<'de> for NamespacePlacement {
     where
         D: serde::Deserializer<'de>,
     {
-        let tag = String::deserialize(deserializer)?;
-        match tag.as_str() {
-            "unplaced" => Ok(Self::Unplaced),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown namespace placement: {other}"
-            ))),
+        deserializer.deserialize_any(PlacementVisitor)
+    }
+}
+
+/// Accepts either the bare `"unplaced"` string (the back-compat form) or a
+/// single-key `{prefer|pinned: [labels]}` map for the Phase-2 variants.
+struct PlacementVisitor;
+
+impl<'de> serde::de::Visitor<'de> for PlacementVisitor {
+    type Value = NamespacePlacement;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("\"unplaced\" or a single-key {prefer|pinned: [labels]} map")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        match value {
+            PLACEMENT_UNPLACED_TAG => Ok(NamespacePlacement::Unplaced),
+            other => Err(E::custom(format!("unknown namespace placement: {other}"))),
         }
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let Some(tag) = map.next_key::<String>()? else {
+            return Err(serde::de::Error::custom(
+                "empty namespace placement map: expected one of {prefer|pinned: [labels]}",
+            ));
+        };
+        let placement = match tag.as_str() {
+            PLACEMENT_PREFER_TAG => NamespacePlacement::Prefer {
+                nodes: map.next_value()?,
+            },
+            PLACEMENT_PINNED_TAG => NamespacePlacement::Pinned {
+                nodes: map.next_value()?,
+            },
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown namespace placement: {other}"
+                )));
+            }
+        };
+        if let Some(extra) = map.next_key::<String>()? {
+            return Err(serde::de::Error::custom(format!(
+                "unexpected extra namespace placement key: {extra}"
+            )));
+        }
+        Ok(placement)
     }
 }
 
@@ -336,9 +450,14 @@ mod tests {
 
     use super::{
         MintOutcome, NamespaceConfig, NamespaceOrigin, NamespacePlacement, NamespaceRecord,
-        NamespaceState,
+        NamespaceState, StoredNamespace,
     };
     use chrono::{Duration, TimeZone, Utc};
+    use std::collections::BTreeSet;
+
+    fn node_set(labels: &[&str]) -> BTreeSet<String> {
+        labels.iter().map(|label| (*label).to_owned()).collect()
+    }
 
     fn fixed_now() -> chrono::DateTime<Utc> {
         match Utc.with_ymd_and_hms(2026, 6, 30, 12, 0, 0).single() {
@@ -361,6 +480,7 @@ mod tests {
         assert_eq!(record.config, NamespaceConfig::default());
         assert_eq!(record.placement, NamespacePlacement::Unplaced);
         assert_eq!(record.config.kind, None);
+        assert_eq!(record.config.max_in_flight_activities, None);
     }
 
     #[test]
@@ -428,5 +548,122 @@ mod tests {
         let state_copy = state;
         assert_eq!(state, state_copy);
         assert_ne!(NamespaceState::Active, NamespaceState::Deprecated);
+    }
+
+    /// Round-trip every placement variant through the full record codec so the
+    /// promoted `Prefer`/`Pinned` arms survive encode → decode unchanged.
+    #[test]
+    fn placement_variants_round_trip_through_record() {
+        let now = fixed_now();
+        for placement in [
+            NamespacePlacement::Unplaced,
+            NamespacePlacement::Prefer {
+                nodes: node_set(&["az-a", "az-b"]),
+            },
+            NamespacePlacement::Pinned {
+                nodes: node_set(&["gpu-pool"]),
+            },
+        ] {
+            let mut record = NamespaceRecord::new_minted("placed", NamespaceOrigin::Explicit, now);
+            record.placement = placement.clone();
+
+            let bytes = record.encode().expect("encode");
+            let decoded = NamespaceRecord::decode(&bytes).expect("decode");
+
+            assert_eq!(decoded.placement, placement);
+            assert_eq!(record, decoded);
+        }
+    }
+
+    /// `Unplaced` must encode as the BARE STRING `"unplaced"` — the exact
+    /// pre-Phase-2 on-disk form — so the promotion is byte-identical for the
+    /// default and the back-compat decode below is a real old-bytes path.
+    #[test]
+    fn unplaced_encodes_as_bare_string_tag() {
+        let placement = NamespacePlacement::Unplaced;
+        let json = serde_json::to_string(&placement).expect("serialize");
+        assert_eq!(json, "\"unplaced\"");
+    }
+
+    /// The Phase-2 struct variants encode as a single-key map keyed by the
+    /// lowercase variant tag, carrying the deterministically-ordered label set.
+    #[test]
+    fn prefer_and_pinned_encode_as_single_key_maps() {
+        let prefer = NamespacePlacement::Prefer {
+            nodes: node_set(&["b", "a"]),
+        };
+        let pinned = NamespacePlacement::Pinned {
+            nodes: node_set(&["only"]),
+        };
+        assert_eq!(
+            serde_json::to_string(&prefer).expect("serialize prefer"),
+            r#"{"prefer":["a","b"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&pinned).expect("serialize pinned"),
+            r#"{"pinned":["only"]}"#
+        );
+    }
+
+    /// BACK-COMPAT: a whole record encoded before `Prefer`/`Pinned` and
+    /// `max_in_flight_activities` existed — placement is the bare string
+    /// `"unplaced"` and the quota key is absent — still decodes byte-identically
+    /// to `Unplaced` + `None`.
+    #[test]
+    fn old_unplaced_record_without_quota_field_decodes() {
+        let old = StoredNamespace {
+            name: "legacy".to_owned(),
+            created_at: super::encode_instant(fixed_now()),
+            last_seen: super::encode_instant(fixed_now()),
+            origin: NamespaceOrigin::WorkerMint,
+            kind: None,
+            max_in_flight_activities: None,
+            placement: NamespacePlacement::Unplaced,
+            state: NamespaceState::Active,
+        };
+        // Hand-build the pre-Phase-2 JSON: a bare `"unplaced"` placement string
+        // and NO `max_in_flight_activities` key at all.
+        let old_json = format!(
+            r#"{{"name":"legacy","created_at":"{}","last_seen":"{}","origin":"WorkerMint","kind":null,"placement":"unplaced","state":"Active"}}"#,
+            old.created_at, old.last_seen
+        );
+
+        let decoded = NamespaceRecord::decode(old_json.as_bytes()).expect("decode old bytes");
+
+        assert_eq!(decoded.placement, NamespacePlacement::Unplaced);
+        assert_eq!(decoded.config.max_in_flight_activities, None);
+        assert_eq!(decoded.config.kind, None);
+        assert_eq!(decoded.name, "legacy");
+        assert_eq!(decoded.origin, NamespaceOrigin::WorkerMint);
+        assert_eq!(decoded.state, NamespaceState::Active);
+    }
+
+    /// A record carrying an explicit `max_in_flight_activities` quota round-trips,
+    /// and a record with the field `None` round-trips too (the additive default).
+    #[test]
+    fn max_in_flight_activities_round_trips_present_and_absent() {
+        let now = fixed_now();
+
+        let mut with_quota = NamespaceRecord::new_minted("capped", NamespaceOrigin::Explicit, now);
+        with_quota.config.max_in_flight_activities = Some(256);
+        let decoded =
+            NamespaceRecord::decode(&with_quota.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.config.max_in_flight_activities, Some(256));
+        assert_eq!(with_quota, decoded);
+
+        let without = NamespaceRecord::new_minted("uncapped", NamespaceOrigin::Explicit, now);
+        let decoded = NamespaceRecord::decode(&without.encode().expect("encode")).expect("decode");
+        assert_eq!(decoded.config.max_in_flight_activities, None);
+        assert_eq!(without, decoded);
+    }
+
+    /// An unknown placement tag (string or map key) is a loud decode error, not a
+    /// silent fallback to `Unplaced`.
+    #[test]
+    fn unknown_placement_tag_is_rejected() {
+        let bad_string: Result<NamespacePlacement, _> = serde_json::from_str("\"elsewhere\"");
+        assert!(bad_string.is_err());
+        let bad_map: Result<NamespacePlacement, _> = serde_json::from_str(r#"{"banish":["x"]}"#);
+        assert!(bad_map.is_err());
     }
 }
