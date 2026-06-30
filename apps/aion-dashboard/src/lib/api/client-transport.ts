@@ -10,6 +10,7 @@ export const AW_REST_CONTRACT = {
     workflowsCount: '/workflows/count',
     history: '/workflows/describe',
     namespaces: '/namespaces',
+    whoami: '/whoami',
     eventSearch: '/events/search',
     clusterCommand: '/cluster/command',
     workflowStart: '/workflows/start',
@@ -22,6 +23,7 @@ export const AW_REST_CONTRACT = {
     workflows: 'POST',
     history: 'POST',
     namespaces: 'GET',
+    whoami: 'GET',
     workflowsPlain: 'GET',
     workflowsCount: 'GET',
     eventSearch: 'POST',
@@ -61,13 +63,6 @@ export type ApiCredentials = {
   bearerToken?: string;
   subject?: string;
   namespaces?: readonly Namespace[];
-  /**
-   * Deployment-wide deploy grant (ADR-022). In dev/no-auth mode it is carried as
-   * the `x-aion-deploy: true` header on deploy-scoped requests; under real auth
-   * the grant lives in the bearer token's `deploy` claim and this flag is
-   * advisory. Only set on the operator console.
-   */
-  deployGranted?: boolean;
   headers?: HeadersInit;
 };
 

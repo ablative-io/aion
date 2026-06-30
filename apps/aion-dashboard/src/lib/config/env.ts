@@ -13,6 +13,12 @@ import type { Namespace } from '@/types';
  *
  * No secrets are baked in: the bearer token / subject come from the environment
  * at build time (or are simply absent in dev where auth is disabled).
+ *
+ * Authorization is NOT baked in. The dashboard discovers its capabilities (the
+ * deploy grant, namespace access) at runtime from `GET /whoami` and renders
+ * affordances from that. There is no build-time deploy flag: in auth-off
+ * single-tenant operator mode the server grants access server-side, and under
+ * real auth the bearer token carries the grant.
  */
 export type DashboardConfig = {
   /** REST base URL (no trailing slash). Empty string = same origin. */
@@ -25,15 +31,6 @@ export type DashboardConfig = {
   subject?: string;
   /** Optional bearer token for `authorization` (JWT auth). */
   bearerToken?: string;
-  /**
-   * Deployment-wide deploy grant for the deploy-scoped cluster (WS3) stream.
-   * The cluster topology subscription is deploy-gated server-side, so without
-   * this the cluster socket is denied and the failover view shows
-   * "disconnected". In dev/no-auth mode it is carried as `x-aion-deploy=true`;
-   * under real auth the grant lives in the bearer token's `deploy` claim. Off by
-   * default — only the operator console sets `VITE_AION_DEPLOY=true`.
-   */
-  deployGranted: boolean;
 };
 
 /** The subset of `import.meta.env` this module reads; injectable for tests. */
@@ -43,7 +40,6 @@ export type DashboardEnv = {
   VITE_AION_NAMESPACES?: string;
   VITE_AION_SUBJECT?: string;
   VITE_AION_BEARER_TOKEN?: string;
-  VITE_AION_DEPLOY?: string;
 };
 
 /**
@@ -77,13 +73,11 @@ export function parseDashboardConfig(env: DashboardEnv): DashboardConfig {
   const namespaces = parseNamespaceList(env.VITE_AION_NAMESPACES);
   const subject = nonBlank(env.VITE_AION_SUBJECT);
   const bearerToken = nonBlank(env.VITE_AION_BEARER_TOKEN);
-  const deployGranted = parseBooleanFlag(env.VITE_AION_DEPLOY);
 
   return {
     apiBaseUrl,
     wsBaseUrl,
     namespaces,
-    deployGranted,
     ...(subject === undefined ? {} : { subject }),
     ...(bearerToken === undefined ? {} : { bearerToken }),
   };
@@ -112,12 +106,10 @@ export function buildCredentials(
   if (config.bearerToken !== undefined) {
     credentials.bearerToken = config.bearerToken;
   }
-  // The deploy grant rides on REST credentials too (deploy package upload /
-  // versions are deploy-scoped, mirroring the WS3 cluster stream). Only carry it
-  // when actually granted so an unconfigured console stays bare.
-  if (config.deployGranted) {
-    credentials.deployGranted = true;
-  }
+  // No deploy grant is baked into the credentials: deploy is authorized
+  // server-side (operator mode) or by the bearer token's `deploy` claim (real
+  // auth), and the console discovers the resulting grant at runtime via
+  // `GET /whoami`.
 
   return Object.keys(credentials).length === 0 ? undefined : credentials;
 }
@@ -161,15 +153,6 @@ function parseNamespaceList(raw: string | undefined): readonly Namespace[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0) as Namespace[];
-}
-
-/**
- * Parse a boolean env flag. Only a literal `true` (case-insensitive, trimmed)
- * grants; anything else (unset, blank, `false`, `0`) is `false`. Mirrors the
- * server's strict `x-aion-deploy` parsing (`deploy_header_granted` in auth.rs).
- */
-function parseBooleanFlag(value: string | undefined): boolean {
-  return value !== undefined && value.trim().toLowerCase() === 'true';
 }
 
 function nonBlank(value: string | undefined): string | undefined {

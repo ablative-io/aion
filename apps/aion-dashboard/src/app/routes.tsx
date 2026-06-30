@@ -2,6 +2,7 @@ import { type ComponentType, lazy, Suspense } from 'react';
 import { createBrowserRouter, type RouteObject, useParams, useSearchParams } from 'react-router';
 
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
+import { useCapabilities } from '@/features/capabilities';
 import { FailoverFallback, FailoverView } from '@/features/failover';
 import { useNamespace } from '@/features/namespace';
 import { WorkflowDetailView } from '@/features/workflow-detail';
@@ -107,10 +108,13 @@ function SearchRoute() {
 
 function ActionsRoute() {
   const { selectedNamespace } = useNamespace();
+  // Deploy affordance is gated on the runtime-discovered capability, never a
+  // build-time flag: the panel renders only for a caller the server authorizes.
+  const { deployGranted } = useCapabilities();
 
   return (
     <Suspense fallback={<LoadingSkeleton />}>
-      <ActionsView namespace={selectedNamespace} />
+      <ActionsView namespace={selectedNamespace} deployGranted={deployGranted} />
     </Suspense>
   );
 }

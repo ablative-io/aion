@@ -19,11 +19,6 @@ interface ImportMetaEnv {
   readonly VITE_AION_SUBJECT?: string;
   /** Optional bearer token for `authorization: Bearer <token>` (JWT auth). */
   readonly VITE_AION_BEARER_TOKEN?: string;
-  /**
-   * Deployment-wide deploy grant (`true` to enable) for the deploy-scoped
-   * cluster (WS3) stream. Off unless set; only the operator console sets it.
-   */
-  readonly VITE_AION_DEPLOY?: string;
 }
 
 interface ImportMeta {

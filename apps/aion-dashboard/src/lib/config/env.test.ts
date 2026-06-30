@@ -57,16 +57,13 @@ test('parseDashboardConfig treats blank values as unset (no silent empty credent
   expect(config.namespaces).toEqual([]);
 });
 
-test('parseDashboardConfig reads the deploy grant strictly (only literal true grants)', () => {
-  // Off by default — the deploy-scoped cluster stream must not be implicitly granted.
-  expect(parseDashboardConfig({}).deployGranted).toBe(false);
-  // Strict true (case-insensitive, trimmed), mirroring the server's x-aion-deploy parsing.
-  expect(parseDashboardConfig({ VITE_AION_DEPLOY: 'true' }).deployGranted).toBe(true);
-  expect(parseDashboardConfig({ VITE_AION_DEPLOY: ' TRUE ' }).deployGranted).toBe(true);
-  // Anything else is no grant.
-  expect(parseDashboardConfig({ VITE_AION_DEPLOY: 'false' }).deployGranted).toBe(false);
-  expect(parseDashboardConfig({ VITE_AION_DEPLOY: '1' }).deployGranted).toBe(false);
-  expect(parseDashboardConfig({ VITE_AION_DEPLOY: '' }).deployGranted).toBe(false);
+test('parseDashboardConfig bakes no deploy grant (authorization is discovered at runtime)', () => {
+  // The config carries no deploy field at all: deploy is authorized server-side
+  // (operator mode) or by the bearer token's deploy claim (real auth), and the
+  // console discovers the resulting grant at runtime via GET /whoami. A stale
+  // VITE_AION_DEPLOY env value must NOT influence authorization.
+  const config = parseDashboardConfig({ VITE_AION_DEPLOY: 'true' } as never);
+  expect('deployGranted' in config).toBe(false);
 });
 
 test('buildCredentials returns undefined when nothing is configured', () => {
@@ -107,22 +104,16 @@ test('buildCredentials carries bearer token without namespaces when only token i
   expect(buildCredentials(config)).toEqual({ bearerToken: 'jwt' });
 });
 
-test('buildCredentials carries the deploy grant when VITE_AION_DEPLOY=true', () => {
+test('buildCredentials never bakes a deploy grant into the credentials', () => {
+  // Even with a stale VITE_AION_DEPLOY in the environment, the credentials carry
+  // no deploy flag: the console asserts nothing about the deploy grant.
   const config = parseDashboardConfig({
     VITE_AION_NAMESPACES: 'default',
     VITE_AION_SUBJECT: 'operator',
     VITE_AION_DEPLOY: 'true',
-  });
+  } as never);
 
-  expect(buildCredentials(config)).toEqual({
-    namespaces: ['default'],
-    subject: 'operator',
-    deployGranted: true,
-  });
-});
-
-test('buildCredentials omits the deploy grant when it is not granted', () => {
-  const config = parseDashboardConfig({ VITE_AION_NAMESPACES: 'default' });
-
-  expect(buildCredentials(config)).toEqual({ namespaces: ['default'] });
+  const credentials = buildCredentials(config);
+  expect(credentials).toEqual({ namespaces: ['default'], subject: 'operator' });
+  expect(credentials && 'deployGranted' in credentials).toBe(false);
 });

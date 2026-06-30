@@ -107,6 +107,35 @@ export type EventSearchQuery = {
   recordedBefore?: string;
 };
 
+/**
+ * The caller's runtime capabilities, discovered from `GET /whoami`. The console
+ * renders affordances (deploy panel, cross-namespace access) from THIS, never
+ * from a build-time flag — authorization is a server decision made at request
+ * time. In auth-off single-tenant operator mode the server reports
+ * `authEnabled: false` with full access (`deployGranted` + `allNamespaces`).
+ */
+export type Capabilities = {
+  /** Caller subject as resolved by the server (the audit label). */
+  subject: string;
+  /** Whether the server has auth configured. `false` ⇒ operator mode. */
+  authEnabled: boolean;
+  /** Whether the caller holds the deployment-wide deploy grant. */
+  deployGranted: boolean;
+  /** Whether the caller holds access to every namespace (operator mode). */
+  allNamespaces: boolean;
+  /** The caller's explicitly granted namespaces (empty for an operator). */
+  namespaces: Namespace[];
+};
+
+/** Raw `/whoami` envelope (server snake_case), normalized into {@link Capabilities}. */
+type WhoAmIResponse = {
+  subject?: unknown;
+  auth_enabled?: unknown;
+  deploy_granted?: unknown;
+  all_namespaces?: unknown;
+  namespaces?: unknown;
+};
+
 type RequestBody = JsonRecord | undefined;
 
 export class ApiClient {
@@ -215,6 +244,23 @@ export class ApiClient {
     }
 
     return snapshot;
+  }
+
+  /**
+   * Discover the caller's runtime capabilities (`GET /whoami`). This reflects
+   * the server's request-time authorization decision for THIS caller, so the
+   * console gates affordances on the result rather than on any build-time flag.
+   * Runs through the same credential path as every request; in auth-off
+   * operator mode no credentials are needed and the server returns full access.
+   */
+  async getCapabilities(options?: Pick<RequestOptions, 'credentials'>): Promise<Capabilities> {
+    const response = await this.request<WhoAmIResponse>(
+      AW_REST_CONTRACT.endpoints.whoami,
+      AW_REST_CONTRACT.methods.whoami,
+      { namespace: '' as Namespace, credentials: options?.credentials }
+    );
+
+    return normalizeCapabilities(response);
   }
 
   async listNamespaces(options?: Pick<RequestOptions, 'credentials'>): Promise<Namespace[]> {
@@ -417,11 +463,9 @@ export class ApiClient {
     if (this.credentials?.subject !== undefined) {
       headers.set('x-aion-subject', this.credentials.subject);
     }
-    // Dev/no-auth grant. Under real auth the server validates the bearer's
-    // `deploy` claim and ignores this header, so emitting it is harmless there.
-    if (this.credentials?.deployGranted === true) {
-      headers.set('x-aion-deploy', 'true');
-    }
+    // No build-time deploy header: deploy is authorized server-side in operator
+    // mode, or by the bearer token's `deploy` claim under real auth. The console
+    // never asserts the grant from a compiled flag.
 
     return headers;
   }
@@ -458,6 +502,27 @@ export class ApiClient {
 
     return headers;
   }
+}
+
+/**
+ * Normalize the server's `/whoami` envelope into {@link Capabilities}. Unknown
+ * or missing fields collapse to the LEAST-privileged interpretation (no deploy,
+ * no all-namespaces, auth treated as enabled) so a malformed response can never
+ * spuriously unlock an affordance.
+ */
+function normalizeCapabilities(response: WhoAmIResponse): Capabilities {
+  const namespaces = Array.isArray(response.namespaces)
+    ? response.namespaces.filter((entry): entry is Namespace => typeof entry === 'string')
+    : [];
+
+  return {
+    subject: typeof response.subject === 'string' ? response.subject : 'anonymous',
+    // Default to auth-enabled (the safe assumption) when the flag is absent.
+    authEnabled: response.auth_enabled !== false,
+    deployGranted: response.deploy_granted === true,
+    allNamespaces: response.all_namespaces === true,
+    namespaces,
+  };
 }
 
 export function createApiClient(options?: ApiClientOptions): ApiClient {

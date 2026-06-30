@@ -205,10 +205,18 @@ describe('VersionsBody', () => {
 });
 
 describe('ActionsView', () => {
-  test('renders both action sections', () => {
-    const markup = wrap(<ActionsView namespace={NAMESPACE} />);
-    expect(markup).toContain('Start workflow');
-    expect(markup).toContain('Deploy package');
-    expect(markup).toContain('Package archive');
+  test('renders the deploy section only when the runtime deploy grant is present', () => {
+    const granted = wrap(<ActionsView namespace={NAMESPACE} deployGranted={true} />);
+    expect(granted).toContain('Start workflow');
+    expect(granted).toContain('Deploy package');
+    expect(granted).toContain('Package archive');
+  });
+
+  test('hides the deploy affordance when the caller is not deploy-granted', () => {
+    // deployGranted defaults to false: an ungranted caller never sees the panel.
+    const ungranted = wrap(<ActionsView namespace={NAMESPACE} />);
+    expect(ungranted).toContain('Start workflow');
+    expect(ungranted).not.toContain('Deploy package');
+    expect(ungranted).not.toContain('Package archive');
   });
 });
