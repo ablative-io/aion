@@ -75,30 +75,60 @@ pub(super) fn labels_from_config(config: &str) -> BTreeMap<String, String> {
 }
 
 /// Resolve the task queue one activity dispatch lands on, applying the locked
-/// precedence exactly once (NSTQ-4).
+/// precedence exactly once (NSTQ-4, extended by #144).
 ///
-/// Precedence: the per-activity override (`config.task_queue`) wins; absent
-/// that, the workflow-level default (`config.workflow_task_queue`); absent both,
-/// the named [`aion_core::DEFAULT_TASK_QUEUE`]. Both selections cross the FFI
-/// boundary unresolved inside the activity-dispatch `config` JSON (the SDK's
-/// `activity_config`), so this is the single seam where the precedence is
-/// decided for both the single-schedule and the fan-out paths.
+/// Precedence, highest first:
+///   1. the per-activity override (`config.task_queue`);
+///   2. the workflow-level DECLARED default (`config.workflow_task_queue`) the
+///      SDK author set;
+///   3. `start_time_task_queue` — the queue the WORKFLOW WAS STARTED ON, read
+///      from RECORDED HISTORY by the caller (#144);
+///   4. the named [`aion_core::DEFAULT_TASK_QUEUE`], the absolute last resort
+///      (a legacy history with no recorded start-time queue, or a start that
+///      selected none anywhere).
+///
+/// Both config selections cross the FFI boundary unresolved inside the
+/// activity-dispatch `config` JSON (the SDK's `activity_config`), so this is the
+/// single seam where the precedence is decided for both the single-schedule and
+/// the fan-out paths. The `start_time_task_queue` fallback is purely additive:
+/// behaviour is unchanged whenever (1) or (2) supplies a queue — it only refines
+/// the case that previously silently used the named default.
+///
+/// `start_time_task_queue` MUST be derived from recorded history (see
+/// [`aion_core::start_time_task_queue`]), never from live or wall-clock state,
+/// so recovery/replay re-resolve the SAME queue (this engine is
+/// replay-deterministic).
 ///
 /// A `config` that is not valid JSON, or whose selection fields are absent or
-/// non-string, deterministically resolves to the named default — the SDK always
-/// emits valid config, so a malformed string signals a defect without taking
-/// down an otherwise-valid dispatch over routing metadata (mirroring
-/// [`labels_from_config`]). An explicit JSON `null` (the SDK's encoding of "no
-/// selection") is treated as absent.
-pub(super) fn resolve_task_queue(config: &str) -> String {
+/// non-string, falls through to `start_time_task_queue` then the named default —
+/// the SDK always emits valid config, so a malformed string signals a defect
+/// without taking down an otherwise-valid dispatch over routing metadata
+/// (mirroring [`labels_from_config`]). An explicit JSON `null` (the SDK's
+/// encoding of "no selection") is treated as absent.
+pub(super) fn resolve_task_queue(config: &str, start_time_task_queue: Option<&str>) -> String {
+    let selection = config_task_queue_selection(config);
+    selection
+        .or_else(|| start_time_task_queue.map(str::to_owned))
+        .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE))
+}
+
+/// The config-level task-queue selection: the per-activity override, else the
+/// workflow-level declared default, else `None` (no selection in the config).
+///
+/// Splits the JSON decode + the (1)→(2) precedence out of [`resolve_task_queue`]
+/// so the start-time-queue fallback (3) and the named default (4) read as a flat
+/// `or_else` chain. A malformed or non-string config yields `None` (no
+/// selection), matching [`labels_from_config`]'s "never fail a dispatch over
+/// routing metadata" stance.
+fn config_task_queue_selection(config: &str) -> Option<String> {
     let value = match serde_json::from_str::<serde_json::Value>(config) {
         Ok(value) => value,
         Err(error) => {
             tracing::warn!(
                 %error,
-                "activity dispatch config was not valid JSON; routing to the default task queue"
+                "activity dispatch config was not valid JSON; falling back to the start-time or default task queue"
             );
-            return String::from(aion_core::DEFAULT_TASK_QUEUE);
+            return None;
         }
     };
     let selection = |field: &str| {
@@ -107,9 +137,7 @@ pub(super) fn resolve_task_queue(config: &str) -> String {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
     };
-    selection("task_queue")
-        .or_else(|| selection("workflow_task_queue"))
-        .unwrap_or_else(|| String::from(aion_core::DEFAULT_TASK_QUEUE))
+    selection("task_queue").or_else(|| selection("workflow_task_queue"))
 }
 
 /// Resolve the OPTIONAL node affinity one activity dispatch pins to, decided
@@ -291,7 +319,7 @@ mod tests {
     fn activity_override_wins_over_workflow_default() {
         // The per-activity selection is highest precedence.
         assert_eq!(
-            resolve_task_queue(&config(r#""claude""#, r#""gpu""#)),
+            resolve_task_queue(&config(r#""claude""#, r#""gpu""#), None),
             "claude"
         );
     }
@@ -299,14 +327,14 @@ mod tests {
     #[test]
     fn workflow_default_applies_when_activity_selects_none() {
         // No activity override (JSON null) falls back to the workflow default.
-        assert_eq!(resolve_task_queue(&config("null", r#""gpu""#)), "gpu");
+        assert_eq!(resolve_task_queue(&config("null", r#""gpu""#), None), "gpu");
     }
 
     #[test]
     fn no_selection_resolves_to_the_named_default() {
-        // Neither selection set: the named "default" task queue.
+        // Neither selection set, no start-time queue: the named "default" queue.
         assert_eq!(
-            resolve_task_queue(&config("null", "null")),
+            resolve_task_queue(&config("null", "null"), None),
             aion_core::DEFAULT_TASK_QUEUE
         );
     }
@@ -315,7 +343,7 @@ mod tests {
     fn absent_fields_resolve_to_the_named_default() {
         // A config predating the fields (labels-only) decodes as no selection.
         assert_eq!(
-            resolve_task_queue(r#"{"labels":{}}"#),
+            resolve_task_queue(r#"{"labels":{}}"#, None),
             aion_core::DEFAULT_TASK_QUEUE
         );
     }
@@ -324,8 +352,58 @@ mod tests {
     fn malformed_config_resolves_to_the_named_default() {
         // Invalid JSON never takes down a dispatch over routing metadata.
         assert_eq!(
-            resolve_task_queue("{not json"),
+            resolve_task_queue("{not json", None),
             aion_core::DEFAULT_TASK_QUEUE
+        );
+    }
+
+    #[test]
+    fn start_time_queue_applies_when_no_config_selection() {
+        // #144: no activity override and no workflow declared default falls back
+        // to the workflow's RECORDED start-time queue, NOT the named default.
+        assert_eq!(
+            resolve_task_queue(&config("null", "null"), Some("started-on")),
+            "started-on"
+        );
+    }
+
+    #[test]
+    fn activity_override_wins_over_start_time_queue() {
+        // #144 precedence: an explicit activity selector still wins over the
+        // start-time queue.
+        assert_eq!(
+            resolve_task_queue(&config(r#""claude""#, "null"), Some("started-on")),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn workflow_default_wins_over_start_time_queue() {
+        // #144 precedence: an SDK-declared workflow default still wins over the
+        // start-time queue.
+        assert_eq!(
+            resolve_task_queue(&config("null", r#""gpu""#), Some("started-on")),
+            "gpu"
+        );
+    }
+
+    #[test]
+    fn named_default_is_the_last_resort_below_start_time_queue() {
+        // #144: only when there is no config selection AND no recorded
+        // start-time queue does the named default apply (the legacy case).
+        assert_eq!(
+            resolve_task_queue(&config("null", "null"), None),
+            aion_core::DEFAULT_TASK_QUEUE
+        );
+    }
+
+    #[test]
+    fn malformed_config_falls_through_to_start_time_queue() {
+        // #144: a malformed config yields no selection, so the start-time queue
+        // applies before the named default (never panics over routing metadata).
+        assert_eq!(
+            resolve_task_queue("{not json", Some("started-on")),
+            "started-on"
         );
     }
 

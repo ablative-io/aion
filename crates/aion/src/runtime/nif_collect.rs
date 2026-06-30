@@ -257,9 +257,15 @@ fn dispatch_unscheduled(
     // The workflow's durable isolation namespace is the routing correctness boundary the staged
     // outbox rows must carry (NSTQ-2), so resolve it once and stamp it onto every fan-out item.
     let workflow_namespace = context.workflow_handle().namespace().to_owned();
+    // #144: the queue the workflow was STARTED on, read once from recorded history, is each
+    // member's fallback when neither the member override nor the workflow declared default selects
+    // a queue — replacing the silent named-default fallback. Reading it from history (never live
+    // state) keeps every member's resolved queue replay-deterministic.
+    let start_time_task_queue = context.start_time_task_queue();
+    let start_time_task_queue = start_time_task_queue.as_deref();
     if outbox_enabled {
         if !fresh.is_empty() {
-            let items = fan_out_items(&fresh, &workflow_namespace, label)?;
+            let items = fan_out_items(&fresh, &workflow_namespace, start_time_task_queue, label)?;
             context
                 .record_fan_out_dispatch(Utc::now(), &items)
                 .map_err(|error| error.error_reason())?;
@@ -292,9 +298,10 @@ fn dispatch_unscheduled(
                     ActivityId::from_sequence_position(*ordinal),
                     spec.name.clone(),
                     input,
-                    // NSTQ-4: resolve once at this schedule seam, same precedence
-                    // as the flag-ON fan-out and the single-schedule paths.
-                    super::nif_activity::resolve_task_queue(&spec.config),
+                    // NSTQ-4 (+#144): resolve once at this schedule seam, same
+                    // precedence as the flag-ON fan-out and single-schedule paths
+                    // (override > workflow default > start-time queue > default).
+                    super::nif_activity::resolve_task_queue(&spec.config, start_time_task_queue),
                     // NODE-4: resolve the OPTIONAL node affinity at the same seam
                     // (member pin, else None), matching the live dispatch below.
                     super::nif_activity::resolve_node(&spec.config),
@@ -319,10 +326,14 @@ fn dispatch_unscheduled(
             super::nif_activity::correlation_id(*ordinal),
             ActivityDispatch {
                 namespace: namespace.clone(),
-                // NSTQ-4: resolve once at this schedule seam (member override >
-                // workflow default > the named default), matching the recorded
+                // NSTQ-4 (+#144): resolve once at this schedule seam (member
+                // override > workflow default > the workflow's recorded start-time
+                // queue > the named default), matching the recorded
                 // `ActivityScheduled` for this ordinal on the flag-OFF path.
-                task_queue: super::nif_activity::resolve_task_queue(&spec.config),
+                task_queue: super::nif_activity::resolve_task_queue(
+                    &spec.config,
+                    start_time_task_queue,
+                ),
                 // NODE-4: resolve the OPTIONAL node affinity at the same seam
                 // (member pin, else None), matching the recorded
                 // `ActivityScheduled` for this ordinal on the flag-OFF path.
@@ -342,12 +353,17 @@ fn dispatch_unscheduled(
 
 /// Map a slice of `(ordinal, spec)` pairs to the durable-outbox [`FanOutItem`]s the recorder stages.
 ///
-/// Shared by the flag-ON fresh dispatch ([`NifContext::record_fan_out_dispatch`]) and stale
-/// re-arm ([`NifContext::rearm_outbox_pending`]) paths so both derive identical
-/// `(ordinal, activity_type, input)` items.
+/// Drives the flag-ON fresh dispatch ([`NifContext::record_fan_out_dispatch`]); the stale re-arm
+/// path ([`NifContext::rearm_outbox_pending`]) re-derives its items from recorded history instead
+/// (see [`fan_out_items_recovered`]).
+///
+/// `start_time_task_queue` is the workflow's RECORDED start-time queue (#144), applied as each
+/// member's fallback when its config selects no queue — read from history once by the caller so the
+/// resolved queue replays deterministically.
 fn fan_out_items(
     members: &[(u64, &ActivitySpec)],
     namespace: &str,
+    start_time_task_queue: Option<&str>,
     label: &str,
 ) -> Result<Vec<FanOutItem>, String> {
     members
@@ -356,10 +372,14 @@ fn fan_out_items(
             Ok(FanOutItem {
                 ordinal: *ordinal,
                 namespace: namespace.to_owned(),
-                // NSTQ-4: resolve each member's task queue once at this schedule seam (member
-                // override > workflow default > the named default) from its dispatch config, so the
-                // staged outbox row and the recorded `ActivityScheduled` land on the chosen pool.
-                task_queue: super::nif_activity::resolve_task_queue(&spec.config),
+                // NSTQ-4 (+#144): resolve each member's task queue once at this schedule seam
+                // (member override > workflow declared default > the workflow's recorded start-time
+                // queue > the named default) from its dispatch config, so the staged outbox row and
+                // the recorded `ActivityScheduled` land on the chosen pool.
+                task_queue: super::nif_activity::resolve_task_queue(
+                    &spec.config,
+                    start_time_task_queue,
+                ),
                 // NODE-4: resolve each member's OPTIONAL node affinity once at this schedule seam
                 // (member pin, else None — no workflow default) from its dispatch config, so the
                 // staged outbox row and the recorded `ActivityScheduled` land on the chosen node.
@@ -1060,6 +1080,15 @@ mod tests {
                 activity_id,
             },
             Event::TimerFired { timer_id, .. } => Event::TimerFired { envelope, timer_id },
+            Event::SearchAttributesUpdated {
+                workflow_id: attribute_workflow_id,
+                attributes,
+                ..
+            } => Event::SearchAttributesUpdated {
+                envelope,
+                workflow_id: attribute_workflow_id,
+                attributes,
+            },
             other => other,
         }
     }
@@ -1252,7 +1281,7 @@ mod tests {
     fn fresh_fan_out_item_carries_the_selected_task_queue() -> TestResult {
         let claude = spec_with_task_queue("work", Some("claude"), None);
         let members = [(0u64, &claude)];
-        let items = fan_out_items(&members, "remote", "fanout")
+        let items = fan_out_items(&members, "remote", None, "fanout")
             .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
 
         assert_eq!(items.len(), 1);
@@ -1265,15 +1294,16 @@ mod tests {
     }
 
     /// NSTQ-4 precedence at the fresh-dispatch seam: a member with no override
-    /// under a workflow defaulting to "gpu" resolves to "gpu"; with neither, to
-    /// the named default. Mixed members each land on their own resolved queue.
+    /// under a workflow defaulting to "gpu" resolves to "gpu"; with neither (and
+    /// no start-time queue), to the named default. Mixed members each land on
+    /// their own resolved queue.
     #[test]
     fn fresh_fan_out_items_resolve_precedence_per_member() -> TestResult {
         let overridden = spec_with_task_queue("a", Some("claude"), Some("gpu"));
         let defaulted = spec_with_task_queue("b", None, Some("gpu"));
         let plain = spec_with_task_queue("c", None, None);
         let members = [(0u64, &overridden), (1u64, &defaulted), (2u64, &plain)];
-        let items = fan_out_items(&members, "remote", "fanout")
+        let items = fan_out_items(&members, "remote", None, "fanout")
             .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
 
         let queues: Vec<&str> = items.iter().map(|i| i.task_queue.as_str()).collect();
@@ -1281,6 +1311,29 @@ mod tests {
             queues,
             vec!["claude", "gpu", aion_core::DEFAULT_TASK_QUEUE],
             "override > workflow default > the named default, resolved once per member"
+        );
+        Ok(())
+    }
+
+    /// #144 precedence at the fresh-dispatch seam: under a workflow STARTED on
+    /// "started-on", a member with an explicit override keeps it, a member with
+    /// only the SDK-declared workflow default keeps that, and a member that
+    /// selects neither falls back to the workflow's start-time queue — NOT the
+    /// named default. The start-time queue threads in once for the whole batch.
+    #[test]
+    fn fresh_fan_out_items_fall_back_to_the_start_time_queue() -> TestResult {
+        let overridden = spec_with_task_queue("a", Some("claude"), None);
+        let defaulted = spec_with_task_queue("b", None, Some("gpu"));
+        let plain = spec_with_task_queue("c", None, None);
+        let members = [(0u64, &overridden), (1u64, &defaulted), (2u64, &plain)];
+        let items = fan_out_items(&members, "remote", Some("started-on"), "fanout")
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
+
+        let queues: Vec<&str> = items.iter().map(|i| i.task_queue.as_str()).collect();
+        assert_eq!(
+            queues,
+            vec!["claude", "gpu", "started-on"],
+            "override > workflow default > the recorded start-time queue (never the named default)"
         );
         Ok(())
     }
@@ -1294,7 +1347,7 @@ mod tests {
         let pinned = spec_with_node("a", Some("box-7"));
         let unpinned = spec_with_node("b", None);
         let members = [(0u64, &pinned), (1u64, &unpinned)];
-        let items = fan_out_items(&members, "remote", "fanout")
+        let items = fan_out_items(&members, "remote", None, "fanout")
             .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() })?;
 
         assert_eq!(items.len(), 2);
@@ -1369,6 +1422,92 @@ mod tests {
             "each recorded ActivityScheduled must carry its resolved task queue"
         );
         harness.shutdown()
+    }
+
+    /// A `SearchAttributesUpdated` event recording the workflow's start-time
+    /// task queue as the `aion.task_queue` attribute — exactly as the server
+    /// stamps it in the same append as `WorkflowStarted` (#144). This is the
+    /// durable, history-resident source the start-time-queue fallback reads.
+    fn start_time_task_queue_event(queue: &str) -> Event {
+        Event::SearchAttributesUpdated {
+            envelope: placeholder_envelope(),
+            workflow_id: WorkflowId::new_v4(),
+            attributes: std::collections::HashMap::from([(
+                aion_core::START_TIME_TASK_QUEUE_ATTRIBUTE.to_owned(),
+                aion_core::SearchAttributeValue::String(queue.to_owned()),
+            )]),
+        }
+    }
+
+    /// #144 end-to-end through the flag-OFF schedule path: a workflow STARTED on
+    /// "started-on" (recorded as the `aion.task_queue` search attribute) that
+    /// fans out a member selecting NO task queue anywhere records its
+    /// `ActivityScheduled` on "started-on", NOT the named default — the
+    /// previously-silent fallback. The start-time queue is read from recorded
+    /// history, so it is replay-stable.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_selection_records_on_the_workflow_start_time_queue() -> TestResult {
+        let harness =
+            CollectHarness::over_events(&[start_time_task_queue_event("started-on")]).await?;
+        let mut harness = harness;
+        harness.deps.dispatcher = Some(Arc::new(NeverDispatcher));
+        // One member with no override and no workflow declared default.
+        let specs = vec![spec_with_task_queue("a", None, None)];
+
+        assert_eq!(
+            harness.step(CollectKind::All, &specs),
+            Ok(CollectStep::Suspend)
+        );
+
+        assert_eq!(
+            harness.scheduled_task_queues().await?,
+            vec![(0, "started-on".to_owned())],
+            "a no-selection activity must record on the workflow's start-time queue, not default"
+        );
+        harness.shutdown()
+    }
+
+    /// #144 replay-stability: recovery (a fresh engine epoch over the same store)
+    /// re-resolves a no-selection activity to the SAME recorded start-time queue.
+    /// The first epoch schedules the activity on "started-on" and parks; a fresh
+    /// epoch replays the same collect over the recorded history and the recorded
+    /// `ActivityScheduled` still reads back "started-on" — never re-defaulting,
+    /// never diverging run-to-run. Mirrors `recovery_re_targets_the_recorded_*`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recovery_re_resolves_the_start_time_queue_not_default() -> TestResult {
+        // Epoch 1: schedule the no-selection member on the start-time queue.
+        let first =
+            CollectHarness::over_events(&[start_time_task_queue_event("started-on")]).await?;
+        let mut first = first;
+        first.deps.dispatcher = Some(Arc::new(NeverDispatcher));
+        let specs = vec![spec_with_task_queue("a", None, None)];
+        assert_eq!(
+            first.step(CollectKind::All, &specs),
+            Ok(CollectStep::Suspend)
+        );
+        let recorded_first = first.scheduled_task_queues().await?;
+        assert_eq!(recorded_first, vec![(0, "started-on".to_owned())]);
+        let store = Arc::clone(&first.store);
+        let workflow_id = first.workflow_id.clone();
+        let run_id = first.handle.run_id().clone();
+        first.shutdown()?;
+
+        // Epoch 2 (the restart analogue): a fresh registry/runtime/ordinal
+        // counter over the SAME store replays the recorded history.
+        let replay = CollectHarness::over_store(store, workflow_id, run_id).await?;
+        let mut replay = replay;
+        replay.deps.dispatcher = Some(Arc::new(NeverDispatcher));
+        assert_eq!(
+            replay.step(CollectKind::All, &specs),
+            Ok(CollectStep::Suspend),
+            "replay must re-enter the same pending collect"
+        );
+        assert_eq!(
+            replay.scheduled_task_queues().await?,
+            vec![(0, "started-on".to_owned())],
+            "replay must re-resolve to the recorded start-time queue, never the default"
+        );
+        replay.shutdown()
     }
 
     fn failed(ordinal: u64, message: &str) -> Event {

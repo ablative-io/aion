@@ -437,6 +437,24 @@ impl NifContext {
         self.resolver.history()
     }
 
+    /// The task queue the WORKFLOW WAS STARTED ON, projected from this context's
+    /// recorded history (#144).
+    ///
+    /// Reads the `aion.task_queue` search attribute the server recorded in the
+    /// same atomic append as `WorkflowStarted`
+    /// ([`aion_core::start_time_task_queue`]). Returns `None` when the start
+    /// recorded no task-queue selection (a legacy history, or a start that left
+    /// the queue unset), so the activity-queue resolution falls back to the
+    /// named default.
+    ///
+    /// The value is a pure function of recorded history — never live or
+    /// wall-clock state — so recovery/replay re-derive the identical queue,
+    /// preserving replay determinism.
+    #[must_use]
+    pub fn start_time_task_queue(&self) -> Option<String> {
+        aion_core::start_time_task_queue(self.history())
+    }
+
     /// Resolves a workflow command against recorded history before any live side effect runs.
     ///
     /// # Errors
@@ -754,6 +772,57 @@ mod tests {
             .block_on_recorder(|recorder| Box::pin(async move { Ok(recorder.current_head()) }))?;
 
         assert_eq!(head, 5);
+        Ok(())
+    }
+
+    /// #144: the context projects the workflow's recorded start-time task queue
+    /// from the `aion.task_queue` search attribute the server stamped in history.
+    #[test]
+    fn context_reads_the_recorded_start_time_task_queue() -> TestResult {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let history = vec![Event::SearchAttributesUpdated {
+            envelope: envelope(&workflow_id, 2)?,
+            workflow_id: workflow_id.clone(),
+            attributes: std::collections::HashMap::from([(
+                aion_core::START_TIME_TASK_QUEUE_ATTRIBUTE.to_owned(),
+                aion_core::SearchAttributeValue::String(String::from("started-on")),
+            )]),
+        }];
+        let (registry, store, _handle) = context_with_history(&runtime, 70, workflow_id, &history)?;
+        let context = NifContext::new_with_history_store(
+            70,
+            &registry,
+            runtime.handle().clone(),
+            Some(store),
+            birth_wait(),
+        )?;
+
+        assert_eq!(
+            context.start_time_task_queue().as_deref(),
+            Some("started-on")
+        );
+        Ok(())
+    }
+
+    /// #144 back-compat: a history with no recorded start-time queue (a legacy
+    /// start, or a start that selected none) projects `None`, so the
+    /// activity-queue resolution falls back to the named default — no panic.
+    #[test]
+    fn context_without_start_time_attribute_projects_none() -> TestResult {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        // Only WorkflowStarted (seeded by context_with_history); no attribute.
+        let (registry, store, _handle) = context_with_history(&runtime, 71, workflow_id, &[])?;
+        let context = NifContext::new_with_history_store(
+            71,
+            &registry,
+            runtime.handle().clone(),
+            Some(store),
+            birth_wait(),
+        )?;
+
+        assert_eq!(context.start_time_task_queue(), None);
         Ok(())
     }
 

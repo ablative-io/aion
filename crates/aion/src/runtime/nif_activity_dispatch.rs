@@ -197,12 +197,18 @@ fn dispatch_activity_with_context(
                 )
                 .unwrap_or(Term::NIL));
             };
-            // NSTQ-4: resolve the dispatch's task queue once at this schedule
-            // seam (activity override > workflow default > the named default),
+            // NSTQ-4 (+#144): resolve the dispatch's task queue once at this
+            // schedule seam (activity override > workflow declared default >
+            // the workflow's RECORDED start-time queue > the named default),
             // then stamp the same value onto BOTH the recorded
             // `ActivityScheduled` and the live dispatch so history and routing
-            // never diverge.
-            let task_queue = super::nif_activity::resolve_task_queue(&call.config);
+            // never diverge. The start-time queue is read from recorded history,
+            // so replay re-resolves identically.
+            let start_time_task_queue = context.start_time_task_queue();
+            let task_queue = super::nif_activity::resolve_task_queue(
+                &call.config,
+                start_time_task_queue.as_deref(),
+            );
             // NODE-4: resolve the OPTIONAL node affinity once at the same seam
             // (activity pin, else None — no workflow default), and stamp the same
             // value onto BOTH the recorded `ActivityScheduled` and the live

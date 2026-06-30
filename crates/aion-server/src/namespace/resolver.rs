@@ -29,7 +29,11 @@ pub const NAMESPACE_ATTRIBUTE: &str = "aion.namespace";
 /// [`NAMESPACE_ATTRIBUTE`], so the start-time queue selection survives replay
 /// and failover. Absent when the start did not select a task queue (the
 /// workflow falls back to the namespace's default queue).
-pub const TASK_QUEUE_ATTRIBUTE: &str = "aion.task_queue";
+///
+/// Aliases [`aion_core::START_TIME_TASK_QUEUE_ATTRIBUTE`] rather than
+/// redeclaring the literal, so the server's recorded attribute and the engine's
+/// history-derived start-time queue (#144) cannot drift.
+pub const TASK_QUEUE_ATTRIBUTE: &str = aion_core::START_TIME_TASK_QUEUE_ATTRIBUTE;
 
 /// Where a caller's grants came from, so a denial message can point the
 /// operator at the knob that actually carries the grant (the development

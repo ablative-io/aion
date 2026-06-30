@@ -42,6 +42,43 @@ fn default_task_queue() -> String {
     String::from(DEFAULT_TASK_QUEUE)
 }
 
+/// Search attribute name that records the task queue a workflow was STARTED on.
+///
+/// The server stamps this attribute durably in the SAME atomic append as
+/// [`Event::WorkflowStarted`] (via [`Event::SearchAttributesUpdated`]) when the
+/// start request selected a task queue — mirroring the `aion.namespace`
+/// attribute that records the owning namespace. It is therefore part of
+/// RECORDED HISTORY: recovery/replay re-derive the identical value, so an
+/// activity that falls back to its workflow's start-time queue (#144) resolves
+/// to the same queue on every replay. The attribute is absent when the start
+/// did not select a queue (the legacy / "no selection anywhere" case).
+///
+/// This is the canonical name for the whole workspace;
+/// `aion_server::TASK_QUEUE_ATTRIBUTE` re-exports it rather than redeclaring the
+/// literal, so a history-derived start-time queue and the server's recorded
+/// attribute cannot drift.
+pub const START_TIME_TASK_QUEUE_ATTRIBUTE: &str = "aion.task_queue";
+
+/// The task queue a workflow was STARTED on, projected from recorded history.
+///
+/// Reads the [`START_TIME_TASK_QUEUE_ATTRIBUTE`] search attribute folded from
+/// the run's [`Event::SearchAttributesUpdated`] events (the server records it in
+/// the same append as [`Event::WorkflowStarted`]). Returns `None` when the start
+/// recorded no task-queue selection — a legacy history, or a start that left the
+/// queue unset — so callers fall back to the named [`DEFAULT_TASK_QUEUE`].
+///
+/// Because the value is read purely from recorded history (never from live or
+/// wall-clock state), it is replay-deterministic: the same history always
+/// projects the same start-time queue.
+#[must_use]
+pub fn start_time_task_queue(events: &[Event]) -> Option<String> {
+    let attributes = crate::search_attributes_from_events(events);
+    match attributes.get(START_TIME_TASK_QUEUE_ATTRIBUTE) {
+        Some(crate::SearchAttributeValue::String(queue)) => Some(queue.clone()),
+        _ => None,
+    }
+}
+
 /// A recorded workflow history event.
 ///
 /// User data is carried as opaque [`Payload`] values, while failures use the closed workflow and
@@ -650,6 +687,58 @@ mod tests {
                 other => return Err(format!("expected ActivityScheduled, got {other:?}").into()),
             }
         }
+        Ok(())
+    }
+
+    /// #144: the start-time task queue projects from the `aion.task_queue`
+    /// search attribute recorded by `SearchAttributesUpdated`, mirroring the
+    /// `aion.namespace` projection. A later update overrides an earlier value.
+    #[test]
+    fn start_time_task_queue_projects_from_recorded_attribute()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{START_TIME_TASK_QUEUE_ATTRIBUTE, start_time_task_queue};
+        use crate::SearchAttributeValue;
+
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1),
+                workflow_type: String::from("checkout"),
+                input: payload("input")?,
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
+                parent_run_id: None,
+                package_version: package_version(),
+            },
+            Event::SearchAttributesUpdated {
+                envelope: envelope(2),
+                workflow_id: WorkflowId::new(uuid::Uuid::nil()),
+                attributes: HashMap::from([(
+                    START_TIME_TASK_QUEUE_ATTRIBUTE.to_owned(),
+                    SearchAttributeValue::String(String::from("gpu")),
+                )]),
+            },
+        ];
+
+        assert_eq!(start_time_task_queue(&events).as_deref(), Some("gpu"));
+        Ok(())
+    }
+
+    /// #144 back-compat: a history with no recorded `aion.task_queue` attribute
+    /// projects `None`, so callers fall back to the named default.
+    #[test]
+    fn start_time_task_queue_is_none_without_the_attribute()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::start_time_task_queue;
+
+        let events = vec![Event::WorkflowStarted {
+            envelope: envelope(1),
+            workflow_type: String::from("checkout"),
+            input: payload("input")?,
+            run_id: RunId::new(uuid::Uuid::from_u128(1)),
+            parent_run_id: None,
+            package_version: package_version(),
+        }];
+
+        assert_eq!(start_time_task_queue(&events), None);
         Ok(())
     }
 
