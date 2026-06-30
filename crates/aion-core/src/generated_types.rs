@@ -8,10 +8,11 @@ use ts_rs::{Config, TS};
 use crate::{
     ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ClusterCommand, ClusterEvent,
     ClusterEventMeta, ClusterPeer, ClusterShard, ClusterSnapshot, ClusterStreamError,
-    ClusterWorker, ContentType, DescribeWorkflowResponse, Event, EventEnvelope, OverlapPolicy,
-    PackageVersion, Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeType,
-    SearchAttributeValue, TimerId, TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason,
-    WorkerTransport, WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    ClusterWorker, ContentType, DescribeWorkflowResponse, Event, EventEnvelope,
+    NamespacePlacementWire, OverlapPolicy, PackageVersion, Payload, RunId, ScheduleConfig,
+    ScheduleId, SearchAttributeType, SearchAttributeValue, TimerId, TimerIdKind, TriggerSpec,
+    WithTimeoutOutcome, WorkerDeathReason, WorkerTransport, WorkflowError, WorkflowFilter,
+    WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
 const OPS_CONSOLE_GENERATED_DIR: &str = "../../apps/aion-ops-console/src/types/generated";
@@ -73,6 +74,7 @@ fn ops_console_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<ClusterEventMeta>(&config, &mut output)?;
     push_type::<WorkerTransport>(&config, &mut output)?;
     push_type::<WorkerDeathReason>(&config, &mut output)?;
+    push_type::<NamespacePlacementWire>(&config, &mut output)?;
     push_type::<ClusterEvent>(&config, &mut output)?;
     push_type::<ClusterPeer>(&config, &mut output)?;
     push_type::<ClusterShard>(&config, &mut output)?;

@@ -27,6 +27,14 @@ use crate::{
     },
 };
 
+/// Short TTL for the dispatcher's per-namespace placement cache (Control-Plane
+/// Phase 2, P2-P3). Kept small so an operator's `PUT /namespaces/{name}/placement`
+/// takes effect on the hot claim loop within a couple of seconds, while still
+/// collapsing a per-sweep quorum `get_namespace` into a cheap in-process lookup.
+/// A stale entry under `Prefer` only mis-prefers a worker for at most one window
+/// and self-corrects — it never affects correctness or replay.
+const PLACEMENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Owns the liminal worker listener for the server's lifetime when the outbox is
 /// commissioned over the liminal transport.
 ///
@@ -411,8 +419,18 @@ fn select_outbox_row_dispatch(
         OutboxTransport::Grpc => {
             let push_dispatcher = ActivityDispatcher::new(state.worker_registry().clone())
                 .with_drain_state(state.drain_state().clone());
-            let dispatch: Arc<dyn OutboxRowDispatch> =
-                Arc::new(WorkerOutboxDispatch::new(push_dispatcher));
+            // Control-Plane Phase 2 (P2-P3): attach the short-TTL placement cache
+            // so an unpinned row in a `Prefer{L}` namespace prefers an L-labelled
+            // worker (spilling to any live worker). The cache front-runs a per-row
+            // quorum `get_namespace` on the hot claim loop; a default-`Unplaced`
+            // deployment is byte-identical (every row falls through to any-worker).
+            let placement_cache = crate::worker::PlacementCache::new(
+                Arc::clone(state.namespace_store()),
+                PLACEMENT_CACHE_TTL,
+            );
+            let dispatch: Arc<dyn OutboxRowDispatch> = Arc::new(
+                WorkerOutboxDispatch::new(push_dispatcher).with_placement_cache(placement_cache),
+            );
             Ok((dispatch, OutboxWorkerListener::default()))
         }
         OutboxTransport::Liminal => build_liminal_row_dispatch(state, outbox_config),

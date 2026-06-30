@@ -3,10 +3,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use aion_store::{
-    ClaimScope, Event, MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceStore, OutboxRow,
-    OutboxStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
-    StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
-    WritableEventStore, WriteToken,
+    ClaimScope, Event, MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceRecord,
+    NamespaceStore, OutboxRow, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
+    ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
+    WorkflowSummary, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -193,6 +193,14 @@ impl NamespaceStore for LibSqlStore {
 
     async fn get_namespace(&self, name: &str) -> Result<Option<NamespaceRecord>, StoreError> {
         crate::namespace::get_namespace(self.connection(), name).await
+    }
+
+    async fn set_namespace_placement(
+        &self,
+        name: &str,
+        placement: NamespacePlacement,
+    ) -> Result<Option<()>, StoreError> {
+        crate::namespace::set_namespace_placement(self.connection(), name, placement).await
     }
 
     async fn deprecate_namespace(&self, name: &str) -> Result<(), StoreError> {

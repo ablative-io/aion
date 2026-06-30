@@ -537,6 +537,16 @@ fn with_meta_worker_lifecycle(
             created_at,
             origin,
         },
+        // Like `NamespaceCreated`, emitted directly through the publisher (which
+        // stamps the real meta), never queued in `tick()`; re-stamped faithfully
+        // to keep the match exhaustive without a swallowing wildcard.
+        ClusterEvent::NamespacePlacementChanged {
+            name, placement, ..
+        } => ClusterEvent::NamespacePlacementChanged {
+            meta,
+            name,
+            placement,
+        },
         ClusterEvent::PeerAdded { .. }
         | ClusterEvent::PeerConnected { .. }
         | ClusterEvent::PeerDisconnected { .. }

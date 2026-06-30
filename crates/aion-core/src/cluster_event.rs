@@ -258,6 +258,44 @@ pub enum ClusterEvent {
         /// How the namespace came to exist, as the stable `snake_case` label.
         origin: String,
     },
+    /// A namespace's durable placement directive was changed (Control-Plane
+    /// Phase 2, P2-P2 — `PUT /namespaces/{name}/placement`).
+    ///
+    /// Emitted on the SAME deploy-scoped channel as [`Self::NamespaceCreated`]
+    /// after the placement is durably set, so the ops console's namespace panel
+    /// reflects an operator's placement change live with no refresh. `placement`
+    /// is the stable wire projection ([`NamespacePlacementWire`]) of the durable
+    /// `NamespacePlacement`, carried as a `kind` label + label set rather than the
+    /// `aion-store` enum, because this leaf crate must not depend on the store
+    /// crate (the same discipline [`Self::NamespaceCreated`] applies to `origin`).
+    NamespacePlacementChanged {
+        /// Cluster-event metadata.
+        meta: ClusterEventMeta,
+        /// The namespace whose placement changed (registry primary key).
+        name: String,
+        /// The new placement directive, as the stable wire projection.
+        placement: NamespacePlacementWire,
+    },
+}
+
+/// Stable wire projection of a namespace's durable placement directive
+/// (`NamespacePlacement` in `aion-store`), for the ops-console real-time channel
+/// (Control-Plane Phase 2).
+///
+/// Lives in this leaf crate (not `aion-server` / `aion-store`) for the same reason
+/// the rest of [`ClusterEvent`] does: only this crate crosses the Rust ->
+/// TypeScript boundary via `ts-rs`. `kind` is the stable `snake_case` variant tag
+/// (`unplaced` / `prefer` / `pinned`) and `nodes` is the (possibly empty)
+/// node-label set; `Unplaced` carries an empty `nodes`. Modelling it as a flat
+/// `{kind, nodes}` shape rather than re-encoding the store's tagged form keeps the
+/// generated TS binding a single simple type the console can switch on.
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
+pub struct NamespacePlacementWire {
+    /// Stable `snake_case` placement-kind tag: `unplaced` / `prefer` / `pinned`.
+    pub kind: String,
+    /// The placement's node-label set, deterministically ordered. Empty for
+    /// `unplaced`; the preferred/required labels for `prefer`/`pinned`.
+    pub nodes: Vec<String>,
 }
 
 /// A peer entry in the priming [`ClusterSnapshot`].

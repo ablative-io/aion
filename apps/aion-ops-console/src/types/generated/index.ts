@@ -577,6 +577,17 @@ export type WorkerTransport = { "transport": "Grpc" } | { "transport": "Liminal"
 
 export type WorkerDeathReason = { "reason": "Disconnect" } | { "reason": "Timeout" } | { "reason": "Deregistered" };
 
+export type NamespacePlacementWire = { 
+/**
+ * Stable `snake_case` placement-kind tag: `unplaced` / `prefer` / `pinned`.
+ */
+kind: string, 
+/**
+ * The placement's node-label set, deterministically ordered. Empty for
+ * `unplaced`; the preferred/required labels for `prefer`/`pinned`.
+ */
+nodes: Array<string>, };
+
 export type ClusterEvent = { "type": "PeerAdded", 
 /**
  * Cluster-event metadata.
@@ -737,7 +748,19 @@ created_at: string,
 /**
  * How the namespace came to exist, as the stable `snake_case` label.
  */
-origin: string, };
+origin: string, } | { "type": "NamespacePlacementChanged", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * The namespace whose placement changed (registry primary key).
+ */
+name: string, 
+/**
+ * The new placement directive, as the stable wire projection.
+ */
+placement: NamespacePlacementWire, };
 
 export type ClusterPeer = { 
 /**

@@ -20,8 +20,8 @@ use super::schedules::{
 use super::whoami::whoami;
 use super::workflows::{
     cancel_workflow, count_workflows, describe_workflow, get_workflows, list_namespace_records,
-    list_namespaces, post_list_workflows, post_namespace, query_workflow, signal_workflow,
-    start_workflow,
+    list_namespaces, post_list_workflows, post_namespace, query_workflow, set_namespace_placement,
+    signal_workflow, start_workflow,
 };
 use crate::{ServerError, ServerState, observability, ops_console::assets};
 
@@ -175,6 +175,10 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/whoami", get(whoami))
         .route("/namespaces", get(list_namespaces).post(post_namespace))
         .route("/namespaces/records", get(list_namespace_records))
+        .route(
+            "/namespaces/{name}/placement",
+            axum::routing::put(set_namespace_placement),
+        )
         .route("/workflows", get(get_workflows))
         .route("/workflows/count", get(count_workflows))
         .route("/workflows/start", post(start_workflow))

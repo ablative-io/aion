@@ -46,9 +46,9 @@ use aion_core::{
     Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
 };
 use aion_store::{
-    ClaimScope, MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceStore, OutboxRow,
-    OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
-    RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
+    ClaimScope, MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceRecord, NamespaceStore,
+    OutboxRow, OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
+    ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -847,6 +847,85 @@ impl HaematiteStore {
             .map_err(|error| database_error(&error))?;
         database.commit().map_err(|error| database_error(&error))?;
         Ok(())
+    }
+
+    /// Read-modify-write an existing namespace record's `placement` directive
+    /// through the same value-CAS upsert path the registry's other mutations use
+    /// (Control-Plane Phase 2, P2-P2), or report not-found for an absent row.
+    ///
+    /// Only `placement` and `last_seen` change; `origin`, `created_at`, `config`,
+    /// and `state` are preserved. An absent registry row returns `Ok(None)` — the
+    /// caller surfaces a not-found rather than minting a row, since placement
+    /// targets an already-minted namespace. A successful (or benign concurrent
+    /// CAS-loss) write returns `Ok(Some(()))`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_namespace_record`].
+    fn set_namespace_placement_record(
+        &self,
+        name: &str,
+        placement: NamespacePlacement,
+    ) -> Result<Option<()>, StoreError> {
+        let database = self.inner.database();
+        let key = keyspace::namespace_key(name);
+        let Some(bytes) = database.get(&key).map_err(|error| database_error(&error))? else {
+            // No registry row: placement targets an already-minted namespace, so
+            // an absent row is a not-found, never a silent mint.
+            return Ok(None);
+        };
+        let mut record = NamespaceRecord::decode(&bytes)?;
+        record.placement = placement;
+        record.bump_last_seen(Utc::now());
+        if let Some(routing) = self.distribution.clone() {
+            return self.replicate_placement_write(&key, &bytes, &record, &routing);
+        }
+        // Single-node / non-distributed: plain local write (owns every shard).
+        database
+            .put(key, record.encode()?)
+            .map_err(|error| database_error(&error))?;
+        database.commit().map_err(|error| database_error(&error))?;
+        Ok(Some(()))
+    }
+
+    /// Quorum-replicated value-CAS write of an updated placement record, factored
+    /// out of [`Self::set_namespace_placement_record`] so each function stays
+    /// small. Mirrors the discriminations of [`Self::register_namespace_record`]:
+    /// a benign concurrent CAS-loss reconciles as success (the placement is set
+    /// either way), a fence surfaces [`StoreError::NotOwner`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_namespace_record`].
+    fn replicate_placement_write(
+        &self,
+        key: &[u8],
+        current: &[u8],
+        record: &NamespaceRecord,
+        routing: &DistributedRouting,
+    ) -> Result<Option<()>, StoreError> {
+        let database = self.inner.database();
+        let value = record.encode()?;
+        let expected = Some(Hash::of(current));
+        let result = run_off_runtime(|| {
+            database.replicate_write(
+                key.to_vec(),
+                expected,
+                value,
+                None,
+                &routing.membership,
+                routing.timeout,
+            )
+        });
+        match result {
+            // Wrote, OR a concurrent writer raced the value-CAS: the placement is
+            // set either way — the update is idempotent.
+            Ok(_) | Err(DatabaseError::CasConflict { .. }) => Ok(Some(())),
+            Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner {
+                shard: database.shard_for(key),
+            }),
+            Err(error) => Err(database_error(&error)),
+        }
     }
 
     /// Win the per-shard election and become the live owner of a SINGLE `shard`
@@ -2221,6 +2300,20 @@ impl NamespaceStore for HaematiteStore {
         .await
     }
 
+    async fn set_namespace_placement(
+        &self,
+        name: &str,
+        placement: NamespacePlacement,
+    ) -> Result<Option<()>, StoreError> {
+        // Same blocking/off-runtime constraint as the upsert path: the quorum
+        // value-CAS write blocks and refuses to run under an entered runtime.
+        let store = self.clone();
+        let name = name.to_owned();
+        tokio::task::spawn_blocking(move || store.set_namespace_placement_record(&name, placement))
+            .await
+            .map_err(|error| join_error(&error))?
+    }
+
     async fn deprecate_namespace(&self, name: &str) -> Result<(), StoreError> {
         // Same blocking/off-runtime constraint as the upsert path.
         let store = self.clone();
@@ -2994,6 +3087,61 @@ mod tests {
         // Idempotent on an existing name: a second put reconciles as success.
         let again = store.put_namespace(record).await?;
         assert_eq!(again, MintOutcome::AlreadyExisted);
+        Ok(())
+    }
+
+    /// `set_namespace_placement` over the single-node local path updates only the
+    /// placement (+ `last_seen`) of an existing record, is idempotent, and reports
+    /// not-found (`Ok(None)`) for an absent namespace rather than minting one.
+    #[tokio::test]
+    async fn set_placement_updates_existing_and_is_not_found_when_absent() -> Result<(), StoreError>
+    {
+        use aion_store::NamespacePlacement;
+        use std::collections::BTreeSet;
+
+        let store = store("ns-placement")?;
+        store
+            .register_namespace("orders", NamespaceOrigin::Explicit)
+            .await?;
+        let original = store
+            .get_namespace("orders")
+            .await?
+            .expect("record must exist after create");
+        assert_eq!(original.placement, NamespacePlacement::Unplaced);
+
+        let nodes: BTreeSet<String> = ["az-a".to_owned(), "az-b".to_owned()].into_iter().collect();
+        let placement = NamespacePlacement::Pinned {
+            nodes: nodes.clone(),
+        };
+        assert_eq!(
+            store
+                .set_namespace_placement("orders", placement.clone())
+                .await?,
+            Some(())
+        );
+        let updated = store
+            .get_namespace("orders")
+            .await?
+            .expect("record must persist");
+        assert_eq!(updated.placement, placement);
+        assert_eq!(updated.origin, NamespaceOrigin::Explicit);
+        assert_eq!(updated.created_at, original.created_at);
+        assert_eq!(updated.state, NamespaceState::Active);
+
+        // Idempotent re-apply.
+        assert_eq!(
+            store.set_namespace_placement("orders", placement).await?,
+            Some(())
+        );
+
+        // Absent namespace: not-found, nothing minted.
+        assert_eq!(
+            store
+                .set_namespace_placement("ghost", NamespacePlacement::Unplaced)
+                .await?,
+            None
+        );
+        assert!(store.get_namespace("ghost").await?.is_none());
         Ok(())
     }
 
