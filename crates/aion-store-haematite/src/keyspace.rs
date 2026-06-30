@@ -134,10 +134,13 @@ pub(crate) fn namespace_key(name: &str) -> Vec<u8> {
 /// defensively skip a malformed key rather than fail the whole enumeration.
 ///
 /// The list path decodes each record from its VALUE (which carries the name), so
-/// this key inverse is not yet exercised by the store; it is the declared seam
-/// for the S4 boot-wiring / key-driven enumeration that follows this slice, kept
-/// alongside [`namespace_key`] so the round-trip is provable today.
-#[allow(dead_code)]
+/// this key inverse is not yet exercised by production code; it is the declared
+/// seam for the S4 boot-wiring / key-driven enumeration that follows this slice.
+/// Gated to `cfg(test)` (rather than an `#[allow(dead_code)]`) so the production
+/// build carries no unused code per the zero-production-allow policy, while its
+/// round-trip stays provable; S4 promotes it out of `cfg(test)` when a real
+/// caller lands.
+#[cfg(test)]
 pub(crate) fn namespace_from_key(key: &[u8]) -> Option<String> {
     let suffix = key.strip_prefix(NAMESPACE_PREFIX)?;
     String::from_utf8(suffix.to_vec()).ok()
