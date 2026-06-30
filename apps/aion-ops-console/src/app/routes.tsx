@@ -4,7 +4,7 @@ import { createBrowserRouter, type RouteObject, useParams, useSearchParams } fro
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { useCapabilities } from '@/features/capabilities';
 import { FailoverFallback, FailoverView } from '@/features/failover';
-import { useNamespace } from '@/features/namespace';
+import { NamespaceRegistryPanel, useNamespace } from '@/features/namespace';
 import { WorkflowDetailView } from '@/features/workflow-detail';
 import { WorkflowList } from '@/features/workflow-list';
 import type { Namespace } from '@/types';
@@ -16,6 +16,7 @@ import {
   actionsPath,
   failoverPath,
   incidentsPath,
+  namespacesPath,
   routerBasenameFromBaseUrl,
   searchPath,
   workflowDetailPath,
@@ -31,6 +32,8 @@ export {
   failoverPath,
   incidentsHref,
   incidentsPath,
+  namespacesHref,
+  namespacesPath,
   routerBasenameFromBaseUrl,
   searchHref,
   searchPath,
@@ -71,6 +74,7 @@ export const appRoutes: RouteObject[] = [
       { path: searchPath, element: <SearchRoute /> },
       { path: actionsPath, element: <ActionsRoute /> },
       { path: incidentsPath, element: <IncidentsRoute /> },
+      { path: namespacesPath, element: <NamespaceRegistryPanel /> },
       { path: failoverPath, element: <FailoverRoute /> },
       // Catch-all: an unknown URL renders the branded 404 inside the shell so
       // the nav persists, instead of falling through to the RR default.

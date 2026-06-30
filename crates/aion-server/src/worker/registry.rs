@@ -294,13 +294,24 @@ impl ConnectedWorkerRegistry {
     /// registry never touches the namespace registry, so registration stays
     /// byte-identical to before the registry existed. Pure builder addition,
     /// mirroring [`Self::with_cluster_publisher`].
+    ///
+    /// When a cluster publisher has already been attached
+    /// ([`Self::with_cluster_publisher`], called first on the boot path), it is
+    /// threaded into the minter so a first worker-mint emits the live
+    /// `namespace created` delta to the ops console (S8). Order-independence is
+    /// not assumed: callers wire the publisher before minting on the boot path.
     #[must_use]
     pub fn with_namespace_minting(
         mut self,
         store: Arc<dyn NamespaceStore>,
         policy: AutoCreate,
     ) -> Self {
-        self.minter = Some(NamespaceMinter::new(store, policy));
+        let minter = NamespaceMinter::new(store, policy);
+        let minter = match &self.cluster_publisher {
+            Some(publisher) => minter.with_cluster_publisher(publisher.clone()),
+            None => minter,
+        };
+        self.minter = Some(minter);
         self
     }
 

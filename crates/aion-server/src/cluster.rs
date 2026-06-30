@@ -407,6 +407,11 @@ fn placeholder_meta() -> aion_core::ClusterEventMeta {
 }
 
 /// Replace a queued event's placeholder meta with the publisher-stamped one.
+///
+/// The peer/shard topology arms (the only events `tick()` queues with a
+/// placeholder) are handled here; worker-lifecycle and the
+/// publisher-direct-emit variants delegate to [`with_meta_worker_lifecycle`] to
+/// keep each function under the house line limit.
 fn with_meta(event: ClusterEvent, meta: aion_core::ClusterEventMeta) -> ClusterEvent {
     match event {
         ClusterEvent::PeerAdded {
@@ -471,6 +476,24 @@ fn with_meta(event: ClusterEvent, meta: aion_core::ClusterEventMeta) -> ClusterE
             from_peer,
             held_by,
         },
+        other => with_meta_worker_lifecycle(other, meta),
+    }
+}
+
+/// Meta re-stamp for the worker-lifecycle, supervisor, and `NamespaceCreated`
+/// variants (the tail of [`with_meta`]'s exhaustive match).
+///
+/// `NamespaceCreated` is emitted directly through the publisher (which stamps the
+/// real meta), never queued inside `tick()` with a placeholder, so its arm is
+/// unreachable in practice; it re-stamps faithfully to keep the match exhaustive
+/// without a wildcard that could silently swallow a future variant. The
+/// peer/shard variants never reach here ([`with_meta`] handles them), so they are
+/// `unreachable!` rather than silently mis-stamped.
+fn with_meta_worker_lifecycle(
+    event: ClusterEvent,
+    meta: aion_core::ClusterEventMeta,
+) -> ClusterEvent {
+    match event {
         ClusterEvent::WorkerConnected {
             worker_id,
             namespaces,
@@ -502,6 +525,25 @@ fn with_meta(event: ClusterEvent, meta: aion_core::ClusterEventMeta) -> ClusterE
         }
         ClusterEvent::SupervisorStopped { node, .. } => {
             ClusterEvent::SupervisorStopped { meta, node }
+        }
+        ClusterEvent::NamespaceCreated {
+            name,
+            created_at,
+            origin,
+            ..
+        } => ClusterEvent::NamespaceCreated {
+            meta,
+            name,
+            created_at,
+            origin,
+        },
+        ClusterEvent::PeerAdded { .. }
+        | ClusterEvent::PeerConnected { .. }
+        | ClusterEvent::PeerDisconnected { .. }
+        | ClusterEvent::ShardAdopted { .. }
+        | ClusterEvent::ShardAdoptionFailed { .. }
+        | ClusterEvent::ShardAdoptionSkipped { .. } => {
+            unreachable!("peer/shard variants are re-stamped by with_meta, never delegated here")
         }
     }
 }

@@ -212,6 +212,80 @@ pub(crate) async fn list_namespaces(
     Ok(Json(names))
 }
 
+/// One durable namespace registry row projected for the ops console's namespace
+/// panel columns (`GET /namespaces/records`).
+///
+/// Carries exactly the registry fields the live panel renders — name,
+/// `created_at`, `last_seen`, and the stable `snake_case` `origin` label — so the
+/// console can render the created / last-seen / origin columns without a second
+/// fetch and reconcile them against the live `namespace created` socket delta.
+/// `created_at`/`last_seen` are RFC 3339 strings (matching the durable record's
+/// own instant encoding), so the wire form is timezone-explicit and the TS side
+/// parses them with `Date`.
+#[derive(serde::Serialize)]
+pub(crate) struct NamespaceRecordSummary {
+    /// The namespace name (registry primary key).
+    name: String,
+    /// When the registry first minted the namespace, RFC 3339.
+    created_at: String,
+    /// Most recent reference instant, RFC 3339.
+    last_seen: String,
+    /// How the namespace came to exist, as the stable `snake_case` label
+    /// (`worker_mint` / `start_mint` / `explicit` / `inferred_from_state`).
+    origin: String,
+}
+
+impl From<aion_store::NamespaceRecord> for NamespaceRecordSummary {
+    fn from(record: aion_store::NamespaceRecord) -> Self {
+        Self {
+            name: record.name,
+            created_at: record.created_at.to_rfc3339(),
+            last_seen: record.last_seen.to_rfc3339(),
+            origin: namespace_origin_label(record.origin).to_owned(),
+        }
+    }
+}
+
+/// Stable `snake_case` wire label for a [`aion_store::NamespaceOrigin`], matching
+/// the label the mint audit event and the `namespace created` socket delta carry,
+/// so the console can correlate a freshly-fetched row with a live delta by origin.
+const fn namespace_origin_label(origin: aion_store::NamespaceOrigin) -> &'static str {
+    match origin {
+        aion_store::NamespaceOrigin::WorkerMint => "worker_mint",
+        aion_store::NamespaceOrigin::StartMint => "start_mint",
+        aion_store::NamespaceOrigin::Explicit => "explicit",
+        aion_store::NamespaceOrigin::InferredFromState => "inferred_from_state",
+    }
+}
+
+/// List the durable namespace RECORDS the caller can see, for the ops console's
+/// namespace-panel columns (`GET /namespaces/records`).
+///
+/// The records counterpart to [`list_namespaces`]: same REAL durable set from the
+/// registry, same grant filter (the existence-leak boundary — an unauthorized
+/// caller never learns a namespace it cannot access exists), but projecting the
+/// full created / last-seen / origin columns rather than only names. The existing
+/// `GET /namespaces` string-list endpoint is unchanged so the namespace selector
+/// keeps working; this is a purely additive endpoint. The result is sorted by
+/// `created_at` then name (the registry's own list ordering), so the console
+/// renders a stable column.
+pub(crate) async fn list_namespace_records(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+) -> Result<Json<Vec<NamespaceRecordSummary>>, HttpWireError> {
+    let records = state
+        .namespace_store()
+        .list_namespaces()
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+    let visible = records
+        .into_iter()
+        .filter(|record| caller.can_access(&record.name))
+        .map(NamespaceRecordSummary::from)
+        .collect();
+    Ok(Json(visible))
+}
+
 /// Request body for an explicit operator namespace create (`POST /namespaces`).
 #[derive(serde::Deserialize)]
 pub(crate) struct CreateNamespaceRequest {
@@ -254,11 +328,16 @@ pub(crate) async fn post_namespace(
         .namespace_guard()
         .authorize_namespace(&caller, name)
         .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    // Route the explicit create through the shared mint choke-point so a
+    // genuinely-new operator-minted namespace emits the SAME live "namespace
+    // created" socket delta the worker-register (S5) and workflow-start (S6)
+    // seams do — one durable delta per genuinely-new namespace, never a second
+    // on an idempotent re-create.
     let outcome = state
-        .namespace_store()
-        .register_namespace(&authorized, aion_store::NamespaceOrigin::Explicit)
+        .namespace_minter()
+        .create_explicit(&authorized)
         .await
-        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
     Ok(Json(CreateNamespaceResponse {
         name: authorized,
         created: matches!(outcome, aion_store::MintOutcome::Created),
@@ -705,6 +784,51 @@ mod tests {
             namespaces,
             vec!["alpha".to_owned(), "tenant-a".to_owned(), "zeta".to_owned()],
             "operator sees the full durable set, sorted"
+        );
+        Ok(())
+    }
+
+    /// `GET /namespaces/records` returns the REAL durable RECORDS (the columns
+    /// the ops console panel renders) filtered by the caller's grant: an
+    /// enumerated caller sees only the records for namespaces it can access, never
+    /// the existence of namespaces it cannot (same anti-existence-leak boundary as
+    /// the string-list endpoint), and each record carries name + `created_at` +
+    /// `last_seen` + the `snake_case` origin label.
+    #[tokio::test]
+    async fn list_namespace_records_returns_durable_records_filtered_for_enumerated_caller()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (router, _store) =
+            router_with_seeded_namespaces(runtime_config(), &[NAMESPACE, "tenant-b", "secret"])
+                .await?;
+
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = super::super::test_support::TOKEN.to_owned();
+        let request = axum::http::Request::builder()
+            .uri("/namespaces/records")
+            .method("GET")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-aion-subject", "alice")
+            .header("x-aion-namespaces", NAMESPACE)
+            .body(axum::body::Body::empty())?;
+
+        let response = router.oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let records: Vec<serde_json::Value> = read_json(response).await?;
+        assert_eq!(
+            records.len(),
+            1,
+            "enumerated caller sees only its authorized namespace's record"
+        );
+        assert_eq!(records[0]["name"], NAMESPACE);
+        assert_eq!(
+            records[0]["origin"], "explicit",
+            "origin is the stable snake_case label the seed minted with"
+        );
+        assert!(
+            records[0]["created_at"].is_string() && records[0]["last_seen"].is_string(),
+            "each record carries RFC 3339 created_at + last_seen columns: {records:?}"
         );
         Ok(())
     }

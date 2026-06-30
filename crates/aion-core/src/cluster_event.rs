@@ -232,6 +232,32 @@ pub enum ClusterEvent {
         /// This node's name.
         node: String,
     },
+    /// A brand-new namespace was minted in the durable registry (Control-Plane
+    /// Phase 1, S8).
+    ///
+    /// Emitted exactly once per genuinely-new namespace at the registry's single
+    /// `MintOutcome::Created` choke-point — so the worker-register seam (S5), the
+    /// workflow-start safety net (S6), and the explicit `POST /namespaces` path
+    /// (S7) all surface the same delta. An idempotent re-reference of an existing
+    /// namespace (`MintOutcome::AlreadyExisted`) never emits this, so the ops
+    /// console appends each namespace exactly once with no refresh.
+    ///
+    /// `origin` is the stable `snake_case` label (`worker_mint` / `start_mint` /
+    /// `explicit` / `inferred_from_state`) rather than the `aion-store`
+    /// `NamespaceOrigin` enum, because this leaf crate must not depend on the
+    /// store crate; the label is the same string the audit `tracing` event logs.
+    /// `created_at` is the durable record's first-mint instant, carried so the
+    /// console's created column matches the registry without a follow-up fetch.
+    NamespaceCreated {
+        /// Cluster-event metadata.
+        meta: ClusterEventMeta,
+        /// The minted namespace's name (registry primary key).
+        name: String,
+        /// The durable record's creation instant (its `created_at`).
+        created_at: DateTime<Utc>,
+        /// How the namespace came to exist, as the stable `snake_case` label.
+        origin: String,
+    },
 }
 
 /// A peer entry in the priming [`ClusterSnapshot`].

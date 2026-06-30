@@ -17,10 +17,13 @@ import {
   type JsonRecord,
   type ListVersionsResponse,
   type LoadPackageResult,
+  type NamespaceRecord,
+  type NamespaceRecordsResponse,
   type NamespacesResponse,
   normalizeEventSearch,
   normalizeHistory,
   normalizeLoadPackage,
+  normalizeNamespaceRecords,
   normalizeNamespaces,
   normalizeStartWorkflow,
   normalizeWorkflowPage,
@@ -47,6 +50,7 @@ export type {
   EventSearchResult,
   JsonRecord,
   LoadPackageResult,
+  NamespaceRecord,
   StartWorkflowResult,
   WorkflowPage,
   WorkflowVersion,
@@ -271,6 +275,25 @@ export class ApiClient {
     );
 
     return normalizeNamespaces(response);
+  }
+
+  /**
+   * Fetch the durable namespace RECORDS (`GET /namespaces/records`) the caller
+   * can see — the created/last_seen/origin columns the live namespace panel
+   * renders. Grant-filtered + existence-leak-safe server-side, exactly like
+   * {@link listNamespaces}; this returns the richer record shape rather than only
+   * the names, so the panel can render columns without a second fetch.
+   */
+  async listNamespaceRecords(
+    options?: Pick<RequestOptions, 'credentials'>
+  ): Promise<NamespaceRecord[]> {
+    const response = await this.request<NamespaceRecordsResponse>(
+      AW_REST_CONTRACT.endpoints.namespaceRecords,
+      AW_REST_CONTRACT.methods.namespaceRecords,
+      { namespace: '' as Namespace, credentials: options?.credentials }
+    );
+
+    return normalizeNamespaceRecords(response);
   }
 
   async getWorkflowsPlain(options: RequestOptions): Promise<WorkflowSummary[]> {

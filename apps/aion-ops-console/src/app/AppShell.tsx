@@ -9,6 +9,7 @@ import {
   actionsPath,
   failoverPath,
   incidentsPath,
+  namespacesPath,
   searchPath,
   workflowDetailPath,
   workflowListPath,
@@ -17,6 +18,7 @@ import {
 // Primary nav. `activePrefix` keeps "Workflows" lit while on a detail route.
 const NAV_ITEMS: readonly AppNavItem[] = [
   { href: workflowListPath, label: 'Workflows', activePrefix: workflowListPath },
+  { href: namespacesPath, label: 'Namespaces', activePrefix: namespacesPath },
   { href: searchPath, label: 'Search', activePrefix: searchPath },
   { href: actionsPath, label: 'Actions', activePrefix: actionsPath },
   { href: incidentsPath, label: 'Incidents', activePrefix: incidentsPath },

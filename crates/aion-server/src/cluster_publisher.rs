@@ -159,7 +159,8 @@ pub fn cluster_event_meta(event: &ClusterEvent) -> &ClusterEventMeta {
         | ClusterEvent::WorkerConnected { meta, .. }
         | ClusterEvent::WorkerDisconnected { meta, .. }
         | ClusterEvent::SupervisorStarted { meta, .. }
-        | ClusterEvent::SupervisorStopped { meta, .. } => meta,
+        | ClusterEvent::SupervisorStopped { meta, .. }
+        | ClusterEvent::NamespaceCreated { meta, .. } => meta,
     }
 }
 

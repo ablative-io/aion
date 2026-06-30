@@ -43,6 +43,52 @@ export type HistoryResponse =
 export type NamespacesResponse = Namespace[] | { namespaces?: Namespace[] };
 
 /**
+ * One durable namespace registry row as the console renders it (the columns of
+ * the live namespace panel). The wire shape is `NamespaceRecordSummary` from
+ * `GET /namespaces/records`: name + RFC 3339 created_at/last_seen + the stable
+ * snake_case origin label. `origin` is kept as the raw server label (not a
+ * narrowed union) so a future server-side origin variant never silently fails to
+ * parse — the UI maps known labels to friendly text and falls back to the raw
+ * label for anything unrecognized.
+ */
+export type NamespaceRecord = {
+  name: Namespace;
+  createdAt: string;
+  lastSeen: string;
+  origin: string;
+};
+
+/** Raw `GET /namespaces/records` row, before camelCase normalization. */
+type RawNamespaceRecord = {
+  name?: unknown;
+  created_at?: unknown;
+  last_seen?: unknown;
+  origin?: unknown;
+};
+
+export type NamespaceRecordsResponse = RawNamespaceRecord[] | { namespaces?: RawNamespaceRecord[] };
+
+/**
+ * Normalize the `GET /namespaces/records` response into the camelCase
+ * {@link NamespaceRecord} shape. Accepts either a bare array (the server's actual
+ * shape) or a `{ namespaces }` envelope, mirroring {@link normalizeNamespaces}'s
+ * tolerance. A row missing its required `name` is a contract violation surfaced
+ * as an {@link ApiError}, never silently dropped.
+ */
+export function normalizeNamespaceRecords(response: NamespaceRecordsResponse): NamespaceRecord[] {
+  const rows: RawNamespaceRecord[] = Array.isArray(response)
+    ? response
+    : readArray<RawNamespaceRecord>(response, NAMESPACES_KEY);
+
+  return rows.map((row) => ({
+    name: requireString(row.name, 'name') as Namespace,
+    createdAt: requireString(row.created_at, 'created_at'),
+    lastSeen: requireString(row.last_seen, 'last_seen'),
+    origin: asString(row.origin),
+  }));
+}
+
+/**
  * Normalized result of a `POST /workflows/start`. The server returns plain UUID
  * strings; this is the camelCase shape the UI consumes. Provenance is honest:
  * these ids exist only because the server confirmed the run was created.

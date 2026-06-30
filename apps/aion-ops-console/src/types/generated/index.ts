@@ -721,7 +721,23 @@ meta: ClusterEventMeta,
 /**
  * This node's name.
  */
-node: string, };
+node: string, } | { "type": "NamespaceCreated", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * The minted namespace's name (registry primary key).
+ */
+name: string, 
+/**
+ * The durable record's creation instant (its `created_at`).
+ */
+created_at: string, 
+/**
+ * How the namespace came to exist, as the stable `snake_case` label.
+ */
+origin: string, };
 
 export type ClusterPeer = { 
 /**

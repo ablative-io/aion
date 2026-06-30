@@ -6,6 +6,7 @@ export type {
   EventSearchResult,
   JsonRecord,
   LoadPackageResult,
+  NamespaceRecord,
   RequestOptions,
   ServerErrorBody,
   StartWorkflowParams,

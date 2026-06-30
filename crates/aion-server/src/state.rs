@@ -560,6 +560,11 @@ impl ServerState {
             Arc::clone(&self.inner.namespace_store),
             self.inner.runtime.auto_create,
         )
+        // Thread the deployment-global cluster channel so the start-time safety
+        // net (S6) and the explicit `POST /namespaces` path (S7) emit the same
+        // live "namespace created" delta the worker-mint seam (S5) does — all
+        // three mint choke-points surface on the one ops-console push channel.
+        .with_cluster_publisher(self.inner.cluster_publisher.clone())
     }
 
     /// Clone the advisory outbox wake (LSUB-2) shared with the engine's stage

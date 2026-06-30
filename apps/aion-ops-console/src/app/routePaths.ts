@@ -10,6 +10,7 @@ export const searchPath = '/search';
 export const incidentsPath = '/incidents';
 export const failoverPath = '/failover';
 export const actionsPath = '/actions';
+export const namespacesPath = '/registry';
 
 export function workflowListHref() {
   return workflowListPath;
@@ -34,6 +35,10 @@ export function failoverHref() {
 
 export function actionsHref() {
   return actionsPath;
+}
+
+export function namespacesHref() {
+  return namespacesPath;
 }
 
 export function routerBasenameFromBaseUrl(baseUrl = import.meta.env.BASE_URL ?? '/') {
