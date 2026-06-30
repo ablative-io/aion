@@ -55,7 +55,7 @@ pub struct ActivityDispatch {
     /// Human-meaningful display labels the workflow attached to the activity
     /// (for example `brief=IP-001`, `repo=ablative-io/yggdrasil`). The engine
     /// never interprets these; they ride to the worker purely so its logs and
-    /// the dashboard can show what a dispatch is working on. `BTreeMap` keeps
+    /// the ops console can show what a dispatch is working on. `BTreeMap` keeps
     /// the rendered order stable.
     pub labels: BTreeMap<String, String>,
 }

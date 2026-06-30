@@ -91,7 +91,7 @@ pub struct ProtoActivityTask {
     pub attempt: u32,
     /// Human-meaningful display labels the workflow attached to the activity
     /// (for example `brief=IP-001`). Display metadata only — the engine never
-    /// interprets them; they ride to the worker so its logs and the dashboard
+    /// interprets them; they ride to the worker so its logs and the ops console
     /// can show what a dispatch is working on. Empty when none were set.
     #[prost(map = "string, string", tag = "6")]
     pub labels: ::std::collections::HashMap<String, String>,

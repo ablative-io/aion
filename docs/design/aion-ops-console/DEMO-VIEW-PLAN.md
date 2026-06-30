@@ -179,7 +179,7 @@ These are the only pre-existing-code edits; each is small and clears tsc/biome/t
 1. **Regenerate broken generated types** (do NOT hand-edit — biome reformats it, CLAUDE.md
    forbids). Add `TimerIdKind` and `WithTimeoutOutcome` to the export list in
    `crates/aion-core/src/generated_types.rs` (push_type list, ~lines 40-62), then run
-   `cargo test -p aion-core export_dashboard_wire_types`. This rewrites
+   `cargo test -p aion-core export_ops_console_wire_types`. This rewrites
    `src/types/generated/index.ts` with the two missing names defined → tsc unblocked.
 2. **`src/components/StatusBadge.tsx`** — add the missing `ContinuedAsNew` entry to
    `STATUS_BADGE_METADATA` (it is now in `WorkflowStatus`). One line; prevents tsc error +

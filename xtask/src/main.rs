@@ -153,7 +153,7 @@ fn build_ops_console_dist(root: &Path) -> Result<PathBuf> {
     // existing exporter test; it writes apps/aion-ops-console/src/types/generated/.
     step("regenerating ts-rs wire types");
     run(Command::new("cargo")
-        .args(["test", "-p", "aion-core", "export_dashboard_wire_types"])
+        .args(["test", "-p", "aion-core", "export_ops_console_wire_types"])
         .current_dir(root))
     .context("ts-rs wire type export failed")?;
 

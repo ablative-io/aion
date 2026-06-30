@@ -44,7 +44,7 @@ meridian workflow run onatopp-dev-norn \
 | AW | `docs/design/aion-server` | `briefs/AW-NNN.json` |
 | AR | `docs/design/aion-workers` | `briefs/AR-NNN.json` |
 | AL | `docs/design/aion-clients` | `briefs/AL-NNN.json` |
-| AU | `docs/design/aion-dashboard` | `briefs/AU-NNN.json` |
+| AU | `docs/design/aion-ops-console` | `briefs/AU-NNN.json` |
 
 ---
 

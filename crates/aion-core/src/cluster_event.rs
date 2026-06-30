@@ -1,16 +1,16 @@
-//! Cluster topology and ownership events for the dashboard real-time channel (WS3).
+//! Cluster topology and ownership events for the ops console real-time channel (WS3).
 //!
-//! This module defines the *typed contract* for the second class of real-time push the dashboard
+//! This module defines the *typed contract* for the second class of real-time push the ops console
 //! consumes: cluster/topology/ownership deltas that today exist only as `tracing` logs and
 //! Prometheus gauges. The wire shapes live in `aion-core` (not `aion-server`) for one reason: only
 //! this leaf crate depends on `ts-rs`, so this is the single place a Rust type can cross the
-//! Rust -> TypeScript boundary into the dashboard's generated bindings.
+//! Rust -> TypeScript boundary into the ops console's generated bindings.
 //!
 //! # Scope (WS3 FOUNDATION)
 //!
 //! This file is *types only*. It deliberately does **not** define the broadcast publisher, the
 //! emit call-sites in the supervisor / registry, the subscription endpoint, or the namespace gate.
-//! Those are wired in later WS3 increments. Defining the contract first lets the dashboard and the
+//! Those are wired in later WS3 increments. Defining the contract first lets the ops console and the
 //! server agree on shapes before any behaviour ships.
 //!
 //! # Honesty corrections applied to the original design
@@ -24,7 +24,7 @@
 //!   no `node` dimension (`connected_workers` is an `IntGaugeVec` keyed by *namespace*) and there
 //!   is no `workflows_running` gauge at all. A `{ node, connected_workers, workflows_running }`
 //!   payload cannot be produced by "piggybacking the gauge setters". Sourcing it honestly requires
-//!   a real metrics change (node-labelled gauges + a running gauge). Until then the dashboard
+//!   a real metrics change (node-labelled gauges + a running gauge). Until then the ops console
 //!   derives `connected_workers` client-side from [`ClusterEvent::WorkerConnected`] /
 //!   [`ClusterEvent::WorkerDisconnected`] deltas against the [`ClusterSnapshot`] baseline. Adding
 //!   a timer that scrapes Prometheus to fill this variant is the exact polling-as-push regression
@@ -98,7 +98,7 @@ pub enum WorkerDeathReason {
     Deregistered,
 }
 
-/// A cluster/topology/ownership delta pushed over the dashboard real-time channel.
+/// A cluster/topology/ownership delta pushed over the ops console real-time channel.
 ///
 /// Tagged union on `type` to match the existing [`crate::Event`] wire shape. Every variant carries
 /// [`ClusterEventMeta`] as `meta`. Cluster events are deployment-scoped, not namespace-stamped at
@@ -164,7 +164,7 @@ pub enum ClusterEvent {
     /// HONESTY: the original design hardcoded `will_retry: true`. That is a silent lie — a peer
     /// later observed connected resets `adopted` and stops retrying, and the
     /// "handled elsewhere" path terminally stops. The retry decision is not expressible as a
-    /// constant, so the field is omitted; the dashboard infers retry by observing whether a
+    /// constant, so the field is omitted; the ops console infers retry by observing whether a
     /// subsequent [`Self::ShardAdopted`] / [`Self::ShardAdoptionSkipped`] for the same
     /// `(from_peer, shards)` arrives, rather than trusting a promise that may never be kept
     /// (ADR-016 no-silent-failure).
@@ -276,7 +276,7 @@ pub struct ClusterWorker {
 }
 
 /// A calm-state baseline of the whole cluster, sent as the priming reply before the live delta
-/// stream so the dashboard can render an at-a-glance "all clear" before any [`ClusterEvent`]
+/// stream so the ops console can render an at-a-glance "all clear" before any [`ClusterEvent`]
 /// arrives (ADR-019). On `cluster_lagged` the client re-requests this rather than replaying a
 /// (non-durable) delta history.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
@@ -297,7 +297,7 @@ pub struct ClusterSnapshot {
     pub workers: Vec<ClusterWorker>,
 }
 
-/// A command the dashboard can issue against the cluster channel (ADR-020 command seam).
+/// A command the ops console can issue against the cluster channel (ADR-020 command seam).
 ///
 /// Defined now for contract coherence. **Phase 1 ships only [`Self::RequestClusterSnapshot`]** (a
 /// read). The mutating variants compile so the contract exists, but their handlers reject with an
@@ -306,7 +306,7 @@ pub struct ClusterSnapshot {
 /// exercised now and an `unimplemented` stub is never an auth-bypass-shaped hole.
 ///
 /// Tagged on `command` (distinct from [`ClusterEvent`]'s `type`) because commands and events are
-/// different directions on the wire; the dashboard's protocol parser keys command frames on
+/// different directions on the wire; the ops console's protocol parser keys command frames on
 /// `command` and event frames on `type`.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "command")]

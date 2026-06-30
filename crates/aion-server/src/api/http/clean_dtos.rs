@@ -152,9 +152,9 @@ impl TryFrom<DescribeWorkflowRequest> for ProtoDescribeWorkflowRequest {
 }
 
 /// Clean list-workflows request: `filter` is a plain JSON object with every
-/// predicate optional (mirrors the dashboard's `WorkflowFilter`), not a
-/// serde-encoded `WireEnvelope`. Unknown fields (e.g. the dashboard's `parent`,
-/// or pagination keys the dashboard sends alongside) are ignored.
+/// predicate optional (mirrors the ops console's `WorkflowFilter`), not a
+/// serde-encoded `WireEnvelope`. Unknown fields (e.g. the ops console's `parent`,
+/// or pagination keys the ops console sends alongside) are ignored.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListWorkflowsRequest {
     namespace: String,
@@ -264,7 +264,7 @@ impl TryFrom<ProtoListWorkflowsResponse> for ListWorkflowsResponse {
     }
 }
 
-/// Convert the store's visibility projection into the dashboard-facing
+/// Convert the store's visibility projection into the ops console-facing
 /// [`WorkflowSummary`] wire shape. `start_time`/`close_time` map to
 /// `started_at`/`ended_at`; `parent` is not carried in the visibility
 /// projection, so it is `None` (matching `from_history`).

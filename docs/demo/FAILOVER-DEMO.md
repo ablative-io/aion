@@ -13,7 +13,7 @@ All failover intelligence lives in shipped library code (the SS-5b
 for a real Norn agent later (see "Swapping in a real agent" below).
 
 There is no web UI here — this is the backend + a stable status surface a
-dashboard can poll. The dashboard plan ships separately.
+ops console can poll. The ops console plan ships separately.
 
 ## One command
 
@@ -69,12 +69,12 @@ Per node index `i`, deliberately AVOIDING TCP 7000 (macOS AirPlay Receiver):
 Override the bases via `DEMO_BIND_BASE`, `DEMO_GRPC_BASE`, `DEMO_HTTP_BASE`,
 `DEMO_LIMINAL_BASE`.
 
-## Status surface — what a dashboard polls
+## Status surface — what an ops console polls
 
 Every node exposes these over its HTTP port (`8090+i`) and gRPC port
-(`50051+i`). State is replicated, so a dashboard can poll any live node; after a
+(`50051+i`). State is replicated, so an ops console can poll any live node; after a
 kill, poll a survivor. (The `aion` CLI shown drives the same gRPC API a
-dashboard would call directly; the HTTP/JSON routes are in
+ops console would call directly; the HTTP/JSON routes are in
 `crates/aion-server/src/api/http/router.rs`.)
 
 ### Node liveness
@@ -85,7 +85,7 @@ curl -s http://127.0.0.1:8090/health/ready    # 200 once it can serve traffic
 ```
 
 Poll all `8090+i`; a node whose `/health/live` stops answering is down (the
-killed owner). This is the node-liveness signal for the dashboard.
+killed owner). This is the node-liveness signal for the ops console.
 
 ### Workload progress + exactly-once tally
 
@@ -97,7 +97,7 @@ aion list --endpoint http://127.0.0.1:50051
 # "ActivityCompleted" events (climbs 0 -> 4 as the fleet progresses):
 aion describe <WORKFLOW_ID> --endpoint http://127.0.0.1:50051
 
-# HTTP/JSON equivalents (for a browser dashboard). ALL requests must carry the
+# HTTP/JSON equivalents (for a browser ops console). ALL requests must carry the
 # caller's authorized namespace as a header: `-H "x-aion-namespaces: default"`
 # (anonymous callers declare their namespaces this way; without it the server
 # replies namespace_denied). Request bodies are clean JSON with string ids:
@@ -112,19 +112,19 @@ The `summary.status` field is the run state (`Running` -> `Completed`); the
 number of `history[].type == "ActivityCompleted"` events is the exactly-once
 tally (must equal the fan-out arity, 4, with no dupes even across a kill).
 
-### Live events (push, for a reactive dashboard)
+### Live events (push, for a reactive ops console)
 
 ```
 ws://127.0.0.1:8090/events/stream
 ```
 
-A WebSocket of live workflow/activity events — the dashboard's push channel for
+A WebSocket of live workflow/activity events — the ops console's push channel for
 progress + failover transitions instead of polling.
 
 ### Current shard owner + failover events
 
 The current owner of a shard and the auto-adoption transition are emitted to the
-node logs by shipped library code. The load-bearing failover line a dashboard
+node logs by shipped library code. The load-bearing failover line an ops console
 (or the demo) keys on:
 
 ```
@@ -145,7 +145,7 @@ curl -s http://127.0.0.1:8090/metrics   # Prometheus exposition
 
 Activity durations, workflow counts, store latencies — per namespace/activity.
 
-## Web dashboard (the `/failover` view)
+## Web ops console (the `/failover` view)
 
 A React ops console ships in `apps/aion-ops-console`; its `/failover` route is the
 visual front-end for this demo — node-liveness grid, owner/adoption strip,
@@ -176,24 +176,24 @@ fails its own reads over to a survivor automatically. The exactly-once counter i
 derived from `ActivityCompleted` events deduped by history sequence, so a
 WebSocket reconnect during the kill can never double-count.
 
-### Single binary serves the dashboard (no separate web server)
+### Single binary serves the ops console (no separate web server)
 
-The `aion` binary can serve the built dashboard itself at its **HTTP port** — the
+The `aion` binary can serve the built ops console itself at its **HTTP port** — the
 same port as the API. No vite server, no static host: one process.
 
 * **Dev (live, hot reload):** run the vite dev server (`bun run dev` above). It
   talks to the API via `VITE_*` config and **CORS** (configure
   `cors_allowed_origins` on the server to include the vite origin, e.g.
   `http://localhost:5173`).
-* **Shipped (single binary):** the dashboard is ALWAYS embedded, so just build
+* **Shipped (single binary):** the ops console is ALWAYS embedded, so just build
   and run:
 
   ```bash
   cargo build -p aion-cli --release
-  ./target/release/aion server --open              # serves the dashboard at the HTTP port; --open launches a browser
+  ./target/release/aion server --open              # serves the ops console at the HTTP port; --open launches a browser
   ```
 
-  The dashboard is then at `http://<listen_address>/` (e.g. `http://127.0.0.1:8090/`).
+  The ops console is then at `http://<listen_address>/` (e.g. `http://127.0.0.1:8090/`).
 
 There is no cargo feature: the ops console is part of the product and the committed
 `crates/aion-server/ops-console-embed/` bundle is embedded into every build. To refresh

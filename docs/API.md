@@ -5,7 +5,7 @@ Aion exposes the engine through the server (`aion server --config aion.toml`, bu
 ## Implementation status
 
 - **Implemented:** engine crash/restart recovery for active workflow histories, durable timer recovery, HTTP/JSON workflow operations (including live workflow queries), gRPC worker/client APIs, and the WebSocket event-stream route described below.
-- **In progress:** dashboard UX and cross-language SDK/conformance hardening. Prefer the `aion` CLI, HTTP, gRPC, or the Rust client when you need the most exercised surfaces.
+- **In progress:** ops console UX and cross-language SDK/conformance hardening. Prefer the `aion` CLI, HTTP, gRPC, or the Rust client when you need the most exercised surfaces.
 
 ## Authentication and caller metadata
 

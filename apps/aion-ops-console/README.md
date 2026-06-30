@@ -25,7 +25,7 @@ cargo xtask build-ops-console
 ```
 
 In order it: (a) regenerates the ts-rs wire types
-(`cargo test -p aion-core export_dashboard_wire_types`), (b) runs
+(`cargo test -p aion-core export_ops_console_wire_types`), (b) runs
 `bun install && bun run build` here, and (c) syncs `dist/*` into
 `crates/aion-server/ops-console-embed/`. **Commit the refreshed bundle.**
 
@@ -63,7 +63,7 @@ view models.
 Regenerate after changing exported Aion wire shapes:
 
 ```sh
-cargo test -p aion-core export_dashboard_wire_types
+cargo test -p aion-core export_ops_console_wire_types
 ```
 
 The repository-level `just gen-types` task should call the same ts-rs export path when the house

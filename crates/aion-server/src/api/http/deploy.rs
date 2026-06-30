@@ -200,7 +200,7 @@ mod tests {
     }
 
     /// Absent `[deploy]` section: every deploy route is a plain 404 — the
-    /// surface is not mounted at all (and the dashboard SPA fallback never
+    /// surface is not mounted at all (and the ops console SPA fallback never
     /// answers for `/deploy/*`).
     #[tokio::test]
     async fn disabled_surface_is_404_on_every_route() -> Result<(), Box<dyn std::error::Error>> {

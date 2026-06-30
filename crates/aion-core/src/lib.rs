@@ -16,7 +16,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-/// Cluster topology and ownership events for the dashboard real-time channel (WS3).
+/// Cluster topology and ownership events for the ops console real-time channel (WS3).
 pub mod cluster_event;
 /// Describe-workflow response projection (summary + event history).
 pub mod describe;

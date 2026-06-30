@@ -2,7 +2,7 @@
 //!
 //! Phase 1 ships exactly one *mutating* blast radius: zero. The only command
 //! that does real work is the read-only [`ClusterCommand::RequestClusterSnapshot`]
-//! (the dashboard's calm-state baseline; also obtainable as the WS priming
+//! (the ops console's calm-state baseline; also obtainable as the WS priming
 //! reply). Every mutating variant compiles so the contract exists, but its
 //! handler runs the full deploy-auth gate FIRST and then returns an
 //! `unimplemented` wire error — so the seam's authorization contract is
