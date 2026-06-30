@@ -16,7 +16,7 @@ use crate::auth::JwksCache;
 use crate::{
     config::{RuntimeConfig, ServerConfig, StoreBackend, StoreConfig},
     error::ServerError,
-    namespace::{NamespaceGuard, resolver::NamespaceResolver},
+    namespace::{NamespaceGuard, NamespaceMinter, resolver::NamespaceResolver},
     observability::{
         Metrics, health::HealthState, instrumented_store::InstrumentedEventStore,
         metrics::MetricsError,
@@ -524,6 +524,22 @@ impl ServerState {
     #[must_use]
     pub fn namespace_store(&self) -> &Arc<dyn NamespaceStore> {
         &self.inner.namespace_store
+    }
+
+    /// Build the shared minted-on-use hook over the durable namespace store and
+    /// the configured [`AutoCreate`](crate::config::AutoCreate) policy.
+    ///
+    /// This is the SAME policy logic the worker-registration seam applies (S5);
+    /// the workflow-start safety net (S6) calls it after authorization so a
+    /// client that starts a workflow before any worker registers still gets a
+    /// durable namespace record. Cheap to build (clones an `Arc` + a `Copy`
+    /// policy), so transports construct it per request rather than holding it.
+    #[must_use]
+    pub fn namespace_minter(&self) -> NamespaceMinter {
+        NamespaceMinter::new(
+            Arc::clone(&self.inner.namespace_store),
+            self.inner.runtime.auto_create,
+        )
     }
 
     /// Clone the advisory outbox wake (LSUB-2) shared with the engine's stage

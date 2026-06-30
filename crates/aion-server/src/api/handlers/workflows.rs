@@ -13,7 +13,10 @@ use super::error::{
 };
 use super::payload::{required_payload, required_workflow_id};
 use super::runs::{resolve_run_id, terminal_status};
-use crate::{CallerIdentity, NamespaceGuard, NamespaceOperation, ServerError, WorkflowTarget};
+use crate::{
+    CallerIdentity, NamespaceGuard, NamespaceMinter, NamespaceOperation, ServerError,
+    WorkflowTarget,
+};
 
 /// Handles a decoded start-workflow request.
 ///
@@ -30,7 +33,7 @@ pub async fn start(
     caller: &CallerIdentity,
     request: ProtoStartWorkflowRequest,
 ) -> Result<ProtoStartWorkflowResponse, WireError> {
-    start_with_placement(guard, caller, request, None).await
+    start_with_placement(guard, caller, request, None, None).await
 }
 
 /// Start a workflow, optionally with a `placement` id chosen by the routing edge
@@ -38,20 +41,53 @@ pub async fn start(
 /// remint). `placement = None` is the default path: the engine mints the id, so
 /// the single-node / non-clustered behaviour is unchanged.
 ///
+/// `minter` is the minted-on-use safety net (Control-Plane Phase 1, S6): when
+/// `Some`, the resolved-and-authorized namespace is durably minted (open) or
+/// gated (closed) BEFORE the engine start, so a client that starts a workflow
+/// before any worker registers still gets a durable namespace record. It is the
+/// SAME [`NamespaceMinter`] policy the worker-registration seam (S5) applies, so
+/// the two transports and the two mint choke-points can never diverge. `None`
+/// disables the mint entirely (every unit test of the bare handler), leaving the
+/// start path byte-identical.
+///
+/// The mint runs AFTER namespace authorization (`guard.scope`), so it is
+/// auth-scoped by construction — it can only record a namespace the caller is
+/// already permitted to start in. It does NOT change the immutable NSTQ
+/// `aion.namespace` binding ([`start_search_attributes`]) or the start response
+/// shape; the mint is purely additive.
+///
 /// # Errors
 ///
-/// Identical to [`start`].
+/// Identical to [`start`], plus a durable-store failure (a retryable `NotOwner`
+/// fence surfaces as such) or a `closed`-policy namespace-denied error from the
+/// minter, all mapped to a stable [`WireError`].
 pub async fn start_with_placement(
     guard: &NamespaceGuard,
     caller: &CallerIdentity,
     request: ProtoStartWorkflowRequest,
     placement: Option<aion_core::WorkflowId>,
+    minter: Option<&NamespaceMinter>,
 ) -> Result<ProtoStartWorkflowResponse, WireError> {
     let scoped = guard
         .scope(caller, &NamespaceOperation::start(&request))
         .await
         .map_err(|error| error.to_wire_error())?;
     let namespace = scoped.namespace().to_owned();
+    // MINT-ON-START safety net (Phase 1 S6). Runs strictly AFTER the namespace
+    // authorization above, so it can only ever mint a namespace the caller is
+    // already authorized to start in — auth-scoped by construction. A `closed`
+    // policy rejects an unknown namespace with the same namespace-denied error;
+    // a quorum `NotOwner` fence propagates as the retryable wire code, never a
+    // silent success. Shares the EXACT S5 policy via `NamespaceMinter`.
+    if let Some(minter) = minter {
+        minter
+            .mint_or_gate(
+                std::slice::from_ref(&namespace),
+                aion_store::NamespaceOrigin::StartMint,
+            )
+            .await
+            .map_err(|error| error.to_wire_error())?;
+    }
     let input = required_payload(request.input.clone())?;
     // An empty task_queue means "not selected": fall back to the namespace's
     // default queue rather than recording an empty selection.
@@ -614,6 +650,169 @@ mod tests {
             error.err().map(|error| error.code),
             Some(WireErrorCode::NamespaceDenied)
         );
+        Ok(())
+    }
+
+    // ---- Minted-on-use START safety net (Control-Plane Phase 1, S6) --------
+
+    use std::sync::Arc;
+
+    use aion_store::{NamespaceOrigin, NamespaceStore};
+
+    use crate::config::AutoCreate;
+
+    fn namespace_store() -> Arc<dyn NamespaceStore> {
+        Arc::new(aion_store::InMemoryStore::default())
+    }
+
+    fn minter(store: &Arc<dyn NamespaceStore>, policy: AutoCreate) -> NamespaceMinter {
+        NamespaceMinter::new(Arc::clone(store), policy)
+    }
+
+    fn fresh_start_request() -> Result<ProtoStartWorkflowRequest, aion_core::PayloadError> {
+        Ok(ProtoStartWorkflowRequest {
+            namespace: NAMESPACE.to_owned(),
+            workflow_type: "missing-workflow".to_owned(),
+            input: Some(proto_payload()?),
+            routing_key: None,
+            task_queue: None,
+        })
+    }
+
+    /// A start into a never-before-seen namespace (no worker registered) mints a
+    /// durable record under the open policy, even though the start itself fails
+    /// at the engine (no such workflow type) — the mint runs strictly after
+    /// authorization and before the engine call. A second start is idempotent:
+    /// no duplicate row.
+    #[tokio::test]
+    async fn open_start_mints_durable_record_and_is_idempotent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let store = namespace_store();
+        let minter = minter(&store, AutoCreate::Open);
+
+        // No worker ever registered, so the namespace has no row yet.
+        assert!(store.get_namespace(NAMESPACE).await?.is_none());
+
+        // The start fails at the engine (unknown workflow type) but the mint
+        // already ran: a durable record exists afterwards.
+        let first = start_with_placement(
+            &context.guard,
+            &context.caller,
+            fresh_start_request()?,
+            None,
+            Some(&minter),
+        )
+        .await;
+        assert!(
+            first.is_err(),
+            "the fixture start has no registered workflow type"
+        );
+        let record = store
+            .get_namespace(NAMESPACE)
+            .await?
+            .ok_or("expected a durable record minted by the start")?;
+        assert_eq!(record.name, NAMESPACE);
+        assert_eq!(record.origin, NamespaceOrigin::StartMint);
+
+        // A second start is idempotent: still exactly one row, no duplicate.
+        let _second = start_with_placement(
+            &context.guard,
+            &context.caller,
+            fresh_start_request()?,
+            None,
+            Some(&minter),
+        )
+        .await;
+        let all = store.list_namespaces().await?;
+        assert_eq!(
+            all.iter().filter(|r| r.name == NAMESPACE).count(),
+            1,
+            "a second start must not create a duplicate namespace row"
+        );
+        Ok(())
+    }
+
+    /// Under the closed policy a start into an unknown namespace is rejected with
+    /// the same namespace-denied error the worker-registration seam uses, and the
+    /// namespace is not created.
+    #[tokio::test]
+    async fn closed_start_rejects_unknown_namespace_and_does_not_create_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let store = namespace_store();
+        let minter = minter(&store, AutoCreate::Closed);
+
+        let denied = start_with_placement(
+            &context.guard,
+            &context.caller,
+            fresh_start_request()?,
+            None,
+            Some(&minter),
+        )
+        .await;
+
+        let error = denied
+            .err()
+            .ok_or_else(|| WireError::backend("expected a namespace-denied error"))?;
+        assert_eq!(error.code, WireErrorCode::NamespaceDenied);
+        assert!(
+            store.get_namespace(NAMESPACE).await?.is_none(),
+            "closed policy must NOT create the namespace it rejected"
+        );
+        Ok(())
+    }
+
+    /// Under the closed policy a start into a namespace that already has a
+    /// durable record (the `POST /namespaces` escape hatch's effect) is admitted
+    /// — it proceeds to the engine exactly as the open path does.
+    #[tokio::test]
+    async fn closed_start_admits_a_known_namespace() -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let store = namespace_store();
+        store
+            .register_namespace(NAMESPACE, NamespaceOrigin::Explicit)
+            .await?;
+        let minter = minter(&store, AutoCreate::Closed);
+
+        // The known namespace passes the gate, so the start reaches the engine
+        // and fails only on the unknown workflow type — never on the namespace.
+        let error = start_with_placement(
+            &context.guard,
+            &context.caller,
+            fresh_start_request()?,
+            None,
+            Some(&minter),
+        )
+        .await
+        .err()
+        .ok_or_else(|| WireError::backend("expected the fixture workflow-type miss"))?;
+        assert_eq!(
+            error.code,
+            WireErrorCode::NotFound,
+            "a known namespace must pass the gate and fail only at the engine"
+        );
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTypeNotFound"));
+        Ok(())
+    }
+
+    /// With no minter installed the start path is byte-identical to before S6:
+    /// the namespace is never touched and the start reaches the engine as usual.
+    #[tokio::test]
+    async fn no_minter_leaves_start_untouched() -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        let error = start_with_placement(
+            &context.guard,
+            &context.caller,
+            fresh_start_request()?,
+            None,
+            None,
+        )
+        .await
+        .err()
+        .ok_or_else(|| WireError::backend("expected the fixture workflow-type miss"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowTypeNotFound"));
         Ok(())
     }
 }

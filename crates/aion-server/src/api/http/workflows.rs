@@ -31,9 +31,21 @@ pub(crate) async fn start_workflow(
     let request = request
         .try_into()
         .map_err(|error| HttpStartError::Wire(HttpWireError(error)))?;
-    let response = handlers::start(state.namespace_guard(), &caller, request)
-        .await
-        .map_err(|error| HttpStartError::Wire(HttpWireError(error)))?;
+    // The minted-on-use safety net (Phase 1 S6): an authorized start into an
+    // unseen namespace durably mints (open) or is gated (closed) before the
+    // engine start, so a client that starts before any worker registers still
+    // gets a durable namespace record. The HTTP path mints locally (`placement =
+    // None`); steered placement is a gRPC/cluster concern.
+    let minter = state.namespace_minter();
+    let response = handlers::start_with_placement(
+        state.namespace_guard(),
+        &caller,
+        request,
+        None,
+        Some(&minter),
+    )
+    .await
+    .map_err(|error| HttpStartError::Wire(HttpWireError(error)))?;
     StartWorkflowResponse::try_from(response)
         .map(Json)
         .map_err(HttpStartError::Wire)

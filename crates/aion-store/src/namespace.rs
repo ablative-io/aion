@@ -61,6 +61,9 @@ pub struct NamespaceRecord {
 pub enum NamespaceOrigin {
     /// Minted by a worker registering for a previously unseen namespace.
     WorkerMint,
+    /// Minted by a workflow start resolving a previously unseen namespace before
+    /// any worker registered for it (the start-time safety net).
+    StartMint,
     /// Created by an explicit operator request (`POST /namespaces`).
     Explicit,
     /// Back-filled lazily because durable state existed without a registry
