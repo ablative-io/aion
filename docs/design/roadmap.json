@@ -51,7 +51,7 @@
         "commits": []
       },
       "depends_on": [],
-      "notes": "Do not claim multi-node scale-out \u2014 we cannot demonstrate it."
+      "notes": "Cross-node `kill -9` FAILOVER is now demonstrable (#157/#148/#109) \u2014 claim it. HORIZONTAL THROUGHPUT scale-out at large node counts remains unproven \u2014 do not claim that until the scale-out proof lands (Track D)."
     },
     {
       "id": "RM-003",

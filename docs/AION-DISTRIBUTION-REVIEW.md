@@ -1,5 +1,12 @@
 # Aion distributed fan-out/fan-in/affinity + storage — comparative design review
 
+> STATUS UPDATE (2026-06-30): the two load-bearing caveats this review flags
+> (durable outbox before dispatch; CAS-gated epoch fence on shard writes) have
+> since been BUILT — the epoch fence lives in `crates/aion/src/engine/fence.rs`,
+> and cross-node `kill -9` failover is now proven (#157). Read this document as
+> the design INPUT that motivated those fixes, not as current state. The body
+> below is left intact as the original review record.
+
 > Output of the 11-agent comparative review (Temporal, Orleans, Akka, Ray, Erlang/OTP, DBOS/Restate → synthesis → 3-lens adversarial critique → verdict), 2026-06-24. This is the design-INPUT artifact, not yet the design doc.
 
 ## Headline verdict — `yes-with-caveats`
