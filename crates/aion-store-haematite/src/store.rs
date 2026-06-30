@@ -46,9 +46,9 @@ use aion_core::{
     Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
 };
 use aion_store::{
-    ClaimScope, OutboxRow, OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord,
-    PackageStore, ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore,
-    WriteToken,
+    ClaimScope, MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceStore, OutboxRow,
+    OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
+    RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -665,6 +665,188 @@ impl HaematiteStore {
         String::from_utf8(bytes)
             .map(Some)
             .map_err(|error| StoreError::Backend(format!("corrupt shard-owner record: {error}")))
+    }
+
+    /// Idempotent minted-on-use upsert of the namespace registry record for
+    /// `name` (Control-Plane Phase 1), copy-adapted from the verified
+    /// create-if-absent / value-CAS / reconcile pattern of
+    /// [`Self::publish_shard_owner`].
+    ///
+    /// In DISTRIBUTED mode the write goes through the quorum-replicated fenced
+    /// path ([`Database::replicate_write`]) keyed by [`keyspace::namespace_key`],
+    /// so the record travels with its shard on owner-node death and `GET
+    /// /namespaces` survives failover. The discriminations mirror
+    /// `publish_shard_owner` exactly:
+    ///
+    /// * Absent (`expected = None`) ⇒ create-if-absent; on success returns
+    ///   [`MintOutcome::Created`].
+    /// * Present ⇒ value-CAS touch that bumps `last_seen` (`expected =
+    ///   Some(hash)`); on success returns [`MintOutcome::AlreadyExisted`].
+    /// * [`DatabaseError::CasConflict`] = a benign concurrent racer minted/touched
+    ///   first ⇒ idempotent [`MintOutcome::AlreadyExisted`].
+    /// * [`DatabaseError::Fenced`] = this node was deposed by a higher ballot ⇒
+    ///   [`StoreError::NotOwner`].
+    ///
+    /// In SINGLE-NODE / non-distributed mode there is no quorum to reach, so it
+    /// falls back to a plain local upsert ([`Self::local_namespace_upsert`]).
+    ///
+    /// The quorum write blocks and must run off the tokio runtime, so callers
+    /// may invoke it from async via the [`NamespaceStore`] trait wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotOwner`] when a quorum write is fenced,
+    /// [`StoreError::Serialization`] on a codec failure, or
+    /// [`StoreError::Backend`] for any other replication/database failure.
+    pub fn register_namespace_record(
+        &self,
+        record: &NamespaceRecord,
+    ) -> Result<MintOutcome, StoreError> {
+        let Some(routing) = self.distribution.clone() else {
+            // Single-node / non-distributed: plain local upsert (no quorum).
+            return self.local_namespace_upsert(record);
+        };
+        let database = self.inner.database();
+        let key = keyspace::namespace_key(&record.name);
+        let current = database.get(&key).map_err(|error| database_error(&error))?;
+        if let Some(bytes) = current {
+            // Exists: refresh last_seen via value-CAS (idempotent touch). The
+            // existing record's origin/created_at/state are preserved; only
+            // last_seen advances.
+            let mut existing = NamespaceRecord::decode(&bytes)?;
+            existing.bump_last_seen(Utc::now());
+            let value = existing.encode()?;
+            let expected = Some(Hash::of(&bytes));
+            let result = run_off_runtime(|| {
+                database.replicate_write(
+                    key.clone(),
+                    expected,
+                    value,
+                    None,
+                    &routing.membership,
+                    routing.timeout,
+                )
+            });
+            return match result {
+                // The touch succeeded, OR a concurrent racer touched the same
+                // record first (benign value-CAS loss): the record exists and
+                // last_seen advanced either way — idempotent AlreadyExisted.
+                Ok(_) | Err(DatabaseError::CasConflict { .. }) => Ok(MintOutcome::AlreadyExisted),
+                Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner {
+                    shard: database.shard_for(&key),
+                }),
+                Err(error) => Err(database_error(&error)),
+            };
+        }
+        // Absent: create-if-absent (expected = None).
+        let value = record.encode()?;
+        let result = run_off_runtime(|| {
+            database.replicate_write(
+                key.clone(),
+                None,
+                value,
+                None,
+                &routing.membership,
+                routing.timeout,
+            )
+        });
+        match result {
+            Ok(_) => Ok(MintOutcome::Created),
+            // A concurrent racer minted the same namespace first: reconcile —
+            // observe the winner's record and report it as already-existing
+            // (idempotent, lock-free mint).
+            Err(DatabaseError::CasConflict { .. }) => Ok(MintOutcome::AlreadyExisted),
+            Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner {
+                shard: database.shard_for(&key),
+            }),
+            Err(error) => Err(database_error(&error)),
+        }
+    }
+
+    /// Plain local (non-quorum) upsert of a namespace record, used by the
+    /// single-node / non-distributed path of [`Self::register_namespace_record`].
+    ///
+    /// Create-if-absent on a fresh name (returns [`MintOutcome::Created`]); on an
+    /// existing name it bumps `last_seen` and returns
+    /// [`MintOutcome::AlreadyExisted`], preserving the existing record's origin,
+    /// `created_at`, and lifecycle state. A single-node store owns every shard
+    /// unconditionally, so the read-modify-write needs no fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Serialization`] on a codec failure or
+    /// [`StoreError::Backend`] on a database failure.
+    fn local_namespace_upsert(&self, record: &NamespaceRecord) -> Result<MintOutcome, StoreError> {
+        let database = self.inner.database();
+        let key = keyspace::namespace_key(&record.name);
+        let outcome =
+            if let Some(bytes) = database.get(&key).map_err(|error| database_error(&error))? {
+                let mut existing = NamespaceRecord::decode(&bytes)?;
+                existing.bump_last_seen(Utc::now());
+                database
+                    .put(key, existing.encode()?)
+                    .map_err(|error| database_error(&error))?;
+                MintOutcome::AlreadyExisted
+            } else {
+                database
+                    .put(key, record.encode()?)
+                    .map_err(|error| database_error(&error))?;
+                MintOutcome::Created
+            };
+        database.commit().map_err(|error| database_error(&error))?;
+        Ok(outcome)
+    }
+
+    /// Read-modify-write a namespace record's lifecycle state to
+    /// [`aion_store::NamespaceState::Deprecated`] through the same upsert path,
+    /// or a no-op when the namespace has no registry row / is already deprecated.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register_namespace_record`].
+    fn deprecate_namespace_record(&self, name: &str) -> Result<(), StoreError> {
+        use aion_store::NamespaceState;
+        let database = self.inner.database();
+        let key = keyspace::namespace_key(name);
+        let Some(bytes) = database.get(&key).map_err(|error| database_error(&error))? else {
+            // No registry row: idempotent no-op (deprecation never strands history).
+            return Ok(());
+        };
+        let mut record = NamespaceRecord::decode(&bytes)?;
+        if record.state == NamespaceState::Deprecated {
+            // Already deprecated: idempotent no-op.
+            return Ok(());
+        }
+        record.state = NamespaceState::Deprecated;
+        if let Some(routing) = self.distribution.clone() {
+            let value = record.encode()?;
+            let expected = Some(Hash::of(&bytes));
+            let result = run_off_runtime(|| {
+                database.replicate_write(
+                    key.clone(),
+                    expected,
+                    value,
+                    None,
+                    &routing.membership,
+                    routing.timeout,
+                )
+            });
+            return match result {
+                // Wrote, OR a concurrent writer raced the value-CAS: the record
+                // is deprecated either way — deprecation is idempotent.
+                Ok(_) | Err(DatabaseError::CasConflict { .. }) => Ok(()),
+                Err(DatabaseError::Fenced { .. }) => Err(StoreError::NotOwner {
+                    shard: database.shard_for(&key),
+                }),
+                Err(error) => Err(database_error(&error)),
+            };
+        }
+        // Single-node / non-distributed: plain local write (owns every shard).
+        database
+            .put(key, record.encode()?)
+            .map_err(|error| database_error(&error))?;
+        database.commit().map_err(|error| database_error(&error))?;
+        Ok(())
     }
 
     /// Win the per-shard election and become the live owner of a SINGLE `shard`
@@ -1986,6 +2168,69 @@ impl PackageStore for HaematiteStore {
     }
 }
 
+#[async_trait]
+impl NamespaceStore for HaematiteStore {
+    async fn register_namespace(
+        &self,
+        name: &str,
+        origin: NamespaceOrigin,
+    ) -> Result<MintOutcome, StoreError> {
+        let record = NamespaceRecord::new_minted(name, origin, Utc::now());
+        self.put_namespace(record).await
+    }
+
+    async fn put_namespace(&self, record: NamespaceRecord) -> Result<MintOutcome, StoreError> {
+        // The distributed CAS upsert drives `replicate_write` through
+        // `run_off_runtime`, which BLOCKS and refuses to run under an entered
+        // tokio runtime; run the whole upsert on a cloned handle via
+        // `spawn_blocking` (the inherent method spawns its OWN bare thread for the
+        // quorum wait, so this only parks a blocking-pool thread, never the
+        // executor).
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.register_namespace_record(&record))
+            .await
+            .map_err(|error| join_error(&error))?
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<NamespaceRecord>, StoreError> {
+        self.blocking(|store| {
+            let mut records: Vec<NamespaceRecord> =
+                scan_prefix(store, keyspace::NAMESPACE_PREFIX, |_, value| {
+                    NamespaceRecord::decode(value)
+                })?;
+            // Ascending by created_at, ties broken by name (the trait contract).
+            records.sort_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.name.cmp(&right.name))
+            });
+            Ok(records)
+        })
+        .await
+    }
+
+    async fn get_namespace(&self, name: &str) -> Result<Option<NamespaceRecord>, StoreError> {
+        let key = keyspace::namespace_key(name);
+        self.blocking(move |store| {
+            let database = store.database();
+            match database.get(&key).map_err(|error| database_error(&error))? {
+                Some(bytes) => NamespaceRecord::decode(&bytes).map(Some),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    async fn deprecate_namespace(&self, name: &str) -> Result<(), StoreError> {
+        // Same blocking/off-runtime constraint as the upsert path.
+        let store = self.clone();
+        let name = name.to_owned();
+        tokio::task::spawn_blocking(move || store.deprecate_namespace_record(&name))
+            .await
+            .map_err(|error| join_error(&error))?
+    }
+}
+
 /// Enumerate every workflow id by reading the co-located event streams.
 ///
 /// Each workflow's history lives in one haematite event stream keyed by
@@ -2026,14 +2271,17 @@ fn parse_workflow_id(text: &str) -> Result<WorkflowId, StoreError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use aion_core::{ContentType, Payload, WorkflowId};
     use aion_store::{
-        ClaimScope, OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, StoreError,
-        WritableEventStore, WriteToken,
+        ClaimScope, MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceState, NamespaceStore,
+        OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, StoreError, WritableEventStore,
+        WriteToken,
     };
     use chrono::{Duration, Utc};
 
@@ -2641,6 +2889,188 @@ mod tests {
             ReadableEventStore::is_current_owner(&store, 9),
             "the trait method agrees: own-all reports current owner of any shard"
         );
+        Ok(())
+    }
+
+    // --- namespace registry (Control-Plane Phase 1, S3) --------------------
+    //
+    // These exercise the SINGLE-NODE / local-upsert path (`distribution ==
+    // None`), which is what the unit-test `store(..)` harness builds. The
+    // CasConflict-reconcile and Fenced→NotOwner branches of the distributed
+    // CAS path are driven only under the multi-node cluster harness that
+    // arrives with S4 wiring; they are asserted there. The local path proves
+    // the create / idempotent-touch / list-order / deprecate contract.
+
+    #[tokio::test]
+    async fn register_namespace_creates_then_get_returns_it() -> Result<(), StoreError> {
+        let store = store("ns-create")?;
+
+        let outcome = store
+            .register_namespace("orders", NamespaceOrigin::WorkerMint)
+            .await?;
+        assert_eq!(
+            outcome,
+            MintOutcome::Created,
+            "create-if-absent mints a fresh record"
+        );
+
+        let fetched = store.get_namespace("orders").await?;
+        let record = fetched.expect("a freshly minted namespace must be readable back");
+        assert_eq!(record.name, "orders");
+        assert_eq!(record.origin, NamespaceOrigin::WorkerMint);
+        assert_eq!(record.state, NamespaceState::Active);
+        assert_eq!(
+            record.created_at, record.last_seen,
+            "a brand-new record is seen exactly once, at creation"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_register_is_already_existed_and_bumps_last_seen() -> Result<(), StoreError> {
+        let store = store("ns-touch")?;
+
+        let first = store
+            .register_namespace("billing", NamespaceOrigin::WorkerMint)
+            .await?;
+        assert_eq!(first, MintOutcome::Created);
+        let after_create = store
+            .get_namespace("billing")
+            .await?
+            .expect("record must exist after create");
+
+        // A monotonic clock guarantees the second touch advances last_seen.
+        // The store stamps `Utc::now()`; sleep a beat so the instant differs.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let second = store
+            .register_namespace("billing", NamespaceOrigin::Explicit)
+            .await?;
+        assert_eq!(
+            second,
+            MintOutcome::AlreadyExisted,
+            "a second register observes the existing record (idempotent mint)"
+        );
+
+        let after_touch = store
+            .get_namespace("billing")
+            .await?
+            .expect("record must still exist after touch");
+        assert_eq!(
+            after_touch.created_at, after_create.created_at,
+            "created_at is immutable across the touch"
+        );
+        assert_eq!(
+            after_touch.origin,
+            NamespaceOrigin::WorkerMint,
+            "origin is preserved across the touch (the second register's origin is ignored)"
+        );
+        assert!(
+            after_touch.last_seen >= after_create.last_seen,
+            "last_seen is refreshed (bumped) by the touch: {} >= {}",
+            after_touch.last_seen,
+            after_create.last_seen
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn put_namespace_carries_supplied_record() -> Result<(), StoreError> {
+        let store = store("ns-put")?;
+        let mut record =
+            NamespaceRecord::new_minted("tenant-a", NamespaceOrigin::Explicit, Utc::now());
+        record.config.kind = Some("tenant".to_owned());
+
+        let outcome = store.put_namespace(record.clone()).await?;
+        assert_eq!(outcome, MintOutcome::Created);
+
+        let fetched = store
+            .get_namespace("tenant-a")
+            .await?
+            .expect("put_namespace must persist the supplied record");
+        assert_eq!(fetched.origin, NamespaceOrigin::Explicit);
+        assert_eq!(fetched.config.kind.as_deref(), Some("tenant"));
+
+        // Idempotent on an existing name: a second put reconciles as success.
+        let again = store.put_namespace(record).await?;
+        assert_eq!(again, MintOutcome::AlreadyExisted);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_namespace_returns_none_for_absent() -> Result<(), StoreError> {
+        let store = store("ns-miss")?;
+        assert_eq!(
+            store.get_namespace("never-minted").await?,
+            None,
+            "an absent name is None, never an error"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_namespaces_is_ascending_by_created_at_then_name() -> Result<(), StoreError> {
+        let store = store("ns-list")?;
+        let base = Utc::now();
+
+        // Mint out of order; assert the list re-sorts. `gamma` and `bravo`
+        // share a created_at so the name tiebreak orders them.
+        let alpha = NamespaceRecord::new_minted("alpha", NamespaceOrigin::Explicit, base);
+        let gamma = NamespaceRecord::new_minted(
+            "gamma",
+            NamespaceOrigin::Explicit,
+            base + Duration::seconds(10),
+        );
+        let bravo = NamespaceRecord::new_minted(
+            "bravo",
+            NamespaceOrigin::Explicit,
+            base + Duration::seconds(10),
+        );
+
+        store.put_namespace(gamma).await?;
+        store.put_namespace(alpha).await?;
+        store.put_namespace(bravo).await?;
+
+        let listed = store.list_namespaces().await?;
+        let names: Vec<String> = listed.into_iter().map(|record| record.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "alpha".to_owned(), // earliest created_at
+                "bravo".to_owned(), // tie on created_at, name < gamma
+                "gamma".to_owned(),
+            ],
+            "list is ascending by created_at, ties broken by name"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deprecate_namespace_sets_state_and_is_idempotent() -> Result<(), StoreError> {
+        let store = store("ns-deprecate")?;
+        store
+            .register_namespace("retiring", NamespaceOrigin::WorkerMint)
+            .await?;
+
+        store.deprecate_namespace("retiring").await?;
+        let after = store
+            .get_namespace("retiring")
+            .await?
+            .expect("deprecating never deletes the record");
+        assert_eq!(
+            after.state,
+            NamespaceState::Deprecated,
+            "deprecate transitions Active -> Deprecated"
+        );
+
+        // Idempotent: deprecating again, or an unknown name, is a no-op.
+        store.deprecate_namespace("retiring").await?;
+        store.deprecate_namespace("no-such-namespace").await?;
+        let still = store
+            .get_namespace("retiring")
+            .await?
+            .expect("record must persist across a redundant deprecate");
+        assert_eq!(still.state, NamespaceState::Deprecated);
         Ok(())
     }
 }
