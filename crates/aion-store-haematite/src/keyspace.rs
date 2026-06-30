@@ -19,6 +19,7 @@
 //! | `p`  | deployed packages     | `p: || type || 0x1f || content_hash`        |
 //! | `r`  | package routes        | `r: || workflow_type`                       |
 //! | `o`  | outbox rows           | `o: || dispatch_key`                        |
+//! | `n`  | namespace registry    | `n: || namespace_name`                      |
 //!
 //! Range scans over a tag prefix use the half-open upper bound produced by
 //! [`prefix_upper_bound`]. Because the single-node store runs haematite with
@@ -107,6 +108,39 @@ pub(crate) const OUTBOX_PREFIX: &[u8] = b"o:";
 /// Outbox key for `dispatch_key`.
 pub(crate) fn outbox_key(dispatch_key: &str) -> Vec<u8> {
     composite(OUTBOX_PREFIX, &[dispatch_key.as_bytes()])
+}
+
+/// Prefix for the namespace-registry region (Control-Plane Phase 1).
+///
+/// A registry record names a durable, minted-on-use namespace so the live set of
+/// namespaces is listable and survives owner-node death. The single-byte tag `n`
+/// is disjoint from every other region tag (`E`, `t`, `p`, `r`, `o`, `d`) and
+/// from the `0x00`-suffixed event-stream keyspace, so a namespace record never
+/// collides with any other durable record. Records are written through the
+/// quorum-replicated fenced path ([`crate::HaematiteStore::register_namespace_record`])
+/// in distributed mode so the registry travels with its shard on failover.
+pub(crate) const NAMESPACE_PREFIX: &[u8] = b"n:";
+
+/// Registry key for `name`: `n: || namespace_name`.
+pub(crate) fn namespace_key(name: &str) -> Vec<u8> {
+    composite(NAMESPACE_PREFIX, &[name.as_bytes()])
+}
+
+/// Decode a namespace-registry key back into its namespace name.
+///
+/// The inverse of [`namespace_key`]: strips the `n:` prefix and re-reads the
+/// remaining bytes as UTF-8. Returns `None` for a key that is not in the
+/// namespace region or whose suffix is not valid UTF-8, so a prefix scan can
+/// defensively skip a malformed key rather than fail the whole enumeration.
+///
+/// The list path decodes each record from its VALUE (which carries the name), so
+/// this key inverse is not yet exercised by the store; it is the declared seam
+/// for the S4 boot-wiring / key-driven enumeration that follows this slice, kept
+/// alongside [`namespace_key`] so the round-trip is provable today.
+#[allow(dead_code)]
+pub(crate) fn namespace_from_key(key: &[u8]) -> Option<String> {
+    let suffix = key.strip_prefix(NAMESPACE_PREFIX)?;
+    String::from_utf8(suffix.to_vec()).ok()
 }
 
 /// Prefix for the shard-owner directory region (SS-3).
@@ -211,6 +245,35 @@ mod tests {
         assert_eq!(
             workflow_type_from_route_key(&key).as_deref(),
             Some("checkout")
+        );
+    }
+
+    #[test]
+    fn namespace_key_round_trips() {
+        let key = namespace_key("orders");
+        assert_eq!(namespace_from_key(&key).as_deref(), Some("orders"));
+    }
+
+    #[test]
+    fn namespace_key_is_tagged_and_disjoint_from_other_regions() {
+        let key = namespace_key("default");
+        assert_eq!(&key[..2], NAMESPACE_PREFIX);
+        // Disjoint from every other single-byte region tag.
+        assert_ne!(&key[..2], TIMER_PREFIX);
+        assert_ne!(&key[..2], PACKAGE_PREFIX);
+        assert_ne!(&key[..2], ROUTE_PREFIX);
+        assert_ne!(&key[..2], OUTBOX_PREFIX);
+        assert_ne!(&key[..2], SHARD_OWNER_PREFIX);
+        // Not the `E`-tagged event-stream keyspace either.
+        assert_ne!(key[0], b'E');
+    }
+
+    #[test]
+    fn namespace_from_key_rejects_foreign_keys() {
+        // A timer-region key is not a namespace key.
+        assert_eq!(
+            namespace_from_key(timer_key(&WorkflowId::new(Uuid::from_u128(3)), "t").as_slice()),
+            None
         );
     }
 
