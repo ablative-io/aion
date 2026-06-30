@@ -120,6 +120,7 @@ fn runtime_config() -> RuntimeConfig {
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: "default".to_owned(),
+        auto_create: aion_server::config::AutoCreate::default(),
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: false },
         owned_shards: Vec::new(),
