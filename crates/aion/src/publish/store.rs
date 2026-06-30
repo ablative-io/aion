@@ -151,6 +151,18 @@ impl WritableEventStore for PublishingEventStore {
     async fn rearm_outbox_pending(&self, rows: &[aion_store::OutboxRow]) -> Result<(), StoreError> {
         self.inner.rearm_outbox_pending(rows).await
     }
+
+    /// Forward the fan-out cancellation settle to the wrapped store.
+    ///
+    /// MUST be forwarded: the trait default is a SILENT `Ok(())` no-op, so
+    /// without this override a cancelled fan-out ordinal's outbox row is never
+    /// settled on an `outbox.enabled` server — it stays claimable and the
+    /// dispatcher re-dispatches the cancelled activity. Same silent-default
+    /// forwarding hazard as the per-shard failover seam (#157). Settle writes no
+    /// history events, so there is nothing to publish.
+    async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        self.inner.settle_outbox_row_cancelled(dispatch_key).await
+    }
 }
 
 #[async_trait]
@@ -475,6 +487,58 @@ mod tests {
         assert!(
             calls.contains(&"publish_shard_owner:2".to_owned()),
             "spy did not record publish_shard_owner:2 — call was not forwarded; saw {calls:?}"
+        );
+
+        // The three PLURAL owned-shard seams have no value sentinel (their
+        // defaults — and the spy's inner InMemoryStore — are no-op/`Ok(())`), so
+        // forwarding is proved by the recorded call alone. These were unguarded
+        // before: a dropped forward (e.g. `extend_owned_shards`, which gates which
+        // adopted shards recovery enumerates) would regress silently like #157.
+        store.set_owned_shards(Some(&[3]));
+        assert!(
+            store.acquire_owned_shards(&[4]).is_ok(),
+            "acquire_owned_shards must forward to the spy's inner Ok(()), not error"
+        );
+        store.extend_owned_shards(&[5]);
+
+        let calls = spy.calls();
+        for expected in [
+            "set_owned_shards:Some([3])",
+            "acquire_owned_shards:[4]",
+            "extend_owned_shards:[5]",
+        ] {
+            assert!(
+                calls.contains(&expected.to_owned()),
+                "spy did not record {expected} — call was not forwarded; saw {calls:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Regression guard (#157 family): the decorator must FORWARD
+    /// `settle_outbox_row_cancelled` to its inner store. The trait default is a
+    /// silent `Ok(())` no-op, so a dropped forward strands a cancelled fan-out
+    /// ordinal's outbox row — it stays claimable and the dispatcher re-dispatches
+    /// the cancelled activity. The spy records the call and returns an `Err`
+    /// sentinel distinct from that default, so the swallow is caught either way.
+    #[tokio::test]
+    async fn forwards_outbox_cancel_settle_to_inner() -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::testing::ShardSeamSpy;
+
+        let spy = Arc::new(ShardSeamSpy::new());
+        let store = PublishingEventStore::new(
+            Arc::clone(&spy) as Arc<dyn aion_store::EventStore>,
+            capacity(8)?,
+        )?;
+
+        assert!(
+            store.settle_outbox_row_cancelled("wf-7").await.is_err(),
+            "settle must forward to the spy's Err sentinel, not the silent Ok(()) no-op default"
+        );
+        let calls = spy.calls();
+        assert!(
+            calls.contains(&"settle_outbox_row_cancelled:wf-7".to_owned()),
+            "spy did not record settle_outbox_row_cancelled — the decorator swallowed it; saw {calls:?}"
         );
         Ok(())
     }
