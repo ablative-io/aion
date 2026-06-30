@@ -95,6 +95,7 @@ fn test_runtime() -> aion_server::config::RuntimeConfig {
         query_timeout: Some(Duration::from_millis(5_000)),
         default_namespace: "default".to_owned(),
         auto_create: aion_server::config::AutoCreate::Open,
+        max_in_flight_activities: aion_server::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
         owned_shards: Vec::new(),
