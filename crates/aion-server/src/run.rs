@@ -1182,7 +1182,9 @@ mod lsub_prod_xnode_e2e {
             )));
         }
         let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(test_error)?;
-        let workflow_id = body["workflow_id"]["uuid"]
+        // The HTTP wire contract (`clean_dtos::StartWorkflowResponse`) serializes
+        // `workflow_id` as a plain UUID string, not a nested `{ uuid }` object.
+        let workflow_id = body["workflow_id"]
             .as_str()
             .ok_or_else(|| test_error("start response missing workflow id"))?
             .parse::<uuid::Uuid>()
