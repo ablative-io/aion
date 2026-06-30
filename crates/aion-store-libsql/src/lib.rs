@@ -23,6 +23,7 @@ pub mod config;
 pub mod connection;
 /// Error conversion helpers for libSQL-backed storage.
 pub mod error;
+mod namespace;
 mod outbox;
 #[cfg(test)]
 #[path = "outbox_tests.rs"]

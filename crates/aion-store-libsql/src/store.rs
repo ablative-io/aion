@@ -3,9 +3,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use aion_store::{
-    ClaimScope, Event, OutboxRow, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
-    ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
-    WorkflowSummary, WritableEventStore, WriteToken,
+    ClaimScope, Event, MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceStore, OutboxRow,
+    OutboxStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore, RunSummary,
+    StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
+    WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -169,6 +170,33 @@ impl PackageStore for LibSqlStore {
 
     async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
         crate::package::list_package_routes(self.connection()).await
+    }
+}
+
+#[async_trait]
+impl NamespaceStore for LibSqlStore {
+    async fn register_namespace(
+        &self,
+        name: &str,
+        origin: NamespaceOrigin,
+    ) -> Result<MintOutcome, StoreError> {
+        crate::namespace::register_namespace(self.connection(), name, origin).await
+    }
+
+    async fn put_namespace(&self, record: NamespaceRecord) -> Result<MintOutcome, StoreError> {
+        crate::namespace::put_namespace(self.connection(), record).await
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<NamespaceRecord>, StoreError> {
+        crate::namespace::list_namespaces(self.connection()).await
+    }
+
+    async fn get_namespace(&self, name: &str) -> Result<Option<NamespaceRecord>, StoreError> {
+        crate::namespace::get_namespace(self.connection(), name).await
+    }
+
+    async fn deprecate_namespace(&self, name: &str) -> Result<(), StoreError> {
+        crate::namespace::deprecate_namespace(self.connection(), name).await
     }
 }
 

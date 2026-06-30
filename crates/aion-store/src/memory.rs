@@ -1,7 +1,7 @@
 //! `InMemoryStore` reference implementation and behavioural test suite.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use aion_core::{
     Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
@@ -9,6 +9,9 @@ use aion_core::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::namespace::{
+    MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceState, NamespaceStore,
+};
 use crate::package::{PackageRecord, PackageRouteRecord, PackageStore};
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
 use crate::{
@@ -19,6 +22,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     state: Mutex<InMemoryState>,
+    namespaces: Mutex<BTreeMap<String, NamespaceRecord>>,
 }
 
 #[async_trait]
@@ -88,6 +92,17 @@ impl InMemoryStore {
         self.state
             .lock()
             .map_err(|error| StoreError::Backend(format!("in-memory store lock poisoned: {error}")))
+    }
+
+    /// Poison-tolerant lock over the namespace registry map.
+    ///
+    /// The namespace operations have no fallible body beyond the lock, so a
+    /// poisoned guard is recovered in place (matching the recording test-double
+    /// pattern in `testing.rs`) rather than surfaced as a `StoreError`.
+    fn lock_namespaces(&self) -> MutexGuard<'_, BTreeMap<String, NamespaceRecord>> {
+        self.namespaces
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -163,6 +178,69 @@ impl PackageStore for InMemoryStore {
             .collect();
         routes.sort_by(|left, right| left.workflow_type.cmp(&right.workflow_type));
         Ok(routes)
+    }
+}
+
+#[async_trait]
+impl NamespaceStore for InMemoryStore {
+    async fn register_namespace(
+        &self,
+        name: &str,
+        origin: NamespaceOrigin,
+    ) -> Result<MintOutcome, StoreError> {
+        let now = Utc::now();
+        let mut namespaces = self.lock_namespaces();
+        if let Some(existing) = namespaces.get_mut(name) {
+            existing.bump_last_seen(now);
+            Ok(MintOutcome::AlreadyExisted)
+        } else {
+            namespaces.insert(
+                name.to_owned(),
+                NamespaceRecord::new_minted(name, origin, now),
+            );
+            Ok(MintOutcome::Created)
+        }
+    }
+
+    async fn put_namespace(&self, record: NamespaceRecord) -> Result<MintOutcome, StoreError> {
+        let now = Utc::now();
+        let mut namespaces = self.lock_namespaces();
+        if let Some(existing) = namespaces.get_mut(&record.name) {
+            // Idempotent on an existing name: reconcile as already-existing
+            // rather than overwriting the durable record wholesale. Only the
+            // staleness signal is refreshed.
+            existing.bump_last_seen(now);
+            Ok(MintOutcome::AlreadyExisted)
+        } else {
+            namespaces.insert(record.name.clone(), record);
+            Ok(MintOutcome::Created)
+        }
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<NamespaceRecord>, StoreError> {
+        let namespaces = self.lock_namespaces();
+        let mut records: Vec<NamespaceRecord> = namespaces.values().cloned().collect();
+        records.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(records)
+    }
+
+    async fn get_namespace(&self, name: &str) -> Result<Option<NamespaceRecord>, StoreError> {
+        let namespaces = self.lock_namespaces();
+        Ok(namespaces.get(name).cloned())
+    }
+
+    async fn deprecate_namespace(&self, name: &str) -> Result<(), StoreError> {
+        let mut namespaces = self.lock_namespaces();
+        if let Some(existing) = namespaces.get_mut(name) {
+            existing.state = NamespaceState::Deprecated;
+        }
+        // A missing row is an idempotent no-op: deprecation never strands
+        // durable history and an absent registry entry is not an error.
+        Ok(())
     }
 }
 
@@ -757,6 +835,177 @@ mod tests {
                 },
             ]
         );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod namespace_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::InMemoryStore;
+    use crate::namespace::{MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceState};
+    use crate::{NamespaceStore, StoreError};
+    use chrono::{TimeZone, Utc};
+
+    #[tokio::test]
+    async fn register_creates_if_absent_and_persists() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+
+        let outcome = store
+            .register_namespace("orders", NamespaceOrigin::WorkerMint)
+            .await?;
+
+        assert_eq!(outcome, MintOutcome::Created);
+        let record = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(record.name, "orders");
+        assert_eq!(record.origin, NamespaceOrigin::WorkerMint);
+        assert_eq!(record.state, NamespaceState::Active);
+        assert_eq!(record.created_at, record.last_seen);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_register_already_existed_bumps_last_seen_only() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+
+        let first = store
+            .register_namespace("orders", NamespaceOrigin::WorkerMint)
+            .await?;
+        assert_eq!(first, MintOutcome::Created);
+        let original = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+
+        // A different origin on re-register must NOT overwrite the recorded origin.
+        let second = store
+            .register_namespace("orders", NamespaceOrigin::Explicit)
+            .await?;
+        assert_eq!(second, MintOutcome::AlreadyExisted);
+
+        let touched = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(touched.created_at, original.created_at);
+        assert_eq!(touched.origin, NamespaceOrigin::WorkerMint);
+        assert!(touched.last_seen >= original.last_seen);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn put_namespace_is_idempotent_on_existing_name() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        let now = Utc
+            .with_ymd_and_hms(2026, 6, 30, 12, 0, 0)
+            .single()
+            .expect("valid instant");
+
+        let mut record = NamespaceRecord::new_minted("billing", NamespaceOrigin::Explicit, now);
+        record.config.kind = Some("tenant".to_owned());
+
+        let created = store.put_namespace(record.clone()).await?;
+        assert_eq!(created, MintOutcome::Created);
+
+        // A second put with a DIFFERENT record body must reconcile as
+        // AlreadyExisted and must not overwrite the stored record wholesale.
+        let mut replacement =
+            NamespaceRecord::new_minted("billing", NamespaceOrigin::WorkerMint, now);
+        replacement.config.kind = None;
+        let again = store.put_namespace(replacement).await?;
+        assert_eq!(again, MintOutcome::AlreadyExisted);
+
+        let stored = store
+            .get_namespace("billing")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(stored.origin, NamespaceOrigin::Explicit);
+        assert_eq!(stored.config.kind.as_deref(), Some("tenant"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_orders_by_created_at_then_name() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        let earlier = Utc
+            .with_ymd_and_hms(2026, 6, 30, 12, 0, 0)
+            .single()
+            .expect("valid instant");
+        let later = Utc
+            .with_ymd_and_hms(2026, 6, 30, 13, 0, 0)
+            .single()
+            .expect("valid instant");
+
+        // Two share `earlier` (tiebreak by name), one is `later`.
+        store
+            .put_namespace(NamespaceRecord::new_minted(
+                "zeta",
+                NamespaceOrigin::Explicit,
+                earlier,
+            ))
+            .await?;
+        store
+            .put_namespace(NamespaceRecord::new_minted(
+                "alpha",
+                NamespaceOrigin::Explicit,
+                earlier,
+            ))
+            .await?;
+        store
+            .put_namespace(NamespaceRecord::new_minted(
+                "beta",
+                NamespaceOrigin::Explicit,
+                later,
+            ))
+            .await?;
+
+        let listed: Vec<String> = store
+            .list_namespaces()
+            .await?
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+
+        assert_eq!(listed, vec!["alpha", "zeta", "beta"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_for_absent_name() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        assert!(store.get_namespace("missing").await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deprecate_sets_state_and_is_idempotent() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        store
+            .register_namespace("orders", NamespaceOrigin::WorkerMint)
+            .await?;
+
+        store.deprecate_namespace("orders").await?;
+        let deprecated = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(deprecated.state, NamespaceState::Deprecated);
+
+        // Deprecating again is a no-op, not an error.
+        store.deprecate_namespace("orders").await?;
+        let still = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(still.state, NamespaceState::Deprecated);
+
+        // Deprecating an absent namespace is also an idempotent no-op.
+        store.deprecate_namespace("never-seen").await?;
+        assert!(store.get_namespace("never-seen").await?.is_none());
         Ok(())
     }
 }
