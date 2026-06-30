@@ -64,10 +64,10 @@ pub use deploy::DeployGuard;
 pub use dev_ui::{ActivityMockRegistry, DevMockingDispatcher, MockedActivity};
 pub use error::{ServerError, StreamFailure};
 pub use namespace::{
-    CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceOperation, NamespaceResolver,
-    ScheduleNamespaceSource, ScheduleTarget, ScopedEngine, StaticScheduleNamespaces,
-    StaticWorkflowNamespaces, SubscriptionScope, TASK_QUEUE_ATTRIBUTE, WorkflowAttribution,
-    WorkflowNamespaceSource, WorkflowTarget,
+    CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceGuard, NamespaceMinter, NamespaceOperation,
+    NamespaceResolver, ScheduleNamespaceSource, ScheduleTarget, ScopedEngine,
+    StaticScheduleNamespaces, StaticWorkflowNamespaces, SubscriptionScope, TASK_QUEUE_ATTRIBUTE,
+    WorkflowAttribution, WorkflowNamespaceSource, WorkflowTarget,
 };
 pub use run::run;
 pub use state::ServerState;

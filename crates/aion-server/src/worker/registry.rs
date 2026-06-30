@@ -5,13 +5,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use aion_core::{ClusterEvent, WorkerDeathReason, WorkerTransport};
 use aion_proto::{ProtoActivityTask, ProtoRegisterWorker};
-use aion_store::{MintOutcome, NamespaceOrigin, NamespaceStore};
+use aion_store::{NamespaceOrigin, NamespaceStore};
 use tokio::sync::{Notify, mpsc};
 
 use crate::cluster_publisher::ClusterEventPublisher;
 use crate::config::AutoCreate;
 use crate::error::ServerError;
-use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceOperation};
+use crate::namespace::{CallerIdentity, NamespaceGuard, NamespaceMinter, NamespaceOperation};
 use crate::observability::Metrics;
 
 /// The literal task queue an empty/absent selector normalizes to.
@@ -237,28 +237,6 @@ impl Default for RegistryState {
     }
 }
 
-/// Optional minted-on-use hook installed on the worker registry.
-///
-/// Pairs the durable namespace registry with its [`AutoCreate`] policy. `None`
-/// (every default/test construction) disables minting entirely, keeping
-/// registration behaviour byte-identical to before the registry existed; the
-/// server boot path installs a `Some` so each authorized namespace is durably
-/// recorded (open) or gated (closed) at registration time.
-#[derive(Clone)]
-struct NamespaceMinter {
-    store: Arc<dyn NamespaceStore>,
-    policy: AutoCreate,
-}
-
-impl std::fmt::Debug for NamespaceMinter {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NamespaceMinter")
-            .field("policy", &self.policy)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Cloneable registry of currently connected worker streams.
 #[derive(Clone, Debug)]
 pub struct ConnectedWorkerRegistry {
@@ -322,7 +300,7 @@ impl ConnectedWorkerRegistry {
         store: Arc<dyn NamespaceStore>,
         policy: AutoCreate,
     ) -> Self {
-        self.minter = Some(NamespaceMinter { store, policy });
+        self.minter = Some(NamespaceMinter::new(store, policy));
         self
     }
 
@@ -368,30 +346,13 @@ impl ConnectedWorkerRegistry {
     /// Apply the minted-on-use policy to an already-authorized namespace set.
     ///
     /// A no-op when no minter is installed (every default/test registry), so
-    /// registration stays byte-identical. With a minter:
-    ///
-    /// - [`AutoCreate::Open`]: each namespace is durably upserted via
-    ///   [`NamespaceStore::register_namespace`] with
-    ///   [`NamespaceOrigin::WorkerMint`]; a [`MintOutcome::Created`] (first mint)
-    ///   emits a loud structured `tracing` event — the Phase-1 "namespace
-    ///   created" signal (the socket-delta surfacing lands in a later slice). An
-    ///   [`MintOutcome::AlreadyExisted`] is silent (idempotent re-register).
-    /// - [`AutoCreate::Closed`]: a namespace with no registry row is rejected
-    ///   with a namespace-denied error; nothing is created.
-    ///
-    /// A [`aion_store::StoreError::NotOwner`] from a quorum mint (this node is not the
-    /// namespace shard's owner) propagates unchanged through `?` as
-    /// [`ServerError::StoreBackend`], which surfaces as the typed, *retryable*
-    /// `NotOwner` wire code — never a silent success.
-    ///
-    /// **Closed-policy existence check (Phase 1).** Existence is probed by
-    /// registry-row presence ([`NamespaceStore::get_namespace`]). In a fresh
-    /// Phase-1 deployment every used namespace already has a row minted on first
-    /// register/start, so a missing row correctly means "never referenced".
-    /// The blueprint's stronger "exists if durable STATE too" anchor is
-    /// belt-and-suspenders for the future inference/reap paths, which Phase 1
-    /// does not have; it lands with those paths rather than scanning full
-    /// history here.
+    /// registration stays byte-identical. With a minter, the work is delegated
+    /// to the shared [`NamespaceMinter::mint_or_gate`] — the single
+    /// transport-agnostic implementation reused by the workflow-start safety net
+    /// — with [`NamespaceOrigin::WorkerMint`] so a first mint is attributed to
+    /// worker registration. See that method for the open/closed policy, the
+    /// idempotent "namespace created" event, and the retryable `NotOwner`
+    /// surface.
     ///
     /// # Errors
     ///
@@ -402,32 +363,9 @@ impl ConnectedWorkerRegistry {
         let Some(minter) = &self.minter else {
             return Ok(());
         };
-        for namespace in namespaces {
-            match minter.policy {
-                AutoCreate::Open => {
-                    if minter
-                        .store
-                        .register_namespace(namespace, NamespaceOrigin::WorkerMint)
-                        .await?
-                        == MintOutcome::Created
-                    {
-                        tracing::info!(
-                            namespace = %namespace,
-                            origin = "worker_mint",
-                            "namespace created"
-                        );
-                    }
-                }
-                AutoCreate::Closed => {
-                    if minter.store.get_namespace(namespace).await?.is_none() {
-                        return Err(ServerError::namespace_denied(format!(
-                            "namespace {namespace} does not exist and auto_create is closed"
-                        )));
-                    }
-                }
-            }
-        }
-        Ok(())
+        minter
+            .mint_or_gate(namespaces, NamespaceOrigin::WorkerMint)
+            .await
     }
 
     /// Insert an already-authorized worker stream into the default task queue of

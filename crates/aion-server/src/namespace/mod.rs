@@ -2,6 +2,8 @@
 
 /// Namespace guard rules for workflow operations and subscriptions.
 pub mod guard;
+/// Transport-agnostic minted-on-use namespace hook (Control-Plane Phase 1).
+pub mod minter;
 /// Caller identity resolution and scoped-engine selection.
 pub mod resolver;
 /// Durable schedule→namespace ownership sources.
@@ -10,6 +12,7 @@ pub mod schedule_source;
 pub use guard::{
     NamespaceGuard, NamespaceOperation, ScheduleTarget, SubscriptionScope, WorkflowTarget,
 };
+pub use minter::NamespaceMinter;
 pub use resolver::{
     CallerIdentity, NAMESPACE_ATTRIBUTE, NamespaceResolver, ScopedEngine, StaticWorkflowNamespaces,
     TASK_QUEUE_ATTRIBUTE, WorkflowAttribution, WorkflowNamespaceSource,

@@ -266,11 +266,17 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
                 StartResolution::Reply(reply) => return Ok(Response::new(reply)),
                 StartResolution::Local(placement) => placement,
             };
+            // Minted-on-use safety net (Phase 1 S6): mint/gate the authorized
+            // namespace before the engine start, sharing the SAME policy the
+            // worker-registration seam applies. Auth-scoped (`guard.scope` runs
+            // inside the handler); placement is the orthogonal steered-start id.
+            let minter = self.state.namespace_minter();
             let response = handlers::start_with_placement(
                 self.state.namespace_guard(),
                 &caller,
                 decode_start_request(inner),
                 placement,
+                Some(&minter),
             )
             .await
             .map_err(status_from_wire_error)?;
@@ -279,11 +285,16 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
         #[cfg(not(feature = "haematite-backend"))]
         {
             let placement: Option<aion_core::WorkflowId> = None;
+            // Minted-on-use safety net (Phase 1 S6): mint/gate the authorized
+            // namespace before the engine start, sharing the SAME policy the
+            // worker-registration seam applies.
+            let minter = self.state.namespace_minter();
             let response = handlers::start_with_placement(
                 self.state.namespace_guard(),
                 &caller,
                 decode_start_request(request.into_inner()),
                 placement,
+                Some(&minter),
             )
             .await
             .map_err(status_from_wire_error)?;
