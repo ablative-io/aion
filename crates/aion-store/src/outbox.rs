@@ -376,6 +376,29 @@ pub trait OutboxStore: Send + Sync + 'static {
     ///
     /// Returns [`StoreError::Backend`] for backend boundary failures.
     async fn fail_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError>;
+
+    /// Returns the count of in-flight outbox rows for `namespace` (CP2-Q1.5).
+    ///
+    /// "In-flight" is the dispatched-but-not-terminal set: rows whose `status` is
+    /// [`OutboxStatus::Pending`] OR [`OutboxStatus::Claimed`]. Terminal rows
+    /// ([`OutboxStatus::Done`], [`OutboxStatus::Failed`], [`OutboxStatus::Cancelled`]) are excluded.
+    ///
+    /// This is the durable, restart-correct quota source that replaces the in-memory
+    /// `inflight_activities` gauge proven dead in P2-Q0 (see `docs/design/CONTROL-PLANE-PHASE-2.md`
+    /// §3.3/§8). Because it counts durable rows, the count survives a restart, and because a
+    /// `Claimed` row is in-flight, a row that dispatched but whose `mark_done` failed (the
+    /// stuck-`Claimed` case) is still counted — it has not reached a terminal outcome and the worker
+    /// may still be running it. The count is strictly scoped to `namespace`: rows in any other
+    /// namespace are never included.
+    ///
+    /// Nothing consumes this yet (P2-Q2 will); it is a pure additive store query with no behaviour
+    /// change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn count_inflight_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError>;
 }
 
 #[cfg(test)]
