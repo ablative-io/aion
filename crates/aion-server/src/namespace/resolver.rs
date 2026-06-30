@@ -186,7 +186,15 @@ impl CallerIdentity {
         self.all_namespaces
     }
 
-    fn can_access(&self, namespace: &str) -> bool {
+    /// Whether this caller may access `namespace`: the all-namespaces operator
+    /// always can; an enumerated caller can only for a granted name.
+    ///
+    /// This is the existence-leak boundary for read enumeration (`GET
+    /// /namespaces`): a caller must never learn that a namespace it cannot
+    /// access exists, so the durable set is filtered through this predicate at
+    /// the read hop, exactly as [`Self::resolve`]'s grant check gates the access
+    /// hop.
+    pub(crate) fn can_access(&self, namespace: &str) -> bool {
         self.all_namespaces || self.namespaces.contains(namespace)
     }
 

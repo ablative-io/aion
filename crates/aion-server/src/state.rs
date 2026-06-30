@@ -269,6 +269,30 @@ impl ServerState {
     /// Build shared state from explicit parts with a default worker registry.
     #[must_use]
     pub fn from_parts(namespace_resolver: NamespaceResolver, runtime: RuntimeConfig) -> Self {
+        // No durable store was supplied (this constructor builds state from a
+        // resolver only), so the registry is a local-only in-memory store —
+        // present so `namespace_store()` is always reachable, never mutating any
+        // durable backend.
+        Self::from_parts_with_namespace_store(
+            namespace_resolver,
+            runtime,
+            Arc::new(aion_store::InMemoryStore::default()),
+        )
+    }
+
+    /// Build shared state from explicit parts with a caller-supplied durable
+    /// namespace registry.
+    ///
+    /// Identical to [`Self::from_parts`] except the namespace registry is the
+    /// supplied store rather than a fresh in-memory one, so a caller can seed the
+    /// durable set the control-plane read/create paths (`GET`/`POST
+    /// /namespaces`) observe.
+    #[must_use]
+    pub fn from_parts_with_namespace_store(
+        namespace_resolver: NamespaceResolver,
+        runtime: RuntimeConfig,
+        namespace_store: Arc<dyn NamespaceStore>,
+    ) -> Self {
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         Self {
             inner: Arc::new(ServerStateInner {
@@ -282,11 +306,7 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
-                // No durable store was supplied (these constructors build state
-                // from a resolver only), so the registry is a local-only
-                // in-memory store — present so `namespace_store()` is always
-                // reachable, never mutating any durable backend.
-                namespace_store: Arc::new(aion_store::InMemoryStore::default()),
+                namespace_store,
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,

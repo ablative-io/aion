@@ -184,21 +184,85 @@ pub(crate) async fn describe_workflow(
 /// List the namespaces the caller can select, sorted.
 ///
 /// Backs the ops console's namespace discovery (`client.listNamespaces()` ->
-/// `GET /namespaces`). For an enumerated caller (a token/header grant) the
-/// server returns exactly that caller's authorized namespaces, mirroring the
-/// auth model. An OPERATOR (auth-off single-tenant mode) holds all-namespace
-/// access via [`CallerIdentity::all_namespaces`] with an EMPTY explicit set, so
-/// returning that set would leave the console with "no namespaces"; instead
-/// surface the server's configured namespace so the operator has a concrete
-/// namespace to select and operate in.
+/// `GET /namespaces`). Returns the REAL durable set from the registry
+/// ([`ServerState::namespace_store`]), filtered by the caller's grant: an
+/// OPERATOR (auth-off single-tenant mode) sees every durable namespace, while an
+/// enumerated caller sees only the namespaces it [`CallerIdentity::can_access`].
+///
+/// The filter is the existence-leak boundary (CVE-2025-14986 family): a caller
+/// must never learn that a namespace it cannot access exists, so unauthorized
+/// names are dropped before the response is built. The result is sorted and
+/// deduplicated, keeping the `Vec<String>` response shape the ops console reads.
 pub(crate) async fn list_namespaces(
     State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
 ) -> Result<Json<Vec<String>>, HttpWireError> {
-    if caller.all_namespaces() {
-        return Ok(Json(vec![state.runtime_config().default_namespace.clone()]));
+    let records = state
+        .namespace_store()
+        .list_namespaces()
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+    let mut names: Vec<String> = records
+        .into_iter()
+        .map(|record| record.name)
+        .filter(|name| caller.can_access(name))
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(Json(names))
+}
+
+/// Request body for an explicit operator namespace create (`POST /namespaces`).
+#[derive(serde::Deserialize)]
+pub(crate) struct CreateNamespaceRequest {
+    /// The namespace name to create. Free-form, exactly as carried elsewhere on
+    /// the wire; must be non-empty.
+    name: String,
+}
+
+/// Response for an explicit namespace create: the resulting name plus whether
+/// this call brought the durable record into being or observed an existing one.
+#[derive(serde::Serialize)]
+pub(crate) struct CreateNamespaceResponse {
+    /// The durable namespace name.
+    name: String,
+    /// `true` when this call minted the record, `false` when it already existed
+    /// (the idempotent re-create path).
+    created: bool,
+}
+
+/// Explicit operator namespace create (`POST /namespaces`).
+///
+/// Auth-scoped: the caller must be authorized for the requested namespace via
+/// the SAME grant check the access path runs ([`NamespaceGuard::authorize_namespace`]),
+/// so a caller can never create — or learn the existence of — a namespace it
+/// cannot access. Idempotent: the durable upsert via `register_namespace` mints
+/// the record on the first call and reconciles a subsequent call as an existing
+/// record, reporting which occurred through `created`.
+pub(crate) async fn post_namespace(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<CreateNamespaceRequest>,
+) -> Result<Json<CreateNamespaceResponse>, HttpWireError> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err(HttpWireError(aion_proto::WireError::invalid_input(
+            "namespace name must not be empty",
+        )));
     }
-    Ok(Json(caller.namespaces()))
+    let authorized = state
+        .namespace_guard()
+        .authorize_namespace(&caller, name)
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    let outcome = state
+        .namespace_store()
+        .register_namespace(&authorized, aion_store::NamespaceOrigin::Explicit)
+        .await
+        .map_err(|error| HttpWireError(ServerError::from(error).to_wire_error()))?;
+    Ok(Json(CreateNamespaceResponse {
+        name: authorized,
+        created: matches!(outcome, aion_store::MintOutcome::Created),
+    }))
 }
 
 #[cfg(test)]
@@ -526,11 +590,14 @@ mod tests {
         Ok(())
     }
 
-    /// `GET /namespaces` returns the caller's authorized namespaces as sorted
-    /// JSON, resolving against the api router rather than falling through to the
-    /// ops console SPA catch-all (which would answer with HTML).
-    #[tokio::test]
-    async fn http_list_namespaces_returns_sorted_json() -> Result<(), Box<dyn std::error::Error>> {
+    /// Build a router whose durable namespace registry is seeded with `seed`,
+    /// over a `SharedEngine`-mode resolver. The returned `Arc<dyn NamespaceStore>`
+    /// is the SAME store the handlers read/write, so a test can assert durable
+    /// reads after a `POST`.
+    async fn router_with_seeded_namespaces(
+        config: crate::config::RuntimeConfig,
+        seed: &[&str],
+    ) -> Result<(Router, Arc<dyn aion_store::NamespaceStore>), Box<dyn std::error::Error>> {
         let store: Arc<dyn aion_store::EventStore> = Arc::new(aion_store::InMemoryStore::default());
         let engine = Arc::new(
             aion::EngineBuilder::new()
@@ -540,15 +607,59 @@ mod tests {
                 .build()
                 .await?,
         );
+        let namespace_store: Arc<dyn aion_store::NamespaceStore> =
+            Arc::new(aion_store::InMemoryStore::default());
+        for name in seed {
+            namespace_store
+                .register_namespace(name, aion_store::NamespaceOrigin::Explicit)
+                .await?;
+        }
         let resolver = NamespaceResolver::from_parts(
             NamespaceMode::SharedEngine,
             Some(engine),
             Arc::new(StaticWorkflowNamespaces::default()),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        let router = workflow_router(server_state(resolver, runtime_config()).await?);
+        let state = crate::ServerState::from_parts_with_namespace_store(
+            resolver,
+            config,
+            Arc::clone(&namespace_store),
+        );
+        Ok((workflow_router(state), namespace_store))
+    }
 
-        let response = router.oneshot(namespaces_request()?).await?;
+    /// Request to `GET /namespaces` as an enumerated caller granted exactly the
+    /// `tenant-a` namespace (the dev-header grant under the non-auth path, the
+    /// signed `namespace` claim under the auth path).
+    fn list_request_for_tenant_a()
+    -> Result<axum::http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", NAMESPACE)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = super::super::test_support::TOKEN.to_owned();
+        Ok(axum::http::Request::builder()
+            .uri("/namespaces")
+            .method("GET")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-aion-subject", "alice")
+            .header("x-aion-namespaces", NAMESPACE)
+            .body(axum::body::Body::empty())?)
+    }
+
+    /// `GET /namespaces` returns the REAL durable set filtered by the caller's
+    /// grant: an enumerated caller sees ONLY the durable namespaces it can
+    /// access, never the existence of namespaces it cannot (anti-existence-leak),
+    /// and the response is JSON, not the ops-console SPA HTML.
+    #[tokio::test]
+    async fn list_namespaces_returns_durable_set_filtered_for_enumerated_caller()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Seed three durable namespaces; the enumerated caller is granted only
+        // `tenant-a` (NAMESPACE). `tenant-b` and `secret` must never appear.
+        let (router, _store) =
+            router_with_seeded_namespaces(runtime_config(), &[NAMESPACE, "tenant-b", "secret"])
+                .await?;
+
+        let response = router.oneshot(list_request_for_tenant_a()?).await?;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response
@@ -559,41 +670,26 @@ mod tests {
             "GET /namespaces must return JSON, not the ops console SPA HTML"
         );
         let body = read_text(response).await?;
-        assert!(
-            !body.contains('<'),
-            "GET /namespaces must not return HTML: {body}"
-        );
+        assert!(!body.contains('<'), "must not return HTML: {body}");
         let namespaces: Vec<String> = serde_json::from_str(&body)?;
-        assert_eq!(namespaces, EXPECTED_NAMESPACES);
+        assert_eq!(
+            namespaces,
+            vec![NAMESPACE.to_owned()],
+            "enumerated caller sees only its authorized durable namespace, never the others' existence"
+        );
         Ok(())
     }
 
-    /// Regression ("No namespaces available"): the auth-off operator holds
-    /// all-namespace access via `all_namespaces()` with an EMPTY explicit set,
-    /// so `GET /namespaces` must surface the server's configured namespace (so
-    /// the console selector is populated) rather than the empty grant set.
+    /// The operator (auth-off single-tenant mode) sees EVERY durable namespace,
+    /// sorted — the real registry set, not the synthetic configured-namespace
+    /// echo the stopgap returned.
     #[tokio::test]
-    async fn auth_off_operator_namespace_list_is_the_configured_namespace()
+    async fn list_namespaces_returns_full_durable_set_for_operator()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut config = runtime_config();
         config.auth.enabled = false;
-        let expected = vec![config.default_namespace.clone()];
-        let store: Arc<dyn aion_store::EventStore> = Arc::new(aion_store::InMemoryStore::default());
-        let engine = Arc::new(
-            aion::EngineBuilder::new()
-                .store_arc(store)
-                .in_memory_visibility()
-                .scheduler_threads(1)
-                .build()
-                .await?,
-        );
-        let resolver = NamespaceResolver::from_parts(
-            NamespaceMode::SharedEngine,
-            Some(engine),
-            Arc::new(StaticWorkflowNamespaces::default()),
-            Arc::new(StaticScheduleNamespaces::default()),
-        );
-        let router = workflow_router(server_state(resolver, config).await?);
+        let (router, _store) =
+            router_with_seeded_namespaces(config, &["zeta", "alpha", "tenant-a"]).await?;
 
         let response = router
             .oneshot(
@@ -606,34 +702,114 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let namespaces: Vec<String> = read_json(response).await?;
         assert_eq!(
-            namespaces, expected,
-            "auth-off operator must see the configured namespace, not an empty list"
+            namespaces,
+            vec!["alpha".to_owned(), "tenant-a".to_owned(), "zeta".to_owned()],
+            "operator sees the full durable set, sorted"
         );
         Ok(())
     }
 
-    /// Under the development header path the comma-separated `x-aion-namespaces`
-    /// header yields both grants; under the JWT path the token carries a single
-    /// namespace claim. Either way the response is the caller's sorted grants.
-    #[cfg(not(feature = "auth"))]
-    const EXPECTED_NAMESPACES: &[&str] = &["alpha", "beta"];
-    #[cfg(feature = "auth")]
-    const EXPECTED_NAMESPACES: &[&str] = &["beta"];
+    /// `POST /namespaces` is idempotent: the first create mints the record
+    /// (`created = true`), a second create observes the existing one
+    /// (`created = false`), and the durable store holds exactly one record.
+    #[tokio::test]
+    async fn post_namespace_is_idempotent_create_then_already_existed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Operator mode so the caller is authorized for the namespace it creates.
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let (router, store) = router_with_seeded_namespaces(config, &[]).await?;
 
-    fn namespaces_request()
-    -> Result<axum::http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
-        #[cfg(feature = "auth")]
-        // The JWT path derives grants from the signed `namespace` claim; mint a
-        // token granting `beta` so the header is irrelevant to the outcome.
-        let bearer = crate::auth::test_support::mint_token("alice", "beta")?;
-        #[cfg(not(feature = "auth"))]
-        let bearer = super::super::test_support::TOKEN.to_owned();
-        Ok(axum::http::Request::builder()
-            .uri("/namespaces")
-            .method("GET")
-            .header("authorization", format!("Bearer {bearer}"))
-            .header("x-aion-subject", "alice")
-            .header("x-aion-namespaces", "beta,alpha")
-            .body(axum::body::Body::empty())?)
+        let first = router
+            .clone()
+            .oneshot(json_request("/namespaces", &json!({ "name": "orders" }))?)
+            .await?;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body: serde_json::Value = read_json(first).await?;
+        assert_eq!(first_body["name"], "orders");
+        assert_eq!(
+            first_body["created"], true,
+            "first create must mint the record"
+        );
+
+        let second = router
+            .oneshot(json_request("/namespaces", &json!({ "name": "orders" }))?)
+            .await?;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body: serde_json::Value = read_json(second).await?;
+        assert_eq!(
+            second_body["created"], false,
+            "second create must observe the existing record (idempotent)"
+        );
+
+        // Exactly one durable record, read back from the same store.
+        let listed = store.list_namespaces().await?;
+        assert_eq!(
+            listed.iter().filter(|r| r.name == "orders").count(),
+            1,
+            "an idempotent create yields exactly one durable record"
+        );
+        let record = store
+            .get_namespace("orders")
+            .await?
+            .ok_or("created namespace must be durably retrievable")?;
+        assert_eq!(record.origin, aion_store::NamespaceOrigin::Explicit);
+        Ok(())
+    }
+
+    /// `POST /namespaces` is auth-scoped: an enumerated caller cannot create a
+    /// namespace it has no grant for, and the attempt writes NOTHING durably
+    /// (no enumeration oracle, no unauthorized mint).
+    #[cfg(not(feature = "auth"))]
+    #[tokio::test]
+    async fn post_namespace_rejects_unauthorized_caller() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Auth-enabled, enumerated caller granted only `tenant-a` (via
+        // `json_request`'s `x-aion-namespaces` header), attempting to create
+        // `forbidden`.
+        let (router, store) = router_with_seeded_namespaces(runtime_config(), &[]).await?;
+
+        let response = router
+            .oneshot(json_request(
+                "/namespaces",
+                &json!({ "name": "forbidden" }),
+            )?)
+            .await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a caller without a grant must be denied namespace create"
+        );
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::NamespaceDenied);
+
+        // The denial must not have minted anything: no durable trace of the
+        // unauthorized namespace.
+        assert!(
+            store.get_namespace("forbidden").await?.is_none(),
+            "an unauthorized create must write nothing durably"
+        );
+        Ok(())
+    }
+
+    /// `POST /namespaces` rejects an empty name with a typed `invalid_input`
+    /// wire error rather than panicking or minting a blank record.
+    #[tokio::test]
+    async fn post_namespace_rejects_empty_name() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let (router, store) = router_with_seeded_namespaces(config, &[]).await?;
+
+        let response = router
+            .oneshot(json_request("/namespaces", &json!({ "name": "   " }))?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::InvalidInput);
+        assert!(
+            store.list_namespaces().await?.is_empty(),
+            "a rejected create must mint nothing"
+        );
+        Ok(())
     }
 }

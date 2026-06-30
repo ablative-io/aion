@@ -58,6 +58,30 @@ impl NamespaceGuard {
         Ok(scoped)
     }
 
+    /// Authorize a caller for a single namespace by name, returning the
+    /// resolved namespace if the grant allows it.
+    ///
+    /// This is the SAME grant check the access hop runs ([`NamespaceResolver::resolve`]):
+    /// the operator (all-namespaces) is authorized for any name, an enumerated
+    /// caller only for a granted one, and single-tenant mode only for the
+    /// configured namespace. It carries no workflow/schedule target, so it never
+    /// reaches durable ownership — the control-plane create path (`POST
+    /// /namespaces`) authorizes namespace *existence*, not a per-resource probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Namespace`] (`namespace_denied`) when the caller
+    /// has no grant for `namespace`, so an unauthorized caller can never create
+    /// (or learn the existence of) a namespace it cannot access.
+    pub fn authorize_namespace(
+        &self,
+        caller: &CallerIdentity,
+        namespace: &str,
+    ) -> Result<String, ServerError> {
+        let scoped = self.resolver.resolve(caller, namespace)?;
+        Ok(scoped.namespace().to_owned())
+    }
+
     /// Authorize every namespace in a worker registration's set, returning the
     /// resolved namespaces in stable wire order with duplicates removed.
     ///
