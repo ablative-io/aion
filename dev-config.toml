@@ -46,14 +46,16 @@ event_broadcast_capacity = 1024
 
 # Operator deploy API (runtime package load/route/unload). Dark by default:
 # with this section absent or enabled = false, /deploy/* is not mounted and
-# the gRPC DeployService answers Unimplemented. When enabled,
-# max_archive_bytes is REQUIRED (no default) — size it for your packages
-# (example archives run 360-422 KB; 16 MiB shown here). max_inflated_bytes is
-# also REQUIRED: the ceiling on the total decompressed size of an upload's
-# contents (a DEFLATE bomb under max_archive_bytes can inflate ~1000:1); it
-# must be at least max_archive_bytes — 64 MiB shown here. Authorization is
-# the deployment-wide deploy grant: the `deploy` JWT claim, or in development
-# the x-aion-deploy: true header (the aion CLI sends it automatically).
+# the gRPC DeployService answers Unimplemented. When enabled, both ceilings
+# default to conservative security limits (64 MiB archive / 256 MiB inflated)
+# so enabling deploy boots without forcing you to size them — override
+# max_archive_bytes for your packages (example archives run 360-422 KB; 16 MiB
+# shown here). max_inflated_bytes caps the total decompressed size of an
+# upload's contents (a DEFLATE bomb under max_archive_bytes can inflate
+# ~1000:1); when set it must be at least max_archive_bytes — 64 MiB shown here.
+# An explicit 0 (or inflate < archive) is still rejected. Authorization is the
+# deployment-wide deploy grant: the `deploy` JWT claim, or in development the
+# x-aion-deploy: true header (the aion CLI sends it automatically).
 #[deploy]
 #enabled = true
 #max_archive_bytes = 16777216
