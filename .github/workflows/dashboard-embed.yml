@@ -1,19 +1,19 @@
 name: dashboard-embed
 
-# WS5: ship the real dashboard inside the aion-server binary.
+# The ops console is part of the product and is ALWAYS embedded in the
+# `aion-server`/`aion` binary (no cargo feature). A plain `cargo build` ships the
+# real UI at `/`. The committed `crates/aion-server/dashboard-embed/` bundle is
+# the source of truth.
 #
-# Three DISTINCT guards (kept separate so there is no write-then-assert
+# Two DISTINCT guards (kept separate so there is no write-then-assert
 # contradiction):
-#   1. wire-types-no-diff  — regenerate the ts-rs wire types and assert the
+#   1. wire-types-no-diff   — regenerate the ts-rs wire types and assert the
 #      committed generated files match (read-only assertion on already-committed
 #      output). Does NOT build the dashboard.
-#   2. embed-build         — run the full embed pipeline (regenerate types, build
-#      the dashboard with bun, sync into dashboard-embed/) THEN build with
-#      --features embed-dashboard, and smoke-check that a release artifact does
-#      NOT serve the committed placeholder stub.
-#   3. release-feature-guard — a release that FORGOT the embed feature is caught
-#      loudly: the release build always passes the feature, and the smoke check
-#      fails if `/` serves the placeholder marker.
+#   2. embed-freshness      — rebuild the dashboard into a scratch dir and DIFF
+#      against the committed dashboard-embed/ bundle (cargo xtask
+#      verify-dashboard). Fails loudly if the committed bundle is stale, then
+#      builds the binary (no flags) and smoke-checks that `/` serves the real UI.
 
 on:
   push:
@@ -36,21 +36,17 @@ jobs:
             exit 1
           fi
 
-  # GUARD 2 + 3: build the real bundle, embed it, build with the feature, and
-  # smoke-check that the embedded binary does NOT serve the placeholder stub.
-  embed-build:
+  # GUARD 2: the committed bundle matches a clean rebuild, and a plain (no-flag)
+  # binary serves the real dashboard at `/`.
+  embed-freshness:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
-      - name: Run the embed pipeline (regen types + bun build + sync)
-        run: cargo xtask build-dashboard
-      - name: Build with the dashboard embedded
-        run: cargo build -p aion-server --features embed-dashboard
-      # The release artifact ALWAYS carries the embed feature (guard against a
-      # release that forgot it).
-      - name: Build the release binary with the dashboard embedded
-        run: cargo build -p aion-cli --release --features release
-      - name: Smoke check — released binary serves the real dashboard, not the stub
-        run: bash ci/smoke-embed.sh
+      - name: Verify committed dashboard-embed/ matches a clean rebuild
+        run: cargo xtask verify-dashboard
+      - name: Build the binary (no features — dashboard is always embedded)
+        run: cargo build -p aion-cli
+      - name: Smoke check — binary serves the real dashboard at /
+        run: AION_BIN=target/debug/aion bash ci/smoke-embed.sh

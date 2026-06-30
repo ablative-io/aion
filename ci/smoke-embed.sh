@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Smoke check: the release `aion` binary (built with --features release, which
-# turns on aion-server/embed-dashboard) must serve the REAL dashboard at `/`,
-# not the committed placeholder stub. Fails loudly if:
-#   * the placeholder marker (AION_EMBED_PLACEHOLDER) is present at `/`, or
+# Smoke check: the `aion` binary — built with a PLAIN `cargo build` (no features:
+# the dashboard is always embedded) — must serve the REAL dashboard at `/`.
+# Fails loudly if:
+#   * a stale committed placeholder marker (AION_EMBED_PLACEHOLDER) is present, or
 #   * `/` carries no built asset reference (/assets/index-*.js).
 #
-# This is the "release that forgot the embed feature / forgot the pipeline"
-# guard: either omission makes `/` serve the placeholder, which fails here.
+# This guards against a stale or missing committed bundle: either makes `/` serve
+# something other than the real built UI, which fails here. Point AION_BIN at the
+# built binary (e.g. target/debug/aion or target/release/aion).
 set -euo pipefail
 
-BIN="${AION_BIN:-target/release/aion}"
+BIN="${AION_BIN:-target/debug/aion}"
 HTTP_PORT="${AION_SMOKE_HTTP_PORT:-18099}"
 GRPC_PORT="${AION_SMOKE_GRPC_PORT:-51099}"
 HTTP_ADDR="127.0.0.1:${HTTP_PORT}"
 
 if [[ ! -x "$BIN" ]]; then
-  echo "::error::release binary not found at $BIN (build with --features release first)" >&2
+  echo "::error::aion binary not found at $BIN (run a plain \`cargo build -p aion-cli\` first)" >&2
   exit 1
 fi
 
@@ -59,7 +60,7 @@ done
 BODY="$(curl -s "http://${HTTP_ADDR}/")"
 
 if grep -q "AION_EMBED_PLACEHOLDER" <<<"$BODY"; then
-  echo "::error::/ served the committed PLACEHOLDER stub — the embed pipeline did not run, or the embed feature is off." >&2
+  echo "::error::/ served a PLACEHOLDER stub — the committed dashboard-embed/ bundle is stale. Run \`cargo xtask build-dashboard\` and commit." >&2
   echo "--- served body ---" >&2
   echo "$BODY" >&2
   exit 1
@@ -72,4 +73,4 @@ if ! grep -qE '/assets/index-[A-Za-z0-9_]+\.(js|css)' <<<"$BODY"; then
   exit 1
 fi
 
-echo "OK: release binary serves the real dashboard at / (asset references present, no placeholder)."
+echo "OK: binary serves the real dashboard at / (asset references present, no placeholder)."

@@ -185,20 +185,22 @@ same port as the API. No vite server, no static host: one process.
   talks to the API via `VITE_*` config and **CORS** (configure
   `cors_allowed_origins` on the server to include the vite origin, e.g.
   `http://localhost:5173`).
-* **Shipped (single binary):** build the bundle into the binary, then run it:
+* **Shipped (single binary):** the dashboard is ALWAYS embedded, so just build
+  and run:
 
   ```bash
-  cargo xtask build-dashboard                       # regen wire types + bun build + sync into dashboard-embed/
-  cargo build -p aion-cli --release --features release
+  cargo build -p aion-cli --release
   ./target/release/aion server --open              # serves the dashboard at the HTTP port; --open launches a browser
   ```
 
   The dashboard is then at `http://<listen_address>/` (e.g. `http://127.0.0.1:8090/`).
 
-The embed is gated by the `embed-dashboard` cargo feature (forwarded from aion-cli's
-`release` feature). A **plain** `cargo build` (feature off) needs no bun and serves a
-branded placeholder at `/` that documents the dev URL and build command — never a
-blank page. See `apps/aion-dashboard/README.md` for the pipeline and CI guards.
+There is no cargo feature: the ops console is part of the product and the committed
+`crates/aion-server/dashboard-embed/` bundle is embedded into every build. To refresh
+the bundle after changing the dashboard source, run `cargo xtask build-dashboard`
+(regen wire types + bun build + sync) and commit the result; `cargo xtask
+verify-dashboard` (run in CI) fails if the committed bundle is stale. See
+`apps/aion-dashboard/README.md` for the pipeline and CI guards.
 
 ## Components
 

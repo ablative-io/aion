@@ -102,13 +102,15 @@ say "build (dashboard bundle + aion cluster binary + worker + packager)"
 # server-side at the handshake — the console discovers its deploy capability at
 # runtime via GET /whoami. API/WS base is left unset = same origin, so each node
 # serves a console that talks to ITSELF (correct for the failover own-read view).
-# Requires bun; if absent, the `release` build below still succeeds and serves the
-# placeholder page.
+# Optional: refresh the committed dashboard-embed/ bundle with this demo's baked
+# VITE config. The dashboard is ALWAYS embedded (the committed bundle ships in
+# every build), so if bun is absent the build below still serves the real console
+# from the committed bundle — just without these demo-specific VITE defaults.
 ( cd "$ROOT" && VITE_AION_NAMESPACES=default VITE_AION_SUBJECT=operator cargo xtask build-dashboard ) \
-  || note "dashboard bundle build skipped/failed (need bun) — nodes will serve the placeholder"
-# `release` turns on the embedded dashboard (rust_embed over dashboard-embed/) so
-# each node serves the real ops console at its HTTP port.
-( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport,release ) \
+  || note "dashboard bundle rebuild skipped/failed (need bun) — nodes serve the committed bundle"
+# The dashboard is always embedded (rust_embed over the committed dashboard-embed/),
+# so each node serves the real ops console at its HTTP port with no extra feature.
+( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport ) \
   || die "aion CLI build failed"
 ( cd "$WORKER_DIR" && cargo build ) || die "$WORKER_NAME build failed"
 ( cd "$PACKAGER_DIR" && cargo build ) || die "fleet-packager build failed"
