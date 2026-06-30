@@ -1,7 +1,7 @@
 //! Deployable HTTP, gRPC, WebSocket, and worker endpoint for Aion workflows.
 //!
 //! This crate wraps the transport-agnostic engine with API handlers, namespace
-//! isolation, observability, shutdown handling, dashboard assets, and
+//! isolation, observability, shutdown handling, ops-console assets, and
 //! remote-worker task dispatch.
 //!
 //! # Example
@@ -30,8 +30,6 @@ pub mod cluster;
 pub mod cluster_publisher;
 /// Runtime configuration loading and validation.
 pub mod config;
-/// Dashboard asset serving helpers.
-pub mod dashboard;
 /// Operator deploy surface authorization.
 pub mod deploy;
 /// Local dev-server surface: trigger a run, stream it over the existing
@@ -46,6 +44,8 @@ mod internal_workflow;
 pub mod namespace;
 /// Health, metrics, and tracing support.
 pub mod observability;
+/// Ops-console asset serving helpers.
+pub mod ops_console;
 /// Distributed request routing: the gRPC-edge availability layer over the fence.
 pub mod routing;
 /// Server run loop: configuration load, transports, and graceful shutdown.

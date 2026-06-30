@@ -11,8 +11,9 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+    NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig, WebSocketConfig,
+    WorkerConfig,
 };
 use crate::{NamespaceResolver, ServerState};
 
@@ -132,8 +133,8 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
             jwks_url: Some(TOKEN.to_owned()),
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

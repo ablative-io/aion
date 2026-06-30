@@ -181,9 +181,9 @@ mod tests {
 
     use super::DeployGrpcService;
     use crate::config::{
-        AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-        ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
-        WebSocketConfig, WorkerConfig,
+        AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+        NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig, WebSocketConfig,
+        WorkerConfig,
     };
     use crate::{
         NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
@@ -207,8 +207,8 @@ mod tests {
                 jwks_url: None,
                 jwks_refresh_seconds: 300,
             },
-            dashboard: DashboardConfig {
-                source: DashboardAssetSource::Embedded,
+            ops_console: OpsConsoleConfig {
+                source: OpsConsoleAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,

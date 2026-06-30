@@ -177,11 +177,11 @@
       "external_deps": []
     },
     {
-      "id": "aion-dashboard",
+      "id": "aion-ops-console",
       "kind": "frontend",
-      "path": "apps/aion-dashboard",
-      "cluster": "aion-dashboard",
-      "description": "The monitoring web UI: workflow list, history viewer, and live event feed over WebSocket. React + Vite + Tailwind.",
+      "path": "apps/aion-ops-console",
+      "cluster": "aion-ops-console",
+      "description": "The ops console web UI: workflow list, history viewer, and live event feed over WebSocket. React + Vite + Tailwind.",
       "internal_deps": [],
       "external_deps": []
     }

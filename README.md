@@ -47,7 +47,7 @@ completed durable workflow, with every file you need inline.
   `RetryPolicy`, but engine-side automatic re-dispatch is not wired up yet —
   workflows drive their own bounded retry loops (the
   [order-saga example](docs/examples/order-saga.md) shows the pattern).
-- The dashboard UI is under development; the CLI and HTTP API are the
+- The ops console UI is under development; the CLI and HTTP API are the
   operating surfaces.
 - Cooperative cancellation covers worker shutdown/drain only. There is no
   cancel frame in the worker protocol, so the server cannot cancel a
@@ -117,7 +117,7 @@ The whole-system design lives in
 | `gleam/aion_flow` | The Gleam authoring SDK ([Hex](https://hex.pm/packages/aion_flow)) |
 | `gleam/aion_client` | The Gleam caller SDK |
 | `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs |
-| `apps/aion-dashboard` | Monitoring UI under development |
+| `apps/aion-ops-console` | Ops console UI under development |
 
 ## Repository layout
 
@@ -126,7 +126,7 @@ crates/            Rust crates (engine, store, package, proto, server, nif, work
 gleam/             Gleam packages (aion_flow authoring SDK, aion_client)
 sdks/python/       Python worker + client SDKs
 sdks/typescript/   TypeScript worker + client SDKs
-apps/              The under-development monitoring dashboard (React + Vite)
+apps/              The under-development ops console (React + Vite)
 conformance/       Cross-language conformance suites
 examples/          Working examples (hello-world first, order-fulfillment flagship)
 docs/              User documentation; docs/design/ holds the full design

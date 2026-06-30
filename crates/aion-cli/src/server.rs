@@ -16,7 +16,7 @@ pub struct ServerArgs {
     /// Path to a TOML server configuration file. Optional when using local defaults.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Override the HTTP/JSON and dashboard listener address.
+    /// Override the HTTP/JSON and ops-console listener address.
     #[arg(long)]
     listen_address: Option<SocketAddr>,
     /// Override the event-store URL and select the libSQL backend when the default is memory.
@@ -41,7 +41,7 @@ pub struct ServerArgs {
     /// written into and packaged from. Required when `--gleam-path` is set.
     #[arg(long = "authoring-project-root")]
     authoring_project_root: Option<PathBuf>,
-    /// Open the dashboard in the default browser once the HTTP listener is up.
+    /// Open the ops console in the default browser once the HTTP listener is up.
     /// Resolves the served URL from the effective config (the same
     /// `--listen-address`/config/default precedence the server uses).
     #[arg(long)]

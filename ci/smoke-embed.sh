@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke check: the `aion` binary — built with a PLAIN `cargo build` (no features:
-# the dashboard is always embedded) — must serve the REAL dashboard at `/`.
+# the ops console is always embedded) — must serve the REAL ops console at `/`.
 # Fails loudly if:
 #   * a stale committed placeholder marker (AION_EMBED_PLACEHOLDER) is present, or
 #   * `/` carries no built asset reference (/assets/index-*.js).
@@ -60,17 +60,17 @@ done
 BODY="$(curl -s "http://${HTTP_ADDR}/")"
 
 if grep -q "AION_EMBED_PLACEHOLDER" <<<"$BODY"; then
-  echo "::error::/ served a PLACEHOLDER stub — the committed dashboard-embed/ bundle is stale. Run \`cargo xtask build-dashboard\` and commit." >&2
+  echo "::error::/ served a PLACEHOLDER stub — the committed ops-console-embed/ bundle is stale. Run \`cargo xtask build-ops-console\` and commit." >&2
   echo "--- served body ---" >&2
   echo "$BODY" >&2
   exit 1
 fi
 
 if ! grep -qE '/assets/index-[A-Za-z0-9_]+\.(js|css)' <<<"$BODY"; then
-  echo "::error::/ has no built asset reference — the embedded bundle is not the real dashboard." >&2
+  echo "::error::/ has no built asset reference — the embedded bundle is not the real ops console." >&2
   echo "--- served body ---" >&2
   echo "$BODY" >&2
   exit 1
 fi
 
-echo "OK: binary serves the real dashboard at / (asset references present, no placeholder)."
+echo "OK: binary serves the real ops console at / (asset references present, no placeholder)."

@@ -22,9 +22,9 @@ use aion_package::{
 };
 use aion_proto::StreamedEvent;
 use aion_server::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, DevConfig,
-    ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig,
-    WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, DevConfig, ListenConfig, MetricsConfig,
+    NamespaceConfig, NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig,
+    WebSocketConfig, WorkerConfig,
 };
 use aion_server::{ServerState, api::http::http_router};
 use aion_store::InMemoryStore;
@@ -55,8 +55,8 @@ fn runtime_config(dev_enabled: bool) -> RuntimeConfig {
             jwks_url: None,
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

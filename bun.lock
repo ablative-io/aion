@@ -5,9 +5,9 @@
     "": {
       "name": "aion-workspace",
     },
-    "apps/aion-dashboard": {
-      "name": "aion-dashboard",
-      "version": "0.1.0",
+    "apps/aion-ops-console": {
+      "name": "aion-ops-console",
+      "version": "0.2.0",
       "dependencies": {
         "@radix-ui/react-select": "^2.2.6",
         "@radix-ui/react-slot": "^1.2.4",
@@ -464,7 +464,7 @@
 
     "agent-base": ["agent-base@7.1.4", "", {}, "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ=="],
 
-    "aion-dashboard": ["aion-dashboard@workspace:apps/aion-dashboard"],
+    "aion-ops-console": ["aion-ops-console@workspace:apps/aion-ops-console"],
 
     "ajv": ["ajv@6.15.0", "", { "dependencies": { "fast-deep-equal": "^3.1.1", "fast-json-stable-stringify": "^2.0.0", "json-schema-traverse": "^0.4.1", "uri-js": "^4.2.2" } }, "sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw=="],
 

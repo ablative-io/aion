@@ -71,9 +71,9 @@ use aion_server::ServerState;
 use aion_server::api::http::http_router;
 use aion_server::api::worker_grpc::worker_service;
 use aion_server::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-    MetricsConfig, NamespaceConfig, NamespaceMode, OutboxConfig, RuntimeConfig, WebSocketConfig,
-    WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+    NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig, RuntimeConfig,
+    WebSocketConfig, WorkerConfig,
 };
 use aion_server::worker::{
     ActivityDispatcher, ConnectedWorkerRegistry, OutboxDispatcher, OutboxDispatcherConfig,
@@ -165,8 +165,8 @@ fn runtime_config(package_path: PathBuf) -> RuntimeConfig {
             jwks_url: None,
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

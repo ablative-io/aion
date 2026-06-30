@@ -22,16 +22,16 @@ use super::workflows::{
     cancel_workflow, count_workflows, describe_workflow, get_workflows, list_namespaces,
     post_list_workflows, query_workflow, signal_workflow, start_workflow,
 };
-use crate::{ServerError, ServerState, dashboard::assets, observability};
+use crate::{ServerError, ServerState, observability, ops_console::assets};
 
 /// Build the public HTTP application: workflow-management routes first, then
-/// the dashboard static asset fallback. The dashboard adds no data API.
+/// the ops-console static asset fallback. The ops console adds no data API.
 ///
 /// # Errors
 ///
-/// Returns [`ServerError::Config`] when dashboard assets are misconfigured.
+/// Returns [`ServerError::Config`] when ops-console assets are misconfigured.
 pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
-    let dashboard = assets::dashboard_router(&state.runtime_config().dashboard)?;
+    let ops_console = assets::ops_console_router(&state.runtime_config().ops_console)?;
     let cors = cors_layer(&state.runtime_config().cors_allowed_origins)?;
     let metrics = state.metrics().cloned();
     let health = state.health().cloned();
@@ -52,9 +52,9 @@ pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
                 ),
         );
     }
-    let router = router.merge(dashboard);
-    // CORS is applied last so it wraps every public route the browser dashboard
-    // calls (the workflow API, /metrics, /health/*, the dashboard fallback).
+    let router = router.merge(ops_console);
+    // CORS is applied last so it wraps every public route the browser ops console
+    // calls (the workflow API, /metrics, /health/*, the ops-console fallback).
     // With no configured origins `cors_layer` returns None and the router is
     // byte-identical to before — no cross-origin request is allowed (the secure
     // default). With origins set the layer also answers OPTIONS preflight.
@@ -128,7 +128,7 @@ async fn dev_disabled() -> StatusCode {
 pub fn workflow_router(state: ServerState) -> Router {
     // The deploy surface is dark by default: when `[deploy].enabled` is
     // false the routes are not mounted and every `/deploy/*` path is a
-    // plain 404 (the explicit catch-all keeps the dashboard SPA fallback
+    // plain 404 (the explicit catch-all keeps the ops-console SPA fallback
     // from answering for the deploy namespace). The archive upload route
     // disables the default body limit because `read_archive_body` enforces
     // the operator-configured `deploy.max_archive_bytes` ceiling while
@@ -148,7 +148,7 @@ pub fn workflow_router(state: ServerState) -> Router {
     // The authoring surface is dark by default, gated on
     // `[authoring].gleam_path`: when it is unset the routes are not mounted and
     // every `/authoring/*` path is a plain 404 (the explicit catch-all keeps
-    // the dashboard SPA fallback from answering for the authoring namespace).
+    // the ops-console SPA fallback from answering for the authoring namespace).
     // With it absent the server compiles no Gleam and deploys pre-built `.aion`
     // files only (CN7).
     let authoring = if state.runtime_config().authoring.gleam_path.is_some() {
@@ -158,7 +158,7 @@ pub fn workflow_router(state: ServerState) -> Router {
     };
     // The dev surface is dark by default, gated on `[dev].enabled`: when off the
     // routes are not mounted and every `/dev/*` path is a plain 404 (the
-    // explicit catch-all keeps the dashboard SPA fallback from answering for
+    // explicit catch-all keeps the ops-console SPA fallback from answering for
     // the dev namespace), and the engine runs the bare production dispatcher.
     let dev = if state.runtime_config().dev.enabled {
         Router::new()
@@ -210,11 +210,11 @@ mod tests {
     use super::*;
     use crate::{
         NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces,
-        config::{DashboardAssetSource, DashboardConfig, NamespaceMode},
+        config::{NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig},
     };
 
     #[tokio::test]
-    async fn dashboard_assets_serve_index_asset_and_do_not_shadow_public_api()
+    async fn ops_console_assets_serve_index_asset_and_do_not_shadow_public_api()
     -> Result<(), Box<dyn std::error::Error>> {
         let bundle = tempfile::tempdir()?;
         fs::write(
@@ -239,8 +239,8 @@ mod tests {
             Arc::new(StaticScheduleNamespaces::default()),
         );
         let mut config = runtime_config();
-        config.dashboard = DashboardConfig {
-            source: DashboardAssetSource::FileSystem {
+        config.ops_console = OpsConsoleConfig {
+            source: OpsConsoleAssetSource::FileSystem {
                 asset_path: bundle.path().to_path_buf(),
             },
         };
@@ -268,7 +268,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/dashboard/workflows/demo")
+                    .uri("/ops-console/workflows/demo")
                     .body(body::Body::empty())?,
             )
             .await?;

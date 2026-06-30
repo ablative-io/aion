@@ -1,0 +1,13 @@
+# The built ops-console bundle is COMMITTED. The ops console is part of the
+# product and is ALWAYS embedded in the `aion-server`/`aion` binary (rust_embed
+# over this directory, no cargo feature). A plain `cargo build` / `cargo install`
+# therefore ships the real UI at `/`.
+#
+# Regenerate this bundle with `cargo xtask build-ops-console` and commit the
+# result. CI's `cargo xtask verify-ops-console` fails if the committed bundle is
+# stale against a clean rebuild of the ops-console source.
+#
+# We commit index.html, assets/**, and favicon.svg. Only stray sourcemaps are
+# ignored as a belt-and-braces guard against accidental .map bloat (the Vite
+# config builds with sourcemap: false, so none should appear).
+*.map

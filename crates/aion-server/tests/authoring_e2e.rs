@@ -20,8 +20,9 @@ use aion::{Engine, EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{RunId, WorkflowId};
 use aion_server::api::http::http_router;
 use aion_server::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+    NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig, WebSocketConfig,
+    WorkerConfig,
 };
 use aion_server::{NamespaceResolver, ServerState};
 use aion_store::{EventStore, InMemoryStore};
@@ -139,8 +140,8 @@ fn runtime_config(authoring: AuthoringConfig) -> RuntimeConfig {
             jwks_url: None,
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

@@ -1,0 +1,52 @@
+name: ops-console-embed
+
+# The ops console is part of the product and is ALWAYS embedded in the
+# `aion-server`/`aion` binary (no cargo feature). A plain `cargo build` ships the
+# real UI at `/`. The committed `crates/aion-server/ops-console-embed/` bundle is
+# the source of truth.
+#
+# Two DISTINCT guards (kept separate so there is no write-then-assert
+# contradiction):
+#   1. wire-types-no-diff   — regenerate the ts-rs wire types and assert the
+#      committed generated files match (read-only assertion on already-committed
+#      output). Does NOT build the ops console.
+#   2. embed-freshness      — rebuild the ops console into a scratch dir and DIFF
+#      against the committed ops-console-embed/ bundle (cargo xtask
+#      verify-ops-console). Fails loudly if the committed bundle is stale, then
+#      builds the binary (no flags) and smoke-checks that `/` serves the real UI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # GUARD 1: committed generated wire types match the exporter. Read-only assert.
+  wire-types-no-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate ts-rs wire types
+        run: cargo test -p aion-core export_dashboard_wire_types
+      - name: Assert no diff (committed generated types are up to date)
+        run: |
+          if ! git diff --exit-code -- apps/aion-ops-console/src/types/generated/; then
+            echo "::error::Generated wire types are stale. Run: cargo test -p aion-core export_dashboard_wire_types, then commit." >&2
+            exit 1
+          fi
+
+  # GUARD 2: the committed bundle matches a clean rebuild, and a plain (no-flag)
+  # binary serves the real ops console at `/`.
+  embed-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - name: Verify committed ops-console-embed/ matches a clean rebuild
+        run: cargo xtask verify-ops-console
+      - name: Build the binary (no features — ops console is always embedded)
+        run: cargo build -p aion-cli
+      - name: Smoke check — binary serves the real ops console at /
+        run: AION_BIN=target/debug/aion bash ci/smoke-embed.sh
