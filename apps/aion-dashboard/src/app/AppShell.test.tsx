@@ -119,7 +119,16 @@ function renderApp(initialPath: string) {
 
   return renderToStaticMarkup(
     <App
-      apiClient={{ listNamespaces: async () => ['default'] }}
+      apiClient={{
+        listNamespaces: async () => ['default'],
+        getCapabilities: async () => ({
+          subject: 'operator',
+          authEnabled: false,
+          deployGranted: true,
+          allNamespaces: true,
+          namespaces: [],
+        }),
+      }}
       initialNamespace="default"
       queryClient={queryClient}
       router={router}

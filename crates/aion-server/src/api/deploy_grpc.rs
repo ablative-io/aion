@@ -261,6 +261,44 @@ mod tests {
         Ok(ServerState::from_parts(resolver, config))
     }
 
+    /// Shared-secret bearer accepted by the dev-token path (`auth.enabled =
+    /// true`, `not(feature = "auth")`), wired as the configured `jwks_url`.
+    #[cfg(not(feature = "auth"))]
+    const AUTH_TOKEN: &str = "deploy-secret";
+
+    /// Deploy-enabled state with authentication ON via the dev-token path, used
+    /// to prove the strict gate still denies an ungranted caller.
+    #[cfg(not(feature = "auth"))]
+    async fn auth_on_deploy_state() -> Result<ServerState, Box<dyn std::error::Error>> {
+        let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let mut config = runtime_config();
+        config.auth = AuthConfig {
+            enabled: true,
+            jwks_url: Some(AUTH_TOKEN.to_owned()),
+            jwks_refresh_seconds: 300,
+        };
+        config.deploy = DeployConfig {
+            enabled: true,
+            max_archive_bytes: Some(1024),
+            max_inflated_bytes: Some(2048),
+        };
+        Ok(ServerState::from_parts(resolver, config))
+    }
+
     fn granted_request<T>(message: T) -> Result<Request<T>, Box<dyn std::error::Error>> {
         let mut request = Request::new(message);
         request
@@ -272,13 +310,40 @@ mod tests {
         Ok(request)
     }
 
+    /// Auth-off single-tenant operator mode: the gRPC caller IS the operator
+    /// and holds the deploy grant decided server-side, so deploy is authorized
+    /// with no `x-aion-deploy` metadata at all (mirrors the HTTP boundary).
     #[tokio::test]
-    async fn denied_metadata_is_permission_denied_with_deploy_denied_detail()
+    async fn auth_off_operator_is_deploy_granted_without_metadata()
     -> Result<(), Box<dyn std::error::Error>> {
         use generated::deploy_service_server::DeployService as _;
 
         let service = DeployGrpcService::new(deploy_state().await?);
         let mut request = Request::new(generated::ListVersionsRequest {});
+        request
+            .metadata_mut()
+            .insert("x-aion-subject", "ci".parse()?);
+
+        let response = service.list_versions(request).await?;
+        assert!(response.into_inner().versions.is_empty());
+        Ok(())
+    }
+
+    /// Auth-ENABLED (dev-token path): the strict gate stays strict. A caller
+    /// with a valid bearer and subject but NO deploy grant is still denied —
+    /// operator mode never leaks into the auth-on path.
+    #[cfg(not(feature = "auth"))]
+    #[tokio::test]
+    async fn auth_on_denies_caller_without_deploy_grant() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use generated::deploy_service_server::DeployService as _;
+
+        let service = DeployGrpcService::new(auth_on_deploy_state().await?);
+        let mut request = Request::new(generated::ListVersionsRequest {});
+        // Valid shared-secret bearer + subject, but no x-aion-deploy grant.
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {AUTH_TOKEN}").parse()?);
         request
             .metadata_mut()
             .insert("x-aion-subject", "ci".parse()?);

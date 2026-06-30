@@ -66,6 +66,11 @@ fn deploy_denied(caller: &CallerIdentity) -> ServerError {
         GrantSource::TokenClaim => {
             format!("mint a token whose deploy claim is true for subject `{subject}`")
         }
+        // An operator always holds the deploy grant (`deploy_granted` is true),
+        // so this arm is never reached; keep the match exhaustive.
+        GrantSource::Operator => {
+            format!("subject `{subject}` is the operator and already holds the deploy grant")
+        }
     };
     ServerError::deploy_denied(format!(
         "subject `{subject}` is not authorized to deploy; {hint}"

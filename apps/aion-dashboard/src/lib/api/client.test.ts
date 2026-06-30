@@ -104,6 +104,48 @@ test('listNamespaces parses a typed namespace list', async () => {
   await expect(client.listNamespaces()).resolves.toEqual(['default', 'ops']);
 });
 
+test('getCapabilities normalizes the /whoami operator-mode response', async () => {
+  const calls: Request[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    fetchImpl: async (input, init) => {
+      calls.push(new Request(input, init));
+      return jsonResponse({
+        subject: 'operator',
+        auth_enabled: false,
+        deploy_granted: true,
+        all_namespaces: true,
+        namespaces: [],
+      });
+    },
+  });
+
+  await expect(client.getCapabilities()).resolves.toEqual({
+    subject: 'operator',
+    authEnabled: false,
+    deployGranted: true,
+    allNamespaces: true,
+    namespaces: [],
+  });
+  expect(calls[0]?.url).toBe('https://aion.example/whoami');
+  expect(calls[0]?.method).toBe('GET');
+});
+
+test('getCapabilities collapses a malformed /whoami response to least privilege', async () => {
+  const client = new ApiClient({
+    // Missing every field: auth treated as enabled, no deploy, no all-namespaces.
+    fetchImpl: async () => jsonResponse({}),
+  });
+
+  await expect(client.getCapabilities()).resolves.toEqual({
+    subject: 'anonymous',
+    authEnabled: true,
+    deployGranted: false,
+    allNamespaces: false,
+    namespaces: [],
+  });
+});
+
 test('non-success responses throw ApiError with status, code, and message', async () => {
   const client = new ApiClient({
     fetchImpl: async () =>
@@ -276,10 +318,7 @@ test('startWorkflow forwards the selected task_queue to the server body', async 
     },
   });
 
-  await client.startWorkflow(
-    { workflowType: 'T', input: {}, taskQueue: 'gpu' },
-    { namespace }
-  );
+  await client.startWorkflow({ workflowType: 'T', input: {}, taskQueue: 'gpu' }, { namespace });
 
   await expect(calls[0]?.json()).resolves.toEqual({
     namespace,
@@ -324,11 +363,11 @@ test('startWorkflow throws a typed ApiError on WorkflowTypeNotFound', async () =
   }
 });
 
-test('deployPackage sends the raw archive as octet-stream with the deploy grant', async () => {
+test('deployPackage sends the raw archive as octet-stream with no baked deploy header', async () => {
   const calls: Request[] = [];
   const client = new ApiClient({
     baseUrl: 'https://aion.example',
-    credentials: { subject: 'operator', namespaces: [namespace], deployGranted: true },
+    credentials: { subject: 'operator', namespaces: [namespace] },
     fetchImpl: async (input, init) => {
       calls.push(new Request(input, init));
       return jsonResponse({
@@ -356,34 +395,19 @@ test('deployPackage sends the raw archive as octet-stream with the deploy grant'
   expect(calls[0]?.url).toBe('https://aion.example/deploy/packages');
   expect(calls[0]?.method).toBe('POST');
   expect(calls[0]?.headers.get('content-type')).toBe('application/octet-stream');
-  // Deploy is deployment-scoped: deploy grant, no namespace header.
-  expect(calls[0]?.headers.get('x-aion-deploy')).toBe('true');
+  // Deploy is authorized server-side (operator mode) or by the bearer's deploy
+  // claim (real auth); the console never bakes an x-aion-deploy header.
+  expect(calls[0]?.headers.get('x-aion-deploy')).toBeNull();
   expect(calls[0]?.headers.get('x-aion-namespaces')).toBeNull();
   const sent = new Uint8Array(await (calls[0] as Request).arrayBuffer());
   expect(Array.from(sent)).toEqual([1, 2, 3, 4]);
-});
-
-test('deployPackage omits x-aion-deploy when the grant is absent', async () => {
-  const calls: Request[] = [];
-  const client = new ApiClient({
-    baseUrl: 'https://aion.example',
-    credentials: { subject: 'operator' },
-    fetchImpl: async (input, init) => {
-      calls.push(new Request(input, init));
-      return jsonResponse({ workflow_type: 'T', content_hash: 'h' });
-    },
-  });
-
-  await client.deployPackage(new ArrayBuffer(2));
-
-  expect(calls[0]?.headers.get('x-aion-deploy')).toBeNull();
 });
 
 test('listVersions normalizes the deploy versions listing', async () => {
   const calls: Request[] = [];
   const client = new ApiClient({
     baseUrl: 'https://aion.example',
-    credentials: { subject: 'operator', deployGranted: true },
+    credentials: { subject: 'operator' },
     fetchImpl: async (input, init) => {
       calls.push(new Request(input, init));
       return jsonResponse({
@@ -408,12 +432,13 @@ test('listVersions normalizes the deploy versions listing', async () => {
   expect(versions[0]?.workflowType).toBe('EmailDigest');
   expect(versions[0]?.routeActive).toBe(true);
   expect(calls[0]?.method).toBe('GET');
-  expect(calls[0]?.headers.get('x-aion-deploy')).toBe('true');
+  // No baked deploy header — authorization is the server's decision.
+  expect(calls[0]?.headers.get('x-aion-deploy')).toBeNull();
 });
 
 test('listVersions surfaces a 404 (deploy disabled) as a typed ApiError', async () => {
   const client = new ApiClient({
-    credentials: { deployGranted: true },
+    credentials: { subject: 'operator' },
     fetchImpl: async () => jsonResponse({ message: 'not found' }, { status: 404 }),
   });
 

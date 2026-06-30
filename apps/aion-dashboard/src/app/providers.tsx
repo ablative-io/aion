@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { type ReactNode, useEffect, useState } from 'react';
 
+import { CapabilitiesProvider } from '@/features/capabilities';
 import { NamespaceProvider } from '@/features/namespace';
 import type { AionEventWebSocketManager, ApiClient } from '@/lib/api';
 import { configuredEventSocket } from '@/lib/config';
@@ -10,7 +11,7 @@ const QUERY_STALE_TIME_MS = 30_000;
 const QUERY_GC_TIME_MS = 5 * 60_000;
 
 export type AppProvidersProps = {
-  apiClient?: Pick<ApiClient, 'listNamespaces'> | undefined;
+  apiClient?: Pick<ApiClient, 'listNamespaces' | 'getCapabilities'> | undefined;
   children: ReactNode;
   initialNamespace?: Namespace | undefined;
   queryClient?: QueryClient | undefined;
@@ -28,9 +29,11 @@ export function AppProviders({
 
   return (
     <QueryClientProvider client={client}>
-      <NamespaceProvider apiClient={apiClient} initialNamespace={initialNamespace}>
-        <WebSocketConnection manager={websocketManager}>{children}</WebSocketConnection>
-      </NamespaceProvider>
+      <CapabilitiesProvider apiClient={apiClient}>
+        <NamespaceProvider apiClient={apiClient} initialNamespace={initialNamespace}>
+          <WebSocketConnection manager={websocketManager}>{children}</WebSocketConnection>
+        </NamespaceProvider>
+      </CapabilitiesProvider>
     </QueryClientProvider>
   );
 }

@@ -120,22 +120,27 @@ async fn caller_from_headers(
     }
 }
 
+/// Auth-off single-tenant operator mode: when no auth is configured the server
+/// decides server-side, at request time, that the caller IS the operator and
+/// holds full access (every namespace + the deployment-wide deploy grant). No
+/// development header is required for access; the `x-aion-subject` header is
+/// honored only as the audit label when present and non-empty.
+///
+/// The `x-aion-namespaces` / `x-aion-deploy` headers are intentionally NOT read
+/// here — the operator already has all access, so they would assert nothing.
 fn development_caller_from_headers(headers: &axum::http::HeaderMap) -> CallerIdentity {
     let subject = headers
         .get("x-aion-subject")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty());
-    let namespaces = headers
-        .get("x-aion-namespaces")
-        .and_then(|value| value.to_str().ok())
-        .map_or_else(Vec::new, parse_namespaces);
-    CallerIdentity::new(subject.unwrap_or("anonymous"), namespaces)
-        .with_deploy(deploy_header_granted(headers))
+        .filter(|value| !value.is_empty())
+        .unwrap_or("operator");
+    CallerIdentity::operator(subject)
 }
 
 /// Deployment-wide deploy grant from the development `x-aion-deploy` header,
 /// the dev-mode analog of the JWT `deploy` claim. Absent or non-true = no
 /// grant.
+#[cfg(not(feature = "auth"))]
 fn deploy_header_granted(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get("x-aion-deploy")
@@ -208,6 +213,7 @@ impl IntoResponse for HttpAuthError {
     }
 }
 
+#[cfg(not(feature = "auth"))]
 fn parse_namespaces(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -226,7 +232,7 @@ mod tests {
     use aion_store::{EventStore, InMemoryStore};
     #[cfg(not(feature = "auth"))]
     use axum::response::Response;
-    use axum::{body, http::Request, http::StatusCode};
+    use axum::{body, http::HeaderMap, http::Request, http::StatusCode};
     use tower::ServiceExt;
 
     use super::super::router::workflow_router;
@@ -239,6 +245,12 @@ mod tests {
     };
 
     async fn list_router() -> Result<axum::Router, Box<dyn std::error::Error>> {
+        router_with(runtime_config()).await
+    }
+
+    async fn router_with(
+        config: crate::config::RuntimeConfig,
+    ) -> Result<axum::Router, Box<dyn std::error::Error>> {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
         let engine = Arc::new(
             EngineBuilder::new()
@@ -254,9 +266,62 @@ mod tests {
             Arc::new(StaticWorkflowNamespaces::default()),
             Arc::new(StaticScheduleNamespaces::default()),
         );
-        Ok(workflow_router(
-            server_state(resolver, runtime_config()).await?,
-        ))
+        Ok(workflow_router(server_state(resolver, config).await?))
+    }
+
+    /// Auth-off single-tenant operator mode: a caller with NO development
+    /// headers at all is the operator and is authorized for an arbitrary
+    /// namespace (cross-namespace access) AND holds the deploy grant. This is
+    /// the request-time, server-side authorization decision the operator
+    /// experience depends on — the client asserts nothing.
+    #[tokio::test]
+    async fn auth_off_operator_authorizes_namespace_and_deploy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let router = router_with(config).await?;
+
+        // A namespace the caller never enumerated, with no x-aion-* headers.
+        let list = ProtoListWorkflowsRequest {
+            namespace: "some-other-tenant".to_owned(),
+            filter: None,
+        };
+        let body = serde_json::to_vec(&list)?;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/workflows/list")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(body::Body::from(body))?,
+            )
+            .await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "auth-off operator must be authorized for any namespace with no headers"
+        );
+
+        // And the resolved identity carries the deploy grant.
+        let resolved = super::development_caller_from_headers(&HeaderMap::new());
+        assert!(resolved.deploy_granted());
+        assert!(resolved.all_namespaces());
+        assert_eq!(resolved.subject(), "operator");
+        Ok(())
+    }
+
+    /// The `x-aion-subject` header is honored only as the audit label in
+    /// operator mode; it is never required, and never narrows access.
+    #[tokio::test]
+    async fn auth_off_operator_honors_subject_as_audit_label()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-aion-subject", "ci-bot".parse()?);
+        let resolved = super::development_caller_from_headers(&headers);
+        assert_eq!(resolved.subject(), "ci-bot");
+        assert!(resolved.all_namespaces());
+        assert!(resolved.deploy_granted());
+        Ok(())
     }
 
     /// JWT-path failure modes: missing, malformed, and expired bearers are

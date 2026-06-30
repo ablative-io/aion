@@ -72,19 +72,18 @@ export const configuredEventSocket = createConfiguredWebSocketManager();
  * subscription arm (the server keeps the socket one-subscription-per-socket, so
  * the cluster channel is its own socket, not a multiplexed second subscription
  * on the workflow socket). Cluster topology is deployment-scoped and deploy-gated
- * server-side, so unlike the workflow event socket this socket carries the
- * deployment-wide deploy grant (`deploy: config.deployGranted`): without it the
- * server denies the subscription with one terminal `namespace_denied` frame and
- * the failover view reconnect-loops to "disconnected". In dev/no-auth mode the
- * grant rides as `x-aion-deploy=true`; under real auth it lives in the bearer
- * token's `deploy` claim and the server ignores the param.
+ * server-side, but the grant is NOT baked into the bundle: in auth-off
+ * single-tenant operator mode the server grants the socket server-side at the
+ * handshake (no `x-aion-deploy` param needed), and under real auth the grant
+ * lives in the bearer token's `deploy` claim. The console therefore opens the
+ * socket with no compiled deploy flag; whether topology flows is the server's
+ * runtime decision (also reflected in `GET /whoami`).
  */
 export function createConfiguredClusterStream(
   config: DashboardConfig = getDashboardConfig()
 ): AionClusterStreamManager {
   const credentials: SocketCredentials = {
     namespaces: config.namespaces,
-    deploy: config.deployGranted,
     ...(config.subject === undefined ? {} : { subject: config.subject }),
     ...(config.bearerToken === undefined ? {} : { bearerToken: config.bearerToken }),
   };

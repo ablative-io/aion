@@ -440,8 +440,18 @@ async fn register_ack_is_first_frame_then_task() -> Result<(), TestError> {
 /// Brief test 4: a denied registration still fails the RPC with
 /// `PermissionDenied` and delivers no frames — the denial taxonomy is
 /// byte-for-byte unchanged; there is no nack frame.
+///
+/// Runs auth ENABLED (dev-token path) so the namespace gate actually denies a
+/// registration for an ungranted namespace — under auth-off single-tenant
+/// operator mode the caller is the operator and holds every namespace, so there
+/// is no denial. Gated `not(feature = "auth")` because the real-JWT build needs
+/// a live JWKS endpoint.
+#[cfg(not(feature = "auth"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError> {
+    /// Shared-secret bearer accepted by the auth-on dev-token path.
+    const AUTH_TOKEN: &str = "worker-denial-secret";
+
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let registry = ConnectedWorkerRegistry::default();
@@ -450,7 +460,13 @@ async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError>
         StaticWorkflowNamespaces::default(),
         StaticScheduleNamespaces::default(),
     );
-    let state = ServerState::from_parts_with_registry(resolver, runtime_config(), registry.clone());
+    let mut config = runtime_config();
+    config.auth = AuthConfig {
+        enabled: true,
+        jwks_url: Some(AUTH_TOKEN.to_owned()),
+        jwks_refresh_seconds: 300,
+    };
+    let state = ServerState::from_parts_with_registry(resolver, config, registry.clone());
     let server = tokio::spawn(
         tonic::transport::Server::builder()
             .add_service(worker_service(state))
@@ -473,6 +489,13 @@ async fn denied_registration_fails_rpc_without_frames() -> Result<(), TestError>
         })
         .await?;
     let mut request = tonic::Request::new(ReceiverStream::new(worker_rx));
+    // Valid bearer + subject, granted only NAMESPACE — not "ungranted".
+    request
+        .metadata_mut()
+        .insert("authorization", format!("Bearer {AUTH_TOKEN}").parse()?);
+    request
+        .metadata_mut()
+        .insert("x-aion-subject", "worker".parse()?);
     request
         .metadata_mut()
         .insert("x-aion-namespaces", NAMESPACE.parse()?);

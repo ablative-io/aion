@@ -4,6 +4,11 @@
 //!
 //! Lives in its own test binary so the thread-local capture subscriber never
 //! races other tests' tracing callsite state.
+//!
+//! Gated `not(feature = "auth")`: the denial half needs the auth-on dev-token
+//! path (the real-JWT build would require a live JWKS endpoint), and the lone
+//! test below drives auth on through that path.
+#![cfg(not(feature = "auth"))]
 
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -28,6 +33,8 @@ type TestError = Box<dyn std::error::Error>;
 
 const RELOAD_MODULE: &str = "aion_reload_fixture";
 const NAMESPACE: &str = "default";
+/// Shared-secret bearer accepted by the auth-on dev-token path.
+const AUTH_TOKEN: &str = "audit-secret";
 
 /// Compiles the reload fixture returning `version` from both entrypoints.
 fn compile_reload_beam(version: u32) -> Result<Vec<u8>, TestError> {
@@ -82,9 +89,15 @@ fn runtime_config(deploy: DeployConfig) -> RuntimeConfig {
             http: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
         },
         tls: None,
+        // Auth ENABLED via the dev-token path: header-sourced grants still
+        // carry `grant_source="header"`, and the strict gate denies a
+        // bearer-authenticated caller with no deploy grant — the denial the
+        // audit/warn line asserts. (Under auth-off operator mode there is no
+        // denial and the grant source is `operator`; this audit proof needs the
+        // auth-on path, hence the file is gated `not(feature = "auth")`.)
         auth: AuthConfig {
-            enabled: false,
-            jwks_url: None,
+            enabled: true,
+            jwks_url: Some(AUTH_TOKEN.to_owned()),
             jwks_refresh_seconds: 300,
         },
         dashboard: DashboardConfig {
@@ -160,6 +173,7 @@ fn post_archive(archive: Vec<u8>) -> Result<Request<body::Body>, TestError> {
         .uri("/deploy/packages")
         .method("POST")
         .header("content-type", "application/octet-stream")
+        .header("authorization", format!("Bearer {AUTH_TOKEN}"))
         .header("x-aion-subject", "ci")
         .header("x-aion-namespaces", NAMESPACE)
         .header("x-aion-deploy", "true")
@@ -168,6 +182,11 @@ fn post_archive(archive: Vec<u8>) -> Result<Request<body::Body>, TestError> {
 
 /// Audit: one structured line per mutation carrying who/what/version/outcome,
 /// and a warn per denial (test plan item 11's log half).
+///
+/// Auth ENABLED via the dev-token path so the denial half remains real (auth-on
+/// strict gate); gated `not(feature = "auth")` because the real-JWT build needs
+/// a live JWKS endpoint.
+#[cfg(not(feature = "auth"))]
 #[tokio::test]
 async fn deploy_mutations_emit_structured_audit_lines() -> Result<(), TestError> {
     #[derive(Clone, Default)]
@@ -205,13 +224,17 @@ async fn deploy_mutations_emit_structured_audit_lines() -> Result<(), TestError>
     let archive = archive_bytes(&beam, "run")?;
     let response = router.clone().oneshot(post_archive(archive)?).await?;
     assert_eq!(response.status(), StatusCode::OK);
+    // Authenticated (valid bearer) but NO deploy grant: the auth-on strict gate
+    // denies, producing the warn line.
     let denied = router
         .clone()
         .oneshot(
             Request::builder()
                 .uri("/deploy/versions")
                 .method("GET")
+                .header("authorization", format!("Bearer {AUTH_TOKEN}"))
                 .header("x-aion-subject", "mallory")
+                .header("x-aion-namespaces", NAMESPACE)
                 .body(body::Body::empty())?,
         )
         .await?;

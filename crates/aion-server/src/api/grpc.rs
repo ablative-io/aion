@@ -622,22 +622,23 @@ pub(crate) async fn caller_from_metadata(
     }
 }
 
+/// Auth-off single-tenant operator mode for the gRPC boundary, mirroring the
+/// HTTP path exactly: with no auth configured the server decides server-side,
+/// at request time, that the caller IS the operator and holds full access
+/// (every namespace + the deployment-wide deploy grant). No metadata is
+/// required for access; `x-aion-subject` is honored only as the audit label.
 fn development_caller_from_metadata(metadata: &tonic::metadata::MetadataMap) -> CallerIdentity {
     let subject = metadata
         .get("x-aion-subject")
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
-        .unwrap_or("anonymous");
-    let namespaces = metadata
-        .get("x-aion-namespaces")
-        .and_then(|value| value.to_str().ok())
-        .map(parse_namespaces)
-        .unwrap_or_default();
-    CallerIdentity::new(subject, namespaces).with_deploy(deploy_metadata_granted(metadata))
+        .unwrap_or("operator");
+    CallerIdentity::operator(subject)
 }
 
 /// Deployment-wide deploy grant from the development `x-aion-deploy`
 /// metadata entry, the dev-mode analog of the JWT `deploy` claim.
+#[cfg(not(feature = "auth"))]
 fn deploy_metadata_granted(metadata: &tonic::metadata::MetadataMap) -> bool {
     metadata
         .get("x-aion-deploy")
@@ -689,6 +690,7 @@ fn parse_bearer(value: &str) -> Option<String> {
     Some(token.to_owned())
 }
 
+#[cfg(not(feature = "auth"))]
 fn parse_namespaces(value: &str) -> Vec<String> {
     value
         .split(',')
