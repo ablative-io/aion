@@ -22,7 +22,7 @@ address:
 
 | Purpose                         | Config key                         | Default port (node *i*) |
 | ------------------------------- | ---------------------------------- | ----------------------- |
-| HTTP/JSON API + dashboard       | `[server] listen_address`          | `8090 + i`              |
+| HTTP/JSON API + ops console     | `[server] listen_address`          | `8090 + i`              |
 | gRPC API + worker pull protocol | `[server] grpc_address`            | `50051 + i`             |
 | haematite replication bind      | `[store.cluster] bind_address`     | `7700 + i`              |
 | liminal push listener           | `[outbox] liminal_listen_address`  | `8190 + i`              |
@@ -150,7 +150,7 @@ This is the honest current state, not a recommendation for production:
   self-declares its own authorization. Bearer-token validation exists but only
   engages when `[auth] enabled = true` with a `jwks_url`.
 - **Deploy is enabled in the demo configs.** The generator now emits
-  `[deploy] enabled = true` with explicit size ceilings so the dashboard's
+  `[deploy] enabled = true` with explicit size ceilings so the ops console's
   "deploy package" action works against a demo node. With dev-open auth that
   means any caller that can reach the node may deploy.
 
@@ -160,23 +160,24 @@ and give the worker a TLS tonic channel (`Session::from_channel`); set
 token; and stop trusting `x-aion-namespaces` in dev mode. None of that is wired
 into the demo today — keep the mesh on a trusted network.
 
-### Dashboard CORS across hosts
+### Ops console CORS across hosts
 
 `[server] cors_allowed_origins` is secure-by-default: only the listed origins
 may call the node's HTTP API cross-origin, and it defaults to the local Vite dev
-server (`http://localhost:5173`, `http://127.0.0.1:5173`). A dashboard served
+server (`http://localhost:5173`, `http://127.0.0.1:5173`). An ops console served
 from a routable host would be blocked until you add its origin. Set it at
 generation time:
 
 ```bash
 DEMO_HOSTS="100.64.0.1 100.64.0.2 100.64.0.3" \
-DEMO_DASHBOARD_ORIGINS="http://100.64.0.9:5173" \
+DEMO_OPS_CONSOLE_ORIGINS="http://100.64.0.9:5173" \
   scripts/demo/gen-cluster-config.sh --out cfg --package /path/fleet.aion \
     --nodes 3 --mode shared
 ```
 
-`DEMO_DASHBOARD_ORIGINS` is a space-separated origin list and is applied to
-every node's `cors_allowed_origins`.
+`DEMO_OPS_CONSOLE_ORIGINS` is a space-separated origin list and is applied to
+every node's `cors_allowed_origins`. The legacy `DEMO_DASHBOARD_ORIGINS` name is
+still honoured as a fallback.
 
 ---
 
@@ -184,7 +185,8 @@ every node's `cors_allowed_origins`.
 
 - Generator: `scripts/demo/gen-cluster-config.sh` (`--out`, `--package`,
   `--nodes`, `--mode loopback|shared`, `--host`), env `DEMO_HOSTS`,
-  `DEMO_DASHBOARD_ORIGINS`; emitter `emit_cluster_config` in
+  `DEMO_OPS_CONSOLE_ORIGINS` (legacy `DEMO_DASHBOARD_ORIGINS` honoured as a
+  fallback); emitter `emit_cluster_config` in
   `scripts/demo/lib.sh`.
 - Per-node config keys: `[server] listen_address` / `grpc_address` /
   `cors_allowed_origins`, `[store.cluster] bind_address` / `node_id` /

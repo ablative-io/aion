@@ -340,7 +340,7 @@ mod tests {
     /// grant supplied as the `x-aion-deploy=true` query param (exactly what a
     /// browser console sends, since it cannot set the handshake header) is
     /// authorized and receives the priming `cluster_snapshot` frame. This is the
-    /// contract the dashboard's deploy-credential fix relies on: without the
+    /// contract the ops console's deploy-credential fix relies on: without the
     /// grant the cluster socket is denied and the failover view reconnect-loops
     /// to "disconnected".
     #[tokio::test]

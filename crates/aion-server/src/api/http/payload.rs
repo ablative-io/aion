@@ -37,13 +37,13 @@ fn invalid_start_input() -> WireError {
     )
 }
 
-/// Convert the proto describe response into the dashboard-facing
+/// Convert the proto describe response into the ops console-facing
 /// [`DescribeWorkflowResponse`]: the summary is decoded into the generated
 /// [`aion_core::WorkflowSummary`] shape and each history envelope is decoded
 /// into a plain [`aion_core::Event`], so the wire matches the generated
 /// TypeScript bindings field-for-field (no protobuf-derived `{content_type,
 /// data}` payload wrappers).
-pub(crate) fn describe_response_to_dashboard(
+pub(crate) fn describe_response_to_ops_console(
     response: &ProtoDescribeWorkflowResponse,
 ) -> Result<DescribeWorkflowResponse, HttpWireError> {
     let summary = response

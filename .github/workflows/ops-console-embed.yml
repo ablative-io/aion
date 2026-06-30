@@ -28,11 +28,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Regenerate ts-rs wire types
-        run: cargo test -p aion-core export_dashboard_wire_types
+        run: cargo test -p aion-core export_ops_console_wire_types
       - name: Assert no diff (committed generated types are up to date)
         run: |
           if ! git diff --exit-code -- apps/aion-ops-console/src/types/generated/; then
-            echo "::error::Generated wire types are stale. Run: cargo test -p aion-core export_dashboard_wire_types, then commit." >&2
+            echo "::error::Generated wire types are stale. Run: cargo test -p aion-core export_ops_console_wire_types, then commit." >&2
             exit 1
           fi
 

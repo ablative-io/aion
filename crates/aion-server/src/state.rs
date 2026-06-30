@@ -56,14 +56,14 @@ struct ServerStateInner {
     /// to one poll interval. Always present (cheap, no `Option`): the handle is
     /// harmless when the outbox is not commissioned, since nothing pulses it.
     outbox_wake: Arc<tokio::sync::Notify>,
-    /// WS3 cluster topology/ownership publisher. Always present: the dashboard's
+    /// WS3 cluster topology/ownership publisher. Always present: the ops console's
     /// cluster channel is served on every boot (calm state with no peers on a
     /// single-node server). Sized from `websocket.cluster_broadcast_capacity`.
     cluster_publisher: crate::cluster_publisher::ClusterEventPublisher,
     /// This node's distribution name for the WS3 cluster snapshot self-identity.
     /// `Some` on a distributed haematite boot (the configured `store.cluster.node_id`),
     /// `None` on a single-node boot — the snapshot then reports the standalone
-    /// self-label so the dashboard still has a node to render.
+    /// self-label so the ops console still has a node to render.
     cluster_self_node: Option<String>,
     /// Owns the distributed haematite inbound-write responder thread, kept alive
     /// for the server's lifetime so a cluster node keeps answering peers'
@@ -558,7 +558,7 @@ impl ServerState {
         }
         let engine = Arc::clone(self.inner.namespace_guard.resolver().engine()?);
         // WS3: feed cluster topology deltas from the supervisor's existing
-        // decision points into the dashboard channel. `self_node` is the
+        // decision points into the ops console channel. `self_node` is the
         // configured distribution name (already captured for the snapshot).
         let publisher = Arc::new(self.inner.cluster_publisher.clone());
         let self_node = self.inner.cluster_self_node.clone().unwrap_or_default();

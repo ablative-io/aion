@@ -71,7 +71,7 @@ pub fn http_router(state: ServerState) -> Result<Router, ServerError> {
 /// the layer is not installed and no cross-origin request is permitted. When
 /// origins are configured the layer is scoped to exactly those origins (never
 /// `Any`, so it is safe to pair with credentialed requests), permits the
-/// methods the dashboard uses (GET, POST, and OPTIONS preflight), and allows
+/// methods the ops console uses (GET, POST, and OPTIONS preflight), and allows
 /// exactly the request headers the API consumes.
 ///
 /// # Errors

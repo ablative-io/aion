@@ -407,7 +407,7 @@ Create `aion.toml` in a fresh working directory:
 
 ```toml
 [server]
-listen_address = "127.0.0.1:8080"   # HTTP/JSON API + dashboard
+listen_address = "127.0.0.1:8080"   # HTTP/JSON API + ops console
 grpc_address = "127.0.0.1:50051"    # gRPC API + worker protocol
 
 [store]

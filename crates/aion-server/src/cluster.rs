@@ -127,9 +127,9 @@ pub struct ClusterSupervisor<L: PeerLiveness, A: ShardAdopter> {
     config: SupervisorConfig,
     state: BTreeMap<String, PeerState>,
     /// WS3 cluster-event sink. `None` keeps every existing test compiling and
-    /// keeps a non-dashboard boot silent; when present, `tick()` emits a delta at
+    /// keeps a non-ops-console boot silent; when present, `tick()` emits a delta at
     /// each of its existing branch points. The publisher fans out to live
-    /// dashboard subscribers and is a no-op with none attached.
+    /// ops console subscribers and is a no-op with none attached.
     publisher: Option<Arc<ClusterEventPublisher>>,
     /// This node's distribution name, stamped into `ShardAdopted.adopted_by` and
     /// the supervisor lifecycle events. Empty when unknown (no emit honesty cost:
@@ -386,7 +386,7 @@ impl<L: PeerLiveness, A: ShardAdopter> ClusterSupervisor<L, A> {
                 }
             }
         }
-        // Lifecycle EMIT: clean drain/shutdown — the dashboard can distinguish a
+        // Lifecycle EMIT: clean drain/shutdown — the ops console can distinguish a
         // stopped supervisor from "all peers healthy" (ADR-019).
         let self_node = self.self_node.clone();
         self.emit(|meta| ClusterEvent::SupervisorStopped {

@@ -18,7 +18,7 @@ use serde::Serialize;
 use super::auth::HttpCaller;
 use crate::ServerState;
 
-/// Capability snapshot for the resolved caller, consumed by the dashboard to
+/// Capability snapshot for the resolved caller, consumed by the ops console to
 /// gate affordances at runtime.
 #[derive(Debug, Serialize)]
 pub(crate) struct WhoAmI {
@@ -92,7 +92,7 @@ mod tests {
 
     /// Auth-off operator mode: `/whoami` reports the operator's full access with
     /// no development headers on the request. This is the runtime signal the
-    /// dashboard reads to enable deploy/namespace affordances.
+    /// ops console reads to enable deploy/namespace affordances.
     #[tokio::test]
     async fn whoami_reports_operator_in_auth_off_mode() -> Result<(), Box<dyn std::error::Error>> {
         let response = auth_off_router()

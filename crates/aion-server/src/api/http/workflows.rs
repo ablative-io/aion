@@ -16,7 +16,7 @@ use super::clean_dtos::{
     StartWorkflowResponse, core_summary_from_store,
 };
 use super::error::{HttpStartError, HttpWireError};
-use super::payload::describe_response_to_dashboard;
+use super::payload::describe_response_to_ops_console;
 use super::visibility::{VisibilityQuery, scope_visibility_filter};
 use crate::{NamespaceOperation, ServerError, ServerState, api::handlers};
 
@@ -166,12 +166,12 @@ pub(crate) async fn describe_workflow(
     let response = handlers::describe(state.namespace_guard(), &caller, request)
         .await
         .map_err(HttpWireError)?;
-    describe_response_to_dashboard(&response).map(Json)
+    describe_response_to_ops_console(&response).map(Json)
 }
 
 /// List the namespaces the caller can select, sorted.
 ///
-/// Backs the dashboard's namespace discovery (`client.listNamespaces()` ->
+/// Backs the ops console's namespace discovery (`client.listNamespaces()` ->
 /// `GET /namespaces`). For an enumerated caller (a token/header grant) the
 /// server returns exactly that caller's authorized namespaces, mirroring the
 /// auth model. An OPERATOR (auth-off single-tenant mode) holds all-namespace
@@ -476,7 +476,7 @@ mod tests {
         let router = workflow_router(server_state(resolver, runtime_config()).await?);
 
         // Clean wire contract: ids are plain UUID strings (matches the
-        // dashboard's getHistory request body).
+        // ops console's getHistory request body).
         let describe = json!({
             "namespace": NAMESPACE,
             "workflow_id": workflow_id().to_string(),
@@ -491,7 +491,7 @@ mod tests {
         // Clean wire contract: the describe response is the generated
         // `DescribeWorkflowResponse` shape — a `WorkflowSummary` projection
         // (workflow_id/workflow_type/status/started_at/ended_at/parent) plus a
-        // plain `Event[]` history the dashboard decodes directly.
+        // plain `Event[]` history the ops console decodes directly.
         let body: serde_json::Value = read_json(response).await?;
         assert_eq!(
             body["summary"]["workflow_id"],
@@ -505,7 +505,7 @@ mod tests {
         );
         assert_eq!(
             body["history"][0]["type"], "WorkflowStarted",
-            "history entries are plain Event JSON the dashboard decodes directly"
+            "history entries are plain Event JSON the ops console decodes directly"
         );
         assert_eq!(
             body["history"][0]["data"]["workflow_type"], "fixture",
@@ -516,7 +516,7 @@ mod tests {
 
     /// `GET /namespaces` returns the caller's authorized namespaces as sorted
     /// JSON, resolving against the api router rather than falling through to the
-    /// dashboard SPA catch-all (which would answer with HTML).
+    /// ops console SPA catch-all (which would answer with HTML).
     #[tokio::test]
     async fn http_list_namespaces_returns_sorted_json() -> Result<(), Box<dyn std::error::Error>> {
         let store: Arc<dyn aion_store::EventStore> = Arc::new(aion_store::InMemoryStore::default());
@@ -544,7 +544,7 @@ mod tests {
                 .get(axum::http::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok()),
             Some("application/json"),
-            "GET /namespaces must return JSON, not the dashboard SPA HTML"
+            "GET /namespaces must return JSON, not the ops console SPA HTML"
         );
         let body = read_text(response).await?;
         assert!(

@@ -63,7 +63,7 @@ pub struct ClusterSubscription {
 /// hand-decoded on the TS side (same contract as the workflow path).
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamedClusterEvent {
-    /// Frame discriminator pinned to `"cluster_event"` so the dashboard's
+    /// Frame discriminator pinned to `"cluster_event"` so the ops console's
     /// hand-written frame parser can branch a cluster delta apart from a
     /// `cluster_snapshot` priming reply or an `{"error": ...}` terminal frame.
     pub kind: String,
@@ -88,7 +88,7 @@ impl StreamedClusterEvent {
 /// Server -> client priming frame carrying the calm-state [`aion_core::ClusterSnapshot`].
 ///
 /// Sent once at the head of a cluster subscription before any live delta so the
-/// dashboard can render the "all clear" baseline (ADR-019) and apply only deltas
+/// ops console can render the "all clear" baseline (ADR-019) and apply only deltas
 /// with `cluster_seq > snapshot.as_of_seq`.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamedClusterSnapshot {

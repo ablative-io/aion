@@ -131,7 +131,7 @@ fn step_to_json(step: &InspectStep) -> Result<Value> {
 /// in-VM replay can recover counts — deferred). So this surfaces the projection
 /// honestly: the value the production `random()` path serves at each draw
 /// ordinal, computed by the same formula the running workflow used. The sample
-/// shows the first draw ordinals; a consumer (the RM-007 dashboard) queries any
+/// shows the first draw ordinals; a consumer (the RM-007 ops console) queries any
 /// ordinal it needs against the same projection.
 const RANDOM_SAMPLE_ORDINALS: u64 = 8;
 
