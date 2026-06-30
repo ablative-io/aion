@@ -1,262 +1,206 @@
-# Roadmap — open work as of 2026-06-13
+# Aion Roadmap — current as of 2026-06-30
 
-> **The machine-readable ledger at `docs/design/roadmap.json` (rendered:
-> `docs/design/ROADMAP.md`) is now authoritative for item status and
-> dispatch** (design-system v2, ADR-007). The prose below remains the
-> detail reference until each item's cluster design absorbs it; new items
-> enter the ledger first.
+> **This is the canonical forward roadmap.** It reconciles three planning
+> surfaces: the live task tracker, the strategic design docs
+> ([`CONTROL-PLANE.md`](./design/CONTROL-PLANE.md),
+> [`HAEMATITE-CLUSTER-SOURCE-OF-TRUTH.md`](./design/HAEMATITE-CLUSTER-SOURCE-OF-TRUTH.md),
+> [`DURABLE-AGENTS-AS-INFRASTRUCTURE.md`](./DURABLE-AGENTS-AS-INFRASTRUCTURE.md)),
+> and the still-open detail from prior roadmaps. The machine ledger
+> (`docs/design/roadmap.json`) remains authoritative for fine-grained dispatch
+> status. Task numbers (`#NNN`) refer to the working task tracker.
 
-Everything below is queued, not in flight. Items are dependency-ordered
-within each section. Status of the released stack: aion 0.6.0 on crates.io
-(unified `aion` binary; no default activity timeouts, `aion new` +
-templates, `aion codegen`), `aion_flow` 0.4.0 on hex, beamr 0.6.0
-underneath; outside-in validated end to end including a live stacked-dev
-run against real yg/norn/cargo/meridian CLIs.
+## North Star — the No. 1 outcome
 
-## 1. Parent-close policy — DECIDED (Tom, 2026-06-13), implementation queued
+A **self-contained, multi-tenant, compute-aware durable-execution platform**:
+the only single binary (embedded haematite, no Cassandra/ES/Postgres) that ships
+a first-class multi-tenant control plane AND places/supervises worker compute —
+the unclaimed quadrant vs Temporal/Inngest/Restate/DBOS/Hatchet
+([`CONTROL-PLANE.md`](./design/CONTROL-PLANE.md) §1). Three pillars + two freebies:
 
-**The fact (pinned by `crates/aion/tests/nested_workflows_e2e.rs`):**
-cancelling a workflow records its terminal and kills only its own process.
-Child workflows are deliberately not process-linked (`src/child/spawn.rs`);
-the awaiting parent's `child.await` fails with `cancelled:<reason>` (D-4
-mapping, `src/runtime/nif_child_watch.rs`), but the cancelled workflow's
-own descendants are **left resident** — live Running processes that nothing
-reaps, surviving indefinitely until their own terminals. A grandchild
-parked on a three-month timer outlives its entire cancelled tree.
+| Pillar | State |
+|---|---|
+| **1. One binary, no external deps** | ✅ shipped — single `aion` binary, embedded haematite, embedded ops console |
+| **2. Namespaces as a real tenant boundary** | 🔜 the control-plane build (Track B) |
+| **3. Manage/place compute** | 🔜 the second moat (Track B Phase 3) |
+| *Freebie:* visibility without Elasticsearch | ✅ haematite-durable + real-time socket ops console |
+| *Freebie:* no-determinism authoring for agents | ⚠️ to verify against our engine (Track B, decision) |
 
-**Decision (Tom accepted the recommendation, 2026-06-13):**
-Temporal-style per-spawn parent-close policy, `RequestCancel |
-Terminate | Abandon`, as a **required** argument on `child.spawn` /
-`spawn_and_wait` (the no-arbitrary-defaults rule means authors must
-choose, not inherit). `Abandon` is today's behavior made explicit —
-the child hands off and keeps running independently after the parent's
-terminal. Engine work: propagate on parent terminal (all terminals,
-not just cancel), recursively; recovery must re-arm pending
-propagations. SDK + docs + the `workflows.md` child section ("a
-per-spawn parent-close policy is under design") update when it lands.
+## Where we are (the foundation — shipped & proven)
 
-## 2. Proof portfolio (the "contemporary of Temporal" wave)
+- **Durable execution**: workflows, durable timers, signals, queries, outbox
+  fan-out, continue-as-new, package deploy. Published stack on crates.io (0.8.0).
+- **Distribution & failover**: active-active haematite (quorum + epoch fence +
+  shard election), cross-node request routing, liminal `namespace × task_queue
+  × node` dispatch. **Cross-node `kill -9` failover WORKS and is proven** — both
+  the parked-timer and fan-out OS-process kill-9 gates pass (#157, #148, #109).
+  *(This supersedes the prior roadmap's "do not claim multi-node scale-out" —
+  hard-kill cross-node failover is now demonstrable. Horizontal throughput
+  scale-out at large node counts remains unproven; see Track D.)*
+- **Ops console out-of-box**: embedded-by-default (no flag), auth-off operator
+  mode, deploy-granted by default, live namespace list, real-time socket feed,
+  properly named "Ops Console" (#154/#155/#156).
+- **Routing**: namespace/task_queue/node split + affinity (NSTQ #84-89, NODE
+  #91-100, LSUB #101-112).
 
-Goal: every public claim has a witnessable, executable receipt — not just
-internal test suites. Agreed plan, in credibility-per-effort order:
+---
 
-1. **Claims ledger** — `docs/CLAIMS.md`: every strong claim (survives
-   kill -9, byte-identical replay, zero activity re-execution, mid-flight
-   version pinning, queries append nothing) mapped to the named runnable
-   test/demo that proves it and the exact command. The nested-e2e suite's
-   full-`Vec<Event>` equality assertions are ledger-grade receipts already.
-2. **Public CI on fresh clones** — no `.github/workflows` exists yet.
-   Full gates (fmt, clippy -D warnings, `cargo test -p` every crate) plus
-   the from-source example builds (`tests/common/example_build.rs` needs
-   `gleam` on the runner). This is the credibility keystone: our worst
-   release bug was tests that only passed on one machine against stale
-   gitignored archives.
-3. **Chaos gate** — a harness that runs the order saga while killing the
-   server at *random* points N times, asserting completion with
-   byte-identical history and zero re-executed activities, in CI on every
-   commit.
-4. **Recorded demos** — scripted asciinema: the kill -9 recovery demo, the
-   v1-pinned/v2-routed deploy demo (~3 min of terminal time each, proven
-   by the dogfood runs).
-5. **Published benchmark numbers** — `benchmarks/million-processes` exists
-   but its results were never published. Add workflows/sec, signal latency,
-   recovery-time-vs-history-length curves.
-6. **Honest Temporal side-by-side** — the same order saga implemented on
-   both, in one repo: LOC, infra footprint (docker-compose cluster vs one
-   binary), cold start, RAM, operational story. Concede what Temporal wins:
-   battle-testing, horizontal scale-out, ecosystem. **Do not claim
-   multi-node scale-out — we cannot demonstrate it.**
+## Track A — Demo & proof (prove the thesis live)
 
-## 3. Authoring roadmap (sequenced)
+The near-term credibility work. Pillar 1 is provable *today*.
 
-1. **Schema→Gleam codegen** — DONE: `aion codegen` regenerates
-   `src/<name>_io.gleam` (types + codecs) from `schemas/*.json`, with
-   `--check` as the CI drift gate (`docs/guides/codegen.md`).
-2. **Dev-pipeline template** — DONE: `aion new <name> --template
-   dev-pipeline --worker rust` (the fourth template; the worker is required
-   and the refusal explains why) scaffolds `examples/stacked-dev` as a
-   starting point — three composed workflows, six schemas, the CLI-shelling
-   worker, and the hermetic 11-scenario test suite — and runs codegen
-   in-process so workflow-level codecs are generated, not vendored.
-   Remaining follow-ups: activity payloads / typed errors / status replies
-   have no schemas and keep hand-written codecs (adding activity schemas is
-   a future wave); the other three templates still vendor hand-written
-   codecs and do not run codegen; the `TODO(meridian)` seams ride along
-   from `examples/stacked-dev` (see §5).
-3. **CLI JSON ergonomics (Tom, 2026-06-13 — live-dogfood friction).**
-   `--input`/`--payload` should accept the curl `@file` convention
-   (`aion start stacked_dev --input @input.json`,
-   `aion signal <id> review_verdict --payload @verdict.json`) instead of
-   forcing `"$(cat ...)"` shell quoting; `aion start` should validate the
-   input against the deployed package's input schema CLIENT-side, failing
-   with a file+RFC6901 pointer before dispatch instead of as a failed run;
-   and an `aion input <workflow_type>` helper should emit a valid input
-   skeleton from the deployed schema (composing the input document by hand
-   is the remaining authoring pain — embedding design docs as JSON-encoded
-   strings is easy to get wrong silently). **Polymorphic input (Tom,
-   2026-06-13):** `--input` should take inline JSON or `@file`
-   interchangeably; a directory form (`--input @docs/design/foo/`) that
-   assembles the input by mapping schema fields to files in the directory
-   is wanted but needs design — field→file mapping must be explicit and
-   schema-driven, not guessed (no-arbitrary-defaults applies to
-   inference too).
-4. **`aion dev`** — watch mode: rebuild + repackage + hot-redeploy on file
-   change (content-hash namespacing already makes redeploy safe).
-5. **Dashboard timeline** — per-run event timeline view in aion-dashboard.
-6. **Elixir SDK** — BEAM-native polyglot authoring (the strategic counter
-   to Temporal's client-runtime polyglot story; see §6 of the Temporal
-   discussion — we never build client-side determinism cores).
-7. **Declarative DSL + visual builder** — on top of the typed SDK, not
-   instead of it.
-8. **WASM workflow runtime** — long-term polyglot path (beamr-wasm exists;
-   banked beamr items below are prerequisites).
+- **#118 Sydney failover demo** — laptop → Tailscale → dogfood; the visceral
+  "kill it, watch it recover, correct result" beat. *Now unblocked by #157.*
+  Needs Tom (hardware/Tailscale/login). **Proves pillar 1 live.**
+- **#121 L2-min: real Norn agent surviving kill-9** — a real agent activity on
+  the cluster, surviving a hard kill. Builds on #118.
+- **#133 GOAL: all 5 demo capabilities LIVE-verified in the ops console** —
+  deploy ✅ (#136), start ✅ (#137), remote worker ✅ (#139); **#138 target
+  namespace + task_queue from the UI** is the one unverified capability.
+- **Proof portfolio** (from prior roadmap §2, still open): `docs/CLAIMS.md`
+  claims→receipt ledger; **chaos gate** (kill the server at random points,
+  assert byte-identical history + zero re-executed activities); recorded
+  asciinema demos; published benchmark numbers (`benchmarks/million-processes`
+  exists, never published); honest Temporal side-by-side (same saga, both
+  systems, LOC + infra footprint).
 
-## 4. Publish bundle — SHIPPED as 0.6.0 (2026-06-13)
+## Track B — Control plane (pillars 2 & 3) — [`CONTROL-PLANE.md`](./design/CONTROL-PLANE.md)
 
-All eleven crates published at 0.6.0 (timeout removal, `aion new` +
-templates, `aion codegen`, hint-string fix, worker SDK reconnect +
-session log); `aion_flow` 0.4.0 on hex (`testing.mock_child`); template
-pins bumped to `>= 0.4.0 and < 0.5.0`. CHANGELOG.md added at the repo
-root — keep it current with every release from here. Same day, the
-live test-bed run (brief tk-015) completed the ENTIRE stacked_dev arc
-against real CLIs — provision, norn dev, verify, gate, review DM,
-human signal, and land (commit + merge from repo root) — so every
-step of the flagship workflow is live-proven.
+The strategic build. Design done; phased.
 
-**Candidate follow-ups from the release experience (Tom, 2026-06-13):**
-- **Release pipeline as an aion workflow** (and a fifth template
-  candidate): ordered multi-crate publish, long verify builds, a human
-  "ship it" approval signal, durable resume if it dies mid-wave —
-  this very process, run by hand today, is shaped exactly like a
-  workflow. Today's run also showed the version bump ripples into
-  scaffold-gate assertions and example/fixture lockfiles; a workflow
-  step could sweep those mechanically.
-- **Briefs-driven self-hosted dev:** use `stacked_dev` to dispatch
-  norn agents against aion's own roadmap items — author the design
-  docs/briefs (the tk-015 input shape), fan out runs, review via
-  meridian. The dogfood becomes the dev process.
+- **Decision (now): determinism/authoring model** — verify whether our engine is
+  replay-deterministic (Temporal footgun) or memoization-friendly (Inngest-style,
+  an agent win). Shapes the whole agent story. (`CONTROL-PLANE.md` §5.)
+- **Decision (now): default shard count** — raise from 1 (validate value vs perf
+  audit #47); the immutable-`shard_count` trap means single-node deployments
+  can't grow to a cluster without this. (`CONTROL-PLANE.md` §6.)
+- **Phase 1 — Namespace registry as durable haematite state**: minted-on-use
+  (worker registration upserts), `{name, created_at, last_seen, origin, config,
+  placement}`, `GET /namespaces` returns the live set, loud "namespace created"
+  event, `auto_create=open|closed` policy. Folds into #146.
+- **Phase 2 — Namespace as a real boundary**: auth-consistent checks at every
+  hop (CVE-2025-14986 lesson), per-namespace keyed backpressure (not hard-fail
+  limits).
+- **Phase 3 — Compute management (second moat)**: beamr-supervised worker fleets
+  placed per namespace, kept alive across kill-9, autoscaling that respects
+  in-flight work. Subsumes the "distributed worker deploy" direction
+  (registry → leasing → remote deploy).
+- **Phase 4 — Observability scoped by namespace**: the socket ops console per
+  namespace (near-free given what's built).
 
-## 5. Meridian integration (Tom's current focus)
+## Track C — Correctness, hardening & CI
 
-`examples/stacked-dev` is the contract. Most CLI seams were resolved by
-live contact 2026-06-13 (yg provision/diagnostics/merge, norn run/resume
-+ output envelope, `meridian review request` argv/identity/response
-envelope); the remaining typed seams are exchange-VM dispatch (Copy/
-Overlay/Vm isolation), affected-closure gate scope, and warm-cache
-sharing per isolation mode. Meridian owes:
-- **CLI contract discipline (the lesson of the live-dogfood night).**
-  Five consecutive run failures were guessed-contract drift, not logic
-  bugs: argv order (clap's greedy `--reviewer` swallowing a positional),
-  an undocumented required identity (`--as`), workspace resolution
-  (config key, not `workspace activate` state), and an imagined response
-  shape (`request_id` does not exist). Fixes wanted on the Meridian side:
-  (a) schema'd/versioned machine output on every CLI verb — norn's
-  `--output-schema` is the model, it never broke; (b) `review request`
-  should validate the branch exists before DM-ing reviewers; (c)
-  `workspace join` 415s (the join POST lacks a Content-Type header); (d)
-  `workspace activate` state should be consulted by `review request`.
-  On our side the discipline is permanent: every test shim emits a REAL
-  captured envelope, never an invented one — contract drift must break a
-  test, not a live run.
-- **Multi-reviewer verdicts (DECIDED — Tom + Waffles, 2026-06-13).** The
-  workflow keeps its single `review_verdict` signal: one signal = THE
-  decision. Reviewers vote to Meridian (`meridian review complete
-  --verdict`, which clears each reviewer from the branch's
-  `pending_reviewers` set and emits `ReviewVerdictSubmitted`); Meridian's
-  coordinator applies the quorum policy (all-in, majority, any-reject —
-  org policy lives in Meridian, never baked into workflow code) and, once
-  decided, fires `aion signal <workflow_id> review_verdict` itself. The
-  missing wire: the coordinator is keyed by BRANCH but `aion signal`
-  takes the WORKFLOW id — review request must carry the workflow id
-  along (request metadata / DM context) or Meridian needs a branch→run
-  mapping recorded at request time.
-- A Meridian worker serving the eight activity names
-  (`provision_workspace`, `warm_build`, `dev`, `scoped_checks`,
-  `dev_resume`, `full_checks`, `request_review`, `land`) mirroring the
-  local impls. Note: `warm_build`/`dev` use the tagged
-  `StartupTask`/`StartupResult` envelope (one homogeneous `workflow.all`
-  fan-out).
-- Dispatch contract is `examples/stacked-dev/schemas/input.json`
-  (`additionalProperties: false`; caps/backoff/deadline are required —
-  Meridian chooses the values, the workflow bakes nothing in).
+The "stop regressions silently rotting" track. **The keystone gap.**
 
-## 6. Known flakes and loose ends
+- **Public full-gate CI** (from prior roadmap §2.2; STILL the biggest hole —
+  only `ops-console-embed.yml` exists). fmt + clippy `-D` + `cargo test -p`
+  every crate, on fresh clones, with `gleam` on the runner for example builds.
+- **CI-harden the kill-9 gates** — the `#[ignore]d` parked-timer + fan-out
+  kill-9 e2e tests pass now but aren't in CI; that's *exactly* how #157 rotted
+  unseen. Add a slow/nightly lane so it can't silently regress.
+- **#113** beamr's rare ~3% parallel lib-test flake — hunt it (will surface in
+  CI once the gate exists).
+- **#144 task_queue-on-start CONSUMPTION seam** — activities default to the
+  recorded start-time queue (closes a routing half-gap).
+- **Known flakes** (prior roadmap §6): `payload_binary…spawn` race,
+  `examples_e2e` gleam `Incompatible locked version` race, SDK harness
+  `with_timeout` zero-deadline limitation.
 
-- **stacked-dev worker: mint-or-resume for crash recovery (Tom,
-  2026-06-13).** Activities are at-least-once; a crash mid-`dev` re-runs
-  the step. The session id is deterministic (branch-derived) and norn
-  persists sessions to disk with `--resume <ID>`, so the conversation
-  survives — but the worker's dev handler currently always mints
-  (`--session-id`). Rider: detect the existing session (or fall back to
-  `--resume` on mint collision) so a kill -9 mid-development resumes the
-  same agent session as if nothing happened. Same refinement applies to
-  the Meridian dispatcher's norn activity later.
-- **Engine: no-worker dispatch is terminal (found by the worker e2e).**
-  An activity dispatched with no connected worker fails the run instead
-  of parking as pending work. A durability engine should wait; folds into
-  the task-queues/routing item in §7.
+## Track D — Distribution & scale maturity
 
-- Under heavy parallel load in one checkout:
-  `payload_binary_remains_valid_through_spawn_and_is_released` failed once;
-  `examples_e2e` hit one `Incompatible locked version` gleam-build race.
-  Both pass in isolation and on clean runs; both pre-date the current wave.
-  Watch once CI exists — uncontended runners won't mask a real defect.
-- SDK test-harness limitation: the in-process double's `with_timeout` only
-  expires at a zero deadline, so a genuine signal-arrives-after-deadline
-  race can't be simulated in-process. Documented in the stacked-dev work;
-  fix in the SDK harness when convenient.
-- `.meridian/` untracked files were swept into commit `da2f07ba` by a
-  `git add -A`; flagged, unconfirmed whether intentional.
-- `.claude/` (agent worktree scaffolding) shows untracked in the repo —
-  decide whether to gitignore.
-- beamr banked non-blockers (tracked in the beamr repo): WASM tail-park
-  apply, dirty-native tail mis-continue, WASM/JIT timer parity,
-  `send_after` delivery, QoS busy-yield, file-io op-key leak. Relevant
-  again when the WASM workflow runtime work starts.
+- **#146 → BUILD: dynamic membership / quorum denominator** — design landed;
+  build it so quorum stops sizing in dead nodes (the fault-tolerance ceiling).
+- **#147 Cluster auto-discovery** — mDNS-first cut for a laptop mesh.
+- **#116 Aion fan-out/affinity + pluggable-storage maturity** (initiative) —
+  haematite first-class distributed backend; storage backend pluggability.
+- **Horizontal throughput scale-out** — unproven at large node counts; the
+  honest gap to close before claiming it (ties to Track A's Temporal side-by-side).
 
-## 7. Engine items noted but not scheduled
+## Track E — Authoring, SDK & DX (from prior roadmap §3)
 
-- Engine-side automatic retry dispatch from a `RetryPolicy` is not wired;
-  examples model retries as workflow-driven bounded loops (the documented
-  pattern). Decide whether engine-side retry is wanted at all, or whether
-  the workflow-driven pattern is the permanent answer.
-- Query at a cancelled-but-orphaned child: behavior is whatever the pinned
-  cancellation semantics imply today; revisit alongside parent-close.
-- **Activity progress / heartbeats.** Between `ActivityStarted` and its
-  result the engine knows nothing about a running activity. Long activities
-  that stream output (norn emitting JSON events during `dev` in
-  stacked-dev) have no live surface: the CLI runner captures the full
-  stream but only the final typed result is recorded — correct for
-  durability/replay (history carries outcomes, not progress chatter), and
-  workers are free to consume/forward the live stream out-of-band (the
-  Meridian worker answer). The engine-level candidate is Temporal-style
-  worker heartbeats: `heartbeat(details)` updating queryable live state
-  without appending history, which also enables heartbeat timeouts for
-  detecting hung activities. CONFIRMED WANTED (Tom, 2026-06-13).
-- **Per-activity timeouts declared by the workflow author.** The engine
-  imposes no activity timeout of its own (the hardcoded 30s dispatch
-  deadline was removed 2026-06-13; agent activities legitimately run for
-  over an hour) — a running activity is bounded only by the workflow's
-  `timeout_seconds` and worker liveness (stream teardown fails in-flight
-  work as retryable lost-worker errors). When authors need a per-activity
-  bound, the natural seam already exists: `ActivityDispatcher::dispatch`
-  carries a per-activity `config` JSON from workflow code all the way to
-  the server's `WorkerActivityDispatcher` (currently unused there), so an
-  author-declared timeout can ride it to the dispatch wait without any
-  wire change. Pairs with the heartbeat-timeout item above for
-  hung-but-connected workers (`HeartbeatTracker::fail_expired_workers`
-  exists but is deliberately not driven by any loop — driving it today
-  would re-cap non-heartbeating long activities at the heartbeat window).
-- **Worker task queues / routing / affinity.** CONFIRMED WANTED (Tom,
-  2026-06-13). Today activities dispatch by name to whichever connected
-  worker serves that name — fine for one worker, insufficient for fleets:
-  filesystem-coupled activity families (stacked-dev's provision → dev →
-  checks → land all share a worktree path) must land on the SAME worker
-  that provisioned the workspace. Temporal solves this with task queues;
-  we want named queues (worker registers names+queue, workflow/spawn
-  chooses queue) plus run-affinity ("subsequent activities of this run
-  prefer the worker that served activity X"), and capability placement
-  falls out (norn workers on the token box, check workers on CI-class
-  machines, GPU activities by the GPU). Single-remote-worker deployments
-  need none of this and work today — the worker owns its private disk and
-  only data crosses the wire.
+- **CLI JSON ergonomics**: `@file` convention for `--input`/`--payload`,
+  client-side schema validation before dispatch, `aion input <type>` skeleton
+  emitter, polymorphic/inline-or-file input (directory form needs design).
+- **`aion dev`** — watch mode: rebuild + repackage + hot-redeploy on change.
+- **Ops-console run timeline** — per-run event timeline view (now an ops-console
+  feature, not "dashboard").
+- **Elixir SDK** — BEAM-native polyglot authoring (the strategic counter to
+  Temporal's client-runtime polyglot; we never build client-side determinism
+  cores).
+- **Declarative DSL + visual builder** — on top of the typed SDK.
+- **WASM workflow runtime** — long-term polyglot path (#125 haematite browser-IO
+  remediation + banked beamr items are prerequisites).
+- **#125 Haematite WASM browser-I/O remediation** — gates ops-console Phase 2 /
+  browser-side workflows.
+- **#130 Ops-console professional disciplines (ADR-015..019)**.
+
+## Track F — Engine semantics (decisions + wiring, prior roadmap §1/§7)
+
+- **Parent-close policy** — DECIDED (Tom, per-spawn `RequestCancel | Terminate
+  | Abandon`, required arg); **implementation still queued** (no
+  `ParentClosePolicy` in the engine yet). Propagate on all parent terminals,
+  recursively; recovery re-arms pending propagations.
+- **Worker heartbeats** — CONFIRMED WANTED. `HeartbeatTracker` exists but
+  `fail_expired_workers` is not driven by any loop; wire it + `heartbeat(details)`
+  queryable live state + heartbeat timeouts for hung activities.
+- **Per-activity author-declared timeouts** — the `config` JSON seam already
+  reaches the dispatch wait; thread an author timeout onto it (pairs with
+  heartbeat timeouts).
+- **Engine-side retry from `RetryPolicy`** — not wired; decide whether
+  engine-side retry is wanted or the workflow-driven bounded-loop pattern is the
+  permanent answer.
+- **No-worker dispatch should PARK, not fail** — an activity with no connected
+  worker currently fails the run; a durability engine should wait.
+- **mint-or-resume on crash** (stacked-dev worker) — resume the same norn
+  session on a kill-9 mid-`dev` instead of always minting.
+
+## Track G — Hygiene, decisions & meridian
+
+- **#150 DECISION (needs Tom): AD-012 reopen operation** — keep / finish / drop
+  the WIP branch.
+- **#149 Branch-thicket cleanup** — prune stale merged branches across all 4 repos.
+- **#151 Refactor** — split the oversized `aion-server config/mod.rs` into modules.
+- **#153 cargo-install UX** — `cargo install` from crates.io currently yields an
+  API-only binary (no embedded console for the published-crate path); smooth it.
+- **Meridian integration** (prior roadmap §5, Tom's prior focus) — `examples/
+  stacked-dev` is the contract; remaining: multi-reviewer verdict wire
+  (branch→run mapping), a Meridian worker serving the eight activity names, CLI
+  contract discipline (schema'd machine output).
+
+---
+
+## Near-term sequence (recommended)
+
+1. **#118 Sydney failover demo** (with Tom) — proves pillar 1 live; everything
+   downstream rides on it being real.
+2. **CI keystone** (Track C): full-gate CI + CI-harden the kill-9 gates — stop
+   the silent-rot class of bug that produced #157.
+3. **Control-plane decisions** (Track B): verify determinism model + decide the
+   shard-count default — both are cheap and unblock the doc → build.
+4. **Control-plane Phase 1**: the durable namespace registry (the spine that
+   makes the ops console genuinely multi-namespace and retires the `default`
+   stopgap).
+5. Then iterate Track B Phases 2-4, with Track D/E/F items interleaved by need.
+
+## Decisions needed from Tom
+
+- **#150** AD-012 reopen operation: keep / finish / drop.
+- **Shard-count default** value (Track B) — accept "generous power-of-two,
+  validated vs #47", or pick a number.
+- **Determinism authoring stance** (Track B) — once verified, confirm whether we
+  lean into the no-determinism-for-agents positioning.
+- **Engine-side retry** (Track F) — wanted, or is workflow-driven the answer?
+
+## Coverage map (every open item → track)
+
+| Item | Track |
+|---|---|
+| #118 Sydney demo, #121 Norn-on-cluster, #133/#138 demo-capabilities, proof portfolio | A |
+| Control-plane Phases 1-4, determinism decision, shard-count decision, #146-build (registry side) | B |
+| Public CI, CI-harden kill-9 gates, #113 flake, #144 consumption seam, known flakes | C |
+| #146-build (dynamic membership), #147 auto-discovery, #116 fan-out/storage, scale-out proof | D |
+| CLI ergonomics, `aion dev`, run timeline, Elixir SDK, DSL, WASM runtime, #125, #130 | E |
+| Parent-close, heartbeats, per-activity timeouts, engine retry, no-worker-park, mint-or-resume | F |
+| #150 AD-012, #149 branches, #151 config split, #153 install UX, Meridian integration | G |
+
+*Last reconciled 2026-06-30 (post #157 failover fix + CONTROL-PLANE.md). When an
+item lands, update this file and the ledger.*
