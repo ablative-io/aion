@@ -84,6 +84,26 @@ pub const CREATE_VISIBILITY_CLOSE_TIME_INDEX: &str = "
 CREATE INDEX IF NOT EXISTS idx_visibility_close_time
 ON visibility (close_time)";
 
+/// Durable minted-on-use namespace registry (Control-Plane Phase 1).
+///
+/// One row per namespace keyed by `name`. `created_at`/`last_seen` are RFC 3339
+/// text (matching the package/timer/outbox encodings); `record` holds the opaque
+/// [`NamespaceRecord`](aion_store::NamespaceRecord) codec bytes that are the
+/// store's truth (only decoded to satisfy `list`). The single-node libSQL path
+/// upserts locally with no quorum to reach.
+pub const CREATE_NAMESPACES_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS namespaces (
+    name TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    record BLOB NOT NULL
+)";
+
+/// Namespace index supporting the `created_at` ASC (tie-break `name`) list ordering.
+pub const CREATE_NAMESPACES_CREATED_AT_INDEX: &str = "
+CREATE INDEX IF NOT EXISTS idx_namespaces_created_at
+ON namespaces (created_at, name)";
+
 /// Durable fan-out dispatch outbox.
 ///
 /// `dispatch_key` (`"{workflow_id}:{ordinal}"`) is `UNIQUE`: it is the database-level idempotency
@@ -121,7 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_outbox_claimed_at
 ON outbox (status, claimed_at)
 WHERE status = 'claimed' AND claimed_at IS NOT NULL";
 
-const DDL_STATEMENTS: [&str; 13] = [
+const DDL_STATEMENTS: [&str; 15] = [
     CREATE_EVENTS_TABLE,
     CREATE_EVENTS_PROJECTION_INDEX,
     CREATE_TIMERS_TABLE,
@@ -135,6 +155,8 @@ const DDL_STATEMENTS: [&str; 13] = [
     CREATE_VISIBILITY_CLOSE_TIME_INDEX,
     CREATE_OUTBOX_TABLE,
     CREATE_OUTBOX_PENDING_INDEX,
+    CREATE_NAMESPACES_TABLE,
+    CREATE_NAMESPACES_CREATED_AT_INDEX,
 ];
 
 /// Ensure the libSQL schema exists on a fresh or previously-created database.
@@ -287,6 +309,9 @@ mod tests {
         assert_schema_object(&conn, "table", "outbox").await?;
         assert_schema_object(&conn, "index", "idx_outbox_pending").await?;
         assert_schema_object(&conn, "index", "idx_outbox_claimed_at").await?;
+        assert_schema_object(&conn, "table", "namespaces").await?;
+        assert_schema_object(&conn, "index", "sqlite_autoindex_namespaces_1").await?;
+        assert_schema_object(&conn, "index", "idx_namespaces_created_at").await?;
 
         Ok(())
     }
