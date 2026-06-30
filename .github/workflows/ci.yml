@@ -49,6 +49,7 @@ jobs:
               - 'crates/aion-server/**'
               - 'crates/aion-store/**'
               - 'crates/aion-store-haematite/**'
+              - 'crates/aion-worker/**'
               - 'crates/aion-cli/tests/**'
 
   # ----------------------------------------------------------------------- #
@@ -96,14 +97,16 @@ jobs:
         run: cargo test --workspace --all-features
 
   # ----------------------------------------------------------------------- #
-  # SLOW LANE — the real OS-process kill-9 failover gates. These PASS on main
-  # since #157 (the per-shard failover seam now forwards through the store
-  # decorators) and are MUST-PASS here (no continue-on-error). They run nightly,
-  # on demand, and on PRs that touch the failover-critical code.
+  # SLOW LANE — the real OS-process failover gates (kill-9 + graceful). These
+  # PASS on main since #157 (the per-shard failover seam now forwards through the
+  # store decorators) and are MUST-PASS here (no continue-on-error). They run
+  # nightly, on demand, and on PRs that touch the failover-critical code. The
+  # graceful (non-kill9) osproc test is included here because no other lane runs
+  # it (it is `#[ignore]`d, so the fast `cargo test` lanes skip it).
   # ----------------------------------------------------------------------- #
 
   kill9-failover:
-    name: kill-9 failover gates (slow, post-#157 regression guards)
+    name: osproc failover gates (slow, post-#157 regression guards)
     runs-on: ubuntu-latest
     needs: changes
     # Always run on schedule / workflow_dispatch / push-to-main; on a PR run only
@@ -127,3 +130,7 @@ jobs:
         run: >-
           cargo test -p aion-cli --features haematite-backend,liminal-transport
           --test parked_timer_osproc_kill9_failover_e2e -- --ignored --nocapture
+      - name: lsub5b graceful osproc failover (non-kill9 — no fast lane runs it)
+        run: >-
+          cargo test -p aion-cli --features haematite-backend,liminal-transport
+          --test lsub5b_osproc_failover_e2e -- --ignored --nocapture
