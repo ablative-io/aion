@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use aion::{
     ActivityDispatcher, EngineBuilder, RuntimeHandle, SignalRouter, signal::ConcreteSignalRouter,
 };
-use aion_store::{EventStore, OutboxStore};
+use aion_store::{EventStore, NamespaceStore, OutboxStore};
 #[cfg(feature = "libsql-backend")]
 use aion_store_libsql::LibSqlStore;
 
@@ -49,6 +49,15 @@ struct ServerStateInner {
     /// `EventStore` so the outbox dispatcher writes through the same single
     /// `libsql::Connection`. `None` for the in-memory backend (no outbox table).
     outbox_store: Option<Arc<dyn OutboxStore>>,
+    /// The durable namespace registry, captured from the SAME concrete leaf
+    /// backend as the engine's `EventStore` BEFORE that leaf is wrapped in the
+    /// decorator chain (`PublishingEventStore` → `InstrumentedEventStore`),
+    /// which do not implement [`NamespaceStore`]. The haematite backend supplies
+    /// the quorum-replicated implementation; the libSQL and in-memory backends
+    /// supply a local-only one. Always present so the control-plane mint
+    /// (Phase 1 S5) and `GET /namespaces` (S7) can reach a real store on every
+    /// boot. Mirrors the `cluster_store` retention pattern.
+    namespace_store: Arc<dyn NamespaceStore>,
     /// Advisory outbox wake (LSUB-2): the in-process `Notify` shared by the
     /// engine's stage seam (the `InstrumentedEventStore`'s `append_with_outbox`)
     /// and the [`OutboxDispatcher`](crate::worker::OutboxDispatcher) run loop, so
@@ -128,10 +137,18 @@ impl ServerState {
     /// Returns [`ServerError::EngineCall`] if the engine cannot be constructed.
     pub async fn build_with_store<S>(store: S, runtime: RuntimeConfig) -> Result<Self, ServerError>
     where
-        S: EventStore,
+        S: EventStore + NamespaceStore,
     {
-        Self::build_with_connected_store(ConnectedStore::local(Arc::new(store), None), runtime)
-            .await
+        // Capture the concrete leaf as BOTH the event store and the namespace
+        // registry before it is wrapped in the (NamespaceStore-unaware) decorator
+        // chain — the same leaf, two trait objects.
+        let leaf = Arc::new(store);
+        let namespace_store: Arc<dyn NamespaceStore> = leaf.clone();
+        Self::build_with_connected_store(
+            ConnectedStore::local(leaf, None, namespace_store),
+            runtime,
+        )
+        .await
     }
 
     async fn build_with_connected_store(
@@ -230,6 +247,7 @@ impl ServerState {
                 health: Some(HealthState::new(instrumented_store, true)),
                 activity_mock_registry,
                 outbox_store,
+                namespace_store: connected.namespace_store,
                 outbox_wake,
                 cluster_publisher,
                 cluster_self_node,
@@ -265,6 +283,11 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                // No durable store was supplied (these constructors build state
+                // from a resolver only), so the registry is a local-only
+                // in-memory store — present so `namespace_store()` is always
+                // reachable, never mutating any durable backend.
+                namespace_store: Arc::new(aion_store::InMemoryStore::default()),
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
@@ -311,6 +334,11 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                // No durable store was supplied (these constructors build state
+                // from a resolver only), so the registry is a local-only
+                // in-memory store — present so `namespace_store()` is always
+                // reachable, never mutating any durable backend.
+                namespace_store: Arc::new(aion_store::InMemoryStore::default()),
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
@@ -351,6 +379,11 @@ impl ServerState {
                 health: None,
                 activity_mock_registry: None,
                 outbox_store: None,
+                // No durable store was supplied (these constructors build state
+                // from a resolver only), so the registry is a local-only
+                // in-memory store — present so `namespace_store()` is always
+                // reachable, never mutating any durable backend.
+                namespace_store: Arc::new(aion_store::InMemoryStore::default()),
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
@@ -479,6 +512,19 @@ impl ServerState {
     #[must_use]
     pub fn outbox_store(&self) -> Option<Arc<dyn OutboxStore>> {
         self.inner.outbox_store.clone()
+    }
+
+    /// Borrow the durable namespace registry shared by the control plane.
+    ///
+    /// This is the SAME concrete leaf backend the engine writes events through
+    /// (haematite quorum-replicated, or libSQL / in-memory local-only),
+    /// captured as a [`NamespaceStore`] before the decorator chain wrapped it.
+    /// Always present on every boot, so the mint-on-register path (Phase 1 S5)
+    /// and `GET /namespaces` (S7) can reach a real registry regardless of
+    /// backend.
+    #[must_use]
+    pub fn namespace_store(&self) -> &Arc<dyn NamespaceStore> {
+        &self.inner.namespace_store
     }
 
     /// Clone the advisory outbox wake (LSUB-2) shared with the engine's stage
@@ -817,6 +863,13 @@ fn build_routing_state(
 struct ConnectedStore {
     event_store: Arc<dyn EventStore>,
     outbox_store: Option<Arc<dyn OutboxStore>>,
+    /// The SAME concrete leaf store as `event_store`, captured as a
+    /// [`NamespaceStore`] before the decorator chain wraps it (the decorators
+    /// are `NamespaceStore`-unaware). The control plane mints and lists through
+    /// this handle. Every backend populates it: haematite supplies the
+    /// quorum-replicated implementation, libSQL and in-memory the local-only
+    /// one.
+    namespace_store: Arc<dyn NamespaceStore>,
     bootstrap_coordinator: bool,
     #[cfg(feature = "haematite-backend")]
     cluster_responder: Option<aion_store_haematite::ClusterResponder>,
@@ -844,10 +897,19 @@ struct ConnectedStore {
 impl ConnectedStore {
     /// A non-distributed connected store: owns the coordinator's shard (so it
     /// bootstraps the coordinator) and has no cluster responder.
-    fn local(event_store: Arc<dyn EventStore>, outbox_store: Option<Arc<dyn OutboxStore>>) -> Self {
+    ///
+    /// `namespace_store` is the SAME concrete leaf as `event_store`, captured as
+    /// a [`NamespaceStore`] by the caller (where the concrete type is still
+    /// known) before the decorator chain wraps the event store.
+    fn local(
+        event_store: Arc<dyn EventStore>,
+        outbox_store: Option<Arc<dyn OutboxStore>>,
+        namespace_store: Arc<dyn NamespaceStore>,
+    ) -> Self {
         Self {
             event_store,
             outbox_store,
+            namespace_store,
             bootstrap_coordinator: true,
             #[cfg(feature = "haematite-backend")]
             cluster_responder: None,
@@ -874,10 +936,13 @@ impl ConnectedStore {
 /// outbox table, so it yields `None`.
 async fn connect_store(config: StoreConfig) -> Result<ConnectedStore, ServerError> {
     match config.backend {
-        StoreBackend::Memory => Ok(ConnectedStore::local(
-            Arc::new(aion_store::InMemoryStore::default()),
-            None,
-        )),
+        StoreBackend::Memory => {
+            // One leaf store, captured as both the engine's event store and the
+            // namespace registry (in-memory backends have no outbox table).
+            let leaf = Arc::new(aion_store::InMemoryStore::default());
+            let namespace_store: Arc<dyn NamespaceStore> = leaf.clone();
+            Ok(ConnectedStore::local(leaf, None, namespace_store))
+        }
         StoreBackend::LibSql => {
             #[cfg(feature = "libsql-backend")]
             {
@@ -929,8 +994,13 @@ async fn connect_libsql_store(config: StoreConfig) -> Result<ConnectedStore, Ser
         })?;
     let leaf = Arc::new(store);
     let event_store: Arc<dyn EventStore> = leaf.clone();
+    let namespace_store: Arc<dyn NamespaceStore> = leaf.clone();
     let outbox_store: Arc<dyn OutboxStore> = leaf;
-    Ok(ConnectedStore::local(event_store, Some(outbox_store)))
+    Ok(ConnectedStore::local(
+        event_store,
+        Some(outbox_store),
+        namespace_store,
+    ))
 }
 
 /// Reject `backend = libsql` cleanly when the optional `libsql-backend` feature
@@ -1032,6 +1102,10 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
     let leaf = Arc::new(store);
     let event_store: Arc<dyn EventStore> = leaf.clone();
     let outbox_store: Arc<dyn OutboxStore> = leaf.clone();
+    // The namespace registry is the SAME concrete `HaematiteStore` leaf (the
+    // quorum-replicated implementation), captured before the leaf is moved into
+    // the cluster-store retention below.
+    let namespace_store: Arc<dyn NamespaceStore> = leaf.clone();
     // Retain the concrete store ONLY for a distributed boot (responder present),
     // where the SS-5b supervisor will poll it for peer liveness. A single-node
     // boot has no peers, so it carries no cluster store and never supervises.
@@ -1044,6 +1118,7 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
     Ok(ConnectedStore {
         event_store,
         outbox_store: Some(outbox_store),
+        namespace_store,
         bootstrap_coordinator,
         cluster_responder: responder,
         cluster_store,
@@ -1175,6 +1250,55 @@ mod tests {
 
         std::hint::black_box(state.namespace_guard());
         std::hint::black_box(state.worker_registry());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn namespace_store_is_reachable_and_functional_after_default_boot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::{MintOutcome, NamespaceOrigin};
+
+        // A default single-node (in-memory) boot must expose a real, functional
+        // namespace registry through `state.namespace_store()` — the control
+        // plane's mint (S5) and `GET /namespaces` (S7) reach the store this way.
+        let state =
+            ServerState::build_with_store(InMemoryStore::default(), runtime_config()).await?;
+
+        let store = state.namespace_store();
+
+        // Mint a fresh namespace: the first reference creates it.
+        let outcome = store
+            .register_namespace("orders", NamespaceOrigin::WorkerMint)
+            .await?;
+        assert_eq!(
+            outcome,
+            MintOutcome::Created,
+            "the first reference to a namespace mints it"
+        );
+
+        // Re-referencing is idempotent: the record already exists.
+        let again = store
+            .register_namespace("orders", NamespaceOrigin::WorkerMint)
+            .await?;
+        assert_eq!(
+            again,
+            MintOutcome::AlreadyExisted,
+            "a second reference touches the existing record rather than re-creating it"
+        );
+
+        // Single lookup returns the durable record.
+        let fetched = store.get_namespace("orders").await?;
+        let record = fetched.ok_or("registered namespace must be retrievable via get_namespace")?;
+        assert_eq!(record.name, "orders");
+        assert_eq!(record.origin, NamespaceOrigin::WorkerMint);
+
+        // The live set lists the namespace.
+        let listed = store.list_namespaces().await?;
+        assert!(
+            listed.iter().any(|record| record.name == "orders"),
+            "list_namespaces returns the minted namespace"
+        );
 
         Ok(())
     }
