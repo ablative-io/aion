@@ -59,10 +59,14 @@ Two near-free wins the research confirms are real pain elsewhere:
 - **Visibility without Elasticsearch.** ES is a top-tier Temporal pain
   ("neither UI nor CLI works without it", version-pin hell). aion already has
   haematite-durable history + a real-time socket dashboard.
-- **No-determinism authoring.** Temporal's `NonDeterministicException`-after-deploy
-  is a Tier-1 footgun, *brutal for LLM calls*. Inngest's step-memoization (plain
-  async, no replay rules) is the thing to steal — it matters most for the agent
-  workload. (See §5, open decision.)
+- **The activity boundary as the agent guarantee.** aion is replay-deterministic
+  (Temporal-style — verified against the engine), but the load-bearing agent
+  property is the **activity boundary**: every model/tool call is wrapped in an
+  activity, recorded once on first execution, and *never re-run on recovery* (the
+  recorded result is replayed). A `kill -9` mid-agent-run never re-invokes or
+  re-bills a completed model call. That is the honest, still-strong positioning —
+  not Inngest's "no replay rules" model, which is FALSE for our engine. (See §5,
+  RESOLVED.)
 
 ## 2. What a namespace is (today vs target)
 
@@ -135,22 +139,37 @@ These determine whether we beat the field or re-make its mistakes.
 4. **Shard-count is the immutable scale ceiling — choose it generously now.**
    See §6. A now-decision, not a later one.
 
-5. **Determinism / authoring model — OPEN, verify against our engine.** See §5.
+5. **Determinism / authoring model — RESOLVED.** aion is replay-deterministic;
+   the agent guarantee is the activity boundary (recorded-once, never-re-run). See §5.
 
-## 5. OPEN DECISION: determinism / authoring model
+## 5. RESOLVED: determinism / authoring model — replay-deterministic, with the activity boundary as the agent guarantee
 
-Temporal's replay-determinism is a Tier-1 footgun, *especially* for
-non-deterministic LLM calls (you must quarantine every model call in an Activity
-or risk `NonDeterministicException` on replay after a deploy). Inngest avoids
-this entirely via step-result memoization (plain async, no replay rules) — a
-major selling point for the **agent** workload.
+**Verdict (verified by reading the engine, 2026-06-30):** aion is
+**replay-deterministic** in the Temporal sense, **not** memoization-free in the
+Inngest sense.
 
-**To verify against the aion codebase before locking the design:** is aion
-replay-deterministic (inherit the footgun) or does its activity model record
-results (memoization-like, already closer to Inngest)? If the latter, "no
-determinism tax for LLM/agent calls" is a headline differentiator we can claim.
-**Action: read the engine's replay/activity-recording model and record the
-verdict here.**
+- On recovery the engine **re-runs the workflow function from the top**
+  (`durability/recovery.rs` `spawn_workflow_with_policy`).
+- Each primitive resolves against recorded history before any side effect
+  (`runtime/nif_activity_dispatch.rs`): `ResolveOutcome::Recorded` short-circuits
+  to the recorded result; only `ResumeLive` actually dispatches.
+- A real command-stream mismatch raises `NonDeterminismError` and **terminates
+  the run** (`durability/resolver.rs`) — the Temporal footgun is present.
+- Workflow-visible `now()` / `random()` are engine-provided and seeded from
+  recorded state (`runtime/nif_determinism.rs`), so they replay identically.
+
+**The honest, still-strong positioning is the ACTIVITY BOUNDARY.** Every
+model/tool call is wrapped in an activity, recorded once on first execution, and
+**never re-run on recovery** (the recorded result is replayed). So a `kill -9`
+mid-agent-run never re-invokes or re-bills a completed model call. That is the
+real agent guarantee — and it is true of our engine.
+
+**Design consequence:** keep **Temporal-style authoring guidance** — no
+wall-clock, no RNG, no IO in the workflow body; all side effects go through
+activities (and engine-provided `now()` / `random()` for time/entropy). Do **NOT**
+adopt Inngest-style "no replay rules" positioning: it is FALSE for our engine and
+would mis-sell the determinism contract. We claim recorded-once / never-re-run at
+the activity boundary, not determinism-freedom.
 
 ## 6. Haematite shard-count: the Temporal `numHistoryShards` trap (VERIFIED)
 
@@ -229,9 +248,10 @@ survives kill-9"), which anchors this whole thesis. Order:
 ## 9. Things to steal (be fair to the competition)
 
 - **Inngest**: zero-friction onboarding ("your deployment is the worker" as a
-  first-class trivial-onboarding mode); no-determinism authoring; event-native
-  triggers + declarative flow-control (concurrency/throttle/debounce/batch as
-  one-liners, with per-tenant keys).
+  first-class trivial-onboarding mode); event-native triggers + declarative
+  flow-control (concurrency/throttle/debounce/batch as one-liners, with
+  per-tenant keys). (NOT its no-replay-rules authoring — our engine is
+  replay-deterministic; see §5.)
 - **Restate**: **virtual objects** — keyed, single-writer stateful entities.
   This maps almost 1:1 onto a durable *agent* (keyed, single-writer, stateful,
   long-lived). Strong candidate primitive for the agent-native angle.

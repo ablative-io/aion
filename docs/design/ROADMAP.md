@@ -159,7 +159,7 @@ Reviewers vote via meridian review complete; the Meridian coordinator applies qu
 Claims ledger (docs/CLAIMS.md), public CI on fresh clones, chaos gate (random-kill harness asserting byte-identical history), recorded demos, published benchmark numbers, honest Temporal side-by-side. Credibility-per-effort ordered; CI is the keystone.
 
 - **Links:** (none)
-- **Notes:** Do not claim multi-node scale-out — we cannot demonstrate it.
+- **Notes:** Cross-node `kill -9` FAILOVER is now demonstrable (#157/#148/#109) — claim it. HORIZONTAL THROUGHPUT scale-out at large node counts remains unproven — do not claim that until the scale-out proof lands (Track D).
 
 ### RM-003 — CLI JSON ergonomics: polymorphic --input, client-side validation, skeletons
 

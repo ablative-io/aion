@@ -23,7 +23,7 @@ the unclaimed quadrant vs Temporal/Inngest/Restate/DBOS/Hatchet
 | **2. Namespaces as a real tenant boundary** | 🔜 the control-plane build (Track B) |
 | **3. Manage/place compute** | 🔜 the second moat (Track B Phase 3) |
 | *Freebie:* visibility without Elasticsearch | ✅ haematite-durable + real-time socket ops console |
-| *Freebie:* no-determinism authoring for agents | ⚠️ to verify against our engine (Track B, decision) |
+| *Freebie:* activity-boundary agent guarantee (recorded-once, never-re-run) | ✅ verified — replay-deterministic engine; completed model/tool calls never re-run or re-bill on kill-9 recovery |
 
 ## Where we are (the foundation — shipped & proven)
 
@@ -67,9 +67,12 @@ The near-term credibility work. Pillar 1 is provable *today*.
 
 The strategic build. Design done; phased.
 
-- **Decision (now): determinism/authoring model** — verify whether our engine is
-  replay-deterministic (Temporal footgun) or memoization-friendly (Inngest-style,
-  an agent win). Shapes the whole agent story. (`CONTROL-PLANE.md` §5.)
+- **RESOLVED: determinism/authoring model** — our engine is **replay-deterministic**
+  (Temporal-style, verified). The agent guarantee is the **activity boundary**
+  (recorded-once, never-re-run): a completed model/tool call is never re-invoked
+  or re-billed on kill-9 recovery — not determinism-freedom. Keep Temporal-style
+  authoring guidance; do NOT adopt Inngest's no-replay-rules positioning.
+  (`CONTROL-PLANE.md` §5.)
 - **Decision (now): default shard count** — raise from 1 (validate value vs perf
   audit #47); the immutable-`shard_count` trap means single-node deployments
   can't grow to a cluster without this. (`CONTROL-PLANE.md` §6.)
@@ -186,8 +189,10 @@ The "stop regressions silently rotting" track. **The keystone gap.**
 - **#150** AD-012 reopen operation: keep / finish / drop.
 - **Shard-count default** value (Track B) — accept "generous power-of-two,
   validated vs #47", or pick a number.
-- **Determinism authoring stance** (Track B) — once verified, confirm whether we
-  lean into the no-determinism-for-agents positioning.
+- **Determinism authoring stance** (Track B) — RESOLVED: the engine is
+  replay-deterministic; the agent guarantee is the activity boundary
+  (recorded-once, never-re-run), not determinism-freedom. No
+  no-determinism-for-agents positioning.
 - **Engine-side retry** (Track F) — wanted, or is workflow-driven the answer?
 
 ## Coverage map (every open item → track)
