@@ -1,0 +1,129 @@
+name: ci
+
+# THE full-gate keystone CI. Mirrors the LOCAL bar exactly so regressions like
+# the #157 kill-9 failover quorum bug cannot rot in unnoticed (the repo
+# previously had only ops-console-embed.yml — no fmt/clippy/test gate).
+#
+# Toolchain is pinned by rust-toolchain.toml (stable + rustfmt + clippy,
+# edition 2024, rust-version 1.85; no nightly). The clippy bar matches the
+# local one: clippy::all + pedantic = deny and unwrap_used/expect_used/panic =
+# deny, configured in the workspace lints — so a plain `-D warnings` enforces it.
+#
+# Two lanes:
+#   FAST   — fmt / clippy / test on every push-to-main and PR.
+#   SLOW   — the two real OS-process kill-9 failover gates. These spin up 3-node
+#            clusters and hard-kill a node, so they run nightly + on demand, and
+#            on PRs that touch the failover-critical code (paths filter below).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly at 04:17 UTC — runs the slow kill-9 failover gates.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Detect whether a PR touches the failover-critical code. Used to decide
+  # whether the slow kill-9 lane should run on that PR (it always runs on
+  # schedule / workflow_dispatch / push-to-main). Cheap; no toolchain needed.
+  changes:
+    name: detect failover-critical changes
+    runs-on: ubuntu-latest
+    outputs:
+      failover: ${{ steps.filter.outputs.failover }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            failover:
+              - 'crates/aion/**'
+              - 'crates/aion-server/**'
+              - 'crates/aion-store/**'
+              - 'crates/aion-store-haematite/**'
+              - 'crates/aion-cli/tests/**'
+
+  # ----------------------------------------------------------------------- #
+  # FAST LANE — runs on every push-to-main and every PR.
+  # ----------------------------------------------------------------------- #
+
+  fmt:
+    name: fmt (cargo fmt --all --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (-D warnings, default + all-features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (workspace, default + all-features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The example-build tests shell out to the gleam CLI; install Erlang/OTP +
+      # gleam so those cases get real coverage instead of being skipped.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          gleam-version: '1.17.0'
+      - name: cargo test --workspace
+        run: cargo test --workspace
+      - name: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features
+
+  # ----------------------------------------------------------------------- #
+  # SLOW LANE — the real OS-process kill-9 failover gates. These PASS on main
+  # since #157 (the per-shard failover seam now forwards through the store
+  # decorators) and are MUST-PASS here (no continue-on-error). They run nightly,
+  # on demand, and on PRs that touch the failover-critical code.
+  # ----------------------------------------------------------------------- #
+
+  kill9-failover:
+    name: kill-9 failover gates (slow, post-#157 regression guards)
+    runs-on: ubuntu-latest
+    needs: changes
+    # Always run on schedule / workflow_dispatch / push-to-main; on a PR run only
+    # when that PR touches the failover-critical code (see the `changes` job).
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.failover == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          gleam-version: '1.17.0'
+      - name: lsub5b kill-9 reconnect-to-survivor failover
+        run: >-
+          cargo test -p aion-cli --features haematite-backend,liminal-transport
+          --test lsub5b_osproc_kill9_failover_e2e -- --ignored --nocapture
+      - name: parked-timer kill-9 failover
+        run: >-
+          cargo test -p aion-cli --features haematite-backend,liminal-transport
+          --test parked_timer_osproc_kill9_failover_e2e -- --ignored --nocapture

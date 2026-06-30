@@ -51,19 +51,19 @@
 //! test modules). This file therefore inlines the small process/CLI helpers it
 //! needs, keeping the convention clean without touching the shared modules.
 //!
-//! ## CURRENT STATUS — this gate REPRODUCES A REAL kill-9 failover bug (#148)
+//! ## CURRENT STATUS — GREEN positive failover regression guard (#148, fixed by #157)
 //!
-//! As of this commit the test FAILS deterministically when run with `--ignored`,
-//! and the failure is a GENUINE PRODUCT BUG, not a flaw in the harness. It is
-//! landed (clearly documented) per the #148 brief: "if it fails deterministically
-//! you've found a real bug; land the deterministic repro test rather than faking
-//! green." It is `#[ignore]`d, so the DEFAULT `cargo test` suite is unaffected.
+//! This gate PASSES end to end (exactly-once resume, ~15s). It once REPRODUCED a
+//! real kill-9 failover quorum bug (the symptom below), which #157 FIXED; the
+//! gate now stands as a positive regression guard that the hard-kill parked-timer
+//! resume keeps working. It is `#[ignore]`d only because it is slow (spins up a
+//! 3-node cluster + a hard kill), so the DEFAULT `cargo test` suite is unaffected.
 //!
-//! ### Observed symptom (from `KILL9_KEEP_LOGS` on the designated adopter)
+//! ### The bug this once reproduced, and the #157 fix
 //!
-//! After `kill -9` of node 0, the survivor's `ClusterSupervisor` DOES detect the
-//! peer-down and DOES call `Engine::adopt_shards([0])`. Adoption then fails inside
-//! the parked-timer re-arm step:
+//! Before #157, after `kill -9` of node 0 the survivor's `ClusterSupervisor`
+//! detected the peer-down and called `Engine::adopt_shards([0])`, but adoption
+//! then failed inside the parked-timer re-arm step:
 //!
 //! ```text
 //! cluster supervisor failed to adopt a downed peer's shards; will retry
@@ -73,32 +73,20 @@
 //!     required 2, acknowledged 1
 //! ```
 //!
-//! The re-armed durable timer fires and recovery tries to RECORD `TimerFired` —
-//! a quorum write — but the 2-node survivor majority only self-acks (1 < 2): the
-//! other live survivor never acknowledges the write to the dead owner's adopted
-//! shard. `adopt_shards` therefore returns `Err`, the supervisor retries forever,
-//! the workflow never resumes, and no survivor ever logs the auto-adoption.
+//! The re-armed durable timer fired and recovery tried to RECORD `TimerFired` —
+//! a quorum write — but the adopted shard's write membership still expected an
+//! ack from the now-dead owner and never enlisted the live survivor, so the
+//! 2-node survivor majority only self-acked (1 < 2). This was a GENERAL
+//! post-kill-9 quorum-membership failure (the sibling fan-out gate
+//! `lsub5b_osproc_kill9_failover_e2e` died on the identical underlying error one
+//! step later); the timer path merely surfaced it one step EARLIER, inside
+//! `adopt_shards`.
 //!
-//! ### Root-cause direction (NOT timer-specific)
-//!
-//! This is a GENERAL post-kill-9 quorum-membership failure, not a flaw unique to
-//! durable timers. The sibling FAN-OUT gate
-//! (`lsub5b_osproc_kill9_failover_e2e`) fails with the IDENTICAL underlying error
-//! on the SAME worktree HEAD: there `adopt_shards` succeeds (a fan-out workflow
-//! has no timers to fire in step 5, so adoption returns Ok and the survivor logs
-//! the auto-adoption), but the very next quorum write — the recovered workflow's
-//! completion record — dies with the same `required 2, acknowledged 1`. So the
-//! defect is that after a hard kill the surviving majority cannot reach quorum on
-//! writes to the dead owner's adopted shard (the adopted shard's write membership
-//! still expects an ack from the dead owner / does not enlist the live survivor),
-//! NOT that the parked timer fails to re-arm. The timer path merely surfaces it
-//! one step EARLIER (inside `adopt_shards` rather than after it).
-//!
-//! The graceful-shutdown parked-timer path is unaffected and stays GREEN
-//! (`crates/aion/tests/adoption_parked_timer_e2e.rs`): that gate's
-//! `Engine::adopt_shards` runs over a single-process multi-shard store with no
-//! quorum, so it never exercises the survivor-quorum write this hard-kill cluster
-//! path does.
+//! #157 fixed the root cause by forwarding the per-shard failover seam through
+//! the store decorators so an adopted shard's write membership drops the dead
+//! owner and enlists the live survivor. Quorum is now reachable on the adopted
+//! shard, `adopt_shards` succeeds, the re-armed timer's `TimerFired` commits, and
+//! the workflow resumes and completes exactly-once across the hard kill.
 //!
 //! ## Running
 //!
@@ -569,12 +557,9 @@ fn boot_cluster(dir: &Path, package: &Path, ports: &[(u16, u16)]) -> Result<Vec<
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "slow + currently REPRODUCES a real kill-9 failover quorum bug (#148): \
-            spawns a 3-node aion-server cluster, kill -9s the owner, and asserts the \
-            parked durable timer resumes on a survivor. Run with `-- --ignored \
-            --nocapture` (and KILL9_KEEP_LOGS=<dir> to keep server logs). See the \
-            module docs for the observed `acknowledged 1` quorum symptom and \
-            root-cause direction; this is a documented repro, NOT a green gate."]
+#[ignore = "slow: spawns a 3-node aion-server cluster + a hard-kill failover; \
+            passes since #157; run with `-- --ignored --nocapture` (and \
+            KILL9_KEEP_LOGS=<dir> to keep server logs)."]
 fn osproc_kill9_parked_timer_resumes_and_completes_exactly_once() -> Result<(), TestError> {
     let temp = tempfile::tempdir()?;
     let package = build_sleep_query_archive(temp.path())?;
