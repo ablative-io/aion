@@ -198,6 +198,57 @@ fn post_json(uri: &str, value: &serde_json::Value) -> Result<Request<body::Body>
     .body(body::Body::from(serde_json::to_vec(value)?))?)
 }
 
+/// Shared-secret bearer accepted by the auth-on dev-token path
+/// (`auth.enabled = true`, `not(feature = "auth")`).
+#[cfg(not(feature = "auth"))]
+const AUTH_ON_TOKEN: &str = "deploy-secret";
+
+/// Auth-on runtime config (dev-token path): a valid shared-secret bearer plus
+/// the deploy grant authorize deploy; an authenticated caller lacking the
+/// grant is still denied (the strict gate stays strict).
+#[cfg(not(feature = "auth"))]
+fn auth_on_runtime_config(deploy: DeployConfig) -> RuntimeConfig {
+    let mut config = runtime_config(deploy);
+    config.auth = AuthConfig {
+        enabled: true,
+        jwks_url: Some(AUTH_ON_TOKEN.to_owned()),
+        jwks_refresh_seconds: 300,
+    };
+    config
+}
+
+/// Auth-on deploy headers: a valid bearer, the subject, the namespaces, and the
+/// `x-aion-deploy` grant the dev-token gate requires.
+#[cfg(not(feature = "auth"))]
+fn auth_on_deploy_headers(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+    deploy_headers(builder).header("authorization", format!("Bearer {AUTH_ON_TOKEN}"))
+}
+
+#[cfg(not(feature = "auth"))]
+fn auth_on_post_archive(archive: Vec<u8>) -> Result<Request<body::Body>, TestError> {
+    Ok(auth_on_deploy_headers(
+        Request::builder()
+            .uri("/deploy/packages")
+            .method("POST")
+            .header("content-type", "application/octet-stream"),
+    )
+    .body(body::Body::from(archive))?)
+}
+
+#[cfg(not(feature = "auth"))]
+fn auth_on_post_json(
+    uri: &str,
+    value: &serde_json::Value,
+) -> Result<Request<body::Body>, TestError> {
+    Ok(auth_on_deploy_headers(
+        Request::builder()
+            .uri(uri)
+            .method("POST")
+            .header("content-type", "application/json"),
+    )
+    .body(body::Body::from(serde_json::to_vec(value)?))?)
+}
+
 fn get_versions() -> Result<Request<body::Body>, TestError> {
     Ok(
         deploy_headers(Request::builder().uri("/deploy/versions").method("GET"))
@@ -486,36 +537,48 @@ async fn http_drain_refuses_mutations_but_serves_listing() -> Result<(), TestErr
 /// Metrics: counters increment per outcome class and the loaded-version
 /// gauge tracks the listing (test plan item 11's metric half; the audit
 /// line is asserted in `deploy_audit_log.rs`-style capture below).
+///
+/// Runs auth ENABLED (dev-token path) so the deploy gate can actually deny an
+/// ungranted caller — under auth-off single-tenant operator mode there is no
+/// deploy denial to count. Gated `not(feature = "auth")` because the real-JWT
+/// build needs a live JWKS endpoint; the dev-token path is the auth-on analog.
+#[cfg(not(feature = "auth"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deploy_metrics_count_operations_and_denials() -> Result<(), TestError> {
-    let mut config = runtime_config(enabled_deploy());
+    let mut config = auth_on_runtime_config(enabled_deploy());
     config.metrics = MetricsConfig { enabled: true };
     let state = ServerState::build_with_store(aion_store::InMemoryStore::default(), config).await?;
     let router = http_router(state)?;
 
-    // One successful load.
+    // One successful load (valid bearer + deploy grant).
     let beam = compile_reload_beam(1)?;
     let archive = archive_bytes(&beam, "run")?;
-    let response = router.clone().oneshot(post_archive(archive)?).await?;
+    let response = router
+        .clone()
+        .oneshot(auth_on_post_archive(archive)?)
+        .await?;
     assert_eq!(response.status(), StatusCode::OK);
 
-    // One denial (no x-aion-deploy header).
+    // One denial: valid bearer + subject, but NO deploy grant (auth-on strict
+    // gate). This is the denial the counter records.
     let denied = router
         .clone()
         .oneshot(
             Request::builder()
                 .uri("/deploy/versions")
                 .method("GET")
+                .header("authorization", format!("Bearer {AUTH_ON_TOKEN}"))
                 .header("x-aion-subject", "ci")
+                .header("x-aion-namespaces", NAMESPACE)
                 .body(body::Body::empty())?,
         )
         .await?;
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 
-    // One refusal (route to unknown version).
+    // One refusal (route to unknown version), authorized with the deploy grant.
     let refused = router
         .clone()
-        .oneshot(post_json(
+        .oneshot(auth_on_post_json(
             "/deploy/route",
             &json!({ "workflow_type": "missing", "content_hash": "a".repeat(64) }),
         )?)
@@ -622,19 +685,17 @@ async fn grpc_unload_route_active_carries_version_pinned_detail() -> Result<(), 
     assert_eq!(detail.code, WireErrorCode::VersionPinned);
     assert_eq!(detail.error_type.as_deref(), Some("RouteActive"));
 
-    // Denied caller (no deploy metadata): PermissionDenied, deploy_denied.
+    // Auth-off single-tenant operator mode: a caller with no deploy metadata is
+    // the operator and is authorized — deploy is granted server-side at request
+    // time. (The auth-ON strict-gate denial is proven in the lib-level
+    // `auth_on_denies_caller_without_deploy_grant` test.)
     let mut request = tonic::Request::new(generated::ListVersionsRequest {});
     request
         .metadata_mut()
         .insert("x-aion-subject", "ci".parse()?);
-    let status = client
-        .list_versions(request)
-        .await
-        .err()
-        .ok_or("expected deploy denial")?;
-    assert_eq!(status.code(), tonic::Code::PermissionDenied);
-    let detail = WireError::try_from(ProtoWireError::decode(status.details())?)?;
-    assert_eq!(detail.code, WireErrorCode::DeployDenied);
+    let listing = client.list_versions(request).await?;
+    // The route is active, so the loaded version is still listed.
+    assert!(!listing.into_inner().versions.is_empty());
 
     engine.shutdown()?;
     server.abort();

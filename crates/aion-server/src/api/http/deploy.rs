@@ -233,32 +233,33 @@ mod tests {
         Ok(())
     }
 
-    /// Dev mode (`auth.enabled = false`): the `x-aion-deploy: true` header is
-    /// the grant; without it the caller is denied with the header-naming hint.
+    /// Auth-off single-tenant operator mode (`auth.enabled = false`): the
+    /// caller IS the operator and holds the deployment-wide deploy grant,
+    /// decided server-side at request time. No `x-aion-deploy` header is
+    /// required — deploy is authorized with no header at all, and an explicit
+    /// `x-aion-deploy: false` does not narrow the operator (the client asserts
+    /// nothing about authorization).
     #[tokio::test]
-    async fn dev_mode_header_grants_and_denies_deploy() -> Result<(), Box<dyn std::error::Error>> {
+    async fn auth_off_operator_is_always_deploy_granted() -> Result<(), Box<dyn std::error::Error>>
+    {
         let router = deploy_router(false, enabled_deploy()).await?;
 
-        let granted = router
-            .clone()
-            .oneshot(versions_request(Some("true"))?)
-            .await?;
-        assert_eq!(granted.status(), StatusCode::OK);
-        let listing: ProtoListVersionsResponse = read_json(granted).await?;
+        // No deploy header at all: the operator is still granted.
+        let no_header = router.clone().oneshot(versions_request(None)?).await?;
+        assert_eq!(no_header.status(), StatusCode::OK);
+        let listing: ProtoListVersionsResponse = read_json(no_header).await?;
         assert!(listing.versions.is_empty());
 
-        let denied = router.clone().oneshot(versions_request(None)?).await?;
-        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-        let error: WireError = read_json(denied).await?;
-        assert_eq!(error.code, WireErrorCode::DeployDenied);
-        assert!(
-            error.message.contains("x-aion-deploy"),
-            "dev-mode denial must hint the header: {}",
-            error.message
-        );
+        // An explicit false header is ignored: operator access is server-side.
+        let false_valued = router
+            .clone()
+            .oneshot(versions_request(Some("false"))?)
+            .await?;
+        assert_eq!(false_valued.status(), StatusCode::OK);
 
-        let false_valued = router.oneshot(versions_request(Some("false"))?).await?;
-        assert_eq!(false_valued.status(), StatusCode::FORBIDDEN);
+        // A true header is equally fine (and equally unnecessary).
+        let true_valued = router.oneshot(versions_request(Some("true"))?).await?;
+        assert_eq!(true_valued.status(), StatusCode::OK);
         Ok(())
     }
 

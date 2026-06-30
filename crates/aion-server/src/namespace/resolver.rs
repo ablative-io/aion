@@ -41,6 +41,12 @@ pub(crate) enum GrantSource {
     NamespacesHeader,
     /// Grants carried by a validated token's claims.
     TokenClaim,
+    /// Full access granted server-side because no auth is configured
+    /// (single-tenant operator mode): the caller is the operator and holds
+    /// every namespace plus the deployment-wide deploy grant. This grant is
+    /// decided at request time from `auth.enabled == false`, never asserted by
+    /// the client.
+    Operator,
 }
 
 impl GrantSource {
@@ -49,6 +55,7 @@ impl GrantSource {
         match self {
             Self::NamespacesHeader => "header",
             Self::TokenClaim => "token_claim",
+            Self::Operator => "operator",
         }
     }
 }
@@ -63,6 +70,11 @@ pub struct CallerIdentity {
     /// Whether the caller holds the deployment-wide deploy grant (the
     /// `deploy` token claim, or the `x-aion-deploy` development header).
     deploy: bool,
+    /// Whether the caller holds access to every namespace without enumerating
+    /// them. Set only by [`CallerIdentity::operator`] (auth-off single-tenant
+    /// operator mode); always `false` for header- and token-sourced
+    /// identities, which must enumerate their grants.
+    all_namespaces: bool,
 }
 
 impl CallerIdentity {
@@ -76,6 +88,7 @@ impl CallerIdentity {
             denial_reason: None,
             grant_source: GrantSource::NamespacesHeader,
             deploy: false,
+            all_namespaces: false,
         }
     }
 
@@ -93,6 +106,28 @@ impl CallerIdentity {
             denial_reason: None,
             grant_source: GrantSource::TokenClaim,
             deploy: false,
+            all_namespaces: false,
+        }
+    }
+
+    /// Build the single-tenant operator identity: full access to every
+    /// namespace plus the deployment-wide deploy grant, with no namespaces
+    /// enumerated.
+    ///
+    /// This is the server's request-time decision when no auth is configured
+    /// (`auth.enabled == false`): the caller IS the operator. It is constructed
+    /// only at an adapter boundary that has already established auth is off; it
+    /// must never be reachable on the auth-enabled path, where grants come from
+    /// validated token claims (or the development-token path).
+    #[must_use]
+    pub fn operator(subject: impl Into<String>) -> Self {
+        Self {
+            subject: subject.into(),
+            namespaces: BTreeSet::new(),
+            denial_reason: None,
+            grant_source: GrantSource::Operator,
+            deploy: true,
+            all_namespaces: true,
         }
     }
 
@@ -123,6 +158,7 @@ impl CallerIdentity {
             denial_reason: Some(reason.into()),
             grant_source: GrantSource::NamespacesHeader,
             deploy: false,
+            all_namespaces: false,
         }
     }
 
@@ -141,8 +177,17 @@ impl CallerIdentity {
         self.namespaces.iter().cloned().collect()
     }
 
+    /// Whether this caller holds access to every namespace without enumerating
+    /// them. True only for the single-tenant operator identity (auth-off
+    /// operator mode); the all-access grant is signaled here, not by
+    /// [`Self::namespaces`], which stays the explicit (empty) set.
+    #[must_use]
+    pub const fn all_namespaces(&self) -> bool {
+        self.all_namespaces
+    }
+
     fn can_access(&self, namespace: &str) -> bool {
-        self.namespaces.contains(namespace)
+        self.all_namespaces || self.namespaces.contains(namespace)
     }
 
     pub(crate) fn denial_reason(&self) -> Option<&str> {
@@ -572,6 +617,13 @@ fn namespace_denied(caller: &CallerIdentity, requested_namespace: &str) -> Serve
             "grant {requested_namespace} in the namespace claim of the token minted for subject `{}` or request a namespace the token grants",
             caller.subject()
         ),
+        // An operator holds every namespace (`can_access` always true), so this
+        // arm is never reached; keep the match exhaustive without inventing a
+        // misleading hint.
+        GrantSource::Operator => format!(
+            "subject `{}` is the operator and already holds every namespace",
+            caller.subject()
+        ),
     };
     ServerError::namespace_denied(format!(
         "subject not authorized for namespace {requested_namespace}; {hint}"
@@ -603,6 +655,30 @@ mod tests {
         let scoped = resolver.resolve(&caller, "tenant-a")?;
 
         assert_eq!(scoped.namespace(), "tenant-a");
+        Ok(())
+    }
+
+    /// The operator identity (auth-off operator mode) is authorized for any
+    /// namespace without enumerating it, holds the deploy grant, and signals
+    /// all-access through `all_namespaces()` while its explicit namespace set
+    /// stays empty.
+    #[test]
+    fn operator_is_authorized_for_any_namespace() -> Result<(), Box<dyn std::error::Error>> {
+        let resolver = resolver(NamespaceMode::SharedEngine);
+        let operator = CallerIdentity::operator("operator");
+
+        assert!(operator.all_namespaces());
+        assert!(operator.deploy_granted());
+        assert!(operator.namespaces().is_empty());
+
+        assert_eq!(
+            resolver.resolve(&operator, "tenant-a")?.namespace(),
+            "tenant-a"
+        );
+        assert_eq!(
+            resolver.resolve(&operator, "tenant-z")?.namespace(),
+            "tenant-z"
+        );
         Ok(())
     }
 

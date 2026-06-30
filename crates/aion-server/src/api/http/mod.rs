@@ -26,6 +26,7 @@ mod payload;
 mod router;
 mod schedules;
 mod visibility;
+mod whoami;
 mod workflows;
 
 #[cfg(test)]

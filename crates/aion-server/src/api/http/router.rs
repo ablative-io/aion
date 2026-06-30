@@ -17,6 +17,7 @@ use super::schedules::{
     create_schedule, delete_schedule, describe_schedule, list_schedules, pause_schedule,
     resume_schedule, update_schedule,
 };
+use super::whoami::whoami;
 use super::workflows::{
     cancel_workflow, count_workflows, describe_workflow, get_workflows, list_namespaces,
     post_list_workflows, query_workflow, signal_workflow, start_workflow,
@@ -170,6 +171,7 @@ pub fn workflow_router(state: ServerState) -> Router {
     deploy
         .merge(authoring)
         .merge(dev)
+        .route("/whoami", get(whoami))
         .route("/namespaces", get(list_namespaces))
         .route("/workflows", get(get_workflows))
         .route("/workflows/count", get(count_workflows))
