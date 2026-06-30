@@ -94,6 +94,7 @@ fn test_runtime() -> aion_server::config::RuntimeConfig {
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(5_000)),
         default_namespace: "default".to_owned(),
+        auto_create: aion_server::config::AutoCreate::Open,
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
         owned_shards: Vec::new(),

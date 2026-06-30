@@ -123,6 +123,7 @@ fn runtime_config(deploy: DeployConfig) -> RuntimeConfig {
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),
+        auto_create: aion_server::config::AutoCreate::Open,
         drain_timeout: Duration::from_secs(30),
         metrics: MetricsConfig { enabled: true },
         owned_shards: Vec::new(),
