@@ -6,6 +6,15 @@
 //! The server runs in development-token mode (`auth.enabled = true` without
 //! the `auth` feature): the configured `jwks_url` value acts as the shared
 //! secret, so token sourcing is exercised for real.
+//!
+//! This whole suite is gated on `not(feature = "auth")`: it depends on the
+//! dev-token interpretation where `jwks_url` is a static shared secret. With
+//! the `auth` feature compiled in (e.g. `--all-features`), `jwks_url` is a real
+//! JWKS HTTP endpoint the server fetches at boot — the shared-secret value is
+//! not a valid URL, so boot would fail before any deploy mechanics run. This
+//! mirrors the `cfg(not(feature = "auth"))` gating on the equivalent dev-token
+//! tests in `crates/aion-server/src/api/deploy_grpc.rs`.
+#![cfg(not(feature = "auth"))]
 
 use std::process::{Command, Output};
 use std::time::Duration;
