@@ -17,8 +17,8 @@
 
 use std::sync::Arc;
 
-use aion_core::ClusterEvent;
-use aion_store::{MintOutcome, NamespaceOrigin, NamespaceStore};
+use aion_core::{ClusterEvent, NamespacePlacementWire};
+use aion_store::{MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceStore};
 
 use crate::cluster_publisher::ClusterEventPublisher;
 use crate::config::AutoCreate;
@@ -176,6 +176,71 @@ impl NamespaceMinter {
         Ok(outcome)
     }
 
+    /// Set an existing namespace's durable placement directive and emit the
+    /// placement-changed socket delta (Control-Plane Phase 2, P2-P2).
+    ///
+    /// The caller MUST have authorized `name` first (the HTTP handler runs the
+    /// SAME grant check `POST /namespaces` does), so the placement change is
+    /// auth-scoped by construction — a caller can never place a namespace it
+    /// cannot access. The durable write is the idempotent quorum value-CAS update
+    /// of the record's `placement` field
+    /// ([`NamespaceStore::set_namespace_placement`]): re-applying the same
+    /// placement is a successful no-op.
+    ///
+    /// Returns `true` when the placement was durably set, or `false` when no
+    /// registry row exists for `name` (placement targets an already-minted
+    /// namespace, so the handler surfaces a not-found rather than minting here).
+    /// The placement-changed delta fires only on a real set (never on the
+    /// not-found path), mirroring the `Created`-edge discipline of
+    /// [`Self::announce_created`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::StoreBackend`] if the durable update fails
+    /// (including a retryable `NotOwner` fence).
+    pub async fn set_placement(
+        &self,
+        name: &str,
+        placement: NamespacePlacement,
+    ) -> Result<bool, ServerError> {
+        if self
+            .store
+            .set_namespace_placement(name, placement.clone())
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.announce_placement_changed(name, &placement);
+        Ok(true)
+    }
+
+    /// Emit the audit event AND (when a publisher is attached) the durable
+    /// `namespace placement changed` socket delta after a placement update.
+    ///
+    /// Fires only on a real durable set (the `set_placement` not-found path
+    /// returns before reaching here). Without a publisher attached it is the audit
+    /// `tracing` event only, exactly like [`Self::announce_created`].
+    fn announce_placement_changed(&self, name: &str, placement: &NamespacePlacement) {
+        let wire = placement_to_wire(placement);
+        tracing::info!(
+            namespace = %name,
+            placement_kind = %wire.kind,
+            "namespace placement changed"
+        );
+        let Some(publisher) = &self.cluster_publisher else {
+            return;
+        };
+        let name = name.to_owned();
+        drop(
+            publisher.emit(move |meta| ClusterEvent::NamespacePlacementChanged {
+                meta,
+                name,
+                placement: wire,
+            }),
+        );
+    }
+
     /// Emit the loud audit event AND (when a publisher is attached) the durable
     /// `namespace created` socket delta for a genuinely-new namespace.
     ///
@@ -218,6 +283,28 @@ impl NamespaceMinter {
             origin: label,
         }));
         Ok(())
+    }
+}
+
+/// Project a durable [`NamespacePlacement`] onto its stable wire form for the
+/// cluster socket delta: a `snake_case` `kind` tag plus the (possibly empty)
+/// node-label set. `Unplaced` carries an empty `nodes`; `Prefer`/`Pinned` carry
+/// their deterministically-ordered label set. Kept here (not in the leaf
+/// `aion-core` crate) because only the server depends on `aion-store`'s enum.
+fn placement_to_wire(placement: &NamespacePlacement) -> NamespacePlacementWire {
+    match placement {
+        NamespacePlacement::Unplaced => NamespacePlacementWire {
+            kind: "unplaced".to_owned(),
+            nodes: Vec::new(),
+        },
+        NamespacePlacement::Prefer { nodes } => NamespacePlacementWire {
+            kind: "prefer".to_owned(),
+            nodes: nodes.iter().cloned().collect(),
+        },
+        NamespacePlacement::Pinned { nodes } => NamespacePlacementWire {
+            kind: "pinned".to_owned(),
+            nodes: nodes.iter().cloned().collect(),
+        },
     }
 }
 

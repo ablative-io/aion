@@ -15,6 +15,9 @@ pub mod outbox_delivery;
 pub mod outbox_dispatcher;
 /// Live stale-claim outbox reconciler (dormant unless commissioned).
 pub mod outbox_reconciler;
+/// Short-TTL per-namespace placement cache for the dispatcher (Control-Plane
+/// Phase 2, P2-P3).
+pub mod placement_cache;
 /// Connected-worker registry and handles.
 pub mod registry;
 
@@ -36,6 +39,7 @@ pub use outbox_dispatcher::{
     OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch, WorkerOutboxDispatch,
 };
 pub use outbox_reconciler::{OutboxReconciler, OutboxReconcilerConfig};
+pub use placement_cache::PlacementCache;
 pub use registry::{
     ConnectedWorkerRegistry, WorkerDelivery, WorkerHandle, WorkerId, WorkerRegistration,
 };

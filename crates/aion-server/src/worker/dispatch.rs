@@ -110,51 +110,119 @@ impl ActivityDispatcher {
         let span_fields = span.clone();
 
         async {
-            let workers = loop {
+            self.dispatch_to_node(activity, activity.node.as_deref(), &span_fields)
+                .await
+        }
+        .instrument(span)
+        .await
+        .inspect_err(|error| {
+            log_dispatch_error("activity_dispatch", activity, error);
+        })
+    }
+
+    /// Dispatch `activity` preferring workers on one of the `preferred` node
+    /// labels, spilling to ANY live worker when none of the preferred labels has a
+    /// live worker (Control-Plane Phase 2, P2-P3 — the `Prefer{L}` soft spill).
+    ///
+    /// This is consulted ONLY for an UNPINNED activity (`activity.node == None`):
+    /// a per-activity authored pin always wins and is dispatched through
+    /// [`Self::dispatch`] unchanged. The recorded row's `node` is NEVER mutated —
+    /// preference is a pure dispatch-time worker-selection optimization in this
+    /// non-replayed path, exactly like the existing round-robin, so replay is
+    /// untouched (CP-Phase-2 §2.4).
+    ///
+    /// Tier 1: for each preferred label (deterministic set order) try a
+    /// NON-WAITING `workers_for(node = Some(label))` and dispatch to the first
+    /// live worker found. Tier 2 (spill): if no preferred label has a live worker,
+    /// fall back to [`Self::dispatch`] with the activity's own (unpinned) node, so
+    /// the wait-for-worker backstop and round-robin behave exactly as today. An
+    /// empty `preferred` set is the spill case immediately.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dispatch`].
+    pub async fn dispatch_preferring(
+        &self,
+        activity: &ScheduledActivity,
+        preferred: &std::collections::BTreeSet<String>,
+    ) -> Result<(), ServerError> {
+        let span = info_span!(
+            "activity_dispatch",
+            operation = "activity_dispatch_preferring",
+            namespace = %activity.namespace,
+            task_queue = %activity.task_queue,
+            workflow_id = %activity.workflow_id,
+            activity_id = %activity.activity_id,
+            activity_type = %activity.activity_type,
+            worker_id = tracing::field::Empty,
+        );
+        let span_fields = span.clone();
+        async {
+            for label in preferred {
                 self.drain_state
                     .ensure_accepting(&activity.namespace, &activity.activity_type)?;
                 let candidates = self.registry.workers_for(
                     &activity.namespace,
                     &activity.task_queue,
                     &activity.activity_type,
-                    activity.node.as_deref(),
+                    Some(label.as_str()),
                 )?;
-                if !candidates.is_empty() {
-                    break candidates;
+                if let Some(()) = self
+                    .send_to_candidates(activity, candidates, &span_fields)
+                    .await?
+                {
+                    return Ok(());
                 }
-                tracing::info!(
-                    namespace = %activity.namespace,
-                    task_queue = %activity.task_queue,
-                    node = activity.node.as_deref(),
-                    activity_type = %activity.activity_type,
-                    workflow_id = %activity.workflow_id,
-                    activity_id = %activity.activity_id,
-                    "no connected worker; waiting for a matching worker to register"
-                );
-                self.registry.wait_for_worker().await;
-            };
-
-            for worker in workers {
-                self.drain_state
-                    .ensure_accepting(&activity.namespace, &activity.activity_type)?;
-                span_fields.record("worker_id", format!("{:?}", worker.id()));
-                // The gRPC dispatch path only registers gRPC-delivery workers, so
-                // a worker here always carries a stream sender; a missing one means
-                // a non-gRPC-transport worker leaked into this path and cannot be
-                // served over it, so it is deregistered like a closed stream.
-                if let Some(sender) = worker.sender() {
-                    if sender
-                        .send(WorkerMessage::ActivityTask(activity.to_task()))
-                        .await
-                        .is_ok()
-                    {
-                        return Ok(());
-                    }
-                }
-                self.registry.deregister(worker.id())?;
             }
+            // Spill: no preferred label had a live worker. Fall back to the
+            // standard unpinned dispatch (wait-for-worker backstop + round-robin).
+            self.dispatch_to_node(activity, activity.node.as_deref(), &span_fields)
+                .await
+        }
+        .instrument(span)
+        .await
+        .inspect_err(|error| {
+            log_dispatch_error("activity_dispatch_preferring", activity, error);
+        })
+    }
 
-            Err(ServerError::worker_dispatch(
+    /// The waiting dispatch core: select a worker for `node` (waiting for one to
+    /// register when none is live, exactly as before), then push the task.
+    async fn dispatch_to_node(
+        &self,
+        activity: &ScheduledActivity,
+        node: Option<&str>,
+        span_fields: &tracing::Span,
+    ) -> Result<(), ServerError> {
+        let workers = loop {
+            self.drain_state
+                .ensure_accepting(&activity.namespace, &activity.activity_type)?;
+            let candidates = self.registry.workers_for(
+                &activity.namespace,
+                &activity.task_queue,
+                &activity.activity_type,
+                node,
+            )?;
+            if !candidates.is_empty() {
+                break candidates;
+            }
+            tracing::info!(
+                namespace = %activity.namespace,
+                task_queue = %activity.task_queue,
+                node = node,
+                activity_type = %activity.activity_type,
+                workflow_id = %activity.workflow_id,
+                activity_id = %activity.activity_id,
+                "no connected worker; waiting for a matching worker to register"
+            );
+            self.registry.wait_for_worker().await;
+        };
+        match self
+            .send_to_candidates(activity, workers, span_fields)
+            .await?
+        {
+            Some(()) => Ok(()),
+            None => Err(ServerError::worker_dispatch(
                 activity.namespace.clone(),
                 activity.activity_type.clone(),
                 format!(
@@ -162,13 +230,40 @@ impl ActivityDispatcher {
                      delivered",
                     activity.task_queue
                 ),
-            ))
+            )),
         }
-        .instrument(span)
-        .await
-        .inspect_err(|error| {
-            log_dispatch_error("activity_dispatch", activity, error);
-        })
+    }
+
+    /// Try each candidate in order, pushing the task to the first live stream.
+    /// Returns `Ok(Some(()))` on a delivered task, `Ok(None)` when every candidate
+    /// stream was already closed (deregistered as it went). An empty candidate
+    /// list returns `Ok(None)` so callers can treat it as "no live worker here".
+    async fn send_to_candidates(
+        &self,
+        activity: &ScheduledActivity,
+        candidates: Vec<crate::worker::registry::WorkerHandle>,
+        span_fields: &tracing::Span,
+    ) -> Result<Option<()>, ServerError> {
+        for worker in candidates {
+            self.drain_state
+                .ensure_accepting(&activity.namespace, &activity.activity_type)?;
+            span_fields.record("worker_id", format!("{:?}", worker.id()));
+            // The gRPC dispatch path only registers gRPC-delivery workers, so a
+            // worker here always carries a stream sender; a missing one means a
+            // non-gRPC-transport worker leaked into this path and cannot be served
+            // over it, so it is deregistered like a closed stream.
+            if let Some(sender) = worker.sender() {
+                if sender
+                    .send(WorkerMessage::ActivityTask(activity.to_task()))
+                    .await
+                    .is_ok()
+                {
+                    return Ok(Some(()));
+                }
+            }
+            self.registry.deregister(worker.id())?;
+        }
+        Ok(None)
     }
 }
 

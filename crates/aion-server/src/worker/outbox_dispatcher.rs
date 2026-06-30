@@ -25,6 +25,30 @@
 //!
 //! # Phase boundary (Phase 2 vs Phase 3)
 //!
+//! # Placement (Control-Plane Phase 2, P2-P3)
+//!
+//! When a [`PlacementCache`](crate::worker::PlacementCache) is attached to
+//! [`WorkerOutboxDispatch`], an UNPINNED row (`row.node == None`) whose namespace
+//! placement is `Prefer{L}` is dispatched preferring an L-labelled worker, with a
+//! spill to ANY live worker when none of the preferred labels is up. This is the
+//! ONLY placement behaviour this slice ships:
+//!
+//! - a per-activity authored pin (`row.node == Some(N)`) always wins and is
+//!   dispatched off the row's own node, untouched by placement;
+//! - `Unplaced` is unchanged (any worker);
+//! - `Pinned{L}` is STORED and read here, but its hard-constraint *dispatch
+//!   enforcement* (require-and-wait, plus the `Some(N ∉ L)` start-admission
+//!   rejection) is **out of scope for P2-P3 — it is P2-I1**. Until then a `Pinned`
+//!   namespace dispatches like `Unplaced` (any worker). This is documented
+//!   deliberately so the soft-spill slice ships without the isolation gate.
+//!
+//! The determinism invariant is absolute: placement is consulted ONLY for live
+//! worker selection in this non-replayed task; the recorded row's `node` is NEVER
+//! mutated by placement, so a workflow's command stream is identical regardless of
+//! which worker a `Prefer` directive routed the activity to (CP-Phase-2 §2.4).
+//!
+//! # Phase boundary (Phase 2 vs Phase 3)
+//!
 //! Phase 2 scope ends at the outbox row's terminal state. A *successful*
 //! dispatch here means the activity task was accepted by a connected worker; it
 //! does NOT route the eventual worker completion back into workflow history.
@@ -123,11 +147,21 @@ pub trait OutboxRowDispatch: Send + Sync + 'static {
 /// not here.
 pub struct WorkerOutboxDispatch {
     dispatcher: ActivityDispatcher,
+    /// Optional short-TTL per-namespace placement cache (Control-Plane Phase 2,
+    /// P2-P3). When present, an UNPINNED row (`row.node == None`) whose namespace
+    /// placement is `Prefer{L}` dispatches preferring an L-labelled worker and
+    /// spills to any live worker when none is up. When absent (the default, every
+    /// pre-Phase-2 construction and test) dispatch is byte-identical: every row
+    /// goes straight through [`ActivityDispatcher::dispatch`] off the row's own
+    /// `node`. Placement is NEVER stamped back onto the row — it is consulted only
+    /// here, in the non-replayed dispatcher, for worker selection.
+    placement_cache: Option<crate::worker::PlacementCache>,
 }
 
 impl std::fmt::Debug for WorkerOutboxDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerOutboxDispatch")
+            .field("placement_cache", &self.placement_cache.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -136,7 +170,20 @@ impl WorkerOutboxDispatch {
     /// Build a worker-backed dispatch over the shared push dispatcher.
     #[must_use]
     pub fn new(dispatcher: ActivityDispatcher) -> Self {
-        Self { dispatcher }
+        Self {
+            dispatcher,
+            placement_cache: None,
+        }
+    }
+
+    /// Attach the per-namespace placement cache so an unpinned row consults its
+    /// namespace's `Prefer` directive at dispatch time (Control-Plane Phase 2,
+    /// P2-P3). Pure builder addition: without it, dispatch is byte-identical to
+    /// the pre-Phase-2 behaviour.
+    #[must_use]
+    pub fn with_placement_cache(mut self, cache: crate::worker::PlacementCache) -> Self {
+        self.placement_cache = Some(cache);
+        self
     }
 
     /// Translate an outbox row into the wire-bound scheduled activity.
@@ -171,7 +218,31 @@ impl WorkerOutboxDispatch {
 #[async_trait]
 impl OutboxRowDispatch for WorkerOutboxDispatch {
     async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
-        self.dispatcher.dispatch(&Self::to_scheduled(row)).await
+        let scheduled = Self::to_scheduled(row);
+        // A per-activity authored pin (`row.node == Some(N)`) ALWAYS wins and is
+        // untouched: dispatch straight off the row's own node. Only an UNPINNED row
+        // consults namespace placement (CP-Phase-2 §2.2 composition rule).
+        let (Some(cache), None) = (&self.placement_cache, &scheduled.node) else {
+            return self.dispatcher.dispatch(&scheduled).await;
+        };
+        match cache.placement(&scheduled.namespace).await {
+            // SOFT placement: prefer an L-labelled worker, spill to any live one.
+            // The row's `node` stays `None` throughout — preference is a pure
+            // dispatch-time selection input, never written back (the determinism
+            // invariant, CP-Phase-2 §2.4).
+            aion_store::NamespacePlacement::Prefer { nodes } => {
+                self.dispatcher
+                    .dispatch_preferring(&scheduled, &nodes)
+                    .await
+            }
+            // Unplaced (today's behaviour) and Pinned (hard-constraint dispatch
+            // enforcement is P2-I1, out of scope here — see the module/slice note)
+            // both fall through to the unchanged any-worker dispatch.
+            aion_store::NamespacePlacement::Unplaced
+            | aion_store::NamespacePlacement::Pinned { .. } => {
+                self.dispatcher.dispatch(&scheduled).await
+            }
+        }
     }
 }
 
@@ -1035,6 +1106,249 @@ mod tests {
         let unpinned = pending_row(&workflow_id, 1);
         let scheduled = super::WorkerOutboxDispatch::to_scheduled(&unpinned);
         assert_eq!(scheduled.node, None);
+    }
+
+    // --- P2-P3: Prefer two-tier spill + the determinism invariant -----------
+
+    /// Register a worker advertising `node` for `activity_type` in `namespace`,
+    /// returning the registration token (held to keep it connected) and its
+    /// receiver so the test can observe a delivered task.
+    fn register_node_worker(
+        registry: &crate::worker::registry::ConnectedWorkerRegistry,
+        namespace: &str,
+        node: &str,
+        activity_type: &str,
+    ) -> Result<
+        (
+            crate::worker::registry::WorkerRegistration,
+            tokio::sync::mpsc::Receiver<crate::worker::registry::WorkerMessage>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let types = [activity_type.to_owned()];
+        let registration = registry.register_namespaces(
+            [namespace.to_owned()],
+            String::from("default"),
+            Some(node.to_owned()),
+            types.iter(),
+            tx,
+        )?;
+        Ok((registration, rx))
+    }
+
+    /// Build an UNPINNED outbox row (`node == None`) in `namespace` for `charge`.
+    fn unpinned_row(namespace: &str) -> OutboxRow {
+        OutboxRow::pending(
+            WorkflowId::new_v4(),
+            0,
+            String::from("charge"),
+            Payload::new(ContentType::Json, b"{}".to_vec()),
+            Utc::now(),
+        )
+        .with_namespace(namespace)
+        .with_task_queue("default")
+    }
+
+    /// Build a `WorkerOutboxDispatch` over `registry` whose placement cache reads
+    /// `namespace_store` (zero TTL so each dispatch sees the latest placement).
+    fn placement_dispatch(
+        registry: &crate::worker::registry::ConnectedWorkerRegistry,
+        namespace_store: Arc<dyn aion_store::NamespaceStore>,
+    ) -> super::WorkerOutboxDispatch {
+        use crate::worker::dispatch::ActivityDispatcher;
+        let cache = crate::worker::PlacementCache::new(namespace_store, Duration::ZERO);
+        super::WorkerOutboxDispatch::new(ActivityDispatcher::new(registry.clone()))
+            .with_placement_cache(cache)
+    }
+
+    /// P2-P3 (prefer): an unpinned row in a `Prefer{n1}` namespace selects the
+    /// n1 worker when one is live, even with an n2 worker also connected.
+    #[tokio::test]
+    async fn prefer_selects_preferred_node_worker_when_present()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::{InMemoryStore, NamespaceOrigin, NamespacePlacement, NamespaceStore};
+
+        let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        ns_store
+            .register_namespace("t", NamespaceOrigin::Explicit)
+            .await?;
+        let n1: std::collections::BTreeSet<String> = ["n1".to_owned()].into_iter().collect();
+        ns_store
+            .set_namespace_placement("t", NamespacePlacement::Prefer { nodes: n1 })
+            .await?;
+
+        let registry = crate::worker::registry::ConnectedWorkerRegistry::default();
+        let (_n1_reg, mut n1_rx) = register_node_worker(&registry, "t", "n1", "charge")?;
+        let (_n2_reg, mut n2_rx) = register_node_worker(&registry, "t", "n2", "charge")?;
+        let dispatch = placement_dispatch(&registry, Arc::clone(&ns_store));
+
+        let row = unpinned_row("t");
+        OutboxRowDispatch::dispatch(&dispatch, &row).await?;
+
+        assert!(
+            n1_rx.recv().await.is_some(),
+            "the n1 worker receives the task"
+        );
+        assert!(
+            n2_rx.try_recv().is_err(),
+            "the n2 worker must NOT receive the task while n1 is live"
+        );
+        // The recorded row's node is UNTOUCHED by preference (determinism gate).
+        assert_eq!(row.node, None, "placement must never mutate the row's node");
+        Ok(())
+    }
+
+    /// P2-P3 (spill): an unpinned row in a `Prefer{n1}` namespace SPILLS to the
+    /// only live worker (n2) when no n1 worker is connected — the demoable
+    /// node-loss failover behaviour.
+    #[tokio::test]
+    async fn prefer_spills_to_any_worker_when_preferred_node_absent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::{InMemoryStore, NamespaceOrigin, NamespacePlacement, NamespaceStore};
+
+        let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        ns_store
+            .register_namespace("t", NamespaceOrigin::Explicit)
+            .await?;
+        let n1: std::collections::BTreeSet<String> = ["n1".to_owned()].into_iter().collect();
+        ns_store
+            .set_namespace_placement("t", NamespacePlacement::Prefer { nodes: n1 })
+            .await?;
+
+        // Only an n2 worker is live: no n1-labelled worker exists at all.
+        let registry = crate::worker::registry::ConnectedWorkerRegistry::default();
+        let (_n2_reg, mut n2_rx) = register_node_worker(&registry, "t", "n2", "charge")?;
+        let dispatch = placement_dispatch(&registry, Arc::clone(&ns_store));
+
+        let row = unpinned_row("t");
+        OutboxRowDispatch::dispatch(&dispatch, &row).await?;
+
+        assert!(
+            n2_rx.recv().await.is_some(),
+            "with no n1 worker live, the dispatch spills to the live n2 worker"
+        );
+        assert_eq!(row.node, None, "spill must never mutate the row's node");
+        Ok(())
+    }
+
+    /// P2-P3 (unplaced unchanged): an `Unplaced` namespace dispatches to any live
+    /// worker exactly as before, regardless of node label.
+    #[tokio::test]
+    async fn unplaced_namespace_dispatches_to_any_worker() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use aion_store::{InMemoryStore, NamespaceOrigin, NamespaceStore};
+
+        let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        // Registered but left Unplaced (the default).
+        ns_store
+            .register_namespace("t", NamespaceOrigin::Explicit)
+            .await?;
+
+        let registry = crate::worker::registry::ConnectedWorkerRegistry::default();
+        let (_n2_reg, mut n2_rx) = register_node_worker(&registry, "t", "n2", "charge")?;
+        let dispatch = placement_dispatch(&registry, Arc::clone(&ns_store));
+
+        OutboxRowDispatch::dispatch(&dispatch, &unpinned_row("t")).await?;
+        assert!(
+            n2_rx.recv().await.is_some(),
+            "an Unplaced namespace reaches any live worker"
+        );
+        Ok(())
+    }
+
+    /// P2-P3 (authored pin wins): a row with an authored node `Some(N)` STILL
+    /// requires N regardless of the namespace's `Prefer{other}` placement — the
+    /// per-activity pin is authoritative and the placement never overrides it.
+    #[tokio::test]
+    async fn authored_node_pin_wins_over_namespace_prefer() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use aion_store::{InMemoryStore, NamespaceOrigin, NamespacePlacement, NamespaceStore};
+
+        let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        ns_store
+            .register_namespace("t", NamespaceOrigin::Explicit)
+            .await?;
+        // Namespace prefers n1, but the row is authored-pinned to n2.
+        let n1: std::collections::BTreeSet<String> = ["n1".to_owned()].into_iter().collect();
+        ns_store
+            .set_namespace_placement("t", NamespacePlacement::Prefer { nodes: n1 })
+            .await?;
+
+        let registry = crate::worker::registry::ConnectedWorkerRegistry::default();
+        let (_n1_reg, mut n1_rx) = register_node_worker(&registry, "t", "n1", "charge")?;
+        let (_n2_reg, mut n2_rx) = register_node_worker(&registry, "t", "n2", "charge")?;
+        let dispatch = placement_dispatch(&registry, Arc::clone(&ns_store));
+
+        // Authored pin: node = Some("n2").
+        let row = unpinned_row("t").with_node(Some(String::from("n2")));
+        OutboxRowDispatch::dispatch(&dispatch, &row).await?;
+
+        assert!(
+            n2_rx.recv().await.is_some(),
+            "the authored Some(n2) pin is honoured regardless of the namespace Prefer{{n1}}"
+        );
+        assert!(
+            n1_rx.try_recv().is_err(),
+            "the preferred-n1 worker must NOT receive a task authored-pinned to n2"
+        );
+        // The authored node is preserved exactly (determinism gate).
+        assert_eq!(row.node.as_deref(), Some("n2"));
+        Ok(())
+    }
+
+    /// DETERMINISM GATE (non-negotiable): the recorded row's `node` is
+    /// byte-identical regardless of WHICH worker placement routed the activity to.
+    /// Under `Prefer{n1}`, the same unpinned row dispatched once to the n1 worker
+    /// and once (after n1 leaves) spilled to n2 keeps `node == None` BOTH times —
+    /// `to_scheduled` reads the row's node, never the placement, so replay sees an
+    /// identical command stream irrespective of the live dispatch target.
+    #[tokio::test]
+    async fn placement_never_mutates_recorded_row_node_across_routings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::{InMemoryStore, NamespaceOrigin, NamespacePlacement, NamespaceStore};
+
+        let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        ns_store
+            .register_namespace("t", NamespaceOrigin::Explicit)
+            .await?;
+        let n1: std::collections::BTreeSet<String> = ["n1".to_owned()].into_iter().collect();
+        ns_store
+            .set_namespace_placement("t", NamespacePlacement::Prefer { nodes: n1 })
+            .await?;
+        let registry = crate::worker::registry::ConnectedWorkerRegistry::default();
+        let dispatch = placement_dispatch(&registry, Arc::clone(&ns_store));
+
+        // Routing A: n1 worker present → preferred selection.
+        let (n1_reg, mut n1_rx) = register_node_worker(&registry, "t", "n1", "charge")?;
+        let row_a = unpinned_row("t");
+        OutboxRowDispatch::dispatch(&dispatch, &row_a).await?;
+        assert!(n1_rx.recv().await.is_some());
+        let scheduled_a = super::WorkerOutboxDispatch::to_scheduled(&row_a);
+
+        // n1 leaves; only n2 remains.
+        n1_reg.deregister()?;
+        let (_n2_reg, mut n2_rx) = register_node_worker(&registry, "t", "n2", "charge")?;
+
+        // Routing B: same shape of unpinned row → spills to n2.
+        let row_b = unpinned_row("t");
+        OutboxRowDispatch::dispatch(&dispatch, &row_b).await?;
+        assert!(n2_rx.recv().await.is_some());
+        let scheduled_b = super::WorkerOutboxDispatch::to_scheduled(&row_b);
+
+        // The recorded row node — and thus the scheduled task's node — is None in
+        // BOTH routings: the dispatch target (n1 vs n2) did not perturb it.
+        assert_eq!(row_a.node, None);
+        assert_eq!(row_b.node, None);
+        assert_eq!(
+            scheduled_a.node, scheduled_b.node,
+            "the scheduled task node is identical regardless of which worker served it"
+        );
+        assert_eq!(
+            scheduled_a.node, None,
+            "an unpinned row stays unpinned at dispatch"
+        );
+        Ok(())
     }
 
     #[tokio::test]

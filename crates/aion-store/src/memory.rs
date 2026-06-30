@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::namespace::{
-    MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceState, NamespaceStore,
+    MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceRecord, NamespaceState,
+    NamespaceStore,
 };
 use crate::package::{PackageRecord, PackageRouteRecord, PackageStore};
 use crate::visibility::{ListWorkflowsFilter, VisibilityRecord, VisibilityStore};
@@ -231,6 +232,23 @@ impl NamespaceStore for InMemoryStore {
     async fn get_namespace(&self, name: &str) -> Result<Option<NamespaceRecord>, StoreError> {
         let namespaces = self.lock_namespaces();
         Ok(namespaces.get(name).cloned())
+    }
+
+    async fn set_namespace_placement(
+        &self,
+        name: &str,
+        placement: NamespacePlacement,
+    ) -> Result<Option<()>, StoreError> {
+        let now = Utc::now();
+        let mut namespaces = self.lock_namespaces();
+        let Some(existing) = namespaces.get_mut(name) else {
+            // Placement targets an already-minted namespace: an absent row is a
+            // not-found the caller surfaces, never a silent mint here.
+            return Ok(None);
+        };
+        existing.placement = placement;
+        existing.bump_last_seen(now);
+        Ok(Some(()))
     }
 
     async fn deprecate_namespace(&self, name: &str) -> Result<(), StoreError> {
@@ -844,9 +862,68 @@ mod namespace_tests {
     #![allow(clippy::expect_used)]
 
     use super::InMemoryStore;
-    use crate::namespace::{MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceState};
+    use crate::namespace::{
+        MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceRecord, NamespaceState,
+    };
     use crate::{NamespaceStore, StoreError};
     use chrono::{TimeZone, Utc};
+    use std::collections::BTreeSet;
+
+    fn labels(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    /// `set_namespace_placement` updates ONLY the placement (+ `last_seen`) of an
+    /// existing record, leaves the other fields untouched, is idempotent, and is a
+    /// not-found (`Ok(None)`) for an absent namespace — never a silent mint.
+    #[tokio::test]
+    async fn set_placement_updates_only_placement_and_reports_not_found() -> Result<(), StoreError>
+    {
+        let store = InMemoryStore::default();
+        store
+            .register_namespace("orders", NamespaceOrigin::Explicit)
+            .await?;
+        let original = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(original.placement, NamespacePlacement::Unplaced);
+
+        let placement = NamespacePlacement::Prefer {
+            nodes: labels(&["n1", "n2"]),
+        };
+        assert_eq!(
+            store
+                .set_namespace_placement("orders", placement.clone())
+                .await?,
+            Some(())
+        );
+        let updated = store
+            .get_namespace("orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(updated.placement, placement);
+        // Only placement + last_seen changed; identity/lifecycle preserved.
+        assert_eq!(updated.origin, original.origin);
+        assert_eq!(updated.created_at, original.created_at);
+        assert_eq!(updated.state, original.state);
+
+        // Idempotent: re-applying the same placement is a successful no-op.
+        assert_eq!(
+            store.set_namespace_placement("orders", placement).await?,
+            Some(())
+        );
+
+        // Absent namespace: not-found, and nothing minted.
+        assert_eq!(
+            store
+                .set_namespace_placement("ghost", NamespacePlacement::Unplaced)
+                .await?,
+            None
+        );
+        assert!(store.get_namespace("ghost").await?.is_none());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn register_creates_if_absent_and_persists() -> Result<(), StoreError> {

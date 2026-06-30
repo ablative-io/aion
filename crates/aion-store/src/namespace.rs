@@ -429,6 +429,35 @@ pub trait NamespaceStore: Send + Sync + 'static {
     /// backend or codec failure.
     async fn get_namespace(&self, name: &str) -> Result<Option<NamespaceRecord>, StoreError>;
 
+    /// Idempotent quorum-CAS update of an existing namespace's [`placement`]
+    /// directive (Control-Plane Phase 2, P2-P2).
+    ///
+    /// Read-modify-writes ONLY the [`NamespaceRecord::placement`] field of an
+    /// existing record, leaving `origin`, `created_at`, `config`, and `state`
+    /// untouched; `last_seen` is refreshed as the operation is a fresh reference.
+    /// It is the same value-CAS upsert every registry mutation uses, so a
+    /// concurrent racer that wrote an equivalent placement first is reconciled as
+    /// success (idempotent, lock-free). Setting placement to the value the record
+    /// already holds is a successful no-op.
+    ///
+    /// Returns `Ok(None)` when no record exists for `name` (placement targets an
+    /// already-minted namespace; the caller surfaces a not-found rather than
+    /// minting a row here), or `Ok(Some(()))` when the placement was durably set.
+    ///
+    /// [`placement`]: NamespaceRecord::placement
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotOwner`] if a quorum write is fenced because this
+    /// node is not the current owner of the record's shard, or
+    /// [`StoreError::Backend`] / [`StoreError::Serialization`] on a backend or
+    /// codec failure.
+    async fn set_namespace_placement(
+        &self,
+        name: &str,
+        placement: NamespacePlacement,
+    ) -> Result<Option<()>, StoreError>;
+
     /// Transitions a namespace from [`NamespaceState::Active`] to
     /// [`NamespaceState::Deprecated`] (deprecate-before-delete).
     ///

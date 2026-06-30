@@ -7,7 +7,9 @@
 //! `created_at`/`last_seen` are projected into RFC 3339 text columns so the list
 //! ordering is index-served and the staleness signal is human-legible.
 
-use aion_store::{MintOutcome, NamespaceOrigin, NamespaceRecord, NamespaceState, StoreError};
+use aion_store::{
+    MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceRecord, NamespaceState, StoreError,
+};
 use chrono::{SecondsFormat, Utc};
 use libsql::{Connection, Row, TransactionBehavior};
 
@@ -186,6 +188,49 @@ pub(crate) async fn deprecate_namespace(conn: &Connection, name: &str) -> Result
         // A missing row is an idempotent no-op: deprecation never strands
         // durable history and an absent registry entry is not an error.
         Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    };
+
+    finish(tx, outcome).await
+}
+
+/// Set an existing namespace's `placement` directive, bumping `last_seen`
+/// (Control-Plane Phase 2, P2-P2). Only `placement` and `last_seen` change; the
+/// record body's other fields are preserved. An absent row returns `Ok(None)` —
+/// placement targets an already-minted namespace, never minting a row here. A
+/// successful update returns `Ok(Some(()))`. Runs under one `IMMEDIATE`
+/// transaction so the read-modify-write is atomic against a concurrent mutator on
+/// the same single-node connection.
+///
+/// # Errors
+///
+/// Returns `StoreError::Serialization` when the record cannot be re-encoded and
+/// `StoreError::Backend` for libSQL boundary failures.
+pub(crate) async fn set_namespace_placement(
+    conn: &Connection,
+    name: &str,
+    placement: NamespacePlacement,
+) -> Result<Option<()>, StoreError> {
+    let now = Utc::now();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let outcome = match load_record(&tx, name).await {
+        Ok(Some(mut existing)) => {
+            existing.placement = placement;
+            existing.bump_last_seen(now);
+            match existing.encode() {
+                Ok(bytes) => touch_last_seen(&tx, name, now, &bytes)
+                    .await
+                    .map(|()| Some(())),
+                Err(error) => Err(error),
+            }
+        }
+        // An absent registry row is a not-found the caller surfaces, never a
+        // silent mint: placement targets an already-minted namespace.
+        Ok(None) => Ok(None),
         Err(error) => Err(error),
     };
 
@@ -427,6 +472,52 @@ mod tests {
     async fn get_returns_none_for_absent_name() -> Result<(), StoreError> {
         let conn = open_test_connection("get-miss").await?;
         assert!(super::get_namespace(&conn, "missing").await?.is_none());
+        Ok(())
+    }
+
+    /// `set_namespace_placement` durably updates the placement of an existing
+    /// record (preserving its other fields), is idempotent, and is a not-found
+    /// (`Ok(None)`) for an absent namespace rather than a silent mint.
+    #[tokio::test]
+    async fn set_placement_updates_existing_and_is_not_found_when_absent() -> Result<(), StoreError>
+    {
+        use aion_store::NamespacePlacement;
+        use std::collections::BTreeSet;
+
+        let conn = open_test_connection("set-placement").await?;
+        super::register_namespace(&conn, "orders", NamespaceOrigin::Explicit).await?;
+        let original = super::get_namespace(&conn, "orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(original.placement, NamespacePlacement::Unplaced);
+
+        let nodes: BTreeSet<String> = ["n1".to_owned()].into_iter().collect();
+        let placement = NamespacePlacement::Prefer {
+            nodes: nodes.clone(),
+        };
+        assert_eq!(
+            super::set_namespace_placement(&conn, "orders", placement.clone()).await?,
+            Some(())
+        );
+        let updated = super::get_namespace(&conn, "orders")
+            .await?
+            .expect("namespace must persist");
+        assert_eq!(updated.placement, placement);
+        assert_eq!(updated.origin, NamespaceOrigin::Explicit);
+        assert_eq!(updated.created_at, original.created_at);
+
+        // Idempotent re-apply.
+        assert_eq!(
+            super::set_namespace_placement(&conn, "orders", placement).await?,
+            Some(())
+        );
+
+        // Absent namespace: not-found, nothing minted.
+        assert_eq!(
+            super::set_namespace_placement(&conn, "ghost", NamespacePlacement::Unplaced).await?,
+            None
+        );
+        assert!(super::get_namespace(&conn, "ghost").await?.is_none());
         Ok(())
     }
 

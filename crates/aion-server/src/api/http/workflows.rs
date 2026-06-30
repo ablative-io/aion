@@ -6,8 +6,11 @@ use aion_proto::{
 };
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
 };
+use std::collections::BTreeSet;
+
+use aion_store::NamespacePlacement;
 
 use super::auth::HttpCaller;
 use super::clean_dtos::{
@@ -233,6 +236,11 @@ pub(crate) struct NamespaceRecordSummary {
     /// How the namespace came to exist, as the stable `snake_case` label
     /// (`worker_mint` / `start_mint` / `explicit` / `inferred_from_state`).
     origin: String,
+    /// The durable placement directive, as the stable wire projection (`kind` +
+    /// node-label set), so the ops console renders the placement column and a
+    /// caller can read back a `PUT /namespaces/{name}/placement` it just set
+    /// (Control-Plane Phase 2, P2-P2).
+    placement: aion_core::NamespacePlacementWire,
 }
 
 impl From<aion_store::NamespaceRecord> for NamespaceRecordSummary {
@@ -242,7 +250,29 @@ impl From<aion_store::NamespaceRecord> for NamespaceRecordSummary {
             created_at: record.created_at.to_rfc3339(),
             last_seen: record.last_seen.to_rfc3339(),
             origin: namespace_origin_label(record.origin).to_owned(),
+            placement: placement_summary(&record.placement),
         }
+    }
+}
+
+/// Project a durable [`NamespacePlacement`] onto the stable `{kind, nodes}` wire
+/// form the record summary carries, matching the cluster socket delta's shape so
+/// the console reconciles a freshly-fetched record against a live
+/// placement-changed delta by value.
+fn placement_summary(placement: &NamespacePlacement) -> aion_core::NamespacePlacementWire {
+    match placement {
+        NamespacePlacement::Unplaced => aion_core::NamespacePlacementWire {
+            kind: "unplaced".to_owned(),
+            nodes: Vec::new(),
+        },
+        NamespacePlacement::Prefer { nodes } => aion_core::NamespacePlacementWire {
+            kind: "prefer".to_owned(),
+            nodes: nodes.iter().cloned().collect(),
+        },
+        NamespacePlacement::Pinned { nodes } => aion_core::NamespacePlacementWire {
+            kind: "pinned".to_owned(),
+            nodes: nodes.iter().cloned().collect(),
+        },
     }
 }
 
@@ -344,6 +374,105 @@ pub(crate) async fn post_namespace(
     }))
 }
 
+/// Request body for `PUT /namespaces/{name}/placement` (Control-Plane Phase 2,
+/// P2-P2). The flat `{kind, nodes}` shape mirrors the durable
+/// [`NamespacePlacement`] enum: `kind` is the `snake_case` variant tag
+/// (`unplaced` / `prefer` / `pinned`) and `nodes` is the node-label set. `nodes`
+/// is required and non-empty for `prefer`/`pinned`, and MUST be empty (or absent)
+/// for `unplaced`.
+#[derive(serde::Deserialize)]
+pub(crate) struct SetPlacementRequest {
+    /// The placement-kind tag: `unplaced` / `prefer` / `pinned`.
+    kind: String,
+    /// The node-label set. Defaults to empty so `{"kind":"unplaced"}` is valid.
+    #[serde(default)]
+    nodes: Vec<String>,
+}
+
+impl SetPlacementRequest {
+    /// Validate and convert the wire body into a durable [`NamespacePlacement`],
+    /// or a typed `invalid_input` wire error. Rejects an unknown `kind`, an empty
+    /// label set for `prefer`/`pinned`, a non-empty set for `unplaced`, and any
+    /// empty / blank label (a label set is free-form but never blank).
+    fn into_placement(self) -> Result<NamespacePlacement, aion_proto::WireError> {
+        let labels = self.parse_labels()?;
+        match self.kind.as_str() {
+            "unplaced" => {
+                if labels.is_empty() {
+                    Ok(NamespacePlacement::Unplaced)
+                } else {
+                    Err(aion_proto::WireError::invalid_input(
+                        "unplaced placement must not carry node labels",
+                    ))
+                }
+            }
+            "prefer" => Ok(NamespacePlacement::Prefer { nodes: labels }),
+            "pinned" => Ok(NamespacePlacement::Pinned { nodes: labels }),
+            other => Err(aion_proto::WireError::invalid_input(format!(
+                "unknown placement kind `{other}`: expected unplaced, prefer, or pinned"
+            ))),
+        }
+    }
+
+    /// Parse the node-label set, rejecting any blank label. For `prefer`/`pinned`
+    /// the non-empty requirement is enforced by [`Self::into_placement`]; this
+    /// only normalizes and dedups into the deterministic [`BTreeSet`].
+    fn parse_labels(&self) -> Result<BTreeSet<String>, aion_proto::WireError> {
+        let mut labels = BTreeSet::new();
+        for label in &self.nodes {
+            let trimmed = label.trim();
+            if trimmed.is_empty() {
+                return Err(aion_proto::WireError::invalid_input(
+                    "placement node labels must not be empty",
+                ));
+            }
+            labels.insert(trimmed.to_owned());
+        }
+        if matches!(self.kind.as_str(), "prefer" | "pinned") && labels.is_empty() {
+            return Err(aion_proto::WireError::invalid_input(
+                "prefer/pinned placement requires at least one node label",
+            ));
+        }
+        Ok(labels)
+    }
+}
+
+/// Set a namespace's durable placement directive (`PUT /namespaces/{name}/placement`).
+///
+/// Auth-scoped exactly like `POST /namespaces`: the caller must be authorized for
+/// the namespace via [`NamespaceGuard::authorize_namespace`], so a caller can
+/// never place — or learn the existence of — a namespace it cannot access. The
+/// update is an idempotent quorum value-CAS on the record's `placement` field and
+/// emits a placement-changed delta on the existing deploy-scoped cluster socket
+/// publisher. A namespace with no registry row is a `404`-shaped not-found (the
+/// placement targets an already-minted namespace; this endpoint never mints).
+pub(crate) async fn set_namespace_placement(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(name): Path<String>,
+    Json(request): Json<SetPlacementRequest>,
+) -> Result<Json<CreateNamespaceResponse>, HttpWireError> {
+    let placement = request.into_placement().map_err(HttpWireError)?;
+    let authorized = state
+        .namespace_guard()
+        .authorize_namespace(&caller, name.trim())
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    let set = state
+        .namespace_minter()
+        .set_placement(&authorized, placement)
+        .await
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    if !set {
+        return Err(HttpWireError(aion_proto::WireError::not_found(format!(
+            "namespace {authorized} does not exist"
+        ))));
+    }
+    Ok(Json(CreateNamespaceResponse {
+        name: authorized,
+        created: false,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -356,6 +485,7 @@ mod tests {
     };
     use axum::{Router, http::StatusCode};
     use chrono::Utc;
+    use futures::StreamExt;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -913,6 +1043,228 @@ mod tests {
             store.get_namespace("forbidden").await?.is_none(),
             "an unauthorized create must write nothing durably"
         );
+        Ok(())
+    }
+
+    /// Build a router PLUS the `ServerState` (so a test can subscribe to the
+    /// SAME cluster publisher the handlers emit on), over a `SharedEngine`-mode
+    /// resolver with `seed` namespaces pre-minted into the durable registry.
+    async fn router_state_with_seeded_namespaces(
+        config: crate::config::RuntimeConfig,
+        seed: &[&str],
+    ) -> Result<(Router, crate::ServerState), Box<dyn std::error::Error>> {
+        let store: Arc<dyn aion_store::EventStore> = Arc::new(aion_store::InMemoryStore::default());
+        let engine = Arc::new(
+            aion::EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let namespace_store: Arc<dyn aion_store::NamespaceStore> =
+            Arc::new(aion_store::InMemoryStore::default());
+        for name in seed {
+            namespace_store
+                .register_namespace(name, aion_store::NamespaceOrigin::Explicit)
+                .await?;
+        }
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let state =
+            crate::ServerState::from_parts_with_namespace_store(resolver, config, namespace_store);
+        Ok((workflow_router(state.clone()), state))
+    }
+
+    /// Build a `PUT /namespaces/{name}/placement` request with the given JSON body,
+    /// authorized for `name` exactly like the namespace-create path.
+    fn put_placement_request(
+        name: &str,
+        body: &serde_json::Value,
+    ) -> Result<axum::http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
+        #[cfg(feature = "auth")]
+        let bearer = crate::auth::test_support::mint_token("alice", name)?;
+        #[cfg(not(feature = "auth"))]
+        let bearer = super::super::test_support::TOKEN.to_owned();
+        Ok(axum::http::Request::builder()
+            .uri(format!("/namespaces/{name}/placement"))
+            .method("PUT")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-aion-subject", "alice")
+            .header("x-aion-namespaces", name)
+            .body(axum::body::Body::from(serde_json::to_vec(body)?))?)
+    }
+
+    /// `PUT /namespaces/{name}/placement` durably sets the placement (read back via
+    /// `GET /namespaces/records`), is idempotent, and emits exactly one
+    /// placement-changed delta on the existing cluster publisher.
+    #[tokio::test]
+    async fn put_placement_sets_reads_back_and_emits_delta()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let (router, state) = router_state_with_seeded_namespaces(config, &["orders"]).await?;
+        let mut deltas = state.cluster_publisher().subscribe(0);
+
+        let body = json!({ "kind": "prefer", "nodes": ["n2", "n1"] });
+        let response = router
+            .clone()
+            .oneshot(put_placement_request("orders", &body)?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Read back via GET /namespaces/records: placement is durably set, with the
+        // deterministically-ordered label set.
+        let records = router
+            .clone()
+            .oneshot(get_request("/namespaces/records")?)
+            .await?;
+        let records: Vec<serde_json::Value> = read_json(records).await?;
+        let orders = records
+            .iter()
+            .find(|r| r["name"] == "orders")
+            .ok_or("orders record must exist")?;
+        assert_eq!(orders["placement"]["kind"], "prefer");
+        assert_eq!(
+            orders["placement"]["nodes"],
+            json!(["n1", "n2"]),
+            "labels are stored deterministically ordered"
+        );
+
+        // Exactly one placement-changed delta on the existing cluster publisher.
+        let event = deltas
+            .next()
+            .await
+            .ok_or("expected a placement-changed delta")?
+            .map_err(|lag| format!("unexpected lag: {lag:?}"))?;
+        match event {
+            aion_core::ClusterEvent::NamespacePlacementChanged {
+                name, placement, ..
+            } => {
+                assert_eq!(name, "orders");
+                assert_eq!(placement.kind, "prefer");
+                assert_eq!(placement.nodes, vec!["n1".to_owned(), "n2".to_owned()]);
+            }
+            other => {
+                return Err(format!("expected NamespacePlacementChanged, got {other:?}").into());
+            }
+        }
+
+        // Idempotent re-apply: still 200, still durable.
+        let again = router
+            .oneshot(put_placement_request("orders", &body)?)
+            .await?;
+        assert_eq!(again.status(), StatusCode::OK);
+        Ok(())
+    }
+
+    /// `PUT /namespaces/{name}/placement` is auth-scoped: an enumerated caller
+    /// without a grant for the namespace is rejected (FORBIDDEN), and nothing is
+    /// written durably.
+    #[cfg(not(feature = "auth"))]
+    #[tokio::test]
+    async fn put_placement_rejects_unauthorized_caller() -> Result<(), Box<dyn std::error::Error>> {
+        // Auth-enabled (runtime_config default), caller granted only `tenant-a`
+        // (NAMESPACE), attempting to place `forbidden`.
+        let (router, state) =
+            router_state_with_seeded_namespaces(runtime_config(), &["forbidden"]).await?;
+
+        // Grant the caller ONLY `tenant-a` (NAMESPACE), but PUT placement on
+        // `forbidden`: the grant header names a different namespace than the path.
+        let body = json!({ "kind": "prefer", "nodes": ["n1"] });
+        let bearer = super::super::test_support::TOKEN.to_owned();
+        let request = axum::http::Request::builder()
+            .uri("/namespaces/forbidden/placement")
+            .method("PUT")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-aion-subject", "alice")
+            .header("x-aion-namespaces", NAMESPACE)
+            .body(axum::body::Body::from(serde_json::to_vec(&body)?))?;
+        let response = router.oneshot(request).await?;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a caller without a grant must be denied placement"
+        );
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::NamespaceDenied);
+
+        // The denial wrote nothing: placement is still the Unplaced default.
+        let record = state
+            .namespace_store()
+            .get_namespace("forbidden")
+            .await?
+            .ok_or("seeded namespace must exist")?;
+        assert_eq!(record.placement, aion_store::NamespacePlacement::Unplaced);
+        Ok(())
+    }
+
+    /// `PUT /namespaces/{name}/placement` on an absent namespace is a not-found,
+    /// and mints nothing (placement targets an already-minted namespace).
+    #[tokio::test]
+    async fn put_placement_absent_namespace_is_not_found() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let (router, state) = router_state_with_seeded_namespaces(config, &[]).await?;
+
+        let body = json!({ "kind": "prefer", "nodes": ["n1"] });
+        let response = router
+            .oneshot(put_placement_request("ghost", &body)?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            state
+                .namespace_store()
+                .get_namespace("ghost")
+                .await?
+                .is_none(),
+            "a not-found placement must mint nothing"
+        );
+        Ok(())
+    }
+
+    /// `PUT /namespaces/{name}/placement` validates the body: an unknown kind, an
+    /// empty label set for prefer/pinned, and a non-empty set for unplaced are all
+    /// typed `invalid_input` wire errors that write nothing.
+    #[tokio::test]
+    async fn put_placement_rejects_invalid_bodies() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let (router, state) = router_state_with_seeded_namespaces(config, &["orders"]).await?;
+
+        for body in [
+            json!({ "kind": "elsewhere", "nodes": ["n1"] }),
+            json!({ "kind": "prefer", "nodes": [] }),
+            json!({ "kind": "prefer", "nodes": ["  "] }),
+            json!({ "kind": "unplaced", "nodes": ["n1"] }),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(put_placement_request("orders", &body)?)
+                .await?;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "invalid placement body must be rejected: {body}"
+            );
+            let error: WireError = read_json(response).await?;
+            assert_eq!(error.code, WireErrorCode::InvalidInput);
+        }
+
+        // Nothing was written: still the Unplaced default.
+        let record = state
+            .namespace_store()
+            .get_namespace("orders")
+            .await?
+            .ok_or("seeded namespace must exist")?;
+        assert_eq!(record.placement, aion_store::NamespacePlacement::Unplaced);
         Ok(())
     }
 

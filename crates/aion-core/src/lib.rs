@@ -41,7 +41,7 @@ pub mod status;
 
 pub use cluster_event::{
     ClusterCommand, ClusterEvent, ClusterEventMeta, ClusterPeer, ClusterShard, ClusterSnapshot,
-    ClusterStreamError, ClusterWorker, WorkerDeathReason, WorkerTransport,
+    ClusterStreamError, ClusterWorker, NamespacePlacementWire, WorkerDeathReason, WorkerTransport,
 };
 pub use describe::DescribeWorkflowResponse;
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
