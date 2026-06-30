@@ -17,6 +17,7 @@ workspace = true
 
 [features]
 recorder-write-token = []
+test-support = []
 
 [dependencies]
 aion-core = { version = "0.8.0", path = "../aion-core" }

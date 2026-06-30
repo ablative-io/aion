@@ -199,10 +199,35 @@ impl ReadableEventStore for InstrumentedEventStore {
         self.inner.acquire_owned_shards(shards)
     }
 
+    /// Forward the per-shard (ADR-021 clean-partial) election to the inner store.
+    /// MUST be forwarded: the adoption fence (`Engine::adopt_shards`) drives the
+    /// SINGULAR per-shard seam, and the trait default is a silent no-op that would
+    /// let a survivor "adopt" a shard WITHOUT winning the election — its in-memory
+    /// live epoch is then never seeded, so every recovery write is fenced by the
+    /// surviving quorum and cross-node failover stalls (#157).
+    fn acquire_owned_shard(&self, shard: usize) -> Result<(), StoreError> {
+        self.inner.acquire_owned_shard(shard)
+    }
+
     /// Forward the SS-5 failover scope-widening to the inner store; this
     /// decorator adds only metrics, never ownership policy.
     fn extend_owned_shards(&self, shards: &[usize]) {
         self.inner.extend_owned_shards(shards);
+    }
+
+    /// Forward the residual-window ownership re-assertion (ADR-021). MUST be
+    /// forwarded: the trait default returns `true`, which would make the adoption
+    /// planner treat a shard it never actually won as a survivor (#157).
+    fn is_current_owner(&self, shard: usize) -> bool {
+        self.inner.is_current_owner(shard)
+    }
+
+    /// Forward the SS-3 shard-owner directory publish (fenced by the election just
+    /// won). MUST be forwarded: the trait default is a silent no-op, so a request
+    /// reaching a different survivor would mis-resolve to the dead declared owner
+    /// instead of this adopter (#157).
+    fn publish_shard_owner(&self, shard: usize) -> Result<(), StoreError> {
+        self.inner.publish_shard_owner(shard)
     }
 
     async fn read_history(&self, workflow_id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
@@ -360,6 +385,52 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(200), wake.notified())
             .await
             .is_ok()
+    }
+
+    /// Regression guard (#157): the decorator must FORWARD the singular per-shard
+    /// failover-seam methods to its inner store rather than silently inheriting
+    /// the `ReadableEventStore` no-op defaults. The spy returns sentinels distinct
+    /// from those defaults (`Err`/`false`) and records each call, so an unforwarded
+    /// method is caught by both the returned value and the missing recorded call.
+    #[tokio::test]
+    async fn forwards_per_shard_failover_seam_to_inner() -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::ReadableEventStore;
+        use aion_store::testing::ShardSeamSpy;
+
+        let spy = Arc::new(ShardSeamSpy::new());
+        let store = InstrumentedEventStore::new(
+            Arc::clone(&spy) as Arc<dyn aion_store::EventStore>,
+            Metrics::new()?,
+            "default",
+        );
+
+        assert!(
+            store.acquire_owned_shard(0).is_err(),
+            "acquire_owned_shard must forward to the spy's NotOwner sentinel, not the Ok(()) default"
+        );
+        assert!(
+            !store.is_current_owner(1),
+            "is_current_owner must forward to the spy's false, not the `true` default"
+        );
+        assert!(
+            store.publish_shard_owner(2).is_err(),
+            "publish_shard_owner must forward to the spy's NotOwner sentinel, not the Ok(()) default"
+        );
+
+        let calls = spy.calls();
+        assert!(
+            calls.contains(&"acquire_owned_shard:0".to_owned()),
+            "spy did not record acquire_owned_shard:0 — call was not forwarded; saw {calls:?}"
+        );
+        assert!(
+            calls.contains(&"is_current_owner:1".to_owned()),
+            "spy did not record is_current_owner:1 — call was not forwarded; saw {calls:?}"
+        );
+        assert!(
+            calls.contains(&"publish_shard_owner:2".to_owned()),
+            "spy did not record publish_shard_owner:2 — call was not forwarded; saw {calls:?}"
+        );
+        Ok(())
     }
 
     /// LSUB-2 seam: a successful `append_with_outbox` carrying a non-empty outbox

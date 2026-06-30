@@ -123,6 +123,9 @@ haematite = { workspace = true }
 # Deploy e2e builds hostile DEFLATE-bomb archives; PackageBuilder writes
 # Stored entries only, so it cannot produce one.
 zip = { workspace = true }
+# Enable the aion-store recording test doubles (ShardSeamSpy) for the
+# decorator forwarding regression tests.
+aion-store = { version = "0.8.0", path = "../aion-store", features = ["test-support"] }
 
 [features]
 # The ablative stack is the out-of-box default: a stock `aion-server` build links

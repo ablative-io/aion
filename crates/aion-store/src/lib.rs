@@ -32,6 +32,9 @@ pub mod package;
 pub mod run_chain;
 /// Core readable and writable event-store traits.
 pub mod store;
+/// Recording test doubles for store decorators, gated behind `test-support`.
+#[cfg(feature = "test-support")]
+pub mod testing;
 /// Timer persistence records and queries.
 pub mod timer;
 /// Workflow visibility records, predicates, and list filters.
