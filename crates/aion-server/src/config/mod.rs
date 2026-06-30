@@ -401,23 +401,39 @@ pub(crate) const CLUSTER_BROADCAST_CAPACITY_REQUIRED: &str = "websocket.cluster_
 pub struct DeployConfig {
     /// Whether the deploy surface is mounted. Defaults to false.
     pub enabled: bool,
-    /// Upload-size ceiling for `.aion` archives, in bytes. REQUIRED when
-    /// `enabled = true`; no default (house rule) — the operator sizes it for
-    /// their packages.
+    /// Upload-size ceiling for `.aion` archives, in bytes. Defaults to
+    /// [`DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES`] when omitted and `enabled = true`,
+    /// so turning deploy on does not force sizing a security ceiling; the
+    /// operator overrides it for their packages.
     pub max_archive_bytes: Option<u64>,
     /// Inflate ceiling for uploaded archive contents, in bytes: the total
     /// decompressed size of all archive entries an upload may extract to
-    /// (DEFLATE bombs inflate ~1000:1 past `max_archive_bytes`). REQUIRED
-    /// when `enabled = true`; no default (house rule); must be at least
-    /// `max_archive_bytes`.
+    /// (DEFLATE bombs inflate ~1000:1 past `max_archive_bytes`). Defaults to
+    /// [`DEFAULT_DEPLOY_MAX_INFLATED_BYTES`] when omitted and `enabled = true`;
+    /// must be at least `max_archive_bytes`.
     pub max_inflated_bytes: Option<u64>,
 }
 
-/// Operator-facing message for an absent or zero `deploy.max_archive_bytes`.
-pub(crate) const DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED: &str = "deploy.max_archive_bytes is required and has no default when deploy.enabled is true: the archive upload ceiling must be an explicit operator decision sized for the deployment's packages; set deploy.max_archive_bytes (or AION_DEPLOY_MAX_ARCHIVE_BYTES) to a positive number of bytes";
+/// Default `deploy.max_archive_bytes` applied when omitted and deploy is
+/// enabled. A conservative 64 MiB upload ceiling: large enough for real
+/// workflow packages, small enough to bound a single upload. Overridable.
+pub const DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Operator-facing message for an absent or zero `deploy.max_inflated_bytes`.
-pub(crate) const DEPLOY_MAX_INFLATED_BYTES_REQUIRED: &str = "deploy.max_inflated_bytes is required and has no default when deploy.enabled is true: the decompressed-contents ceiling for uploaded archives must be an explicit operator decision (a compressed upload under deploy.max_archive_bytes can inflate ~1000:1); set deploy.max_inflated_bytes (or AION_DEPLOY_MAX_INFLATED_BYTES) to a positive number of bytes no smaller than deploy.max_archive_bytes";
+/// Default `deploy.max_inflated_bytes` applied when omitted and deploy is
+/// enabled. A conservative 256 MiB decompressed-contents ceiling (4x the
+/// archive ceiling) that still hard-caps DEFLATE-bomb inflation. Overridable.
+pub const DEFAULT_DEPLOY_MAX_INFLATED_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Operator-facing message for an explicitly zero `deploy.max_archive_bytes`
+/// (omitting the key uses [`DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES`]; an explicit zero
+/// is a genuine misconfiguration — a zero ceiling refuses every upload).
+pub(crate) const DEPLOY_MAX_ARCHIVE_BYTES_REQUIRED: &str = "deploy.max_archive_bytes must be a positive number of bytes when set (a zero archive ceiling would refuse every upload); omit deploy.max_archive_bytes (or AION_DEPLOY_MAX_ARCHIVE_BYTES) to use the conservative default, or set it to a positive number of bytes sized for the deployment's packages";
+
+/// Operator-facing message for an explicitly zero `deploy.max_inflated_bytes`
+/// (omitting the key uses [`DEFAULT_DEPLOY_MAX_INFLATED_BYTES`]; an explicit
+/// zero is a genuine misconfiguration — a compressed upload under
+/// `deploy.max_archive_bytes` can inflate ~1000:1).
+pub(crate) const DEPLOY_MAX_INFLATED_BYTES_REQUIRED: &str = "deploy.max_inflated_bytes must be a positive number of bytes when set (a compressed upload under deploy.max_archive_bytes can inflate ~1000:1, so a zero inflate ceiling is incoherent); omit deploy.max_inflated_bytes (or AION_DEPLOY_MAX_INFLATED_BYTES) to use the conservative default, or set it to a positive number of bytes no smaller than deploy.max_archive_bytes";
 
 /// Default `query_timeout_ms` applied when omitted, so a minimal/empty config
 /// boots with a sane workflow-query reply deadline instead of failing startup.
@@ -451,9 +467,11 @@ pub struct DevConfig {
 /// that claims pending outbox rows and dispatches them to connected workers is
 /// never spawned, so default server behaviour is unchanged and the live
 /// workflow dispatch path is the only dispatch path. Setting `enabled = true`
-/// commissions the dispatcher and makes every operational knob below REQUIRED —
-/// poll interval, claim batch size, retry budget, and the backoff curve all
-/// come from explicit operator decisions (ADR-001: no assumed defaults).
+/// commissions the dispatcher; its operational knobs below — poll interval,
+/// claim batch size, retry budget, and the backoff curve — are pure tuning, so
+/// each resolves to a sane default when omitted rather than forcing the
+/// operator to hand-author tuning values just to turn the feature on. An
+/// explicitly set value (including a misconfigured `0`) is still validated.
 ///
 /// Scope: this Phase-2 dispatcher dispatches claimed rows and marks each row's
 /// terminal outbox state (done / retry / failed). Routing the worker completion
@@ -465,28 +483,29 @@ pub struct OutboxConfig {
     /// Whether the outbox dispatcher background task is spawned. Defaults to
     /// false, leaving the dispatcher dark and server behaviour unchanged.
     pub enabled: bool,
-    /// Interval between successive claim sweeps, in milliseconds. REQUIRED when
-    /// `enabled = true`; no default (house rule) — the operator sizes the poll
-    /// cadence for their fan-out volume and latency budget.
+    /// Interval between successive claim sweeps, in milliseconds. Defaults to
+    /// [`DEFAULT_OUTBOX_POLL_INTERVAL_MS`] when omitted and `enabled = true`;
+    /// override to size the poll cadence for fan-out volume and latency budget.
     pub poll_interval_ms: Option<u64>,
-    /// Maximum number of pending rows claimed per sweep. REQUIRED when
-    /// `enabled = true`; no default (house rule).
+    /// Maximum number of pending rows claimed per sweep. Defaults to
+    /// [`DEFAULT_OUTBOX_BATCH_SIZE`] when omitted and `enabled = true`.
     pub batch_size: Option<u32>,
-    /// Dispatch attempts before a row is dead-lettered to `failed`. REQUIRED
-    /// when `enabled = true`; no default (house rule). Must be at least one.
+    /// Dispatch attempts before a row is dead-lettered to `failed`. Defaults to
+    /// [`DEFAULT_OUTBOX_MAX_ATTEMPTS`] when omitted and `enabled = true`. Must
+    /// be at least one.
     pub max_attempts: Option<u32>,
-    /// Base retry backoff applied to the first retry, in milliseconds. REQUIRED
-    /// when `enabled = true`; no default (house rule). Successive retries
-    /// multiply this by `backoff_multiplier` raised to the prior-attempt count,
-    /// capped at `backoff_max_ms`.
+    /// Base retry backoff applied to the first retry, in milliseconds. Defaults
+    /// to [`DEFAULT_OUTBOX_BACKOFF_BASE_MS`] when omitted and `enabled = true`.
+    /// Successive retries multiply this by `backoff_multiplier` raised to the
+    /// prior-attempt count, capped at `backoff_max_ms`.
     pub backoff_base_ms: Option<u64>,
     /// Geometric growth factor applied to the backoff per prior attempt.
-    /// REQUIRED when `enabled = true`; no default (house rule). Must be at
-    /// least one so backoff never shrinks.
+    /// Defaults to [`DEFAULT_OUTBOX_BACKOFF_MULTIPLIER`] when omitted and
+    /// `enabled = true`. Must be at least one so backoff never shrinks.
     pub backoff_multiplier: Option<u32>,
-    /// Upper bound on a single retry's backoff, in milliseconds. REQUIRED when
-    /// `enabled = true`; no default (house rule). Must be at least
-    /// `backoff_base_ms`.
+    /// Upper bound on a single retry's backoff, in milliseconds. Defaults to
+    /// [`DEFAULT_OUTBOX_BACKOFF_MAX_MS`] when omitted and `enabled = true`. Must
+    /// be at least `backoff_base_ms`.
     pub backoff_max_ms: Option<u64>,
     /// Interval between live stale-claim reconciliation sweeps, in milliseconds. When both
     /// reconciliation knobs are absent the live sweep remains dark; setting either knob opts into
@@ -547,23 +566,55 @@ pub enum OutboxTransport {
     Liminal,
 }
 
-/// Operator-facing message for an absent or zero `outbox.poll_interval_ms`.
-pub(crate) const OUTBOX_POLL_INTERVAL_REQUIRED: &str = "outbox.poll_interval_ms is required and has no default when outbox.enabled is true: the dispatcher claim cadence must be an explicit operator decision sized for fan-out volume and latency; set outbox.poll_interval_ms (or AION_OUTBOX_POLL_INTERVAL_MS) to a positive number of milliseconds";
+/// Default `outbox.poll_interval_ms` applied when omitted and the dispatcher is
+/// enabled. A tight 20ms claim cadence keeps fan-out latency low; raise it for
+/// lower-rate, larger-batch sweeps.
+pub const DEFAULT_OUTBOX_POLL_INTERVAL_MS: u64 = 20;
 
-/// Operator-facing message for an absent or zero `outbox.batch_size`.
-pub(crate) const OUTBOX_BATCH_SIZE_REQUIRED: &str = "outbox.batch_size is required and has no default when outbox.enabled is true: the per-sweep claim ceiling must be an explicit operator decision; set outbox.batch_size (or AION_OUTBOX_BATCH_SIZE) to a positive integer";
+/// Default `outbox.batch_size` applied when omitted and the dispatcher is
+/// enabled: rows claimed per sweep.
+pub const DEFAULT_OUTBOX_BATCH_SIZE: u32 = 16;
 
-/// Operator-facing message for an absent or zero `outbox.max_attempts`.
-pub(crate) const OUTBOX_MAX_ATTEMPTS_REQUIRED: &str = "outbox.max_attempts is required and has no default when outbox.enabled is true: the dispatch retry budget before dead-lettering must be an explicit operator decision; set outbox.max_attempts (or AION_OUTBOX_MAX_ATTEMPTS) to a positive integer";
+/// Default `outbox.max_attempts` applied when omitted and the dispatcher is
+/// enabled: dispatch attempts before a row is dead-lettered to `failed`.
+pub const DEFAULT_OUTBOX_MAX_ATTEMPTS: u32 = 5;
 
-/// Operator-facing message for an absent or zero `outbox.backoff_base_ms`.
-pub(crate) const OUTBOX_BACKOFF_BASE_REQUIRED: &str = "outbox.backoff_base_ms is required and has no default when outbox.enabled is true: the first-retry backoff must be an explicit operator decision; set outbox.backoff_base_ms (or AION_OUTBOX_BACKOFF_BASE_MS) to a positive number of milliseconds";
+/// Default `outbox.backoff_base_ms` applied when omitted and the dispatcher is
+/// enabled: the first retry's backoff, in milliseconds.
+pub const DEFAULT_OUTBOX_BACKOFF_BASE_MS: u64 = 50;
 
-/// Operator-facing message for an absent or zero `outbox.backoff_multiplier`.
-pub(crate) const OUTBOX_BACKOFF_MULTIPLIER_REQUIRED: &str = "outbox.backoff_multiplier is required and has no default when outbox.enabled is true: the geometric backoff growth factor must be an explicit operator decision and must be at least one so backoff never shrinks; set outbox.backoff_multiplier (or AION_OUTBOX_BACKOFF_MULTIPLIER) to a positive integer";
+/// Default `outbox.backoff_multiplier` applied when omitted and the dispatcher
+/// is enabled: geometric growth factor per prior attempt (must be >= 1).
+pub const DEFAULT_OUTBOX_BACKOFF_MULTIPLIER: u32 = 2;
 
-/// Operator-facing message for an absent or undersized `outbox.backoff_max_ms`.
-pub(crate) const OUTBOX_BACKOFF_MAX_REQUIRED: &str = "outbox.backoff_max_ms is required and has no default when outbox.enabled is true and must be at least outbox.backoff_base_ms: the per-retry backoff ceiling must be an explicit operator decision; set outbox.backoff_max_ms (or AION_OUTBOX_BACKOFF_MAX_MS) to a positive number of milliseconds no smaller than outbox.backoff_base_ms";
+/// Default `outbox.backoff_max_ms` applied when omitted and the dispatcher is
+/// enabled: the per-retry backoff ceiling, in milliseconds.
+pub const DEFAULT_OUTBOX_BACKOFF_MAX_MS: u64 = 1_000;
+
+/// Operator-facing message for an explicitly zero `outbox.poll_interval_ms`
+/// (omitting the key uses [`DEFAULT_OUTBOX_POLL_INTERVAL_MS`]).
+pub(crate) const OUTBOX_POLL_INTERVAL_REQUIRED: &str = "outbox.poll_interval_ms must be a positive number of milliseconds when set (a zero claim cadence is invalid); omit outbox.poll_interval_ms (or AION_OUTBOX_POLL_INTERVAL_MS) to use the default, or set it to a positive number of milliseconds sized for fan-out volume and latency";
+
+/// Operator-facing message for an explicitly zero `outbox.batch_size`
+/// (omitting the key uses [`DEFAULT_OUTBOX_BATCH_SIZE`]).
+pub(crate) const OUTBOX_BATCH_SIZE_REQUIRED: &str = "outbox.batch_size must be a positive integer when set (a zero per-sweep claim ceiling claims nothing); omit outbox.batch_size (or AION_OUTBOX_BATCH_SIZE) to use the default, or set it to a positive integer";
+
+/// Operator-facing message for an explicitly zero `outbox.max_attempts`
+/// (omitting the key uses [`DEFAULT_OUTBOX_MAX_ATTEMPTS`]).
+pub(crate) const OUTBOX_MAX_ATTEMPTS_REQUIRED: &str = "outbox.max_attempts must be a positive integer when set (a zero retry budget dead-letters before the first attempt); omit outbox.max_attempts (or AION_OUTBOX_MAX_ATTEMPTS) to use the default, or set it to a positive integer";
+
+/// Operator-facing message for an explicitly zero `outbox.backoff_base_ms`
+/// (omitting the key uses [`DEFAULT_OUTBOX_BACKOFF_BASE_MS`]).
+pub(crate) const OUTBOX_BACKOFF_BASE_REQUIRED: &str = "outbox.backoff_base_ms must be a positive number of milliseconds when set (a zero first-retry backoff is invalid); omit outbox.backoff_base_ms (or AION_OUTBOX_BACKOFF_BASE_MS) to use the default, or set it to a positive number of milliseconds";
+
+/// Operator-facing message for an explicitly zero `outbox.backoff_multiplier`
+/// (omitting the key uses [`DEFAULT_OUTBOX_BACKOFF_MULTIPLIER`]).
+pub(crate) const OUTBOX_BACKOFF_MULTIPLIER_REQUIRED: &str = "outbox.backoff_multiplier must be at least one when set so backoff never shrinks (a zero multiplier collapses the backoff curve); omit outbox.backoff_multiplier (or AION_OUTBOX_BACKOFF_MULTIPLIER) to use the default, or set it to a positive integer";
+
+/// Operator-facing message for an explicitly undersized `outbox.backoff_max_ms`
+/// (omitting the key uses [`DEFAULT_OUTBOX_BACKOFF_MAX_MS`]; an explicit value
+/// must be at least `outbox.backoff_base_ms`).
+pub(crate) const OUTBOX_BACKOFF_MAX_REQUIRED: &str = "outbox.backoff_max_ms must be at least outbox.backoff_base_ms when set (a ceiling below the base would cap the very first retry below its own backoff); omit outbox.backoff_max_ms (or AION_OUTBOX_BACKOFF_MAX_MS) to use the default, or set it to a positive number of milliseconds no smaller than outbox.backoff_base_ms";
 
 /// Operator-facing message for an absent or zero `outbox.reconcile_interval_ms`.
 pub(crate) const OUTBOX_RECONCILE_INTERVAL_REQUIRED: &str = "outbox.reconcile_interval_ms is required and has no default when live outbox reconciliation is enabled: set both outbox.reconcile_interval_ms and outbox.reconcile_stale_after_ms (or AION_OUTBOX_RECONCILE_INTERVAL_MS / AION_OUTBOX_RECONCILE_STALE_AFTER_MS) to positive millisecond values, or omit both to leave reconciliation disabled";
@@ -686,6 +737,59 @@ impl ServerConfig {
         self.websocket
             .cluster_broadcast_capacity
             .get_or_insert(DEFAULT_CLUSTER_BROADCAST_CAPACITY);
+        self.fill_outbox_defaults();
+        self.fill_deploy_defaults();
+    }
+
+    /// Fill the durable-outbox tuning knobs with sane defaults when the
+    /// dispatcher is enabled but a knob was omitted, so turning the feature on
+    /// does not force hand-authoring pure tuning. Inert while `outbox.enabled`
+    /// is false (the knobs are never read behind the gate). The reconciliation
+    /// pair is intentionally NOT defaulted: when both are absent reconciliation
+    /// stays dark, so forcing a default would silently commission a sweep.
+    /// `get_or_insert` leaves any explicit value (including a misconfigured `0`,
+    /// which [`Self::validate_outbox`] still rejects) untouched.
+    fn fill_outbox_defaults(&mut self) {
+        if !self.outbox.enabled {
+            return;
+        }
+        self.outbox
+            .poll_interval_ms
+            .get_or_insert(DEFAULT_OUTBOX_POLL_INTERVAL_MS);
+        self.outbox
+            .batch_size
+            .get_or_insert(DEFAULT_OUTBOX_BATCH_SIZE);
+        self.outbox
+            .max_attempts
+            .get_or_insert(DEFAULT_OUTBOX_MAX_ATTEMPTS);
+        self.outbox
+            .backoff_base_ms
+            .get_or_insert(DEFAULT_OUTBOX_BACKOFF_BASE_MS);
+        self.outbox
+            .backoff_multiplier
+            .get_or_insert(DEFAULT_OUTBOX_BACKOFF_MULTIPLIER);
+        self.outbox
+            .backoff_max_ms
+            .get_or_insert(DEFAULT_OUTBOX_BACKOFF_MAX_MS);
+    }
+
+    /// Fill the deploy decompression-bomb ceilings with conservative defaults
+    /// when the deploy surface is enabled but a ceiling was omitted, so turning
+    /// the feature on boots rather than refusing for want of a security knob.
+    /// Inert while `deploy.enabled` is false (the ceilings are never read with
+    /// the surface dark). `get_or_insert` leaves any explicit value (including a
+    /// misconfigured `0` or an inflate ceiling below the archive ceiling, both
+    /// still rejected by [`Self::validate`]) untouched.
+    fn fill_deploy_defaults(&mut self) {
+        if !self.deploy.enabled {
+            return;
+        }
+        self.deploy
+            .max_archive_bytes
+            .get_or_insert(DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES);
+        self.deploy
+            .max_inflated_bytes
+            .get_or_insert(DEFAULT_DEPLOY_MAX_INFLATED_BYTES);
     }
 
     fn load_discovered_workflow_packages(
@@ -1235,9 +1339,12 @@ mod duration_millis {
 #[cfg(test)]
 mod tests {
     use super::{
-        CliOverrides, DEFAULT_CLUSTER_BROADCAST_CAPACITY, DEFAULT_EVENT_BROADCAST_CAPACITY,
-        DEFAULT_QUERY_TIMEOUT_MS, ServerConfig, StoreBackend, discover_workflow_packages,
-        merge_workflow_packages,
+        CliOverrides, DEFAULT_CLUSTER_BROADCAST_CAPACITY, DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES,
+        DEFAULT_DEPLOY_MAX_INFLATED_BYTES, DEFAULT_EVENT_BROADCAST_CAPACITY,
+        DEFAULT_OUTBOX_BACKOFF_BASE_MS, DEFAULT_OUTBOX_BACKOFF_MAX_MS,
+        DEFAULT_OUTBOX_BACKOFF_MULTIPLIER, DEFAULT_OUTBOX_BATCH_SIZE, DEFAULT_OUTBOX_MAX_ATTEMPTS,
+        DEFAULT_OUTBOX_POLL_INTERVAL_MS, DEFAULT_QUERY_TIMEOUT_MS, ServerConfig, StoreBackend,
+        discover_workflow_packages, merge_workflow_packages,
     };
 
     #[test]
@@ -1441,12 +1548,12 @@ mod tests {
     }
 
     /// The deploy surface is commissioned explicitly: enabling it without
-    /// the archive ceiling must fail startup naming the key and the
-    /// environment override (the `query_timeout_ms` /
-    /// `event_broadcast_capacity` required-config pattern).
+    /// the archive ceiling is a conservative security default, not a forced
+    /// operator decision: enabling deploy without it must resolve the ceiling
+    /// to [`DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES`] and boot, not fail startup.
     #[test]
-    fn deploy_enabled_without_max_archive_bytes_fails_naming_key_and_env() {
-        let result = ServerConfig::from_slice(
+    fn deploy_enabled_defaults_max_archive_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
             br"
                 [runtime]
                 query_timeout_ms = 10000
@@ -1458,19 +1565,19 @@ mod tests {
                 [deploy]
                 enabled = true
             ",
-        );
+        )?;
 
-        let message = result
-            .err()
-            .map_or_else(String::new, |error| error.to_string());
-        assert!(
-            message.contains("deploy.max_archive_bytes"),
-            "validation message must name the missing key: {message}"
+        assert_eq!(
+            config.deploy.max_archive_bytes,
+            Some(DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES),
+            "omitted max_archive_bytes must resolve to the conservative default"
         );
-        assert!(
-            message.contains("AION_DEPLOY_MAX_ARCHIVE_BYTES"),
-            "validation message must name the environment override: {message}"
+        assert_eq!(
+            config.deploy.max_inflated_bytes,
+            Some(DEFAULT_DEPLOY_MAX_INFLATED_BYTES),
+            "omitted max_inflated_bytes must resolve to the conservative default"
         );
+        Ok(())
     }
 
     #[test]
@@ -1499,13 +1606,13 @@ mod tests {
         );
     }
 
-    /// The inflate ceiling is commissioned alongside the upload ceiling:
-    /// enabling deploy without `max_inflated_bytes` must fail startup naming
-    /// the key and the environment override (same pattern as
-    /// `max_archive_bytes`).
+    /// The inflate ceiling defaults independently of an explicit archive
+    /// ceiling: setting only `max_archive_bytes` must resolve the inflate
+    /// ceiling to [`DEFAULT_DEPLOY_MAX_INFLATED_BYTES`] (which exceeds a 16 MiB
+    /// archive, so the invariant holds) and boot.
     #[test]
-    fn deploy_enabled_without_max_inflated_bytes_fails_naming_key_and_env() {
-        let result = ServerConfig::from_slice(
+    fn deploy_enabled_defaults_max_inflated_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
             br"
                 [runtime]
                 query_timeout_ms = 10000
@@ -1518,19 +1625,19 @@ mod tests {
                 enabled = true
                 max_archive_bytes = 16777216
             ",
-        );
+        )?;
 
-        let message = result
-            .err()
-            .map_or_else(String::new, |error| error.to_string());
-        assert!(
-            message.contains("deploy.max_inflated_bytes"),
-            "validation message must name the missing key: {message}"
+        assert_eq!(
+            config.deploy.max_archive_bytes,
+            Some(16_777_216),
+            "explicit max_archive_bytes must be left untouched"
         );
-        assert!(
-            message.contains("AION_DEPLOY_MAX_INFLATED_BYTES"),
-            "validation message must name the environment override: {message}"
+        assert_eq!(
+            config.deploy.max_inflated_bytes,
+            Some(DEFAULT_DEPLOY_MAX_INFLATED_BYTES),
+            "omitted max_inflated_bytes must resolve to the conservative default"
         );
+        Ok(())
     }
 
     #[test]
@@ -2028,32 +2135,138 @@ mod tests {
     }
 
     #[test]
-    fn outbox_enabled_without_poll_interval_is_rejected() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut config = outbox_enabled_base();
-        config.outbox.poll_interval_ms = None;
-        let error = config
-            .validate()
-            .err()
-            .ok_or("enabled outbox without poll interval must fail")?;
-        assert!(
-            error.to_string().contains("outbox.poll_interval_ms"),
-            "error must name the missing key: {error}"
+    fn outbox_enabled_defaults_poll_interval() -> Result<(), Box<dyn std::error::Error>> {
+        // Enabling the dispatcher but omitting the poll cadence must resolve it
+        // to the default and boot, not fail startup — the cadence is pure
+        // tuning, not a forced operator decision.
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [outbox]
+                enabled = true
+            ",
+        )?;
+        assert_eq!(
+            config.outbox.poll_interval_ms,
+            Some(DEFAULT_OUTBOX_POLL_INTERVAL_MS),
+            "omitted poll_interval_ms must resolve to the default"
         );
         Ok(())
     }
 
     #[test]
-    fn outbox_enabled_without_max_attempts_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    fn outbox_enabled_defaults_max_attempts() -> Result<(), Box<dyn std::error::Error>> {
+        // Setting a tuning knob explicitly but omitting the retry budget must
+        // leave the explicit knob untouched and default only the omitted one.
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [outbox]
+                enabled = true
+                poll_interval_ms = 250
+            ",
+        )?;
+        assert_eq!(
+            config.outbox.poll_interval_ms,
+            Some(250),
+            "explicit poll_interval_ms must be left untouched"
+        );
+        assert_eq!(
+            config.outbox.max_attempts,
+            Some(DEFAULT_OUTBOX_MAX_ATTEMPTS),
+            "omitted max_attempts must resolve to the default"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_enabled_with_only_enabled_flag_uses_all_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Headline conditional-default contract: an outbox section with nothing
+        // but `enabled = true` validates with every tuning knob resolved to its
+        // default. The reconciliation pair stays dark (both absent), as before.
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [outbox]
+                enabled = true
+            ",
+        )?;
+        assert!(config.outbox.enabled);
+        assert_eq!(
+            config.outbox.poll_interval_ms,
+            Some(DEFAULT_OUTBOX_POLL_INTERVAL_MS)
+        );
+        assert_eq!(config.outbox.batch_size, Some(DEFAULT_OUTBOX_BATCH_SIZE));
+        assert_eq!(
+            config.outbox.max_attempts,
+            Some(DEFAULT_OUTBOX_MAX_ATTEMPTS)
+        );
+        assert_eq!(
+            config.outbox.backoff_base_ms,
+            Some(DEFAULT_OUTBOX_BACKOFF_BASE_MS)
+        );
+        assert_eq!(
+            config.outbox.backoff_multiplier,
+            Some(DEFAULT_OUTBOX_BACKOFF_MULTIPLIER)
+        );
+        assert_eq!(
+            config.outbox.backoff_max_ms,
+            Some(DEFAULT_OUTBOX_BACKOFF_MAX_MS)
+        );
+        // Reconciliation is not force-defaulted: both knobs stay absent so the
+        // live sweep remains dark.
+        assert_eq!(config.outbox.reconcile_interval_ms, None);
+        assert_eq!(config.outbox.reconcile_stale_after_ms, None);
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_enabled_zero_poll_interval_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        // An explicit zero is a misconfiguration the default never masks:
+        // `get_or_insert` leaves `Some(0)` untouched and validate rejects it.
         let mut config = outbox_enabled_base();
-        config.outbox.max_attempts = None;
+        config.outbox.poll_interval_ms = Some(0);
         let error = config
             .validate()
             .err()
-            .ok_or("enabled outbox without max attempts must fail")?;
+            .ok_or("enabled outbox with zero poll interval must fail")?;
+        assert!(
+            error.to_string().contains("outbox.poll_interval_ms"),
+            "error must name the zero-valued key: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn outbox_enabled_zero_max_attempts_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = outbox_enabled_base();
+        config.outbox.max_attempts = Some(0);
+        let error = config
+            .validate()
+            .err()
+            .ok_or("enabled outbox with zero max attempts must fail")?;
         assert!(
             error.to_string().contains("outbox.max_attempts"),
-            "error must name the missing key: {error}"
+            "error must name the zero-valued key: {error}"
         );
         Ok(())
     }

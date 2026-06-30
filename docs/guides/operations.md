@@ -92,8 +92,8 @@ heartbeat_window = 30000                # default (ms); heartbeat cadence
 enabled = false                         # default: surface dark — /deploy/*
                                         # not mounted, gRPC DeployService
                                         # answers Unimplemented
-max_archive_bytes = 16777216            # REQUIRED when enabled; no default
-max_inflated_bytes = 67108864           # REQUIRED when enabled; no default;
+max_archive_bytes = 16777216            # default 64 MiB when enabled; override
+max_inflated_bytes = 67108864           # default 256 MiB when enabled; when set,
                                         # must be >= max_archive_bytes
 ```
 

@@ -423,8 +423,9 @@ query_timeout_ms = 10000
 event_broadcast_capacity = 1024
 
 [deploy]
-# Runtime package deploy/route/unload. Dark by default; both ceilings are
-# REQUIRED when enabled, and max_inflated_bytes must be >= max_archive_bytes.
+# Runtime package deploy/route/unload. Dark by default; when enabled both
+# ceilings default to conservative limits (64 MiB archive / 256 MiB inflated),
+# so you can omit them. When set, max_inflated_bytes must be >= max_archive_bytes.
 enabled = true
 max_archive_bytes = 16777216        # 16 MiB upload ceiling
 max_inflated_bytes = 67108864       # 64 MiB decompressed-contents ceiling

@@ -244,8 +244,8 @@ The relevant sections (`crates/aion-server/src/config/{mod,env}.rs`):
 | Key | Type | Env | Notes |
 |---|---|---|---|
 | `enabled` | bool | `AION_DEPLOY_ENABLED` | Dark by default. `aion dev` pushes rebuilt packages through this RPC, so it must be **on** for the hot-load loop to work. |
-| `max_archive_bytes` | u64 | `AION_DEPLOY_MAX_ARCHIVE_BYTES` | **REQUIRED when enabled** (ADR-001). Upload ceiling. |
-| `max_inflated_bytes` | u64 | `AION_DEPLOY_MAX_INFLATED_BYTES` | **REQUIRED when enabled**, ≥ `max_archive_bytes`. Guards a ~1000:1 zip-bomb. |
+| `max_archive_bytes` | u64 | `AION_DEPLOY_MAX_ARCHIVE_BYTES` | Defaults to 64 MiB when enabled; override to size for your packages. Upload ceiling. |
+| `max_inflated_bytes` | u64 | `AION_DEPLOY_MAX_INFLATED_BYTES` | Defaults to 256 MiB when enabled; when set, ≥ `max_archive_bytes`. Guards a ~1000:1 zip-bomb. |
 
 ---
 
