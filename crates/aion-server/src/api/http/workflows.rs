@@ -169,14 +169,23 @@ pub(crate) async fn describe_workflow(
     describe_response_to_dashboard(&response).map(Json)
 }
 
-/// List the namespaces the caller is authorized for, sorted.
+/// List the namespaces the caller can select, sorted.
 ///
 /// Backs the dashboard's namespace discovery (`client.listNamespaces()` ->
-/// `GET /namespaces`). The server returns exactly the caller's authorized
-/// namespaces, mirroring the auth model.
+/// `GET /namespaces`). For an enumerated caller (a token/header grant) the
+/// server returns exactly that caller's authorized namespaces, mirroring the
+/// auth model. An OPERATOR (auth-off single-tenant mode) holds all-namespace
+/// access via [`CallerIdentity::all_namespaces`] with an EMPTY explicit set, so
+/// returning that set would leave the console with "no namespaces"; instead
+/// surface the server's configured namespace so the operator has a concrete
+/// namespace to select and operate in.
 pub(crate) async fn list_namespaces(
+    State(state): State<ServerState>,
     HttpCaller(caller): HttpCaller,
 ) -> Result<Json<Vec<String>>, HttpWireError> {
+    if caller.all_namespaces() {
+        return Ok(Json(vec![state.runtime_config().default_namespace.clone()]));
+    }
     Ok(Json(caller.namespaces()))
 }
 
@@ -544,6 +553,50 @@ mod tests {
         );
         let namespaces: Vec<String> = serde_json::from_str(&body)?;
         assert_eq!(namespaces, EXPECTED_NAMESPACES);
+        Ok(())
+    }
+
+    /// Regression ("No namespaces available"): the auth-off operator holds
+    /// all-namespace access via `all_namespaces()` with an EMPTY explicit set,
+    /// so `GET /namespaces` must surface the server's configured namespace (so
+    /// the console selector is populated) rather than the empty grant set.
+    #[tokio::test]
+    async fn auth_off_operator_namespace_list_is_the_configured_namespace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = runtime_config();
+        config.auth.enabled = false;
+        let expected = vec![config.default_namespace.clone()];
+        let store: Arc<dyn aion_store::EventStore> = Arc::new(aion_store::InMemoryStore::default());
+        let engine = Arc::new(
+            aion::EngineBuilder::new()
+                .store_arc(store)
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .build()
+                .await?,
+        );
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(StaticWorkflowNamespaces::default()),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(server_state(resolver, config).await?);
+
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/namespaces")
+                    .method("GET")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let namespaces: Vec<String> = read_json(response).await?;
+        assert_eq!(
+            namespaces, expected,
+            "auth-off operator must see the configured namespace, not an empty list"
+        );
         Ok(())
     }
 
