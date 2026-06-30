@@ -24,6 +24,8 @@ pub mod conformance;
 pub mod error;
 /// In-memory reference implementation of the store contracts.
 pub mod memory;
+/// Durable, minted-on-use namespace registry records and contract.
+pub mod namespace;
 /// Durable outbox contract for store-backed fan-out dispatch.
 pub mod outbox;
 /// Deployed-package persistence records and contract.
@@ -46,6 +48,10 @@ pub use aion_core::{
 };
 pub use error::StoreError;
 pub use memory::InMemoryStore;
+pub use namespace::{
+    MintOutcome, NamespaceConfig, NamespaceOrigin, NamespacePlacement, NamespaceRecord,
+    NamespaceState, NamespaceStore,
+};
 pub use outbox::{ClaimScope, DEFAULT_OUTBOX_ROUTE, OutboxRow, OutboxStatus, OutboxStore};
 pub use package::{PackageRecord, PackageRouteRecord, PackageStore};
 pub use store::{EventStore, ReadableEventStore, RunSummary, WritableEventStore, WriteToken};
