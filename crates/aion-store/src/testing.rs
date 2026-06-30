@@ -2,12 +2,16 @@
 //!
 //! [`ShardSeamSpy`] is a thin recording wrapper over [`InMemoryStore`]: every
 //! non-seam [`crate::EventStore`] method delegates to the inner store (so the spy is a
-//! correct, panic-free store), while the six per-shard owned-shard seam methods
-//! are overridden to RECORD their calls and return DISTINCTIVE values. The three
-//! singular failover-seam methods (`acquire_owned_shard`, `is_current_owner`,
-//! `publish_shard_owner`) return sentinels that differ from the trait's default
-//! no-op values, so a decorator that silently inherits the defaults instead of
-//! forwarding is unambiguously detectable.
+//! correct, panic-free store), while every DEFAULT-BODIED seam method — the six
+//! per-shard owned-shard seams on [`ReadableEventStore`] AND the two outbox-recovery
+//! seams on [`WritableEventStore`] (`rearm_outbox_pending`, `settle_outbox_row_cancelled`)
+//! — is overridden to RECORD its call and return a DISTINCTIVE value. The singular
+//! failover seams (`acquire_owned_shard`, `is_current_owner`, `publish_shard_owner`)
+//! and `settle_outbox_row_cancelled` return sentinels that differ from the trait's
+//! silent no-op defaults, so a decorator that inherits a default instead of
+//! forwarding is unambiguously detectable by BOTH the returned value and the
+//! missing recorded call (this is exactly the #157-class hazard the spy exists to
+//! catch).
 
 use std::sync::{Arc, Mutex};
 
@@ -170,6 +174,25 @@ impl WritableEventStore for ShardSeamSpy {
         self.inner
             .append_with_outbox(token, workflow_id, events, expected_seq, outbox_rows)
             .await
+    }
+
+    /// Record + report success. The trait default REFUSES a non-empty re-arm, so
+    /// a decorator that fails to forward (hitting that default) is caught by the
+    /// missing recorded call.
+    async fn rearm_outbox_pending(&self, rows: &[OutboxRow]) -> Result<(), StoreError> {
+        self.record(format!("rearm_outbox_pending:{}", rows.len()));
+        Ok(())
+    }
+
+    /// Record + return an `Err` sentinel distinct from the trait's silent `Ok(())`
+    /// no-op default, so a decorator that drops this seam — the #157-class hazard
+    /// that strands cancelled fan-out rows — is caught by BOTH the returned value
+    /// and the missing recorded call.
+    async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
+        self.record(format!("settle_outbox_row_cancelled:{dispatch_key}"));
+        Err(StoreError::Backend(String::from(
+            "ShardSeamSpy::settle_outbox_row_cancelled sentinel",
+        )))
     }
 }
 
