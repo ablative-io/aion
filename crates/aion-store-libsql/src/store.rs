@@ -309,6 +309,10 @@ impl OutboxStore for LibSqlStore {
     async fn fail_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {
         crate::outbox::fail_outbox_row(self.connection(), dispatch_key).await
     }
+
+    async fn count_inflight_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError> {
+        crate::outbox::count_inflight_outbox_rows(self.connection(), namespace).await
+    }
 }
 
 #[async_trait]

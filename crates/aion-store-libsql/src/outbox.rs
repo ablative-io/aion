@@ -55,6 +55,12 @@ const NODE_CLAUSE_UNPINNED_ONLY: &str = " AND node IS NULL";
 const CLAIM_ROW_SQL: &str = "
 UPDATE outbox SET status = 'claimed', claimed_at = ?2 WHERE dispatch_key = ?1 AND status = 'pending'";
 
+// In-flight count (CP2-Q1.5): rows in this namespace that are dispatched-but-not-terminal, i.e.
+// `pending` OR `claimed`. Terminal rows (`done`, `failed`, `cancelled`) are excluded by the IN list,
+// and the predicate is strictly scoped by `namespace = ?1` so no other namespace bleeds in.
+const COUNT_INFLIGHT_OUTBOX_SQL: &str = "
+SELECT COUNT(*) FROM outbox WHERE namespace = ?1 AND status IN ('pending', 'claimed')";
+
 const SELECT_STALE_CLAIMED_SQL: &str = "
 SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id, namespace, task_queue, node
 FROM outbox
@@ -494,6 +500,38 @@ pub(crate) async fn outbox_row_state(
             .map_err(|_| StoreError::Backend(format!("outbox attempt out of range: {attempt}")))?,
         visible_after: decode_instant(&visible_after)?,
     }))
+}
+
+/// Count the in-flight (`pending` OR `claimed`) outbox rows for `namespace` (CP2-Q1.5).
+///
+/// Pushes the status and namespace predicate into a single `COUNT(*)` so the count is computed
+/// in-engine. A stuck-`claimed` row (dispatched but `mark_done` never landed) is still `claimed`
+/// and so still counts; terminal rows do not.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when
+/// the engine returns a negative count.
+pub(crate) async fn count_inflight_outbox_rows(
+    conn: &Connection,
+    namespace: &str,
+) -> Result<u64, StoreError> {
+    let mut rows = conn
+        .query(COUNT_INFLIGHT_OUTBOX_SQL, params![namespace.to_string()])
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    else {
+        return Ok(0);
+    };
+    let count: i64 = row
+        .get(0)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    u64::try_from(count)
+        .map_err(|_| StoreError::Serialization(format!("outbox in-flight count negative: {count}")))
 }
 
 fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {

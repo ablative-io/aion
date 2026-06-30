@@ -612,6 +612,72 @@ async fn unscoped_claim_still_claims_any_row() -> Result<(), StoreError> {
     Ok(())
 }
 
+#[tokio::test]
+async fn count_inflight_outbox_rows_counts_pending_and_claimed_per_namespace()
+-> Result<(), StoreError> {
+    // CP2-Q1.5: the durable in-flight count is exactly Pending + Claimed for the queried namespace.
+    let store = open_test_store("count-inflight").await?;
+
+    // Namespace "alpha": one Pending, one Claimed, one Done, one Failed.
+    let alpha_pending =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha");
+    let alpha_to_claim =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha");
+    let alpha_done =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha");
+    let alpha_failed =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha");
+    // Namespace "beta": one Pending only.
+    let beta_pending =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("beta");
+
+    store
+        .append_outbox_batch(&[
+            alpha_pending,
+            alpha_to_claim.clone(),
+            alpha_done.clone(),
+            alpha_failed.clone(),
+            beta_pending,
+        ])
+        .await?;
+
+    // Claim every due row to Claimed, then drive two of alpha's rows to terminal states. The
+    // remaining alpha row stays Claimed (the stuck-Claimed / mark_done-never-landed case) and the
+    // beta row also stays Claimed.
+    let claimed = store.claim_outbox_rows(100).await?;
+    assert_eq!(claimed.len(), 5, "all five rows are due and were claimed");
+    store.complete_outbox_row(&alpha_done.dispatch_key).await?;
+    store.fail_outbox_row(&alpha_failed.dispatch_key).await?;
+
+    // alpha: original Pending (now Claimed) + alpha_to_claim (Claimed) + alpha_done (Done) +
+    // alpha_failed (Failed). In-flight = the two non-terminal (now Claimed) rows = 2. The Done and
+    // Failed rows must NOT count; the stuck-Claimed row MUST count.
+    assert_eq!(store.count_inflight_outbox_rows("alpha").await?, 2);
+    // beta: its single row stayed Claimed (stuck-Claimed) and counts; isolation means alpha's rows
+    // never bleed into beta.
+    assert_eq!(store.count_inflight_outbox_rows("beta").await?, 1);
+    // A namespace with no rows counts zero.
+    assert_eq!(store.count_inflight_outbox_rows("gamma").await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn count_inflight_outbox_rows_excludes_terminal_only_namespace() -> Result<(), StoreError> {
+    // A namespace whose only rows are Done/Failed has zero in-flight rows.
+    let store = open_test_store("count-inflight-terminal").await?;
+    let done = pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("ns");
+    let failed = pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("ns");
+    store
+        .append_outbox_batch(&[done.clone(), failed.clone()])
+        .await?;
+    store.claim_outbox_rows(100).await?;
+    store.complete_outbox_row(&done.dispatch_key).await?;
+    store.fail_outbox_row(&failed.dispatch_key).await?;
+
+    assert_eq!(store.count_inflight_outbox_rows("ns").await?, 0);
+    Ok(())
+}
+
 async fn open_test_store(name: &str) -> Result<LibSqlStore, StoreError> {
     LibSqlStore::open(unique_temp_path(name)).await
 }

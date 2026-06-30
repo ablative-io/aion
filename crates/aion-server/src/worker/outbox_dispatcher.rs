@@ -838,6 +838,13 @@ mod tests {
                 self.other_terminal.store(true, Ordering::SeqCst);
                 Ok(())
             }
+            async fn count_inflight_outbox_rows(
+                &self,
+                _namespace: &str,
+            ) -> Result<u64, StoreError> {
+                // The single staged row is in-flight (Pending or stuck-Claimed) until completed.
+                Ok(u64::from(!self.completed.load(Ordering::SeqCst)))
+            }
         }
 
         let workflow_id = WorkflowId::new_v4();
