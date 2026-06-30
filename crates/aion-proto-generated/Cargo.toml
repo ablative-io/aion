@@ -9,8 +9,13 @@ repository.workspace = true
 description = "Machine-generated tonic/prost gRPC stubs for Aion, isolated from the hand-written aion-proto crate so its relaxed lint policy lives in Cargo.toml [lints] rather than in-source #![allow]."
 
 [lints.clippy]
+# all/pedantic stay allowed: this crate is machine-generated tonic/prost output.
 all = { level = "allow", priority = -1 }
 pedantic = { level = "allow", priority = -1 }
+# Re-assert the restriction bar dropped by the all/pedantic overrides — generated output is panic-free.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
 [lints.rust]
 missing_docs = "allow"
