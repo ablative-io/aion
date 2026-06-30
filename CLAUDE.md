@@ -20,7 +20,7 @@ The crate / package family:
 - **`aion-nif`** — Rust helper for writing and registering the NIFs Gleam activities call.
 - **`aion-proto`** / **`aion-server`** — the wire contract and the server library (HTTP/gRPC/WebSocket, worker protocol, multi-tenancy). Lib-only: the server runs as `aion server` via `aion_server::run`.
 - **`aion-worker[-python/-typescript]`**, **`aion-client[-python/-typescript]`** — remote worker and caller SDKs.
-- **`aion_flow`** (Gleam, Hex) — the typed authoring SDK. **`aion-dashboard`** — the React monitoring UI.
+- **`aion_flow`** (Gleam, Hex) — the typed authoring SDK. **`aion-ops-console`** — the React ops console UI.
 
 beamr is reached through a single boundary module (`runtime`) inside the `aion` crate; no other module imports beamr.
 

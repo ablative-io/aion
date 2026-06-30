@@ -13,8 +13,9 @@ use std::time::Duration;
 use aion_server::ServerState;
 use aion_server::api::deploy_grpc::deploy_service;
 use aion_server::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+    NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig, WebSocketConfig,
+    WorkerConfig,
 };
 use serde_json::{Value, json};
 
@@ -84,8 +85,8 @@ fn runtime_config() -> RuntimeConfig {
             jwks_url: Some(SECRET.to_owned()),
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

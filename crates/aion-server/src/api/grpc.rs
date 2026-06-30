@@ -1036,8 +1036,8 @@ mod tests {
     use crate::{
         NamespaceResolver,
         config::{
-            AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-            ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig,
+            AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig,
+            NamespaceConfig, NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig,
             WebSocketConfig, WorkerConfig,
         },
     };
@@ -1211,8 +1211,8 @@ mod tests {
                 jwks_url: Some(TOKEN.to_owned()),
                 jwks_refresh_seconds: 300,
             },
-            dashboard: DashboardConfig {
-                source: DashboardAssetSource::Embedded,
+            ops_console: OpsConsoleConfig {
+                source: OpsConsoleAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,

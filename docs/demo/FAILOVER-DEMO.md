@@ -147,12 +147,12 @@ Activity durations, workflow counts, store latencies — per namespace/activity.
 
 ## Web dashboard (the `/failover` view)
 
-A React dashboard ships in `apps/aion-dashboard`; its `/failover` route is the
+A React ops console ships in `apps/aion-ops-console`; its `/failover` route is the
 visual front-end for this demo — node-liveness grid, owner/adoption strip,
 fan-out bar, the headline exactly-once counter, and a live event log.
 
 ```bash
-cd apps/aion-dashboard
+cd apps/aion-ops-console
 # Defaults already target http://127.0.0.1:8090 + ws://127.0.0.1:8090 (demo node 0),
 # so for the stock single-laptop demo only the namespace grant is required:
 VITE_AION_NAMESPACES=default bun run dev
@@ -196,11 +196,11 @@ same port as the API. No vite server, no static host: one process.
   The dashboard is then at `http://<listen_address>/` (e.g. `http://127.0.0.1:8090/`).
 
 There is no cargo feature: the ops console is part of the product and the committed
-`crates/aion-server/dashboard-embed/` bundle is embedded into every build. To refresh
-the bundle after changing the dashboard source, run `cargo xtask build-dashboard`
+`crates/aion-server/ops-console-embed/` bundle is embedded into every build. To refresh
+the bundle after changing the ops-console source, run `cargo xtask build-ops-console`
 (regen wire types + bun build + sync) and commit the result; `cargo xtask
-verify-dashboard` (run in CI) fails if the committed bundle is stale. See
-`apps/aion-dashboard/README.md` for the pipeline and CI guards.
+verify-ops-console` (run in CI) fails if the committed bundle is stale. See
+`apps/aion-ops-console/README.md` for the pipeline and CI guards.
 
 ## Components
 

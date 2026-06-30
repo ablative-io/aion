@@ -54,12 +54,12 @@ tokio-stream = { workspace = true }
 # failures; same version axum already uses internally.
 http-body-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }
-# Provides the CorsLayer the public HTTP router applies so a browser dashboard
+# Provides the CorsLayer the public HTTP router applies so a browser ops console
 # served from a different origin (e.g. the Vite dev server) can call the API.
 # CORS is config-driven and secure-by-default: with no configured origins the
 # layer is not installed and no cross-origin request is allowed.
 tower-http = { workspace = true }
-# Embeds the built dashboard bundle (the committed `dashboard-embed/` bundle)
+# Embeds the built ops-console bundle (the committed `ops-console-embed/` bundle)
 # into the binary. ALWAYS on — the ops console is part of the product, so a plain
 # `cargo build -p aion-server` ships the real web UI at `/`. There is no cargo
 # feature: the bundle is committed and rust_embed serves it unconditionally.

@@ -3,7 +3,7 @@
 The Aion server **library**: HTTP, gRPC, WebSocket, and worker-protocol
 endpoints for Aion workflows. The crate wraps the transport-agnostic engine
 with API handlers, namespace isolation, observability, shutdown handling,
-dashboard assets, and remote-worker task dispatch.
+ops-console assets, and remote-worker task dispatch.
 
 This crate ships no binary. To **run** an Aion server, install the CLI and
 use the `server` subcommand:

@@ -93,7 +93,7 @@ teardown() {
 trap teardown EXIT
 
 # ----------------------------------------------------------------------------
-say "build (dashboard bundle + aion cluster binary + worker + packager)"
+say "build (ops-console bundle + aion cluster binary + worker + packager)"
 # Build the embedded console FIRST, with the demo's namespace grant baked in so the
 # console's REST/WS calls carry x-aion-namespaces (without it the server replies
 # namespace_denied and the UI shows "namespaces unavailable"). No deploy grant is
@@ -102,19 +102,19 @@ say "build (dashboard bundle + aion cluster binary + worker + packager)"
 # server-side at the handshake — the console discovers its deploy capability at
 # runtime via GET /whoami. API/WS base is left unset = same origin, so each node
 # serves a console that talks to ITSELF (correct for the failover own-read view).
-# Optional: refresh the committed dashboard-embed/ bundle with this demo's baked
-# VITE config. The dashboard is ALWAYS embedded (the committed bundle ships in
+# Optional: refresh the committed ops-console-embed/ bundle with this demo's baked
+# VITE config. The ops console is ALWAYS embedded (the committed bundle ships in
 # every build), so if bun is absent the build below still serves the real console
 # from the committed bundle — just without these demo-specific VITE defaults.
-( cd "$ROOT" && VITE_AION_NAMESPACES=default VITE_AION_SUBJECT=operator cargo xtask build-dashboard ) \
-  || note "dashboard bundle rebuild skipped/failed (need bun) — nodes serve the committed bundle"
-# The dashboard is always embedded (rust_embed over the committed dashboard-embed/),
+( cd "$ROOT" && VITE_AION_NAMESPACES=default VITE_AION_SUBJECT=operator cargo xtask build-ops-console ) \
+  || note "ops-console bundle rebuild skipped/failed (need bun) — nodes serve the committed bundle"
+# The ops console is always embedded (rust_embed over the committed ops-console-embed/),
 # so each node serves the real ops console at its HTTP port with no extra feature.
 ( cd "$ROOT" && cargo build -p aion-cli --features haematite-backend,liminal-transport ) \
   || die "aion CLI build failed"
 ( cd "$WORKER_DIR" && cargo build ) || die "$WORKER_NAME build failed"
 ( cd "$PACKAGER_DIR" && cargo build ) || die "fleet-packager build failed"
-ok "built aion (+haematite-backend,+liminal-transport,+embedded dashboard), $WORKER_NAME, packager"
+ok "built aion (+haematite-backend,+liminal-transport,+embedded ops console), $WORKER_NAME, packager"
 
 # Real-AI worker preflight: the Norn binary must exist and be logged in (the
 # project uses the ChatGPT OAuth login, not an API key), or every fan:N step
@@ -226,7 +226,7 @@ note ""
 note "WATCH progress (per-ordinal terminals climb 0 -> $FAN_OUT over ~tens of seconds):"
 note "  watch -n1 '$AION describe $WORKLOAD_ID --endpoint $OWNER_GRPC | grep -c ActivityCompleted'"
 note ""
-note "STATUS surfaces a dashboard can poll (see docs/demo/FAILOVER-DEMO.md):"
+note "STATUS surfaces an ops console can poll (see docs/demo/FAILOVER-DEMO.md):"
 note "  node liveness : curl -s http://127.0.0.1:$(http_port 0)/health/live"
 note "  metrics       : curl -s http://127.0.0.1:$(http_port 0)/metrics"
 note "  workflow list : $AION list --endpoint $OWNER_GRPC"

@@ -67,8 +67,9 @@ pub struct ServerConfig {
     pub namespaces: NamespacesConfig,
     /// Optional TLS material for transports that require it.
     pub tls: Option<TlsConfig>,
-    /// Static dashboard asset bundle location.
-    pub dashboard: DashboardConfig,
+    /// Static ops-console asset bundle location.
+    #[serde(alias = "dashboard")]
+    pub ops_console: OpsConsoleConfig,
     /// Namespace resolver construction mode retained for existing transports.
     pub namespace: NamespaceConfig,
     /// Remote-worker heartbeat policy.
@@ -300,17 +301,17 @@ pub struct TlsConfig {
     pub private_key_path: PathBuf,
 }
 
-/// Static dashboard asset configuration.
+/// Static ops-console asset configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct DashboardConfig {
+pub struct OpsConsoleConfig {
     /// Operator-selected bundle source.
-    pub source: DashboardAssetSource,
+    pub source: OpsConsoleAssetSource,
 }
 
-/// Static dashboard bundle source.
+/// Static ops-console bundle source.
 #[derive(Clone, Debug, Deserialize)]
-pub enum DashboardAssetSource {
+pub enum OpsConsoleAssetSource {
     /// Serve the built bundle from an operator-supplied directory.
     FileSystem {
         /// Directory containing `index.html` and built asset files.
@@ -662,8 +663,8 @@ pub struct RuntimeConfig {
     pub tls: Option<TlsConfig>,
     /// Authentication configuration shared by transports.
     pub auth: AuthConfig,
-    /// Dashboard asset location.
-    pub dashboard: DashboardConfig,
+    /// Ops-console asset location.
+    pub ops_console: OpsConsoleConfig,
     /// Namespace resolver construction mode.
     pub namespace: NamespaceConfig,
     /// Remote worker heartbeat configuration.
@@ -839,7 +840,7 @@ impl ServerConfig {
             },
             tls: self.tls,
             auth: self.auth,
-            dashboard: self.dashboard,
+            ops_console: self.ops_console,
             namespace: self.namespace,
             worker: self.worker,
             websocket: self.websocket,
@@ -940,9 +941,9 @@ impl ServerConfig {
         } else if self.store.cluster.is_some() {
             return config_error("store.cluster is only valid when store.backend is haematite");
         }
-        if let DashboardAssetSource::FileSystem { asset_path } = &self.dashboard.source {
+        if let OpsConsoleAssetSource::FileSystem { asset_path } = &self.ops_console.source {
             if asset_path.as_os_str().is_empty() {
-                return config_error("dashboard.source.FileSystem.asset_path must not be empty");
+                return config_error("ops_console.source.FileSystem.asset_path must not be empty");
             }
         }
         if let NamespaceMode::SingleTenant { namespace } = &self.namespace.mode {
@@ -1203,10 +1204,10 @@ impl Default for ListenConfig {
     }
 }
 
-impl Default for DashboardConfig {
+impl Default for OpsConsoleConfig {
     fn default() -> Self {
         Self {
-            source: DashboardAssetSource::Embedded,
+            source: OpsConsoleAssetSource::Embedded,
         }
     }
 }
@@ -2008,6 +2009,57 @@ mod tests {
             config.authoring.project_root.as_deref(),
             Some(std::path::Path::new("/opt/project"))
         );
+        Ok(())
+    }
+
+    /// The config field renamed `dashboard` -> `ops_console` carries a serde
+    /// alias so existing `[dashboard]` TOML still parses (non-breaking rename).
+    #[test]
+    fn legacy_dashboard_section_alias_still_parses() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [dashboard]
+                source = { FileSystem = { asset_path = "/srv/aion/ui" } }
+            "#,
+        )?;
+        match &config.ops_console.source {
+            super::OpsConsoleAssetSource::FileSystem { asset_path } => {
+                assert_eq!(asset_path.as_os_str(), "/srv/aion/ui");
+            }
+            super::OpsConsoleAssetSource::Embedded => {
+                return Err("legacy [dashboard] section must map to ops_console".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// The new `[ops_console]` section name also parses.
+    #[test]
+    fn ops_console_section_parses() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br#"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [ops_console]
+                source = { FileSystem = { asset_path = "/srv/aion/ui" } }
+            "#,
+        )?;
+        assert!(matches!(
+            config.ops_console.source,
+            super::OpsConsoleAssetSource::FileSystem { .. }
+        ));
         Ok(())
     }
 

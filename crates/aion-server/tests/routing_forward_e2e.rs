@@ -57,8 +57,8 @@ async fn owner_state() -> Result<ServerState, TestError> {
 
 fn test_runtime() -> aion_server::config::RuntimeConfig {
     use aion_server::config::{
-        AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-        DevConfig, ListenConfig, MetricsConfig, OutboxConfig, RuntimeConfig, WebSocketConfig,
+        AuthConfig, AuthoringConfig, DeployConfig, DevConfig, ListenConfig, MetricsConfig,
+        OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig, RuntimeConfig, WebSocketConfig,
         WorkerConfig,
     };
     RuntimeConfig {
@@ -72,8 +72,8 @@ fn test_runtime() -> aion_server::config::RuntimeConfig {
             jwks_url: None,
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

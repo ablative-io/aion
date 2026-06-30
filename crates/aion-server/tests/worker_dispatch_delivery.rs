@@ -27,8 +27,9 @@ use aion_proto::generated::{self, server_to_worker, worker_to_server};
 use aion_server::ServerState;
 use aion_server::api::worker_grpc::worker_service;
 use aion_server::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+    NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig, WebSocketConfig,
+    WorkerConfig,
 };
 use aion_server::worker::{ConnectedWorkerRegistry, WorkerActivityDispatcher};
 use aion_server::{NamespaceResolver, StaticScheduleNamespaces, StaticWorkflowNamespaces};
@@ -71,8 +72,8 @@ fn runtime_config() -> RuntimeConfig {
             jwks_url: None,
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

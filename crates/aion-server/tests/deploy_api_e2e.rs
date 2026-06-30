@@ -20,8 +20,9 @@ use aion_proto::{
 };
 use aion_server::api::http::http_router;
 use aion_server::config::{
-    AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig, ListenConfig,
-    MetricsConfig, NamespaceConfig, NamespaceMode, RuntimeConfig, WebSocketConfig, WorkerConfig,
+    AuthConfig, AuthoringConfig, DeployConfig, ListenConfig, MetricsConfig, NamespaceConfig,
+    NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, RuntimeConfig, WebSocketConfig,
+    WorkerConfig,
 };
 use aion_server::{NamespaceResolver, ServerState};
 use axum::{body, http::Request, http::StatusCode, response::Response};
@@ -102,8 +103,8 @@ fn runtime_config(deploy: DeployConfig) -> RuntimeConfig {
             jwks_url: None,
             jwks_refresh_seconds: 300,
         },
-        dashboard: DashboardConfig {
-            source: DashboardAssetSource::Embedded,
+        ops_console: OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
         },
         namespace: NamespaceConfig {
             mode: NamespaceMode::SharedEngine,

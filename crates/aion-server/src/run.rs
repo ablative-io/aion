@@ -675,8 +675,8 @@ mod tests {
     /// tests (mirrors `state.rs`'s test `runtime_config`).
     fn runtime_config() -> RuntimeConfig {
         use crate::config::{
-            AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-            DevConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode,
+            AuthConfig, AuthoringConfig, DeployConfig, DevConfig, ListenConfig, MetricsConfig,
+            NamespaceConfig, NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig,
             WebSocketConfig, WorkerConfig,
         };
         RuntimeConfig {
@@ -690,8 +690,8 @@ mod tests {
                 jwks_url: None,
                 jwks_refresh_seconds: 300,
             },
-            dashboard: DashboardConfig {
-                source: DashboardAssetSource::Embedded,
+            ops_console: OpsConsoleConfig {
+                source: OpsConsoleAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,

@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Repo automation tasks (build the dashboard bundle and embed it into aion-server)."
+description = "Repo automation tasks (build the ops-console bundle and embed it into aion-server)."
 license.workspace = true
 
 [lints]

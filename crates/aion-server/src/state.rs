@@ -1122,8 +1122,8 @@ mod tests {
 
     use super::ServerState;
     use crate::config::{
-        AuthConfig, AuthoringConfig, DashboardAssetSource, DashboardConfig, DeployConfig,
-        DevConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, OutboxConfig,
+        AuthConfig, AuthoringConfig, DeployConfig, DevConfig, ListenConfig, MetricsConfig,
+        NamespaceConfig, NamespaceMode, OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig,
         RuntimeConfig, WebSocketConfig, WorkerConfig,
     };
 
@@ -1139,8 +1139,8 @@ mod tests {
                 jwks_url: None,
                 jwks_refresh_seconds: 300,
             },
-            dashboard: DashboardConfig {
-                source: DashboardAssetSource::Embedded,
+            ops_console: OpsConsoleConfig {
+                source: OpsConsoleAssetSource::Embedded,
             },
             namespace: NamespaceConfig {
                 mode: NamespaceMode::SharedEngine,
