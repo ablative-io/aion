@@ -5,7 +5,7 @@
 //! makes Aion competitive at scale where goroutine-based engines cannot.
 //!
 //! Usage: `cargo run --release -p million-processes [count]`
-//!   count defaults to 100_000
+//!   count defaults to `100_000`
 
 use std::time::Instant;
 
@@ -92,7 +92,10 @@ fn resident_memory_bytes() -> usize {
     }
 }
 
+// Reading resident-set size on macOS requires the `task_info` mach syscall,
+// which has no safe wrapper in std; the FFI block and calls are unavoidable.
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 fn macos_rss() -> Option<usize> {
     use std::mem;
 
@@ -107,6 +110,9 @@ fn macos_rss() -> Option<usize> {
     }
 
     const MACH_TASK_BASIC_INFO: u32 = 20;
+    // Word count of a small fixed struct — provably tiny, so the narrowing cast
+    // cannot truncate; expressed as a const to keep it compile-time.
+    #[allow(clippy::cast_possible_truncation)]
     const MACH_TASK_BASIC_INFO_COUNT: u32 =
         (mem::size_of::<TaskBasicInfo>() / mem::size_of::<u32>()) as u32;
 
@@ -121,17 +127,20 @@ fn macos_rss() -> Option<usize> {
         task_info(
             mach_task_self(),
             MACH_TASK_BASIC_INFO,
-            &mut info as *mut TaskBasicInfo,
-            &mut count,
+            &raw mut info,
+            &raw mut count,
         )
     };
     if result == 0 {
-        Some(info.resident_size as usize)
+        usize::try_from(info.resident_size).ok()
     } else {
         None
     }
 }
 
+// Casts are display-only approximations for human-readable byte sizes; the
+// precision loss at large magnitudes is intentional and harmless.
+#[allow(clippy::cast_precision_loss)]
 fn human_bytes(bytes: usize) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)

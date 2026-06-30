@@ -7,5 +7,5 @@ publish = false
 [dependencies]
 aion = { package = "aion-rs", path = "../../crates/aion" }
 
-[lints.rust]
-unsafe_code = "allow"
+[lints]
+workspace = true
