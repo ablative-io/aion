@@ -10,6 +10,7 @@ service WorkflowService {
   rpc Signal(SignalRequest) returns (SignalResponse);
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc Reopen(ReopenRequest) returns (ReopenResponse);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   rpc CountWorkflows(CountWorkflowsRequest) returns (CountWorkflowsResponse);
   rpc DescribeWorkflow(DescribeWorkflowRequest) returns (DescribeWorkflowResponse);
@@ -74,6 +75,21 @@ message CancelRequest {
 }
 
 message CancelResponse {}
+
+message ReopenRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  // Optional run id; absent means the latest run.
+  RunId run_id = 3;
+}
+
+// Reopen returns the reopened run id and its projected status (Running) so the
+// caller learns the run is live again — distinct from CancelResponse which is
+// an empty ack.
+message ReopenResponse {
+  RunId run_id = 1;
+  WorkflowStatus status = 2;
+}
 
 message ListWorkflowsRequest {
   string namespace = 1;

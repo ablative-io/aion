@@ -44,18 +44,18 @@ pub(super) async fn recover_timers_on_startup(
         })
 }
 
-pub(super) struct StartupRecoveryContext {
-    pub(super) store: Arc<dyn EventStore>,
-    pub(super) visibility_store: Arc<dyn VisibilityStore>,
-    pub(super) runtime: Arc<RuntimeHandle>,
-    pub(super) catalog: Arc<WorkflowCatalog>,
-    pub(super) registry: Arc<Registry>,
-    pub(super) supervision: Arc<SupervisionTree>,
-    pub(super) recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
-    pub(super) search_attribute_schema: Arc<SearchAttributeSchema>,
+pub(crate) struct StartupRecoveryContext {
+    pub(crate) store: Arc<dyn EventStore>,
+    pub(crate) visibility_store: Arc<dyn VisibilityStore>,
+    pub(crate) runtime: Arc<RuntimeHandle>,
+    pub(crate) catalog: Arc<WorkflowCatalog>,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) supervision: Arc<SupervisionTree>,
+    pub(crate) recovery: Option<Arc<dyn ActiveWorkflowRecoverySeam>>,
+    pub(crate) search_attribute_schema: Arc<SearchAttributeSchema>,
     /// When false, skip seeding the schedule-coordinator history at startup
     /// (multi-node: only the coordinator-shard owner seeds it). Default true.
-    pub(super) bootstrap_schedule_coordinator: bool,
+    pub(crate) bootstrap_schedule_coordinator: bool,
 }
 
 pub(super) async fn recover_active_workflows_on_startup(
@@ -206,6 +206,8 @@ async fn repopulate_active_workflows(
                         run_id,
                         loaded_version,
                         pid,
+                        // Startup recovery builds its own recorder at the head.
+                        recorder: None,
                     },
                 )
                 .await?;
@@ -220,20 +222,28 @@ async fn repopulate_active_workflows(
 }
 
 /// One resident workflow recovered by the AD seam, ready for registration.
-struct RecoveredResident<'a> {
-    workflow_id: &'a aion_core::WorkflowId,
-    workflow_type: &'a str,
-    history: &'a [Event],
-    history_head: u64,
-    projected_status: WorkflowStatus,
-    run_id: RunId,
-    loaded_version: aion_package::ContentHash,
-    pid: crate::Pid,
+pub(crate) struct RecoveredResident<'a> {
+    pub(crate) workflow_id: &'a aion_core::WorkflowId,
+    pub(crate) workflow_type: &'a str,
+    pub(crate) history: &'a [Event],
+    pub(crate) history_head: u64,
+    pub(crate) projected_status: WorkflowStatus,
+    pub(crate) run_id: RunId,
+    pub(crate) loaded_version: aion_package::ContentHash,
+    pub(crate) pid: crate::Pid,
+    /// The single continuous recorder to register this resident with.
+    ///
+    /// Startup recovery passes `None` and this flow builds a fresh
+    /// `Recorder::resume_at(head)`. The reopen operation passes `Some(recorder)`
+    /// — the very recorder that already appended `WorkflowReopened` — so exactly
+    /// one recorder spans the reopen append through the respawn (invariant #3);
+    /// no second writer is ever constructed for the reopened run.
+    pub(crate) recorder: Option<Recorder>,
 }
 
 /// Register one recovered resident process: recorder, registry, supervision,
 /// completion monitor, and the recorded-children crash-window sweep.
-async fn register_recovered_resident(
+pub(crate) async fn register_recovered_resident(
     context: &StartupRecoveryContext,
     resident: RecoveredResident<'_>,
 ) -> Result<(), EngineError> {
@@ -246,13 +256,20 @@ async fn register_recovered_resident(
         run_id,
         loaded_version,
         pid,
+        recorder,
     } = resident;
-    let recorder = Recorder::resume_at(
-        workflow_id.clone(),
-        Arc::clone(&context.store),
-        history_head,
-    )
-    .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store));
+    // Reuse the externally-held recorder (reopen: the one that appended
+    // WorkflowReopened) or build a fresh one at the history head (startup
+    // recovery). This is the single-writer seam: no second recorder is ever
+    // constructed for a run whose recorder was supplied.
+    let recorder = recorder.unwrap_or_else(|| {
+        Recorder::resume_at(
+            workflow_id.clone(),
+            Arc::clone(&context.store),
+            history_head,
+        )
+        .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store))
+    });
     let completion = CompletionNotifier::new();
     let namespace = namespace_from_history(history);
     let handle = WorkflowHandle::new(WorkflowHandleParts {
@@ -356,7 +373,7 @@ fn rollback_recovered_resident(
     }
 }
 
-fn recover_active_workflow(
+pub(crate) fn recover_active_workflow(
     recovery: &dyn ActiveWorkflowRecoverySeam,
     workflow_id: &aion_core::WorkflowId,
     workflow_type: &str,
@@ -377,7 +394,7 @@ fn recover_active_workflow(
 /// event. The `aion.namespace` attribute is set at workflow start and
 /// carried through child inheritance. Falls back to `"default"` when
 /// no namespace attribute is recorded (pre-namespace workflows).
-fn namespace_from_history(history: &[Event]) -> String {
+pub(crate) fn namespace_from_history(history: &[Event]) -> String {
     for event in history {
         if let Event::SearchAttributesUpdated { attributes, .. } = event {
             if let Some(aion_core::SearchAttributeValue::String(ns)) =

@@ -35,6 +35,12 @@ pub trait WorkflowTransport: Send + Sync {
         request: aion_proto::ProtoCancelRequest,
     ) -> Result<aion_proto::ProtoCancelResponse, ClientError>;
 
+    /// Sends `Reopen` over the transport.
+    async fn reopen(
+        &self,
+        request: aion_proto::ProtoReopenRequest,
+    ) -> Result<aion_proto::ProtoReopenResponse, ClientError>;
+
     /// Sends `ListWorkflows` over the transport.
     async fn list_workflows(
         &self,

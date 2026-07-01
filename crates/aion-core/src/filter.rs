@@ -3,7 +3,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{Event, WorkflowId, WorkflowStatus, current_lease_terminal, status_from_events};
+use crate::{
+    ActivityId, Event, WorkflowId, WorkflowStatus, current_lease_terminal, status_from_events,
+};
 
 /// Query input for listing workflow executions.
 ///
@@ -75,6 +77,18 @@ pub struct WorkflowSummary {
     pub ended_at: Option<DateTime<Utc>>,
     /// Parent workflow identifier for child-workflow executions, if the store has one.
     pub parent: Option<WorkflowId>,
+    /// The step (activity type) that failed, populated ONLY for a workflow whose
+    /// current-lease terminal is [`Event::WorkflowFailed`] and whose failure has a
+    /// terminal activity failure to attribute it to (e.g. `dev_review`). This is
+    /// the workflow *step*, never a brief id or label. `None` for every
+    /// healthy/running/completed/cancelled workflow, so list renderers show no
+    /// empty failure column for non-failed rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_step: Option<String>,
+    /// The terminal `WorkflowFailed` error message, populated ONLY for a workflow
+    /// whose current-lease terminal is [`Event::WorkflowFailed`]. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
 }
 
 impl WorkflowSummary {
@@ -85,6 +99,11 @@ impl WorkflowSummary {
     /// are derived from the current run in the history, matching
     /// [`status_from_events`]. Parent linkage is not present in a child
     /// workflow's own history, so this helper leaves `parent` unset.
+    ///
+    /// `failed_step` and `failure_reason` are populated ONLY when the current
+    /// lease's terminal event is [`Event::WorkflowFailed`] (see
+    /// [`failure_projection`]); a reopened, running, completed, or cancelled
+    /// workflow leaves both `None`.
     #[must_use]
     pub fn from_history(events: &[Event]) -> Option<Self> {
         let (workflow_id, workflow_type, started_at) = events.iter().rev().find_map(|event| {
@@ -104,6 +123,7 @@ impl WorkflowSummary {
             }
         })?;
 
+        let (failed_step, failure_reason) = failure_projection(events);
         Some(Self {
             workflow_id,
             workflow_type,
@@ -111,8 +131,88 @@ impl WorkflowSummary {
             started_at,
             ended_at: current_lease_terminal(events).map(|event| *event.recorded_at()),
             parent: None,
+            failed_step,
+            failure_reason,
         })
     }
+}
+
+/// Projects `(failed_step, failure_reason)` from a workflow history, reset-aware.
+///
+/// Returns `(None, None)` unless the current lease's terminal event (per
+/// [`current_lease_terminal`], which a later [`Event::WorkflowReopened`]
+/// supersedes) is [`Event::WorkflowFailed`]. When it is, `failure_reason` is that
+/// event's error message and `failed_step` is the *activity type* of the step
+/// that ended in a terminal failure in the current lease with no later success —
+/// the actual failed step (e.g. `dev_review`), never a brief id. When a failed
+/// workflow has no attributable terminal activity failure (the failure came from
+/// workflow code itself), `failed_step` is `None` while `failure_reason` is set.
+#[must_use]
+pub fn failure_projection(events: &[Event]) -> (Option<String>, Option<String>) {
+    let Some(Event::WorkflowFailed { error, .. }) = current_lease_terminal(events) else {
+        return (None, None);
+    };
+    (failed_activity_step(events), Some(error.message.clone()))
+}
+
+/// Returns the activity type of the step that ended in a terminal failure in the
+/// current lease with no later successful attempt, scanning only the events since
+/// the last reset point (run start or reopen) so a superseded prior-lease failure
+/// is never attributed. When several activities failed terminally, the latest is
+/// reported. Returns `None` when no activity carries a terminal failure.
+fn failed_activity_step(events: &[Event]) -> Option<String> {
+    // Restrict to the current lease: everything after the last WorkflowStarted or
+    // WorkflowReopened. current_lease_terminal already established there is a
+    // WorkflowFailed after that reset, so the lease is well-formed.
+    let lease_start = events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event,
+                Event::WorkflowStarted { .. } | Event::WorkflowReopened { .. }
+            )
+        })
+        .map_or(0, |index| index + 1);
+    let lease = &events[lease_start..];
+
+    // Collect the ids that reached a terminal ActivityFailed and the ids that
+    // later completed/cancelled successfully; a step counts as failed only if it
+    // has no superseding success after its failure.
+    let mut latest_failed: Option<(&ActivityId, &str)> = None;
+    let mut scheduled_types: std::collections::HashMap<&ActivityId, &str> =
+        std::collections::HashMap::new();
+    let mut succeeded: std::collections::HashSet<&ActivityId> = std::collections::HashSet::new();
+    for event in lease {
+        match event {
+            Event::ActivityScheduled {
+                activity_id,
+                activity_type,
+                ..
+            } => {
+                scheduled_types.insert(activity_id, activity_type.as_str());
+            }
+            Event::ActivityCompleted { activity_id, .. }
+            | Event::ActivityCancelled { activity_id, .. } => {
+                succeeded.insert(activity_id);
+            }
+            Event::ActivityFailed { activity_id, .. } => {
+                let step = scheduled_types
+                    .get(activity_id)
+                    .copied()
+                    .unwrap_or_default();
+                latest_failed = Some((activity_id, step));
+            }
+            _ => {}
+        }
+    }
+
+    latest_failed.and_then(|(activity_id, step)| {
+        if succeeded.contains(activity_id) || step.is_empty() {
+            None
+        } else {
+            Some(step.to_owned())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -122,10 +222,10 @@ mod tests {
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
-    use super::{WorkflowFilter, WorkflowSummary};
+    use super::{WorkflowFilter, WorkflowSummary, failure_projection};
     use crate::{
-        Event, EventEnvelope, Payload, RunId, ScheduleId, SearchAttributeValue, WorkflowId,
-        WorkflowStatus,
+        ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, Payload, RunId,
+        ScheduleId, SearchAttributeValue, WorkflowError, WorkflowId, WorkflowStatus,
     };
 
     fn recorded_at(offset_seconds: i64) -> DateTime<Utc> {
@@ -157,6 +257,8 @@ mod tests {
             started_at,
             ended_at: None,
             parent,
+            failed_step: None,
+            failure_reason: None,
         }
     }
 
@@ -515,6 +617,170 @@ mod tests {
         assert_eq!(summary.status, WorkflowStatus::Running);
         assert_eq!(summary.started_at, recorded_at(3));
         assert_eq!(summary.ended_at, None);
+        Ok(())
+    }
+
+    fn started(workflow_id: &WorkflowId) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowStarted {
+            envelope: envelope(1, workflow_id),
+            workflow_type: String::from("stacked_dev"),
+            input: payload("input")?,
+            run_id: RunId::new(uuid::Uuid::from_u128(1)),
+            parent_run_id: None,
+            package_version: crate::PackageVersion::new("a".repeat(64)),
+        })
+    }
+
+    fn scheduled(
+        workflow_id: &WorkflowId,
+        seq: u64,
+        ordinal: u64,
+        activity_type: &str,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::ActivityScheduled {
+            envelope: envelope(seq, workflow_id),
+            activity_id: ActivityId::from_sequence_position(ordinal),
+            activity_type: String::from(activity_type),
+            input: payload("activity")?,
+            task_queue: String::from("default"),
+            node: None,
+        })
+    }
+
+    fn activity_failed(workflow_id: &WorkflowId, seq: u64, ordinal: u64) -> Event {
+        Event::ActivityFailed {
+            envelope: envelope(seq, workflow_id),
+            activity_id: ActivityId::from_sequence_position(ordinal),
+            error: ActivityError {
+                kind: ActivityErrorKind::Terminal,
+                message: String::from("provider error: rate limited"),
+                details: None,
+            },
+            attempt: 1,
+        }
+    }
+
+    fn workflow_failed(workflow_id: &WorkflowId, seq: u64) -> Event {
+        Event::WorkflowFailed {
+            envelope: envelope(seq, workflow_id),
+            error: WorkflowError {
+                message: String::from("norn review failed"),
+                details: None,
+            },
+        }
+    }
+
+    #[test]
+    fn failure_projection_attributes_failed_step_and_reason()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let wf = WorkflowId::new(uuid::Uuid::from_u128(1));
+        let events = vec![
+            started(&wf)?,
+            scheduled(&wf, 2, 0, "scout")?,
+            Event::ActivityCompleted {
+                envelope: envelope(3, &wf),
+                activity_id: ActivityId::from_sequence_position(0),
+                result: payload("scout-result")?,
+                attempt: 1,
+            },
+            scheduled(&wf, 4, 1, "dev_review")?,
+            activity_failed(&wf, 5, 1),
+            workflow_failed(&wf, 6),
+        ];
+
+        let (failed_step, failure_reason) = failure_projection(&events);
+        assert_eq!(failed_step.as_deref(), Some("dev_review"));
+        assert_eq!(failure_reason.as_deref(), Some("norn review failed"));
+
+        let summary = WorkflowSummary::from_history(&events).ok_or("summary")?;
+        assert_eq!(summary.status, WorkflowStatus::Failed);
+        assert_eq!(summary.failed_step.as_deref(), Some("dev_review"));
+        assert_eq!(
+            summary.failure_reason.as_deref(),
+            Some("norn review failed")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_projection_is_none_for_non_failed() -> Result<(), Box<dyn std::error::Error>> {
+        let wf = WorkflowId::new(uuid::Uuid::from_u128(1));
+        // A healthy, completed workflow leaves both fields None.
+        let events = vec![
+            started(&wf)?,
+            scheduled(&wf, 2, 0, "scout")?,
+            Event::WorkflowCompleted {
+                envelope: envelope(3, &wf),
+                result: payload("result")?,
+            },
+        ];
+        let (failed_step, failure_reason) = failure_projection(&events);
+        assert!(failed_step.is_none());
+        assert!(failure_reason.is_none());
+
+        let summary = WorkflowSummary::from_history(&events).ok_or("summary")?;
+        assert!(summary.failed_step.is_none());
+        assert!(summary.failure_reason.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn failure_projection_is_reset_by_reopen() -> Result<(), Box<dyn std::error::Error>> {
+        let wf = WorkflowId::new(uuid::Uuid::from_u128(1));
+        // Failed then reopened: the current lease is Running, so no failure fields.
+        let events = vec![
+            started(&wf)?,
+            scheduled(&wf, 2, 0, "dev_review")?,
+            activity_failed(&wf, 3, 0),
+            workflow_failed(&wf, 4),
+            Event::WorkflowReopened {
+                envelope: envelope(5, &wf),
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
+                reopened: vec![ActivityId::from_sequence_position(0)],
+            },
+        ];
+        let (failed_step, failure_reason) = failure_projection(&events);
+        assert!(failed_step.is_none(), "a reopened run is not failed");
+        assert!(failure_reason.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn failure_projection_has_reason_but_no_step_when_no_activity_failed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let wf = WorkflowId::new(uuid::Uuid::from_u128(1));
+        // Workflow-code failure with no terminal activity failure to attribute.
+        let events = vec![started(&wf)?, workflow_failed(&wf, 2)];
+        let (failed_step, failure_reason) = failure_projection(&events);
+        assert!(failed_step.is_none());
+        assert_eq!(failure_reason.as_deref(), Some("norn review failed"));
+        Ok(())
+    }
+
+    #[test]
+    fn failure_projection_ignores_a_failed_step_that_later_succeeded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let wf = WorkflowId::new(uuid::Uuid::from_u128(1));
+        // dev_review failed (attempt 1) then succeeded (attempt 2); the workflow
+        // later failed on workflow code. The recovered step is not the failed step.
+        let events = vec![
+            started(&wf)?,
+            scheduled(&wf, 2, 0, "dev_review")?,
+            activity_failed(&wf, 3, 0),
+            Event::ActivityCompleted {
+                envelope: envelope(4, &wf),
+                activity_id: ActivityId::from_sequence_position(0),
+                result: payload("dev-review-result")?,
+                attempt: 2,
+            },
+            workflow_failed(&wf, 5),
+        ];
+        let (failed_step, failure_reason) = failure_projection(&events);
+        assert!(
+            failed_step.is_none(),
+            "a step that recovered is not the failed step"
+        );
+        assert_eq!(failure_reason.as_deref(), Some("norn review failed"));
         Ok(())
     }
 }

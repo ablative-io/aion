@@ -66,6 +66,11 @@ pub enum WireErrorCode {
     /// fenced. A retryable routing signal: the caller (or the request-routing
     /// edge) should re-resolve the shard owner and retry or forward.
     NotOwner,
+    /// A precondition on the target's current state was not met (e.g. a reopen
+    /// of a run that is not a reopenable terminal). Distinct from `NotFound`
+    /// (absent) and `Backend` (internal failure): the target exists but is in
+    /// the wrong state. Maps to gRPC `FailedPrecondition` / HTTP 409 Conflict.
+    InvalidState,
 }
 
 impl WireErrorCode {
@@ -86,6 +91,7 @@ impl WireErrorCode {
             Self::DeployDenied => "deploy_denied",
             Self::VersionPinned => "version_pinned",
             Self::NotOwner => "not_owner",
+            Self::InvalidState => "invalid_state",
         }
     }
 }
@@ -222,6 +228,21 @@ impl WireError {
         Self::new(WireErrorCode::NotOwner, message)
     }
 
+    /// Invalid-state precondition failure.
+    #[must_use]
+    pub fn invalid_state(message: impl Into<String>) -> Self {
+        Self::new(WireErrorCode::InvalidState, message)
+    }
+
+    /// Invalid-state precondition failure with a concrete typed error variant name.
+    #[must_use]
+    pub fn invalid_state_with_type(
+        error_type: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::new_with_type(WireErrorCode::InvalidState, error_type, message)
+    }
+
     /// Not-found failure with a concrete typed error variant name.
     #[must_use]
     pub fn not_found_with_type(error_type: impl Into<String>, message: impl Into<String>) -> Self {
@@ -276,6 +297,8 @@ pub enum ProtoWireErrorCode {
     VersionPinned = 12,
     /// See [`WireErrorCode::NotOwner`].
     NotOwner = 13,
+    /// See [`WireErrorCode::InvalidState`].
+    InvalidState = 14,
 }
 
 /// Proto representation of [`WireError`].
@@ -308,6 +331,7 @@ impl From<WireErrorCode> for ProtoWireErrorCode {
             WireErrorCode::DeployDenied => Self::DeployDenied,
             WireErrorCode::VersionPinned => Self::VersionPinned,
             WireErrorCode::NotOwner => Self::NotOwner,
+            WireErrorCode::InvalidState => Self::InvalidState,
         }
     }
 }
@@ -333,6 +357,7 @@ impl TryFrom<ProtoWireErrorCode> for WireErrorCode {
             ProtoWireErrorCode::DeployDenied => Ok(Self::DeployDenied),
             ProtoWireErrorCode::VersionPinned => Ok(Self::VersionPinned),
             ProtoWireErrorCode::NotOwner => Ok(Self::NotOwner),
+            ProtoWireErrorCode::InvalidState => Ok(Self::InvalidState),
         }
     }
 }
@@ -384,7 +409,8 @@ mod tests {
             WireErrorCode::QueryFailed => Some(WireErrorCode::DeployDenied),
             WireErrorCode::DeployDenied => Some(WireErrorCode::VersionPinned),
             WireErrorCode::VersionPinned => Some(WireErrorCode::NotOwner),
-            WireErrorCode::NotOwner => None,
+            WireErrorCode::NotOwner => Some(WireErrorCode::InvalidState),
+            WireErrorCode::InvalidState => None,
         }
     }
 
@@ -424,6 +450,7 @@ mod tests {
             (WireErrorCode::DeployDenied, 11),
             (WireErrorCode::VersionPinned, 12),
             (WireErrorCode::NotOwner, 13),
+            (WireErrorCode::InvalidState, 14),
         ];
         assert_eq!(
             expected.len(),
@@ -457,6 +484,7 @@ mod tests {
             (WireErrorCode::DeployDenied, "deploy_denied"),
             (WireErrorCode::VersionPinned, "version_pinned"),
             (WireErrorCode::NotOwner, "not_owner"),
+            (WireErrorCode::InvalidState, "invalid_state"),
         ];
         assert_eq!(
             expected.len(),
@@ -570,6 +598,10 @@ mod tests {
         assert_eq!(
             WireError::not_owner("wrong shard owner").code,
             WireErrorCode::NotOwner
+        );
+        assert_eq!(
+            WireError::invalid_state("run is not reopenable").code,
+            WireErrorCode::InvalidState
         );
     }
 }

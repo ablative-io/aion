@@ -900,6 +900,7 @@ fn visibility_record_from_history(
             ),
         })?;
 
+    let (failed_step, failure_reason) = aion_core::failure_projection(history);
     Ok(VisibilityRecord {
         workflow_id,
         run_id: run_id.clone(),
@@ -907,6 +908,8 @@ fn visibility_record_from_history(
         status: aion_core::status_from_events(history),
         start_time,
         close_time: terminal_recorded_at(history),
+        failed_step,
+        failure_reason,
         search_attributes: aion_core::search_attributes_from_events(history),
     })
 }

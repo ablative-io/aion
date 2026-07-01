@@ -155,6 +155,13 @@ impl WorkflowService for MockWorkflowService {
         off_scope()
     }
 
+    async fn reopen(
+        &self,
+        _: Request<generated::ReopenRequest>,
+    ) -> Result<Response<generated::ReopenResponse>, Status> {
+        off_scope()
+    }
+
     async fn list_workflows(
         &self,
         _: Request<generated::ListWorkflowsRequest>,

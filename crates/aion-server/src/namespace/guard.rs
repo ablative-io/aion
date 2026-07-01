@@ -6,7 +6,7 @@ use aion_proto::{
     FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
     ProtoCountWorkflowsRequest, ProtoCreateScheduleRequest, ProtoDescribeWorkflowRequest,
     ProtoListSchedulesRequest, ProtoListWorkflowsRequest, ProtoQueryRequest, ProtoRegisterWorker,
-    ProtoScheduleIdRequest, ProtoSignalRequest, ProtoStartWorkflowRequest,
+    ProtoReopenRequest, ProtoScheduleIdRequest, ProtoSignalRequest, ProtoStartWorkflowRequest,
     ProtoUpdateScheduleRequest, SubscriptionRequest, subscription_request,
 };
 
@@ -127,6 +127,8 @@ pub enum NamespaceOperation<'a> {
     Query(&'a ProtoQueryRequest, WorkflowTarget<'a>),
     /// Cancel workflow request.
     Cancel(&'a ProtoCancelRequest, WorkflowTarget<'a>),
+    /// Reopen workflow request.
+    Reopen(&'a ProtoReopenRequest, WorkflowTarget<'a>),
     /// List workflow request.
     ListWorkflows(&'a ProtoListWorkflowsRequest, &'a WorkflowFilter),
     /// Count workflow request.
@@ -185,6 +187,12 @@ impl<'a> NamespaceOperation<'a> {
     #[must_use]
     pub const fn cancel(request: &'a ProtoCancelRequest, target: WorkflowTarget<'a>) -> Self {
         Self::Cancel(request, target)
+    }
+
+    /// Create a reopen operation descriptor.
+    #[must_use]
+    pub const fn reopen(request: &'a ProtoReopenRequest, target: WorkflowTarget<'a>) -> Self {
+        Self::Reopen(request, target)
     }
 
     /// Create a list-workflows operation descriptor.
@@ -289,6 +297,7 @@ impl<'a> NamespaceOperation<'a> {
             Self::Signal(request, _target) => request.namespace.as_str(),
             Self::Query(request, _target) => request.namespace.as_str(),
             Self::Cancel(request, _target) => request.namespace.as_str(),
+            Self::Reopen(request, _target) => request.namespace.as_str(),
             Self::ListWorkflows(request, _filter) => request.namespace.as_str(),
             Self::CountWorkflows(request) => request.namespace.as_str(),
             Self::Describe(request, _target) => request.namespace.as_str(),
@@ -322,6 +331,7 @@ impl<'a> NamespaceOperation<'a> {
             Self::Signal(_, target)
             | Self::Query(_, target)
             | Self::Cancel(_, target)
+            | Self::Reopen(_, target)
             | Self::Describe(_, target)
             | Self::Intervene { target, .. } => target.verify(resolver, authorized_namespace).await,
             Self::UpdateSchedule(_, target)
@@ -562,8 +572,9 @@ mod tests {
     use aion_proto::{
         FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
         ProtoCreateScheduleRequest, ProtoDescribeWorkflowRequest, ProtoListSchedulesRequest,
-        ProtoListWorkflowsRequest, ProtoQueryRequest, ProtoRegisterWorker, ProtoScheduleIdRequest,
-        ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoUpdateScheduleRequest,
+        ProtoListWorkflowsRequest, ProtoQueryRequest, ProtoRegisterWorker, ProtoReopenRequest,
+        ProtoScheduleIdRequest, ProtoSignalRequest, ProtoStartWorkflowRequest,
+        ProtoUpdateScheduleRequest,
     };
     use async_trait::async_trait;
 
@@ -691,6 +702,11 @@ mod tests {
             run_id: None,
             reason: String::from("operator"),
         };
+        let reopen = ProtoReopenRequest {
+            namespace: String::from("tenant-a"),
+            workflow_id: None,
+            run_id: None,
+        };
         let describe = ProtoDescribeWorkflowRequest {
             namespace: String::from("tenant-a"),
             workflow_id: None,
@@ -702,6 +718,7 @@ mod tests {
             NamespaceOperation::signal(&signal, target),
             NamespaceOperation::query(&query, target),
             NamespaceOperation::cancel(&cancel, target),
+            NamespaceOperation::reopen(&reopen, target),
             NamespaceOperation::describe(&describe, target),
         ];
 

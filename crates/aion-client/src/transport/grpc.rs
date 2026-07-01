@@ -10,8 +10,9 @@ use crate::error::ClientError;
 use crate::transport::contract::{SubscriptionAttempt, WorkflowTransport};
 use crate::transport::convert::{
     decode_cancel_response, decode_describe_response, decode_list_response, decode_query_response,
-    decode_signal_response, decode_start_response, encode_cancel_request, encode_describe_request,
-    encode_list_request, encode_query_request, encode_signal_request, encode_start_request,
+    decode_reopen_response, decode_signal_response, decode_start_response, encode_cancel_request,
+    encode_describe_request, encode_list_request, encode_query_request, encode_reopen_request,
+    encode_signal_request, encode_start_request,
 };
 use crate::transport::ws;
 
@@ -111,6 +112,18 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .await
             .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_cancel_response(response.into_inner()))
+    }
+
+    async fn reopen(
+        &self,
+        request: aion_proto::ProtoReopenRequest,
+    ) -> Result<aion_proto::ProtoReopenResponse, ClientError> {
+        let response = self
+            .client()
+            .reopen(self.request(encode_reopen_request(request))?)
+            .await
+            .map_err(|status| ClientError::from_status(&status))?;
+        Ok(decode_reopen_response(response.into_inner()))
     }
 
     async fn list_workflows(

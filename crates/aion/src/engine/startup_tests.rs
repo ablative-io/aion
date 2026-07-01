@@ -92,6 +92,8 @@ impl aion_store::ReadableEventStore for RacingSuccessorStore {
             started_at: Utc::now(),
             ended_at: None,
             parent: None,
+            failed_step: None,
+            failure_reason: None,
         }])
     }
 

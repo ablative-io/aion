@@ -176,6 +176,8 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: recorded_at(1),
                 close_time: None,
+                failed_step: None,
+                failure_reason: None,
                 search_attributes: std::collections::HashMap::from([
                     (
                         String::from("customer_id"),
@@ -196,6 +198,8 @@ mod tests {
                 status: WorkflowStatus::Running,
                 start_time: recorded_at(2),
                 close_time: None,
+                failed_step: None,
+                failure_reason: None,
                 search_attributes: std::collections::HashMap::from([
                     (
                         String::from("customer_id"),

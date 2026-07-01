@@ -156,6 +156,19 @@ pub enum ClientError {
         /// Precise description of what was invalid and how to fix it.
         detail: ErrorDetail,
     },
+    /// A precondition on the target's current state was not met (e.g. a reopen
+    /// of a run that is not a reopenable terminal). Distinct from
+    /// [`ClientError::NotFound`] (absent) and [`ClientError::InvalidArgument`]
+    /// (malformed request): the target exists but is in the wrong state.
+    ///
+    /// Maps from the wire error code `invalid_state` / gRPC `FailedPrecondition`
+    /// with the typed detail present. Not retryable until the target's state
+    /// changes.
+    #[error("invalid_state: {detail}")]
+    InvalidState {
+        /// Server-supplied precondition-failure detail naming the actual state.
+        detail: ErrorDetail,
+    },
     /// The server reported an unexpected internal failure.
     #[error("backend: {detail}")]
     Server {
@@ -220,6 +233,11 @@ impl ClientError {
             "Creates an [`ClientError::InvalidArgument`] carrying a precise message."
         ),
         (
+            invalid_state,
+            InvalidState,
+            "Creates an [`ClientError::InvalidState`] precondition failure."
+        ),
+        (
             server,
             Server,
             "Creates an unexpected-server-failure error from a local conversion or server detail."
@@ -241,6 +259,7 @@ impl ClientError {
             Self::Unauthenticated { .. } => "unauthenticated",
             Self::NamespaceDenied { .. } => "namespace_denied",
             Self::InvalidArgument { .. } => "invalid_input",
+            Self::InvalidState { .. } => "invalid_state",
             Self::Server { .. } => "backend",
         }
     }
@@ -260,6 +279,7 @@ impl ClientError {
             | Self::Unauthenticated { detail }
             | Self::NamespaceDenied { detail }
             | Self::InvalidArgument { detail }
+            | Self::InvalidState { detail }
             | Self::Server { detail } => detail,
         }
     }
@@ -276,6 +296,7 @@ impl ClientError {
             WireErrorCode::UnknownQuery => Self::UnknownQuery { detail },
             WireErrorCode::NotRunning => Self::NotRunning { detail },
             WireErrorCode::InvalidInput => Self::InvalidArgument { detail },
+            WireErrorCode::InvalidState => Self::InvalidState { detail },
             // `sequence_conflict` is emitted solely for the server's internal
             // single-writer invariant violation (a double-writer bug). The
             // server has no idempotency-key feature, so this is never
@@ -330,8 +351,11 @@ impl ClientError {
             Code::Unauthenticated => Self::Unauthenticated { detail },
             Code::PermissionDenied => Self::NamespaceDenied { detail },
             Code::InvalidArgument => Self::InvalidArgument { detail },
-            // The server sends FAILED_PRECONDITION only for the `not_running`
-            // wire code, so the bare gRPC code is still unambiguous.
+            // FAILED_PRECONDITION carries both the `not_running` and
+            // `invalid_state` wire codes; the server always attaches the typed
+            // ProtoWireError detail (decoded above), so this bare-code fallback
+            // is only reached without detail. `not_running` is the historical
+            // default kept for that degenerate case.
             Code::FailedPrecondition => Self::NotRunning { detail },
             // ABORTED deliberately falls through to Server: the server sends
             // it only for `sequence_conflict`, an internal single-writer
@@ -399,6 +423,7 @@ mod tests {
             ClientError::unauthenticated("d"),
             ClientError::namespace_denied("d"),
             ClientError::invalid_argument("d"),
+            ClientError::invalid_state("d"),
             ClientError::server("d"),
         ]
     }
@@ -427,6 +452,7 @@ mod tests {
             "unauthenticated",
             "namespace_denied",
             "invalid_input",
+            "invalid_state",
             "backend",
         ];
         assert_eq!(classes, expected, "class strings are a pinned contract");

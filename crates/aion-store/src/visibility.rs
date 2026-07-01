@@ -58,6 +58,12 @@ pub struct VisibilityRecord {
     pub start_time: DateTime<Utc>,
     /// Timestamp recorded when the workflow execution closed, if terminal.
     pub close_time: Option<DateTime<Utc>>,
+    /// The step (activity type) that failed, projected ONLY for a terminal-Failed
+    /// workflow (e.g. `dev_review`); `None` for every non-failed workflow.
+    pub failed_step: Option<String>,
+    /// The terminal `WorkflowFailed` error message, projected ONLY for a
+    /// terminal-Failed workflow; `None` otherwise.
+    pub failure_reason: Option<String>,
     /// Typed custom search attributes indexed for visibility queries.
     pub search_attributes: HashMap<String, SearchAttributeValue>,
 }
@@ -71,6 +77,8 @@ impl From<VisibilityRecord> for WorkflowSummary {
             status: record.status,
             start_time: record.start_time,
             close_time: record.close_time,
+            failed_step: record.failed_step,
+            failure_reason: record.failure_reason,
             search_attributes: record.search_attributes,
         }
     }
@@ -91,6 +99,12 @@ pub struct WorkflowSummary {
     pub start_time: DateTime<Utc>,
     /// Timestamp recorded when the workflow execution closed, if terminal.
     pub close_time: Option<DateTime<Utc>>,
+    /// The step (activity type) that failed, projected ONLY for a terminal-Failed
+    /// workflow (e.g. `dev_review`); `None` for every non-failed workflow.
+    pub failed_step: Option<String>,
+    /// The terminal `WorkflowFailed` error message, projected ONLY for a
+    /// terminal-Failed workflow; `None` otherwise.
+    pub failure_reason: Option<String>,
     /// Typed custom search attributes indexed for visibility queries.
     pub search_attributes: HashMap<String, SearchAttributeValue>,
 }
@@ -528,6 +542,8 @@ mod tests {
             status: WorkflowStatus::Running,
             start_time: DateTime::<Utc>::default(),
             close_time: None,
+            failed_step: None,
+            failure_reason: None,
             search_attributes,
         }
     }

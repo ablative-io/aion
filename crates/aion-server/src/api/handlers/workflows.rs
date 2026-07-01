@@ -2,8 +2,8 @@
 
 use aion_proto::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoQueryRequest, ProtoQueryResponse,
-    ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
-    WireError, proto_query_response,
+    ProtoReopenRequest, ProtoReopenResponse, ProtoSignalRequest, ProtoSignalResponse,
+    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError, proto_query_response,
 };
 use tracing::{Instrument, info_span};
 
@@ -296,14 +296,64 @@ pub async fn cancel(
     Ok(ProtoCancelResponse {})
 }
 
+/// Handles a decoded reopen request.
+///
+/// Resolves the run (latest when omitted) and calls
+/// [`aion::Engine::reopen_workflow`], returning the reopened run id and its
+/// projected Running status. UNLIKE [`cancel`] this does NOT pre-check terminal
+/// status: the terminal-reopenable precondition is the engine's (AD-012) and the
+/// handler only surfaces its typed [`aion::EngineError::InvalidState`] error.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs are missing or malformed, namespace
+/// scoping fails, or the engine reopen call fails — `invalid_state` for a
+/// non-reopenable-terminal run, `not_found` for an absent workflow.
+pub async fn reopen(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoReopenRequest,
+) -> Result<ProtoReopenResponse, WireError> {
+    let workflow_id = required_workflow_id(request.workflow_id.clone())?;
+    let target = WorkflowTarget::workflow(&workflow_id);
+    let scoped = guard
+        .scope(caller, &NamespaceOperation::reopen(&request, target))
+        .await
+        .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let run_id = resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
+
+    let span = info_span!(
+        "engine_operation",
+        operation = "reopen",
+        namespace = %namespace,
+        workflow_id = %workflow_id,
+    );
+
+    let handle = async {
+        engine
+            .reopen_workflow(&workflow_id, &run_id)
+            .await
+            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
+    }
+    .instrument(span)
+    .await?;
+
+    Ok(ProtoReopenResponse {
+        run_id: Some(handle.run_id().clone().into()),
+        status: aion_proto::ProtoWorkflowStatus::from(handle.cached_status()) as i32,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use aion_proto::{WireError, WireErrorCode};
 
     use super::super::test_support::{
-        NAMESPACE, append_completed, append_failed, append_started, assert_workflow_not_found,
-        cancel_request, context, denied_guard, proto_payload, query_request, run_id,
-        signal_request, workflow_id,
+        NAMESPACE, append_completed, append_failed, append_started, append_timed_out,
+        assert_workflow_not_found, cancel_request, context, denied_guard, proto_payload,
+        query_request, reopen_request, run_id, signal_request, workflow_id,
     };
     use super::*;
 
@@ -471,6 +521,96 @@ mod tests {
         assert_eq!(
             error.message,
             format!("workflow {} not found", workflow_id())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_handler_maps_missing_workflow_to_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+
+        let error = reopen(&context.guard, &context.caller, reopen_request()).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::NotFound);
+        assert_eq!(error.error_type.as_deref(), Some("WorkflowNotFound"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_handler_rejects_completed_workflow_as_invalid_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_completed(context.store.as_ref()).await?;
+        let mut request = reopen_request();
+        request.run_id = None;
+
+        let error = reopen(&context.guard, &context.caller, request).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        assert_eq!(error.code, WireErrorCode::InvalidState);
+        assert_eq!(error.error_type.as_deref(), Some("InvalidState"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_handler_rejects_timed_out_workflow_as_invalid_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        append_timed_out(context.store.as_ref()).await?;
+        let mut request = reopen_request();
+        request.run_id = None;
+
+        let error = reopen(&context.guard, &context.caller, request).await;
+
+        let error = error
+            .err()
+            .ok_or_else(|| WireError::backend("expected error"))?;
+        // TimedOut is a non-reopenable terminal (only Failed and Cancelled reopen).
+        assert_eq!(error.code, WireErrorCode::InvalidState);
+        assert_eq!(error.error_type.as_deref(), Some("InvalidState"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_handler_maps_omitted_run_missing_workflow_to_not_found()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context().await?;
+        context.ownership.record(workflow_id(), NAMESPACE)?;
+        let mut request = reopen_request();
+        request.run_id = None;
+
+        let error = reopen(&context.guard, &context.caller, request).await;
+
+        assert_workflow_not_found(error)?;
+        Ok(())
+    }
+
+    /// A caller WITHOUT a grant for the target namespace is denied reopen with
+    /// the namespace-denied wire code — mirroring the signal denial test.
+    #[tokio::test]
+    async fn denied_reopen_is_namespace_denied_before_engine_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (guard, caller) = denied_guard();
+        let request = ProtoReopenRequest {
+            namespace: NAMESPACE.to_owned(),
+            workflow_id: Some(workflow_id().into()),
+            run_id: Some(run_id().into()),
+        };
+
+        let error = reopen(&guard, &caller, request).await;
+
+        assert_eq!(
+            error.err().map(|error| error.code),
+            Some(WireErrorCode::NamespaceDenied)
         );
         Ok(())
     }

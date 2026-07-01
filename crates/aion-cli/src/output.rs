@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use aion_client::WorkflowHandle;
+use aion_client::{ReopenOutcome, WorkflowHandle};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -25,6 +25,14 @@ pub(crate) struct QueryOutput {
 }
 
 #[derive(Serialize)]
+pub(crate) struct ReopenOutput {
+    pub(crate) workflow_id: String,
+    pub(crate) run_id: String,
+    pub(crate) status: String,
+    pub(crate) reopened: bool,
+}
+
+#[derive(Serialize)]
 pub(crate) struct DescribeOutput<TSummary, THistory> {
     pub(crate) summary: TSummary,
     pub(crate) history: THistory,
@@ -34,6 +42,15 @@ pub(crate) fn start_output(handle: &WorkflowHandle) -> StartOutput {
     StartOutput {
         workflow_id: handle.workflow_id().to_string(),
         run_id: handle.run_id().to_string(),
+    }
+}
+
+pub(crate) fn reopen_output(workflow_id: &str, outcome: &ReopenOutcome) -> ReopenOutput {
+    ReopenOutput {
+        workflow_id: workflow_id.to_owned(),
+        run_id: outcome.run_id.to_string(),
+        status: format!("{:?}", outcome.status),
+        reopened: true,
     }
 }
 

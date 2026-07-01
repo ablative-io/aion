@@ -123,6 +123,38 @@ pub struct ProtoCancelRequest {
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoCancelResponse {}
 
+/// Proto representation of `ReopenRequest`.
+///
+/// Mirrors [`ProtoCancelRequest`] without a `reason`: the reopen carries only a
+/// target. An absent `run_id` means the latest run.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoReopenRequest {
+    /// Namespace that scopes the operation.
+    #[prost(string, tag = "1")]
+    pub namespace: String,
+    /// Target workflow identifier.
+    #[prost(message, optional, tag = "2")]
+    pub workflow_id: Option<ProtoWorkflowId>,
+    /// Target run identifier (absent means the latest run).
+    #[prost(message, optional, tag = "3")]
+    pub run_id: Option<ProtoRunId>,
+}
+
+/// Proto representation of `ReopenResponse`.
+///
+/// Unlike [`ProtoCancelResponse`] (an empty ack) this returns the reopened run
+/// id and its projected status (Running) so the caller learns the run is live
+/// again.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoReopenResponse {
+    /// The reopened concrete run identifier.
+    #[prost(message, optional, tag = "1")]
+    pub run_id: Option<ProtoRunId>,
+    /// The projected workflow status after the reopen (Running).
+    #[prost(enumeration = "crate::convert::ProtoWorkflowStatus", tag = "2")]
+    pub status: i32,
+}
+
 /// Proto representation of `ListWorkflowsRequest`.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoListWorkflowsRequest {
@@ -202,8 +234,9 @@ mod tests {
 
     use super::{
         ProtoCountWorkflowsRequest, ProtoCountWorkflowsResponse, ProtoListWorkflowsRequest,
-        ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
-        ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, proto_query_response,
+        ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoReopenRequest,
+        ProtoReopenResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
+        proto_query_response,
     };
     use crate::convert::{
         ProtoPayload, ProtoRunId, ProtoWorkflowId, decode_core_value, encode_core_value,
@@ -290,6 +323,8 @@ mod tests {
             status: aion_core::WorkflowStatus::Running,
             start_time: recorded_at()?,
             close_time: None,
+            failed_step: None,
+            failure_reason: None,
             search_attributes: HashMap::from([(
                 String::from("customer_id"),
                 SearchAttributeValue::String(String::from("12345")),
@@ -352,6 +387,25 @@ mod tests {
         assert_proto_round_trip(&result_response)?;
         assert_json_round_trip(&error_response)?;
         assert_proto_round_trip(&error_response)?;
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_round_trips_json_and_proto() -> Result<(), Box<dyn std::error::Error>> {
+        let request = ProtoReopenRequest {
+            namespace: String::from("tenant-a"),
+            workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+            run_id: Some(ProtoRunId::from(run_id())),
+        };
+        let response = ProtoReopenResponse {
+            run_id: Some(ProtoRunId::from(run_id())),
+            status: crate::convert::ProtoWorkflowStatus::Running as i32,
+        };
+
+        assert_json_round_trip(&request)?;
+        assert_proto_round_trip(&request)?;
+        assert_json_round_trip(&response)?;
+        assert_proto_round_trip(&response)?;
         Ok(())
     }
 }

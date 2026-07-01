@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS visibility (
     status TEXT NOT NULL,
     start_time TEXT NOT NULL,
     close_time TEXT,
+    failed_step TEXT,
+    failure_reason TEXT,
     search_attributes TEXT NOT NULL CHECK (json_valid(search_attributes))
 )";
 

@@ -21,9 +21,12 @@ fn http_status(code: WireErrorCode) -> StatusCode {
         WireErrorCode::NamespaceDenied | WireErrorCode::DeployDenied => StatusCode::FORBIDDEN,
         // NotOwner (wrong-shard-owner fence) is retryable, like the CAS
         // SequenceConflict precedent: a 409 the caller re-resolves and retries.
+        // InvalidState (e.g. a non-reopenable-terminal reopen) is a state
+        // conflict on the target: HTTP 409 Conflict, per AD-012.
         WireErrorCode::SequenceConflict
         | WireErrorCode::VersionPinned
-        | WireErrorCode::NotOwner => StatusCode::CONFLICT,
+        | WireErrorCode::NotOwner
+        | WireErrorCode::InvalidState => StatusCode::CONFLICT,
         WireErrorCode::UnknownQuery | WireErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
         WireErrorCode::QueryTimeout => StatusCode::REQUEST_TIMEOUT,
         WireErrorCode::NotRunning => StatusCode::PRECONDITION_FAILED,

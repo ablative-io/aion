@@ -168,6 +168,11 @@ const fn hint(error: &ClientError) -> Option<&'static str> {
         ClientError::Unavailable { .. } => {
             Some("cannot reach the server; check --endpoint and that aion-server is running")
         }
+        ClientError::InvalidState { .. } => Some(
+            "the target run is not in a state this operation accepts (e.g. reopen \
+             requires a terminal Failed or Cancelled run); inspect it with `aion \
+             describe <workflow-id>`",
+        ),
         ClientError::AlreadyExists { .. }
         | ClientError::Cancelled { .. }
         | ClientError::InvalidArgument { .. }

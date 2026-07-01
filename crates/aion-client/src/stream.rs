@@ -345,6 +345,13 @@ mod tests {
             Err(ClientError::unavailable("stub transport"))
         }
 
+        async fn reopen(
+            &self,
+            _: aion_proto::ProtoReopenRequest,
+        ) -> Result<aion_proto::ProtoReopenResponse, ClientError> {
+            Err(ClientError::unavailable("stub transport"))
+        }
+
         async fn list_workflows(
             &self,
             _: aion_proto::ProtoListWorkflowsRequest,

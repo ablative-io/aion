@@ -91,6 +91,8 @@ mod tests {
             status: WorkflowStatus::Running,
             start_time: Utc::now(),
             close_time: None,
+            failed_step: None,
+            failure_reason: None,
             search_attributes: HashMap::new(),
         }
     }
