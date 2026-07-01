@@ -2834,8 +2834,6 @@ dependencies = [
 [[package]]
 name = "liminal-rs"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5cc0e613a5fdda937f3b2e939c093db9caa058c9be28d65f422570a1ef60a9c"
 dependencies = [
  "async-trait",
  "beamr",
@@ -2852,8 +2850,6 @@ dependencies = [
 [[package]]
 name = "liminal-sdk"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ec94614d3e44d86bf304c5a0a3f6317fd8c2c15bfa8dfc62fa7f0e573375634"
 dependencies = [
  "futures-core",
  "liminal-rs",
@@ -2866,8 +2862,6 @@ dependencies = [
 [[package]]
 name = "liminal-server"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eef7905541ea355e523fa97bb792ed5efa33fa8d8945be9ed73dbba52bb429aa"
 dependencies = [
  "anyhow",
  "beamr",

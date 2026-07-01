@@ -32,7 +32,7 @@
 //! of the session by construction, so the driver never has to disambiguate them.
 
 use aion_core::{InterventionCommand, InterventionOutcome};
-use aion_integrations::contract::{AgentHarness, AgentSession};
+use aion_integrations::contract::{AgentHarness, AgentSession, DynAgentHarness, DynAgentSession};
 use aion_integrations::error::HarnessError;
 use aion_integrations::spec::AgentRunSpec;
 use futures::StreamExt;
@@ -137,7 +137,9 @@ where
     // The events stream is a detached `'static` stream: taking it does NOT borrow
     // the session, so the driver can still call `intervene`/`wait_result` on the
     // session while pumping events. This is what lets all three run in one task.
-    let mut events = session.events();
+    // (Disambiguated to the typed `AgentSession` — the blanket `DynAgentSession`
+    // impl also defines an `events`, so the method must name its trait.)
+    let mut events = AgentSession::events(&mut session);
     let mut control = control_receiver;
 
     // Pump events out and commands in until the event stream closes (end-of-run).
@@ -175,8 +177,91 @@ where
     }
 
     // The single terminal result — the replay-authoritative activity output.
+    let output = AgentSession::wait_result(session).await?;
+    Ok(DispatchOutcome::Completed { output })
+}
+
+/// Drives one activity attempt through an ERASED [`DynAgentHarness`] — the same
+/// harness-blind driver as [`spawn_agent`], but over a `dyn` harness a worker can
+/// HOLD without being generic (the typed [`AgentHarness`] is not object-safe).
+///
+/// Behaviour is identical to [`spawn_agent`]: it starts the harness, concurrently
+/// pumps the session's events to `event_sender` and feeds `control_receiver`
+/// commands to the session, and maps the terminal result into
+/// [`DispatchOutcome::Completed`]. The only difference is the erased session type,
+/// so the whole event/intervention contract (§4.1 result/event split, capability
+/// gating, stale-target no-op) holds unchanged.
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] when the harness cannot be started or the terminal
+/// result cannot be received — same taxonomy as [`spawn_agent`].
+pub async fn spawn_dyn_agent(
+    harness: &dyn DynAgentHarness,
+    spec: AgentRunSpec,
+    event_sender: ActivityEventSender,
+    control_receiver: Option<ControlReceiver>,
+) -> Result<DispatchOutcome, HarnessError> {
+    let mut session = harness.start_dyn(spec).await?;
+    let mut events = session.events();
+    let mut control = control_receiver;
+
+    loop {
+        tokio::select! {
+            biased;
+            maybe_message = recv_control(&mut control) => {
+                match maybe_message {
+                    Some(message) => deliver_dyn_command(session.as_ref(), message).await,
+                    None => control = None,
+                }
+            }
+            event = events.next() => {
+                match event {
+                    Some(event) => {
+                        if event_sender.send(event).is_err() {
+                            debug!("agent driver: event sink closed; stopping event forwarding");
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
     let output = session.wait_result().await?;
     Ok(DispatchOutcome::Completed { output })
+}
+
+/// The erased twin of [`deliver_command`] — delivers one command to a
+/// [`DynAgentSession`], replies the ack, and logs a gated/stale outcome without
+/// ending the run.
+async fn deliver_dyn_command(session: &dyn DynAgentSession, message: ControlMessage) {
+    let ControlMessage { command, ack } = message;
+    let primitive = command.kind.primitive();
+    let outcome = match session.intervene(command).await {
+        Ok(()) => InterventionOutcome::Applied,
+        Err(HarnessError::CapabilityNotSupported { .. }) => {
+            InterventionOutcome::capability_not_supported(primitive)
+        }
+        Err(HarnessError::StaleTarget { detail }) => InterventionOutcome::stale_target(detail),
+        Err(error) => InterventionOutcome::stale_target(error.to_string()),
+    };
+    match &outcome {
+        InterventionOutcome::Applied => debug!(?primitive, "agent driver: intervention delivered"),
+        InterventionOutcome::CapabilityNotSupported { primitive } => {
+            debug!(
+                ?primitive,
+                "agent driver: intervention gated (capability not supported)"
+            );
+        }
+        InterventionOutcome::StaleTarget { detail } => {
+            warn!(?primitive, %detail, "agent driver: intervention delivery failed");
+        }
+    }
+    if let Some(ack) = ack {
+        drop(ack.send(outcome));
+    }
 }
 
 /// Receives the next control message, or pends forever when there is no control

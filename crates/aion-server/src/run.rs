@@ -615,8 +615,15 @@ fn build_liminal_row_dispatch(
     // (1) Reuse the registry already in ServerState: gRPC + liminal workers share
     // ONE registry and the same `select_worker`.
     let registry = state.worker_registry().clone();
-    // (2) Notifier over that registry (supervisor bound after it is built).
-    let notifier = Arc::new(LiminalConnectionNotifier::new(registry.clone()));
+    // (2) Notifier over that registry (supervisor bound after it is built), with the
+    // NOI-5b transcript tap: a worker's observability publishes on the reserved
+    // channel drain into the SAME transcript sequencer the transcript socket serves,
+    // so a live agent's transcript is persisted + fanned out. (Captures the current
+    // runtime handle to bridge the sync connection callback onto the async append.)
+    let notifier = Arc::new(
+        LiminalConnectionNotifier::new(registry.clone())
+            .with_transcript_publisher(state.transcript_publisher().clone()),
+    );
     // (3) Connection services from the liminal listen config.
     let services = Arc::new(
         LiminalConnectionServices::from_config(&liminal_config).map_err(|error| {
@@ -658,8 +665,13 @@ fn build_liminal_row_dispatch(
         Arc::clone(state.namespace_store()),
         PLACEMENT_CACHE_TTL,
     );
+    // NOI-6: install the SAME attempt-owner back-index the server's intervention
+    // router resolves through, so each dispatched agent attempt binds its owning
+    // worker and a pushed command reaches the worker this dispatcher sent it to.
     let dispatch: Arc<dyn OutboxRowDispatch> = Arc::new(
-        RegistryLiminalDispatch::new(registry, callback).with_placement_cache(placement_cache),
+        RegistryLiminalDispatch::new(registry, callback)
+            .with_placement_cache(placement_cache)
+            .with_attempt_owners(state.attempt_owners().clone()),
     );
 
     info!(

@@ -40,7 +40,7 @@ pub mod jsonrpc;
 /// The neutral run identity handed to a harness at start.
 pub mod spec;
 
-pub use contract::{AgentHarness, AgentSession};
+pub use contract::{AgentHarness, AgentSession, DynAgentHarness, DynAgentSession};
 pub use error::HarnessError;
 pub use spec::AgentRunSpec;
 

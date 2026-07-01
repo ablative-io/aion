@@ -26,6 +26,7 @@ pub(crate) mod report;
 
 pub use agent::{
     ActivityEventSender, ControlMessage, ControlReceiver, harness_error_to_outcome, spawn_agent,
+    spawn_dyn_agent,
 };
 pub use dispatch::{TypedActivityDispatcher, decode_payload, encode_payload};
 pub use intervention::{ControlRegistry, SessionGuard, SessionKey};
