@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-
-import type { ActivityId, Namespace, WorkflowId } from '@/types';
 import type { TranscriptTarget } from '@/lib/api/transcript-stream';
+import type { ActivityId, Namespace, WorkflowId } from '@/types';
 import { parseTargetKey, targetKey } from '../hooks/useTranscript';
 
 /**

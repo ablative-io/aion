@@ -48,7 +48,10 @@ function activityScheduled(seq: number, id: number, type: string): Event {
 }
 
 function activityStarted(seq: number, id: number): Event {
-  return { type: 'ActivityStarted', data: { envelope: envelope(seq), activity_id: id, attempt: 1 } };
+  return {
+    type: 'ActivityStarted',
+    data: { envelope: envelope(seq), activity_id: id, attempt: 1 },
+  };
 }
 
 function activityFailed(seq: number, id: number, attempt: number): Event {
@@ -81,13 +84,21 @@ function timerFired(seq: number, name: string): Event {
   return { type: 'TimerFired', data: { envelope: envelope(seq), timer_id: { Named: name } } };
 }
 
-function workflowReopened(seq: number, reopened: number[]): Event {
+function workflowFailed(seq: number, message: string): Event {
   return {
-    type: 'WorkflowReopened',
+    type: 'WorkflowFailed',
+    data: { envelope: envelope(seq), error: { message, details: null } },
+  };
+}
+
+function terminalActivityFailed(seq: number, id: number, attempt: number): Event {
+  return {
+    type: 'ActivityFailed',
     data: {
       envelope: envelope(seq),
-      run_id: '00000000-0000-0000-0000-0000000000a2',
-      reopened,
+      activity_id: id,
+      attempt,
+      error: { kind: 'Terminal', message: 'terminal boom', details: null },
     },
   };
 }
@@ -298,27 +309,34 @@ test('WorkflowDetailViewContent renders the no-namespace state without an unscop
   expect(markup).toContain('No namespace selected');
 });
 
-test('the reopen-diff trigger appears only when history carries a WorkflowReopened event', () => {
-  const reopenedHistory = [
-    activityScheduled(1, 10, 'charge'),
-    activityFailed(2, 10, 1),
-    workflowReopened(3, [10]),
+test('the reopen affordance appears for a terminal Failed run, not a fresh reopen event', () => {
+  const failedHistory = [
+    workflowStarted(1),
+    activityScheduled(2, 10, 'charge'),
+    terminalActivityFailed(3, 10, 1),
+    workflowFailed(4, 'charge declined'),
   ];
   const withReopen = renderToStaticMarkup(
     <WorkflowDetailViewContent
       error={null}
-      history={reopenedHistory}
+      history={failedHistory}
       isError={false}
       isLive={false}
       isLoading={false}
       isTerminal={true}
       namespace="default"
-      terminalOutcome={null}
-      timeline={projectTimeline(reopenedHistory)}
+      terminalOutcome="failed"
+      timeline={projectTimeline(failedHistory)}
       workflowId={WORKFLOW_ID}
     />
   );
-  expect(withReopen).toContain('Reopen diff');
+  // The Reopen affordance is gated on the terminal Failed/Cancelled outcome, NOT
+  // on an already-recorded WorkflowReopened event (the old inverted gate).
+  expect(withReopen).toContain('reopen-open');
+  // The failure context (failed step + reason) is surfaced where reopen is decided.
+  expect(withReopen).toContain('failure-context');
+  expect(withReopen).toContain('charge');
+  expect(withReopen).toContain('charge declined');
 
   const cleanHistory = [workflowStarted(1), activityScheduled(2, 10, 'charge')];
   const withoutReopen = renderToStaticMarkup(
@@ -335,31 +353,37 @@ test('the reopen-diff trigger appears only when history carries a WorkflowReopen
       workflowId={WORKFLOW_ID}
     />
   );
-  expect(withoutReopen).not.toContain('Reopen diff');
+  // A running workflow shows neither the reopen affordance nor an empty failure panel.
+  expect(withoutReopen).not.toContain('reopen-open');
+  expect(withoutReopen).not.toContain('failure-context');
 });
 
-test('opening the reopen-diff mounts the ReopenDiff panel from the live history', () => {
-  const reopenedHistory = [
-    activityScheduled(1, 10, 'charge'),
-    activityFailed(2, 10, 1),
-    workflowReopened(3, [10]),
+test('opening the reopen panel mounts ReopenDiff from the live history with an enabled commit', () => {
+  const failedHistory = [
+    workflowStarted(1),
+    activityScheduled(2, 10, 'charge'),
+    terminalActivityFailed(3, 10, 1),
+    workflowFailed(4, 'charge declined'),
   ];
   const markup = renderToStaticMarkup(
     <WorkflowDetailViewContent
       error={null}
-      history={reopenedHistory}
+      history={failedHistory}
       initialReopenOpen={true}
       isError={false}
       isLive={false}
       isLoading={false}
       isTerminal={true}
       namespace="default"
-      terminalOutcome={null}
-      timeline={projectTimeline(reopenedHistory)}
+      terminalOutcome="failed"
+      timeline={projectTimeline(failedHistory)}
       workflowId={WORKFLOW_ID}
     />
   );
 
   expect(markup).toContain('reopen-diff');
   expect(markup).toContain('Reopen preview');
+  // The commit button is present and enabled (no stale "not yet available" note).
+  expect(markup).toContain('reopen-commit');
+  expect(markup).not.toContain('not yet available');
 });

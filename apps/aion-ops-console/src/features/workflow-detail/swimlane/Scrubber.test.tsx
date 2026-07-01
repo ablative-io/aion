@@ -49,7 +49,10 @@ function activityScheduled(seq: number, id: number, type: string): Event {
 }
 
 function activityStarted(seq: number, id: number): Event {
-  return { type: 'ActivityStarted', data: { envelope: envelope(seq), activity_id: id, attempt: 1 } };
+  return {
+    type: 'ActivityStarted',
+    data: { envelope: envelope(seq), activity_id: id, attempt: 1 },
+  };
 }
 
 function activityCompleted(seq: number, id: number): Event {

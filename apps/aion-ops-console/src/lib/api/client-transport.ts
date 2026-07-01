@@ -25,6 +25,9 @@ export const AW_REST_CONTRACT = {
     // (both namespace-scoped like signal/cancel).
     workflowIntervene: '/workflows/intervene',
     workflowAttempts: '/workflows/attempts',
+    // Reopen a terminal (Failed/Cancelled) workflow: re-dispatches the failed
+    // tail and returns the reopened run + its projected Running status.
+    workflowReopen: '/workflows/reopen',
     deployPackages: '/deploy/packages',
     deployVersions: '/deploy/versions',
     deployRoute: '/deploy/route',
@@ -44,6 +47,7 @@ export const AW_REST_CONTRACT = {
     workflowStart: 'POST',
     workflowIntervene: 'POST',
     workflowAttempts: 'POST',
+    workflowReopen: 'POST',
     deployPackages: 'POST',
     deployVersions: 'GET',
     deployRoute: 'POST',

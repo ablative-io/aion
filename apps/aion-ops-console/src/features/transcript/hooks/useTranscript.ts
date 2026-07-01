@@ -57,7 +57,12 @@ export function targetKey(target: TranscriptTarget | null): string {
   if (target === null) {
     return '';
   }
-  return [target.namespace, target.workflowId, String(target.activityId), String(target.attempt)].join('\0');
+  return [
+    target.namespace,
+    target.workflowId,
+    String(target.activityId),
+    String(target.attempt),
+  ].join('\0');
 }
 
 /**

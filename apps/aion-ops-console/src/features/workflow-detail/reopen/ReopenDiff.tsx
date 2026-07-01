@@ -1,16 +1,21 @@
 import { X } from 'lucide-react';
 
-import { Button } from '@/components/ui';
+import { Badge, Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import type { Event } from '@/types';
+import type { Event, Namespace, WorkflowId } from '@/types';
 
 import { computeReopen, type ReopenActivityRow, type ReopenDisposition } from './computeReopen';
+import { useReopen } from './useReopen';
 
 type ReopenDiffProps = {
   /** The (failed) run's recorded history. Read-only — the dashboard never writes. */
   history: readonly Event[];
-  workflowId: string;
+  workflowId: WorkflowId;
+  /** Auth scope for the reopen command; `null` disables the commit. */
+  namespace: Namespace | null;
   onClose: () => void;
+  /** Notified with the reopened run id after a committed reopen succeeds. */
+  onReopened?: (runId: string) => void;
 };
 
 // Disposition palette. Reused/superseded reuse house tokens; "will re-run" uses a
@@ -35,16 +40,36 @@ const DISPOSITION_LABEL: Record<ReopenDisposition, string> = {
  * (VISION §4.3): green/preserved = reused recorded results, amber = will
  * re-dispatch, struck = superseded terminal failure.
  *
- * No-silent-failure (VISION §6.2): the commit button is rendered but DISABLED
- * with an explicit "command API not yet available" line. Issuing a reopen is a
- * server command (invariant 3) and the command surface is not on the wire today
- * (PHASE1-REMAINING-PLAN §8). We never render a dead button with no explanation,
- * and we never fabricate a success.
+ * Committing a reopen (VISION §6.2) POSTs to `POST /workflows/reopen` and
+ * surfaces the outcome HONESTLY: a success reports the reopened run + projected
+ * status, and a rejection (non-reopenable terminal, absent workflow,
+ * authorization) is shown as a visible error — never swallowed and never
+ * fabricated. The live event stream drives the workflow back to Running.
  */
-export function ReopenDiff({ history, workflowId, onClose }: ReopenDiffProps) {
+export function ReopenDiff({
+  history,
+  workflowId,
+  namespace,
+  onClose,
+  onReopened,
+}: ReopenDiffProps) {
   const plan = computeReopen(history);
   const beforeRows = plan.rows.filter((row) => row.disposition !== 'redispatch');
   const afterRows = plan.rows.filter((row) => row.disposition !== 'superseded');
+  const { submit, submitState, lastResult, error } = useReopen({ namespace });
+
+  const commit = (): void => {
+    void submit(workflowId)
+      .then((result) => {
+        if (result !== null) {
+          onReopened?.(result.runId);
+        }
+      })
+      .catch(() => {
+        // The error is already captured as visible state by the hook; swallow the
+        // rejection here only to avoid an unhandled-promise warning.
+      });
+  };
 
   return (
     <aside
@@ -83,16 +108,73 @@ export function ReopenDiff({ history, workflowId, onClose }: ReopenDiffProps) {
       </div>
 
       <footer className="flex flex-col gap-2 border-[var(--border-default)] border-t pt-4">
-        <Button disabled type="button" variant="default">
-          Commit reopen
+        <Button
+          data-testid="reopen-commit"
+          disabled={!plan.reopenable || namespace === null || submitState === 'submitting'}
+          onClick={commit}
+          type="button"
+          variant="default"
+        >
+          {submitState === 'submitting' ? 'Reopening…' : 'Commit reopen'}
         </Button>
-        <p className="text-[var(--text-muted)] text-xs" role="note">
-          Commit is disabled: the server command API for reopen is not yet available
-          (PHASE1-REMAINING-PLAN §8). This is a preview only; the dashboard never writes a
-          workflow's history.
-        </p>
+        <ReopenNotice
+          error={error}
+          namespace={namespace}
+          reopenable={plan.reopenable}
+          result={lastResult}
+          submitState={submitState}
+        />
       </footer>
     </aside>
+  );
+}
+
+type ReopenNoticeProps = {
+  submitState: ReturnType<typeof useReopen>['submitState'];
+  result: ReturnType<typeof useReopen>['lastResult'];
+  error: Error | null;
+  reopenable: boolean;
+  namespace: Namespace | null;
+};
+
+/** Surface the reopen outcome / gating reason as distinct, honest visible state. */
+function ReopenNotice({ submitState, result, error, reopenable, namespace }: ReopenNoticeProps) {
+  if (submitState === 'error' && error !== null) {
+    return (
+      <p className="text-[var(--destructive)] text-xs" data-testid="reopen-error" role="alert">
+        {error.message}
+      </p>
+    );
+  }
+  if (submitState === 'settled' && result !== null) {
+    return (
+      <Badge
+        className="self-start border-emerald-500/40 bg-emerald-500/10 text-emerald-500"
+        data-testid="reopen-outcome"
+        variant="outline"
+      >
+        Reopened as run {result.runId} ({result.status})
+      </Badge>
+    );
+  }
+  if (!reopenable) {
+    return (
+      <p className="text-[var(--text-muted)] text-xs" role="note">
+        Nothing would re-dispatch — this run has no terminal-failed activity to reopen.
+      </p>
+    );
+  }
+  if (namespace === null) {
+    return (
+      <p className="text-[var(--text-muted)] text-xs" role="note">
+        Select a namespace to scope the reopen command.
+      </p>
+    );
+  }
+  return (
+    <p className="text-[var(--text-muted)] text-xs" role="note">
+      Committing re-dispatches the failed tail; the live view reflects the run returning to Running.
+    </p>
   );
 }
 
