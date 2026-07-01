@@ -1,3 +1,8 @@
+export type {
+  CreateNamespace,
+  CreateNamespaceControlProps,
+} from './components/CreateNamespaceControl';
+export { CreateNamespaceControl } from './components/CreateNamespaceControl';
 export type { NamespaceRegistryPanelProps } from './components/NamespaceRegistryPanel';
 export { NamespaceRegistryPanel } from './components/NamespaceRegistryPanel';
 export { NamespaceSelector } from './components/NamespaceSelector';

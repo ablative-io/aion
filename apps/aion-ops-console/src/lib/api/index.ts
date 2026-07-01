@@ -2,6 +2,7 @@ export type {
   ApiClientOptions,
   ApiCredentials,
   Capabilities,
+  CreateNamespaceResult,
   EventSearchQuery,
   EventSearchResult,
   JsonRecord,

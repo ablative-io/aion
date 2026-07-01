@@ -10,6 +10,9 @@ export const AW_REST_CONTRACT = {
     workflowsCount: '/workflows/count',
     history: '/workflows/describe',
     namespaces: '/namespaces',
+    // `POST /namespaces` is the explicit operator namespace-create; it shares the
+    // `/namespaces` path with the list `GET`, distinguished by method below.
+    namespaceCreate: '/namespaces',
     namespaceRecords: '/namespaces/records',
     // `{name}` is substituted with the URL-encoded namespace at call time; this
     // is the auth-scoped quorum-CAS `PUT` that sets a namespace's placement.
@@ -27,6 +30,7 @@ export const AW_REST_CONTRACT = {
     workflows: 'POST',
     history: 'POST',
     namespaces: 'GET',
+    namespaceCreate: 'POST',
     namespaceRecords: 'GET',
     namespacePlacement: 'PUT',
     whoami: 'GET',
@@ -41,6 +45,8 @@ export const AW_REST_CONTRACT = {
   },
   requestKeys: {
     namespace: 'namespace',
+    // `POST /namespaces` body key — the free-form namespace name to create.
+    namespaceName: 'name',
     filter: 'filter',
     workflowId: 'workflow_id',
     runId: 'run_id',

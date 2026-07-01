@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { NamespaceRecord } from '@/lib/api';
@@ -68,10 +70,19 @@ function quotaState(
 
 const noopSetPlacement = async () => {};
 
+// The panel now calls useQueryClient (to refresh the selector list after a
+// create), so it must render inside a QueryClientProvider.
+function renderPanel(node: ReactNode): string {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
+  );
+}
+
 describe('NamespaceRegistryPanel — Phase 2 placement + quota', () => {
   test('renders each namespace placement honestly (pinned = hard/isolated)', () => {
     const rows = [record('orders', { kind: 'pinned', nodes: ['node-a', 'node-b'] })];
-    const markup = renderToStaticMarkup(
+    const markup = renderPanel(
       <NamespaceRegistryPanel registry={result(rows, {})} onSetPlacement={noopSetPlacement} />
     );
 
@@ -91,7 +102,7 @@ describe('NamespaceRegistryPanel — Phase 2 placement + quota', () => {
       placementChanged('orders', { kind: 'prefer', nodes: ['zone-1'] })
     );
 
-    const markup = renderToStaticMarkup(
+    const markup = renderPanel(
       <NamespaceRegistryPanel registry={result(folded, {})} onSetPlacement={noopSetPlacement} />
     );
 
@@ -103,7 +114,7 @@ describe('NamespaceRegistryPanel — Phase 2 placement + quota', () => {
     const rows = [record('orders')];
     const quotas = applyQuotaDelta({}, quotaState('orders', 3, 8));
 
-    const markup = renderToStaticMarkup(
+    const markup = renderPanel(
       <NamespaceRegistryPanel registry={result(rows, quotas)} onSetPlacement={noopSetPlacement} />
     );
 
@@ -121,7 +132,7 @@ describe('NamespaceRegistryPanel — Phase 2 placement + quota', () => {
       quotaState('orders', 8, 8)
     );
 
-    const markup = renderToStaticMarkup(
+    const markup = renderPanel(
       <NamespaceRegistryPanel registry={result(rows, quotas)} onSetPlacement={noopSetPlacement} />
     );
 
@@ -131,11 +142,32 @@ describe('NamespaceRegistryPanel — Phase 2 placement + quota', () => {
 
   test('a namespace with no quota snapshot yet shows an honest placeholder, not a fake zero', () => {
     const rows = [record('orders')];
-    const markup = renderToStaticMarkup(
+    const markup = renderPanel(
       <NamespaceRegistryPanel registry={result(rows, {})} onSetPlacement={noopSetPlacement} />
     );
 
     expect(markup).toContain('Quota pending first snapshot');
     expect(markup).not.toContain('0 / 0');
+  });
+});
+
+describe('NamespaceRegistryPanel — create affordance', () => {
+  const noopCreate = async (name: string) => ({ name: name as Namespace, created: true });
+
+  test('renders a create-namespace affordance even when the registry is empty', () => {
+    // A fresh server returns []; the panel must still offer a way to create one
+    // (the chicken-and-egg dead-end fix), alongside the honest empty state.
+    const markup = renderPanel(
+      <NamespaceRegistryPanel
+        registry={result([], {})}
+        onSetPlacement={noopSetPlacement}
+        onCreateNamespace={noopCreate}
+      />
+    );
+
+    expect(markup).toContain('Create namespace');
+    expect(markup).toContain('New namespace name');
+    // The empty state is still shown honestly — no fabricated rows.
+    expect(markup).toContain('No namespaces yet');
   });
 });

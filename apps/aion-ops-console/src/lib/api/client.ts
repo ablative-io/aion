@@ -12,6 +12,7 @@ import type {
 import { ApiError } from './api-error';
 import {
   apiErrorFromResponse,
+  type CreateNamespaceResult,
   type EventSearchResponse,
   type EventSearchResult,
   type HistoryResponse,
@@ -21,6 +22,7 @@ import {
   type NamespaceRecord,
   type NamespaceRecordsResponse,
   type NamespacesResponse,
+  normalizeCreateNamespace,
   normalizeEventSearch,
   normalizeHistory,
   normalizeLoadPackage,
@@ -48,6 +50,7 @@ import {
 export type { ServerErrorBody } from './api-error';
 export { ApiError } from './api-error';
 export type {
+  CreateNamespaceResult,
   EventSearchResult,
   JsonRecord,
   LoadPackageResult,
@@ -276,6 +279,33 @@ export class ApiClient {
     );
 
     return normalizeNamespaces(response);
+  }
+
+  /**
+   * Explicitly create a namespace (`POST /namespaces`). Namespace-scoped: the
+   * caller's `x-aion-namespaces` grant must include `name` (the SAME grant the
+   * access path checks via `authorize_namespace`), so a caller can never create —
+   * or learn the existence of — a namespace it cannot access. Idempotent server
+   * side: `created === false` is the benign already-existed path, not an error.
+   *
+   * The credential scoping (target name in the namespace header) is the caller's
+   * responsibility: pass a `credentials` whose namespaces include `name`, or use a
+   * client built with `createConfiguredApiClient({ namespace: name })`. An empty
+   * name (400), a denied grant (403), or any 4xx propagates as a typed
+   * {@link ApiError} — never swallowed.
+   */
+  async createNamespace(
+    name: string,
+    options?: Pick<RequestOptions, 'credentials'>
+  ): Promise<CreateNamespaceResult> {
+    const response = await this.request<unknown>(
+      AW_REST_CONTRACT.endpoints.namespaceCreate,
+      AW_REST_CONTRACT.methods.namespaceCreate,
+      { namespace: name as Namespace, credentials: options?.credentials },
+      { [AW_REST_CONTRACT.requestKeys.namespaceName]: name }
+    );
+
+    return normalizeCreateNamespace(response);
   }
 
   /**

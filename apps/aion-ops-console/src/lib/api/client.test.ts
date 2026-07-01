@@ -168,6 +168,66 @@ test('setNamespacePlacement surfaces a server rejection as a typed ApiError', as
   ).rejects.toBeInstanceOf(ApiError);
 });
 
+test('createNamespace POSTs /namespaces with the {name} body and reports created', async () => {
+  const calls: Request[] = [];
+  const bodies: string[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    credentials: { namespaces: ['orders'] },
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      calls.push(request);
+      bodies.push(typeof init?.body === 'string' ? init.body : '');
+      return jsonResponse({ name: 'orders', created: true });
+    },
+  });
+
+  await expect(client.createNamespace('orders')).resolves.toEqual({
+    name: 'orders',
+    created: true,
+  });
+
+  expect(calls[0]?.method).toBe('POST');
+  expect(calls[0]?.url).toBe('https://aion.example/namespaces');
+  // The grant travels on the namespace header so authorize_namespace passes.
+  expect(calls[0]?.headers.get('x-aion-namespaces')).toBe('orders');
+  expect(JSON.parse(bodies[0] ?? '{}')).toEqual({ name: 'orders' });
+});
+
+test('createNamespace reports the idempotent already-existed path honestly', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () => jsonResponse({ name: 'orders', created: false }),
+  });
+
+  await expect(client.createNamespace('orders')).resolves.toEqual({
+    name: 'orders',
+    created: false,
+  });
+});
+
+test('createNamespace surfaces an empty-name 400 as a typed ApiError', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () =>
+      jsonResponse(
+        { code: 'invalid_input', message: 'namespace name must not be empty' },
+        {
+          status: 400,
+        }
+      ),
+  });
+
+  await expect(client.createNamespace('   ')).rejects.toBeInstanceOf(ApiError);
+});
+
+test('createNamespace surfaces a denied grant (403) as a typed ApiError', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () =>
+      jsonResponse({ code: 'PermissionDenied', message: 'namespace denied' }, { status: 403 }),
+  });
+
+  await expect(client.createNamespace('secret')).rejects.toBeInstanceOf(ApiError);
+});
+
 test('getCapabilities normalizes the /whoami operator-mode response', async () => {
   const calls: Request[] = [];
   const client = new ApiClient({

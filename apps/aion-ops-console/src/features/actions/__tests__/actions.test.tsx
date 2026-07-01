@@ -58,16 +58,25 @@ describe('parseJsonInput', () => {
 });
 
 describe('StartWorkflowForm', () => {
-  test('renders the no-namespace state when none is selected', () => {
+  test('offers a free-form namespace entry when none is selected (no dead-end)', () => {
+    // A fresh server has no namespaces, so `namespace` is null. Instead of a
+    // dead-end the form renders a namespace field the operator types into; the
+    // start path mints an unseen namespace on use.
     const markup = wrap(<StartWorkflowForm namespace={null} />);
-    expect(markup).toContain('No namespace selected');
+    expect(markup).toContain('Namespace');
+    expect(markup).toContain('created when the run starts');
+    // The rest of the form is available so the flow is usable end to end.
+    expect(markup).toContain('Workflow type');
+    expect(markup).toContain('Start workflow');
   });
 
-  test('renders the form fields when a namespace is selected', () => {
+  test('renders the form fields (no namespace entry) when a namespace is selected', () => {
     const markup = wrap(<StartWorkflowForm namespace={NAMESPACE} />);
     expect(markup).toContain('Workflow type');
     expect(markup).toContain('Input (JSON)');
     expect(markup).toContain('Start workflow');
+    // A selected namespace takes precedence, so the free-form hint is absent.
+    expect(markup).not.toContain('created when the run starts');
   });
 });
 

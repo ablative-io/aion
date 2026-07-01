@@ -254,6 +254,42 @@ export function normalizeNamespaces(response: NamespacesResponse): Namespace[] {
   return Array.isArray(response) ? response : readArray<Namespace>(response, NAMESPACES_KEY);
 }
 
+/**
+ * Result of an explicit `POST /namespaces` create. Mirrors the server's
+ * `CreateNamespaceResponse` (`{ name, created }`): `name` is the durable
+ * namespace, `created === true` means THIS call minted the record and
+ * `created === false` is the idempotent re-create path (the name already
+ * existed). The distinction is surfaced honestly, not collapsed.
+ */
+export type CreateNamespaceResult = {
+  name: Namespace;
+  created: boolean;
+};
+
+type RawCreateNamespaceResponse = {
+  name?: unknown;
+  created?: unknown;
+};
+
+/**
+ * Normalize the `POST /namespaces` response into {@link CreateNamespaceResult}. A
+ * missing/non-string `name` is a contract violation surfaced as an {@link ApiError}
+ * (never a silent success); a missing/non-boolean `created` collapses to `false`
+ * (the conservative "already existed" reading) rather than throwing.
+ */
+export function normalizeCreateNamespace(response: unknown): CreateNamespaceResult {
+  if (!isRecord(response)) {
+    throw new ApiError(200, 'namespaces create response was not an object');
+  }
+
+  const raw = response as RawCreateNamespaceResponse;
+
+  return {
+    name: requireString(raw.name, 'name') as Namespace,
+    created: raw.created === true,
+  };
+}
+
 export function normalizeStartWorkflow(response: unknown): StartWorkflowResult {
   if (!isRecord(response)) {
     throw new ApiError(200, 'workflows/start response was not an object');

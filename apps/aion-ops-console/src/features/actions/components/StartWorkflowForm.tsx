@@ -2,7 +2,6 @@ import { useId, useState } from 'react';
 import { Link } from 'react-router';
 
 import { workflowDetailHref } from '@/app/routePaths';
-import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
 import { Button } from '@/components/ui';
 import type { ApiClient } from '@/lib/api';
@@ -23,22 +22,34 @@ const AREA_CLASS =
   'min-h-28 rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm outline-none focus:border-[var(--text-muted)]';
 
 /**
- * Start a workflow run in the selected namespace. Namespace-scoped command
- * authority (ADR-022): no deploy grant needed. Provenance is honest — the
- * success panel renders only after the server returns real `workflow_id`/`run_id`
- * values, and deep-links to the new run.
+ * Start a workflow run. Namespace-scoped command authority (ADR-022): no deploy
+ * grant needed. Provenance is honest — the success panel renders only after the
+ * server returns real `workflow_id`/`run_id` values, and deep-links to the run.
+ *
+ * The namespace is the SELECTED namespace when one exists, otherwise the operator
+ * types it free-form: `POST /workflows/start` mints an unseen namespace on use
+ * (open policy, `start_mint`), so a fresh server with no namespaces is not a
+ * dead-end — you type a namespace and the run creates it. The effective namespace
+ * is the selected prop, or the trimmed free-form entry when none is selected.
  */
 export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormProps) {
   const ids = useFieldIds();
   const [workflowType, setWorkflowType] = useState('');
+  const [namespaceEntry, setNamespaceEntry] = useState('');
   const [routingKey, setRoutingKey] = useState('');
   const [taskQueue, setTaskQueue] = useState('');
   const [inputText, setInputText] = useState('');
   const [inputError, setInputError] = useState<string | null>(null);
 
-  const start = useStartWorkflow({ namespace, apiClient });
+  // No selected namespace on a fresh server: fall back to the free-form entry,
+  // which the start path mints on use. A selected namespace always takes it.
+  const trimmedEntry = namespaceEntry.trim();
+  const effectiveNamespace: Namespace | null =
+    namespace ?? (trimmedEntry.length > 0 ? (trimmedEntry as Namespace) : null);
+
+  const start = useStartWorkflow({ namespace: effectiveNamespace, apiClient });
   const trimmedType = workflowType.trim();
-  const canSubmit = namespace !== null && trimmedType.length > 0 && !start.isPending;
+  const canSubmit = effectiveNamespace !== null && trimmedType.length > 0 && !start.isPending;
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -60,21 +71,28 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
     });
   }
 
-  if (namespace === null) {
-    return (
-      <EmptyState
-        description="Select a namespace to start a workflow run."
-        title="No namespace selected"
-      />
-    );
-  }
-
   return (
     <div className="space-y-4">
       <form
         className="grid gap-3 rounded-lg border border-[var(--border-default)] p-4"
         onSubmit={handleSubmit}
       >
+        {namespace === null ? (
+          <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={ids.namespace}>
+            Namespace
+            <input
+              className={FIELD_CLASS}
+              id={ids.namespace}
+              placeholder="e.g. orders — created on start if new"
+              value={namespaceEntry}
+              onChange={(event) => setNamespaceEntry(event.currentTarget.value)}
+            />
+            <span className="font-normal text-[var(--text-muted)] text-xs">
+              No namespace is selected. Type one to target — an unseen namespace is created when the
+              run starts.
+            </span>
+          </label>
+        ) : null}
         <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={ids.workflowType}>
           Workflow type
           <input
@@ -131,7 +149,7 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
       <StartOutcome
         error={start.error}
         isError={start.isError}
-        namespace={namespace}
+        namespace={effectiveNamespace}
         result={start.data ?? null}
       />
     </div>
@@ -141,7 +159,8 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
 export type StartOutcomeProps = {
   isError: boolean;
   error: unknown;
-  namespace: Namespace;
+  /** The namespace the run targeted; non-null whenever `result` is present. */
+  namespace: Namespace | null;
   result: { workflowId: string; runId: string } | null;
 };
 
@@ -158,7 +177,7 @@ export function StartOutcome({ isError, error, namespace, result }: StartOutcome
     <div className="rounded-lg border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan-glow)] p-4">
       <h3 className="font-medium text-[var(--text-primary)] text-sm">Workflow started</h3>
       <dl className="mt-2 space-y-1 text-sm">
-        <Detail label="Namespace" value={namespace} />
+        <Detail label="Namespace" value={namespace ?? ''} />
         <Detail label="Workflow ID" value={result.workflowId} />
         <Detail label="Run ID" value={result.runId} />
       </dl>
@@ -185,6 +204,7 @@ function useFieldIds() {
   const prefix = useId();
 
   return {
+    namespace: `${prefix}-namespace`,
     workflowType: `${prefix}-workflow-type`,
     input: `${prefix}-input`,
     routingKey: `${prefix}-routing-key`,
