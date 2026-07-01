@@ -119,6 +119,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-integration-norn"
+version = "0.8.0"
+dependencies = [
+ "aion-core",
+ "aion-integrations",
+ "async-trait",
+ "chrono",
+ "futures",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aion-integrations"
 version = "0.8.0"
 dependencies = [

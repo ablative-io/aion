@@ -1,0 +1,48 @@
+[package]
+name = "aion-integration-norn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The first-party Norn adapter for Aion: implements the aion-integrations AgentHarness trait against a Norn `--protocol jsonrpc` process. The single place that names Norn's on-wire contract."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-integration-norn"
+readme = "README.md"
+keywords = ["aion", "agent", "harness", "norn", "integration"]
+categories = ["api-bindings", "asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-integrations = { version = "0.8.0", path = "../aion-integrations" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "sync",
+] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+uuid = { workspace = true }
