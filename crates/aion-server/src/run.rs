@@ -624,9 +624,18 @@ fn build_liminal_row_dispatch(
     let callback: Arc<dyn crate::worker::OutboxDeliveryCallback> =
         Arc::new(ServerOutboxDeliveryCallback::new(engine));
     // (8) The registry-backed dispatch builds its LiminalCompletionSource from the
-    // shared callback internally.
-    let dispatch: Arc<dyn OutboxRowDispatch> =
-        Arc::new(RegistryLiminalDispatch::new(registry, callback));
+    // shared callback internally. Attach the SAME short-TTL placement cache the
+    // gRPC arm installs (Control-Plane Phase 2, P2-P3), so an unpinned row in a
+    // `Prefer{L}` namespace prefers an L-labelled worker (spilling to any live
+    // worker) on the cross-node liminal transport too — the cluster-failover
+    // demo behaviour. A default-`Unplaced` deployment is byte-identical.
+    let placement_cache = crate::worker::PlacementCache::new(
+        Arc::clone(state.namespace_store()),
+        PLACEMENT_CACHE_TTL,
+    );
+    let dispatch: Arc<dyn OutboxRowDispatch> = Arc::new(
+        RegistryLiminalDispatch::new(registry, callback).with_placement_cache(placement_cache),
+    );
 
     info!(
         listen_address = %listen_address,
