@@ -919,3 +919,214 @@ export type ClusterStreamError = { "kind": "ClusterLagged",
  */
 skipped: number, };
 
+export type MessageRole = { "role": "User" } | { "role": "Assistant" } | { "role": "System" } | { "role": "Tool" };
+
+export type ProgressDetail = { "detail": "UsageEstimate", 
+/**
+ * Estimated input (prompt) tokens consumed so far, when the harness reports it.
+ */
+input_tokens: number | null, 
+/**
+ * Estimated output (completion) tokens produced so far, when the harness reports it.
+ */
+output_tokens: number | null, } | { "detail": "Note", 
+/**
+ * The progress note text.
+ */
+text: string, };
+
+export type StopKind = { "stop": "EndTurn" } | { "stop": "ToolUse" } | { "stop": "LimitReached" } | { "stop": "Cancelled" } | { "stop": "Error", 
+/**
+ * Human-readable error description.
+ */
+message: string, } | { "stop": "Other", 
+/**
+ * The harness's raw stop-reason label.
+ */
+reason: string, };
+
+export type ActivityEventKind = { "kind": "Message", 
+/**
+ * Who the message is attributed to.
+ */
+role: MessageRole, 
+/**
+ * The message text.
+ */
+text: string, } | { "kind": "ToolCall", 
+/**
+ * The tool/function name.
+ */
+tool: string, 
+/**
+ * Correlation id linking this call to its eventual [`Self::ToolResult`].
+ */
+call_id: string, 
+/**
+ * The structured tool input.
+ */
+input: unknown, } | { "kind": "ToolResult", 
+/**
+ * Correlation id matching the originating [`Self::ToolCall`].
+ */
+call_id: string, 
+/**
+ * The structured tool output.
+ */
+output: unknown, 
+/**
+ * Whether the tool reported an error result.
+ */
+is_error: boolean, } | { "kind": "Progress", 
+/**
+ * The progress detail.
+ */
+detail: ProgressDetail, } | { "kind": "Stop", 
+/**
+ * Why the run stopped.
+ */
+reason: StopKind, } | { "kind": "Raw", 
+/**
+ * A label identifying where the raw value came from (adapter-defined).
+ */
+source: string, 
+/**
+ * The raw value, passed through verbatim.
+ */
+value: unknown, } | { "kind": "Delta", 
+/**
+ * The id of the message this fragment belongs to.
+ */
+message_id: string, 
+/**
+ * The incremental text fragment.
+ */
+text_fragment: string, };
+
+export type ActivityEvent = { 
+/**
+ * The workflow this activity belongs to.
+ */
+workflow_id: WorkflowId, 
+/**
+ * The activity within the workflow.
+ */
+activity_id: ActivityId, 
+/**
+ * The attempt number of the activity this event was produced during.
+ */
+attempt: number, 
+/**
+ * Sub-identity of the agent that produced this event — REQUIRED for multi-agent
+ * attribution (a single activity attempt may run several agents).
+ */
+agent_id: string, 
+/**
+ * The role/label of the producing agent (e.g. an orchestrator vs a sub-agent).
+ */
+agent_role: string, 
+/**
+ * Producer-clock instant the event was emitted (best-effort ordering hint).
+ */
+emitted_at: string, 
+/**
+ * Worker-local best-effort monotonic sequence.
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted `2^53` ceiling.
+ */
+worker_seq: number, 
+/**
+ * Server-stamped monotonic sequence assigned at durable-commit time; `None` until the event
+ * is persisted (ephemeral events are never persisted and always carry `None`).
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted `2^53` ceiling.
+ */
+store_seq: number | null, 
+/**
+ * When `true`, this event is WS-forward-only and is **never persisted** (token deltas).
+ */
+ephemeral: boolean, 
+/**
+ * The classified payload of this event.
+ */
+kind: ActivityEventKind, };
+
+export type InjectPriority = { "priority": "Normal" } | { "priority": "Interrupt" };
+
+export type ApprovalDecision = { "decision": "Approve" } | { "decision": "Deny" };
+
+export type InterventionPrimitive = { "primitive": "InjectMessage" } | { "primitive": "Cancel" } | { "primitive": "PauseResume" } | { "primitive": "UpdateBudget" } | { "primitive": "RespondToApproval" };
+
+export type InterventionKind = { "kind": "InjectMessage", 
+/**
+ * The message text to inject.
+ */
+text: string, 
+/**
+ * Whether to act now (`Interrupt`) or queue the turn (`Normal`).
+ */
+priority: InjectPriority, } | { "kind": "Cancel", 
+/**
+ * Human-readable reason for the cancellation.
+ */
+reason: string, } | { "kind": "PauseResume", 
+/**
+ * `true` to suspend, `false` to resume.
+ */
+paused: boolean, } | { "kind": "UpdateBudget", 
+/**
+ * New maximum token budget, when the operator sets one.
+ */
+max_tokens: number | null, 
+/**
+ * New maximum turn budget, when the operator sets one.
+ */
+max_turns: number | null, } | { "kind": "RespondToApproval", 
+/**
+ * Correlation id of the pending approval being answered.
+ */
+call_id: string, 
+/**
+ * The approve/deny decision.
+ */
+decision: ApprovalDecision, 
+/**
+ * An optional note recorded alongside the decision.
+ */
+note: string | null, };
+
+export type InterventionCommand = { 
+/**
+ * The workflow the target activity belongs to.
+ */
+workflow_id: WorkflowId, 
+/**
+ * The target activity within the workflow.
+ */
+activity_id: ActivityId, 
+/**
+ * The target attempt. Commands to a stale (superseded) attempt are no-ops.
+ */
+attempt: number, 
+/**
+ * The auth subject that issued the command, when auth is enabled.
+ *
+ * A neutral subject label (the same identity the auth layer records), carried so the
+ * transcript can attribute the intervention. `None` when auth is off.
+ */
+issued_by: string | null, 
+/**
+ * When the command was issued (operator-clock instant).
+ */
+issued_at: string, 
+/**
+ * The neutral control primitive to apply.
+ */
+kind: InterventionKind, };
+
+export type InterventionCapabilities = { 
+/**
+ * The primitives this harness supports. Empty = observability-only.
+ */
+supported: Array<InterventionPrimitive>, };
+

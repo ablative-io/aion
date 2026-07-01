@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use ts_rs::{Config, TS};
 
 use crate::{
-    ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, ClusterCommand, ClusterEvent,
-    ClusterEventMeta, ClusterPeer, ClusterShard, ClusterSnapshot, ClusterStreamError,
-    ClusterWorker, ContentType, DescribeWorkflowResponse, Event, EventEnvelope,
-    NamespacePlacementWire, OverlapPolicy, PackageVersion, Payload, RunId, ScheduleConfig,
-    ScheduleId, SearchAttributeType, SearchAttributeValue, TimerId, TimerIdKind, TriggerSpec,
-    WithTimeoutOutcome, WorkerDeathReason, WorkerTransport, WorkflowError, WorkflowFilter,
-    WorkflowId, WorkflowStatus, WorkflowSummary,
+    ActivityError, ActivityErrorKind, ActivityEvent, ActivityEventKind, ActivityId,
+    ApprovalDecision, CatchUpPolicy, ClusterCommand, ClusterEvent, ClusterEventMeta, ClusterPeer,
+    ClusterShard, ClusterSnapshot, ClusterStreamError, ClusterWorker, ContentType,
+    DescribeWorkflowResponse, Event, EventEnvelope, InjectPriority, InterventionCapabilities,
+    InterventionCommand, InterventionKind, InterventionPrimitive, MessageRole,
+    NamespacePlacementWire, OverlapPolicy, PackageVersion, Payload, ProgressDetail, RunId,
+    ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, StopKind, TimerId,
+    TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason, WorkerTransport,
+    WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
 const OPS_CONSOLE_GENERATED_DIR: &str = "../../apps/aion-ops-console/src/types/generated";
@@ -82,6 +84,21 @@ fn ops_console_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<ClusterSnapshot>(&config, &mut output)?;
     push_type::<ClusterCommand>(&config, &mut output)?;
     push_type::<ClusterStreamError>(&config, &mut output)?;
+
+    // Agent-observability + intervention real-time channel wire types. Like the cluster
+    // channel, only these inner aion-core payload types cross the ts-rs boundary; any outer
+    // frame envelopes are hand-decoded on the TS side.
+    push_type::<MessageRole>(&config, &mut output)?;
+    push_type::<ProgressDetail>(&config, &mut output)?;
+    push_type::<StopKind>(&config, &mut output)?;
+    push_type::<ActivityEventKind>(&config, &mut output)?;
+    push_type::<ActivityEvent>(&config, &mut output)?;
+    push_type::<InjectPriority>(&config, &mut output)?;
+    push_type::<ApprovalDecision>(&config, &mut output)?;
+    push_type::<InterventionPrimitive>(&config, &mut output)?;
+    push_type::<InterventionKind>(&config, &mut output)?;
+    push_type::<InterventionCommand>(&config, &mut output)?;
+    push_type::<InterventionCapabilities>(&config, &mut output)?;
 
     Ok(output)
 }
