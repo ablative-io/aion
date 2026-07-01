@@ -13,7 +13,7 @@ import { EventTimeline } from '../components/EventTimeline';
 import { useLiveWorkflowEvents } from '../hooks/useLiveWorkflowEvents';
 import { useWorkflowHistory } from '../hooks/useWorkflowHistory';
 import type { projectTimeline } from '../lib/timeline';
-import { ReopenDiff } from '../reopen';
+import { deriveFailureContext, ReopenDiff } from '../reopen';
 import type { LifecycleOutcome, WorkflowDetailProps } from '../types';
 import { Scrubber } from './Scrubber';
 import { Swimlane } from './Swimlane';
@@ -70,9 +70,14 @@ type ContentProps = WorkflowDetailProps & {
   initialReopenOpen?: boolean;
 };
 
-/** A reopen is only meaningful once the engine has recorded a WorkflowReopened event. */
-function hasWorkflowReopened(history: readonly Event[]): boolean {
-  return history.some((event) => event.type === 'WorkflowReopened');
+/**
+ * A workflow is reopenable exactly when the server allows it: a terminal Failed
+ * or Cancelled run (AD-012). We gate on the projected terminal OUTCOME, not on an
+ * already-recorded `WorkflowReopened` event — the affordance must appear for a
+ * fresh failure that has never been reopened.
+ */
+function isReopenable(isTerminal: boolean, outcome: LifecycleOutcome | null): boolean {
+  return isTerminal && (outcome === 'failed' || outcome === 'cancelled');
 }
 
 function WorkflowDetailViewContent({
@@ -94,7 +99,8 @@ function WorkflowDetailViewContent({
   const [selectedSequence, setSelectedSequence] = useState<number | null>(null);
   const [scrubSeq, setScrubSeq] = useState<number | null>(null);
   const [reopenOpen, setReopenOpen] = useState(initialReopenOpen);
-  const reopenable = useMemo(() => hasWorkflowReopened(history), [history]);
+  const reopenable = isReopenable(isTerminal, terminalOutcome);
+  const failureContext = useMemo(() => deriveFailureContext(history), [history]);
   const selectedEntry = useMemo(
     () => timeline.find((entry) => entry.sequence === selectedSequence) ?? null,
     [timeline, selectedSequence]
@@ -145,16 +151,18 @@ function WorkflowDetailViewContent({
             {reopenable ? (
               <Button
                 className="h-7 px-3 text-xs"
+                data-testid="reopen-open"
                 onClick={() => setReopenOpen(true)}
                 type="button"
                 variant="outline"
               >
-                Reopen diff
+                Reopen
               </Button>
             ) : null}
             <ViewToggle mode={mode} onChange={setMode} />
           </div>
         </div>
+        {reopenable ? <FailureContextPanel context={failureContext} /> : null}
       </header>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1 space-y-3">
@@ -182,11 +190,44 @@ function WorkflowDetailViewContent({
       {reopenOpen ? (
         <ReopenDiff
           history={history}
+          namespace={namespace}
           onClose={() => setReopenOpen(false)}
           workflowId={workflowId}
         />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * The failure context a user reads before reopening: the failed step + reason,
+ * derived from history (mirrors the `failed_step`/`failure_reason` the list
+ * carries). Rendered ONLY when history explains the failure — a bare gate with no
+ * derivable context (e.g. a cancellation with an empty reason) shows nothing.
+ */
+function FailureContextPanel({ context }: { context: ReturnType<typeof deriveFailureContext> }) {
+  if (context === null || (context.failedStep === null && context.failureReason === null)) {
+    return null;
+  }
+
+  return (
+    <dl
+      className="flex flex-col gap-1 rounded-md border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 p-3 text-sm"
+      data-testid="failure-context"
+    >
+      {context.failedStep !== null ? (
+        <div className="flex gap-2">
+          <dt className="text-[var(--text-muted)]">Failed step</dt>
+          <dd className="font-mono text-[var(--text-primary)]">{context.failedStep}</dd>
+        </div>
+      ) : null}
+      {context.failureReason !== null ? (
+        <div className="flex gap-2">
+          <dt className="text-[var(--text-muted)]">Reason</dt>
+          <dd className="text-[var(--text-secondary)]">{context.failureReason}</dd>
+        </div>
+      ) : null}
+    </dl>
   );
 }
 

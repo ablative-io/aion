@@ -10,6 +10,7 @@ export type {
   JsonRecord,
   LoadPackageResult,
   NamespaceRecord,
+  ReopenWorkflowResult,
   RequestOptions,
   ServerErrorBody,
   StartWorkflowParams,

@@ -8,6 +8,7 @@ import type {
   InterventionOutcome,
   Namespace,
   NamespacePlacementWire,
+  RunId,
   WorkflowFilter,
   WorkflowId,
   WorkflowSummary,
@@ -32,9 +33,11 @@ import {
   normalizeLoadPackage,
   normalizeNamespaceRecords,
   normalizeNamespaces,
+  normalizeReopenWorkflow,
   normalizeStartWorkflow,
   normalizeWorkflowPage,
   normalizeWorkflowVersions,
+  type ReopenWorkflowResult,
   readJson,
   type StartWorkflowResult,
   type WorkflowPage,
@@ -59,6 +62,7 @@ export type {
   JsonRecord,
   LoadPackageResult,
   NamespaceRecord,
+  ReopenWorkflowResult,
   StartWorkflowResult,
   WorkflowPage,
   WorkflowVersion,
@@ -508,6 +512,36 @@ export class ApiClient {
     );
 
     return readInterventionOutcome(response);
+  }
+
+  /**
+   * Reopen a terminal (Failed/Cancelled) workflow (`POST /workflows/reopen`).
+   * Namespace-scoped exactly like cancel/signal (ADR-022 per-namespace command
+   * authority). Re-dispatches the failed tail and returns the reopened run id +
+   * its projected status (Running immediately after reopen).
+   *
+   * A non-reopenable-terminal run (`invalid_state`) or an absent workflow
+   * (`not_found`) surfaces as a typed {@link ApiError} — never swallowed and
+   * never reinterpreted as success. `run_id` is omitted to target the latest run
+   * (the server resolves it), matching the CLI's `aion reopen <id>`.
+   */
+  async reopen(
+    workflowId: WorkflowId,
+    options: RequestOptions,
+    runId?: RunId
+  ): Promise<ReopenWorkflowResult> {
+    const response = await this.request<unknown>(
+      AW_REST_CONTRACT.endpoints.workflowReopen,
+      AW_REST_CONTRACT.methods.workflowReopen,
+      options,
+      {
+        [AW_REST_CONTRACT.requestKeys.namespace]: options.namespace,
+        [AW_REST_CONTRACT.requestKeys.workflowId]: workflowId,
+        ...(runId === undefined ? {} : { [AW_REST_CONTRACT.requestKeys.runId]: runId }),
+      }
+    );
+
+    return normalizeReopenWorkflow(response);
   }
 
   /**

@@ -2,7 +2,9 @@ import type {
   Event,
   Namespace,
   NamespacePlacementWire,
+  RunId,
   WorkflowId,
+  WorkflowStatus,
   WorkflowSummary,
 } from '@/types';
 
@@ -137,6 +139,39 @@ type RawStartWorkflowResponse = {
   workflow_id?: unknown;
   run_id?: unknown;
 };
+
+/**
+ * Normalized result of a `POST /workflows/reopen`. The server returns the
+ * reopened run's plain UUID string and its projected status (Running immediately
+ * after reopen); this is the camelCase shape the UI consumes. Provenance is
+ * honest: this run is live again only because the server confirmed the reopen.
+ */
+export type ReopenWorkflowResult = {
+  runId: RunId;
+  status: WorkflowStatus;
+};
+
+type RawReopenWorkflowResponse = {
+  run_id?: unknown;
+  status?: unknown;
+};
+
+/** The closed set of statuses the server can project (mirror of `WorkflowStatus`). */
+const WORKFLOW_STATUSES: readonly WorkflowStatus[] = [
+  'Running',
+  'Completed',
+  'Failed',
+  'Cancelled',
+  'TimedOut',
+  'ContinuedAsNew',
+];
+
+function requireWorkflowStatus(value: unknown): WorkflowStatus {
+  if (typeof value === 'string' && (WORKFLOW_STATUSES as readonly string[]).includes(value)) {
+    return value as WorkflowStatus;
+  }
+  throw new ApiError(200, `response field "status" was not a known WorkflowStatus`);
+}
 
 /**
  * Normalized result of a `POST /deploy/packages` upload
@@ -300,6 +335,18 @@ export function normalizeStartWorkflow(response: unknown): StartWorkflowResult {
   const runId = requireString(raw.run_id, 'run_id');
 
   return { workflowId: workflowId as WorkflowId, runId };
+}
+
+export function normalizeReopenWorkflow(response: unknown): ReopenWorkflowResult {
+  if (!isRecord(response)) {
+    throw new ApiError(200, 'workflows/reopen response was not an object');
+  }
+
+  const raw = response as RawReopenWorkflowResponse;
+  const runId = requireString(raw.run_id, 'run_id');
+  const status = requireWorkflowStatus(raw.status);
+
+  return { runId: runId as RunId, status };
 }
 
 export function normalizeLoadPackage(response: unknown): LoadPackageResult {
