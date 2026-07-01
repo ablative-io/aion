@@ -1,9 +1,10 @@
 //! [`InstrumentedEventStore`]: event-store decorator recording server metrics.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_core::{ActivityId, Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{
     EventStore, OutboxRow, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
     RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
@@ -13,11 +14,52 @@ use chrono::{DateTime, Utc};
 
 use super::metrics::Metrics;
 
+/// A dispatched activity awaiting its worker result, tracked so the pairing
+/// terminal (completed / failed / cancelled) can be attributed to the right
+/// `activity_type` and dispatch→result duration.
+///
+/// The two labels the terminal metrics need (`activity_type` and the wall-clock
+/// duration) live ONLY on the `ActivityScheduled` event, never on the terminal
+/// events, so they are captured here at dispatch and consumed at the terminal.
+#[derive(Clone, Debug)]
+struct InflightActivity {
+    activity_type: String,
+    scheduled_at: DateTime<Utc>,
+}
+
 /// Event-store wrapper that observes operation latency and lifecycle events without changing engine crates.
 pub struct InstrumentedEventStore {
     inner: Arc<dyn EventStore>,
     metrics: Metrics,
     namespace: String,
+    /// In-flight activity correlation for the observability-only
+    /// `aion_inflight_activities` gauge, the `aion_activities_*_total` counters,
+    /// and the `aion_activity_duration_seconds` histogram (AO-004 R2/R3, C13/C14).
+    ///
+    /// # Observability, NOT enforcement
+    ///
+    /// This map — and the gauge it feeds — is a per-process observability signal
+    /// with standard Prometheus gauge semantics: it resets on restart and is NOT
+    /// durable. It is deliberately SEPARATE from quota enforcement, which reads the
+    /// DURABLE Claimed outbox count (`count_claimed_outbox_rows*`) so a failover
+    /// survivor sees the correct in-flight count regardless of which process
+    /// dispatched the work (Control-Plane Phase 2, P2-Q2). The two must never be
+    /// conflated: this gauge is for dashboards/alerts, the durable count is the
+    /// enforcement source-of-truth (CONTROL-PLANE-PHASE-2 §8 divergence warning).
+    ///
+    /// # Pairing (no leak, no double-count)
+    ///
+    /// A row is inserted on `ActivityScheduled` (dispatch, the gauge increment) and
+    /// consumed on the FIRST terminal for that `(workflow_id, activity_id)` —
+    /// `ActivityCompleted`, terminal `ActivityFailed`, or `ActivityCancelled` — which
+    /// decrements the gauge exactly once. Because the decrement fires ONLY when a
+    /// matching in-flight entry is removed, a duplicate or unmatched terminal (e.g. a
+    /// re-driven append, or an interim retry failure with no live entry) is a
+    /// structural no-op: it can never drive the gauge below the true in-flight count.
+    /// Correlation state is keyed by the same `(workflow_id, activity_id)` history
+    /// uses, so it holds across the separate append batches that carry the schedule
+    /// and its terminal.
+    inflight: Mutex<HashMap<(WorkflowId, ActivityId), InflightActivity>>,
     /// Advisory outbox wake (LSUB-2): pulsed when an `append_with_outbox` commits
     /// a non-empty outbox-row batch, so the in-process [`OutboxDispatcher`] sweeps
     /// promptly instead of waiting for its next poll tick. Body-less and
@@ -40,6 +82,7 @@ impl InstrumentedEventStore {
             inner,
             metrics,
             namespace: namespace.into(),
+            inflight: Mutex::new(HashMap::new()),
             outbox_wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -91,9 +134,100 @@ impl InstrumentedEventStore {
                 Event::ScheduleTriggered { .. } => {
                     self.metrics.schedule_fired(&self.namespace);
                 }
+                Event::ActivityScheduled {
+                    envelope,
+                    activity_id,
+                    activity_type,
+                    ..
+                } => {
+                    self.record_activity_dispatched(envelope, activity_id, activity_type);
+                }
+                Event::ActivityCompleted {
+                    envelope,
+                    activity_id,
+                    ..
+                } => {
+                    self.record_activity_terminal(envelope, activity_id, "succeeded");
+                }
+                Event::ActivityFailed {
+                    envelope,
+                    activity_id,
+                    ..
+                } => {
+                    self.record_activity_terminal(envelope, activity_id, "failed");
+                }
+                Event::ActivityCancelled {
+                    envelope,
+                    activity_id,
+                    ..
+                } => {
+                    self.record_activity_terminal(envelope, activity_id, "cancelled");
+                }
                 _ => {}
             }
         }
+    }
+
+    /// Record an activity dispatch: increment the dispatched counter and the
+    /// observability-only in-flight gauge, and remember the `activity_type` and
+    /// dispatch time so the pairing terminal can attribute the completion counter,
+    /// outcome, and duration (whose labels live only on this schedule event).
+    fn record_activity_dispatched(
+        &self,
+        envelope: &aion_core::EventEnvelope,
+        activity_id: &ActivityId,
+        activity_type: &str,
+    ) {
+        self.metrics
+            .activity_dispatched(&self.namespace, activity_type);
+        let key = (envelope.workflow_id.clone(), activity_id.clone());
+        let entry = InflightActivity {
+            activity_type: activity_type.to_owned(),
+            scheduled_at: envelope.recorded_at,
+        };
+        // A poisoned lock loses this correlation entry (worst case: one dropped
+        // gauge decrement); it must never panic the append path, so recover the
+        // guard rather than propagate the poison.
+        let mut inflight = self
+            .inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A duplicate schedule for the same key (re-driven append) leaves the
+        // original dispatch time in place: the gauge was already incremented for
+        // the live entry, so we do NOT double-count the in-flight slot.
+        inflight.entry(key).or_insert(entry);
+    }
+
+    /// Record an activity terminal (completed / failed / cancelled). Consumes the
+    /// paired in-flight entry so the gauge decrement fires EXACTLY once per
+    /// dispatch: an unmatched or duplicate terminal finds no entry and is a no-op,
+    /// which structurally prevents the gauge from leaking or underflowing.
+    fn record_activity_terminal(
+        &self,
+        envelope: &aion_core::EventEnvelope,
+        activity_id: &ActivityId,
+        outcome: &str,
+    ) {
+        let key = (envelope.workflow_id.clone(), activity_id.clone());
+        let entry = {
+            let mut inflight = self
+                .inflight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inflight.remove(&key)
+        };
+        let Some(entry) = entry else {
+            // No live in-flight entry: an interim retry failure, a duplicate
+            // terminal, or a terminal whose schedule this process never observed.
+            // Skip entirely so the gauge is never decremented without a paired
+            // increment.
+            return;
+        };
+        let duration = (envelope.recorded_at - entry.scheduled_at)
+            .to_std()
+            .unwrap_or_default();
+        self.metrics
+            .activity_completed(&self.namespace, &entry.activity_type, outcome, duration);
     }
 
     fn observe_since(&self, operation: &str, started: Instant) {
@@ -360,7 +494,8 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use aion_core::{
-        ContentType, Event, EventEnvelope, PackageVersion, Payload, RunId, WorkflowId,
+        ActivityError, ActivityErrorKind, ActivityId, ContentType, Event, EventEnvelope,
+        PackageVersion, Payload, RunId, WorkflowId,
     };
     use aion_store::{OutboxRow, WritableEventStore, WriteToken};
     use aion_store_libsql::LibSqlStore;
@@ -368,6 +503,72 @@ mod tests {
 
     use super::InstrumentedEventStore;
     use crate::observability::Metrics;
+
+    /// Envelope for a synthetic activity event owned by `workflow_id`.
+    fn envelope(workflow_id: &WorkflowId, seq: u64) -> EventEnvelope {
+        EventEnvelope {
+            seq,
+            recorded_at: Utc::now(),
+            workflow_id: workflow_id.clone(),
+        }
+    }
+
+    fn activity_scheduled(
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        activity_type: &str,
+    ) -> Event {
+        Event::ActivityScheduled {
+            envelope: envelope(workflow_id, 2),
+            activity_id: activity_id.clone(),
+            activity_type: activity_type.to_owned(),
+            input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            task_queue: String::from("default"),
+            node: None,
+        }
+    }
+
+    fn activity_completed(workflow_id: &WorkflowId, activity_id: &ActivityId) -> Event {
+        Event::ActivityCompleted {
+            envelope: envelope(workflow_id, 3),
+            activity_id: activity_id.clone(),
+            result: Payload::new(ContentType::Json, b"{}".to_vec()),
+        }
+    }
+
+    fn activity_failed(workflow_id: &WorkflowId, activity_id: &ActivityId) -> Event {
+        Event::ActivityFailed {
+            envelope: envelope(workflow_id, 3),
+            activity_id: activity_id.clone(),
+            error: ActivityError {
+                kind: ActivityErrorKind::Terminal,
+                message: String::from("boom"),
+                details: None,
+            },
+            attempt: 1,
+        }
+    }
+
+    fn activity_cancelled(workflow_id: &WorkflowId, activity_id: &ActivityId) -> Event {
+        Event::ActivityCancelled {
+            envelope: envelope(workflow_id, 3),
+            activity_id: activity_id.clone(),
+        }
+    }
+
+    /// Build an instrumented store over a libSQL backend in the given namespace,
+    /// returning the store and a clone of its metrics handle for assertions. Only
+    /// the metrics-recording seam is exercised, so the inner store is never
+    /// appended to in these unit tests.
+    async fn instrumented(
+        name: &str,
+        namespace: &str,
+    ) -> Result<(InstrumentedEventStore, Metrics), Box<dyn std::error::Error>> {
+        let store = Arc::new(LibSqlStore::open(unique_temp_path(name)).await?);
+        let metrics = Metrics::new()?;
+        let instrumented = InstrumentedEventStore::new(store, metrics.clone(), namespace);
+        Ok((instrumented, metrics))
+    }
 
     fn unique_temp_path(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -602,6 +803,164 @@ mod tests {
         assert!(
             !wake_fired(&wake).await,
             "a failed append commits nothing, so it must not pulse the wake"
+        );
+        Ok(())
+    }
+
+    /// AO-004 C13/C14: dispatch (an `ActivityScheduled` event) increments the
+    /// dispatched counter and the in-flight gauge, both with the correct labels.
+    #[tokio::test]
+    async fn dispatch_increments_counter_and_gauge() -> Result<(), Box<dyn std::error::Error>> {
+        let (store, metrics) = instrumented("dispatch-inc", "tenant-a").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+
+        store.record_events(&[activity_scheduled(&workflow_id, &activity_id, "charge")]);
+
+        assert_eq!(
+            metrics.inflight_activities_value("tenant-a"),
+            1,
+            "dispatch must raise the in-flight gauge to 1"
+        );
+        assert_eq!(
+            metrics.activities_dispatched_value("tenant-a", "charge"),
+            1,
+            "dispatch must increment the dispatched counter for the activity type"
+        );
+        Ok(())
+    }
+
+    /// AO-004 C13/C14: a completed activity nets the in-flight gauge back to zero
+    /// and records the completion counter under the `succeeded` outcome, proving
+    /// the increment/decrement pairing balances.
+    #[tokio::test]
+    async fn completion_nets_gauge_to_zero_and_records_outcome()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (store, metrics) = instrumented("complete-net", "tenant-a").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+
+        store.record_events(&[activity_scheduled(&workflow_id, &activity_id, "charge")]);
+        assert_eq!(metrics.inflight_activities_value("tenant-a"), 1);
+
+        store.record_events(&[activity_completed(&workflow_id, &activity_id)]);
+
+        assert_eq!(
+            metrics.inflight_activities_value("tenant-a"),
+            0,
+            "a completed activity must net the in-flight gauge back to zero"
+        );
+        assert_eq!(
+            metrics.activities_completed_value("tenant-a", "succeeded"),
+            1,
+            "completion must record the succeeded outcome counter"
+        );
+        Ok(())
+    }
+
+    /// A terminal `ActivityFailed` is a completion for gauge purposes: it decrements
+    /// the in-flight gauge (no leak) and records the `failed` outcome.
+    #[tokio::test]
+    async fn failure_decrements_gauge_and_records_failed_outcome()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (store, metrics) = instrumented("fail-dec", "tenant-a").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+
+        store.record_events(&[activity_scheduled(&workflow_id, &activity_id, "charge")]);
+        store.record_events(&[activity_failed(&workflow_id, &activity_id)]);
+
+        assert_eq!(
+            metrics.inflight_activities_value("tenant-a"),
+            0,
+            "a terminal failure must decrement the in-flight gauge (no leak)"
+        );
+        assert_eq!(
+            metrics.activities_completed_value("tenant-a", "failed"),
+            1,
+            "a terminal failure must record the failed outcome counter"
+        );
+        Ok(())
+    }
+
+    /// A cancelled activity (the abandon/settle case) decrements the in-flight
+    /// gauge so a dispatched-but-cancelled activity does not leak a gauge slot.
+    #[tokio::test]
+    async fn cancellation_decrements_gauge_and_records_cancelled_outcome()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (store, metrics) = instrumented("cancel-dec", "tenant-a").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+
+        store.record_events(&[activity_scheduled(&workflow_id, &activity_id, "charge")]);
+        store.record_events(&[activity_cancelled(&workflow_id, &activity_id)]);
+
+        assert_eq!(
+            metrics.inflight_activities_value("tenant-a"),
+            0,
+            "a cancelled activity must decrement the in-flight gauge (no leak)"
+        );
+        assert_eq!(
+            metrics.activities_completed_value("tenant-a", "cancelled"),
+            1,
+            "a cancelled activity must record the cancelled outcome counter"
+        );
+        Ok(())
+    }
+
+    /// Pairing guard: a terminal with NO live in-flight entry (a duplicate
+    /// terminal, or an interim retry failure whose schedule was already consumed)
+    /// is a structural no-op — the gauge is NEVER driven below the true in-flight
+    /// count, and no phantom completion is counted.
+    #[tokio::test]
+    async fn unmatched_terminal_never_underflows_gauge() -> Result<(), Box<dyn std::error::Error>> {
+        let (store, metrics) = instrumented("no-underflow", "tenant-a").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+
+        // Dispatch two activities, complete one, then replay the SAME completion.
+        let other = ActivityId::from_sequence_position(1);
+        store.record_events(&[
+            activity_scheduled(&workflow_id, &activity_id, "charge"),
+            activity_scheduled(&workflow_id, &other, "charge"),
+        ]);
+        assert_eq!(metrics.inflight_activities_value("tenant-a"), 2);
+
+        store.record_events(&[activity_completed(&workflow_id, &activity_id)]);
+        assert_eq!(metrics.inflight_activities_value("tenant-a"), 1);
+
+        // A duplicate terminal for an already-consumed activity must NOT decrement
+        // again, so the one still-in-flight activity keeps the gauge at exactly 1.
+        store.record_events(&[activity_completed(&workflow_id, &activity_id)]);
+        assert_eq!(
+            metrics.inflight_activities_value("tenant-a"),
+            1,
+            "a duplicate/unmatched terminal must not underflow the gauge"
+        );
+        assert_eq!(
+            metrics.activities_completed_value("tenant-a", "succeeded"),
+            1,
+            "the duplicate terminal must not count a second completion"
+        );
+        Ok(())
+    }
+
+    /// Isolation: the per-namespace gauge is keyed by namespace, so activity
+    /// traffic in one tenant never moves another tenant's gauge — the same handle
+    /// reports zero for a namespace with no dispatches.
+    #[tokio::test]
+    async fn gauge_is_isolated_per_namespace() -> Result<(), Box<dyn std::error::Error>> {
+        let (store, metrics) = instrumented("iso", "tenant-a").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+
+        store.record_events(&[activity_scheduled(&workflow_id, &activity_id, "charge")]);
+
+        assert_eq!(metrics.inflight_activities_value("tenant-a"), 1);
+        assert_eq!(
+            metrics.inflight_activities_value("tenant-b"),
+            0,
+            "a namespace with no dispatches must read zero"
         );
         Ok(())
     }
