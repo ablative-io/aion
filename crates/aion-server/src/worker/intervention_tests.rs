@@ -231,3 +231,55 @@ async fn capabilities_for_reads_the_owning_workers_advertised_set() {
     // No owner for attempt 2 => no capabilities.
     assert!(router.capabilities_for(&key(2)).expect("lookup").is_none());
 }
+
+#[tokio::test]
+async fn intervenable_attempts_enumerates_only_live_owned_attempts_of_the_workflow() {
+    let registry = ConnectedWorkerRegistry::default();
+    let (worker_id, _guard) = register_worker(&registry, caps_inject_cancel());
+    let owners = AttemptOwnerIndex::new();
+    // Two live attempts of THIS workflow's activity, plus one attempt of a
+    // DIFFERENT workflow that must not leak into the enumeration.
+    let this_workflow = WorkflowId::new(Uuid::nil());
+    let other_workflow = WorkflowId::new(Uuid::from_u128(7));
+    owners.bind(key(1), worker_id);
+    owners.bind(key(2), worker_id);
+    owners.bind(
+        AttemptKey::new(other_workflow, ActivityId::from_sequence_position(3), 1),
+        worker_id,
+    );
+    let router = InterventionRouter::new(registry, owners, Arc::new(RecordingTransport::default()));
+
+    let mut attempts = router
+        .intervenable_attempts(&this_workflow)
+        .expect("enumeration succeeds");
+    attempts.sort_by_key(|(attempt_key, _caps)| attempt_key.attempt);
+    assert_eq!(attempts.len(), 2, "only this workflow's live attempts appear");
+    assert_eq!(attempts[0].0.attempt, 1);
+    assert_eq!(attempts[1].0.attempt, 2);
+    // Each carries the SAME advertised set the router gates on.
+    for (_key, caps) in &attempts {
+        assert!(caps.supports_primitive(InterventionPrimitive::InjectMessage));
+        assert!(!caps.supports_primitive(InterventionPrimitive::PauseResume));
+    }
+}
+
+#[tokio::test]
+async fn intervenable_attempts_drops_an_attempt_whose_owner_disconnected() {
+    // The attempt is bound in the owner index but its worker has since
+    // deregistered: the enumeration must omit it (no control for an unreachable
+    // attempt), never surface a phantom entry.
+    let registry = ConnectedWorkerRegistry::default();
+    let (worker_id, guard) = register_worker(&registry, caps_inject_cancel());
+    let owners = AttemptOwnerIndex::new();
+    owners.bind(key(1), worker_id);
+    guard.deregister().expect("deregister succeeds");
+    let router = InterventionRouter::new(registry, owners, Arc::new(RecordingTransport::default()));
+
+    let attempts = router
+        .intervenable_attempts(&WorkflowId::new(Uuid::nil()))
+        .expect("enumeration succeeds");
+    assert!(
+        attempts.is_empty(),
+        "a disconnected owner's attempt must not be enumerated"
+    );
+}

@@ -1,10 +1,12 @@
 export type {
   ApiClientOptions,
   ApiCredentials,
+  AttemptCapabilities,
   Capabilities,
   CreateNamespaceResult,
   EventSearchQuery,
   EventSearchResult,
+  InterveneParams,
   JsonRecord,
   LoadPackageResult,
   NamespaceRecord,
@@ -30,6 +32,15 @@ export {
   AionClusterStreamManager,
   createAionClusterStreamManager,
 } from './cluster-stream';
+export type {
+  TranscriptStreamListener,
+  TranscriptStreamManagerOptions,
+  TranscriptTarget,
+} from './transcript-stream';
+export {
+  AionTranscriptStreamManager,
+  createAionTranscriptStreamManager,
+} from './transcript-stream';
 export type {
   AionEventContext,
   AionEventHandler,

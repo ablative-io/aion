@@ -113,6 +113,24 @@ impl AttemptOwnerIndex {
     pub fn owner(&self, key: &AttemptKey) -> Option<WorkerId> {
         self.inner.lock().ok()?.get(key).copied()
     }
+
+    /// Every live attempt owned for `workflow_id`, paired with its owning worker.
+    ///
+    /// The console reads this to enumerate the attempts an operator can currently
+    /// intervene on within one workflow — only attempts with a LIVE owner appear,
+    /// so a finished or superseded attempt (which has no entry) is never offered.
+    /// A poisoned lock yields an empty enumeration, never a panic.
+    #[must_use]
+    pub fn attempts_for_workflow(&self, workflow_id: &WorkflowId) -> Vec<(AttemptKey, WorkerId)> {
+        let Ok(index) = self.inner.lock() else {
+            return Vec::new();
+        };
+        index
+            .iter()
+            .filter(|(key, _worker)| &key.workflow_id == workflow_id)
+            .map(|(key, worker)| (key.clone(), *worker))
+            .collect()
+    }
 }
 
 /// The transport the router pushes a gated command to the owning worker over.
@@ -240,6 +258,33 @@ impl InterventionRouter {
             .registry
             .worker_by_id(worker_id)?
             .map(|worker| worker.intervention_capabilities().clone()))
+    }
+
+    /// Every live, intervenable attempt of `workflow_id` paired with its owning
+    /// worker's advertised [`InterventionCapabilities`] — the enumeration the ops
+    /// console reads to pick a target and gate controls (NOI-7).
+    ///
+    /// Only attempts with a LIVE owner appear: a finished or superseded attempt has
+    /// no owner entry and is not enumerated. An attempt whose owner has since
+    /// disconnected (present in the index but gone from the registry) is likewise
+    /// dropped, so the console never offers a control for an unreachable attempt.
+    /// The capability set is the SAME advertised set the router gates `route` on, so
+    /// the console and the server agree on exactly which primitives are supported.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn intervenable_attempts(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<(AttemptKey, InterventionCapabilities)>, ServerError> {
+        let mut attempts = Vec::new();
+        for (key, worker_id) in self.owners.attempts_for_workflow(workflow_id) {
+            if let Some(worker) = self.registry.worker_by_id(worker_id)? {
+                attempts.push((key, worker.intervention_capabilities().clone()));
+            }
+        }
+        Ok(attempts)
     }
 }
 
