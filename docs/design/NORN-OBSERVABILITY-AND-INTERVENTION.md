@@ -86,17 +86,27 @@
    OpenTelemetry, and does NOT replace the Prometheus metrics surface
    ([metrics.rs](../../../aion/crates/aion-server/src/observability/metrics.rs)).
 
-8. **Honesty caveat — "harness-agnostic" is asymmetric.** *Observability* is genuinely
-   harness-agnostic (any harness's events are demuxed off mixed stdout and mapped to the
-   same envelope). *Intervention* is **Norn-privileged in practice**: it bottoms out in
-   Norn's `Steer`/`Update`/`CancellationToken` inbound path, and any non-Norn harness is a
-   **capability-gated, second-class-absent** tier — it advertises no intervention
-   capability and the console offers no controls for it. The `RegisterWorker` proto
-   `intervention_capabilities` field this rides on is **genuine net-new work**
-   (`worker.proto` today is a fixed 4-field shape,
+8. **Honesty caveat — intervention rides a HARNESS-NEUTRAL contract; Norn is merely the
+   FIRST adapter.** Both *observability* and *intervention* are harness-neutral by design.
+   The intervention **command vocabulary** is the complete set of five neutral semantic
+   primitives — `InjectMessage`, `Cancel`, `PauseResume`, `UpdateBudget`, and
+   `RespondToApproval` (§3.3) — spoken by the wire, server, and ops-console, none of
+   which reference Norn types; ALL harness-specific translation lives in one place, the
+   worker-side per-harness adapter (§3.4). A worker advertises **which neutral primitives its
+   harness supports** (e.g. `{inject_message, cancel}`) in the `RegisterWorker` capabilities
+   field, and **any harness that implements them is FIRST-CLASS, not second-class**. That the
+   FIRST adapter (Norn) does not yet implement every neutral primitive is the STRONGEST proof
+   the contract is not Norn-shaped: capability-gating means the complete contract exists
+   independent of any one harness's coverage. "Norn-only"
+   is a **today-fact of adapter coverage** (there is, today, exactly one shipped adapter —
+   the Norn one), **NOT a design limitation**: the contract is not Norn-shaped, and a second
+   harness is "write an adapter," never "reshape aion-core." The `RegisterWorker` proto
+   capabilities field this rides on is **genuine net-new work** (`worker.proto` today is a
+   fixed 4-field shape,
    [worker.proto:94-109](../../../aion/crates/aion-proto-generated/proto/worker.proto#L94)),
-   not decoration. Read "harness-agnostic" as observability-agnostic; intervention is
-   Norn-first with an explicit absent tier for everyone else.
+   not decoration. A harness that genuinely cannot take control commands advertises no
+   primitives and the console offers no controls for it — an absent tier, not a second-class
+   contract.
 
 ---
 
@@ -108,9 +118,13 @@ results, progress, stop reasons, and (ephemeral) token deltas. Streamed to the o
 console in real time, persisted to a haematite keyspace that survives kill-9 and
 failover, replayable as a transcript, and **never** mixed into workflow replay history.
 
-**Intervention** — a live, best-effort, mid-run control channel INTO a running agent:
-steer, inject-message, pause-ish (steer-to-stop), cancel. Routed operator → server →
-the worker currently owning the activity-attempt → Norn stdin. Recorded as durable
+**Intervention** — a live, best-effort, mid-run control channel INTO a running agent,
+expressed in the complete set of **harness-neutral primitives** (§3.3): `InjectMessage` (an
+out-of-band user turn, `Normal` or `Interrupt` priority — steering is just an `Interrupt`
+injection), `Cancel` (stop the agent run), `PauseResume` (suspend/resume between steps),
+`UpdateBudget` (adjust the run's resource limits mid-flight), and `RespondToApproval`
+(answer a pending tool-use / permission gate). Routed operator → server → the worker currently owning the
+activity-attempt → the worker-side per-harness adapter → agent stdin. Recorded as durable
 observability events (so the transcript shows "operator steered here"), but NOT as
 replay state.
 
@@ -123,15 +137,19 @@ command *delivery* is live-only, command *record* is durable).
 
 ## 2. Scope boundary — what this is and is NOT
 
-- **IS:** Norn-native fd3 events + stdin control as the privileged first-class path;
-  a worker adapter that spawns the agent, tees fd3 → liminal, and forwards commands
-  → agent stdin; a server bridge that sequences + persists + fans out; a haematite
-  `O`-region keyspace; ops-console transcript panel + intervention controls.
-- **IS (harness-agnostic, second-class):** the worker adapter ALSO supports other
+- **IS:** Norn-native fd3 events + stdin control as the privileged first-class **transport**;
+  a **harness-neutral command vocabulary** (`InjectMessage`, `Cancel`, `PauseResume`,
+  `UpdateBudget`, `RespondToApproval` — §3.3) spoken by the
+  wire/server/console; a worker adapter that spawns the agent, tees fd3 → liminal, and
+  translates neutral commands → the harness's native control channel; a server bridge that
+  sequences + persists + fans out; a haematite `O`-region keyspace; ops-console transcript
+  panel + intervention controls.
+- **IS (harness-neutral, first-class-if-implemented):** the worker adapter ALSO supports other
   harnesses whose events come interleaved on stdout via a **mixed-stdout demux**, and
-  intervention is **capability-gated** — a harness that cannot take control commands
-  simply does not advertise the capability and the ops console does not offer the
-  controls for it.
+  intervention is **capability-gated on the neutral primitive set** — a harness whose adapter
+  implements `{inject_message, cancel}` is first-class for those; a harness that cannot take
+  control commands advertises an empty set and the ops console offers no controls for it. Norn
+  is the FIRST adapter, not a privileged command shape (§3.4).
 - **IS NOT:** a generic OTel/Jaeger tracing backend; a replacement for the Prometheus
   `/metrics` surface (per-process aggregates,
   [instrumented_store.rs](../../../aion/crates/aion-server/src/observability/instrumented_store.rs));
@@ -234,7 +252,21 @@ Note: `ProviderEvent`, `AgentUsageEstimate`, `StopReason` are **NOT** serde-deri
 JSON is hand-built in `output.rs`. The fd3 emitter reuses/extends those hand-built
 mappers — it CANNOT naively `serde_json::to_value` them (§9 risk).
 
-### 3.3 The `InterventionCommand` enum
+### 3.3 The `InterventionCommand` enum — HARNESS-NEUTRAL SEMANTIC PRIMITIVES
+
+The command vocabulary is defined in **harness-neutral semantic primitives**, NOT in any
+harness's native terms. The enum lives in the shared `aion-observability` crate
+(`ts-rs`-derived for the dashboard) and is spoken by **the wire, the server, and the
+ops-console — none of which may reference Norn types**. Norn's `Steer`/`Update`/
+`CancellationToken` appear NOWHERE in this enum; they live strictly in the worker-side
+adapter mapping (§3.4 / §6).
+
+**The design test (explicit):** a primitive belongs in the neutral enum ONLY if it can
+plausibly map onto a **non-Norn** conversational-agent harness. Anything that only makes
+sense as a Norn feature does not belong here — it belongs behind the adapter.
+
+The complete neutral set is exactly five primitives — the whole universal agent-control
+surface, each one gated by the harness's advertised capability set:
 
 ```rust
 // aion-observability
@@ -248,23 +280,94 @@ pub struct InterventionCommand {
 }
 
 pub enum InterventionKind {
-    Steer   { text: String },   // -> Norn ChannelMessage { kind: MessageKind::Steer } (immediate, drains at tool boundary)
-    Inject  { text: String },   // -> Norn ChannelMessage { kind: MessageKind::Update } (batches to stop-time)
-    Cancel,                     // -> Norn CancellationToken (hard stop at next boundary)
-    // Pause is deliberately NOT a distinct kind (§6.5): modeled as Steer-to-stop or Cancel+resume.
+    // An out-of-band user turn injected into the running agent (steer / redirect /
+    // add context). SUBSUMES "steer": steering is just an Interrupt-priority injection.
+    // There is NO separate Steer/Update variant in the neutral enum.
+    // Interrupt = steer-now; Normal = queued turn.
+    InjectMessage    { text: String, priority: InjectPriority },
+    // Stop the AGENT RUN (this subprocess's current run). See §7.5:
+    // this is DISTINCT from a workflow-visible cancel/signal, which stays
+    // on the E-stream engine paths and is NOT an agent-stdin intervention.
+    Cancel           { reason: String },
+    // Suspend/resume the agent between steps. Capability-gated: harnesses that
+    // cannot suspend mid-step advertise no support for it.
+    PauseResume      { paused: bool },
+    // Adjust the run's resource limits mid-flight.
+    UpdateBudget     { max_tokens: Option<u64>, max_turns: Option<u32> },
+    // Answer a pending tool-use / permission gate — human-in-the-loop approval of
+    // the agent's next action. The highest-value watch-and-control primitive.
+    RespondToApproval { call_id: String, decision: ApprovalDecision, note: Option<String> },
+}
+
+pub enum InjectPriority {
+    Normal,     // a queued user turn (batches; may not wake an idle agent)
+    Interrupt,  // act now — this is what "steer" was
+}
+
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
 }
 ```
 
-Norn already has the ride-along mechanics: `MessageKind { Steer, Update }`
-([inbound.rs:45](../../../norn/crates/norn/src/loop/inbound.rs#L45)), a cloneable
-`InboundSender` ([inbound.rs:244](../../../norn/crates/norn/src/loop/inbound.rs#L244)),
+**Every primitive passes the design test** (it can plausibly map onto a non-Norn
+conversational-agent harness): `InjectMessage` and `Cancel` are universal; `PauseResume`
+is the standard suspend/resume any stepped agent loop can expose; `UpdateBudget` maps onto
+any harness with token/turn limits; `RespondToApproval` maps onto any harness with a
+tool-use / permission gate. None is Norn-specific — anything that only made sense as a Norn
+feature would belong behind the adapter, not here.
+
+**`Cancel { reason }` cancels the AGENT RUN as an observability/control act — it does NOT
+write workflow replay state** (§7.5). A workflow-visible cancel/signal is a different thing
+entirely and stays on the `E`-stream engine paths; the neutral enum has no state-affecting
+variant by construction. Likewise `RespondToApproval { decision: Deny }` is an agent-run
+control act (it declines the agent's proposed next action); it does NOT write workflow
+replay state (§7.5).
+
+The harness capabilities the transport actually needs already exist in Norn — the ride-along
+mechanics that the *adapter* (§3.4) maps the supported primitives onto are `MessageKind
+{ Steer, Update }` ([inbound.rs:45](../../../norn/crates/norn/src/loop/inbound.rs#L45)), a
+cloneable `InboundSender` ([inbound.rs:244](../../../norn/crates/norn/src/loop/inbound.rs#L244)),
 drain at tool boundaries ([runner.rs:939](../../../norn/crates/norn/src/loop/runner.rs#L939)),
 and a `CancellationToken` checked at boundaries
 ([runner.rs:470](../../../norn/crates/norn/src/loop/runner.rs#L470),
-[:809](../../../norn/crates/norn/src/loop/runner.rs#L809)). `Steer` acts immediately;
-`Update` batches; `Update` deliberately does NOT wake an idle agent
-([inbound.rs:189](../../../norn/crates/norn/src/loop/inbound.rs#L189), DECISION M2) — so an
-intervention that must act now uses `Steer`, not `Inject`.
+[:809](../../../norn/crates/norn/src/loop/runner.rs#L809)) — but these are adapter-internal
+details, referenced only in §3.4 and never above the adapter.
+
+### 3.4 The adapter boundary (LOCKED) — the single translation point
+
+**Rule:** `aion-core` / the wire / `aion-server` / the ops-console speak **ONLY neutral
+commands and are harness-blind.** ALL harness-specific translation lives in **ONE place —
+the worker-side per-harness adapter.** Nothing above the adapter may name a Norn type.
+
+The **Norn adapter** maps the neutral primitives it supports onto Norn's native control
+channel, and advertises the rest as UNSUPPORTED until the underlying Norn mechanism exists:
+
+| Neutral primitive | Norn native mapping |
+|---|---|
+| `InjectMessage { priority: Interrupt }` | Norn's steer/priority path — `ChannelMessage { kind: MessageKind::Steer }` (immediate, drains at the next tool boundary) |
+| `InjectMessage { priority: Normal }` | a queued Norn `ChannelMessage`/`Update` (batches to stop-time; deliberately does NOT wake an idle agent, [inbound.rs:189](../../../norn/crates/norn/src/loop/inbound.rs#L189), DECISION M2) |
+| `Cancel { reason }` | Norn `CancellationToken` (hard stop at next boundary) |
+| `PauseResume { paused }` | **advertised UNSUPPORTED** — Norn has no cited suspend/resume-between-steps mechanism; the Norn adapter returns a clean "capability not supported" rejection until one exists |
+| `UpdateBudget { .. }` | **advertised UNSUPPORTED** — no cited mid-flight budget-mutation surface on the headless run; advertised unsupported until the mechanism exists |
+| `RespondToApproval { .. }` | **advertised UNSUPPORTED** — no cited pending-approval / permission-gate surface on the headless Norn run to answer; advertised unsupported until the mechanism exists |
+
+This is the ONLY location where the Norn-specific `inbound.rs` types (`frame_message` /
+`ChannelMessage` / `CancellationToken`) are referenced. A **future harness** is "write an
+adapter mapping the neutral primitives it supports to its own control channel," **never**
+"reshape `aion-core`." (Cross-referenced from §6, which describes the same boundary at the
+flow level.)
+
+**Why the UNSUPPORTED rows are a feature, not a gap.** Having neutral primitives that even
+the FIRST adapter (Norn) does not yet implement is the STRONGEST possible proof the contract
+is **not Norn-shaped**: if the neutral enum were merely Norn's control surface renamed, every
+primitive would map. It does not. `PauseResume`, `UpdateBudget`, and `RespondToApproval` are
+defined by what a *universal* agent-control surface must express, and capability-gating means
+the **complete contract exists independent of any one harness's coverage** — Norn advertises
+`{inject_message, cancel}`, the server/console gate on that set, and the other three light up
+for whichever harness (Norn included, once the mechanism lands) advertises them. We do NOT
+fabricate Norn internals to fill these rows; "advertised unsupported until the mechanism
+exists" is the honest entry.
 
 ---
 
@@ -327,26 +430,27 @@ so it cannot double as control **as-is**. Two options (§9 open decision):
 2. **Separate control fd.** Keep stdin as prompt, add `--control-fd 0`-style dedicated fd.
 
 **LEAN: option 1** — the locked contract says fd0/stdin *is* the control stream, so in
-driven mode the prompt moves off stdin. The reader task parses each line into an
-`InterventionCommand`-shaped message and:
-- `Steer`/`Inject` → builds a `ChannelMessage` ([inbound.rs:72](../../../norn/crates/norn/src/loop/inbound.rs#L72))
+driven mode the prompt moves off stdin. The reader task parses each line as a **neutral
+`InterventionCommand`** and applies the Norn-adapter mapping (§3.4):
+- `InjectMessage` → builds a `ChannelMessage` ([inbound.rs:72](../../../norn/crates/norn/src/loop/inbound.rs#L72))
   and sends on the root's registered `InboundSender`
   ([wiring.rs:211](../../../norn/crates/norn-cli/src/runtime/wiring.rs#L211) registers the
-  root route). The frame-message security contract
+  root route). `priority: Interrupt` takes Norn's steer path; `priority: Normal` a queued
+  `Update`. The frame-message security contract
   ([inbound.rs:125-148](../../../norn/crates/norn/src/loop/inbound.rs#L125)) must be
   preserved so an external injection cannot forge agent identity — the operator source
   is attributed as an operator, not as a peer agent.
 - `Cancel` → trips a real `CancellationToken` threaded into `AgentStepRequest.cancel`
   ([runner.rs:163](../../../norn/crates/norn/src/loop/runner.rs#L163)) — today headless
   passes `cancel: None` ([orchestrator.rs:399](../../../norn/crates/norn-cli/src/print/orchestrator.rs#L399)),
-  so this is net-new wiring.
+  so this is net-new wiring. This is the agent-run cancel (§7.5), not a workflow-visible cancel.
 - The step runs under `tokio::select!` against the reader task.
 
 **Single-run vs driven loop.** Headless runs ONE `run_agent_step` then exits
 ([orchestrator.rs:383](../../../norn/crates/norn-cli/src/print/orchestrator.rs#L383)).
-That is sufficient for the intervention model: a single long activity attempt is one
-step under `select!`, with control landing at tool boundaries. A multi-turn driven
-daemon is NOT required for v1 and is explicitly out of scope.
+That is sufficient for the complete intervention model: a single long activity attempt is
+one step under `select!`, with control landing at tool boundaries. A multi-turn driven
+daemon is NOT required by this design and is explicitly out of scope.
 
 ### 4.4 Session ↔ (workflow, activity, attempt)
 
@@ -439,13 +543,18 @@ Concrete worker changes:
   connection (`serve_with_redial`, [main.rs:290-305](../../../aion/examples/norn-fan-worker/src/main.rs#L290));
   reuse it (confirm in the spike whether the event/control transport reuses that
   connection or opens its own — §9).
-- **Capability advertisement:** at registration, the worker advertises which harnesses
-  it can intervene in. Today `RegisterWorker` has a fixed 4-field wire shape
-  (`namespaces, activity_types, task_queue, node`,
+- **Capability advertisement:** at registration, the worker advertises **which of the five
+  neutral primitives its harness's adapter supports** — the Norn adapter advertises
+  `{inject_message, cancel}` and marks `{pause_resume, update_budget, respond_to_approval}`
+  unsupported (§3.4) until the mechanisms exist. Today `RegisterWorker` has a fixed 4-field
+  wire shape (`namespaces, activity_types, task_queue, node`,
   [worker.proto:94-109](../../../aion/crates/aion-proto-generated/proto/worker.proto#L94)) —
-  add an `intervention_capabilities` field (proto change, coordinated with the server;
-  `aion-proto-generated` is generated). A harness that cannot take control commands
-  advertises nothing and the server/console never offers intervention for it.
+  add an `intervention_capabilities` field carrying the supported-primitive set (proto
+  change, coordinated with the server; `aion-proto-generated` is generated). Any harness whose
+  adapter implements a primitive is **first-class** for it; a harness that cannot take control
+  commands advertises an empty set and the server/console never offers intervention for it.
+  The server and console gate purely on **which of the five neutral primitives are in the
+  advertised set** and never on harness identity.
 
 ### 5.2 liminal transport
 
@@ -467,8 +576,9 @@ close** (both liminal-side):
   and `publish()` does NOT consult the pressure module
   ([pressure/mod.rs](../../../liminal/crates/liminal/src/pressure/mod.rs)). A high event
   rate to a slow observer grows memory unbounded. Wiring `PressureEnforcer` into the
-  publish path is real work (§9 risk) but can be deferred behind a bounded-channel cap
-  that drops-to-`Raw`-gap under pressure for v1.
+  publish path is real work (§9 risk); the pipeline lands a bounded-channel cap that
+  drops-to-`Raw`-gap under pressure first, with full `PressureEnforcer` wiring a later slice
+  in the same pipeline.
 
 Commands IN ride the **PUSH** primitive (LSUB-0,
 [ConnectionSupervisor::push_to_connection supervisor.rs:177](../../../liminal/crates/liminal-server/src/server/connection/supervisor.rs#L177),
@@ -547,19 +657,26 @@ logic lives in exactly one trusted place.
 
 ---
 
-## 6. The intervention flow — operator → server → worker → Norn stdin
+## 6. The intervention flow — operator → server → worker → adapter → agent stdin
+
+**Everything down to the worker adapter speaks ONLY the neutral primitives
+(`InjectMessage`, `Cancel`, `PauseResume`, `UpdateBudget`, `RespondToApproval`) and is
+harness-blind (§3.4).** The Norn-specific translation
+happens in exactly one place — the worker-side adapter — and is described in §3.4. This
+section describes the same boundary at the flow level.
 
 ```
 ops-console / API
-   │  POST (namespace-scoped, see §6.6)  OR  WS command frame
+   │  POST (namespace-scoped, see §6.6)  OR  WS command frame        [NEUTRAL commands]
    ▼
 aion-server                 resolve CURRENT owner of (workflow,activity,attempt)
-   │  liminal PUSH to the owning worker's connection
+   │  liminal PUSH to the owning worker's connection                 [NEUTRAL commands]
    ▼
 aion-worker                 route by attempt -> in-flight handle -> control channel
-   │  write NDJSON line to child stdin
+   │  per-harness ADAPTER translates neutral -> native (§3.4)        [adapter boundary]
    ▼
-Norn stdin control loop     parse -> ChannelMessage(Steer/Update) OR CancellationToken
+Norn adapter -> agent stdin InjectMessage(Interrupt)->steer path; InjectMessage(Normal)->queued
+                            ChannelMessage/Update; Cancel->CancellationToken
 ```
 
 ### 6.1 Best-effort / live-only (LOCKED)
@@ -611,12 +728,19 @@ terminal activity events (`ActivityStarted/Completed/Cancelled`), which today it
 ([event.rs:218-253](../../../aion/crates/aion-core/src/event.rs#L218)) — see the §9 NOI-0
 prerequisite gate.
 
-### 6.5 No `Pause` primitive
+### 6.5 `PauseResume` — a neutral primitive, capability-gated
 
-Norn has no pause primitive — only `CancellationToken` cancel and `Steer`/`Update`
-([inbound.rs:45](../../../norn/crates/norn/src/loop/inbound.rs#L45)). "Pause" is modeled as
-either a `Steer` that tells the agent to stop and await, or `Cancel` + `open_or_resume`
-resume. We do NOT add a pause gate in v1 (§9 open decision).
+`PauseResume { paused }` IS a first-class neutral primitive (§3.3): suspend/resume the agent
+between steps. It belongs in the neutral set because a plausible non-Norn harness with a
+suspendable step loop can expose it. It is **capability-gated**: a harness whose adapter has
+no suspend/resume mechanism advertises no support and the console offers no pause control for
+it. The **Norn adapter advertises `PauseResume` UNSUPPORTED for now** (§3.4) — Norn has no
+cited suspend/resume-between-steps mechanism, so on the Norn adapter a would-be pause is
+approximated operationally by an `InjectMessage { priority: Interrupt }` that tells the agent
+to stop and await, or `Cancel` + resume (Norn's `CancellationToken` + `open_or_resume`), and
+a literal `PauseResume` command returns a clean "capability not supported" rejection until the
+mechanism exists. That a neutral primitive can be defined and gated ahead of any harness
+implementing it is exactly the point of the capability contract (§3.4).
 
 ### 6.6 Auth (LOCKED)
 
@@ -732,20 +856,28 @@ intervention MUST ALSO be recorded as a first-class `Event` on the `E`-stream th
 normal append path; the `O`-region copy is then a mirror/annotation, not the authority.
 
 **Mitigation (and honest limit):** we split interventions by semantics at design time:
-- **Observational/operational** (`Steer`, `Inject` into the agent, transcript annotations) →
-  `O`-region ONLY. These are the v1 kinds. They perturb the *agent's* behavior within an
-  attempt but never the *workflow's* deterministic state, so the crux holds cleanly.
+- **Observational/operational** (`InjectMessage` into the agent, the agent-run `Cancel`,
+  `PauseResume`, `UpdateBudget`, `RespondToApproval`, transcript annotations) → `O`-region
+  ONLY. These are the neutral kinds. They perturb the *agent's* behavior within an attempt but
+  never the *workflow's* deterministic state, so the crux holds cleanly. The neutral
+  `Cancel { reason }` here is the AGENT-RUN cancel (stop this agent subprocess's current run),
+  DISTINCT from a workflow-visible cancel; likewise `RespondToApproval { decision: Deny }` is
+  an agent-run control act (it declines the agent's proposed next action) and does NOT write
+  workflow replay state — a workflow-visible cancel still goes through the `E`-stream engine
+  path.
 - **State-affecting** (a signal, a workflow-visible cancel) → these are NOT modeled as
-  agent-stdin interventions at all in v1. They already have first-class engine paths
+  agent-stdin interventions at all. They already have first-class engine paths
   (`/workflows/signal`, `/workflows/cancel`, [workflows.rs:57](../../../aion/crates/aion-server/src/api/http/... "workflows signal/cancel"))
   that go through `E`-stream append and are correctly replay-authoritative. **We deliberately
-  do NOT let an agent-stdin `Steer`/`Inject` mutate workflow state.** If a future kind needs
+  do NOT let any of the neutral agent-run primitives (agent-stdin `InjectMessage`, agent-run
+  `Cancel`, `PauseResume`, `UpdateBudget`, `RespondToApproval`) mutate workflow state.** If a future kind needs
   to, it must be a first-class `Event` variant in `aion-core`, reviewed as replay state — a
   cross-crate change (the §3.1 physical-separation rationale), not a quiet addition.
 
 This is the one place the locked model has a residual boundary. It is **not** an unclosed
-correctness hole — it is a deliberately drawn line: v1 interventions are agent-behavioral and
-attempt-scoped; workflow-state changes stay on the existing engine paths. The line must be
+correctness hole — it is a deliberately drawn line: the neutral interventions are
+agent-behavioral and attempt-scoped; workflow-state changes stay on the existing engine
+paths. The line must be
 **enforced in code** (the `InterventionKind` enum has no state-affecting variant) and **stated
 in the operator UI** so an operator never believes an agent-steer is durable workflow state.
 
@@ -787,9 +919,16 @@ Two panels, both built on proven substrates
 - **Mount:** in/next to `TranscriptPanel`, gated on a runtime capability. When auth OFF,
   granted-by-default (like `Capabilities.deployGranted`,
   [client.ts:127](../../../aion/apps/aion-ops-console/src/lib/api/client.ts#L127), but a
-  namespace-`intervene` grant per §6.6); when ON, permission-gated. Controls appear ONLY if
-  the owning worker advertised the intervention capability for this harness (§5.1) — a
-  non-interveneable harness shows the transcript with NO controls.
+  namespace-`intervene` grant per §6.6); when ON, permission-gated. The panel surfaces **all
+  five neutral controls** — inject-message (steer / queued), cancel, pause-resume,
+  update-budget, and respond-to-approval — but **each control is shown/enabled ONLY when the
+  owning worker's advertised capability set includes that primitive** (§5.1); a primitive the
+  worker did not advertise renders as a disabled/absent control, never a live-but-failing one.
+  A non-interveneable harness (empty advertised set) shows the transcript with NO controls.
+  Because the Norn adapter today advertises only `{inject_message, cancel}` (§3.4), a
+  Norn-owned attempt shows those two enabled and pause-resume / update-budget /
+  respond-to-approval disabled — the console gates on the advertised set, never on harness
+  identity.
 - **Action:** a mutation hook mirroring `useStartWorkflow`/`useDeployPackage` posting to the
   namespace-scoped intervene endpoint (§6.6), surfacing honest loading/confirmed/error state,
   showing success ONLY on server ACK. The confirmation arrives as an `O`-region event on the
@@ -830,11 +969,13 @@ control** (the `engine/fence.rs` discipline,
   redirected to a file yields well-formed NDJSON covering all four `AgentEventKind` arms AND
   stdout carries ONLY the final result (assert stdout has zero event lines — proves the
   fd1/fd3 split). Assert the shutdown handshake terminates (no hang, REVIEW C1).
-- **NOI-2 (norn only) — stdin control loop.** Driven mode: prompt off stdin (arg/file),
-  stdin becomes NDJSON control; `Steer`/`Inject` → `ChannelMessage`; `Cancel` → real
-  `CancellationToken` threaded into `AgentStepRequest.cancel`. **Gate:** a Steer sent on
+- **NOI-2 (norn only) — stdin control loop + Norn adapter.** Driven mode: prompt off stdin
+  (arg/file), stdin becomes NDJSON control carrying **neutral** `InterventionCommand`s; the
+  Norn adapter (§3.4) maps `InjectMessage` → `ChannelMessage` (`Interrupt`→steer path,
+  `Normal`→queued `Update`) and `Cancel` → a real `CancellationToken` threaded into
+  `AgentStepRequest.cancel`. **Gate:** an `InjectMessage { priority: Interrupt }` sent on
   stdin mid-run is observed at the next tool boundary (drain at [runner.rs:939](../../../norn/crates/norn/src/loop/runner.rs#L939));
-  a Cancel stops the step and yields `AgentStepResult::Cancelled`. **Negative control:** a
+  a `Cancel` stops the step and yields `AgentStepResult::Cancelled`. **Negative control:** a
   forged-identity injection is attributed as operator, never as a peer agent
   (frame-message contract, [inbound.rs:125-148](../../../norn/crates/norn/src/loop/inbound.rs#L125)).
 - **NOI-3 (aion-worker) — shared spawn helper + fd3 tee + stdin pipe.** `spawn_agent` in
@@ -857,21 +998,37 @@ control** (the `engine/fence.rs` discipline,
   attempt-guard no-op needs a durable `attempt` on the terminal activity events.)*
   `attempt → owning-worker`
   back-index resolving via durable shard-owner state; namespace-scoped intervene endpoint;
-  liminal PUSH to the owning worker. **Gate:** an operator Steer posted to the API lands in
-  the running agent and appears as an `O`-region event on the WS. **Negative control:** a
+  liminal PUSH to the owning worker. This slice exercises the **full neutral command set**
+  through the Norn adapter: the ones Norn supports (`InjectMessage`, `Cancel`) drive the agent
+  end-to-end, and the ones the Norn adapter advertises unsupported (`PauseResume`,
+  `UpdateBudget`, `RespondToApproval`) each return a clean "capability not supported"
+  rejection rather than silently succeeding. **Gate:** an operator `InjectMessage { priority:
+  Interrupt }` posted to the API lands in the running agent and appears as an `O`-region event
+  on the WS; a `PauseResume`/`UpdateBudget`/`RespondToApproval` posted for the Norn-owned
+  attempt is cleanly rejected as unsupported (the capability gate). **Negative control:** a
   command to a finished/migrated attempt is a no-op with an honest NACK (the `attempt` guard,
   §6.4); after failover the command routes to the CURRENT owner, never a stale/dead worker.
 - **NOI-6 (ops-console) — TranscriptPanel + InterventionControls.** Transcript render + delta
   coalescing + capability-gated controls. **Gate:** the panel shows a live transcript with
   token deltas coalescing into messages (no flicker), and the intervention control is HIDDEN
   for a harness that did not advertise the capability.
-- **NOI-7 (harness-agnostic) — mixed-stdout demux.** The adapter parses another harness's
-  interleaved-stdout events into `Raw`/mapped envelopes; that harness advertises NO
-  intervention capability. **Gate:** a non-Norn harness produces a transcript and offers no
-  controls.
+- **NOI-7 (harness-agnostic) — SECOND adapter, both directions.** A mock/non-Norn harness
+  gets its own worker-side adapter: outbound, its interleaved-stdout events demux into
+  `Raw`/mapped envelopes; inbound, it advertises at least `{inject_message, cancel}` and its
+  adapter maps those **neutral** primitives onto its own control channel. **Gate / negative
+  control (the real proof the contract is neutral):** the mock adapter actually DRIVES at
+  least `InjectMessage` + `Cancel` through the neutral contract end-to-end — operator command
+  → server → PUSH → worker → mock adapter → mock agent — AND correctly REJECTS at least one
+  primitive it advertises unsupported (e.g. `RespondToApproval`) with a "capability not
+  supported" NACK, proving **both** the contract neutrality and the capability gate in one
+  test. All of this with `aion-core`/wire/server code UNCHANGED and naming ZERO harness types.
+  This is what forces those layers to stay harness-blind; if adding a second working adapter
+  required touching them, the contract was Norn-with-a-flag, not neutral. (A harness that
+  genuinely cannot take control commands advertises nothing and the console offers no controls
+  — a separate, weaker case than the driven mock above.)
 
-**Feature-gate** the fd3/observability path so a minimal Norn build and a minimal worker can
-drop it before the on/off-by-default call is made (§9.3 open decision).
+**Feature-gate** the fd3/observability path so a feature-off Norn build and a feature-off
+worker can drop it before the on/off-by-default call is made (§9.3 open decision).
 
 ### 9.2 Open decisions
 
@@ -901,7 +1058,7 @@ drop it before the on/off-by-default call is made (§9.3 open decision).
    per-handler does not generalize and has no home for the harness-agnostic path.
 9. **Feature-gate on/off-by-default.** Genuine tension: the ops-console-out-of-box philosophy
    argues on-by-default; the lean-binary posture argues gated. LEAN: on-by-default for the
-   shipped binary, feature-gated so a minimal build can drop it.
+   shipped binary, feature-gated so a feature-off build can drop it.
 10. **`O`-keyspace append mechanism: KV `put_routed` with caller-owned `store_seq` vs a native
     non-`E` haematite event stream.** LEAN: general-KV `'O'` region with an explicit
     big-endian `store_seq` suffix ([keyspace.rs:14-27](../../../aion/crates/aion-store-haematite/src/keyspace.rs#L14),
@@ -953,7 +1110,8 @@ drop it before the on/off-by-default call is made (§9.3 open decision).
 - **liminal backpressure unwired.** Unbounded subscriber `VecDeque`
   ([subscription.rs:33](../../../liminal/crates/liminal/src/channel/subscription.rs#L33)) +
   `publish()` not consulting the pressure module means a slow observer can grow server memory.
-  Mitigation: bounded cap that drops-to-gap for v1; wire `PressureEnforcer` later.
+  Mitigation: a bounded cap that drops-to-gap lands first in the pipeline; full
+  `PressureEnforcer` wiring is a later slice in the same pipeline.
 - **The agent-process spawn lives in USER handler code today** (norn-fan-worker), not the
   reusable runtime. Any design that only edits the example does NOT generalize — the shared
   `spawn_agent` helper (NOI-3) is mandatory, not optional.
@@ -974,8 +1132,11 @@ drop it before the on/off-by-default call is made (§9.3 open decision).
 A headless Norn run speaks three fds: **stdout = the result only** (worker captures it as the
 replay-authoritative activity output), **fd3 = an NDJSON `ActivityEvent` stream** (near-clone
 of the existing `agent_event_to_ndjson` translator, with `agent_id` added), **stdin = an NDJSON
-intervention-command stream** (routed into Norn's existing `Steer`/`Update` inbound + a real
-`CancellationToken`). The worker adapter spawns the agent, tees fd3 to a **liminal channel**,
+stream of harness-neutral intervention commands** (the complete set — `InjectMessage`,
+`Cancel`, `PauseResume`, `UpdateBudget`, `RespondToApproval`; the worker's Norn adapter maps
+the ones Norn supports onto Norn's `Steer`/`Update` inbound + a real `CancellationToken` and
+advertises the rest UNSUPPORTED until the mechanisms exist; no layer above the adapter names a
+Norn type). The worker adapter spawns the agent, tees fd3 to a **liminal channel**,
 and forwards commands via **liminal PUSH**; the **aion-server is the sequencer**, stamping a
 **commit-allocated `store_seq`** and writing an append-only **haematite `'O'`-region keyspace**
 per `(workflow, activity, attempt)` that is byte-provably disjoint from the `E`-stream replay
