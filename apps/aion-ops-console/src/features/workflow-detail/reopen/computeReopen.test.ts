@@ -34,6 +34,7 @@ function completed(seq: number, activityId: number): Event {
     data: {
       envelope: envelope(seq),
       activity_id: activityId,
+      attempt: 1,
       result: { content_type: 'Json', bytes: [] },
     },
   };

@@ -128,13 +128,13 @@ function activityScheduled(seq: number): Event {
 }
 
 function activityStarted(seq: number): Event {
-  return { type: 'ActivityStarted', data: { envelope: envelope(seq), activity_id: 7 } };
+  return { type: 'ActivityStarted', data: { envelope: envelope(seq), activity_id: 7, attempt: 1 } };
 }
 
 function activityCompleted(seq: number): Event {
   return {
     type: 'ActivityCompleted',
-    data: { envelope: envelope(seq), activity_id: 7, result: jsonPayload },
+    data: { envelope: envelope(seq), activity_id: 7, attempt: 1, result: jsonPayload },
   };
 }
 
@@ -222,7 +222,7 @@ const VARIANT_FIXTURES: Record<string, Event> = {
   ActivityFailed: activityFailed(1, 1),
   ActivityCancelled: {
     type: 'ActivityCancelled',
-    data: { envelope: envelope(1), activity_id: 7 },
+    data: { envelope: envelope(1), activity_id: 7, attempt: 1 },
   },
   TimerStarted: {
     type: 'TimerStarted',

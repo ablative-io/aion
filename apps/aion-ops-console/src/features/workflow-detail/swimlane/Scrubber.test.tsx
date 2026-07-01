@@ -49,13 +49,13 @@ function activityScheduled(seq: number, id: number, type: string): Event {
 }
 
 function activityStarted(seq: number, id: number): Event {
-  return { type: 'ActivityStarted', data: { envelope: envelope(seq), activity_id: id } };
+  return { type: 'ActivityStarted', data: { envelope: envelope(seq), activity_id: id, attempt: 1 } };
 }
 
 function activityCompleted(seq: number, id: number): Event {
   return {
     type: 'ActivityCompleted',
-    data: { envelope: envelope(seq), activity_id: id, result: PAYLOAD },
+    data: { envelope: envelope(seq), activity_id: id, attempt: 1, result: PAYLOAD },
   };
 }
 
