@@ -9,7 +9,7 @@ use crate::error::WireError;
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct SubscriptionRequest {
     /// Requested subscription model.
-    #[prost(oneof = "subscription_request::Subscription", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "subscription_request::Subscription", tags = "1, 2, 3, 4, 5")]
     pub subscription: Option<subscription_request::Subscription>,
 }
 
@@ -36,6 +36,15 @@ pub mod subscription_request {
         /// supported, unlike a non-existent multiplexing layer).
         #[prost(message, tag = "4")]
         Cluster(super::ClusterSubscription),
+        /// Agent-observability transcript for one `(workflow, activity, attempt)`
+        /// (NOI-5b). Namespace-scoped exactly like [`Self::PerWorkflow`] — the
+        /// transcript belongs to the workflow the activity runs under and is
+        /// authorized by the caller's namespace grant, never the deploy grant.
+        /// Like the other arms it is a NEW ARM of the single subscription frame;
+        /// a client wanting both a workflow stream and a transcript opens two
+        /// `/events/stream` sockets.
+        #[prost(message, tag = "5")]
+        Transcript(super::TranscriptSubscription),
     }
 }
 
@@ -108,6 +117,74 @@ impl StreamedClusterSnapshot {
         Self {
             kind: Self::KIND.to_owned(),
             snapshot,
+        }
+    }
+}
+
+/// Subscribe to the agent-observability transcript for one
+/// `(workflow, activity, attempt)` (NOI-5b).
+///
+/// Namespace-scoped: the transcript belongs to the workflow the activity runs
+/// under, so this carries the same `namespace` + `workflow_id` the per-workflow
+/// event subscription does, plus the `activity_id`/`attempt` axes that pin the
+/// exact `O`-keyspace stream. The optional `after_seq` resume cursor is the
+/// highest `store_seq` the client has already applied; the server replays the
+/// durable `O` tail with `store_seq > after_seq` then splices onto the live
+/// broadcast with no gap and no duplicate (the same splice contract the workflow
+/// path's `resume_from_seq` uses, but keyed on the commit-allocated `store_seq`).
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct TranscriptSubscription {
+    /// Caller namespace used for adapter-boundary authorisation (the workflow's
+    /// namespace, identical to the per-workflow event subscription).
+    #[prost(string, tag = "1")]
+    pub namespace: String,
+    /// Workflow whose activity transcript is requested.
+    #[prost(message, optional, tag = "2")]
+    pub workflow_id: Option<ProtoWorkflowId>,
+    /// Activity within the workflow whose transcript is requested.
+    #[prost(message, optional, tag = "3")]
+    pub activity_id: Option<crate::convert::ProtoActivityId>,
+    /// Attempt number — the third stream axis. Two attempts of one activity are
+    /// DISTINCT transcript streams.
+    #[prost(uint32, tag = "4")]
+    pub attempt: u32,
+    /// Highest `store_seq` already applied by the client; the server suppresses
+    /// durable records and live deltas with `store_seq <= after_seq` so a
+    /// reconnect does not re-deliver them. Absent (`None`) = a fresh subscriber
+    /// that has applied nothing and must see the full durable transcript
+    /// including `store_seq == 0`.
+    #[prost(uint64, optional, tag = "5")]
+    pub after_seq: Option<u64>,
+}
+
+/// Server -> client frame wrapping a single [`aion_core::ActivityEvent`] on the
+/// agent-observability transcript channel (NOI-5b).
+///
+/// Mirrors [`StreamedClusterEvent`] for the transcript path: the inner
+/// `aion-core` type is the only thing that crosses the ts-rs boundary; this
+/// outer envelope is hand-decoded on the TS side. A persisted event carries its
+/// commit-allocated `store_seq`; an ephemeral token delta carries `store_seq:
+/// None` and is forwarded live but never replayed.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StreamedActivityEvent {
+    /// Frame discriminator pinned to `"activity_event"` so the ops console's
+    /// hand-written frame parser can branch a transcript event apart from an
+    /// `{"error": ...}` terminal frame.
+    pub kind: String,
+    /// The transcript event.
+    pub event: aion_core::ActivityEvent,
+}
+
+impl StreamedActivityEvent {
+    /// Frame discriminator value for a live transcript event.
+    pub const KIND: &'static str = "activity_event";
+
+    /// Wrap an activity event in its server->client frame.
+    #[must_use]
+    pub fn new(event: aion_core::ActivityEvent) -> Self {
+        Self {
+            kind: Self::KIND.to_owned(),
+            event,
         }
     }
 }
@@ -246,9 +323,9 @@ mod tests {
 
     use super::{
         FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, StreamedEvent,
-        SubscriptionRequest, encode_streamed_event, subscription_request,
+        SubscriptionRequest, TranscriptSubscription, encode_streamed_event, subscription_request,
     };
-    use crate::convert::{ProtoWorkflowId, ProtoWorkflowStatus, WireEnvelope};
+    use crate::convert::{ProtoActivityId, ProtoWorkflowId, ProtoWorkflowStatus, WireEnvelope};
     use crate::error::WireError;
 
     fn workflow_id() -> aion_core::WorkflowId {
@@ -312,6 +389,32 @@ mod tests {
                 subscription: Some(subscription_request::Subscription::Firehose(
                     FirehoseSubscription {
                         namespace: String::from("tenant-a"),
+                    },
+                )),
+            },
+            SubscriptionRequest {
+                subscription: Some(subscription_request::Subscription::Transcript(
+                    TranscriptSubscription {
+                        namespace: String::from("tenant-a"),
+                        workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+                        activity_id: Some(ProtoActivityId {
+                            sequence_position: 3,
+                        }),
+                        attempt: 1,
+                        after_seq: Some(9),
+                    },
+                )),
+            },
+            SubscriptionRequest {
+                subscription: Some(subscription_request::Subscription::Transcript(
+                    TranscriptSubscription {
+                        namespace: String::from("tenant-a"),
+                        workflow_id: Some(ProtoWorkflowId::from(workflow_id())),
+                        activity_id: Some(ProtoActivityId {
+                            sequence_position: 3,
+                        }),
+                        attempt: 0,
+                        after_seq: None,
                     },
                 )),
             },

@@ -69,6 +69,15 @@ struct ServerStateInner {
     /// cluster channel is served on every boot (calm state with no peers on a
     /// single-node server). Sized from `websocket.cluster_broadcast_capacity`.
     cluster_publisher: crate::cluster_publisher::ClusterEventPublisher,
+    /// NOI-5b agent-observability transcript sequencer + live fan-out. Always
+    /// present: the transcript channel is served on every boot. The backing
+    /// [`ObservabilityStore`](aion_store::ObservabilityStore) is the durable
+    /// `O`-keyspace impl on a haematite boot and an in-memory impl on every other
+    /// backend (libSQL / in-memory have no `O` keyspace), so the transcript path
+    /// is uniform across backends while only haematite persists across restart.
+    /// Sized from `websocket.cluster_broadcast_capacity` (the same deployment-wide
+    /// real-time channel capacity the cluster tail uses).
+    transcript_publisher: crate::activity_publisher::ActivityEventPublisher,
     /// This node's distribution name for the WS3 cluster snapshot self-identity.
     /// `Some` on a distributed haematite boot (the configured `store.cluster.node_id`),
     /// `None` on a single-node boot — the snapshot then reports the standalone
@@ -183,9 +192,8 @@ impl ServerState {
             connected.self_node_id,
         );
         let (event_broadcast_capacity, query_timeout) = required_engine_seams(&runtime)?;
-        let cluster_broadcast_capacity = required_cluster_broadcast_capacity(&runtime)?;
-        let cluster_publisher =
-            crate::cluster_publisher::ClusterEventPublisher::new(cluster_broadcast_capacity);
+        let (cluster_publisher, transcript_publisher) =
+            build_real_time_publishers(&runtime, connected.observability_store)?;
         let metrics = Metrics::new().map_err(|error| metrics_config_error(&error))?;
         // LSUB-2 advisory wake: one process-wide `Notify` shared by the engine's
         // stage seam and the outbox dispatcher. A single handle is correct here
@@ -249,6 +257,7 @@ impl ServerState {
                 namespace_store: connected.namespace_store,
                 outbox_wake,
                 cluster_publisher,
+                transcript_publisher,
                 cluster_self_node,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder,
@@ -311,6 +320,13 @@ impl ServerState {
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
+                // NOI-5b: a from-parts / embedder state has no durable store, so
+                // the transcript sequencer runs over an in-memory `O`-keyspace
+                // impl — the transcript channel is served on every boot.
+                transcript_publisher: build_transcript_publisher(
+                    None,
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
                 cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
@@ -360,6 +376,13 @@ impl ServerState {
                 namespace_store,
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
+                // NOI-5b: a from-parts / embedder state has no durable store, so
+                // the transcript sequencer runs over an in-memory `O`-keyspace
+                // impl — the transcript channel is served on every boot.
+                transcript_publisher: build_transcript_publisher(
+                    None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
                 cluster_self_node: None,
@@ -412,6 +435,13 @@ impl ServerState {
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
+                // NOI-5b: a from-parts / embedder state has no durable store, so
+                // the transcript sequencer runs over an in-memory `O`-keyspace
+                // impl — the transcript channel is served on every boot.
+                transcript_publisher: build_transcript_publisher(
+                    None,
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
                 cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
@@ -455,6 +485,13 @@ impl ServerState {
                 namespace_store: Arc::new(aion_store::InMemoryStore::default()),
                 outbox_wake: Arc::new(tokio::sync::Notify::new()),
                 cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
+                // NOI-5b: a from-parts / embedder state has no durable store, so
+                // the transcript sequencer runs over an in-memory `O`-keyspace
+                // impl — the transcript channel is served on every boot.
+                transcript_publisher: build_transcript_publisher(
+                    None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
                 cluster_self_node: None,
@@ -504,6 +541,15 @@ impl ServerState {
     #[must_use]
     pub fn cluster_publisher(&self) -> &crate::cluster_publisher::ClusterEventPublisher {
         &self.inner.cluster_publisher
+    }
+
+    /// Borrow the NOI-5b transcript sequencer shared by the worker->server
+    /// ingestion seam (which publishes a running activity's `ActivityEvent`s) and
+    /// the transcript subscription endpoint (which tails + resumes them). Always
+    /// present, on every boot.
+    #[must_use]
+    pub fn transcript_publisher(&self) -> &crate::activity_publisher::ActivityEventPublisher {
+        &self.inner.transcript_publisher
     }
 
     /// This node's configured cluster distribution name for the WS3 snapshot
@@ -909,6 +955,54 @@ fn required_cluster_broadcast_capacity(
         })
 }
 
+/// Build the deployment-wide real-time publishers the server mounts on every
+/// boot — the WS3 cluster topology channel and the NOI-5b agent-observability
+/// transcript channel — from the validated `websocket.cluster_broadcast_capacity`.
+///
+/// The transcript sequencer runs over `observability_store` (the durable
+/// `O`-keyspace impl on a haematite boot) or an in-memory impl when the backend
+/// has none — see [`build_transcript_publisher`].
+///
+/// # Errors
+///
+/// Returns [`ServerError`] when `websocket.cluster_broadcast_capacity` is unset
+/// or zero (the same explicit-no-default guard the cluster channel already had).
+fn build_real_time_publishers(
+    runtime: &RuntimeConfig,
+    observability_store: Option<Arc<dyn aion_store::ObservabilityStore>>,
+) -> Result<
+    (
+        crate::cluster_publisher::ClusterEventPublisher,
+        crate::activity_publisher::ActivityEventPublisher,
+    ),
+    ServerError,
+> {
+    let capacity = required_cluster_broadcast_capacity(runtime)?;
+    Ok((
+        crate::cluster_publisher::ClusterEventPublisher::new(capacity),
+        build_transcript_publisher(observability_store, capacity),
+    ))
+}
+
+/// Build the NOI-5b transcript sequencer over `observability_store` (the durable
+/// `O`-keyspace impl when the backend has one, an in-memory impl otherwise) with
+/// a live-tail buffer of `capacity`.
+///
+/// The publisher is ALWAYS constructed (the transcript channel is served on every
+/// boot); only the durability of the backing store varies by backend. A backend
+/// with no `O` keyspace (libSQL / in-memory) gets the in-memory
+/// [`InMemoryObservabilityStore`](aion_store::InMemoryObservabilityStore), so the
+/// live-tail + resume path behaves identically and only cross-restart durability
+/// differs — exactly the "keep the no-observability path uniform" contract.
+fn build_transcript_publisher(
+    observability_store: Option<Arc<dyn aion_store::ObservabilityStore>>,
+    capacity: std::num::NonZeroUsize,
+) -> crate::activity_publisher::ActivityEventPublisher {
+    let store = observability_store
+        .unwrap_or_else(|| Arc::new(aion_store::InMemoryObservabilityStore::default()));
+    crate::activity_publisher::ActivityEventPublisher::new(store, capacity)
+}
+
 /// The request-routing pieces built from the cluster store + peer config.
 #[cfg(feature = "haematite-backend")]
 struct RoutingState {
@@ -960,6 +1054,14 @@ struct ConnectedStore {
     /// quorum-replicated implementation, libSQL and in-memory the local-only
     /// one.
     namespace_store: Arc<dyn NamespaceStore>,
+    /// NOI-5b: the SAME concrete leaf store captured as an
+    /// [`ObservabilityStore`](aion_store::ObservabilityStore) when the backend
+    /// implements the durable `O` keyspace (haematite). `None` for backends with
+    /// no `O` keyspace (libSQL / in-memory), where the transcript sequencer runs
+    /// over an in-memory impl instead. Captured before the leaf is wrapped in the
+    /// (`ObservabilityStore`-unaware) decorator chain, exactly like
+    /// `namespace_store`.
+    observability_store: Option<Arc<dyn aion_store::ObservabilityStore>>,
     bootstrap_coordinator: bool,
     #[cfg(feature = "haematite-backend")]
     cluster_responder: Option<aion_store_haematite::ClusterResponder>,
@@ -1000,6 +1102,10 @@ impl ConnectedStore {
             event_store,
             outbox_store,
             namespace_store,
+            // A `local` connected store is the memory / libSQL / embedder path,
+            // none of which implement the durable `O` keyspace: the transcript
+            // sequencer falls back to an in-memory impl (NOI-5b).
+            observability_store: None,
             bootstrap_coordinator: true,
             #[cfg(feature = "haematite-backend")]
             cluster_responder: None,
@@ -1196,6 +1302,11 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
     // quorum-replicated implementation), captured before the leaf is moved into
     // the cluster-store retention below.
     let namespace_store: Arc<dyn NamespaceStore> = leaf.clone();
+    // NOI-5b: the SAME concrete leaf captured as the durable `O`-keyspace
+    // observability store, so the transcript sequencer persists to haematite and
+    // survives restart/failover. Captured here (before the decorator chain wraps
+    // the event store) exactly like the namespace registry.
+    let observability_store: Arc<dyn aion_store::ObservabilityStore> = leaf.clone();
     // Retain the concrete store ONLY for a distributed boot (responder present),
     // where the SS-5b supervisor will poll it for peer liveness. A single-node
     // boot has no peers, so it carries no cluster store and never supervises.
@@ -1209,6 +1320,7 @@ async fn connect_haematite_store(config: StoreConfig) -> Result<ConnectedStore, 
         event_store,
         outbox_store: Some(outbox_store),
         namespace_store,
+        observability_store: Some(observability_store),
         bootstrap_coordinator,
         cluster_responder: responder,
         cluster_store,

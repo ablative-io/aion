@@ -12,6 +12,8 @@ pub mod selector;
 pub mod socket;
 /// Event subscription request mapping and store subscription helpers.
 pub mod subscribe;
+/// NOI-5b agent-observability transcript subscription serving.
+pub mod transcript_stream;
 
 pub use cluster_stream::serve_cluster_socket;
 pub use namespace_filter::{GateVerdict, NamespaceEventGate};
@@ -24,3 +26,4 @@ pub use socket::{
 pub use subscribe::{
     EventSubscription, MappedSubscription, map_subscription_request, subscribe_events,
 };
+pub use transcript_stream::serve_transcript_socket;

@@ -205,6 +205,14 @@ fn subscription_frame(
             reject_live_only_cursor("cluster", resume_from_sequence)?;
             ("cluster", encode_subscription(&cluster)?)
         }
+        Some(subscription_request::Subscription::Transcript(transcript)) => {
+            // The NOI-5b transcript channel likewise carries its own `after_seq`
+            // resume cursor (keyed on the commit-allocated `store_seq`) in the
+            // subscription body, so it does not use the per-workflow-seq resume
+            // argument.
+            reject_live_only_cursor("transcript", resume_from_sequence)?;
+            ("transcript", encode_subscription(&transcript)?)
+        }
         None => {
             return Err(ClientError::invalid_argument(
                 "subscription request is missing its subscription variant",
