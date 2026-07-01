@@ -58,7 +58,7 @@ pub use filter::{WorkflowFilter, WorkflowSummary};
 pub use ids::{ActivityId, IdError, PackageVersion, RunId, TimerId, TimerIdKind, WorkflowId};
 pub use intervention::{
     ApprovalDecision, InjectPriority, InterventionCapabilities, InterventionCommand,
-    InterventionKind, InterventionPrimitive,
+    InterventionKind, InterventionOutcome, InterventionPrimitive,
 };
 pub use payload::{ContentType, Payload, PayloadError};
 pub use schedule::{CatchUpPolicy, OverlapPolicy, ScheduleConfig, ScheduleId, TriggerSpec};

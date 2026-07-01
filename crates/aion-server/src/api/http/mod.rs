@@ -22,6 +22,7 @@ mod deploy;
 mod dev_ui;
 mod error;
 mod events;
+mod intervene;
 mod payload;
 mod router;
 mod schedules;

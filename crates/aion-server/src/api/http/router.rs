@@ -13,6 +13,7 @@ use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
 use super::dev_ui::{dev_register_mock, dev_replay_run, dev_trigger_run};
 use super::events::subscribe_events_socket;
+use super::intervene::intervene;
 use super::schedules::{
     create_schedule, delete_schedule, describe_schedule, list_schedules, pause_schedule,
     resume_schedule, update_schedule,
@@ -187,6 +188,7 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/workflows/cancel", post(cancel_workflow))
         .route("/workflows/list", post(post_list_workflows))
         .route("/workflows/describe", post(describe_workflow))
+        .route("/workflows/intervene", post(intervene))
         .route("/events/stream", get(subscribe_events_socket))
         .route("/cluster/command", post(cluster_command))
         .route("/schedules", post(create_schedule).get(list_schedules))

@@ -78,6 +78,13 @@ struct ServerStateInner {
     /// Sized from `websocket.cluster_broadcast_capacity` (the same deployment-wide
     /// real-time channel capacity the cluster tail uses).
     transcript_publisher: crate::activity_publisher::ActivityEventPublisher,
+    /// NOI-6 server-side intervention routing: the `attempt -> owning-worker`
+    /// back-index the intervention router resolves a command's target through.
+    /// Always present (cheap, no `Option`): the agent-dispatch path binds an owner
+    /// when it dispatches an agent attempt and releases it on completion, so the
+    /// router resolves the CURRENT owner. Empty until an agent attempt is
+    /// dispatched — a command to an unbound attempt is the attempt-scoped no-op.
+    attempt_owners: crate::worker::AttemptOwnerIndex,
     /// This node's distribution name for the WS3 cluster snapshot self-identity.
     /// `Some` on a distributed haematite boot (the configured `store.cluster.node_id`),
     /// `None` on a single-node boot — the snapshot then reports the standalone
@@ -164,7 +171,6 @@ impl ServerState {
         connected: ConnectedStore,
         runtime: RuntimeConfig,
     ) -> Result<Self, ServerError> {
-        let store = connected.event_store;
         let outbox_store = connected.outbox_store;
         let bootstrap_coordinator = connected.bootstrap_coordinator;
         #[cfg(feature = "haematite-backend")]
@@ -202,7 +208,7 @@ impl ServerState {
         let outbox_wake = Arc::new(tokio::sync::Notify::new());
         let instrumented_store = Arc::new(
             InstrumentedEventStore::new(
-                store.clone(),
+                connected.event_store,
                 metrics.clone(),
                 runtime.default_namespace.clone(),
             )
@@ -239,12 +245,12 @@ impl ServerState {
         .await?;
         let engine = Arc::new(engine);
         install_outbox_delivery(&pending_activities, &engine, runtime.outbox.enabled);
-        let namespace_resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
+        let resolver = NamespaceResolver::from_config(runtime.namespace.clone(), engine);
         #[cfg(feature = "auth")]
         let jwks_cache = build_jwks_cache(&runtime).await?;
         Ok(Self {
             inner: Arc::new(ServerStateInner {
-                namespace_guard: NamespaceGuard::new(namespace_resolver),
+                namespace_guard: NamespaceGuard::new(resolver),
                 runtime,
                 worker_registry,
                 pending_activities,
@@ -258,6 +264,7 @@ impl ServerState {
                 outbox_wake,
                 cluster_publisher,
                 transcript_publisher,
+                attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder,
@@ -327,6 +334,7 @@ impl ServerState {
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
+                attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
@@ -385,6 +393,7 @@ impl ServerState {
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
+                attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
@@ -442,6 +451,7 @@ impl ServerState {
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
+                attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
@@ -494,6 +504,7 @@ impl ServerState {
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
                 ),
+                attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder: None,
@@ -550,6 +561,44 @@ impl ServerState {
     #[must_use]
     pub fn transcript_publisher(&self) -> &crate::activity_publisher::ActivityEventPublisher {
         &self.inner.transcript_publisher
+    }
+
+    /// Borrow the NOI-6 `attempt -> owning-worker` back-index. The agent-dispatch
+    /// path binds an owner when it dispatches an agent attempt and releases it on
+    /// completion, so the intervention router always resolves the CURRENT owner.
+    #[must_use]
+    pub fn attempt_owners(&self) -> &crate::worker::AttemptOwnerIndex {
+        &self.inner.attempt_owners
+    }
+
+    /// Build the NOI-6 intervention router over the connected-worker registry, the
+    /// attempt-owner back-index, and the active intervention transport.
+    ///
+    /// The transport is the liminal server-push
+    /// ([`LiminalInterventionTransport`](crate::worker::LiminalInterventionTransport))
+    /// when the `liminal-transport` feature is compiled in — the production path
+    /// that pushes a routed command out on the owning worker's connection — and a
+    /// null transport otherwise, which reports the target unreachable so every
+    /// command NACKs the attempt-scoped no-op rather than silently vanishing. The
+    /// router is cheap to build (it clones cloneable handles), so it is constructed
+    /// per request at the endpoint rather than stored.
+    #[must_use]
+    pub fn intervention_router(&self) -> crate::worker::InterventionRouter {
+        let transport: std::sync::Arc<dyn crate::worker::InterventionTransport> = {
+            #[cfg(feature = "liminal-transport")]
+            {
+                std::sync::Arc::new(crate::worker::LiminalInterventionTransport)
+            }
+            #[cfg(not(feature = "liminal-transport"))]
+            {
+                std::sync::Arc::new(NullInterventionTransport)
+            }
+        };
+        crate::worker::InterventionRouter::new(
+            self.inner.worker_registry.clone(),
+            self.inner.attempt_owners.clone(),
+            transport,
+        )
     }
 
     /// This node's configured cluster distribution name for the WS3 snapshot
@@ -1389,6 +1438,33 @@ fn connect_haematite_store_unavailable() -> Result<ConnectedStore, ServerError> 
         message: "store.backend = haematite requires the aion-server `haematite-backend` feature"
             .to_owned(),
     })
+}
+
+/// The NOI-6 intervention transport used when no push transport is compiled in.
+///
+/// Without the `liminal-transport` feature there is no way to reach a worker's
+/// out-of-band connection, so every routed command reports the owning worker
+/// unreachable — which the router maps onto the attempt-scoped stale-target no-op.
+/// This keeps the intervention endpoint honest on a transport-less build (an
+/// operator gets a NACK, never a false "applied") without gating the endpoint on a
+/// feature.
+#[cfg(not(feature = "liminal-transport"))]
+#[derive(Clone, Debug)]
+struct NullInterventionTransport;
+
+#[cfg(not(feature = "liminal-transport"))]
+#[async_trait::async_trait]
+impl crate::worker::InterventionTransport for NullInterventionTransport {
+    async fn push(
+        &self,
+        _worker: &crate::worker::WorkerHandle,
+        _command: aion_core::InterventionCommand,
+    ) -> Result<aion_core::InterventionOutcome, ServerError> {
+        Err(ServerError::worker_connection_lost(
+            "intervention",
+            "no intervention push transport is compiled in".to_owned(),
+        ))
+    }
 }
 
 #[cfg(test)]

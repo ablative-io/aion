@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use aion_core::{ClusterEvent, WorkerDeathReason, WorkerTransport};
+use aion_core::{ClusterEvent, InterventionCapabilities, WorkerDeathReason, WorkerTransport};
 use aion_proto::{ProtoActivityTask, ProtoRegisterWorker};
 use aion_store::{NamespaceOrigin, NamespacePlacement, NamespaceStore};
 use tokio::sync::{Notify, mpsc};
@@ -159,6 +159,12 @@ pub struct WorkerHandle {
     node: Option<String>,
     activity_types: BTreeSet<String>,
     delivery: WorkerDelivery,
+    /// The neutral mid-run intervention primitives this worker's harness advertises
+    /// support for (NOI-6). The server gates every intervention command on THIS set
+    /// and NEVER routes an unadvertised primitive. Empty = observability-only (the
+    /// default for every non-agent worker), so a normal activity worker advertises
+    /// no controls and the intervention router refuses every command for it.
+    intervention_capabilities: InterventionCapabilities,
 }
 
 impl WorkerHandle {
@@ -198,6 +204,16 @@ impl WorkerHandle {
     #[must_use]
     pub const fn delivery(&self) -> &WorkerDelivery {
         &self.delivery
+    }
+
+    /// The neutral intervention primitives this worker's harness advertises (NOI-6).
+    ///
+    /// The intervention router gates on this set and never routes an unadvertised
+    /// primitive. Empty (the default for a plain activity worker) means the worker
+    /// is observability-only: the router refuses every intervention command for it.
+    #[must_use]
+    pub const fn intervention_capabilities(&self) -> &InterventionCapabilities {
+        &self.intervention_capabilities
     }
 
     /// gRPC stream sender used by the gRPC dispatch path to push work, or `None`
@@ -526,6 +542,38 @@ impl ConnectedWorkerRegistry {
         activity_types: impl IntoIterator<Item = &'a String>,
         delivery: WorkerDelivery,
     ) -> Result<WorkerRegistration, ServerError> {
+        self.register_delivery_with_capabilities(
+            namespaces,
+            task_queue,
+            node,
+            activity_types,
+            delivery,
+            InterventionCapabilities::none(),
+        )
+    }
+
+    /// Insert an already-authorized worker exactly like [`Self::register_delivery`],
+    /// additionally recording the neutral [`InterventionCapabilities`] its harness
+    /// advertises (NOI-6).
+    ///
+    /// This is the capability-carrying registration core: [`Self::register_delivery`]
+    /// is the façade over it that advertises the empty set (observability-only), so
+    /// every existing caller stays byte-identical. Selection is unchanged — the
+    /// capability set is metadata the intervention router gates on, never a routing
+    /// dimension.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn register_delivery_with_capabilities<'a>(
+        &self,
+        namespaces: impl IntoIterator<Item = String>,
+        task_queue: impl Into<String>,
+        node: Option<String>,
+        activity_types: impl IntoIterator<Item = &'a String>,
+        delivery: WorkerDelivery,
+        intervention_capabilities: InterventionCapabilities,
+    ) -> Result<WorkerRegistration, ServerError> {
         let namespaces = namespaces.into_iter().collect::<BTreeSet<_>>();
         let task_queue = task_queue.into();
         let activity_types = activity_types.into_iter().cloned().collect::<BTreeSet<_>>();
@@ -543,6 +591,7 @@ impl ConnectedWorkerRegistry {
             node,
             activity_types: activity_types.clone(),
             delivery,
+            intervention_capabilities,
         };
 
         for namespace in &namespaces {
@@ -665,6 +714,21 @@ impl ConnectedWorkerRegistry {
     pub fn all_workers(&self) -> Result<Vec<WorkerHandle>, ServerError> {
         let state = self.state()?;
         Ok(state.workers.values().cloned().collect())
+    }
+
+    /// Return the handle for a worker by id, or `None` when it is not registered.
+    ///
+    /// The intervention router resolves the owning worker of a target attempt by id
+    /// (NOI-6): the attempt-owner back-index stores a [`WorkerId`], and the router
+    /// reads back the live handle to gate on its advertised capabilities and select
+    /// its delivery. A `None` result means the owner disconnected — the router
+    /// treats that as the attempt-scoped no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn worker_by_id(&self, worker_id: WorkerId) -> Result<Option<WorkerHandle>, ServerError> {
+        Ok(self.state()?.workers.get(&worker_id).cloned())
     }
 
     /// Broadcast a graceful drain request to every connected worker stream.

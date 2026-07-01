@@ -4,6 +4,9 @@
 pub mod agent;
 /// Typed activity dispatch and payload conversion helpers.
 pub mod dispatch;
+/// Worker-side mid-run intervention delivery (NOI-6): the attempt back-index that
+/// routes a pushed neutral command to the live session that owns its target.
+pub mod intervention;
 /// Liminal worker transport (LSUB-1): receive pushed dispatches, execute, reply.
 #[cfg(feature = "liminal-transport")]
 pub mod liminal;
@@ -21,10 +24,16 @@ pub mod loop_;
 /// Dispatch-outcome reporting and runtime-channel draining.
 pub(crate) mod report;
 
-pub use agent::{ActivityEventSender, ControlReceiver, harness_error_to_outcome, spawn_agent};
+pub use agent::{
+    ActivityEventSender, ControlMessage, ControlReceiver, harness_error_to_outcome, spawn_agent,
+};
 pub use dispatch::{TypedActivityDispatcher, decode_payload, encode_payload};
+pub use intervention::{ControlRegistry, SessionGuard, SessionKey};
 #[cfg(feature = "liminal-transport")]
-pub use liminal::{DispatchRequest, DispatchResponse, LiminalActivityWorker};
+pub use liminal::{
+    DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
+    LiminalActivityWorker,
+};
 #[cfg(feature = "liminal-transport")]
 pub use liminal_serve::serve_with_redial;
 pub use loop_::{

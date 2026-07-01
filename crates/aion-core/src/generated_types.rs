@@ -10,7 +10,7 @@ use crate::{
     ApprovalDecision, CatchUpPolicy, ClusterCommand, ClusterEvent, ClusterEventMeta, ClusterPeer,
     ClusterShard, ClusterSnapshot, ClusterStreamError, ClusterWorker, ContentType,
     DescribeWorkflowResponse, Event, EventEnvelope, InjectPriority, InterventionCapabilities,
-    InterventionCommand, InterventionKind, InterventionPrimitive, MessageRole,
+    InterventionCommand, InterventionKind, InterventionOutcome, InterventionPrimitive, MessageRole,
     NamespacePlacementWire, OverlapPolicy, PackageVersion, Payload, ProgressDetail, RunId,
     ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, StopKind, TimerId,
     TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason, WorkerTransport,
@@ -99,6 +99,7 @@ fn ops_console_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<InterventionKind>(&config, &mut output)?;
     push_type::<InterventionCommand>(&config, &mut output)?;
     push_type::<InterventionCapabilities>(&config, &mut output)?;
+    push_type::<InterventionOutcome>(&config, &mut output)?;
 
     Ok(output)
 }

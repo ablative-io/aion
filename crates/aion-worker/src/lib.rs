@@ -71,12 +71,16 @@ pub use protocol::{
     reconnect_with_sleep, register_connected_session, validate_activity_handlers,
 };
 #[cfg(feature = "liminal-transport")]
-pub use runtime::liminal::{DispatchRequest, DispatchResponse, LiminalActivityWorker};
+pub use runtime::liminal::{
+    DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
+    LiminalActivityWorker,
+};
 #[cfg(feature = "liminal-transport")]
 pub use runtime::serve_with_redial;
 pub use runtime::{
-    ActivityDispatcher, ActivityEventSender, ControlReceiver, DispatchOutcome, NoShutdown,
-    ServeEnd, SessionHealth, TypedActivityDispatcher, decode_payload, encode_payload,
-    harness_error_to_outcome, serve_activity_tasks, serve_activity_tasks_until, spawn_agent,
+    ActivityDispatcher, ActivityEventSender, ControlMessage, ControlReceiver, ControlRegistry,
+    DispatchOutcome, NoShutdown, ServeEnd, SessionGuard, SessionHealth, SessionKey,
+    TypedActivityDispatcher, decode_payload, encode_payload, harness_error_to_outcome,
+    serve_activity_tasks, serve_activity_tasks_until, spawn_agent,
 };
 pub use worker::{EmptyActivitySet, Worker, WorkerBuilder, run_worker_with_session};
