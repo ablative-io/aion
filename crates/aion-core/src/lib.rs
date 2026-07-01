@@ -16,6 +16,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+/// Agent-observability transcript events for the ops console real-time channel.
+pub mod activity_event;
 /// Cluster topology and ownership events for the ops console real-time channel (WS3).
 pub mod cluster_event;
 /// Describe-workflow response projection (summary + event history).
@@ -30,6 +32,8 @@ pub mod filter;
 mod generated_types;
 /// Strongly typed identifiers for workflows, runs, activities, timers, and schedules.
 pub mod ids;
+/// Harness-neutral mid-run intervention commands for the ops console control channel.
+pub mod intervention;
 /// Type-erased payload bytes with explicit content-type metadata.
 pub mod payload;
 /// Schedule configuration, trigger, and catch-up policy models.
@@ -39,6 +43,7 @@ pub mod search;
 /// Workflow lifecycle status derivation.
 pub mod status;
 
+pub use activity_event::{ActivityEvent, ActivityEventKind, MessageRole, ProgressDetail, StopKind};
 pub use cluster_event::{
     ClusterCommand, ClusterEvent, ClusterEventMeta, ClusterPeer, ClusterShard, ClusterSnapshot,
     ClusterStreamError, ClusterWorker, NamespacePlacementWire, WorkerDeathReason, WorkerTransport,
@@ -51,6 +56,10 @@ pub use event::{
 };
 pub use filter::{WorkflowFilter, WorkflowSummary};
 pub use ids::{ActivityId, IdError, PackageVersion, RunId, TimerId, TimerIdKind, WorkflowId};
+pub use intervention::{
+    ApprovalDecision, InjectPriority, InterventionCapabilities, InterventionCommand,
+    InterventionKind, InterventionPrimitive,
+};
 pub use payload::{ContentType, Payload, PayloadError};
 pub use schedule::{CatchUpPolicy, OverlapPolicy, ScheduleConfig, ScheduleId, TriggerSpec};
 pub use search::{
