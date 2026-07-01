@@ -29,7 +29,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -52,7 +52,10 @@ use aion_server::{
     NamespaceResolver, ServerState, StaticScheduleNamespaces, StaticWorkflowNamespaces,
 };
 use aion_store::ActivityStreamKey;
-use aion_worker::{ActivityRegistry, LiminalActivityWorker, WorkerConfig};
+use aion_worker::{
+    ActivityRegistry, AgentHarnessConfig, LiminalActivityWorker, RedialTiming, WorkerConfig,
+    serve_with_redial,
+};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use liminal_server::config::{ChannelDef, ServerConfig};
@@ -597,6 +600,107 @@ fn push_dispatch(state: &ServerState, worker_id: aion_server::worker::WorkerId) 
     // The push blocks for the reply (which arrives only when the run is released), so
     // this runs on a spawned blocking task and its result is not awaited here.
     let _ = delivery.dispatch(&request);
+}
+
+/// THE PRODUCTION-SERVE WIRING TEST (NOI-5b/NOI-6): prove the reconnect-to-survivor
+/// serve entrypoint (`serve_with_redial`) — the path the shipped `aion worker serve`
+/// composition root drives — actually INSTALLS the composed agent harness, by
+/// serving through an EMPTY typed registry and asserting an agent dispatch still runs
+/// the live agent path (streams a transcript event) instead of failing with no
+/// handler.
+///
+/// This is specific wiring, not a smoke test: the worker is built through
+/// `serve_with_redial` with `Some(AgentHarnessConfig)` and NOTHING in its typed
+/// registry. If `serve_with_redial` did NOT thread the harness through (the bug this
+/// closes), the agent activity would route to the empty registry, fail
+/// missing-handler, and emit NO transcript event — so the mid-run transcript
+/// assertion below fails. It passes ONLY because the served worker drives the
+/// installed harness.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_with_redial_installs_the_composed_harness() -> Result<(), TestError> {
+    let capabilities = InterventionCapabilities::from_primitives([
+        InterventionPrimitive::InjectMessage,
+        InterventionPrimitive::Cancel,
+    ]);
+    let server = RunningServer::start(capabilities.clone())?;
+    let address = server.address.to_string();
+
+    let (events_tx, events_rx) = mpsc::unbounded_channel::<ActivityEvent>();
+    let applied = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let harness: Arc<dyn aion_integrations::contract::DynAgentHarness> = Arc::new(FakeHarness {
+        session: Mutex::new(Some(FakeSession {
+            capabilities: capabilities.clone(),
+            applied: Arc::clone(&applied),
+            events: Some(events_rx),
+            release: Arc::clone(&release),
+        })),
+    });
+
+    let mut live = server
+        .state
+        .transcript_publisher()
+        .subscribe(stream_key(), None);
+
+    // Drive the PRODUCTION serve entrypoint with the harness bundled as an
+    // `AgentHarnessConfig` — the exact shape the `aion worker serve` composition root
+    // passes — over an EMPTY typed registry (no handler for ACTIVITY_TYPE).
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let worker_address = address.clone();
+    let agent = AgentHarnessConfig::new(harness, [ACTIVITY_TYPE], capabilities.clone());
+    let worker_thread = std::thread::spawn(move || {
+        let empty_registry = Arc::new(ActivityRegistry::new());
+        let config = worker_config().expect("worker config");
+        serve_with_redial(
+            vec![worker_address],
+            &config,
+            &empty_registry,
+            RedialTiming::new(Duration::from_millis(5), Duration::from_millis(20)),
+            &worker_stop,
+            Some(&agent),
+            || {},
+        )
+        .expect("serve_with_redial loop");
+    });
+
+    let worker_id = server.wait_for_registered_worker()?;
+    let attempt_key = AttemptKey::new(
+        workflow_id(),
+        ActivityId::from_sequence_position(ORDINAL),
+        1,
+    );
+    server.state.attempt_owners().bind(attempt_key, worker_id);
+
+    let dispatch_state = server.state.clone();
+    let push_task = tokio::task::spawn_blocking(move || push_dispatch(&dispatch_state, worker_id));
+
+    // THE PROOF: the harness (installed by `serve_with_redial`) ran, so its transcript
+    // event reaches the live broadcast mid-run. An unwired harness would have routed to
+    // the empty registry and produced no event here.
+    events_tx
+        .send(message_event(1, "installed via serve_with_redial"))
+        .map_err(test_error)?;
+    let live_event = tokio::time::timeout(CONNECT_TIMEOUT, next_event(&mut live))
+        .await
+        .map_err(|_| {
+            test_error("no live transcript event — serve_with_redial did not install the harness")
+        })??;
+    assert!(
+        matches!(
+            live_event.kind,
+            ActivityEventKind::Message { text, .. } if text == "installed via serve_with_redial"
+        ),
+        "the served worker drove the installed agent harness, not the empty registry"
+    );
+
+    drop(events_tx);
+    release.notify_one();
+    let _ = push_task.await;
+    stop.store(true, Ordering::SeqCst);
+    worker_thread.join().ok();
+    server.shutdown()?;
+    Ok(())
 }
 
 /// Read the next event from a transcript subscription stream.

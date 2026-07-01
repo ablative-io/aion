@@ -14,10 +14,36 @@ use std::time::Duration;
 use crate::activity::ActivityRegistry;
 use crate::config::WorkerConfig;
 use crate::error::WorkerError;
-use crate::runtime::liminal::LiminalActivityWorker;
+use crate::runtime::liminal::{AgentHarnessConfig, LiminalActivityWorker};
 use crate::runtime::liminal_redial::{
     CandidateCursor, RedialBackoff, RedialError, ServeResult, run_redial_loop,
 };
+
+/// The bounded exponential backoff bounds the redial driver applies between
+/// candidate dials — the reconnect delay grows from `initial_backoff` to
+/// `max_backoff` and resets after a connection that served work, so a survivor
+/// whose listener is briefly not up is retried without hot-spinning.
+///
+/// Bundled into one value so [`serve_with_redial`] takes the timing as a single
+/// argument rather than two loose `Duration`s.
+#[derive(Clone, Copy, Debug)]
+pub struct RedialTiming {
+    /// Lower bound on the reconnect backoff between candidate dials.
+    pub initial_backoff: Duration,
+    /// Upper bound on the reconnect backoff.
+    pub max_backoff: Duration,
+}
+
+impl RedialTiming {
+    /// Builds a timing from the `initial`..`max` backoff bounds.
+    #[must_use]
+    pub const fn new(initial: Duration, max: Duration) -> Self {
+        Self {
+            initial_backoff: initial,
+            max_backoff: max,
+        }
+    }
+}
 
 /// Serves activities across a STATIC list of candidate liminal listen addresses,
 /// migrating to the next candidate whenever the current connection drops (G-1,
@@ -33,14 +59,21 @@ use crate::runtime::liminal_redial::{
 ///
 /// `stop` is a shared flag (the worker sets it from a signal handler or another
 /// thread): it is checked between candidates AND inside each connection's serve
-/// loop, so a shutdown is honoured promptly even on a quiet connection. Reconnect
-/// attempts use bounded exponential backoff (`initial_backoff`..`max_backoff`)
-/// that resets after a connection that served work, so a survivor whose listener
-/// is briefly not up is retried without hot-spinning.
+/// loop, so a shutdown is honoured promptly even on a quiet connection. `timing`
+/// carries the reconnect backoff bounds (see [`RedialTiming`]).
 ///
 /// `on_first_ready` is invoked exactly once, right after the FIRST successful
 /// registration, so a caller can publish a readiness observable (e.g. a file the
 /// failover test polls) without racing a sleep.
+///
+/// `agent` is the OPTIONAL composed agent harness the served worker drives
+/// (NOI-5b/NOI-6): `Some(config)` installs it (via
+/// [`LiminalActivityWorker::with_agent_config`]) on EVERY connection — including
+/// after a redial to a survivor, so the migrated worker still owns its agent
+/// activities — while `None` leaves the worker on the plain typed-registry path,
+/// byte-identical to a harness-less build (`--no-default-features`). Erased to
+/// `Arc<dyn DynAgentHarness>` in the config, so this platform crate never names a
+/// concrete harness adapter.
 ///
 /// # Errors
 ///
@@ -53,16 +86,16 @@ pub fn serve_with_redial<Ready>(
     candidates: Vec<String>,
     config: &WorkerConfig,
     registry: &Arc<ActivityRegistry>,
-    initial_backoff: Duration,
-    max_backoff: Duration,
+    timing: RedialTiming,
     stop: &AtomicBool,
+    agent: Option<&AgentHarnessConfig>,
     mut on_first_ready: Ready,
 ) -> Result<(), WorkerError>
 where
     Ready: FnMut() + Send,
 {
     let mut cursor = CandidateCursor::new(candidates).map_err(redial_setup_error)?;
-    let mut backoff = RedialBackoff::new(initial_backoff, max_backoff);
+    let mut backoff = RedialBackoff::new(timing.initial_backoff, timing.max_backoff);
 
     // The push receive is blocking, so each connection's async serve loop runs on
     // a dedicated current-thread runtime created HERE (not nested inside another
@@ -73,8 +106,23 @@ where
         .map_err(WorkerError::registration)?;
 
     let mut announced_ready = false;
+    // The agent activity types the served worker must ADVERTISE in registration so
+    // the server can select it for them — empty for a harness-less serve.
+    let agent_types = agent
+        .map(|config| config.agent_activity_types().clone())
+        .unwrap_or_default();
     let connect = |address: &str| -> Result<LiminalActivityWorker, WorkerError> {
-        LiminalActivityWorker::connect(address, config, Arc::clone(registry))
+        // Install the composed harness on EVERY connection (including a redial), so
+        // a worker that migrates to a survivor still drives its agent activities AND
+        // re-advertises the agent types in that connection's registration; `None`
+        // leaves it on the plain typed-registry path, unchanged.
+        LiminalActivityWorker::connect_advertising(
+            address,
+            config,
+            Arc::clone(registry),
+            &agent_types,
+        )
+        .map(|worker| worker.with_agent_config(agent.cloned()))
     };
     let serve = |worker: LiminalActivityWorker| -> ServeResult {
         if !announced_ready {

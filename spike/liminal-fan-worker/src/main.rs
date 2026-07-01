@@ -161,9 +161,11 @@ fn main() -> anyhow::Result<()> {
         args.candidates,
         &config,
         &registry,
-        REDIAL_INITIAL_BACKOFF,
-        REDIAL_MAX_BACKOFF,
+        aion_worker::RedialTiming::new(REDIAL_INITIAL_BACKOFF, REDIAL_MAX_BACKOFF),
         &stop,
+        // This fan-out spike serves only plain `fan:N` activities — no agent
+        // harness — so it stays on the typed-registry path unchanged.
+        None,
         move || {
             if let Some(path) = ready_file.as_ref()
                 && let Err(error) = std::fs::write(path, b"connected")

@@ -140,6 +140,61 @@ pub struct InterventionReply {
 /// promptly on a quiet connection rather than blocking forever.
 const RECV_POLL: Duration = Duration::from_millis(100);
 
+/// The composed agent harness a served worker drives, plus the agent activity
+/// types it owns and the neutral [`InterventionCapabilities`] it advertises
+/// (NOI-5b/NOI-6).
+///
+/// This bundles the three things [`LiminalActivityWorker::with_agent_harness`]
+/// needs into one `Option`-shaped value so the production serve path
+/// ([`serve_with_redial`](crate::serve_with_redial)) can thread a composed harness
+/// through as a single argument — or `None` for a harness-less build, which serves
+/// non-agent activities exactly as before. The harness is ERASED
+/// (`Arc<dyn DynAgentHarness>`), so no concrete adapter type ever appears in this
+/// platform crate.
+#[derive(Clone)]
+pub struct AgentHarnessConfig {
+    /// The erased agent harness the worker drives for its agent activity types.
+    harness: Arc<dyn DynAgentHarness>,
+    /// The activity-type names routed through the harness rather than the registry.
+    agent_activity_types: BTreeSet<String>,
+    /// The neutral intervention primitives the harness advertises.
+    capabilities: InterventionCapabilities,
+}
+
+impl AgentHarnessConfig {
+    /// Builds a config from a composed (erased) `harness`, the `agent_activity_types`
+    /// it owns, and the `capabilities` it advertises.
+    #[must_use]
+    pub fn new(
+        harness: Arc<dyn DynAgentHarness>,
+        agent_activity_types: impl IntoIterator<Item = impl Into<String>>,
+        capabilities: InterventionCapabilities,
+    ) -> Self {
+        Self {
+            harness,
+            agent_activity_types: agent_activity_types.into_iter().map(Into::into).collect(),
+            capabilities,
+        }
+    }
+
+    /// The agent activity-type names this config owns — the set the serve path must
+    /// ADVERTISE in registration so the server can select the worker for them.
+    #[must_use]
+    pub fn agent_activity_types(&self) -> &BTreeSet<String> {
+        &self.agent_activity_types
+    }
+}
+
+impl std::fmt::Debug for AgentHarnessConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentHarnessConfig")
+            .field("agent_activity_types", &self.agent_activity_types)
+            .field("capabilities", &self.capabilities)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A worker that serves activities over the liminal server-push transport.
 ///
 /// Construct with [`LiminalActivityWorker::connect`], then drive the serve loop
@@ -203,7 +258,37 @@ impl LiminalActivityWorker {
         config: &WorkerConfig,
         registry: Arc<ActivityRegistry>,
     ) -> Result<Self, WorkerError> {
-        let registration = registration_from(config, &registry);
+        Self::connect_advertising(address, config, registry, &BTreeSet::new())
+    }
+
+    /// Connects like [`Self::connect`] but ADDITIONALLY advertises `agent_types` in
+    /// the in-band registration (NOI-5b/NOI-6).
+    ///
+    /// An agent activity is driven by the installed harness, not the typed registry,
+    /// so its type never appears in `registry.activity_types()`. Without advertising
+    /// it here, the server could not SELECT this worker for that activity — a worker
+    /// whose only activities are agent-driven would register advertising nothing. So
+    /// the registration announces `registry`'s types UNION `agent_types`; the union is
+    /// what makes an agent-only worker selectable. Used by the production serve path
+    /// ([`serve_with_redial`](crate::serve_with_redial)) so a redialed worker
+    /// re-advertises its agent types on every connection.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::connect`]: [`WorkerError::Transport`] on a failed connect,
+    /// handshake, or registration.
+    pub fn connect_advertising(
+        address: &str,
+        config: &WorkerConfig,
+        registry: Arc<ActivityRegistry>,
+        agent_types: &BTreeSet<String>,
+    ) -> Result<Self, WorkerError> {
+        let mut registration = registration_from(config, &registry);
+        for agent_type in agent_types {
+            if !registration.activity_types.contains(agent_type) {
+                registration.activity_types.push(agent_type.clone());
+            }
+        }
         let client = PushClient::connect_with_registration(address, registration)
             .map_err(|error| transport_error(&error))?;
         Ok(Self {
@@ -239,6 +324,40 @@ impl LiminalActivityWorker {
         self.agent_activity_types = agent_activity_types.into_iter().map(Into::into).collect();
         self.agent_capabilities = capabilities;
         self
+    }
+
+    /// Install the optional agent harness carried by an [`AgentHarnessConfig`], if
+    /// one is supplied (NOI-5b/NOI-6).
+    ///
+    /// This is the single seam the production serve path
+    /// ([`serve_with_redial`](crate::serve_with_redial)) threads a composed harness
+    /// through: `Some(config)` applies it via [`Self::with_agent_harness`], `None`
+    /// leaves the worker on the plain typed-registry path exactly as before — so a
+    /// harness-less build (`--no-default-features`) is unaffected. Kept distinct from
+    /// [`Self::with_agent_harness`] so the redial driver can carry the harness as one
+    /// `Option`-shaped value.
+    #[must_use]
+    pub fn with_agent_config(self, config: Option<AgentHarnessConfig>) -> Self {
+        match config {
+            Some(config) => self.with_agent_harness(
+                config.harness,
+                config.agent_activity_types,
+                config.capabilities,
+            ),
+            None => self,
+        }
+    }
+
+    /// Whether `activity_type` is driven through the installed agent harness rather
+    /// than the plain typed registry — `true` only when a harness is installed AND
+    /// the type is registered as an agent type.
+    ///
+    /// The public form of the internal routing predicate ([`Self::is_agent_activity`]),
+    /// exposed so a caller (and the wiring tests) can assert a served worker actually
+    /// routes an agent type to the agent path.
+    #[must_use]
+    pub fn drives_agent_activity(&self, activity_type: &str) -> bool {
+        self.is_agent_activity(activity_type)
     }
 
     /// The intervention control back-index this worker routes pushed commands
