@@ -42,6 +42,29 @@ fn default_task_queue() -> String {
     String::from(DEFAULT_TASK_QUEUE)
 }
 
+/// Sentinel `attempt` value for activity lifecycle events decoded from a history recorded BEFORE the
+/// `attempt` field existed on [`Event::ActivityStarted`] / [`Event::ActivityCompleted`] /
+/// [`Event::ActivityCancelled`] (NOI-0).
+///
+/// Activity attempts are **one-based** everywhere they are produced (see [`Event::ActivityFailed`]'s
+/// `attempt`, which is documented "One-based activity attempt number", and the engine's
+/// `FIRST_DELIVERY_ATTEMPT = 1`). A real attempt is therefore always `>= 1`, so `0` can never collide
+/// with a genuine attempt: it is a distinguishable "legacy / unknown attempt" marker. Old histories
+/// that predate the field decode to this sentinel via `#[serde(default = "legacy_activity_attempt")]`
+/// — deterministically, never panicking, never differing run-to-run — while the compiler still forces
+/// every LIVE construction site to supply the genuine one-based attempt (there is no blanket
+/// `Default` on the variant).
+const LEGACY_ACTIVITY_ATTEMPT: u32 = 0;
+
+/// serde default for the `attempt` field on the activity lifecycle events that gained it in NOI-0.
+///
+/// Returns [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) so a history recorded before the field existed decodes
+/// deterministically to the legacy/unknown sentinel rather than failing. See
+/// [`LEGACY_ACTIVITY_ATTEMPT`] for why `0` is a safe distinguishable value under one-based attempts.
+fn legacy_activity_attempt() -> u32 {
+    LEGACY_ACTIVITY_ATTEMPT
+}
+
 /// Search attribute name that records the task queue a workflow was STARTED on.
 ///
 /// The server stamps this attribute durably in the SAME atomic append as
@@ -220,6 +243,21 @@ pub enum Event {
         envelope: EventEnvelope,
         /// Activity being executed.
         activity_id: ActivityId,
+        /// One-based activity attempt number this start belongs to (NOI-0).
+        ///
+        /// Matches the `attempt` on the [`Event::ActivityFailed`] / [`Event::ActivityCompleted`] /
+        /// [`Event::ActivityCancelled`] that terminates the SAME attempt, so
+        /// `(workflow, activity, attempt)` is a stable identity across the whole lifecycle — the key
+        /// the NOI dedupe/guard/session-id design is built on.
+        ///
+        /// Replay-safety: histories recorded before this field existed have no `attempt` key on their
+        /// `ActivityStarted` events. Decode defaults the missing value to
+        /// [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) via `#[serde(default = ...)]` — never panics, never
+        /// differs run-to-run. Because real attempts are one-based, `0` is a distinguishable
+        /// legacy/unknown sentinel, never a genuine attempt. The encoding of the existing fields is
+        /// untouched.
+        #[serde(default = "legacy_activity_attempt")]
+        attempt: u32,
     },
     /// An activity completed successfully.
     ActivityCompleted {
@@ -229,6 +267,18 @@ pub enum Event {
         activity_id: ActivityId,
         /// Opaque activity result payload.
         result: Payload,
+        /// One-based activity attempt number that produced this completion (NOI-0).
+        ///
+        /// Matches the `attempt` on the [`Event::ActivityStarted`] of the SAME attempt, so a
+        /// completed activity carries one consistent `attempt` readable off both its start and its
+        /// terminal — the negative-control invariant NOI-0 gates on.
+        ///
+        /// Replay-safety: histories recorded before this field existed have no `attempt` key on their
+        /// `ActivityCompleted` events. Decode defaults the missing value to
+        /// [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) via `#[serde(default = ...)]` — never panics, never
+        /// differs run-to-run. The encoding of the existing fields is untouched.
+        #[serde(default = "legacy_activity_attempt")]
+        attempt: u32,
     },
     /// An activity attempt failed.
     ///
@@ -251,6 +301,18 @@ pub enum Event {
         envelope: EventEnvelope,
         /// Activity that was cancelled.
         activity_id: ActivityId,
+        /// One-based activity attempt number that was cancelled (NOI-0).
+        ///
+        /// Matches the `attempt` on the [`Event::ActivityStarted`] of the SAME attempt, so the
+        /// cancellation terminal is attributable to a specific attempt exactly like
+        /// [`Event::ActivityFailed`] is.
+        ///
+        /// Replay-safety: histories recorded before this field existed have no `attempt` key on their
+        /// `ActivityCancelled` events. Decode defaults the missing value to
+        /// [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) via `#[serde(default = ...)]` — never panics, never
+        /// differs run-to-run. The encoding of the existing fields is untouched.
+        #[serde(default = "legacy_activity_attempt")]
+        attempt: u32,
     },
     /// A timer was scheduled to fire at a deterministic timestamp.
     TimerStarted {
@@ -472,7 +534,7 @@ mod tests {
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
-    use super::{DEFAULT_TASK_QUEUE, Event, EventEnvelope};
+    use super::{DEFAULT_TASK_QUEUE, Event, EventEnvelope, LEGACY_ACTIVITY_ATTEMPT};
     use crate::{
         ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, PackageVersion,
         Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeValue, TimerId, TriggerSpec,
@@ -690,6 +752,115 @@ mod tests {
         Ok(())
     }
 
+    /// NOI-0 positive round-trip: `ActivityStarted`, `ActivityCompleted`, and `ActivityCancelled`
+    /// each carry a genuine one-based `attempt` through the durable JSON wire, so replay reads back
+    /// the same attempt that was recorded — a completed activity has one consistent attempt readable
+    /// off BOTH its start and its terminal (the invariant the NOI design keys on).
+    #[test]
+    fn activity_lifecycle_records_and_reads_back_its_attempt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let started = Event::ActivityStarted {
+            envelope: envelope(7),
+            activity_id: ActivityId::from_sequence_position(6),
+            attempt: 3,
+        };
+        let completed = Event::ActivityCompleted {
+            envelope: envelope(8),
+            activity_id: ActivityId::from_sequence_position(6),
+            result: payload("activity-result")?,
+            attempt: 3,
+        };
+        let cancelled = Event::ActivityCancelled {
+            envelope: envelope(9),
+            activity_id: ActivityId::from_sequence_position(6),
+            attempt: 3,
+        };
+
+        for event in [&started, &completed, &cancelled] {
+            round_trip(event)?;
+        }
+
+        // Read the attempt back off each decoded terminal — it must be the recorded value, not the
+        // legacy sentinel.
+        match serde_json::from_str::<Event>(&serde_json::to_string(&started)?)? {
+            Event::ActivityStarted { attempt, .. } => assert_eq!(attempt, 3),
+            other => return Err(format!("expected ActivityStarted, got {other:?}").into()),
+        }
+        match serde_json::from_str::<Event>(&serde_json::to_string(&completed)?)? {
+            Event::ActivityCompleted { attempt, .. } => assert_eq!(attempt, 3),
+            other => return Err(format!("expected ActivityCompleted, got {other:?}").into()),
+        }
+        match serde_json::from_str::<Event>(&serde_json::to_string(&cancelled)?)? {
+            Event::ActivityCancelled { attempt, .. } => assert_eq!(attempt, 3),
+            other => return Err(format!("expected ActivityCancelled, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// NOI-0 replay-safety (the load-bearing negative control): an OLD recorded history that has no
+    /// `attempt` key on its `ActivityStarted` / `ActivityCompleted` / `ActivityCancelled` events MUST
+    /// still decode without panic, defaulting the missing value to the legacy sentinel
+    /// [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) deterministically — never differ run-to-run. Because real
+    /// attempts are one-based, `0` can never collide with a genuine attempt. The old wire form is the
+    /// exact pre-field bytes: the current serialization with the `attempt` key removed.
+    #[test]
+    fn activity_lifecycle_decodes_old_history_without_attempt_as_legacy_sentinel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // One current event per variant, each with a NON-sentinel attempt so we can prove the strip
+        // (not the value) is what drives the default on decode.
+        let started = Event::ActivityStarted {
+            envelope: envelope(7),
+            activity_id: ActivityId::from_sequence_position(6),
+            attempt: 5,
+        };
+        let completed = Event::ActivityCompleted {
+            envelope: envelope(8),
+            activity_id: ActivityId::from_sequence_position(6),
+            result: payload("activity-result")?,
+            attempt: 5,
+        };
+        let cancelled = Event::ActivityCancelled {
+            envelope: envelope(9),
+            activity_id: ActivityId::from_sequence_position(6),
+            attempt: 5,
+        };
+
+        // Strip the `attempt` key from each to reconstruct exactly what a pre-NOI-0 history looks
+        // like on the wire, then decode the stripped form repeatedly: it must succeed and always read
+        // back the legacy sentinel, deterministically.
+        for current in [&started, &completed, &cancelled] {
+            let mut value = serde_json::to_value(current)?;
+            let data = value
+                .get_mut("data")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("activity lifecycle event must serialize to a tagged object with `data`")?;
+            assert!(
+                data.remove("attempt").is_some(),
+                "the current wire form must contain attempt before we strip it"
+            );
+            let old_wire = serde_json::to_string(&value)?;
+            for _ in 0..4 {
+                let decoded = serde_json::from_str::<Event>(&old_wire)?;
+                let attempt = match &decoded {
+                    Event::ActivityStarted { attempt, .. }
+                    | Event::ActivityCompleted { attempt, .. }
+                    | Event::ActivityCancelled { attempt, .. } => *attempt,
+                    other => {
+                        return Err(
+                            format!("expected an activity lifecycle event, got {other:?}").into(),
+                        );
+                    }
+                };
+                assert_eq!(
+                    attempt, LEGACY_ACTIVITY_ATTEMPT,
+                    "a missing attempt must default to the legacy sentinel (0)"
+                );
+                assert_eq!(attempt, 0);
+            }
+        }
+        Ok(())
+    }
+
     /// #144: the start-time task queue projects from the `aion.task_queue`
     /// search attribute recorded by `SearchAttributesUpdated`, mirroring the
     /// `aion.namespace` projection. A later update overrides an earlier value.
@@ -805,11 +976,13 @@ mod tests {
             Event::ActivityStarted {
                 envelope: envelope(7),
                 activity_id: ActivityId::from_sequence_position(6),
+                attempt: 1,
             },
             Event::ActivityCompleted {
                 envelope: envelope(8),
                 activity_id: ActivityId::from_sequence_position(6),
                 result: payload("activity-result")?,
+                attempt: 1,
             },
             Event::ActivityFailed {
                 envelope: envelope(9),
@@ -820,6 +993,7 @@ mod tests {
             Event::ActivityCancelled {
                 envelope: envelope(10),
                 activity_id: ActivityId::from_sequence_position(6),
+                attempt: 1,
             },
             Event::TimerStarted {
                 envelope: envelope(11),

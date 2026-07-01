@@ -19,14 +19,20 @@ use crate::durability::DurabilityError;
 /// Terminal outcome of a single fan-out activity, carrying exactly the fields the matching terminal
 /// event records.
 ///
-/// [`FanOutOutcome::Completed`] maps to [`Event::ActivityCompleted`] (its `result` payload);
-/// [`FanOutOutcome::Failed`] maps to [`Event::ActivityFailed`] (its classified `error` and one-based
-/// `attempt`). The shapes mirror the events the live completion path records today through
+/// [`FanOutOutcome::Completed`] maps to [`Event::ActivityCompleted`] (its `result` payload and
+/// one-based `attempt`); [`FanOutOutcome::Failed`] maps to [`Event::ActivityFailed`] (its classified
+/// `error` and one-based `attempt`). The shapes mirror the events the live completion path records
+/// today through
 /// [`Recorder::record_activity_completed`] / [`Recorder::record_activity_failed`].
 #[derive(Clone, Debug)]
 pub enum FanOutOutcome {
-    /// The activity succeeded with this result payload.
-    Completed(Payload),
+    /// The activity succeeded with this result payload on the given one-based attempt.
+    Completed {
+        /// Opaque activity result payload.
+        result: Payload,
+        /// One-based activity attempt number that produced this completion (NOI-0).
+        attempt: u32,
+    },
     /// The activity attempt failed with this classified error on the given one-based attempt.
     Failed {
         /// Classified activity failure.
@@ -69,6 +75,11 @@ pub struct FanOutItem {
     pub activity_type: String,
     /// Opaque activity input payload.
     pub input: Payload,
+    /// One-based delivery attempt this fan-out dispatch belongs to (NOI-0). Recorded onto the
+    /// derived `ActivityStarted` so it shares one `(workflow, activity, attempt)` identity with the
+    /// terminal recorded through [`Recorder::record_fan_out_completion`]. No retry executor exists
+    /// yet, so this is `FIRST_DELIVERY_ATTEMPT` (`1`) today — the genuine current value, not a shim.
+    pub attempt: u32,
 }
 
 impl Recorder {
@@ -131,6 +142,9 @@ impl Recorder {
             events.push(Event::ActivityStarted {
                 envelope: started_envelope,
                 activity_id,
+                // NOI-0: the genuine one-based attempt this fan-out dispatch belongs to, from the
+                // same `FanOutItem` that stamps the outbox row.
+                attempt: item.attempt,
             });
             outbox_rows.push(
                 OutboxRow::pending(
@@ -254,11 +268,13 @@ impl Recorder {
         }
 
         match outcome {
-            FanOutOutcome::Completed(result) => {
+            FanOutOutcome::Completed { result, attempt } => {
                 self.append_with(recorded_at, |envelope| Event::ActivityCompleted {
                     envelope,
                     activity_id,
                     result,
+                    // NOI-0: the genuine one-based attempt that produced this completion.
+                    attempt,
                 })
                 .await?;
             }

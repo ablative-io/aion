@@ -291,20 +291,12 @@ fn dispatch_unscheduled(
         // Record the whole batch first so the Scheduled range stays contiguous,
         // then dispatch; completions land in the runtime maps keyed by ordinal.
         for (ordinal, spec) in &fresh {
-            let input = payload_from_json_text(&spec.input, label)?;
+            let scheduled = fresh_scheduled_activity(spec, start_time_task_queue, label)?;
             context
                 .record_activity_scheduled_started(
                     Utc::now(),
                     ActivityId::from_sequence_position(*ordinal),
-                    spec.name.clone(),
-                    input,
-                    // NSTQ-4 (+#144): resolve once at this schedule seam, same
-                    // precedence as the flag-ON fan-out and single-schedule paths
-                    // (override > workflow default > start-time queue > default).
-                    super::nif_activity::resolve_task_queue(&spec.config, start_time_task_queue),
-                    // NODE-4: resolve the OPTIONAL node affinity at the same seam
-                    // (member pin, else None), matching the live dispatch below.
-                    super::nif_activity::resolve_node(&spec.config),
+                    scheduled,
                 )
                 .map_err(|error| error.error_reason())?;
         }
@@ -386,9 +378,31 @@ fn fan_out_items(
                 node: super::nif_activity::resolve_node(&spec.config),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
+                // NOI-0: a fresh fan-out dispatch is the first delivery of each member, attempt 1.
+                attempt: FIRST_DELIVERY_ATTEMPT,
             })
         })
         .collect()
+}
+
+/// Build the [`ScheduledActivity`](super::nif_activity::ScheduledActivity) for one FRESH
+/// (non-recovered) fan-out member on the flag-OFF single-schedule path.
+///
+/// Resolves the task queue and OPTIONAL node once at this schedule seam (NSTQ-4 / NODE-4, same
+/// precedence as the flag-ON fan-out and single-schedule paths), and stamps the first-delivery
+/// attempt (NOI-0): a fresh fan-out member is its first delivery, attempt 1.
+fn fresh_scheduled_activity(
+    spec: &ActivitySpec,
+    start_time_task_queue: Option<&str>,
+    label: &str,
+) -> Result<super::nif_activity::ScheduledActivity, String> {
+    Ok(super::nif_activity::ScheduledActivity {
+        activity_type: spec.name.clone(),
+        input: payload_from_json_text(&spec.input, label)?,
+        task_queue: super::nif_activity::resolve_task_queue(&spec.config, start_time_task_queue),
+        node: super::nif_activity::resolve_node(&spec.config),
+        attempt: FIRST_DELIVERY_ATTEMPT,
+    })
 }
 
 /// Map a slice of recovered `(ordinal, spec)` pairs to [`FanOutItem`]s whose `task_queue` and
@@ -422,6 +436,10 @@ fn fan_out_items_recovered(
                 node: scheduled_node(history, *ordinal),
                 activity_type: spec.name.clone(),
                 input: payload_from_json_text(&spec.input, label)?,
+                // NOI-0 recovery: re-derive the attempt from the recorded `ActivityStarted` so the
+                // re-staged dispatch keeps the SAME attempt identity. A pre-field or unrecorded
+                // ordinal reads back the legacy sentinel / first delivery deterministically.
+                attempt: started_attempt(history, *ordinal).unwrap_or(FIRST_DELIVERY_ATTEMPT),
             })
         })
         .collect()
@@ -617,13 +635,24 @@ fn take_and_record(
                 .record_fan_out_completion(
                     Utc::now(),
                     ordinal,
-                    FanOutOutcome::Completed(payload.clone()),
+                    FanOutOutcome::Completed {
+                        result: payload.clone(),
+                        // NOI-0: fan-out dispatches at `FIRST_DELIVERY_ATTEMPT` (no retry executor
+                        // yet), matching the `ActivityStarted` staged for this ordinal.
+                        attempt: FIRST_DELIVERY_ATTEMPT,
+                    },
                 )
                 .map_err(|error| error.error_reason())?;
             log_unexpected_drop(result, ordinal);
         } else {
             context
-                .record_activity_completed(Utc::now(), activity_id, payload.clone())
+                // NOI-0: this ordinal was dispatched once at `FIRST_DELIVERY_ATTEMPT`.
+                .record_activity_completed(
+                    Utc::now(),
+                    activity_id,
+                    payload.clone(),
+                    FIRST_DELIVERY_ATTEMPT,
+                )
                 .map_err(|error| error.error_reason())?;
         }
         return Ok(OrdinalState::Completed(payload_text(&payload)?));
@@ -668,7 +697,8 @@ fn log_unexpected_drop(result: FanOutCompletionResult, ordinal: u64) {
 
 fn record_cancelled(context: &NifContext, ordinal: u64) -> Result<(), String> {
     context
-        .record_activity_cancelled_and_settle_outbox(Utc::now(), ordinal)
+        // NOI-0: the cancelled fan-out ordinal was dispatched once at `FIRST_DELIVERY_ATTEMPT`.
+        .record_activity_cancelled_and_settle_outbox(Utc::now(), ordinal, FIRST_DELIVERY_ATTEMPT)
         .map_err(|error| error.error_reason())
 }
 
@@ -785,6 +815,25 @@ fn scheduled_node(history: &[Event], ordinal: u64) -> Option<String> {
         Event::ActivityScheduled {
             activity_id, node, ..
         } if *activity_id == target => node.clone(),
+        _ => None,
+    })
+}
+
+/// The recorded `ActivityStarted` one-based attempt for `ordinal` (NOI-0 recovery).
+///
+/// The durable source of truth for re-stamping the SAME attempt on a crash-recovery re-dispatch, so
+/// the re-armed dispatch keeps the identity the original `ActivityStarted` recorded. Returns the
+/// recorded `attempt` for a recorded `ActivityStarted`, or `None` if no `ActivityStarted` exists for
+/// the ordinal. A history recorded before the `attempt` field existed decodes it to the legacy
+/// sentinel (`0`) via the event's serde default — deterministically replay-safe, never a panic.
+fn started_attempt(history: &[Event], ordinal: u64) -> Option<u32> {
+    let target = ActivityId::from_sequence_position(ordinal);
+    history.iter().find_map(|event| match event {
+        Event::ActivityStarted {
+            activity_id,
+            attempt,
+            ..
+        } if *activity_id == target => Some(*attempt),
         _ => None,
     })
 }
@@ -1051,18 +1100,25 @@ mod tests {
                 task_queue,
                 node,
             },
-            Event::ActivityStarted { activity_id, .. } => Event::ActivityStarted {
+            Event::ActivityStarted {
+                activity_id,
+                attempt,
+                ..
+            } => Event::ActivityStarted {
                 envelope,
                 activity_id,
+                attempt,
             },
             Event::ActivityCompleted {
                 activity_id,
                 result,
+                attempt,
                 ..
             } => Event::ActivityCompleted {
                 envelope,
                 activity_id,
                 result,
+                attempt,
             },
             Event::ActivityFailed {
                 activity_id,
@@ -1075,9 +1131,14 @@ mod tests {
                 error,
                 attempt,
             },
-            Event::ActivityCancelled { activity_id, .. } => Event::ActivityCancelled {
+            Event::ActivityCancelled {
+                activity_id,
+                attempt,
+                ..
+            } => Event::ActivityCancelled {
                 envelope,
                 activity_id,
+                attempt,
             },
             Event::TimerFired { timer_id, .. } => Event::TimerFired { envelope, timer_id },
             Event::SearchAttributesUpdated {
@@ -1132,6 +1193,7 @@ mod tests {
             Event::ActivityStarted {
                 envelope: placeholder_envelope(),
                 activity_id: ActivityId::from_sequence_position(ordinal),
+                attempt: 1,
             },
         ]
     }
@@ -1141,6 +1203,7 @@ mod tests {
             envelope: placeholder_envelope(),
             activity_id: ActivityId::from_sequence_position(ordinal),
             result: Payload::new(ContentType::Json, result.as_bytes().to_vec()),
+            attempt: 1,
         }
     }
 
@@ -1162,6 +1225,7 @@ mod tests {
             Event::ActivityStarted {
                 envelope: placeholder_envelope(),
                 activity_id: ActivityId::from_sequence_position(ordinal),
+                attempt: 1,
             },
         ]
     }

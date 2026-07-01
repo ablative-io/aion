@@ -533,6 +533,7 @@ mod tests {
             envelope: envelope(workflow_id, 3),
             activity_id: activity_id.clone(),
             result: Payload::new(ContentType::Json, b"{}".to_vec()),
+            attempt: 1,
         }
     }
 
@@ -553,6 +554,7 @@ mod tests {
         Event::ActivityCancelled {
             envelope: envelope(workflow_id, 3),
             activity_id: activity_id.clone(),
+            attempt: 1,
         }
     }
 

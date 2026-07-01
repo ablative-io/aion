@@ -49,7 +49,7 @@ async fn store_with_activity_history() -> Result<Arc<dyn EventStore>, Box<dyn st
         )
         .await?;
     recorder
-        .record_activity_completed(timestamp(2)?, activity_id, payload("activity-result")?)
+        .record_activity_completed(timestamp(2)?, activity_id, payload("activity-result")?, 1)
         .await?;
     Ok(store)
 }

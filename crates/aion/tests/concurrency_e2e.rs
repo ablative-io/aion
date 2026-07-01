@@ -290,8 +290,9 @@ fn run_shape(history: &[Event]) -> Vec<String> {
             Event::ActivityStarted {
                 envelope,
                 activity_id,
+                attempt,
             } => format!(
-                "{}|astart|{}",
+                "{}|astart|{}|{attempt}",
                 envelope.seq,
                 activity_id.sequence_position()
             ),
@@ -299,8 +300,9 @@ fn run_shape(history: &[Event]) -> Vec<String> {
                 envelope,
                 activity_id,
                 result,
+                attempt,
             } => format!(
-                "{}|acomp|{}|{}",
+                "{}|acomp|{}|{}|{attempt}",
                 envelope.seq,
                 activity_id.sequence_position(),
                 String::from_utf8_lossy(result.bytes())
@@ -319,8 +321,9 @@ fn run_shape(history: &[Event]) -> Vec<String> {
             Event::ActivityCancelled {
                 envelope,
                 activity_id,
+                attempt,
             } => format!(
-                "{}|acancel|{}",
+                "{}|acancel|{}|{attempt}",
                 envelope.seq,
                 activity_id.sequence_position()
             ),
@@ -686,11 +689,11 @@ async fn collect_all_success_returns_input_order_and_replays_byte_identically() 
     // shape is pinned (the result list is input-ordered regardless).
     let shape = run_shape(&settled);
     assert_eq!(shape[1], format!("2|sched|0|gated_ok:a|\"in\""));
-    assert_eq!(shape[2], "3|astart|0");
+    assert_eq!(shape[2], "3|astart|0|1");
     assert_eq!(shape[3], format!("4|sched|1|gated_ok:b|\"in\""));
-    assert_eq!(shape[4], "5|astart|1");
-    assert_eq!(shape[5], "6|acomp|0|\"done-a\"");
-    assert_eq!(shape[6], "7|acomp|1|\"done-b\"");
+    assert_eq!(shape[4], "5|astart|1|1");
+    assert_eq!(shape[5], "6|acomp|0|\"done-a\"|1");
+    assert_eq!(shape[6], "7|acomp|1|\"done-b\"|1");
     wait_for("dispatcher tasks to finish", || {
         gates.finished_dispatches() == 2
     })
@@ -732,7 +735,7 @@ async fn collect_all_fail_fast_cancels_unresolved_and_replays_byte_identically()
     .await?;
     let shape = run_shape(&settled);
     assert_eq!(shape[5], "6|afail|1|boom-b|1");
-    assert_eq!(shape[6], "7|acancel|0");
+    assert_eq!(shape[6], "7|acancel|0|1");
     assert_eq!(count_completed(&settled), 0);
 
     // Release the cancelled member's gate so its dispatcher task finishes;
@@ -785,8 +788,8 @@ async fn collect_race_settles_first_success_and_replays_byte_identically() -> Te
     })
     .await?;
     let shape = run_shape(&settled);
-    assert_eq!(shape[5], "6|acomp|1|\"done-b\"");
-    assert_eq!(shape[6], "7|acancel|0");
+    assert_eq!(shape[5], "6|acomp|1|\"done-b\"|1");
+    assert_eq!(shape[6], "7|acancel|0|1");
 
     gates.release("a");
     wait_for("dispatcher tasks to finish", || {
@@ -834,7 +837,7 @@ async fn collect_race_settles_first_failure_and_replays_byte_identically() -> Te
     .await?;
     let shape = run_shape(&settled);
     assert_eq!(shape[5], "6|afail|0|boom-a|1");
-    assert_eq!(shape[6], "7|acancel|1");
+    assert_eq!(shape[6], "7|acancel|1|1");
     assert_eq!(count_completed(&settled), 0);
 
     gates.release("b");

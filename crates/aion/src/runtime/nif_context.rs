@@ -257,14 +257,11 @@ impl NifContext {
     /// # Errors
     ///
     /// Propagates any [`DurabilityError`] returned by the recorder.
-    pub fn record_activity_scheduled_started(
+    pub(crate) fn record_activity_scheduled_started(
         &self,
         recorded_at: chrono::DateTime<chrono::Utc>,
         activity_id: ActivityId,
-        activity_type: String,
-        input: Payload,
-        task_queue: String,
-        node: Option<String>,
+        scheduled: super::nif_activity::ScheduledActivity,
     ) -> Result<(), NifContextError> {
         self.tokio_handle
             .block_on(async {
@@ -273,18 +270,19 @@ impl NifContext {
                     .record_activity_scheduled(
                         recorded_at,
                         activity_id.clone(),
-                        activity_type,
-                        input,
+                        scheduled.activity_type,
+                        scheduled.input,
                         // NSTQ-4: the resolved task queue (activity override > workflow default >
                         // the named default), decided once at the schedule seam by the caller.
-                        task_queue,
+                        scheduled.task_queue,
                         // NODE-4: the resolved OPTIONAL node affinity (activity pin, else None),
                         // decided once at the schedule seam by the caller.
-                        node,
+                        scheduled.node,
                     )
                     .await?;
                 recorder
-                    .record_activity_started(recorded_at, activity_id)
+                    // NOI-0: the genuine one-based delivery attempt, threaded from the dispatch seam.
+                    .record_activity_started(recorded_at, activity_id, scheduled.attempt)
                     .await
             })
             .map_err(Into::into)
@@ -300,12 +298,14 @@ impl NifContext {
         recorded_at: chrono::DateTime<chrono::Utc>,
         activity_id: ActivityId,
         result: Payload,
+        attempt: u32,
     ) -> Result<(), NifContextError> {
         self.tokio_handle
             .block_on(async {
                 let mut recorder = self.recorder.lock().await;
                 recorder
-                    .record_activity_completed(recorded_at, activity_id, result)
+                    // NOI-0: the genuine one-based attempt that produced this completion.
+                    .record_activity_completed(recorded_at, activity_id, result, attempt)
                     .await
             })
             .map_err(Into::into)
@@ -342,12 +342,14 @@ impl NifContext {
         &self,
         recorded_at: chrono::DateTime<chrono::Utc>,
         activity_id: ActivityId,
+        attempt: u32,
     ) -> Result<(), NifContextError> {
         self.tokio_handle
             .block_on(async {
                 let mut recorder = self.recorder.lock().await;
                 recorder
-                    .record_activity_cancelled(recorded_at, activity_id)
+                    // NOI-0: the genuine one-based attempt that was cancelled.
+                    .record_activity_cancelled(recorded_at, activity_id, attempt)
                     .await
             })
             .map_err(Into::into)
@@ -362,12 +364,14 @@ impl NifContext {
         &self,
         recorded_at: chrono::DateTime<chrono::Utc>,
         ordinal: u64,
+        attempt: u32,
     ) -> Result<(), NifContextError> {
         self.tokio_handle
             .block_on(async {
                 let mut recorder = self.recorder.lock().await;
                 recorder
-                    .record_activity_cancelled_and_settle_outbox(recorded_at, ordinal)
+                    // NOI-0: the genuine one-based attempt that was cancelled.
+                    .record_activity_cancelled_and_settle_outbox(recorded_at, ordinal, attempt)
                     .await
             })
             .map_err(Into::into)
@@ -844,6 +848,7 @@ mod tests {
                 envelope: envelope(&workflow_id, 3)?,
                 activity_id: ActivityId::from_sequence_position(0),
                 result: result.clone(),
+                attempt: 1,
             },
         ];
         let (registry, store, handle) = context_with_history(&runtime, 66, workflow_id, &history)?;
@@ -886,6 +891,7 @@ mod tests {
                 envelope: envelope(workflow_id, 3)?,
                 activity_id: ActivityId::from_sequence_position(0),
                 result: payload("activity-result")?,
+                attempt: 1,
             },
             Event::TimerStarted {
                 envelope: envelope(workflow_id, 4)?,

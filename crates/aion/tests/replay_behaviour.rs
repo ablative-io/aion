@@ -106,7 +106,7 @@ async fn record_full_history(
         )
         .await?;
     recorder
-        .record_activity_completed(timestamp(30)?, activity_id, payload("activity-result")?)
+        .record_activity_completed(timestamp(30)?, activity_id, payload("activity-result")?, 1)
         .await?;
     recorder
         .record_timer_started(timestamp(40)?, timer_id.clone(), timestamp(100)?)
@@ -179,6 +179,7 @@ async fn record_partial_history_for(
             timestamp(timestamp_base + 20)?,
             activity_id,
             payload("activity-result")?,
+            1,
         )
         .await?;
     Ok(())
@@ -309,6 +310,7 @@ async fn record_round_trip_history(
             timestamp(30)?,
             first_activity_id,
             payload("first-activity-result")?,
+            1,
         )
         .await?;
     recorder
@@ -326,6 +328,7 @@ async fn record_round_trip_history(
             timestamp(50)?,
             second_activity_id,
             payload("second-activity-result")?,
+            1,
         )
         .await?;
     recorder
@@ -413,7 +416,7 @@ async fn record_partial_history(
         )
         .await?;
     recorder
-        .record_activity_completed(timestamp(30)?, activity_id, payload("activity-result")?)
+        .record_activity_completed(timestamp(30)?, activity_id, payload("activity-result")?, 1)
         .await?;
 
     Ok(store.read_history(&workflow_id()).await?)
@@ -862,7 +865,7 @@ async fn record_realistic_history(
         )
         .await?;
     recorder
-        .record_activity_completed(timestamp(30)?, activity_id, payload("activity-result")?)
+        .record_activity_completed(timestamp(30)?, activity_id, payload("activity-result")?, 1)
         .await?;
     recorder
         .record_signal_received(

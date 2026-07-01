@@ -190,13 +190,16 @@ async fn execute_live_and_record(
                 )
                 .await?;
             recorder
-                .record_activity_started(recorded_at, activity_id.clone())
+                // NOI-0: the single-schedule executor runs each activity once, so its start,
+                // completion, and failure all belong to attempt 1 (one-based), matching the `1`
+                // recorded on `ActivityFailed` below.
+                .record_activity_started(recorded_at, activity_id.clone(), 1)
                 .await?;
             let outcome = executor.run_activity(activity_type, input).await?;
             match outcome {
                 LiveActivityOutcome::Completed(result) => {
                     recorder
-                        .record_activity_completed(recorded_at, activity_id, result.clone())
+                        .record_activity_completed(recorded_at, activity_id, result.clone(), 1)
                         .await?;
                     Ok(HandoffOutcome::Resolved(Resolution::ActivityCompleted(
                         result,
