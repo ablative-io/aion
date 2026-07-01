@@ -1,8 +1,9 @@
 //! Live end-to-end proof for the stacked-dev example against real binaries:
 //! build the three `.aion` archives from the committed Gleam source, boot
 //! `aion server`, run the standalone Rust worker from
-//! `examples/stacked-dev/worker/` (built against the published `aion-worker`
-//! SDK) with fake-CLI shims as its entire `PATH`, start a `stacked_dev` run,
+//! `examples/stacked-dev/norn-worker/` (built against the published
+//! `aion-worker` SDK) with fake-CLI shims as its entire `PATH`, start a
+//! `stacked_dev` run,
 //! drive the `review_verdict` signal by hand, and assert the run completes
 //! with the landed output. Every step drives a real process; the shims
 //! intercept only at the `yg`/`norn`/`cargo`/`meridian` process boundary —
@@ -178,8 +179,15 @@ fn build_example_archives(repo: &Path) -> Result<(), TestError> {
 
 /// Build the standalone worker crate (its own out-of-workspace package
 /// consuming the published `aion-worker`) and return the binary path.
+///
+/// The single unified worker was split into two variants that serve the same
+/// eleven activities but shell to different dev agents: `norn-worker` drives
+/// the `norn` CLI, `mixed-worker` drives Claude Code (`claude`). This test's
+/// shims speak the `norn` CLI contract (the `norn` shim keys on the
+/// `--session-id`/`--resume` argv shape the `norn-worker` handlers emit), so
+/// the worker under test is the `norn-worker` — binary `stacked-dev-worker-norn`.
 fn build_worker_binary(repo: &Path) -> Result<PathBuf, TestError> {
-    let worker_dir = repo.join("examples/stacked-dev/worker");
+    let worker_dir = repo.join("examples/stacked-dev/norn-worker");
     let status = Command::new("cargo")
         .arg("build")
         .current_dir(&worker_dir)
@@ -188,7 +196,7 @@ fn build_worker_binary(repo: &Path) -> Result<PathBuf, TestError> {
     if !status.success() {
         return Err(format!("worker `cargo build` failed with {status}").into());
     }
-    let binary = worker_dir.join("target/debug/stacked-dev-worker");
+    let binary = worker_dir.join("target/debug/stacked-dev-worker-norn");
     if !binary.is_file() {
         return Err(format!("worker binary missing at {}", binary.display()).into());
     }
@@ -458,16 +466,13 @@ fn deploy_archive(
     }
 }
 
-// Ignored: this live e2e references the standalone worker crate at
-// `examples/stacked-dev/worker/`, which no longer exists — that single worker
-// was split into `norn-worker` and `mixed-worker` (binaries
-// `stacked-dev-worker-norn` / `stacked-dev-worker-mixed`), so there is no
-// drop-in replacement path. It also needs a live build environment (real
-// `cargo build` of the out-of-workspace worker, a booted server, and process
-// shims). Re-point `build_worker_binary` at the intended split worker and run
-// deliberately with: `cargo test -p aion-cli --test stacked_dev_live_e2e -- --ignored`.
+// Ignored only because it is slow: it does a real `cargo build` of the
+// out-of-workspace `norn-worker` crate against the published `aion-worker`
+// SDK, boots a real `aion server`, and drives real worker + shim processes.
+// Run deliberately with:
+// `cargo test -p aion-cli --test stacked_dev_live_e2e -- --ignored`.
 #[test]
-#[ignore = "references examples/stacked-dev/worker/ which was split into norn-worker/mixed-worker; needs a live build env — run with --ignored after fixing the worker path"]
+#[ignore = "slow: cargo-builds the out-of-workspace norn-worker, boots aion server, and drives real worker + shim processes"]
 fn stacked_dev_lands_through_the_real_worker_and_review_signal() -> Result<(), TestError> {
     let repo = repo_root()?;
     let example = repo.join("examples/stacked-dev");
