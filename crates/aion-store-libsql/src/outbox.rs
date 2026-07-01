@@ -67,6 +67,13 @@ SELECT COUNT(*) FROM outbox WHERE namespace = ?1 AND status IN ('pending', 'clai
 const COUNT_CLAIMED_OUTBOX_SQL: &str = "
 SELECT COUNT(*) FROM outbox WHERE namespace = ?1 AND status = 'claimed'";
 
+// Claimed-only count grouped by namespace (CP2-Q2 perf): one grouped query so the per-sweep planner
+// resolves every active namespace's claimed count in a single round-trip instead of N repeated
+// per-namespace COUNTs over the same table. Same `status = 'claimed'` predicate as the scalar count
+// above; the caller filters to the requested namespace set and seeds absent ones to zero.
+const COUNT_CLAIMED_OUTBOX_BY_NAMESPACE_SQL: &str = "
+SELECT namespace, COUNT(*) FROM outbox WHERE status = 'claimed' GROUP BY namespace";
+
 // Pending-route enumeration (CP2-Q2): the distinct `(namespace, task_queue, node)` routes that have
 // at least one CLAIMABLE pending row (status pending AND the visible_after fence has passed). This is
 // the round-robin probe — it claims nothing, it only reports which scopes have work. `node` is
@@ -579,6 +586,50 @@ pub(crate) async fn count_claimed_outbox_rows(
         .map_err(|error| crate::error::libsql_error(&error))?;
     u64::try_from(count)
         .map_err(|_| StoreError::Serialization(format!("outbox claimed count negative: {count}")))
+}
+
+/// Count CLAIMED outbox rows per namespace in ONE grouped query, filtered to `namespaces` (CP2-Q2 perf).
+///
+/// Byte-identical to calling [`count_claimed_outbox_rows`] once per namespace — same `claimed`-only
+/// predicate — but a single round-trip instead of N. Every requested namespace is present in the
+/// returned map (seeded to `0`) so the caller can index it unconditionally; namespaces outside the
+/// request are dropped.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when the
+/// engine returns a negative count.
+pub(crate) async fn count_claimed_outbox_rows_by_namespace(
+    conn: &Connection,
+    namespaces: &[&str],
+) -> Result<std::collections::BTreeMap<String, u64>, StoreError> {
+    let requested: std::collections::BTreeSet<&str> = namespaces.iter().copied().collect();
+    let mut counts: std::collections::BTreeMap<String, u64> =
+        requested.iter().map(|ns| ((*ns).to_owned(), 0)).collect();
+    let mut rows = conn
+        .query(COUNT_CLAIMED_OUTBOX_BY_NAMESPACE_SQL, ())
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let namespace: String = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        if !requested.contains(namespace.as_str()) {
+            continue;
+        }
+        let count: i64 = row
+            .get(1)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        let count = u64::try_from(count).map_err(|_| {
+            StoreError::Serialization(format!("outbox claimed count negative: {count}"))
+        })?;
+        counts.insert(namespace, count);
+    }
+    Ok(counts)
 }
 
 /// Enumerate the distinct `(namespace, task_queue, node)` routes with a claimable pending row (CP2-Q2).
