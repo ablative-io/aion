@@ -67,6 +67,7 @@ dependencies = [
  "aion-server",
  "aion-store",
  "aion-toolchain",
+ "aion-worker",
  "anyhow",
  "chrono",
  "clap",
@@ -2833,9 +2834,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-rs"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5cc0e613a5fdda937f3b2e939c093db9caa058c9be28d65f422570a1ef60a9c"
+checksum = "cb368857f287987e3c8629eaccceac5b88f0390287d545f0bea94fcead2b5110"
 dependencies = [
  "async-trait",
  "beamr",
@@ -2851,9 +2852,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ec94614d3e44d86bf304c5a0a3f6317fd8c2c15bfa8dfc62fa7f0e573375634"
+checksum = "b18055c03e8c36f5b266e978f5b32d0d1f81bd2f0b4e306ee2fa5631323be198"
 dependencies = [
  "futures-core",
  "liminal-rs",
@@ -2865,9 +2866,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-server"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eef7905541ea355e523fa97bb792ed5efa33fa8d8945be9ed73dbba52bb429aa"
+checksum = "55a6e464003f2e57b65ef383f1feade00059fcd00ff0b94b383158e7c7d07c16"
 dependencies = [
  "anyhow",
  "beamr",

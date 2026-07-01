@@ -72,15 +72,15 @@ pub use protocol::{
 };
 #[cfg(feature = "liminal-transport")]
 pub use runtime::liminal::{
-    DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
+    AgentHarnessConfig, DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
     LiminalActivityWorker,
 };
-#[cfg(feature = "liminal-transport")]
-pub use runtime::serve_with_redial;
 pub use runtime::{
     ActivityDispatcher, ActivityEventSender, ControlMessage, ControlReceiver, ControlRegistry,
     DispatchOutcome, NoShutdown, ServeEnd, SessionGuard, SessionHealth, SessionKey,
     TypedActivityDispatcher, decode_payload, encode_payload, harness_error_to_outcome,
-    serve_activity_tasks, serve_activity_tasks_until, spawn_agent,
+    serve_activity_tasks, serve_activity_tasks_until, spawn_agent, spawn_dyn_agent,
 };
+#[cfg(feature = "liminal-transport")]
+pub use runtime::{RedialTiming, serve_with_redial};
 pub use worker::{EmptyActivitySet, Worker, WorkerBuilder, run_worker_with_session};

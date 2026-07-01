@@ -66,12 +66,17 @@ pub fn announce_composed_harness() {
 }
 
 #[cfg(feature = "norn")]
-pub use with_norn::default_agent_harness;
+pub use with_norn::{default_agent_harness, default_agent_harness_config};
 
 #[cfg(feature = "norn")]
 mod with_norn {
+    use std::sync::Arc;
+
+    use aion_core::{InterventionCapabilities, InterventionPrimitive};
     use aion_integration_norn::NornHarness;
     use aion_integrations::AgentHarness;
+    use aion_integrations::contract::DynAgentHarness;
+    use aion_worker::AgentHarnessConfig;
 
     /// The default agent harness the worker drives when the `norn` feature is on:
     /// a [`NornHarness`] invoking `norn` from `PATH` in its `--protocol jsonrpc`
@@ -85,6 +90,33 @@ mod with_norn {
     #[must_use]
     pub fn default_agent_harness() -> impl AgentHarness {
         NornHarness::new()
+    }
+
+    /// The neutral intervention primitives a served Norn worker advertises upfront:
+    /// message injection and cancellation, the set Norn's `--protocol jsonrpc`
+    /// negotiates. Advertised at registration so a live session is registered for
+    /// intervention BEFORE it starts.
+    fn default_norn_capabilities() -> InterventionCapabilities {
+        InterventionCapabilities::from_primitives([
+            InterventionPrimitive::InjectMessage,
+            InterventionPrimitive::Cancel,
+        ])
+    }
+
+    /// The composed [`AgentHarnessConfig`] the `aion worker serve` path installs on
+    /// its served worker (NOI-5b/NOI-6) — the default [`default_agent_harness`]
+    /// ERASED to `Arc<dyn DynAgentHarness>`, the operator-named
+    /// `agent_activity_types` it owns, and the neutral capabilities it advertises.
+    ///
+    /// Erasing here keeps the concrete `NornHarness` type inside this composition
+    /// root: the worker crate holds the harness only through the neutral
+    /// `DynAgentHarness` seam, so no harness-type name reaches a platform crate.
+    #[must_use]
+    pub fn default_agent_harness_config(
+        agent_activity_types: impl IntoIterator<Item = impl Into<String>>,
+    ) -> AgentHarnessConfig {
+        let harness: Arc<dyn DynAgentHarness> = Arc::new(default_agent_harness());
+        AgentHarnessConfig::new(harness, agent_activity_types, default_norn_capabilities())
     }
 }
 

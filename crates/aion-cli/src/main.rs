@@ -34,6 +34,8 @@ mod package;
 mod payload;
 mod render;
 mod server;
+#[cfg(all(feature = "norn", feature = "liminal-transport"))]
+mod worker;
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:50051";
 const DEFAULT_NAMESPACE: &str = "default";
@@ -88,9 +90,26 @@ enum Command {
     /// required (`--gleam-path`); there is no default. An optional
     /// `--debounce-ms` coalesces an editor's multi-event save into one rebuild.
     Dev(dev::DevArgs),
+    /// Run a remote worker that serves agent activities over the liminal transport.
+    ///
+    /// Connects IN to one or more deployed `aion server`
+    /// `outbox.liminal_listen_address` listeners, self-registers, and serves pushed
+    /// dispatches — installing the composed agent harness so agent activities run
+    /// live, and migrating to a survivor listener when the owner of a shard dies.
+    #[cfg(all(feature = "norn", feature = "liminal-transport"))]
+    #[command(subcommand)]
+    Worker(WorkerCommand),
     /// Operate a running Aion server or package workflows locally.
     #[command(flatten)]
     Client(ClientCommand),
+}
+
+/// Subcommands under `aion worker`.
+#[cfg(all(feature = "norn", feature = "liminal-transport"))]
+#[derive(Debug, Subcommand)]
+enum WorkerCommand {
+    /// Serve agent activities over liminal until interrupted.
+    Serve(worker::WorkerServeArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -367,6 +386,19 @@ async fn main() -> ExitCode {
                 .await
                 .and_then(|value| print_json(&value, cli.pretty));
             match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{}", render::render_error(&error));
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        #[cfg(all(feature = "norn", feature = "liminal-transport"))]
+        Command::Worker(WorkerCommand::Serve(ref args)) => {
+            // The production worker-serve entrypoint: install the composed agent
+            // harness and drive the reconnect-to-survivor serve loop. Blocks until
+            // the loop ends; a serve failure reports through the client contract.
+            match worker::serve(args) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("{}", render::render_error(&error));
@@ -1001,6 +1033,8 @@ mod tests {
                     | RemoteCommand::Reopen { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert!(run_id.is_none()),
+                #[cfg(all(feature = "norn", feature = "liminal-transport"))]
+                Command::Worker(_) => anyhow::bail!("expected workflow operation command"),
                 Command::Server(_)
                 | Command::Dev(_)
                 | Command::Client(
@@ -1054,6 +1088,10 @@ mod tests {
                     | RemoteCommand::Reopen { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
+                #[cfg(all(feature = "norn", feature = "liminal-transport"))]
+                Command::Worker(_) => {
+                    anyhow::bail!("expected run-targeted workflow operation command")
+                }
                 Command::Server(_)
                 | Command::Dev(_)
                 | Command::Client(

@@ -50,22 +50,28 @@
 //! (the rejection reason is carried), so a worker the server declines never
 //! believes it is registered.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use aion_core::{
-    ActivityId, ContentType, InterventionCommand, InterventionOutcome, Payload, RunId, WorkflowId,
+    ActivityEvent, ActivityId, ContentType, InterventionCapabilities, InterventionCommand,
+    InterventionOutcome, Payload, RunId, WorkflowId,
 };
+use aion_integrations::contract::DynAgentHarness;
+use aion_integrations::spec::AgentRunSpec;
 use liminal::protocol::WorkerRegistration;
-use liminal_sdk::{PushClient, PushedFrame};
+use liminal_sdk::{OBSERVABILITY_CHANNEL, PushClient, PushWriter, PushedFrame};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 use crate::activity::ActivityRegistry;
 use crate::config::WorkerConfig;
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::ActivityTask;
-use crate::runtime::intervention::ControlRegistry;
+use crate::runtime::agent::spawn_dyn_agent;
+use crate::runtime::intervention::{ControlRegistry, SessionKey};
 use crate::runtime::liminal_redial::ServeResult;
 use crate::runtime::loop_::{ActivityDispatcher, DispatchOutcome};
 
@@ -134,6 +140,61 @@ pub struct InterventionReply {
 /// promptly on a quiet connection rather than blocking forever.
 const RECV_POLL: Duration = Duration::from_millis(100);
 
+/// The composed agent harness a served worker drives, plus the agent activity
+/// types it owns and the neutral [`InterventionCapabilities`] it advertises
+/// (NOI-5b/NOI-6).
+///
+/// This bundles the three things [`LiminalActivityWorker::with_agent_harness`]
+/// needs into one `Option`-shaped value so the production serve path
+/// ([`serve_with_redial`](crate::serve_with_redial)) can thread a composed harness
+/// through as a single argument — or `None` for a harness-less build, which serves
+/// non-agent activities exactly as before. The harness is ERASED
+/// (`Arc<dyn DynAgentHarness>`), so no concrete adapter type ever appears in this
+/// platform crate.
+#[derive(Clone)]
+pub struct AgentHarnessConfig {
+    /// The erased agent harness the worker drives for its agent activity types.
+    harness: Arc<dyn DynAgentHarness>,
+    /// The activity-type names routed through the harness rather than the registry.
+    agent_activity_types: BTreeSet<String>,
+    /// The neutral intervention primitives the harness advertises.
+    capabilities: InterventionCapabilities,
+}
+
+impl AgentHarnessConfig {
+    /// Builds a config from a composed (erased) `harness`, the `agent_activity_types`
+    /// it owns, and the `capabilities` it advertises.
+    #[must_use]
+    pub fn new(
+        harness: Arc<dyn DynAgentHarness>,
+        agent_activity_types: impl IntoIterator<Item = impl Into<String>>,
+        capabilities: InterventionCapabilities,
+    ) -> Self {
+        Self {
+            harness,
+            agent_activity_types: agent_activity_types.into_iter().map(Into::into).collect(),
+            capabilities,
+        }
+    }
+
+    /// The agent activity-type names this config owns — the set the serve path must
+    /// ADVERTISE in registration so the server can select the worker for them.
+    #[must_use]
+    pub fn agent_activity_types(&self) -> &BTreeSet<String> {
+        &self.agent_activity_types
+    }
+}
+
+impl std::fmt::Debug for AgentHarnessConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentHarnessConfig")
+            .field("agent_activity_types", &self.agent_activity_types)
+            .field("capabilities", &self.capabilities)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A worker that serves activities over the liminal server-push transport.
 ///
 /// Construct with [`LiminalActivityWorker::connect`], then drive the serve loop
@@ -150,6 +211,21 @@ pub struct LiminalActivityWorker {
     /// attempt-scoped stale-target no-op. Shared (an `Arc` inside) with the
     /// session-spawn path that registers each running agent session.
     control: ControlRegistry,
+    /// Optional agent harness this worker drives for its agent activity types
+    /// (NOI-5b/NOI-6). When installed via [`Self::with_agent_harness`], an activity
+    /// whose type is in [`Self::agent_activity_types`] is executed by driving the
+    /// harness through [`spawn_dyn_agent`] — streaming its transcript live and
+    /// self-registering the live session — instead of the plain typed registry. A
+    /// worker without a harness (the default) is byte-identical to before.
+    agent_harness: Option<Arc<dyn DynAgentHarness>>,
+    /// The activity-type names executed through the agent harness rather than the
+    /// plain registry. Empty unless [`Self::with_agent_harness`] installs a harness.
+    agent_activity_types: BTreeSet<String>,
+    /// The neutral intervention primitives the installed agent harness advertises —
+    /// declared at construction (mirroring the server-side notifier's
+    /// `with_intervention_capabilities`), because capabilities are needed to register
+    /// the session in the [`ControlRegistry`] BEFORE the session starts.
+    agent_capabilities: InterventionCapabilities,
 }
 
 impl std::fmt::Debug for LiminalActivityWorker {
@@ -182,14 +258,106 @@ impl LiminalActivityWorker {
         config: &WorkerConfig,
         registry: Arc<ActivityRegistry>,
     ) -> Result<Self, WorkerError> {
-        let registration = registration_from(config, &registry);
+        Self::connect_advertising(address, config, registry, &BTreeSet::new())
+    }
+
+    /// Connects like [`Self::connect`] but ADDITIONALLY advertises `agent_types` in
+    /// the in-band registration (NOI-5b/NOI-6).
+    ///
+    /// An agent activity is driven by the installed harness, not the typed registry,
+    /// so its type never appears in `registry.activity_types()`. Without advertising
+    /// it here, the server could not SELECT this worker for that activity — a worker
+    /// whose only activities are agent-driven would register advertising nothing. So
+    /// the registration announces `registry`'s types UNION `agent_types`; the union is
+    /// what makes an agent-only worker selectable. Used by the production serve path
+    /// ([`serve_with_redial`](crate::serve_with_redial)) so a redialed worker
+    /// re-advertises its agent types on every connection.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::connect`]: [`WorkerError::Transport`] on a failed connect,
+    /// handshake, or registration.
+    pub fn connect_advertising(
+        address: &str,
+        config: &WorkerConfig,
+        registry: Arc<ActivityRegistry>,
+        agent_types: &BTreeSet<String>,
+    ) -> Result<Self, WorkerError> {
+        let mut registration = registration_from(config, &registry);
+        for agent_type in agent_types {
+            if !registration.activity_types.contains(agent_type) {
+                registration.activity_types.push(agent_type.clone());
+            }
+        }
         let client = PushClient::connect_with_registration(address, registration)
             .map_err(|error| transport_error(&error))?;
         Ok(Self {
             client,
             registry,
             control: ControlRegistry::new(),
+            agent_harness: None,
+            agent_activity_types: BTreeSet::new(),
+            agent_capabilities: InterventionCapabilities::none(),
         })
+    }
+
+    /// Install an agent `harness` this worker drives for the given
+    /// `agent_activity_types`, advertising `capabilities` (NOI-5b/NOI-6).
+    ///
+    /// An activity whose type is in `agent_activity_types` is executed by driving the
+    /// harness through [`spawn_dyn_agent`]: its transcript streams LIVE to the server
+    /// over this worker's connection, and the live session self-registers in the
+    /// [`ControlRegistry`] under its `(workflow, activity, attempt)` key so a pushed
+    /// intervention reaches it. `capabilities` is the harness's advertised neutral
+    /// primitive set (the same set the server-side notifier advertises for this
+    /// worker), gated on before a command is delivered. Every other activity type
+    /// runs through the plain typed registry exactly as before; a worker built
+    /// without this builder never touches the agent path.
+    #[must_use]
+    pub fn with_agent_harness(
+        mut self,
+        harness: Arc<dyn DynAgentHarness>,
+        agent_activity_types: impl IntoIterator<Item = impl Into<String>>,
+        capabilities: InterventionCapabilities,
+    ) -> Self {
+        self.agent_harness = Some(harness);
+        self.agent_activity_types = agent_activity_types.into_iter().map(Into::into).collect();
+        self.agent_capabilities = capabilities;
+        self
+    }
+
+    /// Install the optional agent harness carried by an [`AgentHarnessConfig`], if
+    /// one is supplied (NOI-5b/NOI-6).
+    ///
+    /// This is the single seam the production serve path
+    /// ([`serve_with_redial`](crate::serve_with_redial)) threads a composed harness
+    /// through: `Some(config)` applies it via [`Self::with_agent_harness`], `None`
+    /// leaves the worker on the plain typed-registry path exactly as before — so a
+    /// harness-less build (`--no-default-features`) is unaffected. Kept distinct from
+    /// [`Self::with_agent_harness`] so the redial driver can carry the harness as one
+    /// `Option`-shaped value.
+    #[must_use]
+    pub fn with_agent_config(self, config: Option<AgentHarnessConfig>) -> Self {
+        match config {
+            Some(config) => self.with_agent_harness(
+                config.harness,
+                config.agent_activity_types,
+                config.capabilities,
+            ),
+            None => self,
+        }
+    }
+
+    /// Whether `activity_type` is driven through the installed agent harness rather
+    /// than the plain typed registry — `true` only when a harness is installed AND
+    /// the type is registered as an agent type.
+    ///
+    /// The public form of the internal routing predicate ([`Self::is_agent_activity`]),
+    /// exposed so a caller (and the wiring tests) can assert a served worker actually
+    /// routes an agent type to the agent path.
+    #[must_use]
+    pub fn drives_agent_activity(&self, activity_type: &str) -> bool {
+        self.is_agent_activity(activity_type)
     }
 
     /// The intervention control back-index this worker routes pushed commands
@@ -291,6 +459,15 @@ impl LiminalActivityWorker {
         }
         let request: DispatchRequest =
             serde_json::from_slice(frame.payload()).map_err(WorkerError::decode)?;
+        // An AGENT dispatch may run for a long time. It MUST NOT block the serve loop,
+        // or a mid-run intervention push (which rides the SAME channel) could never be
+        // received. So it is SPAWNED: the run drives concurrently and replies its own
+        // correlated DispatchResponse when it finishes, while the serve loop returns to
+        // receive interventions. A plain activity runs inline (short, no live session).
+        if self.is_agent_activity(&request.activity_type) {
+            self.spawn_agent_dispatch(correlation_id, request);
+            return Ok(());
+        }
         let response = self.execute(&request).await?;
         let payload = serde_json::to_vec(&response).map_err(WorkerError::encode)?;
         self.client
@@ -298,47 +475,88 @@ impl LiminalActivityWorker {
             .map_err(|error| transport_error(&error))
     }
 
-    /// Executes one dispatch through the typed activity registry, mapping the
-    /// outcome onto a [`DispatchResponse`]. A missing handler or a decode failure
-    /// becomes a failure outcome (a reason string), never a dropped reply, so the
-    /// server always sees a correlated answer it can re-enter.
+    /// Spawns an agent dispatch as a background task so the serve loop stays free to
+    /// receive mid-run interventions, replying its own correlated [`DispatchResponse`]
+    /// when the run completes.
+    ///
+    /// The task holds only cheap clones (the harness `Arc`, the shared
+    /// [`ControlRegistry`], and a [`PushWriter`] reply/drain leg of the connection), so
+    /// it outlives the borrow of `&self`. The session self-registers + streams its
+    /// transcript inside [`run_agent_dispatch`].
+    fn spawn_agent_dispatch(&self, correlation_id: u64, request: DispatchRequest) {
+        let Some(harness) = self.agent_harness.clone() else {
+            return;
+        };
+        let control = self.control.clone();
+        let capabilities = self.agent_capabilities.clone();
+        let writer = self.client.writer_handle();
+        // Run on a DEDICATED thread with its own current-thread runtime, not
+        // `tokio::spawn`: the erased agent session drives a `?Send` future (the neutral
+        // `AgentSession` is `Send` but not `Sync`), which `tokio::spawn` cannot accept.
+        // `block_on` has no `Send` bound, and every captured handle (the harness `Arc`,
+        // the shared `ControlRegistry`, the `PushWriter`) IS `Send`, so the future is
+        // built and driven entirely on the new thread and never crosses one. The
+        // session self-registers so the serve loop's intervention pushes still reach it.
+        std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                tracing::warn!("agent dispatch: failed to build runtime for the agent run");
+                return;
+            };
+            runtime.block_on(run_agent_dispatch(
+                harness,
+                control,
+                capabilities,
+                writer,
+                correlation_id,
+                request,
+            ));
+        });
+    }
+
+    /// Executes one dispatch and maps its outcome onto a [`DispatchResponse`].
+    ///
+    /// An activity whose type is registered as an agent type (via
+    /// [`Self::with_agent_harness`]) is driven through the agent path
+    /// ([`Self::execute_agent`]): its transcript streams LIVE to the server and the
+    /// live session self-registers for intervention. Every other activity runs
+    /// through the plain typed registry ([`Self::execute_registry`]). Either way a
+    /// missing handler / failure becomes a failure outcome (a reason string), never a
+    /// dropped reply, so the server always sees a correlated answer it can re-enter.
     async fn execute(&self, request: &DispatchRequest) -> Result<DispatchResponse, WorkerError> {
+        // Agent activities are spawned in `handle_pushed_frame` and never reach here;
+        // this path is the plain typed-registry execution, now carrying the LIVE
+        // transcript event drain so a handler that emits events streams them mid-run.
+        let attempt = 1;
         let activity_id = ActivityId::from_sequence_position(request.ordinal);
-        let input = Payload::new(ContentType::Json, request.input.clone());
-        // The dispatch attempt is not carried on the push wire (it lives on the
-        // server's outbox row); the worker stamps a 1-based attempt for the
-        // execution context, exactly as a first delivery would.
         let task = ActivityTask {
             workflow_id: request.workflow_id.clone(),
             activity_id: activity_id.clone(),
             run_id: request.run_id.clone(),
             activity_type: request.activity_type.clone(),
-            attempt: 1,
-            input,
+            attempt,
+            input: Payload::new(ContentType::Json, request.input.clone()),
             labels: std::collections::BTreeMap::new(),
         };
-        let (context, cancellation) = ActivityContext::new(activity_id, task.attempt);
+        let (event_sender, drain) = spawn_event_drain(self.client.writer_handle());
+        let (context, cancellation) = ActivityContext::for_workflow_with_events(
+            Some(request.workflow_id.clone()),
+            activity_id,
+            attempt,
+            None,
+            Some(event_sender),
+        );
         // The push transport has no cooperative-cancellation channel in the spike;
         // drop the handle so the activity simply runs to completion.
         drop(cancellation);
-
-        let outcome = match self.registry.dispatch(task, context).await {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                // A registry-level error (no handler, encode failure) is reported
-                // back as a failure outcome rather than a dropped dispatch.
-                return Ok(DispatchResponse {
-                    workflow_id: request.workflow_id.clone(),
-                    ordinal: request.ordinal,
-                    run_id: request.run_id.clone(),
-                    outcome: Err(error.to_string()),
-                });
-            }
-        };
-
+        let outcome = self.registry.dispatch(task, context).await;
+        drain.finish().await;
         let outcome = match outcome {
-            DispatchOutcome::Completed { output } => Ok(result_string(&output)),
-            DispatchOutcome::Failed { failure } => Err(failure.message),
+            Ok(DispatchOutcome::Completed { output }) => Ok(result_string(&output)),
+            Ok(DispatchOutcome::Failed { failure }) => Err(failure.message),
+            Err(error) => Err(error.to_string()),
         };
         Ok(DispatchResponse {
             workflow_id: request.workflow_id.clone(),
@@ -346,6 +564,126 @@ impl LiminalActivityWorker {
             run_id: request.run_id.clone(),
             outcome,
         })
+    }
+
+    /// Whether `activity_type` is driven through the installed agent harness.
+    fn is_agent_activity(&self, activity_type: &str) -> bool {
+        self.agent_harness.is_some() && self.agent_activity_types.contains(activity_type)
+    }
+}
+
+/// Drives one agent activity attempt to completion and replies its correlated
+/// [`DispatchResponse`] (NOI-5b/NOI-6). Runs as a SPAWNED task so the serve loop stays
+/// free to receive mid-run interventions.
+///
+/// It self-registers the live session in the [`ControlRegistry`] under its
+/// `(workflow, activity, attempt)` key BEFORE [`spawn_dyn_agent`] starts it — so a
+/// pushed intervention resolves the instant the run begins — streams the session's
+/// transcript LIVE over `writer`, routes pushed commands to the session, and
+/// deregisters on completion (the [`SessionGuard`](crate::runtime::intervention::SessionGuard)
+/// drops on every exit path). The terminal result is replied to `correlation_id`.
+async fn run_agent_dispatch(
+    harness: Arc<dyn DynAgentHarness>,
+    control: ControlRegistry,
+    capabilities: InterventionCapabilities,
+    writer: PushWriter,
+    correlation_id: u64,
+    request: DispatchRequest,
+) {
+    let attempt = 1;
+    let activity_id = ActivityId::from_sequence_position(request.ordinal);
+    let session_key = SessionKey::new(request.workflow_id.clone(), activity_id.clone(), attempt);
+    // Register the live session's control leg BEFORE the run starts; the guard
+    // deregisters on drop (any exit path), so a finished attempt is never routed to.
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    let _session_guard = control.register(session_key, control_tx, capabilities);
+    let spec = AgentRunSpec::new(
+        request.workflow_id.clone(),
+        activity_id,
+        attempt,
+        Payload::new(ContentType::Json, request.input.clone()),
+    );
+    // Stream the transcript LIVE over the connection while the agent runs.
+    let (event_sender, drain) = spawn_event_drain(writer.clone());
+    let outcome = spawn_dyn_agent(harness.as_ref(), spec, event_sender, Some(control_rx)).await;
+    drain.finish().await;
+    // A harness fault is a retryable activity failure, mapped as the gRPC driver does.
+    let outcome =
+        outcome.unwrap_or_else(|error| crate::runtime::agent::harness_error_to_outcome(&error));
+    let response = DispatchResponse {
+        workflow_id: request.workflow_id.clone(),
+        ordinal: request.ordinal,
+        run_id: request.run_id.clone(),
+        outcome: match outcome {
+            DispatchOutcome::Completed { output } => Ok(result_string(&output)),
+            DispatchOutcome::Failed { failure } => Err(failure.message),
+        },
+    };
+    // Reply the terminal result to the server on the shared connection. A failed
+    // reply (connection gone) is logged; the outbox re-drives the row on timeout.
+    match serde_json::to_vec(&response) {
+        Ok(payload) => {
+            if let Err(error) = writer.reply(correlation_id, payload) {
+                tracing::warn!(%error, "agent dispatch: failed to reply DispatchResponse");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "agent dispatch: failed to encode DispatchResponse"),
+    }
+}
+
+/// Builds the LIVE observability event drain: an [`ActivityEvent`] sender handed to
+/// the [`ActivityContext`]/agent driver, and a background task that publishes every
+/// event to the server over `writer` (NOI-5b).
+///
+/// The drain task publishes each event to [`OBSERVABILITY_CHANNEL`] as it arrives — at
+/// every event boundary, MID-RUN, not batched at exit. The returned [`EventDrain`]
+/// guard's [`EventDrain::finish`] drops the sender and joins the task, so the drain is
+/// torn down cleanly when the activity completes.
+fn spawn_event_drain(writer: PushWriter) -> (mpsc::UnboundedSender<ActivityEvent>, EventDrain) {
+    let (event_sender, event_receiver) = mpsc::unbounded_channel::<ActivityEvent>();
+    let handle = tokio::spawn(drain_events(writer, event_receiver));
+    (event_sender, EventDrain { handle })
+}
+
+/// A running observability-drain task tied to one activity attempt.
+///
+/// Holding it keeps the drain alive; [`Self::finish`] drops the event sender (ending
+/// the drain's receive loop) and awaits the task, so no event is lost and no task is
+/// leaked across dispatches.
+struct EventDrain {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl EventDrain {
+    /// Await the drain task to completion. The caller has already dropped its event
+    /// sender (it was moved into the context/driver), so the drain's receiver closes
+    /// and the task finishes after publishing every buffered event.
+    async fn finish(self) {
+        drop(self.handle.await);
+    }
+}
+
+/// Publishes each drained [`ActivityEvent`] to the server over the shared push
+/// connection until the sender is dropped (end of the activity).
+///
+/// Serializes the whole neutral envelope as the frame payload (the server
+/// deserializes it directly — no lossy mapping) and publishes to
+/// [`OBSERVABILITY_CHANNEL`], where the server's connection-notifier tap routes it to
+/// the transcript sequencer. A publish fault is logged and the drain continues: the
+/// transcript is best-effort live streaming (durability is the server's O-keyspace
+/// commit, not this transport), so one dropped event never fails the activity.
+async fn drain_events(writer: PushWriter, mut receiver: mpsc::UnboundedReceiver<ActivityEvent>) {
+    while let Some(event) = receiver.recv().await {
+        let payload = match serde_json::to_vec(&event) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(%error, "observability drain: failed to encode ActivityEvent");
+                continue;
+            }
+        };
+        if let Err(error) = writer.publish(OBSERVABILITY_CHANNEL, payload) {
+            tracing::warn!(%error, "observability drain: failed to publish transcript event");
+        }
     }
 }
 

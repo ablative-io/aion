@@ -597,6 +597,13 @@ pub struct RegistryLiminalDispatch {
     /// Placement is NEVER stamped back onto the row — it is consulted only here,
     /// in this non-replayed dispatcher, for worker selection.
     placement_cache: Option<crate::worker::PlacementCache>,
+    /// Optional NOI-6 `attempt -> owning-worker` back-index. When installed via
+    /// [`Self::with_attempt_owners`], each dispatched agent attempt binds its
+    /// `(workflow, activity, attempt)` to the selected worker here BEFORE the push and
+    /// releases it after the reply, so the server's intervention router resolves the
+    /// CURRENT owner of a live attempt. `None` (the default, and every non-agent
+    /// deployment) skips the binding — intervention is simply never offered.
+    attempt_owners: Option<super::intervention::AttemptOwnerIndex>,
 }
 
 impl std::fmt::Debug for RegistryLiminalDispatch {
@@ -619,7 +626,25 @@ impl RegistryLiminalDispatch {
             registry,
             completion: LiminalCompletionSource::new(callback),
             placement_cache: None,
+            attempt_owners: None,
         }
+    }
+
+    /// Install the NOI-6 attempt-owner back-index so each dispatched attempt binds
+    /// its owning worker for the intervention router to resolve (NOI-6).
+    ///
+    /// The SAME index the server's [`InterventionRouter`](super::intervention::InterventionRouter)
+    /// resolves through (from `ServerState::attempt_owners`), so a pushed command
+    /// reaches the worker this dispatcher sent the attempt to. Pure builder addition:
+    /// without it, no ownership is recorded and the router finds no owner (the
+    /// too-late no-op), exactly as before.
+    #[must_use]
+    pub fn with_attempt_owners(
+        mut self,
+        attempt_owners: super::intervention::AttemptOwnerIndex,
+    ) -> Self {
+        self.attempt_owners = Some(attempt_owners);
+        self
     }
 
     /// Attach the per-namespace placement cache so an unpinned row consults its
@@ -732,6 +757,25 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
             }
         };
 
+        // NOI-6: bind this attempt's owner BEFORE the push, so an intervention that
+        // races the dispatch resolves the worker. The guard releases on every exit
+        // path (reply, error, panic) so the index never keeps a finished attempt.
+        // The key mirrors the worker's execute-path stamp exactly: activity_id from
+        // the ordinal, attempt = 1 (the push wire carries no attempt; the worker
+        // stamps a first delivery). See `LiminalActivityWorker::execute`.
+        let _owner_guard = self.attempt_owners.as_ref().map(|owners| {
+            let key = super::intervention::AttemptKey::new(
+                row.workflow_id.clone(),
+                ActivityId::from_sequence_position(row.ordinal),
+                1,
+            );
+            owners.bind(key.clone(), worker.id());
+            AttemptOwnerGuard {
+                owners: owners.clone(),
+                key,
+            }
+        });
+
         // Push the dispatch to the worker and block for its correlated reply. The
         // push is a blocking, thread-based liminal call; run it off the async
         // runtime so a long-running activity cannot starve a runtime worker.
@@ -751,6 +795,20 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
         // recorded by the completion callback, exactly as in the gRPC path.
         self.completion.deliver(&response)?;
         Ok(())
+    }
+}
+
+/// RAII guard that releases an [`AttemptOwnerIndex`](super::intervention::AttemptOwnerIndex)
+/// binding when the dispatch call returns — on the reply, an error, or a panic — so
+/// the back-index tracks exactly the attempts currently in flight (NOI-6).
+struct AttemptOwnerGuard {
+    owners: super::intervention::AttemptOwnerIndex,
+    key: super::intervention::AttemptKey,
+}
+
+impl Drop for AttemptOwnerGuard {
+    fn drop(&mut self) {
+        self.owners.release(&self.key);
     }
 }
 
@@ -816,6 +874,21 @@ pub struct LiminalConnectionNotifier {
     /// router gates on it. Default empty = observability-only (a plain activity
     /// worker), so the router offers no controls for it.
     intervention_capabilities: aion_core::InterventionCapabilities,
+    /// The transcript sequencer a worker's observability publishes drain into
+    /// (NOI-5b), plus the Tokio [`Handle`](tokio::runtime::Handle) to bridge the
+    /// synchronous connection-process callback onto the async publish. `None` (the
+    /// default, and every non-agent boot) makes the observability tap a no-op, so a
+    /// worker publish to the reserved channel is simply ignored by the notifier.
+    transcript: Option<TranscriptTap>,
+}
+
+/// The observability-drain leg of the notifier: the transcript sequencer to publish
+/// into and the runtime handle used to spawn the async publish from the synchronous
+/// `on_channel_publish` callback (which runs on the beamr connection-process thread).
+#[derive(Clone)]
+struct TranscriptTap {
+    publisher: crate::activity_publisher::ActivityEventPublisher,
+    runtime: tokio::runtime::Handle,
 }
 
 impl std::fmt::Debug for LiminalConnectionNotifier {
@@ -839,7 +912,34 @@ impl LiminalConnectionNotifier {
             supervisor: OnceLock::new(),
             guards: Mutex::new(HashMap::new()),
             intervention_capabilities: aion_core::InterventionCapabilities::none(),
+            transcript: None,
         }
+    }
+
+    /// Install the transcript sequencer a worker's observability publishes drain into
+    /// (NOI-5b), capturing the CURRENT Tokio runtime handle to bridge the synchronous
+    /// connection-process callback onto the async publish.
+    ///
+    /// MUST be called from within a Tokio runtime (the server boot path is), so the
+    /// captured [`Handle`](tokio::runtime::Handle) can spawn the append+fan-out when a
+    /// worker publishes a transcript event over the reserved channel. Without this
+    /// builder the observability tap is a no-op (a plain, non-agent deployment).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a Tokio runtime — a construction-time wiring error in
+    /// the server boot, never a runtime condition (the boot path always builds the
+    /// notifier inside the server runtime).
+    #[must_use]
+    pub fn with_transcript_publisher(
+        mut self,
+        publisher: crate::activity_publisher::ActivityEventPublisher,
+    ) -> Self {
+        self.transcript = Some(TranscriptTap {
+            publisher,
+            runtime: tokio::runtime::Handle::current(),
+        });
+        self
     }
 
     /// Set the neutral intervention capability set every worker registering through
@@ -952,6 +1052,37 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
             );
         }
     }
+
+    fn on_channel_publish(&self, _pid: u64, channel: &str, payload: &[u8]) -> bool {
+        // Only consume the reserved observability channel; any other channel falls
+        // through to liminal's normal fan-out (this returns false).
+        if channel != liminal_sdk::OBSERVABILITY_CHANNEL {
+            return false;
+        }
+        let Some(tap) = &self.transcript else {
+            // No transcript sequencer installed (a non-agent deployment): still
+            // CONSUME the reserved channel so it never leaks into the fan-out, but
+            // drop the event — there is nothing to persist it into.
+            return true;
+        };
+        let event: aion_core::ActivityEvent = match serde_json::from_slice(payload) {
+            Ok(event) => event,
+            Err(error) => {
+                tracing::warn!(%error, "observability tap: malformed ActivityEvent payload");
+                return true;
+            }
+        };
+        // Bridge the synchronous connection-process callback onto the async
+        // append+fan-out. The commit-allocated store_seq loop lives in `publish`;
+        // a failed persist is logged, never retried (best-effort live streaming).
+        let publisher = tap.publisher.clone();
+        tap.runtime.spawn(async move {
+            if let Err(error) = publisher.publish(&event).await {
+                tracing::warn!(%error, "observability tap: transcript publish failed");
+            }
+        });
+        true
+    }
 }
 
 /// The production [`InterventionTransport`](super::intervention::InterventionTransport):
@@ -1002,10 +1133,69 @@ impl super::intervention::InterventionTransport for LiminalInterventionTransport
 #[cfg(test)]
 mod tests {
     use super::{channel_for_row, dispatch_channel_name, normalize_wire_node};
-    use aion_core::{ContentType, Payload, WorkflowId};
+    use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
     use aion_store::{OutboxRow, OutboxStatus};
     use chrono::Utc;
     use uuid::Uuid;
+
+    /// The NOI-6 dispatch owner guard RELEASES its binding on drop, on EVERY exit path
+    /// (reply, error, panic) — so the attempt-owner back-index tracks exactly the
+    /// attempts currently in flight. This is the invariant the dispatch path relies on
+    /// to never leak a finished attempt's owner.
+    #[tokio::test]
+    async fn attempt_owner_guard_releases_on_drop() -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::intervention::{AttemptKey, AttemptOwnerIndex};
+        use super::super::registry::{ConnectedWorkerRegistry, WorkerDelivery};
+        use super::AttemptOwnerGuard;
+
+        // A real registration yields a real WorkerId (there is no fabricated id).
+        let registry = ConnectedWorkerRegistry::default();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let types = [String::from("agent")];
+        let registration = registry.register_delivery_with_capabilities(
+            [String::from("default")],
+            String::from("default"),
+            None,
+            types.iter(),
+            WorkerDelivery::Grpc(tx),
+            aion_core::InterventionCapabilities::none(),
+        )?;
+        let worker = registration
+            .worker_id()
+            .ok_or("registration must assign a worker id")?;
+
+        let owners = AttemptOwnerIndex::new();
+        let key = AttemptKey::new(
+            WorkflowId::new(Uuid::nil()),
+            ActivityId::from_sequence_position(3),
+            1,
+        );
+        owners.bind(key.clone(), worker);
+        assert_eq!(
+            owners.owner(&key),
+            Some(worker),
+            "owner bound before the guard"
+        );
+        {
+            let _guard = AttemptOwnerGuard {
+                owners: owners.clone(),
+                key: key.clone(),
+            };
+            assert_eq!(
+                owners.owner(&key),
+                Some(worker),
+                "still bound while in flight"
+            );
+        }
+        // The guard dropped at the end of the block: the binding is released, so a
+        // later intervention resolves no owner (the too-late no-op).
+        assert_eq!(
+            owners.owner(&key),
+            None,
+            "owner released when the dispatch returns"
+        );
+        Ok(())
+    }
 
     /// The channel format is pinned EXACTLY: any change is a wire-compatibility
     /// break (the dispatcher and any worker subscription must agree byte-for-byte).

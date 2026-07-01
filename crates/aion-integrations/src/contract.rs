@@ -98,3 +98,91 @@ pub trait AgentSession: Send {
     /// transport/protocol error when the terminal result could not be received.
     async fn wait_result(self) -> Result<Payload, HarnessError>;
 }
+
+/// An object-safe erased [`AgentSession`], so a worker can drive a session behind a
+/// `Box<dyn ..>` without being generic over the concrete harness.
+///
+/// It mirrors [`AgentSession`] exactly EXCEPT that the terminal [`Self::wait_result`]
+/// takes `self: Box<Self>` (rather than `self` by value), which is what makes the
+/// trait object-safe — an owned-`self` method is not dispatchable through `dyn`. A
+/// blanket impl over every [`AgentSession`] means an integrator implements only the
+/// ergonomic typed trait and gets the erased form for free.
+///
+/// The async methods are `?Send`-dispatched. [`AgentSession`] is `Send` but not
+/// `Sync`, so a `&session` cannot cross threads; the worker holds an erased session
+/// inside ONE task and drives it (plus its event drain) there — never `tokio::spawn`-ing
+/// a borrow of it — so requiring `Sync` would over-constrain every adapter for no gain.
+#[async_trait(?Send)]
+pub trait DynAgentSession: Send {
+    /// The negotiated capability set — see [`AgentSession::capabilities`].
+    fn capabilities(&self) -> &InterventionCapabilities;
+
+    /// The neutral event stream OUT — see [`AgentSession::events`].
+    fn events(&mut self) -> BoxStream<'static, ActivityEvent>;
+
+    /// Deliver a neutral command IN — see [`AgentSession::intervene`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AgentSession::intervene`]'s errors unchanged.
+    async fn intervene(&self, cmd: InterventionCommand) -> Result<(), HarnessError>;
+
+    /// Await the single terminal result — see [`AgentSession::wait_result`]. Takes
+    /// `Box<Self>` (not `self`) so the trait stays object-safe.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AgentSession::wait_result`]'s errors unchanged.
+    async fn wait_result(self: Box<Self>) -> Result<Payload, HarnessError>;
+}
+
+#[async_trait(?Send)]
+impl<S: AgentSession + 'static> DynAgentSession for S {
+    fn capabilities(&self) -> &InterventionCapabilities {
+        AgentSession::capabilities(self)
+    }
+
+    fn events(&mut self) -> BoxStream<'static, ActivityEvent> {
+        AgentSession::events(self)
+    }
+
+    async fn intervene(&self, cmd: InterventionCommand) -> Result<(), HarnessError> {
+        AgentSession::intervene(self, cmd).await
+    }
+
+    async fn wait_result(self: Box<Self>) -> Result<Payload, HarnessError> {
+        AgentSession::wait_result(*self).await
+    }
+}
+
+/// An object-safe erased [`AgentHarness`], so a worker can HOLD a harness behind a
+/// `Arc<dyn DynAgentHarness>` (the typed [`AgentHarness`] is not object-safe — it has
+/// an associated `Session` type).
+///
+/// A blanket impl over every [`AgentHarness`] erases the session type into a
+/// `Box<dyn DynAgentSession>`, so a composition root passes any typed harness and the
+/// worker drives it without naming the concrete type.
+#[async_trait]
+pub trait DynAgentHarness: Send + Sync {
+    /// Spawn/connect the harness for one attempt, returning an erased session.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AgentHarness::start`]'s errors unchanged.
+    async fn start_dyn(&self, spec: AgentRunSpec)
+    -> Result<Box<dyn DynAgentSession>, HarnessError>;
+}
+
+#[async_trait]
+impl<H: AgentHarness> DynAgentHarness for H
+where
+    H::Session: 'static,
+{
+    async fn start_dyn(
+        &self,
+        spec: AgentRunSpec,
+    ) -> Result<Box<dyn DynAgentSession>, HarnessError> {
+        let session = AgentHarness::start(self, spec).await?;
+        Ok(Box::new(session))
+    }
+}

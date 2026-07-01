@@ -26,16 +26,17 @@ pub(crate) mod report;
 
 pub use agent::{
     ActivityEventSender, ControlMessage, ControlReceiver, harness_error_to_outcome, spawn_agent,
+    spawn_dyn_agent,
 };
 pub use dispatch::{TypedActivityDispatcher, decode_payload, encode_payload};
 pub use intervention::{ControlRegistry, SessionGuard, SessionKey};
 #[cfg(feature = "liminal-transport")]
 pub use liminal::{
-    DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
+    AgentHarnessConfig, DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
     LiminalActivityWorker,
 };
 #[cfg(feature = "liminal-transport")]
-pub use liminal_serve::serve_with_redial;
+pub use liminal_serve::{RedialTiming, serve_with_redial};
 pub use loop_::{
     ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, SessionHealth, serve_activity_tasks,
     serve_activity_tasks_until,
