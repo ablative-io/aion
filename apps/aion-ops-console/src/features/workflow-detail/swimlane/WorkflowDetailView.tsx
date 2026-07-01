@@ -4,6 +4,7 @@ import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { Badge, Button } from '@/components/ui';
+import { AttemptTranscriptView } from '@/features/transcript';
 import { cn } from '@/lib/utils';
 import type { Event } from '@/types';
 
@@ -177,6 +178,7 @@ function WorkflowDetailViewContent({
         </div>
         <DetailPanel entry={selectedEntry} onClose={() => setSelectedSequence(null)} />
       </div>
+      <AttemptTranscriptView namespace={namespace} workflowId={workflowId} />
       {reopenOpen ? (
         <ReopenDiff
           history={history}

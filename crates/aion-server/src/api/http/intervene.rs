@@ -18,7 +18,8 @@
 //! malformed request is an HTTP error.
 
 use aion_core::{
-    ActivityId, InterventionCommand, InterventionKind, InterventionOutcome, WorkflowId,
+    ActivityId, InterventionCapabilities, InterventionCommand, InterventionKind,
+    InterventionOutcome, WorkflowId,
 };
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use super::auth::HttpCaller;
 use super::error::HttpWireError;
 use crate::namespace::WorkflowTarget;
+use crate::worker::AttemptKey;
 use crate::{NamespaceOperation, ServerError, ServerState};
 
 /// The intervention request body: the neutral command's identity + primitive plus
@@ -101,12 +103,100 @@ async fn run_intervention(
     state.intervention_router().route(command).await
 }
 
+/// The attempt-enumeration request body: the workflow to enumerate live
+/// intervenable attempts for, plus the namespace it runs under (the auth scope).
+///
+/// Namespace-scoped exactly like [`InterveneRequest`]: the caller must hold a
+/// grant for the target namespace AND the workflow must be visible in it, so a
+/// caller cannot enumerate a foreign workflow's attempts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct AttemptsRequest {
+    /// The namespace the target workflow runs under (the auth scope).
+    pub namespace: String,
+    /// The workflow to enumerate live intervenable attempts for.
+    pub workflow_id: WorkflowId,
+}
+
+/// One live, intervenable activity attempt of a workflow: the neutral target
+/// identity + the owning worker's advertised [`InterventionCapabilities`].
+///
+/// The console reads this to pick a target and gate controls — it renders ONLY
+/// the primitives in `capabilities.supported`, and an empty set means the console
+/// offers no controls for that attempt (an observability-only harness).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct AttemptCapabilities {
+    /// The activity within the workflow.
+    pub activity_id: ActivityId,
+    /// The attempt number — the third stream/target axis.
+    pub attempt: u32,
+    /// The owning worker's advertised capability set (the console gates on this).
+    pub capabilities: InterventionCapabilities,
+}
+
+/// The attempt-enumeration response body: the live intervenable attempts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct AttemptsResponse {
+    /// Every live attempt of the workflow with an owning worker, each carrying
+    /// that worker's advertised capabilities. A finished/superseded attempt (no
+    /// live owner) is absent — the console never offers a control for it.
+    pub attempts: Vec<AttemptCapabilities>,
+}
+
+/// `POST /workflows/attempts`.
+///
+/// Namespace-gates the caller (byte-identical to `/workflows/intervene`), then
+/// enumerates the workflow's live intervenable attempts + their advertised
+/// capabilities so the console can pick a target and gate controls. Returns
+/// `200 OK` with a (possibly empty) attempt list; only an authorization failure or
+/// a routing/lock fault is an HTTP error. An empty list is the honest answer for a
+/// workflow with no live agent attempt, NOT an error.
+pub(crate) async fn list_attempts(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<AttemptsRequest>,
+) -> Result<Json<AttemptsResponse>, HttpWireError> {
+    let attempts = run_list_attempts(&state, &caller, request)
+        .await
+        .map_err(|error| HttpWireError(error.to_wire_error()))?;
+    Ok(Json(AttemptsResponse { attempts }))
+}
+
+/// Namespace-gate the caller and enumerate the workflow's live intervenable
+/// attempts + advertised capabilities.
+async fn run_list_attempts(
+    state: &ServerState,
+    caller: &crate::CallerIdentity,
+    request: AttemptsRequest,
+) -> Result<Vec<AttemptCapabilities>, ServerError> {
+    // Namespace-scope + durable-ownership gate, byte-identical to intervene.
+    let target = WorkflowTarget::workflow(&request.workflow_id);
+    let operation = NamespaceOperation::intervene(&request.namespace, target);
+    state.namespace_guard().scope(caller, &operation).await?;
+
+    let router = state.intervention_router();
+    let attempts = router.intervenable_attempts(&request.workflow_id)?;
+    Ok(attempts.into_iter().map(attempt_capabilities).collect())
+}
+
+/// Project a `(key, capabilities)` pair into the neutral response DTO.
+fn attempt_capabilities(
+    (key, capabilities): (AttemptKey, InterventionCapabilities),
+) -> AttemptCapabilities {
+    AttemptCapabilities {
+        activity_id: key.activity_id,
+        attempt: key.attempt,
+        capabilities,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{InterveneRequest, InterveneResponse};
+    use super::{
+        AttemptCapabilities, AttemptsRequest, AttemptsResponse, InterveneRequest, InterveneResponse,
+    };
     use aion_core::{
-        ActivityId, InjectPriority, InterventionKind, InterventionOutcome, InterventionPrimitive,
-        WorkflowId,
+        ActivityId, InjectPriority, InterventionCapabilities, InterventionKind, InterventionOutcome,
+        InterventionPrimitive, WorkflowId,
     };
 
     /// The request body carries the target identity + neutral primitive and
@@ -153,6 +243,56 @@ mod tests {
             let decoded: InterveneResponse = serde_json::from_str(&json)?;
             assert_eq!(decoded.outcome, outcome);
         }
+        Ok(())
+    }
+
+    /// The attempt-enumeration request carries the workflow + namespace scope and
+    /// round-trips through serde.
+    #[test]
+    fn attempts_request_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let request = AttemptsRequest {
+            namespace: "tenant-a".to_owned(),
+            workflow_id: WorkflowId::new(uuid::Uuid::nil()),
+        };
+        let json = serde_json::to_string(&request)?;
+        let decoded: AttemptsRequest = serde_json::from_str(&json)?;
+        assert_eq!(decoded.namespace, "tenant-a");
+        assert_eq!(decoded.workflow_id, request.workflow_id);
+        Ok(())
+    }
+
+    /// The attempt-enumeration response carries each live attempt's identity + its
+    /// advertised capabilities (including the first-class empty set) and round-trips.
+    #[test]
+    fn attempts_response_round_trips_with_capabilities() -> Result<(), Box<dyn std::error::Error>> {
+        let response = AttemptsResponse {
+            attempts: vec![
+                AttemptCapabilities {
+                    activity_id: ActivityId::from_sequence_position(3),
+                    attempt: 1,
+                    capabilities: InterventionCapabilities::from_primitives([
+                        InterventionPrimitive::InjectMessage,
+                        InterventionPrimitive::Cancel,
+                    ]),
+                },
+                AttemptCapabilities {
+                    activity_id: ActivityId::from_sequence_position(4),
+                    attempt: 2,
+                    // An observability-only attempt: the empty set is first-class.
+                    capabilities: InterventionCapabilities::none(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&response)?;
+        let decoded: AttemptsResponse = serde_json::from_str(&json)?;
+        assert_eq!(decoded.attempts.len(), 2);
+        assert_eq!(decoded.attempts[0].attempt, 1);
+        assert!(
+            decoded.attempts[0]
+                .capabilities
+                .supports_primitive(InterventionPrimitive::InjectMessage)
+        );
+        assert!(decoded.attempts[1].capabilities.is_empty());
         Ok(())
     }
 }

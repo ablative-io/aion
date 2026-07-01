@@ -1,6 +1,7 @@
 import type { ApiClientOptions } from '@/lib/api';
 import { ApiClient } from '@/lib/api';
 import { AionClusterStreamManager } from '@/lib/api/cluster-stream';
+import { AionTranscriptStreamManager, type TranscriptTarget } from '@/lib/api/transcript-stream';
 import { AionEventWebSocketManager, type SocketCredentials } from '@/lib/api/websocket';
 import type { Namespace } from '@/types';
 
@@ -93,3 +94,28 @@ export function createConfiguredClusterStream(
 
 /** The app-wide singleton cluster-stream manager. */
 export const configuredClusterStream = createConfiguredClusterStream();
+
+/**
+ * Build a transcript-stream manager (NOI-7) bound to the configured WS base URL
+ * and credentials, targeting one `(namespace, workflow, activity, attempt)`.
+ *
+ * This opens a DEDICATED `/events/stream` socket carrying the transcript
+ * subscription arm (the socket is one-subscription-per-socket, so a transcript is
+ * its own socket, not a multiplexed second subscription). Namespace-scoped like
+ * the workflow event stream: the credentials carry the caller's namespace grant as
+ * query params (a browser cannot set WS handshake headers), and the server gates
+ * the transcript on the target workflow's namespace exactly like the per-workflow
+ * event subscription.
+ */
+export function createConfiguredTranscriptStream(
+  target: TranscriptTarget,
+  config: OpsConsoleConfig = getOpsConsoleConfig()
+): AionTranscriptStreamManager {
+  const credentials: SocketCredentials = {
+    namespaces: config.namespaces,
+    ...(config.subject === undefined ? {} : { subject: config.subject }),
+    ...(config.bearerToken === undefined ? {} : { bearerToken: config.bearerToken }),
+  };
+
+  return new AionTranscriptStreamManager({ baseUrl: config.wsBaseUrl, credentials, target });
+}

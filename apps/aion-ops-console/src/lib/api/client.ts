@@ -1,7 +1,11 @@
 import type {
+  ActivityId,
   ClusterCommand,
   ClusterSnapshot,
   Event,
+  InterventionCapabilities,
+  InterventionKind,
+  InterventionOutcome,
   Namespace,
   NamespacePlacementWire,
   WorkflowFilter,
@@ -75,6 +79,27 @@ export type StartWorkflowParams = {
    * task_queue targeting story). Empty/absent = the namespace's default queue.
    */
   taskQueue?: string | undefined;
+};
+
+/**
+ * One live, intervenable activity attempt of a workflow (NOI-7): the target
+ * identity + the owning worker's advertised {@link InterventionCapabilities}. The
+ * console gates controls on `capabilities.supported` — an empty set means the
+ * attempt is observability-only and offers no controls.
+ */
+export type AttemptCapabilities = {
+  activityId: ActivityId;
+  attempt: number;
+  capabilities: InterventionCapabilities;
+};
+
+/** Inputs to {@link ApiClient.intervene}: the target attempt + neutral primitive. */
+export type InterveneParams = {
+  workflowId: WorkflowId;
+  activityId: ActivityId;
+  attempt: number;
+  /** The neutral control primitive (the ts-rs `InterventionKind`). */
+  kind: InterventionKind;
 };
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -427,6 +452,65 @@ export class ApiClient {
   }
 
   /**
+   * Enumerate a workflow's live intervenable activity attempts + their advertised
+   * capabilities (`POST /workflows/attempts`). Namespace-scoped exactly like
+   * {@link intervene}: the caller's namespace grant must cover the workflow.
+   *
+   * Only attempts with a LIVE owning worker are returned; a finished/superseded
+   * attempt is absent (never offered a control). An empty array is the honest
+   * answer for a workflow with no live agent attempt, NOT an error. The console
+   * gates controls on each attempt's `capabilities.supported`, so it renders ONLY
+   * the primitives the owning worker advertises. A denied grant or invalid request
+   * propagates as a typed {@link ApiError} — never swallowed.
+   */
+  async listAttempts(
+    workflowId: WorkflowId,
+    options: RequestOptions
+  ): Promise<AttemptCapabilities[]> {
+    const response = await this.request<AttemptsResponseBody>(
+      AW_REST_CONTRACT.endpoints.workflowAttempts,
+      AW_REST_CONTRACT.methods.workflowAttempts,
+      options,
+      {
+        [AW_REST_CONTRACT.requestKeys.namespace]: options.namespace,
+        [AW_REST_CONTRACT.requestKeys.workflowId]: workflowId,
+      }
+    );
+
+    return normalizeAttempts(response);
+  }
+
+  /**
+   * Submit a mid-run intervention command (`POST /workflows/intervene`).
+   * Namespace-scoped (ADR-022 per-namespace command authority, like signal/cancel).
+   *
+   * The server ALWAYS returns `200 OK` with a neutral {@link InterventionOutcome}
+   * ack — `Applied`, `CapabilityNotSupported`, or `StaleTarget` — which this method
+   * surfaces VERBATIM. A gated or stale ack is a first-class outcome the operator
+   * inspects, NOT an error; only an authorization failure or a malformed request is
+   * a typed {@link ApiError}. Errors are never swallowed and outcomes are never
+   * reinterpreted as success. `issued_by`/`issued_at` are stamped server-side (the
+   * console cannot forge attribution), so this body carries only the target +
+   * primitive.
+   */
+  async intervene(params: InterveneParams, options: RequestOptions): Promise<InterventionOutcome> {
+    const response = await this.request<InterveneResponseBody>(
+      AW_REST_CONTRACT.endpoints.workflowIntervene,
+      AW_REST_CONTRACT.methods.workflowIntervene,
+      options,
+      {
+        [AW_REST_CONTRACT.requestKeys.namespace]: options.namespace,
+        [AW_REST_CONTRACT.requestKeys.workflowId]: params.workflowId,
+        activity_id: params.activityId,
+        attempt: params.attempt,
+        kind: params.kind,
+      }
+    );
+
+    return readInterventionOutcome(response);
+  }
+
+  /**
    * Upload a `.aion` package archive (`POST /deploy/packages`). The whole request
    * body IS the archive bytes (raw `application/octet-stream`), not multipart or
    * JSON. Deployment-scoped: it carries the deploy grant (no namespace header).
@@ -615,6 +699,84 @@ function normalizeCapabilities(response: WhoAmIResponse): Capabilities {
     allNamespaces: response.all_namespaces === true,
     namespaces,
   };
+}
+
+/** Raw `/workflows/attempts` envelope (server snake_case). */
+type AttemptsResponseBody = {
+  attempts?: unknown;
+};
+
+/** Raw `/workflows/intervene` envelope (server snake_case). */
+type InterveneResponseBody = {
+  outcome?: unknown;
+};
+
+/**
+ * Normalize the server's `/workflows/attempts` envelope into the console shape.
+ * A row missing its load-bearing fields (activity/attempt/capabilities) is
+ * DROPPED rather than surfaced as a phantom control target — the console never
+ * offers a control for an attempt it cannot address. Malformed shapes throw a
+ * typed {@link ApiError} rather than silently rendering nothing.
+ */
+function normalizeAttempts(response: AttemptsResponseBody): AttemptCapabilities[] {
+  const rows = response.attempts;
+  if (!Array.isArray(rows)) {
+    throw new ApiError(200, 'workflows/attempts response missing an attempts array');
+  }
+
+  const attempts: AttemptCapabilities[] = [];
+  for (const row of rows) {
+    const attempt = readAttemptRow(row);
+    if (attempt !== null) {
+      attempts.push(attempt);
+    }
+  }
+  return attempts;
+}
+
+/** Read one attempt row, or `null` when it lacks addressable target fields. */
+function readAttemptRow(row: unknown): AttemptCapabilities | null {
+  if (typeof row !== 'object' || row === null) {
+    return null;
+  }
+  const record = row as Record<string, unknown>;
+  const activityId = record.activity_id;
+  const attempt = record.attempt;
+  const capabilities = record.capabilities;
+  if (
+    typeof activityId !== 'number' ||
+    typeof attempt !== 'number' ||
+    !isCapabilities(capabilities)
+  ) {
+    return null;
+  }
+  return { activityId, attempt, capabilities };
+}
+
+/** Structural guard for the ts-rs `InterventionCapabilities` (a supported list). */
+function isCapabilities(value: unknown): value is InterventionCapabilities {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as { supported?: unknown }).supported)
+  );
+}
+
+/**
+ * Read the neutral {@link InterventionOutcome} from the `/workflows/intervene`
+ * envelope. An absent/malformed outcome is a real contract fault (a typed
+ * {@link ApiError}), never quietly treated as a success.
+ */
+function readInterventionOutcome(response: InterveneResponseBody): InterventionOutcome {
+  const outcome = response.outcome;
+  if (
+    typeof outcome === 'object' &&
+    outcome !== null &&
+    typeof (outcome as { outcome?: unknown }).outcome === 'string'
+  ) {
+    return outcome as InterventionOutcome;
+  }
+  throw new ApiError(200, 'workflows/intervene response missing a neutral outcome');
 }
 
 export function createApiClient(options?: ApiClientOptions): ApiClient {

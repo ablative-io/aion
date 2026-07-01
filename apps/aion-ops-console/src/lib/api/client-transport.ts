@@ -21,6 +21,10 @@ export const AW_REST_CONTRACT = {
     eventSearch: '/events/search',
     clusterCommand: '/cluster/command',
     workflowStart: '/workflows/start',
+    // NOI-7: the mid-run intervention endpoint + the live-attempt enumeration
+    // (both namespace-scoped like signal/cancel).
+    workflowIntervene: '/workflows/intervene',
+    workflowAttempts: '/workflows/attempts',
     deployPackages: '/deploy/packages',
     deployVersions: '/deploy/versions',
     deployRoute: '/deploy/route',
@@ -38,6 +42,8 @@ export const AW_REST_CONTRACT = {
     workflowsCount: 'GET',
     eventSearch: 'POST',
     workflowStart: 'POST',
+    workflowIntervene: 'POST',
+    workflowAttempts: 'POST',
     deployPackages: 'POST',
     deployVersions: 'GET',
     deployRoute: 'POST',
