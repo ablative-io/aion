@@ -504,6 +504,8 @@ fn decode_visibility_summary(
         started_at: summary.start_time,
         ended_at: summary.close_time,
         parent: None,
+        failed_step: summary.failed_step,
+        failure_reason: summary.failure_reason,
     })
 }
 
@@ -691,6 +693,8 @@ mod tests {
             started_at: Utc::now(),
             ended_at: None,
             parent: None,
+            failed_step: None,
+            failure_reason: None,
         }
     }
 
@@ -702,6 +706,8 @@ mod tests {
             status: WorkflowStatus::Running,
             start_time: Utc::now(),
             close_time: None,
+            failed_step: None,
+            failure_reason: None,
             search_attributes: std::collections::HashMap::new(),
         }
     }

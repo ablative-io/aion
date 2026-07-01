@@ -290,6 +290,8 @@ mod tests {
             status: aion_core::WorkflowStatus::Running,
             start_time: recorded_at()?,
             close_time: None,
+            failed_step: None,
+            failure_reason: None,
             search_attributes: HashMap::from([(
                 String::from("customer_id"),
                 SearchAttributeValue::String(String::from("12345")),

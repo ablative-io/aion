@@ -24,9 +24,11 @@ INSERT OR REPLACE INTO visibility (
     status,
     start_time,
     close_time,
+    failed_step,
+    failure_reason,
     search_attributes
 )
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
 
 /// Upsert a complete workflow visibility projection row.
 ///
@@ -43,6 +45,8 @@ pub(crate) async fn record_visibility(
     let status = encode_status(record.status)?;
     let start_time = encode_timestamp(record.start_time);
     let close_time = record.close_time.map(encode_timestamp);
+    let failed_step = record.failed_step;
+    let failure_reason = record.failure_reason;
     let search_attributes = serde_json::to_string(&record.search_attributes)
         .map_err(|error| crate::error::serde_json_error(&error))?;
 
@@ -55,6 +59,8 @@ pub(crate) async fn record_visibility(
             status,
             start_time,
             close_time,
+            failed_step,
+            failure_reason,
             search_attributes,
         ),
     )
@@ -145,7 +151,7 @@ struct QueryPlan {
 impl QueryPlan {
     fn list(filter: &ListWorkflowsFilter) -> Result<Self, StoreError> {
         let mut plan = Self::filtered(
-            "SELECT workflow_id, run_id, workflow_type, status, start_time, close_time, search_attributes FROM visibility",
+            "SELECT workflow_id, run_id, workflow_type, status, start_time, close_time, failed_step, failure_reason, search_attributes FROM visibility",
             filter,
         )?;
         plan.sql
@@ -329,8 +335,14 @@ fn decode_summary(row: &libsql::Row) -> Result<VisibilityWorkflowSummary, StoreE
     let close_time: Option<String> = row
         .get(5)
         .map_err(|error| crate::error::libsql_error(&error))?;
-    let search_attributes: String = row
+    let failed_step: Option<String> = row
         .get(6)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let failure_reason: Option<String> = row
+        .get(7)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let search_attributes: String = row
+        .get(8)
         .map_err(|error| crate::error::libsql_error(&error))?;
 
     Ok(VisibilityWorkflowSummary {
@@ -340,6 +352,8 @@ fn decode_summary(row: &libsql::Row) -> Result<VisibilityWorkflowSummary, StoreE
         status: decode_status(&status)?,
         start_time: decode_timestamp(&start_time)?,
         close_time: close_time.as_deref().map(decode_timestamp).transpose()?,
+        failed_step,
+        failure_reason,
         search_attributes: serde_json::from_str::<HashMap<String, SearchAttributeValue>>(
             &search_attributes,
         )
@@ -801,8 +815,36 @@ mod tests {
             status,
             start_time,
             close_time,
+            failed_step: None,
+            failure_reason: None,
             search_attributes: HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn record_visibility_round_trips_failed_step_and_reason() -> Result<(), StoreError> {
+        let conn = open_test_connection("failed-fields").await?;
+        let mut record = visibility_record(
+            WorkflowId::new_v4(),
+            RunId::new_v4(),
+            "stacked_dev",
+            WorkflowStatus::Failed,
+            instant(2026, 6, 1, 9, 0, 0)?,
+            Some(instant(2026, 6, 1, 10, 0, 0)?),
+        );
+        record.failed_step = Some(String::from("dev_review"));
+        record.failure_reason = Some(String::from("provider error: rate limited"));
+        record_visibility(&conn, record.clone()).await?;
+
+        let summaries = list_workflows(&conn, ListWorkflowsFilter::default()).await?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].failed_step.as_deref(), Some("dev_review"));
+        assert_eq!(
+            summaries[0].failure_reason.as_deref(),
+            Some("provider error: rate limited")
+        );
+        assert_eq!(summaries[0], record.into());
+        Ok(())
     }
 
     fn custom_filter(predicate: SearchAttributePredicate) -> ListWorkflowsFilter {

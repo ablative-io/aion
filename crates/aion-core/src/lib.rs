@@ -54,7 +54,7 @@ pub use event::{
     DEFAULT_TASK_QUEUE, Event, EventEnvelope, START_TIME_TASK_QUEUE_ATTRIBUTE, WithTimeoutOutcome,
     start_time_task_queue,
 };
-pub use filter::{WorkflowFilter, WorkflowSummary};
+pub use filter::{WorkflowFilter, WorkflowSummary, failure_projection};
 pub use ids::{ActivityId, IdError, PackageVersion, RunId, TimerId, TimerIdKind, WorkflowId};
 pub use intervention::{
     ApprovalDecision, InjectPriority, InterventionCapabilities, InterventionCommand,

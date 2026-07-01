@@ -276,6 +276,8 @@ pub(crate) fn core_summary_from_store(summary: StoreWorkflowSummary) -> Workflow
         started_at: summary.start_time,
         ended_at: summary.close_time,
         parent: None,
+        failed_step: summary.failed_step,
+        failure_reason: summary.failure_reason,
     }
 }
 
