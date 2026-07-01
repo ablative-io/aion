@@ -1,0 +1,57 @@
+# Norn Observability + Intervention — BUILD PROGRESS (living tracker)
+
+**This is the "where are we / pick up here" doc.** It tracks the build of the Norn agent
+observability + mid-run intervention control plane, slice by slice.
+
+- **Design (source of truth for WHAT to build):** [`NORN-OBSERVABILITY-AND-INTERVENTION.md`](./NORN-OBSERVABILITY-AND-INTERVENTION.md) — the full design; the NOI-0..8 pipeline lives in its §9.1.
+- **What it is:** a complete, durable, real-time control plane for agents, built as a **general integration SDK** — Norn is just the *first* adapter, and there is **zero Norn-specific code in aion's platform crates** (mechanically enforced by the `no-norn-in-platform` CI gate).
+- **Transport:** stdio-duplex **JSON-RPC 2.0** (hand-rolled, zero new external deps). **Five neutral capability-gated intervention primitives** (`InjectMessage` / `Cancel` / `PauseResume` / `UpdateBudget` / `RespondToApproval`). Observability persists to a byte-disjoint haematite **`O`-keyspace**, never in the workflow replay log.
+
+_Last updated: 2026-07-01._
+
+---
+
+## Status — NOI-0 … NOI-8
+
+Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
+
+| Slice | What | Repo | Status | Commit |
+|---|---|---|---|---|
+| — | **Neutral DATA types** — `ActivityEvent` envelope + 5-primitive `InterventionCommand` (in `aion-core`, beside `cluster_event.rs`; ts-rs for the dashboard) | aion | ✅ | `956a443e` |
+| **NOI-0** | Durable `attempt` field on `ActivityStarted/Completed/Cancelled` (the whole design keys on `(workflow,activity,attempt)`) | aion-core | ✅ | `0381ab5c` |
+| **NOI-1** | Norn `--protocol jsonrpc` channel: `initialize` + `run/*` result + `event/*` live notifications | norn | ✅ | `3533590` |
+| **NOI-2** | Norn `intervene/*` write direction: inject / cancel + `-32601` capability gate | norn | ✅ | `58bec9f` |
+| **NOI-3** | `aion-integrations` SDK crate — the harness-blind `AgentHarness`/`AgentSession` trait + reusable JSON-RPC-stdio helper | aion | ✅ | `185d92dd` |
+| **NOI-4a** | `aion-integration-norn` adapter — first `AgentHarness` impl, drives a **real** `norn --protocol jsonrpc` process (e2e verified) | aion | ✅ | `7b80f23b` |
+| **NOI-4b** | `aion-worker` harness-blind trait-driver + `aion-cli` composition root (default-on `norn` feature) + **`no-norn-in-platform` CI gate** (proven by planted-edge negative control) | aion | ✅ | `7ef85752` |
+| **NOI-5** | Durable transcript spine: worker publishes events → liminal → **server sequencer** (`store_seq`) → **haematite `O`-keyspace** → **transcript WebSocket** | aion | 🔨 | branch `noi-5-transcript` |
+| **NOI-6** | Intervention routing: operator → server → liminal PUSH → worker → `session.intervene()` | aion | ⬜ | — |
+| **NOI-7** | Ops-console `TranscriptPanel` + `InterventionControls` (capability-gated) | aion | ⬜ | — |
+| **NOI-8** | Second observability-only adapter — the SDK **generality proof** (two implementations of one trait) | aion | ⬜ | — |
+
+**Milestone reached:** through NOI-4, the entire aion↔Norn control plane works end-to-end through the neutral trait, the product runs Norn out-of-box, and the zero-Norn-in-platform invariant is CI-enforced. NOI-5..8 are the durable-persistence + UI back half.
+
+---
+
+## Build cadence / discipline (hard rules — learned the hard way)
+
+- **Serial per repo.** NEVER run two file-mutating builds against the *same* repo at once — worktrees share one `.git`, and a ref race once moved `main` (recovered, nothing lost). Cross-repo parallel is fine; same-repo is serial. The back half is almost all aion, so it runs one slice at a time.
+- **Explicit worktree per build** (`git worktree add`), never destructive `git reset` against a shared ref.
+- **Re-gate every merge by hand on a forced recompile** (`cargo clean -p <crate>` + rebuild) — twice this caught phantom rust-analyzer "compile errors" that were actually fine.
+- **No corners:** clippy `-D warnings`, zero new production `#[allow]`, additive-only, real negative controls.
+
+---
+
+## Needs Tom (open decisions, not blocking the NOI chain)
+
+- **4096 shard default** (#169b) — held for an explicit "yes 4096" (one-way door, cross-repo).
+- **AD-012 reopen** (#150) — keep the idea / finish it / drop the WIP branch.
+- Live-in-browser verifies (#138) + the Sydney hardware demo (#118) need Tom at the keyboard.
+
+---
+
+## Resume point
+
+**NOI-5 is in flight** (branch `noi-5-transcript`). On its completion: re-gate on a forced recompile
+(with the concurrent-writer `store_seq` monotonicity + kill-9 dedup negative controls),
+merge, push, update this table. Then NOI-6 → NOI-7 → NOI-8, serial. Update this file after each merge.
