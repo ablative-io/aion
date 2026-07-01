@@ -399,6 +399,52 @@ pub trait OutboxStore: Send + Sync + 'static {
     /// Returns [`StoreError::Backend`] for backend boundary failures and
     /// [`StoreError::Serialization`] when a stored row cannot be decoded.
     async fn count_inflight_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError>;
+
+    /// Returns the count of CLAIMED outbox rows for `namespace` (CP2-Q2).
+    ///
+    /// "Claimed" is the *concurrently executing* set: rows in [`OutboxStatus::Claimed`] — dispatched
+    /// to a worker and not yet terminal. This is deliberately NARROWER than
+    /// [`OutboxStore::count_inflight_outbox_rows`], which also counts [`OutboxStatus::Pending`]
+    /// backlog: a tenant sitting on a large Pending backlog has a large *in-flight* count but a small
+    /// *claimed* count, and it is the CLAIMED count — concurrent executing activities — that the
+    /// keyed-backpressure ceiling caps (CP-Phase-2 §3.1 as corrected). Counting Pending+Claimed for
+    /// headroom would wedge a tenant against its own backlog: it could never claim the Pending rows
+    /// that make up the count. So headroom is `per_node_ceiling − claimed`, never `… − inflight`.
+    ///
+    /// A stuck-`Claimed` row (dispatched but `mark_done` never landed, `outbox_dispatcher` §) is
+    /// still `Claimed` and so still counts — the worker may still be executing it, so it correctly
+    /// occupies a concurrency slot. The count is strictly scoped to `namespace`: rows in any other
+    /// namespace are never included.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn count_claimed_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError>;
+
+    /// Enumerates the distinct `(namespace, task_queue, node)` routes that currently have at least
+    /// one CLAIMABLE pending row — a row whose `status` is [`OutboxStatus::Pending`] and whose
+    /// `visible_after` fence has passed (CP2-Q2).
+    ///
+    /// This is the enumeration primitive the keyed-backpressure dispatcher round-robins over: it
+    /// cannot ask [`OutboxStore::claim_outbox_rows_scoped`] (which needs a *specific*
+    /// [`ClaimScope`]) to "claim across all namespaces", so it first probes which routes have work
+    /// and then issues one scoped, headroom-capped claim per route. Each returned [`ClaimScope`]
+    /// carries the exact `(namespace, task_queue, node)` of pending rows, so a subsequent
+    /// `claim_outbox_rows_scoped` with that scope claims those rows (and any unpinned rows in the
+    /// same pool — see [`ClaimScope`]). A route with only future-fenced (`visible_after > now`) or
+    /// terminal rows is NOT returned: there is nothing claimable to dispatch.
+    ///
+    /// The probe is read-only and claims nothing; it only shapes which scopes the dispatcher then
+    /// claims under. On a node that owns a shard subset, only routes with claimable rows on owned
+    /// shards are returned (the same owned-shard scoping as the claim path), so the per-node round
+    /// naturally sees only its proportional slice of each tenant's work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError>;
 }
 
 #[cfg(test)]
