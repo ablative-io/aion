@@ -119,6 +119,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-integrations"
+version = "0.8.0"
+dependencies = [
+ "aion-core",
+ "async-trait",
+ "chrono",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "aion-nif"
 version = "0.8.0"
 dependencies = [
