@@ -121,6 +121,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-integration-cli"
+version = "0.8.0"
+dependencies = [
+ "aion-core",
+ "aion-integrations",
+ "aion-worker",
+ "async-trait",
+ "chrono",
+ "futures",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aion-integration-norn"
 version = "0.8.0"
 dependencies = [
