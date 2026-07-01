@@ -829,6 +829,24 @@ mod tests {
             Arc::new(StaticWorkflowNamespaces::default()),
             Arc::new(StaticScheduleNamespaces::default()),
         );
+        // Build the state exactly as the compiled auth path requires: under
+        // `feature = "auth"` an enumerated caller's bearer is validated against an
+        // injected `JwksCache` (fed by a live fixture JWKS endpoint), so the
+        // seeded-registry state MUST carry one — otherwise the auth extractor sees
+        // no cache and rejects the caller with 401 regardless of the token.
+        #[cfg(feature = "auth")]
+        let state = {
+            let url = crate::auth::test_support::serve_jwks()?;
+            let refresh = std::time::Duration::from_secs(config.auth.jwks_refresh_seconds);
+            let cache = crate::auth::JwksCache::new(url, refresh).await?;
+            crate::ServerState::from_parts_with_namespace_store_and_jwks(
+                resolver,
+                config,
+                Arc::clone(&namespace_store),
+                cache,
+            )
+        };
+        #[cfg(not(feature = "auth"))]
         let state = crate::ServerState::from_parts_with_namespace_store(
             resolver,
             config,
