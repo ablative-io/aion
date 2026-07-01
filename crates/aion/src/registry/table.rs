@@ -61,6 +61,37 @@ impl Registry {
         Ok(previous)
     }
 
+    /// Atomically inserts `handle` for `key` only if no handle is already
+    /// registered for that exact `(workflow, run)`.
+    ///
+    /// Returns the handle now registered for `key`: the freshly inserted one when
+    /// the slot was empty, or the pre-existing one when it was occupied (leaving
+    /// that occupant untouched). The whole check-and-insert runs under the single
+    /// `handles` lock, so two concurrent reopens of the same terminal workflow
+    /// cannot both insert — exactly one wins the slot and the other observes the
+    /// winner's handle. This is the per-workflow serialization point the reopen
+    /// operation relies on (invariant #3): the winner's recorder is the sole
+    /// writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegistryPoisoned`] if the registry lock was poisoned.
+    pub fn insert_if_absent(
+        &self,
+        key: (WorkflowId, RunId),
+        handle: WorkflowHandle,
+    ) -> Result<WorkflowHandle, EngineError> {
+        // Lock ordering: handles first, then index. Never the reverse.
+        let mut handles = self.handles()?;
+        if let Some(existing) = handles.get(&key) {
+            return Ok(existing.clone());
+        }
+        let pid = handle.pid();
+        handles.insert(key.clone(), handle.clone());
+        self.index()?.insert(key.0, (key.1, pid));
+        Ok(handle)
+    }
+
     /// Looks up a live workflow run handle.
     ///
     /// # Errors
@@ -391,6 +422,32 @@ mod tests {
         // Removing the live run clears the index entry.
         registry.remove(&workflow_id, &second_run)?;
         assert_eq!(registry.live_pid(&workflow_id)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn insert_if_absent_wins_the_slot_and_rejects_the_racer() -> Result<(), EngineError> {
+        let registry = Registry::default();
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let run = aion_core::RunId::new_v4();
+        let first = handle(1, 1, WorkflowStatus::Running);
+        let second = handle(2, 2, WorkflowStatus::Running);
+
+        // The empty slot accepts the first handle.
+        let registered =
+            registry.insert_if_absent((workflow_id.clone(), run.clone()), first.clone())?;
+        assert_eq!(registered.pid(), 1);
+        assert_eq!(registry.live_pid(&workflow_id)?, Some(1));
+
+        // A second insert_if_absent observes the existing occupant untouched.
+        let observed =
+            registry.insert_if_absent((workflow_id.clone(), run.clone()), second)?;
+        assert_eq!(
+            observed.pid(),
+            1,
+            "the second insert must return the winner's handle, not overwrite it"
+        );
+        assert_eq!(registry.get(&workflow_id, &run)?, Some(first));
         Ok(())
     }
 

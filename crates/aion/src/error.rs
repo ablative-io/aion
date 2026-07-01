@@ -117,6 +117,19 @@ pub enum EngineError {
     #[error("workflow catalog lock was poisoned")]
     CatalogPoisoned,
 
+    /// A precondition on the target workflow's current state was not met.
+    ///
+    /// Raised by the reopen operation when the target run is not in a reopenable
+    /// state: not terminal, terminal for a non-reopenable reason
+    /// (Completed/`TimedOut`), or already Running. The `reason` names the actual
+    /// status so callers and operators can see why the reopen was rejected. Maps
+    /// to the `INVALID_STATE` wire code (gRPC `FailedPrecondition` / HTTP 409).
+    #[error("invalid workflow state: {reason}")]
+    InvalidState {
+        /// Human-readable precondition-failure reason naming the actual status.
+        reason: String,
+    },
+
     /// The engine is already shutting down and no new workflow starts are accepted.
     #[error("engine is shutting down")]
     ShuttingDown,

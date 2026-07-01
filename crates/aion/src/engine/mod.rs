@@ -19,7 +19,7 @@ mod seams;
 /// Shutdown gating for in-flight lifecycle operations.
 mod shutdown_gate;
 /// Startup recovery wiring used by `EngineBuilder::build()`.
-mod startup;
+pub(crate) mod startup;
 /// Crash-window repair sweeps run by startup recovery.
 mod startup_sweeps;
 

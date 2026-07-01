@@ -16,6 +16,7 @@ use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
 
 use crate::lifecycle::continue_as_new::{self, ContinueAsNewContext, ContinueAsNewRequest};
+use crate::lifecycle::reopen::{self, ReopenWorkflowContext};
 use crate::lifecycle::start::{self, StartWorkflowContext};
 use crate::lifecycle::terminate::{self, TerminateWorkflowContext};
 use crate::lifecycle::transition;
@@ -555,6 +556,45 @@ impl Engine {
                 input,
                 workflow_type,
             },
+        )
+        .await;
+        drop(operation);
+        result
+    }
+
+    /// Reopen a terminal-`Failed` or terminal-`Cancelled` run and re-drive it.
+    ///
+    /// Appends a single `WorkflowReopened` that supersedes the run's terminal
+    /// event (returning it to Running), then respawns and re-drives the SAME run
+    /// through the existing recovery path so replay returns every recorded result
+    /// and only the reopened / in-flight step re-dispatches live, in the
+    /// workflow's own namespace. Takes only a workflow id and run; the reopened
+    /// steps and the namespace are derived from history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::WorkflowNotFound`] when no history exists for the pair, and
+    /// [`EngineError::InvalidState`] when the run is not a reopenable terminal
+    /// (not terminal, terminal for Completed/`TimedOut`, or already Running).
+    pub async fn reopen_workflow(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+    ) -> Result<WorkflowHandle, EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result = reopen::reopen(
+            ReopenWorkflowContext {
+                store: self.store(),
+                visibility_store: Arc::clone(&self.visibility_store),
+                catalog: Arc::clone(&self.catalog),
+                runtime: &self.runtime,
+                supervision: Arc::clone(&self.supervision),
+                registry: &self.registry,
+                search_attribute_schema: Arc::clone(&self.search_attribute_schema),
+            },
+            id,
+            run,
         )
         .await;
         drop(operation);
