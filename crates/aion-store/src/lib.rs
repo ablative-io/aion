@@ -26,6 +26,8 @@ pub mod error;
 pub mod memory;
 /// Durable, minted-on-use namespace registry records and contract.
 pub mod namespace;
+/// Durable observability (`O`) keyspace contract — the NOI-5 transcript spine.
+pub mod observability;
 /// Durable outbox contract for store-backed fan-out dispatch.
 pub mod outbox;
 /// Deployed-package persistence records and contract.
@@ -51,6 +53,9 @@ pub use memory::InMemoryStore;
 pub use namespace::{
     MintOutcome, NamespaceConfig, NamespaceOrigin, NamespacePlacement, NamespaceRecord,
     NamespaceState, NamespaceStore,
+};
+pub use observability::{
+    ActivityRecord, ActivityStreamKey, InMemoryObservabilityStore, ObservabilityStore,
 };
 pub use outbox::{ClaimScope, DEFAULT_OUTBOX_ROUTE, OutboxRow, OutboxStatus, OutboxStore};
 pub use package::{PackageRecord, PackageRouteRecord, PackageStore};
