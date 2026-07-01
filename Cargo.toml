@@ -14,6 +14,7 @@ members = [
     "crates/aion-server",
     "crates/aion-worker",
     "crates/aion-client",
+    "crates/aion-integrations",
     "crates/aion-cli",
     "benchmarks/million-processes",
     "xtask",
