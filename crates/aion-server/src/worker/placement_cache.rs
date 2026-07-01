@@ -107,6 +107,46 @@ impl PlacementCache {
     }
 }
 
+/// The ordered node-filter tiers an UNPINNED row consults for the `Prefer{L}`
+/// two-tier spill (Control-Plane Phase 2, P2-P3) — the SINGLE source of the
+/// prefer-then-spill sequence shared by BOTH the gRPC
+/// ([`WorkerOutboxDispatch`](crate::worker::WorkerOutboxDispatch)) and liminal
+/// ([`RegistryLiminalDispatch`](crate::worker::RegistryLiminalDispatch)) dispatch
+/// paths, so the two transports can never diverge on what "prefer labelled worker,
+/// spill to any" means.
+///
+/// The returned sequence is a list of node filters to try IN ORDER, stopping at
+/// the first that has a live worker:
+///
+/// - `Prefer{L}` → each label in `L` (deterministic [`BTreeSet`](std::collections::BTreeSet)
+///   order) as `Some(label)`, then a final `None` spill tier (any live worker).
+///   An empty `L` collapses to just the `None` spill.
+/// - `Unplaced` / `Pinned` → a single `None` tier (any live worker). `Pinned`'s
+///   hard-constraint dispatch enforcement is P2-I1 (#164), out of scope here, so
+///   it dispatches like `Unplaced` for now — see the outbox dispatcher module
+///   docs.
+///
+/// This is consulted ONLY for an unpinned row (`row.node == None`): an authored
+/// `Some(N)` pin is authoritative and never enters this path. The result is a
+/// pure worker-SELECTION input; it never mutates the recorded row's `node`
+/// (the determinism invariant, CP-Phase-2 §2.4).
+#[must_use]
+pub fn preferred_node_order(placement: &NamespacePlacement) -> Vec<Option<String>> {
+    match placement {
+        NamespacePlacement::Prefer { nodes } => {
+            // Tier 1..N: each preferred label in deterministic set order.
+            // Tier N+1: the `None` spill to any live worker.
+            let mut tiers: Vec<Option<String>> =
+                nodes.iter().map(|label| Some(label.clone())).collect();
+            tiers.push(None);
+            tiers
+        }
+        // Unplaced today, and Pinned until P2-I1 (#164): a single any-worker tier,
+        // byte-identical to the pre-Phase-2 unpinned dispatch.
+        NamespacePlacement::Unplaced | NamespacePlacement::Pinned { .. } => vec![None],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -208,5 +248,51 @@ mod tests {
             "an absent registry row defaults to Unplaced (any worker)"
         );
         Ok(())
+    }
+
+    // --- #163: the shared prefer-then-spill tier order (gRPC + liminal) --------
+
+    use super::preferred_node_order;
+
+    /// A `Prefer{L}` placement yields each label in deterministic set order as a
+    /// `Some` tier, then a final `None` spill tier — the single source both the
+    /// gRPC and liminal dispatch paths consult so they cannot diverge.
+    #[test]
+    fn prefer_order_is_each_label_then_the_none_spill() {
+        let order = preferred_node_order(&NamespacePlacement::Prefer {
+            nodes: labels(&["n2", "n1"]),
+        });
+        // BTreeSet order is sorted: n1 before n2, then the None spill.
+        assert_eq!(
+            order,
+            vec![Some("n1".to_owned()), Some("n2".to_owned()), None],
+            "each preferred label (sorted) precedes the None spill tier"
+        );
+    }
+
+    /// An empty `Prefer{}` set collapses to the immediate `None` spill.
+    #[test]
+    fn empty_prefer_set_is_just_the_spill() {
+        let order = preferred_node_order(&NamespacePlacement::Prefer {
+            nodes: BTreeSet::new(),
+        });
+        assert_eq!(order, vec![None], "an empty prefer set is the spill case");
+    }
+
+    /// `Unplaced` and `Pinned` (until P2-I1) both yield a single any-worker tier,
+    /// byte-identical to the pre-Phase-2 unpinned selection.
+    #[test]
+    fn unplaced_and_pinned_are_a_single_any_worker_tier() {
+        assert_eq!(
+            preferred_node_order(&NamespacePlacement::Unplaced),
+            vec![None]
+        );
+        assert_eq!(
+            preferred_node_order(&NamespacePlacement::Pinned {
+                nodes: labels(&["n1"]),
+            }),
+            vec![None],
+            "Pinned dispatches like Unplaced until its hard-constraint gate (P2-I1)"
+        );
     }
 }

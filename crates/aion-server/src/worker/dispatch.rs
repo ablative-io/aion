@@ -131,12 +131,18 @@ impl ActivityDispatcher {
     /// non-replayed path, exactly like the existing round-robin, so replay is
     /// untouched (CP-Phase-2 §2.4).
     ///
-    /// Tier 1: for each preferred label (deterministic set order) try a
+    /// The prefer-then-spill tier sequence is derived ONCE, from the shared
+    /// [`preferred_node_order`](crate::worker::preferred_node_order), so this gRPC
+    /// path and the liminal
+    /// [`RegistryLiminalDispatch`](crate::worker::RegistryLiminalDispatch) can never
+    /// diverge on what "prefer labelled worker, spill to any" means:
+    ///
+    /// Tier 1..N: for each preferred label (deterministic set order) try a
     /// NON-WAITING `workers_for(node = Some(label))` and dispatch to the first
-    /// live worker found. Tier 2 (spill): if no preferred label has a live worker,
-    /// fall back to [`Self::dispatch`] with the activity's own (unpinned) node, so
-    /// the wait-for-worker backstop and round-robin behave exactly as today. An
-    /// empty `preferred` set is the spill case immediately.
+    /// live worker found. Tier N+1 (spill): if no preferred label has a live
+    /// worker, fall back to [`Self::dispatch`] with the activity's own (unpinned)
+    /// node, so the wait-for-worker backstop and round-robin behave exactly as
+    /// today. An empty `preferred` set is the spill case immediately.
     ///
     /// # Errors
     ///
@@ -145,6 +151,30 @@ impl ActivityDispatcher {
         &self,
         activity: &ScheduledActivity,
         preferred: &std::collections::BTreeSet<String>,
+    ) -> Result<(), ServerError> {
+        // Reconstruct the shared tier order from the preferred labels so gRPC and
+        // liminal consult ONE prefer-then-spill implementation.
+        let tiers = crate::worker::preferred_node_order(&aion_store::NamespacePlacement::Prefer {
+            nodes: preferred.clone(),
+        });
+        self.dispatch_over_tiers(activity, &tiers).await
+    }
+
+    /// Dispatch `activity` over an ordered `tiers` sequence of node filters, each
+    /// a `Some(label)` preference or the final `None` spill (the shared
+    /// [`preferred_node_order`](crate::worker::preferred_node_order) output). The
+    /// first non-spill tier with a live worker wins via a NON-WAITING
+    /// `workers_for`; the `None` spill tier falls back to the waiting
+    /// [`Self::dispatch_to_node`] so the wait-for-worker backstop and round-robin
+    /// behave exactly as today.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dispatch`].
+    async fn dispatch_over_tiers(
+        &self,
+        activity: &ScheduledActivity,
+        tiers: &[Option<String>],
     ) -> Result<(), ServerError> {
         let span = info_span!(
             "activity_dispatch",
@@ -158,7 +188,14 @@ impl ActivityDispatcher {
         );
         let span_fields = span.clone();
         async {
-            for label in preferred {
+            for tier in tiers {
+                let Some(label) = tier else {
+                    // The `None` spill tier: fall back to the waiting unpinned
+                    // dispatch (wait-for-worker backstop + round-robin).
+                    return self
+                        .dispatch_to_node(activity, activity.node.as_deref(), &span_fields)
+                        .await;
+                };
                 self.drain_state
                     .ensure_accepting(&activity.namespace, &activity.activity_type)?;
                 let candidates = self.registry.workers_for(
@@ -174,8 +211,8 @@ impl ActivityDispatcher {
                     return Ok(());
                 }
             }
-            // Spill: no preferred label had a live worker. Fall back to the
-            // standard unpinned dispatch (wait-for-worker backstop + round-robin).
+            // An empty tier list (never produced by `preferred_node_order`, which
+            // always appends the spill) still degrades to the unpinned dispatch.
             self.dispatch_to_node(activity, activity.node.as_deref(), &span_fields)
                 .await
         }

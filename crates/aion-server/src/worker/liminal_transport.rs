@@ -77,7 +77,7 @@ use serde::{Deserialize, Serialize};
 
 use super::bridge::OutboxDeliveryCallback;
 use super::outbox_dispatcher::OutboxRowDispatch;
-use super::registry::{ConnectedWorkerRegistry, WorkerDelivery, WorkerRegistration};
+use super::registry::{ConnectedWorkerRegistry, WorkerDelivery, WorkerHandle, WorkerRegistration};
 use crate::error::ServerError;
 
 /// Upper bound on how long a server-initiated dispatch push waits for the
@@ -491,11 +491,24 @@ fn is_connection_closed_reply_error(error: &LiminalServerError) -> bool {
 pub struct RegistryLiminalDispatch {
     registry: ConnectedWorkerRegistry,
     completion: LiminalCompletionSource,
+    /// Optional short-TTL per-namespace placement cache (Control-Plane Phase 2,
+    /// P2-P3), the SAME cache the gRPC
+    /// [`WorkerOutboxDispatch`](crate::worker::WorkerOutboxDispatch) is given. When
+    /// present, an UNPINNED row (`row.node == None`) whose namespace placement is
+    /// `Prefer{L}` selects an L-labelled worker and spills to any live worker when
+    /// none is up, via the SHARED
+    /// [`preferred_node_order`](crate::worker::preferred_node_order). When absent
+    /// (the default, every pre-Phase-2 construction and test) selection is
+    /// byte-identical to before: one `select_worker` off the row's own node.
+    /// Placement is NEVER stamped back onto the row — it is consulted only here,
+    /// in this non-replayed dispatcher, for worker selection.
+    placement_cache: Option<crate::worker::PlacementCache>,
 }
 
 impl std::fmt::Debug for RegistryLiminalDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegistryLiminalDispatch")
+            .field("placement_cache", &self.placement_cache.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -511,7 +524,63 @@ impl RegistryLiminalDispatch {
         Self {
             registry,
             completion: LiminalCompletionSource::new(callback),
+            placement_cache: None,
         }
+    }
+
+    /// Attach the per-namespace placement cache so an unpinned row consults its
+    /// namespace's `Prefer` directive at selection time (Control-Plane Phase 2,
+    /// P2-P3) — the liminal mirror of
+    /// [`WorkerOutboxDispatch::with_placement_cache`](crate::worker::WorkerOutboxDispatch::with_placement_cache).
+    /// Pure builder addition: without it, selection is byte-identical to the
+    /// pre-Phase-2 behaviour.
+    #[must_use]
+    pub fn with_placement_cache(mut self, cache: crate::worker::PlacementCache) -> Self {
+        self.placement_cache = Some(cache);
+        self
+    }
+
+    /// Select the liminal worker for `row`, applying the shared `Prefer` two-tier
+    /// spill for an UNPINNED row when a placement cache is attached.
+    ///
+    /// A per-activity authored pin (`row.node == Some(N)`) ALWAYS wins and is
+    /// selected off the row's own node, untouched by placement — exactly the gRPC
+    /// composition rule. Only an unpinned row consults the namespace placement, and
+    /// then over the SHARED [`preferred_node_order`](crate::worker::preferred_node_order)
+    /// tier sequence: each preferred label in turn (first live worker wins), then
+    /// the `None` spill to any live worker. Without a cache (or with a pinned row)
+    /// this collapses to the single `select_worker` off the row's own node — the
+    /// pre-Phase-2 behaviour.
+    async fn select_liminal_worker(
+        &self,
+        row: &OutboxRow,
+    ) -> Result<Option<WorkerHandle>, ServerError> {
+        // A pinned row or an absent cache: one selection off the row's own node.
+        let (Some(cache), None) = (&self.placement_cache, &row.node) else {
+            return self.registry.select_worker(
+                &row.namespace,
+                &row.task_queue,
+                &row.activity_type,
+                row.node.as_deref(),
+            );
+        };
+        // Unpinned + placement-aware: walk the shared prefer-then-spill tiers,
+        // stopping at the first tier that has a live worker. The `None` spill tier
+        // is always last, so an unplaced/pinned namespace or an exhausted prefer
+        // set still selects any live worker — the row's `node` is never mutated.
+        let placement = cache.placement(&row.namespace).await;
+        for tier in crate::worker::preferred_node_order(&placement) {
+            let selected = self.registry.select_worker(
+                &row.namespace,
+                &row.task_queue,
+                &row.activity_type,
+                tier.as_deref(),
+            )?;
+            if selected.is_some() {
+                return Ok(selected);
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -520,22 +589,15 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
     async fn dispatch(&self, row: &OutboxRow) -> Result<(), ServerError> {
         // Select the worker the SAME way the gRPC path does: by the row's
         // (namespace, task_queue, activity_type) pool key with the row's optional
-        // node affinity. No worker for the pool => honest no-worker error => the
-        // outbox retries (never a false `done`).
-        let worker = self
-            .registry
-            .select_worker(
-                &row.namespace,
-                &row.task_queue,
-                &row.activity_type,
-                row.node.as_deref(),
-            )?
-            .ok_or_else(|| {
-                dispatch_error(
-                    &channel_for_row(row),
-                    "no liminal worker registered for the row's pool".to_owned(),
-                )
-            })?;
+        // node affinity, applying the SHARED `Prefer` two-tier spill for an
+        // unpinned row when a placement cache is attached. No worker for the pool
+        // => honest no-worker error => the outbox retries (never a false `done`).
+        let worker = self.select_liminal_worker(row).await?.ok_or_else(|| {
+            dispatch_error(
+                &channel_for_row(row),
+                "no liminal worker registered for the row's pool".to_owned(),
+            )
+        })?;
 
         let delivery = match worker.delivery() {
             WorkerDelivery::Liminal(delivery) => delivery.clone(),
@@ -968,5 +1030,305 @@ mod tests {
         assert_eq!(normalize_wire_node(None), None);
         assert_eq!(normalize_wire_node(Some("")), None);
         assert_eq!(normalize_wire_node(Some("box-7")), Some("box-7".to_owned()));
+    }
+
+    // --- #163: the Prefer two-tier spill on the LIMINAL selection path ---------
+    //
+    // These exercise `RegistryLiminalDispatch::select_liminal_worker` — the
+    // liminal transport's worker selection — proving it consults the SAME shared
+    // `preferred_node_order` two-tier spill the gRPC path uses (the cross-node
+    // demo behaviour), and that placement NEVER mutates the recorded row's node.
+    // Selection is delivery-agnostic (`select_worker` filters by node regardless
+    // of transport), so a worker registered with any delivery drives the same
+    // selection the production liminal-delivered worker would; the tests assert on
+    // the SELECTED handle's node, which is exactly what #163 changed.
+    mod placement_selection {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use aion_core::{ActivityId, Payload, RunId, WorkflowId};
+        use aion_store::{
+            InMemoryStore, NamespaceOrigin, NamespacePlacement, NamespaceStore, OutboxRow,
+        };
+
+        use crate::error::ServerError;
+        use crate::worker::PlacementCache;
+        use crate::worker::bridge::OutboxDeliveryCallback;
+        use crate::worker::registry::{ConnectedWorkerRegistry, WorkerMessage, WorkerRegistration};
+
+        use super::super::RegistryLiminalDispatch;
+
+        /// No-op delivery callback: the selection tests never deliver a result, so
+        /// the completion sink is never invoked. Both methods are unreachable in
+        /// these tests and simply report "no live run" if ever called.
+        struct NoopCallback;
+
+        impl OutboxDeliveryCallback for NoopCallback {
+            fn deliver_completion(
+                &self,
+                _workflow_id: &WorkflowId,
+                _activity_id: &ActivityId,
+                _run_id: Option<&RunId>,
+                _result: String,
+            ) -> Result<bool, ServerError> {
+                Ok(false)
+            }
+            fn deliver_failure(
+                &self,
+                _workflow_id: &WorkflowId,
+                _activity_id: &ActivityId,
+                _run_id: Option<&RunId>,
+                _reason: String,
+            ) -> Result<bool, ServerError> {
+                Ok(false)
+            }
+        }
+
+        fn labels(values: &[&str]) -> BTreeSet<String> {
+            values.iter().map(|v| (*v).to_owned()).collect()
+        }
+
+        /// Register a worker advertising `node` for `charge` in `namespace`,
+        /// returning the registration guard (held to keep it connected).
+        fn register_node_worker(
+            registry: &ConnectedWorkerRegistry,
+            namespace: &str,
+            node: &str,
+        ) -> Result<WorkerRegistration, ServerError> {
+            let (tx, _rx) = tokio::sync::mpsc::channel::<WorkerMessage>(1);
+            let types = [String::from("charge")];
+            registry.register_namespaces(
+                [namespace.to_owned()],
+                String::from("default"),
+                Some(node.to_owned()),
+                types.iter(),
+                tx,
+            )
+        }
+
+        /// Build an UNPINNED outbox row (`node == None`) in `namespace` for `charge`.
+        fn unpinned_row(namespace: &str) -> OutboxRow {
+            OutboxRow::pending(
+                WorkflowId::new_v4(),
+                0,
+                String::from("charge"),
+                Payload::from_json(&serde_json::json!({}))
+                    .unwrap_or_else(|_| Payload::new(aion_core::ContentType::Json, Vec::new())),
+                chrono::Utc::now(),
+            )
+            .with_namespace(namespace)
+            .with_task_queue("default")
+        }
+
+        /// A namespace store with `namespace` set to `Prefer{nodes}`.
+        async fn prefer_store(
+            namespace: &str,
+            nodes: &[&str],
+        ) -> Result<Arc<dyn NamespaceStore>, ServerError> {
+            let store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+            store
+                .register_namespace(namespace, NamespaceOrigin::Explicit)
+                .await?;
+            store
+                .set_namespace_placement(
+                    namespace,
+                    NamespacePlacement::Prefer {
+                        nodes: labels(nodes),
+                    },
+                )
+                .await?;
+            Ok(store)
+        }
+
+        /// Build a `RegistryLiminalDispatch` over `registry` whose placement cache
+        /// reads `ns_store` (zero TTL so each selection sees the latest placement).
+        fn liminal_dispatch(
+            registry: &ConnectedWorkerRegistry,
+            ns_store: Arc<dyn NamespaceStore>,
+        ) -> RegistryLiminalDispatch {
+            let cache = PlacementCache::new(ns_store, Duration::ZERO);
+            RegistryLiminalDispatch::new(registry.clone(), Arc::new(NoopCallback))
+                .with_placement_cache(cache)
+        }
+
+        /// #163 (prefer): an unpinned row in a `Prefer{n1}` namespace selects the
+        /// n1 worker on the liminal path when one is live, even with an n2 worker
+        /// also connected.
+        #[tokio::test]
+        async fn prefer_selects_preferred_node_worker_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store = prefer_store("t", &["n1"]).await?;
+            let registry = ConnectedWorkerRegistry::default();
+            let _n1 = register_node_worker(&registry, "t", "n1")?;
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            let row = unpinned_row("t");
+            let selected = dispatch
+                .select_liminal_worker(&row)
+                .await?
+                .ok_or("a worker must be selected")?;
+            assert_eq!(
+                selected.node(),
+                Some("n1"),
+                "the liminal path prefers the n1 worker while it is live"
+            );
+            // Determinism gate: preference never mutates the recorded row's node.
+            assert_eq!(row.node, None, "placement must never mutate the row's node");
+            Ok(())
+        }
+
+        /// #163 (spill): an unpinned row in a `Prefer{n1}` namespace SPILLS to the
+        /// only live worker (n2) on the liminal path when no n1 worker is
+        /// connected — the cross-node node-loss failover behaviour.
+        #[tokio::test]
+        async fn prefer_spills_to_any_live_worker_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store = prefer_store("t", &["n1"]).await?;
+            // Only an n2 worker is live: no n1-labelled worker exists at all.
+            let registry = ConnectedWorkerRegistry::default();
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            let row = unpinned_row("t");
+            let selected = dispatch
+                .select_liminal_worker(&row)
+                .await?
+                .ok_or("the spill must select the live n2 worker")?;
+            assert_eq!(
+                selected.node(),
+                Some("n2"),
+                "with no n1 worker live, the liminal selection spills to the live n2 worker"
+            );
+            assert_eq!(row.node, None, "spill must never mutate the row's node");
+            Ok(())
+        }
+
+        /// #163 (determinism, mirrors the gRPC `placement_never_mutates_recorded_row_node`
+        /// test): under `Prefer{n1}` the SAME unpinned row selected once to the n1
+        /// worker and once (after n1 leaves) spilled to n2 keeps `node == None`
+        /// BOTH times — selection reads the row's node, never the placement, so
+        /// replay sees an identical command stream irrespective of the target.
+        #[tokio::test]
+        async fn placement_never_mutates_recorded_row_node_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store = prefer_store("t", &["n1"]).await?;
+            let registry = ConnectedWorkerRegistry::default();
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            // Routing A: n1 present -> preferred selection.
+            let n1 = register_node_worker(&registry, "t", "n1")?;
+            let row_a = unpinned_row("t");
+            let selected_a = dispatch
+                .select_liminal_worker(&row_a)
+                .await?
+                .ok_or("routing A must select a worker")?;
+            assert_eq!(selected_a.node(), Some("n1"));
+
+            // n1 leaves; only n2 remains.
+            n1.deregister()?;
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+
+            // Routing B: same shape of unpinned row -> spills to n2.
+            let row_b = unpinned_row("t");
+            let selected_b = dispatch
+                .select_liminal_worker(&row_b)
+                .await?
+                .ok_or("routing B must spill to a worker")?;
+            assert_eq!(selected_b.node(), Some("n2"));
+
+            // The recorded row node is None in BOTH routings: the dispatch target
+            // (n1 vs n2) did not perturb it.
+            assert_eq!(row_a.node, None);
+            assert_eq!(row_b.node, None);
+            assert_eq!(
+                row_a.node, row_b.node,
+                "the recorded row node is identical regardless of which worker was selected"
+            );
+            Ok(())
+        }
+
+        /// #163 (authored pin wins): a row authored-pinned to `Some(n2)` STILL
+        /// selects an n2 worker on the liminal path regardless of the namespace's
+        /// `Prefer{n1}` — the per-activity pin is authoritative and placement never
+        /// overrides it.
+        #[tokio::test]
+        async fn authored_node_pin_wins_over_namespace_prefer_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store = prefer_store("t", &["n1"]).await?;
+            let registry = ConnectedWorkerRegistry::default();
+            let _n1 = register_node_worker(&registry, "t", "n1")?;
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            // Authored pin: node = Some("n2").
+            let row = unpinned_row("t").with_node(Some(String::from("n2")));
+            let selected = dispatch
+                .select_liminal_worker(&row)
+                .await?
+                .ok_or("the authored pin must select the n2 worker")?;
+            assert_eq!(
+                selected.node(),
+                Some("n2"),
+                "the authored Some(n2) pin is honoured regardless of the namespace Prefer{{n1}}"
+            );
+            // The authored node is preserved exactly (determinism gate).
+            assert_eq!(row.node.as_deref(), Some("n2"));
+            Ok(())
+        }
+
+        /// #163 (byte-identical default): an `Unplaced` namespace selects any live
+        /// worker on the liminal path exactly as the pre-Phase-2 single
+        /// `select_worker` would — the ceiling/placement never engages.
+        #[tokio::test]
+        async fn unplaced_namespace_selects_any_worker_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+            // Registered but left Unplaced (the default placement).
+            ns_store
+                .register_namespace("t", NamespaceOrigin::Explicit)
+                .await?;
+            let registry = ConnectedWorkerRegistry::default();
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            let selected = dispatch
+                .select_liminal_worker(&unpinned_row("t"))
+                .await?
+                .ok_or("an Unplaced namespace still selects a live worker")?;
+            assert_eq!(
+                selected.node(),
+                Some("n2"),
+                "an Unplaced namespace reaches any live worker, exactly as before"
+            );
+            Ok(())
+        }
+
+        /// #163 (byte-identical, no cache): with NO placement cache attached, the
+        /// liminal selection is the single `select_worker` off the row's own node —
+        /// byte-identical to the pre-#163 construction. An unpinned row reaches any
+        /// live worker; the namespace's `Prefer` is not even consulted.
+        #[tokio::test]
+        async fn no_cache_selection_is_byte_identical_to_pre_163()
+        -> Result<(), Box<dyn std::error::Error>> {
+            // The namespace prefers n1, but with no cache the preference is ignored.
+            let _ns_store = prefer_store("t", &["n1"]).await?;
+            let registry = ConnectedWorkerRegistry::default();
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            // No `.with_placement_cache(...)`: the pre-#163 construction.
+            let dispatch = RegistryLiminalDispatch::new(registry.clone(), Arc::new(NoopCallback));
+
+            let selected = dispatch
+                .select_liminal_worker(&unpinned_row("t"))
+                .await?
+                .ok_or("without a cache the unpinned row still selects any worker")?;
+            assert_eq!(
+                selected.node(),
+                Some("n2"),
+                "with no placement cache the selection is the unchanged any-worker path"
+            );
+            Ok(())
+        }
     }
 }
