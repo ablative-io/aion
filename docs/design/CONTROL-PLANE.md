@@ -216,20 +216,31 @@ rehash**.
 
 ## 7. Phased build
 
+> STATUS RECONCILED 2026-07-02: Phases 0-2 are DELIVERED. Phase 0 done (this doc +
+> §5 verified + §6.1 shard default resolved: 4096, af4bad09). Phase 1 LANDED (durable
+> namespace registry — `aion-store/src/namespace.rs`, `aion-store-haematite/src/keyspace.rs`,
+> `GET/POST /namespaces` at `router.rs:177`, quorum CAS test; see NAMESPACE-REGISTRY-PHASE-1.md).
+> Phase 2 LANDED (placement `Prefer`/`Pinned` consulted by both dispatch transports +
+> keyed quota backpressure, all wired at `run.rs` boot; see CONTROL-PLANE-PHASE-2.md).
+> REMAINING: Phase 3 (compute management / second moat) + the cluster wave #146 (durable
+> membership) / #147 (auto-discovery). Original phasing retained below.
+
 Grounded in what already exists (haematite source-of-truth #146, liminal
 ns›tq›node routing, beamr supervision, #157 failover).
 
-- **Phase 0 — This doc.** Plus verify §5 (determinism) and decide §6.1 (shard
-  default) against #47.
-- **Phase 1 — Namespace registry as durable haematite state.**
+- **Phase 0 — This doc.** ✅ DONE. Plus verify §5 (determinism) ✅ and decide §6.1
+  (shard default) against #47 ✅ (resolved: 4096, af4bad09).
+- **Phase 1 — Namespace registry as durable haematite state.** ✅ LANDED.
   Upsert-on-first-reference; `{name, created_at, last_seen, origin, config,
   placement}`; `GET /namespaces` returns the live set (retires the stopgap);
   loud "namespace created" event. Folds into #146.
-- **Phase 2 — Namespace as a real boundary.** Auth-consistent checks at every
-  hop (§4.1) + per-namespace keyed quotas (§4.2, generous backpressure).
-- **Phase 3 — Compute management (second moat).** beamr-supervised worker
+- **Phase 2 — Namespace as a real boundary.** ✅ LANDED. Auth-consistent checks at every
+  hop (§4.1) + per-namespace keyed quotas (§4.2, generous backpressure) + placement
+  (`Prefer` soft-spill / `Pinned` hard-wait) over the `node` axis.
+- **Phase 3 — Compute management (second moat).** ⏳ REMAINING. beamr-supervised worker
   fleets placed per namespace, kept alive across kill-9 (#157 substrate proven),
   autoscaling that respects in-flight work (do NOT repeat KEDA-scales-to-zero).
+  (Also remaining: cluster wave #146 durable membership, #147 auto-discovery/mDNS.)
 - **Phase 4 — Observability scoped by namespace.** The socket dashboard / ops
   console per namespace — near-free given what's built.
 - **Cross-cutting now:** raise the default shard count (§6.1) — small change,

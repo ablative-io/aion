@@ -1,7 +1,15 @@
 # Multi-Shard Active-Active Aion-on-Haematite — Design
 
 **Date:** 2026-06-25
-**Status:** Design, verified against code. Drives the AA-4-x build series.
+**Status:** ✅ IMPLEMENTED (reconciled 2026-07-02). The AA-4-x build series LANDED:
+AA-4-0..4 + AA-4-6 are merged (commits: AA-4-3a `e6363388`, AA-4-3b `ee50fd95`,
+AA-4-4 `cc905fc0`, AA-4-6 ship-gate demo `b94b1549`; plus `Engine::adopt_shards`
+survivor resume `fac5ac46`). ONLY **AA-4-5** (shard→owner directory + `start_workflow`
+forwarding on `NotOwner`) remains carried — it was explicitly deferred from v1 (callers
+target the owner / retry on fence). NOTE: a post-kill-9 adopted-shard quorum-membership
+bug is tracked separately (#148/#157 repro `b3d7885c`) and is orthogonal to this series'
+landing. Design record retained below. Original status: "Design, verified against code.
+Drives the AA-4-x build series."
 **Goal (v1 DoD):** A 3-node cluster, `shard_count == 3`, each node owning one shard,
 running three independent workflows simultaneously (one per node). Killing any one
 node causes its shard to be re-elected by a survivor and that workflow to resume,

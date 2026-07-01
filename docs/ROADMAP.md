@@ -94,12 +94,19 @@ The strategic build. Design done; phased.
 
 The "stop regressions silently rotting" track. **The keystone gap.**
 
-- **Public full-gate CI** (from prior roadmap §2.2; STILL the biggest hole —
-  only `ops-console-embed.yml` exists). fmt + clippy `-D` + `cargo test -p`
-  every crate, on fresh clones, with `gleam` on the runner for example builds.
-- **CI-harden the kill-9 gates** — the `#[ignore]d` parked-timer + fan-out
-  kill-9 e2e tests pass now but aren't in CI; that's *exactly* how #157 rotted
-  unseen. Add a slow/nightly lane so it can't silently regress.
+> ✅ RECONCILED 2026-07-02: the CI keystone is DELIVERED. `.github/workflows/ci.yml`
+> now exists and runs the full gate — fmt (`cargo fmt --all --check`), clippy
+> (`-D warnings`, default + all-features), a no-norn-in-platform invariant gate, the
+> workspace test job (default + all-features), AND a dedicated **osproc failover gates**
+> job running the kill-9 e2e guards (post-#157 regression guards, `cargo test -p aion-cli
+> --features haematite-backend,liminal-transport`). The two items below are done.
+
+- ✅ **DELIVERED** — **Public full-gate CI** (from prior roadmap §2.2; was the biggest
+  hole — only `ops-console-embed.yml` existed). Now `ci.yml` runs fmt + clippy `-D` +
+  workspace test (default + all-features) with a failover-critical change detector.
+- ✅ **DELIVERED** — **CI-harden the kill-9 gates** — the parked-timer + fan-out kill-9
+  e2e tests now run in CI's `osproc failover gates` job (the slow lane), so the class
+  of silent rot that produced #157 can't recur unseen.
 - **#113** beamr's rare ~3% parallel lib-test flake — hunt it (will surface in
   CI once the gate exists).
 - **#144 task_queue-on-start CONSUMPTION seam** — activities default to the
@@ -173,22 +180,32 @@ The "stop regressions silently rotting" track. **The keystone gap.**
 
 ## Near-term sequence (recommended)
 
+> Reconciled 2026-07-02: steps 2-4 below have since LANDED — the CI keystone
+> (`.github/workflows/ci.yml`, Track C), the control-plane decisions (determinism
+> RESOLVED, shard-count RESOLVED at 4096 / `af4bad09`), and Control-plane Phase 1
+> (durable namespace registry) plus Phase 2 (placement + quotas). Remaining near-term
+> work is #118 Sydney demo (step 1) and Phase 3 / the cluster wave (#146/#147).
+
 1. **#118 Sydney failover demo** (with Tom) — proves pillar 1 live; everything
    downstream rides on it being real.
-2. **CI keystone** (Track C): full-gate CI + CI-harden the kill-9 gates — stop
+2. ✅ LANDED — **CI keystone** (Track C): full-gate CI + CI-harden the kill-9 gates — stop
    the silent-rot class of bug that produced #157.
-3. **Control-plane decisions** (Track B): verify determinism model + decide the
+3. ✅ LANDED — **Control-plane decisions** (Track B): verify determinism model + decide the
    shard-count default — both are cheap and unblock the doc → build.
-4. **Control-plane Phase 1**: the durable namespace registry (the spine that
+4. ✅ LANDED — **Control-plane Phase 1**: the durable namespace registry (the spine that
    makes the ops console genuinely multi-namespace and retires the `default`
-   stopgap).
+   stopgap). (Phase 2 placement + quotas also landed.)
 5. Then iterate Track B Phases 2-4, with Track D/E/F items interleaved by need.
 
 ## Decisions needed from Tom
 
-- **#150** AD-012 reopen operation: keep / finish / drop.
-- **Shard-count default** value (Track B) — accept "generous power-of-two,
-  validated vs #47", or pick a number.
+> Reconciled 2026-07-02: the first two below are RESOLVED (struck through).
+
+- **#150** AD-012 reopen operation: keep / finish / drop. — ✅ RESOLVED: folded into
+  the reopen/resume work (see WORKFLOW-REOPEN-DESIGN.md).
+- **Shard-count default** value (Track B) — ✅ RESOLVED: default raised 64 → **4096**
+  on haematite 0.4.0 lazy materialization (commit `af4bad09`); no longer a pending
+  decision. (accept "generous power-of-two, validated vs #47".)
 - **Determinism authoring stance** (Track B) — RESOLVED: the engine is
   replay-deterministic; the agent guarantee is the activity boundary
   (recorded-once, never-re-run), not determinism-freedom. No

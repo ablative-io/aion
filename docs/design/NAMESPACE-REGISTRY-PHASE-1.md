@@ -1,7 +1,13 @@
-<!-- STATUS: DRAFT design blueprint (2026-06-30). Produced by a source-grounded
-analysis pass; every seam cites file:line. NOT yet approved to build — it folds
-into #146 and Control-Plane Phase 1, and carries OPEN DECISIONS for Tom (see the
-final section) plus a dependency on the shard-count-default decision. Review first. -->
+<!-- STATUS: BUILT & LANDED (reconciled 2026-07-02). This blueprint is implemented:
+durable minted-on-use namespace registry ships in `aion-store/src/namespace.rs`
+(NamespaceRecord/NamespacePlacement), `aion-store-haematite/src/keyspace.rs` + quorum
+CAS test `aion-store-haematite/tests/namespace_quorum_cas.rs`, and the HTTP surface
+`GET/POST /namespaces` + `/namespaces/{name}/placement` at
+`aion-server/src/api/http/router.rs:177-181`. Verified against those symbols. The
+shard-count-default dependency is RESOLVED (4096, commit af4bad09). OPEN DECISIONS in
+the final section were resolved during the build. Original DRAFT text below is retained
+as the design record.
+     Prior header: "DRAFT design blueprint (2026-06-30) ... NOT yet approved to build". -->
 
 # Control-Plane Phase 1 — Durable, Haematite-Backed, Minted-on-Use Namespace Registry
 

@@ -1,5 +1,12 @@
 # Aion interim durable-outbox fan-out/fan-in (libsql) — build plan
 
+> ✅ ARCHIVED — BUILT (reconciled 2026-07-02). The interim libsql outbox this plan
+> describes SHIPPED (H1 of AION-DISTRIBUTION-DESIGN.md). The durable dedup chokepoint,
+> reconciler, cancel/settle, RunId-on-wire, run_server bootstrap test, and liminal
+> cross-node swap all landed — see AION-OUTBOX-CUTOVER-DECISION.md for the per-blocker
+> verification. This plan is retained as the historical build record; for current status
+> read the cutover-decision doc.
+
 Realizes H1 of [AION-DISTRIBUTION-DESIGN.md](./AION-DISTRIBUTION-DESIGN.md) on the existing
 **libsql** backend — the early-capability milestone that delivers distributed fan-out/fan-in while
 the haematite active-active backend (synchronous replication) is built underneath. Grounded in a

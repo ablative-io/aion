@@ -1,8 +1,8 @@
 # aion — Decisions
 
-_Updated: 2026-06-21_
+_Updated: 2026-06-29_
 
-## Decided (14)
+## Decided (31)
 
 ### ADR-001 — No arbitrary limits, no assumed defaults
 
@@ -218,3 +218,248 @@ _Updated: 2026-06-21_
 - The activity declaration form drives worker, manifest, codec, schema, and test codegen the way I/O schemas already drive codec codegen (ADR-007 precedent); aion gains an `aion generate` surface extending today's I/O-only `aion codegen`.
 - No standalone DSL runtime is built; the visual canvas is a projection of the typed source, never the authoritative artifact.
 - Ratified by Tom on 2026-06-21; the aion-authoring cluster's designed roadmap items (RM-021, RM-009, RM-025..RM-029) are cleared to be briefed and dispatched.
+
+### ADR-015 — Dashboard: URL is state — every meaningful view state is deep-linkable
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** Operators hand off incidents mid-triage. A console whose view state lives in ephemeral component memory cannot be shared, bookmarked, or restored — the receiver re-navigates from scratch, and back/forward break. Temporal's console is the negative example: little of its view state is URL-addressable. The fork: keep view state in component memory (simpler to build) or make every meaningful state URL-encoded and router-driven (more constraint, but shareable).
+
+**Decision.** Every meaningful view state — namespace, selected workflow, selected event/bar, scrub seq, active search query and filters, active view — is URL-encoded and router-driven; component-local state holds only ephemeral UI (hover, transient focus). Rejected: ephemeral in-memory view state — it forfeits shareable/bookmarkable/back-forward-correct navigation, which is the 3 a.m. handoff primitive (paste a link in Slack, land on the exact bar at the exact scrub point).
+
+> Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- The router is the single source of view state; every new view must define its URL schema as part of its design.
+- Operator-action URLs (reopen/cancel) may address a target but never auto-execute — the action still requires an explicit confirm (ADR-013 / VISION §7).
+- VISION §1 (professional-console bar) and §6.5 (URL as state) are bound by this; reviewers check that no shareable state is trapped in component memory.
+
+### ADR-016 — Dashboard: the console never lies about its own provenance/freshness
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** After a read fails over to a survivor, or when a socket drops, a console that silently shows stale or wrong-node data misleads an operator under pressure — the most dangerous moment to be misled. The fork: assume-fresh (simpler UI, no provenance plumbing) vs always-surface provenance + freshness.
+
+**Decision.** The dashboard always surfaces its own data provenance and freshness: which node it is reading from, the last seq it has applied, and an explicit 'viewing a survivor' signal after a read fails over. A silently stale or post-failover view is a defect, not a graceful degradation. Rejected: assume-fresh / render data without provenance — under failover that turns the console into a confident liar exactly when truth matters most.
+
+> Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- Every read path carries source-node + last-applied-seq provenance through to the UI; the connection/staleness indicator is non-negotiable (VISION §6.3).
+- Depends on the server exposing source-node identity and a seq cursor on reads/streams (coordinate with the AW contract and the §8 failover-event promotion).
+- Reviewers check that no view can present stale/old-node data without an honest indicator.
+
+### ADR-017 — Dashboard: keyboard-first with a command palette as the spine
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** The consoles operators reach for under pressure — k9s, Linear, Superhuman — are dense and keyboard-driven; Temporal is sparse and mouse-bound. The fork: mouse-primary with keyboard as an accessibility afterthought, or keyboard-first with a command palette as the universal entry point.
+
+**Decision.** Keyboard-first: a command palette (universal Cmd-K / '/' entry) is the fastest path to everything — jump to a workflow, run a search, switch namespace, issue an action — and every primary surface is fully keyboard-navigable, with context-sensitive palette actions. Mouse stays fully supported, but keyboard is never a second-class path. Rejected: mouse-primary / keyboard-as-afterthought — it cedes speed-of-triage, a direct outclass vector over Temporal.
+
+> Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- A global command-palette + keybinding system is core architecture from the start, not bolted on later (VISION §4.6).
+- Every view defines its keyboard navigation model and its palette action contributions as part of its design.
+- Palette actions that mutate state route through the command API and the confirm boundary (VISION §7), never direct writes.
+
+### ADR-018 — Dashboard: performance is a budgeted, measured feature
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** 'Faster than logs' is meaningless without numbers. A console that janks at 10k events, or blocks on first paint, loses operator trust precisely when speed matters. The fork: best-effort performance vs committed, measured budgets treated as correctness.
+
+**Decision.** Performance is a committed contract: the swimlane stays smooth at 10k+ events via virtualized lanes while live events append; the triage surface paints the top incident within one screen on first load; list and search results stream/virtualize rather than block. Budgets are measured, not merely asserted, and a regression past them is treated as a defect. Rejected: best-effort performance — it lets the console degrade into a slower-than-logs tool under real load, defeating its entire premise.
+
+> Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- Virtualized rendering is required for the swimlane, list, and search from the start (not retrofitted); large-history handling is designed in.
+- Performance budgets become explicit review/CI criteria (VISION §6.6).
+- The swimlane/scrubber bespoke rendering layer must be built against these budgets.
+
+### ADR-019 — Dashboard: the healthy/calm state is designed, not an empty page
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** A triage-first console risks shipping only the broken-state design and leaving the healthy 99% case as an empty or spinning page; the tool then only feels finished when something is on fire. The fork: triage-only, or an equally-designed ambient healthy state.
+
+**Decision.** The healthy/ambient cluster-heartbeat state — nodes live, shards owned, workers connected, throughput nominal — gets the same design care as the incident cards; the operator who glances at a calm cluster sees a legible 'all clear', not emptiness. Rejected: triage-only / undesigned healthy state — it leaves the console feeling unfinished in its most common condition and erodes trust in the quiet.
+
+> Yes absolutely... it's meant to out class temporal so the UI needs to outlast anything in that area. Add that stuff to the vision document and anywhere else it's needed.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- The three-AM view (VISION §4.4) must render a designed calm state, reading the same topology/throughput signals positively.
+- Empty/healthy is a first-class design state alongside loading/error/incident; reviewers check it exists and is legible.
+
+### ADR-020 — Dashboard: a live cluster map is a first-class view; design its command seam alongside the event seam
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** Operators need a whole-system mental model of the distributed cluster, and the failover beat today is a counter, not motion. The push-channel work (#128/WS3) is being designed right now, so the question is whether to (a) build only an observe map fed by those events, or (b) also design a command seam now so the map can DRIVE operator actions later. A force-directed graph is the tempting-but-wrong default. Temporal-class consoles are observe-mostly; a map that previews the consequence of an action before it is taken is a different class of tool.
+
+**Decision.** Build a deliberate-layout (NOT force-directed) live cluster map as VISION concept 4.7 — nodes/shards/workers/in-flight workflows, with work as tokens flowing along the real Liminal dispatch edges and failover rendered as motion. It elevates the single-purpose /failover view into the general view. Tier 0 (navigate/drill, deep-linked) and Tier 1 (cluster time-scrub) ride on the cluster-event push channel and are Phase 1. Tier 2 (operator actions: cancel/reopen, dead-letter redrive, DRAIN a node, PLANNED shard handoff, chaos kill-node) is the control-plane north-star but is ASPIRATIONAL: each action mutating cluster state requires a NEW named server command that does not exist today, runs strictly as a command the engine's single writer enacts (invariant 3), and is gated behind explicit confirm + a blast-radius preview. Decision: design the event seam (animates the map) AND the command seam (acts from it) TOGETHER in WS3 so the map is fed and operable from one coherent contract, even though Tier-2 commands ship incrementally as each lands. Rejected: a force-directed graph as the primary layout (decorative, illegible under pressure, violates the hand-plane principle); and an observe-only map (forgoes the control-plane leap that is the actual durable-agents-as-infrastructure vision).
+
+> I think I agree with you for your sort of assessment. I just would like it all captured and you make sure that we don't confuse it with the final state.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- WS3 (#128) must carry BOTH a cluster-event push channel and a command seam; the push-channel design is no longer event-only.
+- Tier-2 actions are spec'd-but-disabled until their named server commands (drain, planned handoff, redrive) exist; they are explicitly NOT part of the Phase-1 baseline (VISION s9 'Phase 1.5 — Control plane').
+- Blast-radius preview before any state-mutating action is a requirement, not polish (the reopen-diff idea applied to cluster ops); reuses the s7 command boundary and s6.3 provenance.
+- VISION s4.7 carries an explicit status marker separating already-true direction (Tier 0/1) from aspirational (Tier 2) so the spec is never mistaken for the shipped state.
+
+### ADR-021 — Adoption: clean-partial multi-shard adoption (commit what you won)
+
+- **Scope:** aion · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** Fixing the double-adoption race (#122/WS2), a survivor adopting multiple shards after an owner dies can win the fenced publish for some shards and be deposed (NotOwner) on others within the same adoption. The behavior for that mixed outcome must be defined; it shapes the failover semantics demonstrated to others.
+
+**Decision.** Clean-partial: recover and serve the shards whose fenced publish succeeded, and cleanly drop (do NOT recover/serve, leave owned_shards scope unwidened for) the shards that were fenced, retrying those on a later supervisor tick. A typed deposition (NotOwner) is a clean drop, never a hard error; only quorum-unavailable (ElectionTimeout/QuorumTimeout) stays a retryable error. Rejected: all-or-nothing fail-closed (any single fenced shard aborts the entire adoption with no recovery) — it trades availability for atomic simplicity, and the whole point of failover is that work keeps flowing.
+
+> I think I agree with you for your sort of assessment.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- adopt_shards_inner becomes a per-shard acquire+publish pipeline with a committed accumulator; extend_owned_shards + recover run only over committed shards, after a re-assert of is_current_owner.
+- The WS2 test matrix must prove win-A/fenced-B leaves B absent from owned_shards, unrecovered, and not re-spawned, while A is recovered.
+- Requires the haematite typed-fence split (Fenced vs CasConflict) + is_current_owner from haematite 0.3.0 so 'deposed' is distinguishable from a benign value-CAS race.
+
+### ADR-022 — Dashboard: three-tier RBAC capability model (read / per-workflow-command / cluster-control)
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** Today authorization is `deploy: bool` + namespace grants. ADR-020's control-plane spec would conflate 'can deploy a package' with 'can drain/kill a node' — a deploy token would imply cluster-kill authority, which is wrong. The fork: keep the flat deploy-bool model and overload it, or split authorization into capability tiers before any M2 command can land. This shapes claim fields and the command-seam contract, so it must be settled first.
+
+**Decision.** Adopt a three-tier capability split: READ (observe everything), PER-WORKFLOW-COMMAND (cancel/reopen — reuses the existing namespace-ownership guard), and CLUSTER-CONTROL (drain/handoff/kill — a separate, high grant). A deploy token must NOT imply cluster-kill authority; this replaces the flat `deploy: bool` + namespace-grants model. The split shapes claim fields and the command-seam contract and must land before any M2 command. Rejected: overloading the existing deploy boolean — it conflates package deployment with node-destroying cluster control, the exact authority leak this model exists to prevent.
+
+**Consequences:**
+- Claim fields are reshaped to carry the three capability tiers; the flat deploy-bool is removed (ADR-002 clean replace).
+- Per-workflow commands reuse the namespace-ownership guard already in the engine; cluster-control is a distinct high grant.
+- Must land before any M2 command lands, because it defines the command-seam contract (couples to ADR-020's command seam and S4).
+
+### ADR-023 — Dashboard: control-action safety via idempotency-key + wait-for-effect-event + pinned blast-radius
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** A command client that optimistically writes history or executes against a stale view is dangerous under failover and concurrency. The fork: optimistic UI (write the effect locally, reconcile later) vs a strict round-trip discipline that mirrors the engine's fencing/CAS model. This is hard to retrofit once the command client is built.
+
+**Decision.** Control actions use an idempotency-key plus WAIT-FOR-EFFECT-EVENT reconciliation: the UI NEVER optimistically writes history — it waits for the server's event confirming the effect. Additionally, a server-computed BLAST-RADIUS preview is pinned to `cluster_seq` with optimistic-concurrency so a stale preview cannot execute. This mirrors the engine's fencing/CAS model. Rejected: optimistic history writes in the UI — under failover and concurrency they make the console assert effects that may not have happened, the opposite of ADR-016's provenance honesty.
+
+**Consequences:**
+- The command client is built around idempotency-keys and effect-event reconciliation from the start (no optimistic local history).
+- Blast-radius previews are pinned to `cluster_seq`; a stale preview is rejected by optimistic-concurrency at execute time.
+- Couples to ADR-020 (blast-radius before any state-mutating action) and ADR-016 (provenance/freshness).
+
+### ADR-024 — Dashboard: dual-mode swimlane axis (logical seq-rank default + temporal-width toggle)
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** The swimlane is the centerpiece view. Seq-rank ordering preserves the partial-order / ShiViz correctness argument but makes bar width meaningless; operators instinctively expect width to mean elapsed time. The fork: pick one axis (correctness vs operator expectation) or support both. This is L effort but it is the centerpiece, so the choice matters.
+
+**Decision.** DUAL-MODE: logical seq-rank is the default (preserves the partial-order / ShiViz correctness argument), with a temporal-width toggle that maps width to operator-expected duration. Both modes are first-class. Rejected: a single fixed axis — seq-rank-only forfeits the duration intuition operators reach for; temporal-only forfeits the partial-order correctness guarantee that makes the swimlane trustworthy.
+
+**Consequences:**
+- The swimlane rendering layer supports two axis mappings and a toggle; URL-encodes the active mode (ADR-015).
+- L effort accepted on the centerpiece view; both modes must hold the ADR-018 performance budget at 10k+ events.
+- Relates to U6 in the scope doc.
+
+### ADR-025 — Dashboard: light theme delivery deferred to Phase 1.5; token architecture built to best practice now
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** Temporal ships both themes; light theme is real work (toggle + a light-theme audit of status colors under the hand-plane constraint). The fork: ship light theme in Phase 1, or defer delivery while still ensuring the token architecture can absorb it later without a component refactor. Tom's explicit, strong requirement: adding light mode later must be a token-map addition, never a component rewrite.
+
+**Decision.** Light-theme DELIVERY is deferred to Phase 1.5 (ship dark-first, polished). BUT the design-TOKEN ARCHITECTURE is built to best practice NOW: multi-tier semantic tokens, fully theme-swappable, so adding light mode later is a TOKEN-MAP ADDITION, never a component refactor. Both theme maps live at the token layer — dark = shipped, light = defined-now / delivered-1.5. Rejected: a quick dark-only token setup that hardcodes theme decisions into components — it would turn light mode into a painful refactor later, which Tom explicitly forbade ('I really don't want it to become a nightmare later').
+
+> I really don't want it to become a nightmare later.
+> — Tom, 2026-06-29
+
+**Consequences:**
+- Token architecture is three-tier (primitives → semantic → optional component), single-source-of-truth, theme-swappable, authored now and documented in DESIGN-TOKENS.md.
+- The light theme map is DEFINED now (at the token layer) but DELIVERED in Phase 1.5; dark ships first.
+- Components reference semantic tokens only (no raw hex, no opacity modifiers); a CI guard enforces it. Relates to U4.
+
+### ADR-026 — Dashboard: TLS via required terminating proxy for M1; refuse non-loopback plaintext in prod
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** The console serves operator-facing control surfaces; plaintext over a network is unacceptable in production. The fork: implement in-process rustls termination now, or require a TLS-terminating proxy in front and refuse to serve plaintext on non-loopback addresses in prod. In-process rustls is more self-contained but more surface to own at M1.
+
+**Decision.** For M1: TLS is proxy-required (a TLS-terminating proxy in front), and the server REFUSES non-loopback plaintext in production. In-process rustls is kept as a later option, not an M1 obligation. Rejected: building in-process rustls termination for M1 — it adds TLS-management surface to own at exactly the moment the priority is shipping the console safely; a required proxy + plaintext refusal achieves the safety guarantee now.
+
+**Consequences:**
+- Production refuses to bind plaintext on non-loopback addresses; a TLS-terminating proxy is a documented deployment requirement.
+- In-process rustls remains a deferred option for a later phase.
+- Relates to S12 in the scope doc.
+
+### ADR-027 — Dashboard: server keepalive frames drive freshness (connected-but-silent downgrades freshness)
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** After a socket goes quiet, a client cannot distinguish 'healthy and idle' from 'silently stale' without a signal. The fork: a client-side last-frame-time heuristic (no server work, but guesses) vs server KEEPALIVE FRAMES plus the server stamping node + last-applied seq on responses (needs server work, but authoritative). This feeds ADR-016's provenance promise.
+
+**Decision.** Use server KEEPALIVE FRAMES (plus the server stamping node + last-applied seq on responses) rather than a client heuristic. This feeds ADR-016 provenance: a connected-but-silent socket DOWNGRADES freshness, so the console is honest about going stale even when the connection is technically alive. Rejected: a client last-frame-time heuristic — it guesses at staleness instead of being told, and cannot reliably distinguish idle-healthy from silently-stale, undermining the ADR-016 honesty guarantee.
+
+**Consequences:**
+- AW contract must add server keepalive frames + node/last-applied-seq response stamping (couples to D3/A6 resync-floor work).
+- A connected-but-silent socket is rendered as degraded freshness, not 'fresh' (ADR-016).
+- Relates to D4 in the scope doc; decide before S9.
+
+### ADR-028 — Dashboard: virtualization via @tanstack/react-virtual
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** The 10k-event swimlane and large lists/search results need real windowing to hold the ADR-018 performance budget; server-paging alone does not solve the swimlane. The fork: adopt a virtualization library, or rely on strict server-paging as the list 'virtualization story'. A library aligned with the existing TanStack stack reduces integration risk.
+
+**Decision.** Use `@tanstack/react-virtual` (house-stack aligned with the existing TanStack Query usage). Rejected: strict server-paging as the sole virtualization story — it does not window the 10k-event swimlane, which needs real client-side virtualization regardless to meet the ADR-018 budget.
+
+**Consequences:**
+- `@tanstack/react-virtual` is added as a dependency; the swimlane, list, and search use it for windowing.
+- Aligns with ADR-018 (virtualized rendering required from the start) and D7.
+- Confirmed dependency add.
+
+### ADR-029 — Dashboard: cluster-map fallback ships last-known state with honest provenance if WS3 slips
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** The live cluster map (ADR-020 Tier 0/1) rides the WS3 cluster-event push channel, which is in flight. If WS3 slips, the console must not block on it. The fork: block the console until WS3 lands, ship the single-purpose failover view as the cluster surface, or ship coarse last-known cluster state derived from existing query data with honest provenance and upgrade later.
+
+**Decision.** If WS3 slips, ship COARSE LAST-KNOWN cluster state derived from existing query data with honest 'last-known' provenance, and UPGRADE to the live map when WS3 lands. Never block the console on WS3. Rejected: blocking the console on WS3 (forfeits a usable cluster surface for an external dependency) and shipping the bare failover view alone (less general, and still leaves the healthy cluster view undesigned).
+
+**Consequences:**
+- A last-known cluster surface is built from existing query data with explicit provenance (ADR-016) and upgrades to the live map (ADR-020) when WS3 lands.
+- The console's Phase-1 boundary does not depend on WS3 landing on time.
+- Relates to C7 and the Phase-1 cluster-map boundary in the scope doc.
+
+### ADR-030 — Dashboard: audit goes to a real durable sink before any M2 command carries authority
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** `tracing::info!` is not an audit store — it is lossy, unstructured, and not queryable as a record of who did what. Once M2 commands carry real authority (cancel/reopen/drain/kill), there must be a durable, tamper-evident record, including denials. The fork: keep logging-as-audit, or stand up a real durable sink before commands carry authority.
+
+**Decision.** Audit goes to a real DURABLE sink — a dedicated `audit` namespace or a hash-chained log — before any M2 command carries authority; DENIALS are recorded too, not just successes. `tracing::info!` is explicitly not an audit store. Rejected: logging as the audit store — it is lossy and not a trustworthy record, unacceptable once the console can mutate cluster state.
+
+**Consequences:**
+- A durable audit sink (dedicated `audit` namespace or hash-chained log) is built before M2 commands carry authority.
+- Denied actions are audited alongside successful ones (RBAC denials per ADR-022 are recorded).
+- Relates to S6 in the scope doc.
+
+### ADR-031 — Dashboard: event-reference docs auto-generated from ts-rs doc-comments, CI-guarded for zero drift
+
+- **Scope:** aion-dashboard · **Date:** 2026-06-29 · **Decided by:** Tom
+
+**Context.** The event reference can be hand-curated (richer prose) or auto-generated from the ts-rs doc-comments that already define the wire types. Hand-curated docs drift from the actual types; generated docs stay in sync but need wiring. The wire-types CI guard already exists to prevent type drift.
+
+**Decision.** AUTO-GENERATE the event reference from ts-rs doc-comments, wired into the existing wire-types CI guard so there is ZERO drift between the documented events and the actual wire types. Rejected: hand-curated event docs — richer prose is not worth the inevitable drift from the real types, especially when the wire-types guard already gives us a zero-drift mechanism to hook into.
+
+**Consequences:**
+- Event-reference generation reads ts-rs doc-comments and is wired into the existing `wire-types-no-diff` CI guard.
+- Documented events cannot drift from the wire types; a drift fails CI.
+- Relates to G3 in the scope doc.

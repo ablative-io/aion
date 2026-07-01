@@ -1,6 +1,15 @@
 # Aion Outbox #13 — the liminal cross-node swap (DESIGN + DECOMPOSITION)
 
-> Status: **design + decomposition, not yet briefs.** Read-only analysis, 2026-06-27.
+> ✅ LANDED (reconciled 2026-07-02). The liminal cross-node swap SHIPPED via the LSUB
+> series (#101-112): real push-based cross-node dispatch is wired into the production boot
+> (LSUB-PROD 13-6, `e02fbed8`/`c2aa2a22`), the OutboxDispatcher is ownership-gated
+> (LSUB-4), and the cross-node owner-kill fan-out failover capstone + kill-9 worker
+> reconnect-to-survivor landed (LSUB-5 `8a0bcb1b`, #112 `66c2e2db`). Symbol:
+> `LiminalOutboxDispatch` / `channel_for_row` in `aion-server/src/worker/liminal_transport.rs`.
+> FOLLOW-UP STILL OPEN: liminal-transport wire hardening remains a tracked follow-up.
+> Design/decomposition record retained below.
+>
+> Status (original): **design + decomposition, not yet briefs.** Read-only analysis, 2026-06-27.
 > Builds on the durable outbox (#9–12, landed) and is item 5 of "remaining work"
 > in [AION-OUTBOX-CUTOVER-DECISION.md](./AION-OUTBOX-CUTOVER-DECISION.md):
 > *"Replace the OutboxDispatcher's local `registry.dispatch` with a liminal

@@ -1,8 +1,18 @@
-<!-- STATUS: DRAFT design blueprint (2026-07-01). Source-grounded synthesis of four
-perspective passes (placement, quotas, isolation, competitive); every seam cites
-file:line. NOT yet approved to build — folds into CONTROL-PLANE.md §7 Phase 2 and
-depends on the shard-count-default decision (CONTROL-PLANE §6.1, NAMESPACE-REGISTRY-PHASE-1 §7.2).
-Carries OPEN DECISIONS for Tom (final section). Review first. -->
+<!-- STATUS: BUILT & LANDED (reconciled 2026-07-02). Phase 2 is implemented and wired
+at boot. Verified: NamespacePlacement (Prefer/Pinned) reserved fields are now real
+policy the dispatch path consults — PlacementCache + worker_selection_for + the
+prefer-then-spill node-filter tiers ship in `aion-server/src/worker/placement_cache.rs`
+and are consulted by BOTH transports (`worker/outbox_dispatcher.rs`,
+`worker/liminal_transport.rs`); QuotaCache + Backpressure keyed admission ship in
+`worker/quota_cache.rs` + `worker/backpressure.rs`. All are constructed at boot in
+`aion-server/src/run.rs` (PlacementCache, QuotaCache, Backpressure). PLACEMENT SPILL IS
+LIVE, not partial: `Prefer{L}` prefers labelled workers then spills to any live worker;
+`Pinned{L}` routes to a NON-spilling Required decision that waits on absence. (NOTE: the
+stale in-code comment `aion-store/src/namespace.rs:137` "nothing reads Prefer/Pinned yet"
+is OUT OF DATE — the dispatch-time two-tier spill is wired; that comment is source, not
+this doc, so left for a code pass.) Shard-count-default dependency RESOLVED (4096,
+af4bad09). Original DRAFT text retained below as the design record.
+     Prior header: "DRAFT design blueprint (2026-07-01) ... NOT yet approved to build". -->
 
 # Control-Plane Phase 2 — Tenant Placement, Quotas, and the Isolation Ladder
 

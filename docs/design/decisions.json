@@ -383,7 +383,7 @@
     {
       "id": "ADR-022",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: three-tier RBAC capability model (read / per-workflow-command / cluster-control)",
@@ -401,7 +401,7 @@
     {
       "id": "ADR-023",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: control-action safety via idempotency-key + wait-for-effect-event + pinned blast-radius",
@@ -419,7 +419,7 @@
     {
       "id": "ADR-024",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: dual-mode swimlane axis (logical seq-rank default + temporal-width toggle)",
@@ -437,7 +437,7 @@
     {
       "id": "ADR-025",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: light theme delivery deferred to Phase 1.5; token architecture built to best practice now",
@@ -455,7 +455,7 @@
     {
       "id": "ADR-026",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: TLS via required terminating proxy for M1; refuse non-loopback plaintext in prod",
@@ -473,7 +473,7 @@
     {
       "id": "ADR-027",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: server keepalive frames drive freshness (connected-but-silent downgrades freshness)",
@@ -491,7 +491,7 @@
     {
       "id": "ADR-028",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: virtualization via @tanstack/react-virtual",
@@ -509,7 +509,7 @@
     {
       "id": "ADR-029",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: cluster-map fallback ships last-known state with honest provenance if WS3 slips",
@@ -527,7 +527,7 @@
     {
       "id": "ADR-030",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: audit goes to a real durable sink before any M2 command carries authority",
@@ -545,7 +545,7 @@
     {
       "id": "ADR-031",
       "scope": "aion-dashboard",
-      "status": "accepted",
+      "status": "decided",
       "date": "2026-06-29",
       "decided_by": "Tom",
       "title": "Dashboard: event-reference docs auto-generated from ts-rs doc-comments, CI-guarded for zero drift",
