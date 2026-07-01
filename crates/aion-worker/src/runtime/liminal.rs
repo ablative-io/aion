@@ -53,7 +53,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use aion_core::{ActivityId, ContentType, Payload, RunId, WorkflowId};
+use aion_core::{
+    ActivityId, ContentType, InterventionCommand, InterventionOutcome, Payload, RunId, WorkflowId,
+};
 use liminal::protocol::WorkerRegistration;
 use liminal_sdk::{PushClient, PushedFrame};
 use serde::{Deserialize, Serialize};
@@ -63,6 +65,7 @@ use crate::config::WorkerConfig;
 use crate::context::ActivityContext;
 use crate::error::WorkerError;
 use crate::protocol::ActivityTask;
+use crate::runtime::intervention::ControlRegistry;
 use crate::runtime::liminal_redial::ServeResult;
 use crate::runtime::loop_::{ActivityDispatcher, DispatchOutcome};
 
@@ -102,6 +105,30 @@ pub struct DispatchResponse {
     pub outcome: Result<String, String>,
 }
 
+/// Wire request carrying one neutral mid-run intervention command from the server
+/// to this worker (NOI-6).
+///
+/// Field-for-field mirror of `aion-server`'s
+/// `liminal_transport::InterventionRequest`. It rides the SAME server-push channel
+/// as [`DispatchRequest`], distinguished by its unique required `intervention`
+/// field — a [`DispatchRequest`] has none, so the serve loop demuxes the two by
+/// which one deserializes. The envelope is neutral: it carries an
+/// [`InterventionCommand`], never a harness type.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterventionRequest {
+    /// The neutral command to deliver to the session owning the target attempt.
+    pub intervention: InterventionCommand,
+}
+
+/// Wire reply carrying this worker's neutral intervention ack back to the server
+/// (NOI-6). Field-for-field mirror of `aion-server`'s
+/// `liminal_transport::InterventionReply`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterventionReply {
+    /// The neutral applied/gated/stale outcome the operator receives.
+    pub outcome: InterventionOutcome,
+}
+
 /// How long the serve loop blocks for the next server push before re-checking the
 /// shutdown flag. A bounded poll lets [`LiminalActivityWorker::serve_until`] stop
 /// promptly on a quiet connection rather than blocking forever.
@@ -117,6 +144,12 @@ const RECV_POLL: Duration = Duration::from_millis(100);
 pub struct LiminalActivityWorker {
     client: PushClient,
     registry: Arc<ActivityRegistry>,
+    /// The attempt back-index a pushed intervention is routed through (NOI-6). A
+    /// pushed [`InterventionRequest`] is delivered to the live session owning its
+    /// target `(workflow, activity, attempt)`; a command with no live owner is the
+    /// attempt-scoped stale-target no-op. Shared (an `Arc` inside) with the
+    /// session-spawn path that registers each running agent session.
+    control: ControlRegistry,
 }
 
 impl std::fmt::Debug for LiminalActivityWorker {
@@ -152,7 +185,19 @@ impl LiminalActivityWorker {
         let registration = registration_from(config, &registry);
         let client = PushClient::connect_with_registration(address, registration)
             .map_err(|error| transport_error(&error))?;
-        Ok(Self { client, registry })
+        Ok(Self {
+            client,
+            registry,
+            control: ControlRegistry::new(),
+        })
+    }
+
+    /// The intervention control back-index this worker routes pushed commands
+    /// through (NOI-6). The session-spawn path registers each running agent session
+    /// here so a routed intervention reaches the live attempt that owns it.
+    #[must_use]
+    pub fn control_registry(&self) -> &ControlRegistry {
+        &self.control
     }
 
     /// Blocks up to `RECV_POLL` for the next pushed dispatch, executes it, and
@@ -222,10 +267,28 @@ impl LiminalActivityWorker {
         ServeResult::Stopped
     }
 
-    /// Decodes one pushed frame into a [`DispatchRequest`], executes the activity,
-    /// and writes the correlated [`DispatchResponse`] reply.
+    /// Decodes one pushed frame and dispatches it by kind: an
+    /// [`InterventionRequest`] (NOI-6) is routed to the live session owning its
+    /// target attempt and answered with a correlated [`InterventionReply`]; anything
+    /// else is a [`DispatchRequest`] executed as an activity and answered with a
+    /// [`DispatchResponse`].
+    ///
+    /// The two share the push channel and are demuxed by which one deserializes: an
+    /// [`InterventionRequest`] has a unique required `intervention` field a
+    /// [`DispatchRequest`] lacks, so a dispatch frame never decodes as an
+    /// intervention and vice-versa. Intervention is tried first; on a miss the frame
+    /// is decoded as a dispatch (preserving the existing dispatch path exactly).
     async fn handle_pushed_frame(&self, frame: PushedFrame) -> Result<(), WorkerError> {
         let correlation_id = frame.correlation_id();
+        if let Ok(request) = serde_json::from_slice::<InterventionRequest>(frame.payload()) {
+            let outcome = self.control.deliver(request.intervention).await;
+            let reply = InterventionReply { outcome };
+            let payload = serde_json::to_vec(&reply).map_err(WorkerError::encode)?;
+            return self
+                .client
+                .reply(correlation_id, payload)
+                .map_err(|error| transport_error(&error));
+        }
         let request: DispatchRequest =
             serde_json::from_slice(frame.payload()).map_err(WorkerError::decode)?;
         let response = self.execute(&request).await?;
@@ -432,6 +495,63 @@ mod tests {
         for field in ["activity_type", "workflow_id", "ordinal", "run_id", "input"] {
             assert!(json.contains(field), "wire JSON must carry `{field}`");
         }
+        Ok(())
+    }
+
+    /// An intervention request round-trips and is demuxed from a dispatch request:
+    /// a dispatch JSON must NOT decode as an intervention (no `intervention` field),
+    /// which is exactly what lets the serve loop tell the two pushes apart.
+    #[test]
+    fn intervention_request_demuxes_from_a_dispatch_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{InterventionReply, InterventionRequest};
+        use aion_core::{
+            ActivityId, InjectPriority, InterventionCommand, InterventionKind, InterventionOutcome,
+        };
+
+        let command = InterventionCommand {
+            workflow_id: WorkflowId::new(Uuid::nil()),
+            activity_id: ActivityId::from_sequence_position(3),
+            attempt: 1,
+            issued_by: Some("operator".to_owned()),
+            issued_at: chrono::Utc::now(),
+            kind: InterventionKind::InjectMessage {
+                text: "steer".to_owned(),
+                priority: InjectPriority::Interrupt,
+            },
+        };
+        let request = InterventionRequest {
+            intervention: command,
+        };
+        let bytes = serde_json::to_vec(&request)?;
+        assert_eq!(
+            serde_json::from_slice::<InterventionRequest>(&bytes)?,
+            request
+        );
+
+        // A dispatch request must NOT decode as an intervention (missing field).
+        let dispatch = DispatchRequest {
+            activity_type: "charge-card".to_owned(),
+            workflow_id: WorkflowId::new(Uuid::new_v4()),
+            ordinal: 7,
+            run_id: None,
+            input: b"{}".to_vec(),
+        };
+        let dispatch_bytes = serde_json::to_vec(&dispatch)?;
+        assert!(
+            serde_json::from_slice::<InterventionRequest>(&dispatch_bytes).is_err(),
+            "a dispatch frame must never decode as an intervention"
+        );
+
+        // The reply round-trips its neutral outcome.
+        let reply = InterventionReply {
+            outcome: InterventionOutcome::Applied,
+        };
+        let reply_bytes = serde_json::to_vec(&reply)?;
+        assert_eq!(
+            serde_json::from_slice::<InterventionReply>(&reply_bytes)?,
+            reply
+        );
         Ok(())
     }
 

@@ -9,6 +9,9 @@ pub mod bridge;
 pub mod dispatch;
 /// Worker heartbeat and liveness tracking.
 pub mod heartbeat;
+/// Server-side mid-run intervention routing (NOI-6): capability gate + attempt
+/// owner resolution + push to the owning worker over a pluggable transport.
+pub mod intervention;
 /// Cross-node outbox dispatch over the liminal bus (#13-0 spike, feature-gated).
 #[cfg(feature = "liminal-transport")]
 pub mod liminal_transport;
@@ -39,9 +42,11 @@ pub use dispatch::{
 pub use heartbeat::{
     HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport, TaskLiveness,
 };
+pub use intervention::{AttemptKey, AttemptOwnerIndex, InterventionRouter, InterventionTransport};
 #[cfg(feature = "liminal-transport")]
 pub use liminal_transport::{
-    DispatchRequest, DispatchResponse, LiminalCompletionSource, LiminalConnectionNotifier,
+    DispatchRequest, DispatchResponse, InterventionReply, InterventionRequest,
+    LiminalCompletionSource, LiminalConnectionNotifier, LiminalInterventionTransport,
     LiminalWorkerDelivery, RegistryLiminalDispatch, channel_for_row, dispatch_channel_name,
 };
 pub use outbox_delivery::ServerOutboxDeliveryCallback;

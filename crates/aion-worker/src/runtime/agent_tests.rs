@@ -20,7 +20,7 @@ use chrono::Utc;
 use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 
-use super::{ControlReceiver, harness_error_to_outcome, spawn_agent};
+use super::{ControlMessage, ControlReceiver, harness_error_to_outcome, spawn_agent};
 use crate::runtime::loop_::DispatchOutcome;
 
 /// A fake session: yields a fixed batch of events, records every accepted
@@ -195,7 +195,9 @@ async fn feeds_control_commands_into_intervene() {
 
     // Queue a command, then close the control channel so the loop can proceed to
     // draining the (empty) event stream and taking the result.
-    control_tx.send(inject_command()).unwrap();
+    control_tx
+        .send(ControlMessage::new(inject_command()))
+        .unwrap();
     drop(control_tx);
 
     let outcome = spawn_agent(&harness, spec(), event_tx, Some(control_rx))
@@ -209,6 +211,53 @@ async fn feeds_control_commands_into_intervene() {
         InterventionKind::InjectMessage { .. }
     ));
     assert!(matches!(outcome, DispatchOutcome::Completed { .. }));
+}
+
+#[tokio::test]
+async fn a_command_with_an_ack_channel_replies_the_neutral_outcome() {
+    use aion_core::InterventionOutcome;
+    use tokio::sync::oneshot;
+
+    let interventions = Arc::new(Mutex::new(Vec::new()));
+    let session = FakeSession {
+        capabilities: caps_inject_cancel(),
+        events: Some(Vec::new()),
+        interventions: Arc::clone(&interventions),
+        result: Payload::new(ContentType::Json, b"null".to_vec()),
+        fail_result: None,
+    };
+    let harness = FakeHarness::new(session);
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (control_tx, control_rx): (_, ControlReceiver) = mpsc::unbounded_channel();
+
+    // Applied command: the ack reports Applied.
+    let (ack_ok_tx, ack_ok_rx) = oneshot::channel();
+    control_tx
+        .send(ControlMessage::with_ack(inject_command(), ack_ok_tx))
+        .unwrap();
+    // Gated command (session advertises no PauseResume): the ack reports the class.
+    let mut gated = inject_command();
+    gated.kind = InterventionKind::PauseResume { paused: true };
+    let (ack_gated_tx, ack_gated_rx) = oneshot::channel();
+    control_tx
+        .send(ControlMessage::with_ack(gated, ack_gated_tx))
+        .unwrap();
+    drop(control_tx);
+
+    spawn_agent(&harness, spec(), event_tx, Some(control_rx))
+        .await
+        .expect("driver runs to a terminal result");
+
+    assert_eq!(
+        ack_ok_rx.await.expect("applied ack delivered"),
+        InterventionOutcome::Applied
+    );
+    assert!(matches!(
+        ack_gated_rx.await.expect("gated ack delivered"),
+        InterventionOutcome::CapabilityNotSupported { .. }
+    ));
+    // Only the applied InjectMessage reached the session; the gated one did not.
+    assert_eq!(interventions.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -230,7 +279,7 @@ async fn a_capability_gated_command_is_not_fatal() {
 
     let mut gated = inject_command();
     gated.kind = InterventionKind::PauseResume { paused: true };
-    control_tx.send(gated).unwrap();
+    control_tx.send(ControlMessage::new(gated)).unwrap();
     drop(control_tx);
 
     let outcome = spawn_agent(&harness, spec(), event_tx, Some(control_rx))

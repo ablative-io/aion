@@ -104,6 +104,10 @@ aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
 # in the production dependency graph.
 aion-worker = { path = "../aion-worker", features = ["liminal-transport"] }
 aion-core = { version = "0.8.0", path = "../aion-core" }
+# The NOI-6 intervention-routing e2e drives a live agent session through the
+# neutral `AgentHarness`/`AgentSession` seam; this dev-dep provides the trait for
+# the test's in-proc fake session. A default (non-test) build never links it.
+aion-integrations = { version = "0.8.0", path = "../aion-integrations" }
 # The SS-5b auto-failover test reuses the aion-rs SS-5 example-build helper,
 # which rebuilds the `hello-world` archive from source and advisory-locks the
 # build dir; these dev-deps back that helper for the haematite test build.

@@ -145,6 +145,49 @@ impl SchemaValidate for DispatchResponse {
     }
 }
 
+/// Wire request carrying one neutral mid-run intervention command to a liminal
+/// worker (NOI-6, §6.2).
+///
+/// Rides the SAME liminal server-push channel as [`DispatchRequest`], distinguished
+/// on the wire by its unique required `intervention` field — a plain
+/// [`DispatchRequest`] has no such field, so the worker demuxes the two by which
+/// one deserializes. The whole envelope is neutral: it carries an
+/// [`InterventionCommand`], never a harness type. Field-for-field mirrored by the
+/// worker's `liminal::InterventionRequest`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterventionRequest {
+    /// The neutral command to route to the worker owning the target attempt.
+    pub intervention: aion_core::InterventionCommand,
+}
+
+impl SchemaValidate for InterventionRequest {
+    fn schema_metadata() -> SchemaMetadata {
+        SchemaMetadata::new(
+            "aion.intervention.request",
+            "1",
+            br#"{"type":"object"}"#.as_slice(),
+        )
+    }
+}
+
+/// Wire response carrying the worker's neutral intervention ack back to the server
+/// (NOI-6). Field-for-field mirrored by the worker's `liminal::InterventionReply`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterventionReply {
+    /// The neutral applied/gated/stale outcome the operator receives.
+    pub outcome: aion_core::InterventionOutcome,
+}
+
+impl SchemaValidate for InterventionReply {
+    fn schema_metadata() -> SchemaMetadata {
+        SchemaMetadata::new(
+            "aion.intervention.reply",
+            "1",
+            br#"{"type":"object"}"#.as_slice(),
+        )
+    }
+}
+
 /// Builds the wire request for one claimed outbox row.
 ///
 /// Kept free-standing (not a method) so both the dispatch path and tests build
@@ -460,6 +503,57 @@ impl LiminalWorkerDelivery {
             )
         })
     }
+
+    /// Push one neutral intervention command out on the worker's connection and
+    /// block for its correlated ack reply (NOI-6, §6.2).
+    ///
+    /// Mirrors [`Self::dispatch`] but carries an [`InterventionRequest`] and decodes
+    /// an [`InterventionReply`], so an intervention rides the SAME server-push
+    /// channel as an activity dispatch. The push is a blocking, thread-based liminal
+    /// call; the async router runs it off the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::WorkerConnectionLost`] when the worker connection was
+    /// gone at push time or closed before replying (so the router surfaces the
+    /// too-late no-op); returns [`ServerError::WorkerDispatch`] when the request
+    /// cannot be serialized, the reply times out, or the reply cannot be decoded.
+    pub fn push_intervention(
+        &self,
+        request: &InterventionRequest,
+    ) -> Result<InterventionReply, ServerError> {
+        let payload = serde_json::to_vec(request).map_err(|error| {
+            dispatch_error(
+                "liminal-push",
+                format!("intervention serialize failed: {error}"),
+            )
+        })?;
+        let awaiter = self
+            .supervisor
+            .push_to_connection(self.pid, payload)
+            .map_err(|error| {
+                ServerError::worker_connection_lost(
+                    "liminal-push",
+                    format!("push intervention to worker failed: {error}"),
+                )
+            })?;
+        let reply = awaiter.receive(PUSH_REPLY_TIMEOUT).map_err(|error| {
+            if is_connection_closed_reply_error(&error) {
+                ServerError::worker_connection_lost(
+                    "liminal-push",
+                    format!("worker connection closed before intervention ack: {error}"),
+                )
+            } else {
+                dispatch_error("liminal-push", format!("intervention ack failed: {error}"))
+            }
+        })?;
+        serde_json::from_slice(&reply).map_err(|error| {
+            dispatch_error(
+                "liminal-push",
+                format!("intervention ack decode failed: {error}"),
+            )
+        })
+    }
 }
 
 /// Returns true when a liminal push-reply error is the *Disconnected* case (the
@@ -714,6 +808,14 @@ pub struct LiminalConnectionNotifier {
     registry: ConnectedWorkerRegistry,
     supervisor: OnceLock<ConnectionSupervisor>,
     guards: Mutex<HashMap<u64, WorkerRegistration>>,
+    /// The neutral intervention primitives a liminal-connected agent worker
+    /// advertises (NOI-6, item 4). The liminal `WorkerRegistration` wire has a fixed
+    /// shape that cannot carry this, so it is configured on the notifier at the
+    /// composition root from the harness's advertised `AgentSession::capabilities()`
+    /// and recorded on every registered worker's handle, where the intervention
+    /// router gates on it. Default empty = observability-only (a plain activity
+    /// worker), so the router offers no controls for it.
+    intervention_capabilities: aion_core::InterventionCapabilities,
 }
 
 impl std::fmt::Debug for LiminalConnectionNotifier {
@@ -736,7 +838,26 @@ impl LiminalConnectionNotifier {
             registry,
             supervisor: OnceLock::new(),
             guards: Mutex::new(HashMap::new()),
+            intervention_capabilities: aion_core::InterventionCapabilities::none(),
         }
+    }
+
+    /// Set the neutral intervention capability set every worker registering through
+    /// this notifier advertises (NOI-6, item 4).
+    ///
+    /// The composition root wires this from the harness's advertised
+    /// `AgentSession::capabilities()` so a liminal-connected agent worker's handle
+    /// carries the primitives its harness supports, which the intervention router
+    /// gates on. Without this builder the set is empty (observability-only), so a
+    /// plain activity worker advertises no controls. Pure builder addition, mirroring
+    /// the registry's capability-carrying registration façade.
+    #[must_use]
+    pub fn with_intervention_capabilities(
+        mut self,
+        capabilities: aion_core::InterventionCapabilities,
+    ) -> Self {
+        self.intervention_capabilities = capabilities;
+        self
     }
 
     /// Bind the connection supervisor the notifier pushes through, immediately
@@ -777,12 +898,13 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
         // never believes it is registered when it is not.
         let guard = self
             .registry
-            .register_delivery(
+            .register_delivery_with_capabilities(
                 registration.namespaces.iter().cloned(),
                 registration.task_queue.clone(),
                 node,
                 registration.activity_types.iter(),
                 delivery,
+                self.intervention_capabilities.clone(),
             )
             .map_err(|error| LiminalServerError::ListenerAccept {
                 message: format!(
@@ -829,6 +951,51 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
                 "deregistered liminal worker on disconnect"
             );
         }
+    }
+}
+
+/// The production [`InterventionTransport`](super::intervention::InterventionTransport):
+/// pushes a routed command to the owning worker over its liminal server-push
+/// connection (NOI-6, §6.2).
+///
+/// It reads the worker handle's [`WorkerDelivery::Liminal`] leg and pushes the
+/// neutral [`InterventionRequest`] via [`LiminalWorkerDelivery::push_intervention`],
+/// running the blocking push off the async runtime. A worker delivered over gRPC
+/// (no liminal leg) surfaces the stale-target no-op via a connection-lost error, so
+/// the router NACKs the operator rather than routing to a leg it cannot reach.
+#[derive(Clone, Debug, Default)]
+pub struct LiminalInterventionTransport;
+
+#[async_trait]
+impl super::intervention::InterventionTransport for LiminalInterventionTransport {
+    async fn push(
+        &self,
+        worker: &super::registry::WorkerHandle,
+        command: aion_core::InterventionCommand,
+    ) -> Result<aion_core::InterventionOutcome, ServerError> {
+        let delivery = match worker.delivery() {
+            WorkerDelivery::Liminal(delivery) => delivery.clone(),
+            WorkerDelivery::Grpc(_) => {
+                // No liminal leg to push to: the intervention transport rides the
+                // liminal push channel only, so this is unreachable for the target.
+                return Err(ServerError::worker_connection_lost(
+                    "liminal-push",
+                    "owning worker is not delivered over liminal".to_owned(),
+                ));
+            }
+        };
+        let request = InterventionRequest {
+            intervention: command,
+        };
+        let reply = tokio::task::spawn_blocking(move || delivery.push_intervention(&request))
+            .await
+            .map_err(|error| {
+                dispatch_error(
+                    "liminal-push",
+                    format!("intervention task join failed: {error}"),
+                )
+            })??;
+        Ok(reply.outcome)
     }
 }
 

@@ -1172,3 +1172,13 @@ export type InterventionCapabilities = {
  */
 supported: Array<InterventionPrimitive>, };
 
+export type InterventionOutcome = { "outcome": "Applied" } | { "outcome": "CapabilityNotSupported", 
+/**
+ * The primitive the target does not support.
+ */
+primitive: InterventionPrimitive, } | { "outcome": "StaleTarget", 
+/**
+ * Human-readable detail describing why the target is stale.
+ */
+detail: string, };
+

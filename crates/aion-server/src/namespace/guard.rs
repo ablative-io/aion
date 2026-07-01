@@ -151,6 +151,15 @@ pub enum NamespaceOperation<'a> {
     Subscribe(SubscriptionScope<'a>, &'a EventFilter),
     /// Worker registration request.
     RegisterWorker(&'a ProtoRegisterWorker),
+    /// Mid-run intervention on a running activity (NOI-6). Namespace-scoped like
+    /// signal/cancel: the caller must hold a grant for `namespace` AND the target
+    /// workflow must be visible in it (anti-leak `not_found` otherwise).
+    Intervene {
+        /// The namespace the target workflow runs under.
+        namespace: &'a str,
+        /// The target workflow whose durable ownership is verified.
+        target: WorkflowTarget<'a>,
+    },
 }
 
 impl<'a> NamespaceOperation<'a> {
@@ -268,6 +277,12 @@ impl<'a> NamespaceOperation<'a> {
         Self::RegisterWorker(request)
     }
 
+    /// Create a mid-run intervention operation descriptor (NOI-6).
+    #[must_use]
+    pub const fn intervene(namespace: &'a str, target: WorkflowTarget<'a>) -> Self {
+        Self::Intervene { namespace, target }
+    }
+
     fn requested_namespace(&self) -> &str {
         match self {
             Self::StartWorkflow(request) => request.namespace.as_str(),
@@ -292,6 +307,7 @@ impl<'a> NamespaceOperation<'a> {
             // the single-scope `scope` API. Empty set => empty string, which
             // the resolver rejects as an unauthorized namespace.
             Self::RegisterWorker(request) => request.namespaces.first().map_or("", String::as_str),
+            Self::Intervene { namespace, .. } => namespace,
         }
     }
 
@@ -301,10 +317,13 @@ impl<'a> NamespaceOperation<'a> {
         authorized_namespace: &str,
     ) -> Result<(), ServerError> {
         match self {
+            // NOI-6 `Intervene` verifies durable workflow ownership exactly like
+            // signal/cancel, so a caller cannot probe or steer a foreign workflow.
             Self::Signal(_, target)
             | Self::Query(_, target)
             | Self::Cancel(_, target)
-            | Self::Describe(_, target) => target.verify(resolver, authorized_namespace).await,
+            | Self::Describe(_, target)
+            | Self::Intervene { target, .. } => target.verify(resolver, authorized_namespace).await,
             Self::UpdateSchedule(_, target)
             | Self::PauseSchedule(_, target)
             | Self::ResumeSchedule(_, target)

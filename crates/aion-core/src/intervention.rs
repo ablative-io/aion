@@ -135,6 +135,61 @@ pub struct InterventionCommand {
     pub kind: InterventionKind,
 }
 
+/// The neutral outcome of routing one [`InterventionCommand`] to the worker owning the target
+/// attempt — the ack that surfaces back to the operator.
+///
+/// The three variants ARE the three distinct outcome classes the design locks (§6.4), expressed
+/// harness-neutrally so the wire, the server, and the ops console never inspect a harness error:
+///
+/// - [`Self::Applied`] — the session accepted and applied the command.
+/// - [`Self::CapabilityNotSupported`] — the target harness does not advertise the command's
+///   primitive. The server gates on the advertised set BEFORE routing, so this is normally
+///   returned by the server without a wire round-trip; a worker returns it too if a gated command
+///   still reaches it.
+/// - [`Self::StaleTarget`] — the target `(workflow, activity, attempt)` is finished, superseded by
+///   a later attempt, or unknown (the attempt-scoped no-op). It is an honest NACK, never a crash.
+///
+/// Carried as its own enum (not a `Result`) so it round-trips over `ts-rs` into the ops console
+/// exactly like the other real-time DTOs, and so a future outcome class is an additive variant.
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "outcome")]
+pub enum InterventionOutcome {
+    /// The command was delivered to the live session and applied.
+    Applied,
+    /// The command's primitive is not in the target harness's advertised capability set.
+    CapabilityNotSupported {
+        /// The primitive the target does not support.
+        primitive: InterventionPrimitive,
+    },
+    /// The target attempt is finished, superseded, or unknown — an attempt-scoped no-op.
+    StaleTarget {
+        /// Human-readable detail describing why the target is stale.
+        detail: String,
+    },
+}
+
+impl InterventionOutcome {
+    /// Returns `true` when the command was applied to a live session.
+    #[must_use]
+    pub const fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied)
+    }
+
+    /// Builds a [`Self::CapabilityNotSupported`] naming the ungated primitive.
+    #[must_use]
+    pub const fn capability_not_supported(primitive: InterventionPrimitive) -> Self {
+        Self::CapabilityNotSupported { primitive }
+    }
+
+    /// Builds a [`Self::StaleTarget`] with a detail message.
+    #[must_use]
+    pub fn stale_target(detail: impl Into<String>) -> Self {
+        Self::StaleTarget {
+            detail: detail.into(),
+        }
+    }
+}
+
 /// A single neutral intervention primitive, independent of any command payload.
 ///
 /// The discriminant an [`InterventionCapabilities`] advertises and the primitive each
@@ -228,7 +283,7 @@ mod tests {
 
     use super::{
         ApprovalDecision, InjectPriority, InterventionCapabilities, InterventionCommand,
-        InterventionKind, InterventionPrimitive, WorkflowId,
+        InterventionKind, InterventionOutcome, InterventionPrimitive, WorkflowId,
     };
     use crate::ids::ActivityId;
 
@@ -344,5 +399,26 @@ mod tests {
             max_tokens: None,
             max_turns: None,
         }));
+    }
+
+    #[test]
+    fn every_outcome_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let outcomes = vec![
+            InterventionOutcome::Applied,
+            InterventionOutcome::capability_not_supported(InterventionPrimitive::PauseResume),
+            InterventionOutcome::stale_target("attempt 2 superseded"),
+        ];
+        for outcome in outcomes {
+            let decoded = round_trip(&outcome)?;
+            assert_eq!(outcome, decoded);
+        }
+        // Only `Applied` reports applied; the two NACK classes do not.
+        assert!(InterventionOutcome::Applied.is_applied());
+        assert!(!InterventionOutcome::stale_target("gone").is_applied());
+        assert!(
+            !InterventionOutcome::capability_not_supported(InterventionPrimitive::Cancel)
+                .is_applied()
+        );
+        Ok(())
     }
 }

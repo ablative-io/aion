@@ -31,12 +31,12 @@
 //! and the result is never delivered as an event — the two are distinct channels
 //! of the session by construction, so the driver never has to disambiguate them.
 
-use aion_core::InterventionCommand;
+use aion_core::{InterventionCommand, InterventionOutcome};
 use aion_integrations::contract::{AgentHarness, AgentSession};
 use aion_integrations::error::HarnessError;
 use aion_integrations::spec::AgentRunSpec;
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use crate::activity::ActivityFailure;
@@ -49,10 +49,48 @@ use crate::runtime::loop_::DispatchOutcome;
 /// [`ActivityContext`]: crate::context::ActivityContext
 pub type ActivityEventSender = mpsc::UnboundedSender<aion_core::ActivityEvent>;
 
+/// One routed intervention on the driver's control channel: the neutral command
+/// plus an OPTIONAL reply channel the driver answers with the neutral
+/// [`InterventionOutcome`] ack.
+///
+/// The ack is what closes the loop back to the operator (NOI-6 §6.4): after the
+/// driver calls [`AgentSession::intervene`] it maps the session's result onto an
+/// [`InterventionOutcome`] and, when an `ack` sender is present, replies with it.
+/// A `None` ack is the fire-and-forget shape (used where no operator is waiting,
+/// e.g. an internal test that only observes the applied side-effect).
+#[derive(Debug)]
+pub struct ControlMessage {
+    /// The neutral command to apply to the session.
+    pub command: InterventionCommand,
+    /// Optional reply channel the driver answers with the applied/gated/stale ack.
+    pub ack: Option<oneshot::Sender<InterventionOutcome>>,
+}
+
+impl ControlMessage {
+    /// A fire-and-forget control message with no ack reply channel.
+    #[must_use]
+    pub const fn new(command: InterventionCommand) -> Self {
+        Self { command, ack: None }
+    }
+
+    /// A control message paired with a reply channel for its ack.
+    #[must_use]
+    pub const fn with_ack(
+        command: InterventionCommand,
+        ack: oneshot::Sender<InterventionOutcome>,
+    ) -> Self {
+        Self {
+            command,
+            ack: Some(ack),
+        }
+    }
+}
+
 /// The neutral command source the driver feeds into a session's
 /// [`AgentSession::intervene`]. This is the `control_receiver` the worker installs
-/// per attempt; NOI-6 delivers server-routed operator commands onto it.
-pub type ControlReceiver = mpsc::UnboundedReceiver<InterventionCommand>;
+/// per attempt; NOI-6 delivers server-routed operator commands (each with its ack
+/// reply channel) onto it.
+pub type ControlReceiver = mpsc::UnboundedReceiver<ControlMessage>;
 
 /// Drives one activity attempt through the neutral [`AgentHarness`] seam and
 /// returns its terminal [`DispatchOutcome`].
@@ -110,9 +148,9 @@ where
             biased;
             // A command from the server-routed control channel. Feed it into the
             // session; a capability-gated rejection is logged, not fatal.
-            maybe_command = recv_control(&mut control) => {
-                match maybe_command {
-                    Some(command) => deliver_command(&session, command).await,
+            maybe_message = recv_control(&mut control) => {
+                match maybe_message {
+                    Some(message) => deliver_command(&session, message).await,
                     // The control channel closed: drop it and keep pumping events
                     // to the terminal result (a closed control channel is not an
                     // end-of-run signal — only the event stream closing is).
@@ -141,35 +179,71 @@ where
     Ok(DispatchOutcome::Completed { output })
 }
 
-/// Receives the next control command, or pends forever when there is no control
+/// Receives the next control message, or pends forever when there is no control
 /// channel — so the `select!` arm simply never fires in the no-intervention case.
-async fn recv_control(control: &mut Option<ControlReceiver>) -> Option<InterventionCommand> {
+async fn recv_control(control: &mut Option<ControlReceiver>) -> Option<ControlMessage> {
     match control {
         Some(receiver) => receiver.recv().await,
         None => std::future::pending().await,
     }
 }
 
-/// Delivers one command to the session, logging a capability-gated rejection or a
-/// delivery fault without ending the run.
-async fn deliver_command<S>(session: &S, command: InterventionCommand)
+/// Delivers one command to the session, replies its neutral ack (when a reply
+/// channel is present), and logs a capability-gated rejection or a delivery fault
+/// without ending the run.
+async fn deliver_command<S>(session: &S, message: ControlMessage)
+where
+    S: AgentSession,
+{
+    let ControlMessage { command, ack } = message;
+    let primitive = command.kind.primitive();
+    let outcome = apply_command(session, command).await;
+    match &outcome {
+        InterventionOutcome::Applied => {
+            debug!(?primitive, "agent driver: intervention delivered");
+        }
+        InterventionOutcome::CapabilityNotSupported { primitive } => {
+            // A gated command is a normal outcome of capability negotiation, not a
+            // run failure: the server should not route an unadvertised primitive,
+            // but if one arrives the driver rejects it cleanly and keeps running.
+            debug!(
+                ?primitive,
+                "agent driver: intervention gated (capability not supported)"
+            );
+        }
+        InterventionOutcome::StaleTarget { detail } => {
+            // A transport/protocol/stale fault delivering a command does not fail
+            // the run — the run continues and its terminal result stands.
+            warn!(?primitive, %detail, "agent driver: intervention delivery failed");
+        }
+    }
+    // Reply the ack to the waiting operator, if any. A dropped receiver (operator
+    // gone) is benign — the command still applied to the session.
+    if let Some(ack) = ack {
+        drop(ack.send(outcome));
+    }
+}
+
+/// Applies one command to the session and maps the session's result onto the
+/// neutral [`InterventionOutcome`] ack the operator receives.
+///
+/// The mapping is the harness-blind translation of the neutral error taxonomy into
+/// the three locked outcome classes (§6.4): a capability-gated rejection becomes
+/// [`InterventionOutcome::CapabilityNotSupported`]; a stale-target rejection or any
+/// transport/protocol/harness fault becomes [`InterventionOutcome::StaleTarget`]
+/// (an honest NACK, never a crash — the run continues regardless).
+async fn apply_command<S>(session: &S, command: InterventionCommand) -> InterventionOutcome
 where
     S: AgentSession,
 {
     let primitive = command.kind.primitive();
     match session.intervene(command).await {
-        Ok(()) => debug!(?primitive, "agent driver: intervention delivered"),
-        Err(HarnessError::CapabilityNotSupported { primitive }) => {
-            // A gated command is a normal outcome of capability negotiation, not a
-            // run failure: the server should not route an unadvertised primitive,
-            // but if one arrives the driver rejects it cleanly and keeps running.
-            debug!(%primitive, "agent driver: intervention gated (capability not supported)");
+        Ok(()) => InterventionOutcome::Applied,
+        Err(HarnessError::CapabilityNotSupported { .. }) => {
+            InterventionOutcome::capability_not_supported(primitive)
         }
-        Err(error) => {
-            // A transport/protocol/stale fault delivering a command does not fail
-            // the run — the run continues and its terminal result stands.
-            warn!(?primitive, %error, "agent driver: intervention delivery failed");
-        }
+        Err(HarnessError::StaleTarget { detail }) => InterventionOutcome::stale_target(detail),
+        Err(error) => InterventionOutcome::stale_target(error.to_string()),
     }
 }
 
