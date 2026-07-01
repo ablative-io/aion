@@ -1820,6 +1820,64 @@ impl OutboxStore for HaematiteStore {
         })
         .await
     }
+
+    async fn count_claimed_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError> {
+        // Mirror the claim/in-flight scan, but count ONLY Claimed (concurrently executing) rows —
+        // not the Pending backlog. This is the keyed-backpressure headroom input: counting
+        // Pending+Claimed would wedge a tenant against its own backlog (CP-Phase-2 §3.1). A
+        // stuck-Claimed row still counts (the worker may still be executing it). Owned-shard scoped
+        // exactly as the claim path, so a per-node count sees only this node's claimed slice.
+        let scope = self.owned_shard_scope();
+        let namespace = namespace.to_owned();
+        self.blocking(move |store| {
+            let rows: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?;
+            let count = rows
+                .into_iter()
+                .filter(|row| {
+                    row.namespace == namespace && matches!(row.status, OutboxStatus::Claimed)
+                })
+                .count();
+            Ok(u64::try_from(count).unwrap_or(u64::MAX))
+        })
+        .await
+    }
+
+    async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError> {
+        // Read-only enumeration of the distinct `(namespace, task_queue, node)` routes with a
+        // claimable pending row (status Pending AND visible_after passed). Owned-shard scoped so the
+        // per-node round-robin naturally sees only this node's slice of each tenant's work; claims
+        // nothing — it only shapes which scopes the dispatcher then claims under (CP2-Q2).
+        let scope = self.owned_shard_scope();
+        self.blocking(move |store| {
+            let now = Utc::now();
+            let rows: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?;
+            // Deduplicate routes deterministically (the scan order is arbitrary across shards).
+            let mut seen: std::collections::BTreeSet<(String, String, Option<String>)> =
+                std::collections::BTreeSet::new();
+            for row in rows {
+                if row.status == OutboxStatus::Pending && row.visible_after <= now {
+                    seen.insert((row.namespace, row.task_queue, row.node));
+                }
+            }
+            Ok(seen
+                .into_iter()
+                .map(|(namespace, task_queue, node)| {
+                    ClaimScope::new(namespace, task_queue).with_node(node)
+                })
+                .collect())
+        })
+        .await
+    }
 }
 
 /// Whether `status` is the dispatched-but-not-terminal (in-flight) set: `Pending` OR `Claimed`
@@ -2525,6 +2583,93 @@ mod tests {
         store.fail_outbox_row(&failed.dispatch_key).await?;
 
         assert_eq!(store.count_inflight_outbox_rows("ns").await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn count_claimed_outbox_rows_counts_only_claimed_not_pending_backlog()
+    -> Result<(), StoreError> {
+        // CP2-Q2: the CLAIMED-only count is the keyed-backpressure headroom input. It counts only
+        // concurrently-executing (Claimed) rows and EXCLUDES the Pending backlog, so a tenant with a
+        // large backlog never wedges itself against its own count. Parity with the libSQL backend.
+        let store = store("count-claimed")?;
+        let past = Utc::now() - Duration::hours(1);
+        let future = Utc::now() + Duration::days(3650);
+        let alpha_a = pending_row(&WorkflowId::new_v4(), 0, "charge", past).with_namespace("alpha");
+        let alpha_b = pending_row(&WorkflowId::new_v4(), 0, "charge", past).with_namespace("alpha");
+        // Future-fenced backlog: stays Pending, never claimed.
+        let mut backlog = Vec::new();
+        for _ in 0..5 {
+            backlog.push(
+                pending_row(&WorkflowId::new_v4(), 0, "charge", future).with_namespace("alpha"),
+            );
+        }
+        store
+            .append_outbox_batch(&[alpha_a.clone(), alpha_b.clone()])
+            .await?;
+        store.append_outbox_batch(&backlog).await?;
+
+        let claimed = store.claim_outbox_rows(100).await?;
+        assert_eq!(claimed.len(), 2, "only the two due rows are claimable");
+
+        // In-flight sees all 7; claimed-only sees exactly the 2 executing rows.
+        assert_eq!(store.count_inflight_outbox_rows("alpha").await?, 7);
+        assert_eq!(
+            store.count_claimed_outbox_rows("alpha").await?,
+            2,
+            "claimed-only excludes the Pending backlog (no self-wedge)"
+        );
+
+        store.complete_outbox_row(&alpha_a.dispatch_key).await?;
+        assert_eq!(store.count_claimed_outbox_rows("alpha").await?, 1);
+        assert_eq!(store.count_claimed_outbox_rows("beta").await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_outbox_routes_enumerates_distinct_claimable_routes() -> Result<(), StoreError>
+    {
+        // CP2-Q2: the round-robin probe returns exactly the distinct (namespace, task_queue, node)
+        // routes with a claimable Pending row, and nothing for a future-fenced route. Parity with
+        // the libSQL backend.
+        let store = store("pending-routes")?;
+        let past = Utc::now() - Duration::hours(1);
+        let future = Utc::now() + Duration::days(3650);
+        let alpha1 = pending_row(&WorkflowId::new_v4(), 0, "charge", past)
+            .with_namespace("alpha")
+            .with_task_queue("default");
+        let alpha2 = pending_row(&WorkflowId::new_v4(), 0, "charge", past)
+            .with_namespace("alpha")
+            .with_task_queue("default");
+        let beta = pending_row(&WorkflowId::new_v4(), 0, "charge", past)
+            .with_namespace("beta")
+            .with_task_queue("gpu");
+        let fenced = pending_row(&WorkflowId::new_v4(), 0, "charge", future)
+            .with_namespace("gamma")
+            .with_task_queue("default");
+        store
+            .append_outbox_batch(&[alpha1, alpha2, beta, fenced])
+            .await?;
+
+        let mut routes = store.pending_outbox_routes().await?;
+        routes.sort_by(|l, r| {
+            l.namespace
+                .cmp(&r.namespace)
+                .then_with(|| l.task_queue.cmp(&r.task_queue))
+        });
+        assert_eq!(
+            routes.len(),
+            2,
+            "two distinct claimable routes (alpha's two rows collapse to one)"
+        );
+        assert_eq!(routes[0].namespace, "alpha");
+        assert_eq!(routes[0].task_queue, "default");
+        assert_eq!(routes[1].namespace, "beta");
+        assert_eq!(routes[1].task_queue, "gpu");
+        assert!(
+            routes.iter().all(|route| route.namespace != "gamma"),
+            "the future-fenced gamma route is not claimable and must not be enumerated"
+        );
         Ok(())
     }
 

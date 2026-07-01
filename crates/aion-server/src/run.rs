@@ -35,6 +35,50 @@ use crate::{
 /// and self-corrects — it never affects correctness or replay.
 const PLACEMENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Short TTL for the dispatcher's per-namespace quota cache (Control-Plane Phase 2,
+/// P2-Q2). Kept small so an operator raising/lowering a tenant's
+/// `max_in_flight_activities` takes effect on the hot claim loop within a couple of
+/// seconds, while still collapsing a per-sweep quorum `get_namespace` into a cheap
+/// in-process lookup. A stale entry only over- or under-admits slightly for one
+/// window and self-corrects — backpressure never drops a row, so it cannot affect
+/// correctness or replay.
+const QUOTA_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Resolved keyed-backpressure inputs for the outbox dispatcher (Control-Plane
+/// Phase 2, P2-Q2): the generous platform-default ceiling and this node's
+/// owned-shard fraction of the cluster shard space.
+#[derive(Clone, Copy, Debug)]
+struct BackpressureSettings {
+    /// The `[namespaces] max_in_flight_activities` platform default, applied to any
+    /// namespace carrying no explicit per-tenant override.
+    platform_default: u32,
+    /// This node's owned-shard fraction of the cluster's virtual shard space,
+    /// derived from `[store] owned_shards` and `[store] shard_count`.
+    fraction: crate::worker::OwnedShardFraction,
+}
+
+impl BackpressureSettings {
+    /// Derive the backpressure inputs from the merged server config.
+    ///
+    /// An empty `[store] owned_shards` means own-all (the single-node default), so
+    /// the fraction is 1 and per-node ceilings equal the cluster-wide quota. A
+    /// declared owned set enforces the proportional per-node slice
+    /// `|owned| / shard_count` (CP-Phase-2 §3.6).
+    fn from_config(config: &ServerConfig) -> Self {
+        let total = u32::try_from(config.store.shard_count).unwrap_or(u32::MAX);
+        let fraction = if config.store.owned_shards.is_empty() {
+            crate::worker::OwnedShardFraction::own_all()
+        } else {
+            let owned = u32::try_from(config.store.owned_shards.len()).unwrap_or(u32::MAX);
+            crate::worker::OwnedShardFraction::new(owned, total)
+        };
+        Self {
+            platform_default: config.namespaces.max_in_flight_activities,
+            fraction,
+        }
+    }
+}
+
 /// Owns the liminal worker listener for the server's lifetime when the outbox is
 /// commissioned over the liminal transport.
 ///
@@ -93,6 +137,12 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // dispatcher shares the engine's already-opened libSQL store (one
     // connection) via `state.outbox_store()`, so no store settings are needed.
     let outbox_config = config.outbox.clone();
+    // Control-Plane Phase 2 (P2-Q2): capture the keyed-backpressure inputs — the
+    // generous platform-default ceiling and this node's owned-shard fraction —
+    // before `build` consumes `config`. On a single-node / own-all boot the fraction
+    // is 1, so per-node ceilings equal the cluster-wide quota and, with the generous
+    // default and no tenant override, the ceiling never engages (byte-identical claim).
+    let backpressure_settings = BackpressureSettings::from_config(&config);
     // Capture the SS-5b failover supervisor knobs before `build` consumes config.
     // Only a distributed haematite boot carries a `[store.cluster]` section; this
     // is `None` for every single-node boot, so no supervisor is ever spawned.
@@ -145,8 +195,13 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // Hold the liminal worker listener (if any) for the server's lifetime: it is
     // dropped at the end of `run_server`, after the serve `select!` completes, so
     // its accept worker stops cleanly on shutdown via the listener's own `Drop`.
-    let _outbox_worker_listener =
-        maybe_spawn_outbox_dispatcher(&state, &outbox_config, outbox_clustered, &shutdown_rx)?;
+    let _outbox_worker_listener = maybe_spawn_outbox_dispatcher(
+        &state,
+        &outbox_config,
+        outbox_clustered,
+        backpressure_settings,
+        &shutdown_rx,
+    )?;
     // SS-5b: a distributed boot whose peers declare owned shards runs the cluster
     // supervisor — automatic failover detection. A single-node boot spawns
     // nothing here (the method returns `false`), so default behaviour is
@@ -301,6 +356,7 @@ fn maybe_spawn_outbox_dispatcher(
     state: &ServerState,
     outbox_config: &OutboxConfig,
     clustered: bool,
+    backpressure_settings: BackpressureSettings,
     shutdown_rx: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<OutboxWorkerListener, ServerError> {
     if !outbox_config.enabled {
@@ -325,9 +381,23 @@ fn maybe_spawn_outbox_dispatcher(
     // dispatcher the instant a fan-out row commits, dispatching in ~RTT instead of
     // up to one poll interval. The wake is always-on and free; the interval poll is
     // untouched, so it remains the correctness backstop for any lost wake.
+    // Control-Plane Phase 2 (P2-Q2): attach per-tenant keyed backpressure so each
+    // sweep claims per-namespace, round-robin, capped at each tenant's CLAIMED-only
+    // headroom (`per_node_ceiling − claimed`). The quota cache front-runs a per-sweep
+    // quorum `get_namespace`. With the generous platform default and no tenant
+    // override the ceiling never engages, so a default deployment's claim behaviour is
+    // byte-identical to the pre-Phase-2 single unscoped claim.
+    let quota_cache = crate::worker::QuotaCache::new(
+        Arc::clone(state.namespace_store()),
+        backpressure_settings.platform_default,
+        QUOTA_CACHE_TTL,
+    );
+    let backpressure =
+        crate::worker::Backpressure::new(quota_cache, backpressure_settings.fraction);
     let dispatcher =
         OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config)
-            .with_wake(state.outbox_wake());
+            .with_wake(state.outbox_wake())
+            .with_backpressure(backpressure);
     tokio::spawn(dispatcher.run(shutdown_rx.clone()));
     // LSUB-4-1: the single dispatcher task is spawned in both modes. In a
     // single-node boot it owns all shards by construction; in an active-active
@@ -680,7 +750,7 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::{
-        OutboxConfig, OutboxTransport, maybe_spawn_outbox_dispatcher,
+        BackpressureSettings, OutboxConfig, OutboxTransport, maybe_spawn_outbox_dispatcher,
         resolve_outbox_reconciler_config,
     };
     use crate::ServerState;
@@ -688,6 +758,15 @@ mod tests {
     use aion_store::InMemoryStore;
     use std::net::SocketAddr;
     use std::time::Duration;
+
+    /// Own-all, generous-default backpressure settings for the gate tests (the
+    /// single-node default: fraction 1, so the ceiling never engages).
+    fn test_backpressure_settings() -> BackpressureSettings {
+        BackpressureSettings {
+            platform_default: crate::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
+            fraction: crate::worker::OwnedShardFraction::own_all(),
+        }
+    }
 
     /// A minimal `RuntimeConfig` for building an in-memory `ServerState` in unit
     /// tests (mirrors `state.rs`'s test `runtime_config`).
@@ -767,8 +846,14 @@ mod tests {
             .await
             .expect("build in-memory state");
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let error = maybe_spawn_outbox_dispatcher(&state, &enabled_outbox_config(), false, &rx)
-            .expect_err("outbox.enabled on the memory backend must be a config error");
+        let error = maybe_spawn_outbox_dispatcher(
+            &state,
+            &enabled_outbox_config(),
+            false,
+            test_backpressure_settings(),
+            &rx,
+        )
+        .expect_err("outbox.enabled on the memory backend must be a config error");
         assert!(
             error.is_config(),
             "memory-backend outbox error must be Config"
@@ -789,8 +874,14 @@ mod tests {
             .await
             .expect("build in-memory state");
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        maybe_spawn_outbox_dispatcher(&state, &OutboxConfig::default(), false, &rx)
-            .expect("disabled outbox gate must be an infallible no-op");
+        maybe_spawn_outbox_dispatcher(
+            &state,
+            &OutboxConfig::default(),
+            false,
+            test_backpressure_settings(),
+            &rx,
+        )
+        .expect("disabled outbox gate must be an infallible no-op");
     }
 
     /// LSUB-4-4: the reconciler config resolves to `None` unless BOTH knobs are
@@ -873,8 +964,14 @@ mod tests {
             .expect("build libsql state");
         let (_tx, rx) = tokio::sync::watch::channel(false);
 
-        let error = maybe_spawn_outbox_dispatcher(&state, &outbox, false, &rx)
-            .expect_err("liminal transport without a listen address must be a config error");
+        let error = maybe_spawn_outbox_dispatcher(
+            &state,
+            &outbox,
+            false,
+            test_backpressure_settings(),
+            &rx,
+        )
+        .expect_err("liminal transport without a listen address must be a config error");
         assert!(
             error.is_config(),
             "missing-listen-address error must be Config"
@@ -935,7 +1032,7 @@ mod lsub_prod_xnode_e2e {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use super::maybe_spawn_outbox_dispatcher;
+    use super::{BackpressureSettings, maybe_spawn_outbox_dispatcher};
     use crate::ServerState;
     use crate::api::http::http_router;
     use crate::config::{
@@ -1238,9 +1335,21 @@ mod lsub_prod_xnode_e2e {
         // Hold the returned listener guard for the test's lifetime, exactly as
         // run_server holds it.
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let listener_guard =
-            maybe_spawn_outbox_dispatcher(&state, &outbox_config, false, &shutdown_rx)
-                .map_err(test_error)?;
+        // Own-all, generous-default backpressure (single-node e2e): fraction 1 and
+        // the platform default, so the ceiling never engages — the claim behaves
+        // exactly as before, proving the production path is byte-identical on default.
+        let backpressure_settings = BackpressureSettings {
+            platform_default: crate::config::DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
+            fraction: crate::worker::OwnedShardFraction::own_all(),
+        };
+        let listener_guard = maybe_spawn_outbox_dispatcher(
+            &state,
+            &outbox_config,
+            false,
+            backpressure_settings,
+            &shutdown_rx,
+        )
+        .map_err(test_error)?;
 
         // (C) A REAL remote worker connects IN to the production listener and
         // self-registers in-band for the fixture's pool.

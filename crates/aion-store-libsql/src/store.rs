@@ -313,6 +313,14 @@ impl OutboxStore for LibSqlStore {
     async fn count_inflight_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError> {
         crate::outbox::count_inflight_outbox_rows(self.connection(), namespace).await
     }
+
+    async fn count_claimed_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError> {
+        crate::outbox::count_claimed_outbox_rows(self.connection(), namespace).await
+    }
+
+    async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError> {
+        crate::outbox::pending_outbox_routes(self.connection()).await
+    }
 }
 
 #[async_trait]

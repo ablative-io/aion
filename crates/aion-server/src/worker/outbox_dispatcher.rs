@@ -263,6 +263,17 @@ pub struct OutboxDispatcher {
     /// is wired in (the default), this is a private `Notify` that is never pulsed,
     /// so the loop behaves exactly as a pure poll.
     wake: Arc<tokio::sync::Notify>,
+    /// Optional per-tenant keyed backpressure at the claim (Control-Plane Phase 2,
+    /// P2-Q2). When present, [`Self::sweep_once`] replaces the single unscoped
+    /// `claim_outbox_rows(batch_size)` with a per-namespace, round-robin,
+    /// headroom-capped claim, so a tenant at its concurrency ceiling has its excess
+    /// Pending rows held (left durable, reconsidered next sweep) and a bursty tenant
+    /// cannot starve a quiet one. When absent (the default, every pre-Phase-2
+    /// construction and test) the sweep is byte-identical: one unscoped claim. With
+    /// the generous platform-default ceiling and no tenant override, the ceiling
+    /// never engages, so an attached-but-default backpressure is also behaviourally
+    /// identical to no backpressure for normal load.
+    backpressure: Option<crate::worker::Backpressure>,
 }
 
 impl std::fmt::Debug for OutboxDispatcher {
@@ -289,6 +300,10 @@ impl OutboxDispatcher {
             // a pure poll. Callers that share the engine's stage seam install the
             // real handle with `with_wake`.
             wake: Arc::new(tokio::sync::Notify::new()),
+            // Default to no backpressure: the sweep is one unscoped claim,
+            // byte-identical to the pre-Phase-2 dispatcher. `with_backpressure`
+            // attaches the keyed per-tenant claim shaping.
+            backpressure: None,
         }
     }
 
@@ -302,6 +317,21 @@ impl OutboxDispatcher {
     #[must_use]
     pub fn with_wake(mut self, wake: Arc<tokio::sync::Notify>) -> Self {
         self.wake = wake;
+        self
+    }
+
+    /// Attach per-tenant keyed backpressure at the claim (Control-Plane Phase 2,
+    /// P2-Q2).
+    ///
+    /// With it, each sweep claims per-namespace, round-robin, capped at each
+    /// tenant's CLAIMED-only headroom (`per_node_ceiling − claimed`) and a fair
+    /// share of the batch, instead of one unscoped `claim_outbox_rows(batch_size)`.
+    /// Pure builder addition: without it (the default) the sweep is byte-identical
+    /// to the pre-Phase-2 single unscoped claim, and even WITH it a default-ceiling
+    /// deployment with no tenant override never engages the ceiling for normal load.
+    #[must_use]
+    pub fn with_backpressure(mut self, backpressure: crate::worker::Backpressure) -> Self {
+        self.backpressure = Some(backpressure);
         self
     }
 
@@ -365,7 +395,7 @@ impl OutboxDispatcher {
         // ~622/1110: `DatabaseError::Fenced => StoreError::NotOwner`), not here. So
         // this sweep has nothing ownership-specific to handle: a claim error is a
         // genuine backend failure, retried next tick.
-        let rows = match self.store.claim_outbox_rows(self.config.batch_size).await {
+        let rows = match self.claim_rows().await {
             Ok(rows) => rows,
             Err(error) => {
                 error!(%error, "outbox dispatcher failed to claim rows; retrying next tick");
@@ -374,6 +404,27 @@ impl OutboxDispatcher {
         };
         for row in rows {
             self.process_row(&row).await;
+        }
+    }
+
+    /// Claim this sweep's rows, applying per-tenant keyed backpressure when it is
+    /// attached (Control-Plane Phase 2, P2-Q2) and otherwise the unchanged single
+    /// unscoped claim.
+    ///
+    /// The backpressure path round-robins a scoped, headroom-capped claim per
+    /// namespace-with-pending-work — rows over a tenant's CLAIMED-only ceiling are
+    /// left durably `Pending`, reconsidered next sweep — but reuses the SAME atomic
+    /// [`OutboxStore::claim_outbox_rows_scoped`] semantics, so exactly-once and the
+    /// durable-outbox guarantees are untouched: only the `limit` and `scope` are
+    /// quota-derived (a smaller claim is already first-class).
+    async fn claim_rows(&self) -> Result<Vec<OutboxRow>, aion_store::StoreError> {
+        match &self.backpressure {
+            Some(backpressure) => {
+                backpressure
+                    .claim_round_robin(&self.store, self.config.batch_size)
+                    .await
+            }
+            None => self.store.claim_outbox_rows(self.config.batch_size).await,
         }
     }
 
@@ -844,6 +895,13 @@ mod tests {
             ) -> Result<u64, StoreError> {
                 // The single staged row is in-flight (Pending or stuck-Claimed) until completed.
                 Ok(u64::from(!self.completed.load(Ordering::SeqCst)))
+            }
+            async fn count_claimed_outbox_rows(&self, _namespace: &str) -> Result<u64, StoreError> {
+                // No backpressure path exercises this store, so a zero claimed count is sufficient.
+                Ok(0)
+            }
+            async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError> {
+                Ok(Vec::new())
             }
         }
 
@@ -1374,6 +1432,474 @@ mod tests {
         let claimed = store.claim_outbox_rows(10).await?;
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].status, OutboxStatus::Claimed);
+        Ok(())
+    }
+
+    // --- P2-Q2: per-tenant keyed backpressure at the claim ------------------
+
+    use crate::worker::{Backpressure, OwnedShardFraction, QuotaCache};
+
+    /// Build a namespace store carrying an explicit `max_in_flight_activities`
+    /// override for each `(namespace, quota)` pair, so the quota cache resolves a
+    /// concrete per-tenant ceiling.
+    async fn namespace_store_with_quotas(
+        quotas: &[(&str, u32)],
+    ) -> Result<Arc<dyn aion_store::NamespaceStore>, ServerError> {
+        use aion_store::{InMemoryStore, NamespaceOrigin, NamespaceRecord, NamespaceStore};
+        let store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        for (namespace, quota) in quotas {
+            let mut record =
+                NamespaceRecord::new_minted(namespace, NamespaceOrigin::Explicit, Utc::now());
+            record.config.max_in_flight_activities = Some(*quota);
+            store
+                .put_namespace(record)
+                .await
+                .map_err(ServerError::from)?;
+        }
+        Ok(store)
+    }
+
+    /// Build own-all keyed backpressure (fraction 1) over `ns_store` with the given
+    /// generous platform default; a zero TTL so each sweep reads the latest quota.
+    fn own_all_backpressure(
+        ns_store: Arc<dyn aion_store::NamespaceStore>,
+        platform_default: u32,
+    ) -> Backpressure {
+        let quota = QuotaCache::new(ns_store, platform_default, Duration::ZERO);
+        Backpressure::new(quota, OwnedShardFraction::own_all())
+    }
+
+    /// Append `count` fresh pending rows in `namespace` and immediately claim them,
+    /// leaving them durably `Claimed` (concurrently executing, never completed) so
+    /// they occupy `count` of the namespace's concurrency slots. Returns their
+    /// dispatch keys so a test can later `complete_outbox_row` specific slots to
+    /// free headroom.
+    async fn seed_claimed(
+        store: &Arc<dyn OutboxStore>,
+        namespace: &str,
+        count: usize,
+    ) -> Result<Vec<String>, ServerError> {
+        let rows: Vec<OutboxRow> = (0..count)
+            .map(|_| {
+                pending_row(&WorkflowId::new_v4(), 0)
+                    .with_namespace(namespace)
+                    .with_task_queue("default")
+            })
+            .collect();
+        store.append_outbox_batch(&rows).await?;
+        let claimed = store
+            .claim_outbox_rows(u32::try_from(count).unwrap_or(u32::MAX))
+            .await?;
+        assert_eq!(
+            claimed.len(),
+            count,
+            "seed must claim exactly the seeded rows"
+        );
+        Ok(claimed.into_iter().map(|row| row.dispatch_key).collect())
+    }
+
+    /// Append `count` fresh pending rows in `namespace`, left `Pending` (backlog).
+    async fn seed_pending(
+        store: &Arc<dyn OutboxStore>,
+        namespace: &str,
+        count: usize,
+    ) -> Result<Vec<OutboxRow>, ServerError> {
+        let rows: Vec<OutboxRow> = (0..count)
+            .map(|_| {
+                pending_row(&WorkflowId::new_v4(), 0)
+                    .with_namespace(namespace)
+                    .with_task_queue("default")
+            })
+            .collect();
+        store.append_outbox_batch(&rows).await?;
+        Ok(rows)
+    }
+
+    /// Append `count` fresh pending rows in `namespace` on `task_queue`, left
+    /// `Pending`. Used to spread ONE namespace's backlog across several routes.
+    async fn seed_pending_on_queue(
+        store: &Arc<dyn OutboxStore>,
+        namespace: &str,
+        task_queue: &str,
+        count: usize,
+    ) -> Result<(), ServerError> {
+        let rows: Vec<OutboxRow> = (0..count)
+            .map(|_| {
+                pending_row(&WorkflowId::new_v4(), 0)
+                    .with_namespace(namespace)
+                    .with_task_queue(task_queue)
+            })
+            .collect();
+        store.append_outbox_batch(&rows).await?;
+        Ok(())
+    }
+
+    async fn count_pending(store: &LibSqlStore, namespace: &str) -> Result<u64, ServerError> {
+        // Pending = in-flight − claimed (both durable, namespace-scoped).
+        let inflight = store.count_inflight_outbox_rows(namespace).await?;
+        let claimed = store.count_claimed_outbox_rows(namespace).await?;
+        Ok(inflight - claimed)
+    }
+
+    /// A tenant AT its ceiling holds its excess Pending rows (they stay Pending,
+    /// never Failed/dropped), and dispatch resumes once Claimed rows complete and
+    /// headroom returns. This is the keyed-backpressure core.
+    #[tokio::test]
+    async fn tenant_at_ceiling_holds_pending_then_resumes_when_headroom_returns()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-ceiling").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        // Ceiling 3 for "t". Seed 3 Claimed (fills the ceiling) + 4 Pending backlog.
+        let ns_store = namespace_store_with_quotas(&[("t", 3)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        let executing = seed_claimed(&store, "t", 3).await?;
+        let backlog = seed_pending(&store, "t", 4).await?;
+
+        // headroom = ceiling(3) − claimed(3) = 0: NOTHING new is claimed this sweep.
+        let claimed = backpressure.claim_round_robin(&store, 16).await?;
+        assert!(claimed.is_empty(), "at the ceiling, no new row is claimed");
+        // Every backlog row is STILL Pending — held, not Failed, not dropped.
+        assert_eq!(count_pending(&raw, "t").await?, 4);
+        for row in &backlog {
+            assert_eq!(
+                raw.outbox_row_state(&row.dispatch_key)
+                    .await?
+                    .map(|state| state.status),
+                Some(OutboxStatus::Pending),
+                "a held backlog row stays Pending — never Failed or dropped"
+            );
+        }
+
+        // Two executing (Claimed) rows complete → claimed drops 3 → 1 → headroom 2.
+        for dispatch_key in executing.iter().take(2) {
+            raw.complete_outbox_row(dispatch_key).await?;
+        }
+        assert_eq!(raw.count_claimed_outbox_rows("t").await?, 1);
+
+        // Next sweep: headroom 2 → exactly 2 backlog rows are claimed, 2 stay Pending.
+        let resumed = backpressure.claim_round_robin(&store, 16).await?;
+        assert_eq!(resumed.len(), 2, "headroom returned, 2 held rows dispatch");
+        assert_eq!(
+            count_pending(&raw, "t").await?,
+            2,
+            "2 backlog rows still held"
+        );
+        Ok(())
+    }
+
+    /// A tenant with a BIG Pending backlog and ZERO Claimed is NOT wedged: it claims
+    /// up to its ceiling. This is the whole point of CLAIMED-only headroom — a
+    /// Pending+Claimed input would count the backlog against the ceiling and let the
+    /// tenant claim nothing, wedging it against its own work.
+    #[tokio::test]
+    async fn big_pending_backlog_with_zero_claimed_is_not_wedged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-no-wedge").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        // Ceiling 5, zero Claimed, a 20-row Pending backlog.
+        let ns_store = namespace_store_with_quotas(&[("t", 5)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        seed_pending(&store, "t", 20).await?;
+        assert_eq!(raw.count_claimed_outbox_rows("t").await?, 0);
+        assert_eq!(raw.count_inflight_outbox_rows("t").await?, 20);
+
+        // headroom = ceiling(5) − claimed(0) = 5: it claims exactly 5, NOT zero.
+        // (A Pending+Claimed headroom would be 5 − 20 = 0 and wedge the tenant.)
+        let claimed = backpressure.claim_round_robin(&store, 100).await?;
+        assert_eq!(
+            claimed.len(),
+            5,
+            "claimed-only headroom lets a 0-claimed tenant claim up to its ceiling"
+        );
+        assert_eq!(
+            count_pending(&raw, "t").await?,
+            15,
+            "the rest stay durably Pending"
+        );
+        Ok(())
+    }
+
+    /// FAIRNESS: two namespaces, one bursty (huge backlog) and one quiet (a single
+    /// row). The quiet tenant gets a claim EVERY sweep — round-robin, never FIFO
+    /// drain of the bursty tenant first. Neither exceeds its ceiling.
+    #[tokio::test]
+    async fn round_robin_gives_quiet_tenant_a_slot_every_sweep()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-fairness").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        // Generous ceilings so the ceiling is not the limiter — fairness is.
+        let ns_store = namespace_store_with_quotas(&[("bursty", 1000), ("quiet", 1000)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        seed_pending(&store, "bursty", 500).await?;
+        seed_pending(&store, "quiet", 1).await?;
+
+        // A single small-batch sweep: with FIFO the batch would be all-bursty and
+        // never reach the one quiet row. Round-robin must give quiet a slot.
+        let claimed = backpressure.claim_round_robin(&store, 8).await?;
+        assert!(
+            claimed.iter().any(|row| row.namespace == "quiet"),
+            "the quiet tenant's single row is claimed this very sweep (no FIFO starvation)"
+        );
+        assert!(
+            claimed.iter().any(|row| row.namespace == "bursty"),
+            "the bursty tenant is also served — round-robin shares, it does not block"
+        );
+        assert_eq!(
+            count_pending(&raw, "quiet").await?,
+            0,
+            "quiet is fully drained"
+        );
+        Ok(())
+    }
+
+    /// FAIRNESS is per-NAMESPACE, not per-ROUTE — the exact case the reviewer proved
+    /// failing under the old per-route budget. A bursty tenant SPREAD ACROSS MANY
+    /// task queues (8 routes, 500 pending) and a quiet single-route tenant (1
+    /// pending) share a small batch (8). Under a per-route budget the bursty tenant's
+    /// 8 routes exhaust the whole batch before the quiet tenant's single route is
+    /// reached, starving it for the sweep. Per-NAMESPACE fairness must reserve the
+    /// quiet tenant a guaranteed slice up front, so its row is claimed THIS sweep
+    /// while the bursty tenant is still served up to its own fair slice.
+    #[tokio::test]
+    async fn quiet_tenant_not_starved_by_bursty_tenant_spread_across_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-fairness-routes").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        // Generous ceilings so the ceiling is not the limiter — fairness is.
+        let ns_store = namespace_store_with_quotas(&[("bursty", 1000), ("quiet", 1000)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        // Bursty tenant: 500 pending rows spread evenly across 8 distinct task_queues
+        // (8 routes). Quiet tenant: a single row on one route.
+        for q in 0..8u32 {
+            seed_pending_on_queue(&store, "bursty", &format!("tq-{q}"), 500 / 8).await?;
+        }
+        seed_pending(&store, "quiet", 1).await?;
+
+        // A single small-batch (8) sweep. With a per-route budget, the bursty
+        // tenant's 8 routes consume all 8 before the quiet route is reached.
+        let claimed = backpressure.claim_round_robin(&store, 8).await?;
+        let bursty = claimed.iter().filter(|r| r.namespace == "bursty").count();
+        let quiet = claimed.iter().filter(|r| r.namespace == "quiet").count();
+        assert_eq!(
+            quiet, 1,
+            "the quiet tenant's single row IS claimed this sweep — per-namespace \
+             fairness reserves it a slice even though the bursty tenant has 8 routes"
+        );
+        assert!(
+            bursty >= 1,
+            "the bursty tenant is also served up to its fair slice, not blocked"
+        );
+        assert!(
+            bursty <= 7,
+            "the bursty tenant cannot consume the whole batch and starve the quiet one"
+        );
+        assert_eq!(
+            count_pending(&raw, "quiet").await?,
+            0,
+            "quiet is fully drained this sweep"
+        );
+        Ok(())
+    }
+
+    /// EXACTLY-ONCE under throttling: no row is dispatched twice, and the dedup
+    /// guard is intact. Two full sweeps under a tight ceiling claim a total set with
+    /// NO duplicate dispatch keys, and re-appending an already-staged batch is
+    /// ignored (INSERT OR IGNORE), never re-claimed.
+    #[tokio::test]
+    async fn throttled_claim_dispatches_each_row_exactly_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-exactly-once").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        let ns_store = namespace_store_with_quotas(&[("t", 3)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        let staged = seed_pending(&store, "t", 6).await?;
+
+        // Re-appending the SAME batch is a dedup no-op (INSERT OR IGNORE): the row
+        // set is unchanged, so throttling can never resurrect a duplicate.
+        store.append_outbox_batch(&staged).await?;
+        assert_eq!(
+            raw.count_inflight_outbox_rows("t").await?,
+            6,
+            "no duplicate rows staged"
+        );
+
+        // Sweep repeatedly, completing each claimed row so headroom frees, until the
+        // backlog drains. Collect every claimed dispatch key across all sweeps.
+        let mut all_claimed: Vec<String> = Vec::new();
+        for _ in 0..10 {
+            let claimed = backpressure.claim_round_robin(&store, 16).await?;
+            assert!(
+                claimed.len() <= 3,
+                "the ceiling caps concurrent claims at 3 per sweep"
+            );
+            for row in &claimed {
+                store.complete_outbox_row(&row.dispatch_key).await?;
+                all_claimed.push(row.dispatch_key.clone());
+            }
+            if all_claimed.len() == 6 {
+                break;
+            }
+        }
+        // Every one of the 6 rows dispatched exactly once — no double-dispatch.
+        all_claimed.sort();
+        all_claimed.dedup();
+        assert_eq!(
+            all_claimed.len(),
+            6,
+            "all 6 rows dispatched, each exactly once"
+        );
+        // Nothing remains claimable: the backlog is fully drained (nothing dropped).
+        assert!(backpressure.claim_round_robin(&store, 16).await?.is_empty());
+        Ok(())
+    }
+
+    /// REPLAY-STABILITY: a heavily-throttled fan-out claim shapes only WHICH rows
+    /// dispatch this sweep and WHEN — it never mutates a claimed row's recorded
+    /// identity (`workflow_id`, `ordinal`, `node`, `input`). The scheduled task derived from
+    /// a throttled claim is byte-identical to the un-throttled claim of the same row,
+    /// so replay sees an identical command stream regardless of throttling.
+    #[tokio::test]
+    async fn throttled_claim_preserves_recorded_row_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Un-throttled baseline: claim a fixed set of rows straight off the store.
+        let baseline_store = open_store("bp-replay-baseline").await?;
+        let base: Arc<dyn OutboxStore> = baseline_store.clone();
+        let base_rows = seed_pending(&base, "t", 4).await?;
+        let baseline = base.claim_outbox_rows(16).await?;
+
+        // Throttled: the SAME logical rows (same workflow_ids/ordinals) under a tight
+        // ceiling, claimed across several headroom-limited sweeps.
+        let throttled_store = open_store("bp-replay-throttled").await?;
+        let store: Arc<dyn OutboxStore> = throttled_store.clone();
+        let ns_store = namespace_store_with_quotas(&[("t", 1)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        // Re-stage rows with identical (workflow_id, ordinal) so dispatch keys match.
+        let replayed: Vec<OutboxRow> = base_rows
+            .iter()
+            .map(|row| {
+                pending_row(&row.workflow_id, row.ordinal)
+                    .with_namespace("t")
+                    .with_task_queue("default")
+            })
+            .collect();
+        store.append_outbox_batch(&replayed).await?;
+
+        let mut throttled = Vec::new();
+        for _ in 0..10 {
+            let claimed = backpressure.claim_round_robin(&store, 16).await?;
+            for row in &claimed {
+                store.complete_outbox_row(&row.dispatch_key).await?;
+            }
+            throttled.extend(claimed);
+            if throttled.len() == 4 {
+                break;
+            }
+        }
+
+        // The recorded identity of each row (the replay-visible content) is identical
+        // between the un-throttled and throttled claims — only claim timing differed.
+        let key = |rows: &[OutboxRow]| -> Vec<(String, u64, Option<String>)> {
+            let mut identity: Vec<(String, u64, Option<String>)> = rows
+                .iter()
+                .map(|row| (row.dispatch_key.clone(), row.ordinal, row.node.clone()))
+                .collect();
+            identity.sort();
+            identity
+        };
+        assert_eq!(
+            key(&baseline),
+            key(&throttled),
+            "throttling changed neither the dispatch key set nor any row's recorded identity"
+        );
+        Ok(())
+    }
+
+    /// BYTE-IDENTICAL DEFAULT: with the generous platform default and NO tenant
+    /// override, the round-robin claim admits the SAME ROW SET the plain unscoped
+    /// claim would — the ceiling never engages for normal load. Proven by seeding the
+    /// SAME logical rows (identical `(workflow_id, ordinal)` → identical dispatch
+    /// keys) into both stores, claiming each way, and asserting the claimed
+    /// dispatch-key SETS are equal (not merely the counts).
+    #[tokio::test]
+    async fn default_ceiling_claim_matches_unscoped_claim() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use aion_store::{InMemoryStore, NamespaceStore};
+
+        // One shared set of 10 logical rows drives BOTH stores, so the derived
+        // dispatch keys are identical and the claimed SETS are directly comparable.
+        let shared: Vec<OutboxRow> = (0..10)
+            .map(|ordinal| {
+                pending_row(&WorkflowId::new_v4(), ordinal)
+                    .with_namespace("t")
+                    .with_task_queue("default")
+            })
+            .collect();
+
+        // Backpressure store: no tenant override anywhere, generous default 1024.
+        let bp_store_raw = open_store("bp-default-bp").await?;
+        let bp_store: Arc<dyn OutboxStore> = bp_store_raw.clone();
+        let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        bp_store.append_outbox_batch(&shared).await?;
+
+        // Plain store: the SAME 10 rows, claimed with the unscoped path.
+        let plain_raw = open_store("bp-default-plain").await?;
+        let plain: Arc<dyn OutboxStore> = plain_raw.clone();
+        plain.append_outbox_batch(&shared).await?;
+
+        let via_bp = backpressure.claim_round_robin(&bp_store, 16).await?;
+        let via_plain = plain.claim_outbox_rows(16).await?;
+
+        // Compare the actual claimed dispatch-key SETS, not just the lengths: this
+        // genuinely proves byte-identical default admission, row for row.
+        let key_set = |rows: &[OutboxRow]| -> std::collections::BTreeSet<String> {
+            rows.iter().map(|row| row.dispatch_key.clone()).collect()
+        };
+        let bp_keys = key_set(&via_bp);
+        let plain_keys = key_set(&via_plain);
+        assert_eq!(
+            bp_keys, plain_keys,
+            "under the generous default the ceiling never engages: the SAME row set \
+             is claimed, dispatch key for dispatch key"
+        );
+        assert_eq!(
+            bp_keys,
+            key_set(&shared),
+            "all 10 seeded rows claim in one sweep (headroom ≫ backlog)"
+        );
+        // Nothing held on the backpressure path — no Pending remains, exactly as the
+        // plain unscoped claim leaves nothing Pending: byte-identical for normal load.
+        assert_eq!(count_pending(&bp_store_raw, "t").await?, 0);
+        assert_eq!(count_pending(&plain_raw, "t").await?, 0);
+        Ok(())
+    }
+
+    /// PROPORTIONAL per-node enforcement: a node owning a fraction f of shards caps
+    /// at ceil(quota × f), not the full cluster-wide quota — so per-node ceilings sum
+    /// to ≈quota with no central counter. A node owning 2 of 8 shards under quota 8
+    /// claims at most ceil(8 × 2/8) = 2 per sweep.
+    #[tokio::test]
+    async fn proportional_ceiling_caps_a_partial_shard_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-proportional").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        let ns_store = namespace_store_with_quotas(&[("t", 8)]).await?;
+        // This node owns 2 of 8 shards → fraction 1/4 → per-node ceiling ceil(8/4)=2.
+        let quota = QuotaCache::new(ns_store, 1024, Duration::ZERO);
+        let backpressure = Backpressure::new(quota, OwnedShardFraction::new(2, 8));
+        seed_pending(&store, "t", 10).await?;
+
+        let claimed = backpressure.claim_round_robin(&store, 16).await?;
+        assert_eq!(
+            claimed.len(),
+            2,
+            "the per-node ceiling ceil(quota × owned/total) = ceil(8 × 2/8) = 2 caps the claim"
+        );
+        assert_eq!(
+            count_pending(&raw, "t").await?,
+            8,
+            "the remaining 8 stay durably Pending"
+        );
         Ok(())
     }
 }

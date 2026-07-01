@@ -678,6 +678,97 @@ async fn count_inflight_outbox_rows_excludes_terminal_only_namespace() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn count_claimed_outbox_rows_counts_only_claimed_not_pending_backlog()
+-> Result<(), StoreError> {
+    // CP2-Q2: the CLAIMED-only count is the keyed-backpressure headroom input. It must count only
+    // concurrently-executing (Claimed) rows and EXCLUDE the Pending backlog — otherwise a tenant
+    // with a big backlog would wedge itself against its own count.
+    let store = open_test_store("count-claimed").await?;
+
+    // Namespace "alpha": two rows that will be claimed, plus a big Pending backlog left unclaimed by
+    // fencing their visibility into the future so `claim` does not pick them up.
+    let alpha_a =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha");
+    let alpha_b =
+        pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha");
+    let mut backlog = Vec::new();
+    for _ in 0..5 {
+        // visible far in the future: stays Pending, never claimed by the claim below.
+        backlog.push(
+            pending_row(&WorkflowId::new_v4(), 0, "charge", far_future()).with_namespace("alpha"),
+        );
+    }
+    store
+        .append_outbox_batch(&[alpha_a.clone(), alpha_b.clone()])
+        .await?;
+    store.append_outbox_batch(&backlog).await?;
+
+    // Claim only the two due rows to Claimed; the 5-row backlog is future-fenced and stays Pending.
+    let claimed = store.claim_outbox_rows(100).await?;
+    assert_eq!(claimed.len(), 2, "only the two due rows are claimable");
+
+    // In-flight (Pending + Claimed) sees all 7; claimed-only sees exactly the 2 executing rows.
+    assert_eq!(store.count_inflight_outbox_rows("alpha").await?, 7);
+    assert_eq!(
+        store.count_claimed_outbox_rows("alpha").await?,
+        2,
+        "claimed-only excludes the Pending backlog (no self-wedge)"
+    );
+
+    // Completing one Claimed row drops the claimed count; the backlog is untouched.
+    store.complete_outbox_row(&alpha_a.dispatch_key).await?;
+    assert_eq!(store.count_claimed_outbox_rows("alpha").await?, 1);
+    assert_eq!(store.count_claimed_outbox_rows("beta").await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_outbox_routes_enumerates_distinct_claimable_routes() -> Result<(), StoreError> {
+    // CP2-Q2: the round-robin probe returns exactly the distinct (namespace, task_queue, node)
+    // routes that currently have a claimable Pending row, and NOTHING for a future-fenced route.
+    let store = open_test_store("pending-routes").await?;
+
+    // Two rows on the SAME route collapse to one entry; a second namespace is its own route.
+    let alpha1 = pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?)
+        .with_namespace("alpha")
+        .with_task_queue("default");
+    let alpha2 = pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?)
+        .with_namespace("alpha")
+        .with_task_queue("default");
+    let beta = pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?)
+        .with_namespace("beta")
+        .with_task_queue("gpu");
+    // A future-fenced row must NOT appear (there is nothing claimable to dispatch).
+    let future = pending_row(&WorkflowId::new_v4(), 0, "charge", far_future())
+        .with_namespace("gamma")
+        .with_task_queue("default");
+    store
+        .append_outbox_batch(&[alpha1, alpha2, beta, future])
+        .await?;
+
+    let mut routes = store.pending_outbox_routes().await?;
+    routes.sort_by(|l, r| {
+        l.namespace
+            .cmp(&r.namespace)
+            .then_with(|| l.task_queue.cmp(&r.task_queue))
+    });
+    assert_eq!(
+        routes.len(),
+        2,
+        "two distinct claimable routes (alpha collapses)"
+    );
+    assert_eq!(routes[0].namespace, "alpha");
+    assert_eq!(routes[0].task_queue, "default");
+    assert_eq!(routes[1].namespace, "beta");
+    assert_eq!(routes[1].task_queue, "gpu");
+    assert!(
+        routes.iter().all(|r| r.namespace != "gamma"),
+        "the future-fenced gamma route is not claimable and must not be enumerated"
+    );
+    Ok(())
+}
+
 async fn open_test_store(name: &str) -> Result<LibSqlStore, StoreError> {
     LibSqlStore::open(unique_temp_path(name)).await
 }
@@ -819,6 +910,12 @@ fn instant(seconds: i64) -> Result<DateTime<Utc>, StoreError> {
     Utc.timestamp_opt(seconds, 0)
         .single()
         .ok_or_else(|| StoreError::Serialization(String::from("invalid test instant")))
+}
+
+/// An instant far enough in the future that a row fenced to it is never claimable
+/// during a test (its `visible_after > now`), so it stays durably `Pending`.
+fn far_future() -> DateTime<Utc> {
+    Utc::now() + chrono::Duration::days(3650)
 }
 
 fn unique_temp_path(name: &str) -> PathBuf {

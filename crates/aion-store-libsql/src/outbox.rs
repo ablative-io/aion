@@ -61,6 +61,21 @@ UPDATE outbox SET status = 'claimed', claimed_at = ?2 WHERE dispatch_key = ?1 AN
 const COUNT_INFLIGHT_OUTBOX_SQL: &str = "
 SELECT COUNT(*) FROM outbox WHERE namespace = ?1 AND status IN ('pending', 'claimed')";
 
+// Claimed-only count (CP2-Q2): rows in this namespace that are concurrently EXECUTING, i.e. `claimed`
+// only — NOT the pending backlog. This is the keyed-backpressure headroom input (a tenant must not
+// wedge itself against its own Pending backlog), strictly narrower than the in-flight count above.
+const COUNT_CLAIMED_OUTBOX_SQL: &str = "
+SELECT COUNT(*) FROM outbox WHERE namespace = ?1 AND status = 'claimed'";
+
+// Pending-route enumeration (CP2-Q2): the distinct `(namespace, task_queue, node)` routes that have
+// at least one CLAIMABLE pending row (status pending AND the visible_after fence has passed). This is
+// the round-robin probe — it claims nothing, it only reports which scopes have work. `node` is
+// SELECTed verbatim (NULL stays NULL = unpinned) so the dispatcher rebuilds the exact ClaimScope.
+const PENDING_OUTBOX_ROUTES_SQL: &str = "
+SELECT DISTINCT namespace, task_queue, node
+FROM outbox
+WHERE status = 'pending' AND visible_after <= ?1";
+
 const SELECT_STALE_CLAIMED_SQL: &str = "
 SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id, namespace, task_queue, node
 FROM outbox
@@ -532,6 +547,84 @@ pub(crate) async fn count_inflight_outbox_rows(
         .map_err(|error| crate::error::libsql_error(&error))?;
     u64::try_from(count)
         .map_err(|_| StoreError::Serialization(format!("outbox in-flight count negative: {count}")))
+}
+
+/// Count the CLAIMED (concurrently executing) outbox rows for `namespace` (CP2-Q2).
+///
+/// Narrower than [`count_inflight_outbox_rows`]: it excludes the `pending` backlog and counts only
+/// `claimed` rows, the input the keyed-backpressure ceiling caps so a tenant cannot wedge itself
+/// against its own backlog. A stuck-`claimed` row still counts (the worker may still be executing).
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when
+/// the engine returns a negative count.
+pub(crate) async fn count_claimed_outbox_rows(
+    conn: &Connection,
+    namespace: &str,
+) -> Result<u64, StoreError> {
+    let mut rows = conn
+        .query(COUNT_CLAIMED_OUTBOX_SQL, params![namespace.to_string()])
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    else {
+        return Ok(0);
+    };
+    let count: i64 = row
+        .get(0)
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    u64::try_from(count)
+        .map_err(|_| StoreError::Serialization(format!("outbox claimed count negative: {count}")))
+}
+
+/// Enumerate the distinct `(namespace, task_queue, node)` routes with a claimable pending row (CP2-Q2).
+///
+/// Read-only: claims nothing, only reports which [`ClaimScope`]s have due work so the dispatcher can
+/// round-robin a scoped, headroom-capped claim per route. A NULL `node` decodes to `None` (unpinned),
+/// rebuilding the exact scope the rows live under.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored route column cannot be decoded.
+pub(crate) async fn pending_outbox_routes(
+    conn: &Connection,
+) -> Result<Vec<ClaimScope>, StoreError> {
+    let now = encode_instant(Utc::now());
+    let mut rows = conn
+        .query(PENDING_OUTBOX_ROUTES_SQL, params![now])
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let mut routes = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        // Legacy rows persisted before NSTQ-2 read NULL namespace/task_queue back as `"default"`,
+        // matching `decode_row`, so the probed scope routes identically to the row.
+        let namespace: Option<String> = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        let task_queue: Option<String> = row
+            .get(1)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        let node: Option<String> = row
+            .get(2)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        routes.push(
+            ClaimScope::new(
+                namespace.unwrap_or_else(|| String::from(DEFAULT_OUTBOX_ROUTE)),
+                task_queue.unwrap_or_else(|| String::from(DEFAULT_OUTBOX_ROUTE)),
+            )
+            .with_node(node),
+        );
+    }
+    Ok(routes)
 }
 
 fn decode_row(row: &Row) -> Result<OutboxRow, StoreError> {
