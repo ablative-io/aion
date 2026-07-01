@@ -220,7 +220,7 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite 0.4.0",
+ "haematite",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "saffron",
@@ -257,7 +257,7 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite 0.4.0",
+ "haematite",
  "http-body-util",
  "jsonwebtoken",
  "libsql",
@@ -308,7 +308,7 @@ dependencies = [
  "aion-store",
  "async-trait",
  "chrono",
- "haematite 0.4.0",
+ "haematite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1908,25 +1908,6 @@ dependencies = [
 
 [[package]]
 name = "haematite"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f1cfc3c46cb57bd4f3b945a8714ce0c74341ad0ee63a968bb160ba895df5de"
-dependencies = [
- "beamr",
- "blake3",
- "crc32fast",
- "dashmap",
- "log",
- "lru",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "zstd",
-]
-
-[[package]]
-name = "haematite"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4036b108a66180e1fcfbf8802eb570b49def7e96c41f3406d900c37314a001c"
@@ -2835,14 +2816,14 @@ dependencies = [
 
 [[package]]
 name = "liminal-rs"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62ba8baf73b1fae00e4611fa08edd9ef60a9a95b17ff469b241941dde28f0e4a"
+checksum = "a5cc0e613a5fdda937f3b2e939c093db9caa058c9be28d65f422570a1ef60a9c"
 dependencies = [
  "async-trait",
  "beamr",
  "chrono",
- "haematite 0.3.0",
+ "haematite",
  "jsonschema",
  "rand 0.10.1",
  "serde_json",
@@ -2853,9 +2834,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31a8cf55fe768169bed19e53fb2278c68f2d737d08823b0d6c7f5f81c790aec4"
+checksum = "7ec94614d3e44d86bf304c5a0a3f6317fd8c2c15bfa8dfc62fa7f0e573375634"
 dependencies = [
  "futures-core",
  "liminal-rs",
@@ -2867,14 +2848,14 @@ dependencies = [
 
 [[package]]
 name = "liminal-server"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "497229ebeedf8be32a7a65d99ba0131eb1bbc0492434b4d65d69ceae75a5e9c9"
+checksum = "eef7905541ea355e523fa97bb792ed5efa33fa8d8945be9ed73dbba52bb429aa"
 dependencies = [
  "anyhow",
  "beamr",
  "clap",
- "haematite 0.3.0",
+ "haematite",
  "liminal-rs",
  "serde",
  "serde_json",
