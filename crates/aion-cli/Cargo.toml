@@ -38,12 +38,6 @@ aion-integration-norn = { version = "0.8.0", path = "../aion-integration-norn", 
 # composition root can name the neutral `AgentHarness` seam the injected
 # `NornHarness` satisfies; carries no concrete adapter.
 aion-integrations = { version = "0.8.0", path = "../aion-integrations", optional = true }
-# The worker SDK, so the `aion worker serve` composition root can drive the
-# liminal reconnect-to-survivor serve loop (`serve_with_redial`) with the composed
-# harness threaded in. OPTIONAL and pulled ONLY by the `norn` composition-root
-# feature with its `liminal-transport` transport, so a default-features-off build
-# never links it.
-aion-worker = { version = "0.8.0", path = "../aion-worker", optional = true }
 aion-package = { version = "0.8.0", path = "../aion-package" }
 aion-server = { version = "0.8.0", path = "../aion-server" }
 # The instant authoring loop (`aion dev`) reuses the toolchain's external
@@ -118,6 +112,4 @@ liminal-transport = ["aion-server/liminal-transport"]
 norn = [
     "dep:aion-integration-norn",
     "dep:aion-integrations",
-    "dep:aion-worker",
-    "aion-worker/liminal-transport",
 ]
