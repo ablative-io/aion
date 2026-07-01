@@ -7,7 +7,7 @@ observability + mid-run intervention control plane, slice by slice.
 - **What it is:** a complete, durable, real-time control plane for agents, built as a **general integration SDK** — Norn is just the *first* adapter, and there is **zero Norn-specific code in aion's platform crates** (mechanically enforced by the `no-norn-in-platform` CI gate).
 - **Transport:** stdio-duplex **JSON-RPC 2.0** (hand-rolled, zero new external deps). **Five neutral capability-gated intervention primitives** (`InjectMessage` / `Cancel` / `PauseResume` / `UpdateBudget` / `RespondToApproval`). Observability persists to a byte-disjoint haematite **`O`-keyspace**, never in the workflow replay log.
 
-_Last updated: 2026-07-02 — NOI-7 landed (`32edd9c4`); ops-console transcript + intervention UI wired, delimiter bug fixed. Next: NOI-8 (2nd adapter, SDK generality proof)._
+_Last updated: 2026-07-02 — **NOI-8 landed (`7d86900a`, merged `21a90b73`); the NOI-0..8 arc is COMPLETE.** The SDK is proven general (two independent `AgentHarness` impls) with platform crates byte-unchanged. Remaining tails are the NOI-5b/NOI-6 deferrals (worker-runtime drain arm + live liminal self-registration), tracked below._
 
 ---
 
@@ -28,7 +28,7 @@ Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
 | **NOI-5b** | Transport wiring (additive on the proven core): thread `Arc<dyn ObservabilityStore>` through **all 5** `ServerState` constructors (haematite → durable `O`-keyspace impl; other backends → in-memory impl; transcript sequencer served on every boot), add the `Transcript` subscription variant (proto oneof tag 5 + `StreamedActivityEvent` frame) + **namespace-gated** `serve_transcript_socket` (reuses the per-workflow anti-leak gate; durable-tail replay + live-splice, no gap/dup), and the additive worker→server publish seam (`ActivityContext.event_sender` + `emit_event`, no-op without a seam). E2E proof green (live delivery, resume-by-`store_seq`, ephemeral-never-persisted, denial). Generated-types diff + `verify-ops-console` + `no-norn-in-platform` clean. **Deferred:** the worker-runtime drain arm + the concrete liminal Channel-Publish event bus (the §5.1/§9 spike) — the handler-facing seam is in place, the runtime→liminal→server bus lands with NOI-6's transport. | aion | ✅ | `16d4f213` |
 | **NOI-6** | Intervention routing: operator → server → liminal PUSH → worker → `session.intervene()`. Neutral `InterventionOutcome` ack (ts-rs). Server `InterventionRouter` gates on the worker's advertised `InterventionCapabilities` (stored on `WorkerHandle`, surfaced at liminal registration via the notifier) + resolves the owning worker via an `AttemptOwnerIndex` back-index + pushes over the liminal server-push (`InterventionRequest`/`InterventionReply` demuxed from `DispatchRequest` on the same channel). Worker `ControlRegistry` routes the pushed command to the live session's `spawn_agent` control channel → `session.intervene()` → ack. Namespace-gated `POST /workflows/intervene` (mirrors signal/cancel). **E2E over real liminal TCP green** (InjectMessage + Cancel applied), plus both negative controls (unadvertised gated at server & never sent; stale/nonexistent attempt = app-range too-late no-op, no panic). Deferred: the liminal-worker execute path does not yet drive `spawn_agent`/register sessions itself (the seam + registry are in place); harness-neutral (`no-norn-in-platform` green). | aion | ✅ | `0ca827a7` |
 | **NOI-7** | Ops-console `TranscriptPanel` + `InterventionControls` (capability-gated). Includes the transcript target delimiter fix (NUL join/split unification — a green-but-dead path caught by adversarial review, confirmed via `od -c`) + round-trip regression test. Re-gated: typecheck, biome, 256 bun tests, `verify-ops-console`, `no-norn-in-platform`. | aion | ✅ | `32edd9c4` |
-| **NOI-8** | Second observability-only adapter — the SDK **generality proof** (two implementations of one trait) | aion | ⬜ | — |
+| **NOI-8** | Second, independent `AgentHarness` integration (`aion-integration-cli`, standalone crate): an **observability-only** CLI adapter (spawns a real line-oriented process, demuxes stdout → `ActivityEvent`, advertises EMPTY intervention capabilities) + an **interveneable mock** (`{inject_message,cancel}`, NACKs `RespondToApproval` et al.). The SDK **generality proof** — two implementations of one trait — with platform crates (`aion-core`/`aion-integrations`/wire/server/`aion-worker`) byte-unchanged (only a workspace-member line). Gate #2 drives `InjectMessage`+`Cancel` through the REAL `spawn_agent` worker driver + `ControlMessage` channel → `Applied`, and asserts the applied-log holds exactly the two accepted commands; negative controls proven by mutation. `no-norn-in-platform` green. | aion | ✅ | `7d86900a` |
 
 **Milestone reached:** through NOI-4, the entire aion↔Norn control plane works end-to-end through the neutral trait, the product runs Norn out-of-box, and the zero-Norn-in-platform invariant is CI-enforced. NOI-5..8 are the durable-persistence + UI back half.
 
@@ -54,11 +54,18 @@ Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
 
 ## Resume point
 
-**NOI-7 landed** (`32edd9c4`, merged to main `4c2f6d5f`; re-gated: typecheck 0 errors, biome clean, 256
-bun tests, `verify-ops-console` + `no-norn-in-platform` clean). The transcript target delimiter fix
-(NUL join / space split mismatch — a green-but-dead path an adversarial review flagged; confirmed real
-via `od -c` on the raw bytes) landed with it plus a round-trip regression test. **Next: NOI-8** (a
-second observability-only adapter — the SDK generality proof, two implementations of one trait). Two
-committed strategic design docs sit beside this one: `ZERO-CONFIG-CLUSTER-FORMATION.md` and
-`WORKER-DEPLOYMENT.md`, both gated on #146 (CSOT-1 phase-1 substrate now landed on haematite main
+**NOI-8 landed** (`7d86900a`, merged to main `21a90b73`; re-gated by the orchestrator on a forced
+recompile: 21 tests green, clippy `-D` clean, `no-norn-in-platform` clean, platform crates
+byte-unchanged, gate-#2 e2e spot-read + negative controls confirmed by mutation). **The NOI-0..8 arc is
+COMPLETE** — a durable, real-time, harness-neutral observability + intervention control plane, proven
+general by two independent `AgentHarness` implementations.
+
+**Remaining NOI tails (deferrals, not new slices):**
+- **NOI-5b tail** — worker-runtime drain arm + the concrete liminal Channel-Publish event bus (§5.1/§9);
+  the handler-facing seam is in, real-worker-runtime durable emission depends on it.
+- **NOI-6 tail** — the liminal-worker execute path does not yet drive `spawn_agent` / self-register
+  sessions (seam + registry in place); gates operating a real running agent from the ops console live.
+
+Two committed strategic design docs sit beside this one: `ZERO-CONFIG-CLUSTER-FORMATION.md` and
+`WORKER-DEPLOYMENT.md`, both gated on #146 (CSOT-1 phase-1 substrate landed on haematite main
 `c41b35c`). Update after each merge.
