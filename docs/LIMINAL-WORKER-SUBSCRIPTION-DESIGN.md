@@ -1,5 +1,14 @@
 # Aion #13 — the liminal worker-pool SUBSCRIPTION (DESIGN + DECOMPOSITION)
 
+> ✅ LANDED (reconciled 2026-07-02). The worker-pool subscription over liminal SHIPPED
+> via the LSUB series (#101-112): in-band worker self-registration over liminal (LSUB-L2
+> Stage 2, `06778058`), the subscribe/dispatch channel derivation
+> (`dispatch_channel_name(ns, tq, Option<node>)` → `aion.dispatch.{ns}.{tq}[.{node}]` in
+> `aion-server/src/worker/liminal_transport.rs`), typed worker-death classification +
+> fast cross-node failover (LSUB-3 Stage B), and OS-process deployed-binary listener
+> (LSUB-5-B `1857222a`, #109). FOLLOW-UP STILL OPEN: liminal-transport wire hardening.
+> The original "remaining gap" framing below is retained as the design/risk record.
+
 Read-only analysis. No implementation. This is a build plan + risk map for the
 **remaining gap** that makes aion's `(namespace, task_queue, node)` routing work
 ACROSS the cluster over liminal, not just locally over gRPC.

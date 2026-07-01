@@ -329,7 +329,7 @@ Wires all 18 aion_flow_ffi functions through the durability layer.
 - [x] **NB-004** — Timer NIFs · _landed_
 - [x] **NB-005** — Signal NIFs · _landed_
 - [x] **NB-006** — Query NIFs · _landed c5074cb_
-- [ ] **NB-007** — Child workflow NIFs · _rejected, re-dispatch pending_
+- [ ] **NB-007** — Child workflow NIFs · _brief rejected, re-dispatch pending. NOTE (reconciled 2026-07-02): the child-workflow FEATURE ships and is e2e-tested (`gleam/aion_flow/src/aion/child.gleam`; `crates/aion/tests/child_await_e2e.rs`, `nested_workflows_e2e.rs`) — but this specific brief itself is unresolved, so the box is left unchecked pending re-dispatch/close._
 - [x] **NB-008** — Concurrency NIFs · _landed_
 - [x] **NB-009** — Process exit detection · _landed_
 
@@ -339,10 +339,11 @@ Wires all 18 aion_flow_ffi functions through the durability layer.
 
 Raised from GitHub issues #7–#10 (Josh/Mrs Willoughby architectural review).
 
-- [ ] **AS-009** — Enforce single-writer discipline at the type level · _GitHub #10_
-- [ ] **AE-015** — Eliminate silent visibility store fallback · _GitHub #9_
-- [ ] **AV-006** — Crash-consistency recovery for visibility projection · _GitHub #8_
-- [ ] **AT-013** — Fix signal delivery failure on beamr 0.3.15 · _GitHub #7_
+<!-- reconciled 2026-07-02: all four merged; ticked against verified merge commits. -->
+- [x] **AS-009** — Enforce single-writer discipline at the type level · _GitHub #10 · landed c989a3af (ReadableEventStore/WritableEventStore split)_
+- [x] **AE-015** — Eliminate silent visibility store fallback · _GitHub #9 · landed b20c93c2 (explicit visibility store in EngineBuilder)_
+- [x] **AV-006** — Crash-consistency recovery for visibility projection · _GitHub #8 · landed 568661bc_
+- [x] **AT-013** — Fix signal delivery failure on beamr 0.3.15 · _GitHub #7 · landed b70f86df_
 
 ---
 

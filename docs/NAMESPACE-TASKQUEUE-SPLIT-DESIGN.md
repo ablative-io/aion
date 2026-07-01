@@ -1,6 +1,13 @@
 # Namespace / task-queue split — making two dimensions out of one (DESIGN)
 
-> Status: **design pass only, not yet briefs.** Read-only analysis + decomposition,
+> ✅ IMPLEMENTED (reconciled 2026-07-02). The NSTQ split SHIPPED. Verified:
+> `crates/aion-proto-generated/proto/worker.proto` carries disjoint `namespaces`
+> (correctness set) / `task_queue` (pool selector) / `node` fields;
+> `aion-server/src/worker/registry.rs` keys the pool on `(namespace, task_queue, node)`
+> with empty-`task_queue` normalized to a named default pool. Landed via NSTQ series
+> (merge `6c0276fc`, #87). This doc is retained as the design/decomposition record.
+>
+> Status (original): **design pass only, not yet briefs.** Read-only analysis + decomposition,
 > 2026-06-27, off `main` ab4c3d82. No implementation in this doc — it specifies
 > the work and the back-compat risk so it can be built deliberately.
 >

@@ -1,5 +1,22 @@
 # Ablative Stack Audit — Synthesized Work-List (2026-06-30)
 
+> STATUS RECONCILED 2026-07-02 — a DONE/OPEN status is now called out per area.
+> **✅ DONE — the defaulting work (Tier-0 items 1 & 2, Theme 2, Theme 3):** aion now
+> defaults to OUR stack. Verified in code:
+> - `aion-server` `default = ["haematite-backend", "liminal-transport"]` (`Cargo.toml:141`);
+>   `aion-cli` `default = ["haematite-backend", "liminal-transport", "norn"]` (`Cargo.toml:79`);
+>   libSQL moved behind an opt-in `libsql-backend` feature.
+> - Runtime default backend is now Haematite with a default data_dir:
+>   `StoreBackend::Haematite` + `DEFAULT_HAEMATITE_DATA_DIR` in
+>   `crates/aion-server/src/config/sections.rs:581-584` (config was refactored `mod.rs`→`sections.rs`).
+> - `aion new` scaffold flipped: `backend = "haematite"` in
+>   `crates/aion-cli/templates/shared/aion.toml:12` (libSQL/memory kept as commented opt-ins).
+> **⏳ OPEN — the residual durability/failover TEST gaps (Theme 1, Tier-0 item 3, Also-lead-tier):**
+> beamr net-tick/heartbeat liveness, haematite disk dir-fsync crash injection, WASM
+> OPFS/IndexedDB persistence tests, ETF decoder fuzz/proptest, etc. remain to verify. Some
+> haematite gaps were closed by the risk-ranked test sweep (#141) — reconcile item-by-item
+> before trusting green. Per-item DONE/OPEN markers are inlined below.
+
 Source: four structured audits of the ablative stack (beamr / haematite / liminal / aion) covering three themes:
 1. **Test coverage** of beamr + haematite (the durable/failover-critical seams)
 2. **Making haematite the default / first-class storage backend** in aion
@@ -15,15 +32,15 @@ These are the items that combine the highest risk with what Tom explicitly asked
 
 ### Tier 0 — start here (3 things)
 
-1. **Flip aion default Cargo features to our stack.** `aion-server` and `aion-cli` ship `default = []` and hard-link external libSQL + default gRPC; a stock/published binary cannot even run on haematite (selecting it is a boot error). This is one coordinated change that unblocks *every* defaulting fix below.
+1. **✅ DONE (2026-07-02).** **Flip aion default Cargo features to our stack.** `aion-server` and `aion-cli` ship `default = []` and hard-link external libSQL + default gRPC; a stock/published binary cannot even run on haematite (selecting it is a boot error). This is one coordinated change that unblocks *every* defaulting fix below.
    - `crates/aion-server/Cargo.toml`: `default = ["haematite-backend", "liminal-transport"]`; make `aion-store-libsql` `optional = true` behind a new `libsql-backend` feature.
    - `crates/aion-cli/Cargo.toml`: `default = ["haematite-backend", "liminal-transport"]`.
    - (Critical × 2 from "default features = ours" + the gating critical from "haematite as default backend".)
 
-2. **Make haematite the runtime default backend (with a default `data_dir`).** Change `StoreConfig::default()` from `Memory` (coerced to LibSql) to `Haematite`, and supply a default `data_dir` (e.g. `aion-data`) so `validate()` does not fail on an empty config. Keep `backend = "memory" | "libsql"` as explicit opt-ins; flip `OutboxTransport` default `Grpc → Liminal`; set `aion-client` `default = ["embedded"]`.
+2. **✅ DONE (2026-07-02) — now in `config/sections.rs:581-584`.** **Make haematite the runtime default backend (with a default `data_dir`).** Change `StoreConfig::default()` from `Memory` (coerced to LibSql) to `Haematite`, and supply a default `data_dir` (e.g. `aion-data`) so `validate()` does not fail on an empty config. Keep `backend = "memory" | "libsql"` as explicit opt-ins; flip `OutboxTransport` default `Grpc → Liminal`; set `aion-client` `default = ["embedded"]`.
    - `crates/aion-server/src/config/mod.rs:966-977` (default), `:716-718` + `config/env.rs:36-37` (Memory→LibSql coercion), `:767-772` (validate data_dir guard), `:513-516` (`OutboxTransport`).
 
-3. **Close the single most failover-relevant TEST gap: beamr has no proactive liveness (net-tick/heartbeat).** An idle link to a silently-partitioned peer never produces a `nodedown`, so pg purge, remote-monitor DOWN, and aion ownership-lease expiry never fire. Add the integration test that drops a peer socket at OS level with no FIN/RST and asserts `connection_down` fires within a bounded interval — a failing test is the signal to build the tick mechanism **before** trusting beamr for unattended cross-node failover.
+3. **⏳ OPEN (reconcile before trusting green).** **Close the single most failover-relevant TEST gap: beamr has no proactive liveness (net-tick/heartbeat).** An idle link to a silently-partitioned peer never produces a `nodedown`, so pg purge, remote-monitor DOWN, and aion ownership-lease expiry never fire. Add the integration test that drops a peer socket at OS level with no FIN/RST and asserts `connection_down` fires within a bounded interval — a failing test is the signal to build the tick mechanism **before** trusting beamr for unattended cross-node failover.
    - `crates/beamr/src/distribution/connection.rs:799-829` (mark_down only on read error/EOF), `sender.rs:176` (write-timeout needs outbound traffic).
 
 ### Also lead-tier (durability test gaps + default-config flips)
@@ -31,7 +48,7 @@ These are the items that combine the highest risk with what Tom explicitly asked
 - **haematite disk dir-fsync barrier is never crash-injected** (HIGH) — `store/disk.rs:116`; a lost-rename window could drop a published node. There is an active `fsync-nodedir` worktree confirming this is live.
 - **haematite WASM persistence (OPFS/IndexedDB) has zero tests** (HIGH) — `src/wasm/*`, `src/store/opfs/*`, `src/store/indexeddb.rs`.
 - **ETF wire decoder parses untrusted peer bytes with no fuzz/proptest** (HIGH) — `crates/beamr/src/etf/decode.rs`; no proptest harness exists anywhere in beamr.
-- **`aion new` scaffold hard-codes `backend = "libsql"`** (HIGH) — `crates/aion-cli/templates/shared/aion.toml:11-13`; flip to haematite + `data_dir`.
+- **✅ DONE (2026-07-02)** — **`aion new` scaffold hard-codes `backend = "libsql"`** (HIGH) — `crates/aion-cli/templates/shared/aion.toml:11-13`; flip to haematite + `data_dir`. FLIPPED: scaffold now emits `backend = "haematite"` (`aion.toml:12`), libSQL/memory commented opt-ins.
 
 ---
 

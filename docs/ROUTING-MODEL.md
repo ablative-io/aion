@@ -1,6 +1,15 @@
 # Routing model — namespace, task-queue, node
 
-> Status: design notes, not yet briefs. Captured 2026-06-16 during the L3
+> ✅ SUPERSEDED / IMPLEMENTED (reconciled 2026-07-02). All three tiers now SHIP.
+> The "Nothing in Tier 2/3 is implemented" line below is STALE. Tier 2 (namespace ×
+> task_queue split, NSTQ) landed — `crates/aion-proto-generated/proto/worker.proto`
+> (`namespaces`/`task_queue`/`node` fields) + `aion-server/src/worker/registry.rs`
+> (`(namespace, task_queue, node)` pool key); NSTQ merge `6c0276fc`. Tier 3 (node
+> affinity) landed — see NODE-AFFINITY-DESIGN.md (NODE-1..5). This doc is retained as
+> the original conceptual record; for current design see NAMESPACE-TASKQUEUE-SPLIT-DESIGN.md
+> and NODE-AFFINITY-DESIGN.md.
+>
+> Status (original): design notes, not yet briefs. Captured 2026-06-16 during the L3
 > (workflow reopen) design discussion. Records the agreed direction for how
 > work is routed to workers so we can build it deliberately rather than letting
 > it stay as the current single-dimension accident.

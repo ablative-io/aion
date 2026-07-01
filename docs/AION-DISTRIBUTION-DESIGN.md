@@ -1,9 +1,18 @@
 # Aion distributed orchestration — design doc (fan-out / fan-in / affinity / storage)
 
-Status: **DRAFT, in progress.** Design-first, working toward a world-class active-active,
-single-binary durable orchestrator. Grounded in the comparative review
+Status: **PARTIALLY DELIVERED — foundation landed, active-active build ongoing**
+(reconciled 2026-07-02). Downgraded from "DRAFT, in progress": **H1** (fan-out via a
+durable outbox) is BUILT and crash-safe — see AION-OUTBOX-CUTOVER-DECISION.md (all five
+cutover blockers landed) and the libsql outbox. **H2** (monotonic fencing epoch) is
+spike-VALIDATED (`crates/haematite/tests/spike_fencing.rs`, 5/5 green) but the
+quorum/consensus-backed build is the remaining cluster wave (#146 durable membership,
+#147 auto-discovery). Sections still gated on that work stay marked ⏳. Multi-shard
+active-active itself landed the AA-4-x series (see MULTI-SHARD-ACTIVE-ACTIVE-DESIGN.md).
+     Original status: "DRAFT, in progress. ... empirical haematite fencing spike (in progress)."
+
+Grounded in the comparative review
 ([AION-DISTRIBUTION-REVIEW.md](./AION-DISTRIBUTION-REVIEW.md)) and an empirical haematite
-fencing spike (in progress). Spike-dependent sections are marked ⏳.
+fencing spike. Spike-dependent sections are marked ⏳.
 
 ## Locked decisions (Tom, 2026-06-24)
 

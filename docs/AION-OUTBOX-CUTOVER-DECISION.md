@@ -157,6 +157,20 @@ All gated on `outbox.enabled` (default `false` — server behaviour unchanged wh
 
 ## Remaining work — REQUIRED, nothing optional
 
+> STATUS RECONCILED 2026-07-02: all five REQUIRED blockers below are now BUILT.
+> Verified against code:
+> 1. Reconciliation sweep — `OutboxReconciler` spawned at boot via `rearm_outbox_pending`
+>    (`aion-server/src/run.rs:442-445`, `resolve_outbox_reconciler_config`).
+> 2. Cancel/settle on collect cancel — `settle_outbox_row_cancelled`
+>    (`aion-store-libsql/src/store.rs:248`, SQL in `outbox/transitions.rs:82`;
+>    threaded through `recorder.rs`/`publish/store.rs`).
+> 3. `RunId` on the wire — `optional RunId run_id` on both ScheduledActivity and the
+>    completion message (`aion-proto-generated/proto/worker.proto:127,138`).
+> 4. `run_server` bootstrap integration test — `crates/aion-server/tests/run_server_outbox_e2e.rs`.
+> 5. Liminal cross-node swap — `LiminalOutboxDispatch` + liminal-push path
+>    (`worker/liminal_transport.rs`, `worker/outbox_dispatcher.rs:710`).
+> The original list is retained below as the design record.
+
 The cutover landed (flag default-off) is correct and crash-safe for the tested paths,
 but the following are REQUIRED before the flag is turned ON in production. None is
 "optional hardening" — they are tracked work, listed roughly in priority order.

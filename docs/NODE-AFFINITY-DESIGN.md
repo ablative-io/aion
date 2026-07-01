@@ -1,6 +1,15 @@
 # Node affinity — the third routing dimension (DESIGN)
 
-> Status: design locked 2026-06-28 (conversation with owner). Builds directly on the
+> ✅ IMPLEMENTED (reconciled 2026-07-02). NODE-1..5 shipped. Verified: the `node`
+> field is on the worker registration wire (`crates/aion-proto-generated/proto/worker.proto`,
+> "optional locality affinity ... round-robin among them"), a worker serves a SET of
+> namespaces (`repeated string namespaces`), and the dispatch pool key is
+> `(namespace, task_queue, node)` in `aion-server/src/worker/registry.rs` with
+> `worker_matches_node`/`ClaimScope` selection. Namespace-default placement over this axis
+> (Prefer/Pinned) is Control-Plane Phase 2 (LANDED — see CONTROL-PLANE-PHASE-2.md). Design
+> record retained below.
+>
+> Status (original): design locked 2026-06-28 (conversation with owner). Builds directly on the
 > NSTQ rethread (namespace × task_queue, landed `6c0276fc`). This adds `node` as the
 > third routing dimension and widens a worker to serve a SET of namespaces.
 

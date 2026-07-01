@@ -1,5 +1,10 @@
 # Implementation Plan: Cancel a workflow's in-flight timers at cancellation time
 
+> ✅ ARCHIVED — IMPLEMENTED (reconciled 2026-07-02). The fix landed: `timer_is_live`
+> any-semantics for re-armed named timers + unified liveness helper (commit 761be22e),
+> alongside the recovery-defense and cancellation root-cause fixes. This doc is kept as
+> the historical plan/record; no further action.
+
 Status: proposal (read-only investigation). Author: investigation agent. Date: 2026-06-22.
 
 ## Problem recap
