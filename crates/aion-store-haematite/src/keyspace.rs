@@ -184,6 +184,42 @@ pub(crate) fn shard_owner_key(shard: usize, shard_for: impl Fn(&[u8]) -> usize) 
     }
 }
 
+/// Region tag for the observability (`O`) keyspace — NOI-5's transcript spine.
+///
+/// Uppercase `O` (`0x4F`) is byte-disjoint from EVERY other region: it is not
+/// `0x00` (the event-stream `seq` separator), not `E` (`0x45`, the event-stream
+/// tag), and not any of the lowercase KV tags (`t`, `p`, `r`, `o` = `0x6F`, `n`,
+/// `d`). An `O`-region key can therefore never collide with a workflow-history
+/// event-stream key nor any other durable record — which is precisely what makes
+/// the observability transcript "durable but non-replay-authoritative" a
+/// structural guarantee: the replay decoder only ever scans `E`-tagged streams
+/// (17-byte keys starting with `0x45`), so an `O`-tagged record is invisible to
+/// replay and, being a different schema besides, undecodable as an `Event`.
+pub(crate) const OBSERVABILITY_TAG: u8 = b'O';
+
+/// The observability stream key for `(workflow_id, activity_seq, attempt)`.
+///
+/// Layout (fixed 29 bytes): `O(1) || workflow_uuid(16) || activity_seq_be(8) ||
+/// attempt_be(4)`. This is handed to
+/// [`haematite::EventStore::append_batch`]/`read_from`, which append their own
+/// `0x00 || seq` suffix — so within one attempt's stream the records order by
+/// their server-allocated `store_seq`. The fixed-width big-endian components make
+/// the key order lexicographically identical to the tuple order and keep the key
+/// unambiguously parseable, and the leading `O` tag keeps it disjoint from the
+/// `E`-stream and the `_:`-prefixed KV regions (see [`OBSERVABILITY_TAG`]).
+pub(crate) fn observability_stream_key(
+    workflow_id: &WorkflowId,
+    activity_seq: u64,
+    attempt: u32,
+) -> Vec<u8> {
+    let mut key = Vec::with_capacity(1 + 16 + 8 + 4);
+    key.push(OBSERVABILITY_TAG);
+    key.extend_from_slice(workflow_id.as_uuid().as_bytes());
+    key.extend_from_slice(&activity_seq.to_be_bytes());
+    key.extend_from_slice(&attempt.to_be_bytes());
+    key
+}
+
 /// Build a composite key: `prefix` then each field joined by [`FIELD_SEP`].
 fn composite(prefix: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     let mut key = prefix.to_vec();
@@ -288,6 +324,46 @@ mod tests {
     #[test]
     fn prefix_upper_bound_unbounded_when_all_ff() {
         assert_eq!(prefix_upper_bound(&[0xff, 0xff]), None);
+    }
+
+    #[test]
+    fn observability_key_is_o_tagged_and_disjoint_from_every_region() {
+        let workflow_id = WorkflowId::new(Uuid::from_u128(11));
+        let key = observability_stream_key(&workflow_id, 3, 2);
+        // Uppercase `O` (0x4F) tag.
+        assert_eq!(key[0], OBSERVABILITY_TAG);
+        assert_eq!(key[0], 0x4F);
+        // Disjoint from the event-stream tag `E` (0x45) and the seq separator.
+        assert_ne!(key[0], b'E');
+        assert_ne!(key[0], 0x00);
+        // Disjoint from every lowercase KV region tag — including `o` (0x6F, the
+        // OUTBOX tag), which is a DIFFERENT byte from uppercase `O` (0x4F).
+        assert_ne!(&key[..2], TIMER_PREFIX);
+        assert_ne!(&key[..2], PACKAGE_PREFIX);
+        assert_ne!(&key[..2], ROUTE_PREFIX);
+        assert_ne!(&key[..2], OUTBOX_PREFIX);
+        assert_ne!(&key[..2], NAMESPACE_PREFIX);
+        assert_ne!(&key[..2], SHARD_OWNER_PREFIX);
+        assert_ne!(key[0], OUTBOX_PREFIX[0]);
+        // Fixed-width layout: O(1) + uuid(16) + activity_seq(8) + attempt(4).
+        assert_eq!(key.len(), 29);
+        // The uuid + fixed-width suffix means it can NEVER be mistaken for a
+        // 17-byte `E`-stream key (the only key shape the replay decoder decodes).
+        assert_ne!(key.len(), 17);
+        assert_eq!(workflow_id_from_event_stream_key(&key), None);
+    }
+
+    #[test]
+    fn observability_keys_order_by_workflow_then_activity_then_attempt() {
+        let workflow = WorkflowId::new(Uuid::from_u128(5));
+        // Same workflow+activity, ascending attempt ⇒ ascending key.
+        let a0 = observability_stream_key(&workflow, 7, 0);
+        let a1 = observability_stream_key(&workflow, 7, 1);
+        assert!(a0 < a1, "ascending attempt must sort ascending");
+        // Ascending activity_seq ⇒ ascending key (big-endian width preserved).
+        let act_low = observability_stream_key(&workflow, 7, 5);
+        let act_high = observability_stream_key(&workflow, 8, 0);
+        assert!(act_low < act_high, "ascending activity must sort ascending");
     }
 
     #[test]

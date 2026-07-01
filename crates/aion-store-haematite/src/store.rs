@@ -43,12 +43,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aion_core::{
-    Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary, status_from_events,
+    ActivityEvent, Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    status_from_events,
 };
 use aion_store::{
-    ClaimScope, MintOutcome, NamespaceOrigin, NamespacePlacement, NamespaceRecord, NamespaceStore,
-    OutboxRow, OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
-    ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
+    ActivityRecord, ActivityStreamKey, ClaimScope, MintOutcome, NamespaceOrigin,
+    NamespacePlacement, NamespaceRecord, NamespaceStore, ObservabilityStore, OutboxRow,
+    OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
+    RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -1452,6 +1454,95 @@ fn stream_head(store: &haematite::EventStore, workflow_id: &WorkflowId) -> Resul
     Ok(events.iter().map(Event::seq).max().unwrap_or(0))
 }
 
+// --- observability (`O`) keyspace helpers (run inside `spawn_blocking`) ------
+
+/// The `O`-region stream key for an observability [`ActivityStreamKey`].
+fn observability_key(key: &ActivityStreamKey) -> Vec<u8> {
+    keyspace::observability_stream_key(
+        &key.workflow_id,
+        key.activity_id.sequence_position(),
+        key.attempt,
+    )
+}
+
+/// The current `O`-stream head (next `store_seq` to be written) for `key`.
+///
+/// The stored `next_seq` metadata is the public 0-based next sequence — exactly
+/// the value the api `append_batch` returns (`expected_seq + n`) and therefore
+/// the count of durable events / the next `store_seq` to write. (The `-1` in the
+/// event-KEY decode is an internal tree-key detail, NOT the `next_seq` metadata.)
+/// An unwritten stream has no metadata and reads head `0`.
+fn observability_head_blocking(
+    store: &haematite::EventStore,
+    key: &ActivityStreamKey,
+) -> Result<u64, StoreError> {
+    let stream_key = observability_key(key);
+    let engine_next = store
+        .database()
+        .read_stream_next_seq(&stream_key)
+        .map_err(|error| database_error(&error))?;
+    Ok(engine_next.unwrap_or(0))
+}
+
+/// Append one observability event to its `O`-stream at `expected_seq`.
+///
+/// Maps haematite's optimistic-concurrency `SequenceConflict` back to
+/// [`StoreError::SequenceConflict`] so the server sequencer can re-read the head
+/// and retry. On success returns the assigned `store_seq` (which equals
+/// `expected_seq`). The single-node store self-commits `append_batch`.
+fn observability_append_blocking(
+    store: &haematite::EventStore,
+    expected_seq: u64,
+    event: &ActivityEvent,
+) -> Result<u64, StoreError> {
+    let key = ActivityStreamKey::of(event);
+    let stream_key = observability_key(&key);
+    let mut event = event.clone();
+    event.store_seq = Some(expected_seq);
+    let payload = serde_json::to_vec(&event).map_err(|error| serde_error(&error))?;
+    match store.append_batch(&stream_key, &[payload.as_slice()], expected_seq) {
+        Ok(_next_seq) => Ok(expected_seq),
+        Err(haematite::ApiError::SequenceConflict(conflict)) => Err(StoreError::SequenceConflict {
+            expected: expected_seq,
+            found: conflict.actual,
+        }),
+        Err(error) => Err(api_error(&error)),
+    }
+}
+
+/// Read every `O`-stream record for `key` with `store_seq >= from_seq`, in order.
+fn observability_read_blocking(
+    store: &haematite::EventStore,
+    key: &ActivityStreamKey,
+    from_seq: u64,
+) -> Result<Vec<ActivityRecord>, StoreError> {
+    let stream_key = observability_key(key);
+    let raw = match store.read_from(&stream_key, from_seq) {
+        Ok(raw) => raw,
+        // An empty stream at from_seq==0 that reports compacted is impossible for
+        // the append-only `O` keyspace (no compaction), but treat any empty read
+        // as an empty tail rather than an error.
+        Err(haematite::ApiError::HistoryCompacted(_)) => return Ok(Vec::new()),
+        Err(error) => return Err(api_error(&error)),
+    };
+    let mut records = Vec::with_capacity(raw.len());
+    for event in raw {
+        let decoded: ActivityEvent =
+            serde_json::from_slice(&event.payload).map_err(|error| serde_error(&error))?;
+        // The api seq is the authoritative store_seq; trust it over the payload's
+        // self-reported copy so a record is self-consistent even if the two ever
+        // drifted.
+        let store_seq = event.seq;
+        let mut decoded = decoded;
+        decoded.store_seq = Some(store_seq);
+        records.push(ActivityRecord {
+            store_seq,
+            event: decoded,
+        });
+    }
+    Ok(records)
+}
+
 /// Insert `rows` into the outbox, ignoring any whose `dispatch_key` already
 /// exists (at-most-once dispatch). Commits before returning.
 fn insert_outbox_rows(store: &haematite::EventStore, rows: &[OutboxRow]) -> Result<(), StoreError> {
@@ -1473,6 +1564,38 @@ fn insert_outbox_rows(store: &haematite::EventStore, rows: &[OutboxRow]) -> Resu
     }
     database.commit().map_err(|error| database_error(&error))?;
     Ok(())
+}
+
+#[async_trait]
+impl ObservabilityStore for HaematiteStore {
+    async fn append_activity_event(
+        &self,
+        expected_seq: u64,
+        event: &ActivityEvent,
+    ) -> Result<u64, StoreError> {
+        // Server-single-writer optimistic-concurrency append to the `O` keyspace.
+        // The server's sequencer supplies `expected_seq` and retries on conflict;
+        // this store never auto-allocates the sequence (§5.3).
+        let event = event.clone();
+        self.blocking(move |store| observability_append_blocking(store, expected_seq, &event))
+            .await
+    }
+
+    async fn activity_head(&self, key: &ActivityStreamKey) -> Result<u64, StoreError> {
+        let key = key.clone();
+        self.blocking(move |store| observability_head_blocking(store, &key))
+            .await
+    }
+
+    async fn read_activity_events_from(
+        &self,
+        key: &ActivityStreamKey,
+        from_seq: u64,
+    ) -> Result<Vec<ActivityRecord>, StoreError> {
+        let key = key.clone();
+        self.blocking(move |store| observability_read_blocking(store, &key, from_seq))
+            .await
+    }
 }
 
 #[async_trait]
