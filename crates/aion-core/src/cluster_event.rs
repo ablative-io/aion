@@ -276,6 +276,42 @@ pub enum ClusterEvent {
         /// The new placement directive, as the stable wire projection.
         placement: NamespacePlacementWire,
     },
+    /// A periodic snapshot of a namespace's concurrency-quota state (Control-Plane
+    /// Phase 2, P2-Q3), pushed on the SAME deploy-scoped channel as
+    /// [`Self::NamespaceCreated`] so the ops console renders a live "in-flight /
+    /// ceiling" badge that ticks as work flows.
+    ///
+    /// This is the ONE edge-triggered exception's honest counterweight: unlike the
+    /// other variants (each emitted at a real subsystem mutation), quota state
+    /// changes on every claim/settle, so per-row emission would be a firehose.
+    /// Instead a throttled snapshot task samples each active namespace's REAL
+    /// durable state once per cadence and emits this — a periodic snapshot per
+    /// active namespace, never a client poll. The console folds the latest snapshot
+    /// per namespace, superseding the prior value.
+    ///
+    /// `in_flight` is the durable **Claimed** outbox-row count for the namespace
+    /// (`count_claimed_outbox_rows`) — the SAME notion the keyed backpressure caps,
+    /// never the dead `inflight_activities` gauge (P2-Q0). `ceiling` is the tenant's
+    /// **cluster-wide** contract: its explicit `max_in_flight_activities` override
+    /// or the platform default — the number the operator set, not the per-node
+    /// proportional slice (exposing per-node math is the leaky-abstraction footgun
+    /// §3.6 rejects). On a single node the durable `in_flight` this node sees is the
+    /// whole cluster's; multi-node exact aggregation is the reserved §3.6 follow-up.
+    NamespaceQuotaState {
+        /// Cluster-event metadata.
+        meta: ClusterEventMeta,
+        /// The namespace this quota snapshot describes (registry primary key).
+        namespace: String,
+        /// Durable count of currently-**Claimed** outbox rows for the namespace —
+        /// the in-flight activities the ceiling caps.
+        ///
+        /// Exported to TypeScript as `number`; see the module docs for the accepted
+        /// `2^53` ceiling (an in-flight count never approaches it).
+        in_flight: u64,
+        /// The tenant's cluster-wide concurrency ceiling: its explicit
+        /// `max_in_flight_activities` override, or the platform default when unset.
+        ceiling: u32,
+    },
 }
 
 /// Stable wire projection of a namespace's durable placement directive

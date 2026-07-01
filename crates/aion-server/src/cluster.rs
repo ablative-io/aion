@@ -547,6 +547,20 @@ fn with_meta_worker_lifecycle(
             name,
             placement,
         },
+        // Like `NamespaceCreated`, emitted directly through the publisher (the
+        // throttled quota-snapshot task) which stamps the real meta, never queued
+        // in `tick()`; re-stamped faithfully to keep the match exhaustive.
+        ClusterEvent::NamespaceQuotaState {
+            namespace,
+            in_flight,
+            ceiling,
+            ..
+        } => ClusterEvent::NamespaceQuotaState {
+            meta,
+            namespace,
+            in_flight,
+            ceiling,
+        },
         ClusterEvent::PeerAdded { .. }
         | ClusterEvent::PeerConnected { .. }
         | ClusterEvent::PeerDisconnected { .. }

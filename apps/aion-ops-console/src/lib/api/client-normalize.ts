@@ -1,4 +1,10 @@
-import type { Event, Namespace, WorkflowId, WorkflowSummary } from '@/types';
+import type {
+  Event,
+  Namespace,
+  NamespacePlacementWire,
+  WorkflowId,
+  WorkflowSummary,
+} from '@/types';
 
 import { ApiError } from './api-error';
 
@@ -56,6 +62,14 @@ export type NamespaceRecord = {
   createdAt: string;
   lastSeen: string;
   origin: string;
+  /**
+   * The namespace's durable placement directive (Control-Plane Phase 2, P2-I2),
+   * as the stable `{kind, nodes}` wire projection: `unplaced` (default), `prefer`
+   * (soft/spill), or `pinned` (hard/isolated). Sourced from the durable record so
+   * the panel renders current placement on mount, then reconciled by value against
+   * a live `NamespacePlacementChanged` delta.
+   */
+  placement: NamespacePlacementWire;
 };
 
 /** Raw `GET /namespaces/records` row, before camelCase normalization. */
@@ -64,6 +78,7 @@ type RawNamespaceRecord = {
   created_at?: unknown;
   last_seen?: unknown;
   origin?: unknown;
+  placement?: unknown;
 };
 
 export type NamespaceRecordsResponse = RawNamespaceRecord[] | { namespaces?: RawNamespaceRecord[] };
@@ -85,7 +100,27 @@ export function normalizeNamespaceRecords(response: NamespaceRecordsResponse): N
     createdAt: requireString(row.created_at, 'created_at'),
     lastSeen: requireString(row.last_seen, 'last_seen'),
     origin: asString(row.origin),
+    placement: normalizePlacement(row.placement),
   }));
+}
+
+/**
+ * Normalize a raw `placement` field into the {@link NamespacePlacementWire} shape.
+ * A missing/malformed placement resolves to `unplaced` (the record default) rather
+ * than throwing — placement is a policy overlay, never a required identity field,
+ * so a pre-Phase-2 record with no placement key renders as the default, never an
+ * error. An unrecognized `kind` string is preserved verbatim so a future server
+ * variant renders raw instead of silently collapsing to the default.
+ */
+export function normalizePlacement(value: unknown): NamespacePlacementWire {
+  if (!isRecord(value)) {
+    return { kind: 'unplaced', nodes: [] };
+  }
+  const kind = typeof value.kind === 'string' && value.kind.length > 0 ? value.kind : 'unplaced';
+  const nodes = Array.isArray(value.nodes)
+    ? value.nodes.filter((node): node is string => typeof node === 'string')
+    : [];
+  return { kind, nodes };
 }
 
 /**

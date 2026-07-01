@@ -760,7 +760,28 @@ name: string,
 /**
  * The new placement directive, as the stable wire projection.
  */
-placement: NamespacePlacementWire, };
+placement: NamespacePlacementWire, } | { "type": "NamespaceQuotaState", 
+/**
+ * Cluster-event metadata.
+ */
+meta: ClusterEventMeta, 
+/**
+ * The namespace this quota snapshot describes (registry primary key).
+ */
+namespace: string, 
+/**
+ * Durable count of currently-**Claimed** outbox rows for the namespace —
+ * the in-flight activities the ceiling caps.
+ *
+ * Exported to TypeScript as `number`; see the module docs for the accepted
+ * `2^53` ceiling (an in-flight count never approaches it).
+ */
+in_flight: number, 
+/**
+ * The tenant's cluster-wide concurrency ceiling: its explicit
+ * `max_in_flight_activities` override, or the platform default when unset.
+ */
+ceiling: number, };
 
 export type ClusterPeer = { 
 /**

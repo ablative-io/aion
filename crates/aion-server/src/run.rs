@@ -44,6 +44,16 @@ const PLACEMENT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(
 /// correctness or replay.
 const QUOTA_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Cadence of the ops-console quota-state broadcaster (Control-Plane Phase 2,
+/// P2-Q3). Each tick samples every registry namespace's durable Claimed-row count
+/// and cluster-wide ceiling, then pushes one `NamespaceQuotaState` per namespace
+/// onto the cluster channel, so the console badge tracks live load. Kept at 1s:
+/// brisk enough that the badge visibly ticks as work flows, throttled enough that
+/// it is never a per-row firehose (in-flight changes on every claim/settle). It is
+/// a server-side push on a timer, NOT a client poll — the dashboard rule bans the
+/// latter, not a throttled server snapshot of REAL durable state.
+const QUOTA_BROADCAST_CADENCE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Resolved keyed-backpressure inputs for the outbox dispatcher (Control-Plane
 /// Phase 2, P2-Q2): the generous platform-default ceiling and this node's
 /// owned-shard fraction of the cluster shard space.
@@ -393,12 +403,27 @@ fn maybe_spawn_outbox_dispatcher(
         QUOTA_CACHE_TTL,
     );
     let backpressure =
-        crate::worker::Backpressure::new(quota_cache, backpressure_settings.fraction);
+        crate::worker::Backpressure::new(quota_cache.clone(), backpressure_settings.fraction);
     let dispatcher =
         OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config)
             .with_wake(state.outbox_wake())
             .with_backpressure(backpressure);
     tokio::spawn(dispatcher.run(shutdown_rx.clone()));
+    // Control-Plane Phase 2 (P2-Q3): commission the ops-console quota-state
+    // broadcaster on the SAME durable stores + quota cache the dispatcher enforces
+    // against, so the console badge is a faithful window onto the live per-tenant
+    // in-flight/ceiling the backpressure caps. It shares the shutdown watch, so it
+    // drains with the dispatcher. Only spawned alongside the (default-off)
+    // dispatcher: quota state is meaningless without the outbox fan-out path, and
+    // `in_flight` is the durable Claimed outbox count that path produces.
+    let quota_broadcaster = crate::worker::QuotaBroadcaster::new(
+        Arc::clone(state.namespace_store()),
+        Arc::clone(&outbox_store),
+        quota_cache,
+        state.cluster_publisher().clone(),
+        QUOTA_BROADCAST_CADENCE,
+    );
+    tokio::spawn(quota_broadcaster.run(shutdown_rx.clone()));
     // LSUB-4-1: the single dispatcher task is spawned in both modes. In a
     // single-node boot it owns all shards by construction; in an active-active
     // clustered boot it claims ONLY the shards this node owns, enforced by

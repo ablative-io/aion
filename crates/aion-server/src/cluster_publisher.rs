@@ -161,7 +161,8 @@ pub fn cluster_event_meta(event: &ClusterEvent) -> &ClusterEventMeta {
         | ClusterEvent::SupervisorStarted { meta, .. }
         | ClusterEvent::SupervisorStopped { meta, .. }
         | ClusterEvent::NamespaceCreated { meta, .. }
-        | ClusterEvent::NamespacePlacementChanged { meta, .. } => meta,
+        | ClusterEvent::NamespacePlacementChanged { meta, .. }
+        | ClusterEvent::NamespaceQuotaState { meta, .. } => meta,
     }
 }
 

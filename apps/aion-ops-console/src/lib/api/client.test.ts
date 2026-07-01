@@ -104,6 +104,70 @@ test('listNamespaces parses a typed namespace list', async () => {
   await expect(client.listNamespaces()).resolves.toEqual(['default', 'ops']);
 });
 
+test('listNamespaceRecords parses the placement projection (P2-I2 column source)', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () =>
+      jsonResponse([
+        {
+          name: 'orders',
+          created_at: '2026-06-30T00:00:00Z',
+          last_seen: '2026-06-30T01:00:00Z',
+          origin: 'explicit',
+          placement: { kind: 'pinned', nodes: ['node-a', 'node-b'] },
+        },
+        // A pre-Phase-2 row with NO placement key resolves to the unplaced default,
+        // never a parse error (placement is a policy overlay, not identity).
+        {
+          name: 'legacy',
+          created_at: '2026-06-29T00:00:00Z',
+          last_seen: '2026-06-29T00:00:00Z',
+          origin: 'worker_mint',
+        },
+      ]),
+  });
+
+  const records = await client.listNamespaceRecords();
+  expect(records[0]?.placement).toEqual({ kind: 'pinned', nodes: ['node-a', 'node-b'] });
+  expect(records[1]?.placement).toEqual({ kind: 'unplaced', nodes: [] });
+});
+
+test('setNamespacePlacement PUTs the target namespace path with the {kind, nodes} body', async () => {
+  const calls: Request[] = [];
+  const bodies: string[] = [];
+  const client = new ApiClient({
+    baseUrl: 'https://aion.example',
+    credentials: { namespaces: ['orders'] },
+    fetchImpl: async (input, init) => {
+      const request = new Request(input, init);
+      calls.push(request);
+      bodies.push(typeof init?.body === 'string' ? init.body : '');
+      return jsonResponse({ name: 'orders', created: false });
+    },
+  });
+
+  await client.setNamespacePlacement('orders', { kind: 'pinned', nodes: ['node-a'] });
+
+  expect(calls[0]?.method).toBe('PUT');
+  expect(calls[0]?.url).toBe('https://aion.example/namespaces/orders/placement');
+  // The grant travels on the namespace header so authorize_namespace passes.
+  expect(calls[0]?.headers.get('x-aion-namespaces')).toBe('orders');
+  expect(JSON.parse(bodies[0] ?? '{}')).toEqual({ kind: 'pinned', nodes: ['node-a'] });
+});
+
+test('setNamespacePlacement surfaces a server rejection as a typed ApiError', async () => {
+  const client = new ApiClient({
+    fetchImpl: async () =>
+      jsonResponse(
+        { code: 'not_found', message: 'namespace ghost does not exist' },
+        { status: 404 }
+      ),
+  });
+
+  await expect(
+    client.setNamespacePlacement('ghost', { kind: 'unplaced', nodes: [] })
+  ).rejects.toBeInstanceOf(ApiError);
+});
+
 test('getCapabilities normalizes the /whoami operator-mode response', async () => {
   const calls: Request[] = [];
   const client = new ApiClient({

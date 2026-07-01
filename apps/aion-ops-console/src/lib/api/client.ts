@@ -3,6 +3,7 @@ import type {
   ClusterSnapshot,
   Event,
   Namespace,
+  NamespacePlacementWire,
   WorkflowFilter,
   WorkflowId,
   WorkflowSummary,
@@ -294,6 +295,44 @@ export class ApiClient {
     );
 
     return normalizeNamespaceRecords(response);
+  }
+
+  /**
+   * Set a namespace's durable placement directive (`PUT /namespaces/{name}/placement`).
+   *
+   * Namespace-scoped: the caller's `x-aion-namespaces` grant must include `name`
+   * (the same grant the access path checks), so the console never sets — or learns
+   * the existence of — a namespace it cannot access. The server runs a quorum
+   * value-CAS on the record and, on success, emits a `NamespacePlacementChanged`
+   * cluster delta; the panel folds that delta live, so this method does NOT return
+   * the new placement — the socket is the source of truth (no refetch, no optimistic
+   * client-side write that could diverge from the durable record). Rejection (an
+   * unknown namespace, a denied grant, an invalid label set) propagates as a typed
+   * {@link ApiError}.
+   */
+  async setNamespacePlacement(
+    namespace: Namespace,
+    placement: NamespacePlacementWire,
+    options?: Pick<RequestOptions, 'credentials'>
+  ): Promise<void> {
+    const path = AW_REST_CONTRACT.endpoints.namespacePlacement.replace(
+      '{name}',
+      encodeURIComponent(namespace)
+    );
+    await this.request<unknown>(
+      path,
+      AW_REST_CONTRACT.methods.namespacePlacement,
+      {
+        // The grant is carried on the namespace header (buildHeaders reads
+        // credentials.namespaces); the target namespace also travels in the path.
+        namespace,
+        credentials: options?.credentials,
+      },
+      {
+        kind: placement.kind,
+        nodes: placement.nodes,
+      }
+    );
   }
 
   async getWorkflowsPlain(options: RequestOptions): Promise<WorkflowSummary[]> {
