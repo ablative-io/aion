@@ -243,6 +243,35 @@ impl Metrics {
             .with_label_values(&[workflow_type])
             .set(count);
     }
+
+    /// Current value of the `aion_inflight_activities` gauge for a namespace.
+    #[cfg(test)]
+    pub(crate) fn inflight_activities_value(&self, namespace: &str) -> i64 {
+        self.inner
+            .inflight_activities
+            .with_label_values(&[namespace])
+            .get()
+    }
+
+    /// Current value of the `aion_activities_dispatched_total` counter for a
+    /// namespace and activity type.
+    #[cfg(test)]
+    pub(crate) fn activities_dispatched_value(&self, namespace: &str, activity_type: &str) -> u64 {
+        self.inner
+            .activities_dispatched
+            .with_label_values(&[namespace, activity_type])
+            .get()
+    }
+
+    /// Current value of the `aion_activities_completed_total` counter for a
+    /// namespace and outcome label.
+    #[cfg(test)]
+    pub(crate) fn activities_completed_value(&self, namespace: &str, outcome: &str) -> u64 {
+        self.inner
+            .activities_completed
+            .with_label_values(&[namespace, outcome])
+            .get()
+    }
 }
 
 fn build_workflow_metrics() -> Result<(IntCounterVec, IntCounterVec, IntCounterVec), MetricsError> {
