@@ -540,17 +540,23 @@ impl RegistryLiminalDispatch {
         self
     }
 
-    /// Select the liminal worker for `row`, applying the shared `Prefer` two-tier
-    /// spill for an UNPINNED row when a placement cache is attached.
+    /// Select the liminal worker for `row`, applying the SHARED placement decision
+    /// for an UNPINNED row when a placement cache is attached — the exact gRPC
+    /// semantics ([`worker_selection_for`](crate::worker::worker_selection_for)):
+    /// `Prefer{L}` spills to any live worker, `Pinned{L}` requires an L-labelled
+    /// worker and NEVER spills to a node=None any-worker.
     ///
     /// A per-activity authored pin (`row.node == Some(N)`) ALWAYS wins and is
     /// selected off the row's own node, untouched by placement — exactly the gRPC
-    /// composition rule. Only an unpinned row consults the namespace placement, and
-    /// then over the SHARED [`preferred_node_order`](crate::worker::preferred_node_order)
-    /// tier sequence: each preferred label in turn (first live worker wins), then
-    /// the `None` spill to any live worker. Without a cache (or with a pinned row)
-    /// this collapses to the single `select_worker` off the row's own node — the
-    /// pre-Phase-2 behaviour.
+    /// composition rule. Without a cache (or with a pinned row) this collapses to
+    /// the single `select_worker` off the row's own node — the pre-Phase-2
+    /// behaviour.
+    ///
+    /// For `Pinned{L}`, when no L-labelled worker is live this returns `Ok(None)` —
+    /// NOT a spill to a node=None worker — so the [`OutboxRowDispatch`] surfaces the
+    /// honest no-worker error and the outbox retries/stalls until an L-labelled
+    /// worker returns, mirroring the gRPC wait-for-worker path exactly (both
+    /// transports agree via [`WorkerSelection`](crate::worker::WorkerSelection)).
     async fn select_liminal_worker(
         &self,
         row: &OutboxRow,
@@ -564,17 +570,40 @@ impl RegistryLiminalDispatch {
                 row.node.as_deref(),
             );
         };
-        // Unpinned + placement-aware: walk the shared prefer-then-spill tiers,
-        // stopping at the first tier that has a live worker. The `None` spill tier
-        // is always last, so an unplaced/pinned namespace or an exhausted prefer
-        // set still selects any live worker — the row's `node` is never mutated.
+        // Unpinned + placement-aware: resolve the shared selection decision, so this
+        // liminal path and the gRPC path can never diverge on Prefer-vs-Pinned. The
+        // row's `node` is never mutated — selection is a pure dispatch-time input.
         let placement = cache.placement(&row.namespace).await;
-        for tier in crate::worker::preferred_node_order(&placement) {
+        match crate::worker::worker_selection_for(&placement) {
+            // Prefer/Unplaced: walk the prefer-then-spill tiers (the `None` spill is
+            // always last), stopping at the first tier with a live worker.
+            crate::worker::WorkerSelection::PreferTiers(tiers) => {
+                self.select_over_tiers(row, tiers.iter().map(Option::as_deref))
+            }
+            // Pinned{L}: try ONLY the required labels — no `None` spill. When none is
+            // live, return None so the caller retries/stalls (never any-node).
+            crate::worker::WorkerSelection::Required(required) => self.select_over_tiers(
+                row,
+                required.iter().map(|label| Some(String::as_str(label))),
+            ),
+        }
+    }
+
+    /// Select the first live worker over an ordered sequence of node filters,
+    /// returning `Ok(None)` when no filter matches a live worker. Shared by the
+    /// `Prefer` (tiers end in a `None` spill) and `Pinned` (required labels only,
+    /// no spill) selection arms so both walk the registry identically.
+    fn select_over_tiers<'a>(
+        &self,
+        row: &OutboxRow,
+        tiers: impl Iterator<Item = Option<&'a str>>,
+    ) -> Result<Option<WorkerHandle>, ServerError> {
+        for tier in tiers {
             let selected = self.registry.select_worker(
                 &row.namespace,
                 &row.task_queue,
                 &row.activity_type,
-                tier.as_deref(),
+                tier,
             )?;
             if selected.is_some() {
                 return Ok(selected);
@@ -1141,6 +1170,26 @@ mod tests {
             Ok(store)
         }
 
+        /// A namespace store with `namespace` set to `Pinned{nodes}` (P2-I1).
+        async fn pinned_store(
+            namespace: &str,
+            nodes: &[&str],
+        ) -> Result<Arc<dyn NamespaceStore>, ServerError> {
+            let store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
+            store
+                .register_namespace(namespace, NamespaceOrigin::Explicit)
+                .await?;
+            store
+                .set_namespace_placement(
+                    namespace,
+                    NamespacePlacement::Pinned {
+                        nodes: labels(nodes),
+                    },
+                )
+                .await?;
+            Ok(store)
+        }
+
         /// Build a `RegistryLiminalDispatch` over `registry` whose placement cache
         /// reads `ns_store` (zero TTL so each selection sees the latest placement).
         fn liminal_dispatch(
@@ -1246,6 +1295,55 @@ mod tests {
                 row_a.node, row_b.node,
                 "the recorded row node is identical regardless of which worker was selected"
             );
+            Ok(())
+        }
+
+        /// #164 (P2-I1 hard pin): an unpinned row in a `Pinned{n1}` namespace
+        /// selects the n1 worker on the liminal path when live — exactly like
+        /// Prefer's happy path.
+        #[tokio::test]
+        async fn pinned_selects_required_node_worker_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store = pinned_store("t", &["n1"]).await?;
+            let registry = ConnectedWorkerRegistry::default();
+            let _n1 = register_node_worker(&registry, "t", "n1")?;
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            let row = unpinned_row("t");
+            let selected = dispatch
+                .select_liminal_worker(&row)
+                .await?
+                .ok_or("the required n1 worker must be selected")?;
+            assert_eq!(selected.node(), Some("n1"));
+            assert_eq!(row.node, None, "placement must never mutate the row's node");
+            Ok(())
+        }
+
+        /// #164 (P2-I1 no spill — the load-bearing test): an unpinned row in a
+        /// `Pinned{n1}` namespace with ONLY a live n2 worker selects NOTHING — it
+        /// must NEVER spill to the wrong-node worker. This is the exact opposite of
+        /// the `prefer_spills_to_any_live_worker_on_liminal_path` behaviour and would
+        /// FAIL under the old fall-through (which selected any worker for Pinned).
+        /// The `Ok(None)` drives the outbox no-worker retry/stall, mirroring the
+        /// gRPC wait.
+        #[tokio::test]
+        async fn pinned_never_spills_to_a_wrong_node_worker_on_liminal_path()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let ns_store = pinned_store("t", &["n1"]).await?;
+            // Only an n2 worker is live: no n1-labelled worker exists at all.
+            let registry = ConnectedWorkerRegistry::default();
+            let _n2 = register_node_worker(&registry, "t", "n2")?;
+            let dispatch = liminal_dispatch(&registry, Arc::clone(&ns_store));
+
+            let row = unpinned_row("t");
+            let selected = dispatch.select_liminal_worker(&row).await?;
+            assert!(
+                selected.is_none(),
+                "Pinned{{n1}} must NOT spill to the live n2 worker — it selects nothing \
+                 so the outbox retries/stalls until an n1 worker returns"
+            );
+            assert_eq!(row.node, None, "placement must never mutate the row's node");
             Ok(())
         }
 

@@ -28,24 +28,27 @@
 //! # Placement (Control-Plane Phase 2, P2-P3)
 //!
 //! When a [`PlacementCache`](crate::worker::PlacementCache) is attached to
-//! [`WorkerOutboxDispatch`], an UNPINNED row (`row.node == None`) whose namespace
-//! placement is `Prefer{L}` is dispatched preferring an L-labelled worker, with a
-//! spill to ANY live worker when none of the preferred labels is up. This is the
-//! ONLY placement behaviour this slice ships:
+//! [`WorkerOutboxDispatch`], an UNPINNED row (`row.node == None`) consults its
+//! namespace's placement for live worker selection:
 //!
 //! - a per-activity authored pin (`row.node == Some(N)`) always wins and is
 //!   dispatched off the row's own node, untouched by placement;
 //! - `Unplaced` is unchanged (any worker);
-//! - `Pinned{L}` is STORED and read here, but its hard-constraint *dispatch
-//!   enforcement* (require-and-wait, plus the `Some(N ∉ L)` start-admission
-//!   rejection) is **out of scope for P2-P3 — it is P2-I1**. Until then a `Pinned`
-//!   namespace dispatches like `Unplaced` (any worker). This is documented
-//!   deliberately so the soft-spill slice ships without the isolation gate.
+//! - `Prefer{L}` prefers an L-labelled worker, with a SPILL to ANY live worker
+//!   when none of the preferred labels is up (the soft, high-availability tier);
+//! - `Pinned{L}` (P2-I1) REQUIRES an L-labelled worker and WAITS on absence —
+//!   it NEVER spills to a node=None any-worker dispatch. When none of the required
+//!   labels has a live worker it holds on the wait-for-worker backstop and retries
+//!   the whole set (the "isolation > availability" hard pin, CP-Phase-2 §2.5). The
+//!   companion `Some(N ∉ L)` composition case is enforced by admission at
+//!   `accept_registration` (only L-node workers ever serve a `Pinned{L}` namespace),
+//!   so a conflicting activity simply finds no worker and hits the same stall.
 //!
 //! The determinism invariant is absolute: placement is consulted ONLY for live
 //! worker selection in this non-replayed task; the recorded row's `node` is NEVER
 //! mutated by placement, so a workflow's command stream is identical regardless of
-//! which worker a `Prefer` directive routed the activity to (CP-Phase-2 §2.4).
+//! which worker a `Prefer` or `Pinned` directive routed the activity to
+//! (CP-Phase-2 §2.4).
 //!
 //! # Phase boundary (Phase 2 vs Phase 3)
 //!
@@ -235,13 +238,16 @@ impl OutboxRowDispatch for WorkerOutboxDispatch {
                     .dispatch_preferring(&scheduled, &nodes)
                     .await
             }
-            // Unplaced (today's behaviour) and Pinned (hard-constraint dispatch
-            // enforcement is P2-I1, out of scope here — see the module/slice note)
-            // both fall through to the unchanged any-worker dispatch.
-            aion_store::NamespacePlacement::Unplaced
-            | aion_store::NamespacePlacement::Pinned { .. } => {
-                self.dispatcher.dispatch(&scheduled).await
+            // HARD placement (P2-I1): require an L-labelled worker and WAIT on
+            // absence — NEVER spill to a node=None any-worker dispatch. The row's
+            // `node` stays `None` throughout; the required set is a pure
+            // dispatch-time selection input (the determinism invariant,
+            // CP-Phase-2 §2.4/§2.5).
+            aion_store::NamespacePlacement::Pinned { nodes } => {
+                self.dispatcher.dispatch_requiring(&scheduled, &nodes).await
             }
+            // Unplaced: today's behaviour — the unchanged any-worker dispatch.
+            aion_store::NamespacePlacement::Unplaced => self.dispatcher.dispatch(&scheduled).await,
         }
     }
 }

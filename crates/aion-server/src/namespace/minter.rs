@@ -215,6 +215,28 @@ impl NamespaceMinter {
         Ok(true)
     }
 
+    /// Read a namespace's durable placement directive, for the worker-admission
+    /// gate (Control-Plane Phase 2, P2-I1). Reads the SAME registry record
+    /// [`Self::set_placement`] writes — the single source of truth — so admission
+    /// and dispatch can never disagree on a namespace's placement.
+    ///
+    /// An absent registry row means no placement applies:
+    /// [`NamespacePlacement::Unplaced`] (any worker), so a namespace that has not
+    /// yet been minted never gates a registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::StoreBackend`] if the durable lookup fails (including
+    /// a retryable `NotOwner` fence).
+    pub async fn placement_of(&self, name: &str) -> Result<NamespacePlacement, ServerError> {
+        Ok(self
+            .store
+            .get_namespace(name)
+            .await?
+            .map(|record| record.placement)
+            .unwrap_or_default())
+    }
+
     /// Emit the audit event AND (when a publisher is attached) the durable
     /// `namespace placement changed` socket delta after a placement update.
     ///
