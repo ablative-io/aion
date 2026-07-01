@@ -7,8 +7,20 @@
 //! claims one unscoped batch of pending rows per sweep. With backpressure attached
 //! it instead claims **per-namespace, round-robin, headroom-capped**: a tenant at
 //! its concurrency ceiling has its excess Pending rows held (left durable, NOT
-//! dropped, reconsidered next sweep), and a bursty tenant cannot starve a quiet one
-//! (round-robin guarantees every namespace-with-work a claim slot each sweep).
+//! dropped, reconsidered next sweep), and a bursty tenant cannot starve a quiet one.
+//!
+//! # Fairness is per-NAMESPACE, not per-route
+//!
+//! The batch budget is allocated PER NAMESPACE first: every active namespace (one
+//! with claimable pending work) gets a guaranteed slice — `batch_size ÷ active`
+//! (rounded up, ≥1), capped by that namespace's headroom — BEFORE any single tenant
+//! can consume the whole batch. A bursty tenant spread across many task_queues can
+//! therefore never exhaust the sweep budget on its own routes and starve a quiet
+//! single-route tenant: each namespace's slice is reserved up front, and only within
+//! a namespace is that slice distributed round-robin across its own routes. Any
+//! budget left after every namespace has had its guaranteed slice is offered in a
+//! second pass to namespaces with more pending work — fairness first, utilization
+//! second.
 //!
 //! # The three load-bearing semantics
 //!
@@ -86,13 +98,20 @@ impl OwnedShardFraction {
     }
 }
 
-/// One namespace's claim allowance for a single sweep, after applying the
-/// CLAIMED-only headroom and the round-robin fair share.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NamespaceAllowance {
+/// One namespace's claim plan for a single sweep: its CLAIMED-only headroom and the
+/// routes (`task_queue`/node pools) that carry its pending work.
+///
+/// The headroom is the hard per-tenant backstop; the routes are how a namespace's
+/// per-sweep allocation is spread round-robin across its several task queues so no
+/// single route hoards the namespace's own slice.
+#[derive(Clone, Debug)]
+struct NamespacePlan {
     /// `per_node_ceiling − claimed`, clamped at zero. The hard backstop: a tenant
     /// can never exceed this many NEW claims this sweep no matter the round-robin.
     headroom: u32,
+    /// This namespace's routes (distinct `(task_queue, node)` pools), the units the
+    /// per-namespace allocation is round-robined over.
+    routes: Vec<ClaimScope>,
 }
 
 /// Keyed backpressure over the outbox claim: resolves per-namespace ceilings and
@@ -123,9 +142,10 @@ impl Backpressure {
         Self { quota, fraction }
     }
 
-    /// Claim up to `batch_size` rows across all namespaces-with-pending-work,
-    /// round-robin, each namespace capped at its CLAIMED-only headroom and a fair
-    /// share of the batch. Returns every claimed row, in claim order.
+    /// Claim up to `batch_size` rows across all namespaces-with-pending-work, with
+    /// the batch budget allocated PER NAMESPACE first (a guaranteed fair slice each),
+    /// then distributed round-robin across each namespace's routes. Returns every
+    /// claimed row, in claim order.
     ///
     /// Rows not claimed (a tenant at its ceiling, or the batch budget exhausted)
     /// stay durably `Pending` and are reconsidered next sweep — the keyed
@@ -150,31 +170,42 @@ impl Backpressure {
     }
 
     /// Resolve each pending namespace's per-sweep headroom (CLAIMED-only,
-    /// proportional ceiling) once, so the round-robin below shares one allowance per
-    /// namespace across that namespace's several routes.
+    /// proportional ceiling) and group its routes, then compute the per-namespace
+    /// slice so every active tenant is guaranteed an allocation of the batch before
+    /// any single tenant can consume it.
     async fn plan_sweep(
         &self,
         store: &Arc<dyn OutboxStore>,
         routes: &[ClaimScope],
         batch_size: u32,
     ) -> Result<SweepPlan, aion_store::StoreError> {
-        // Distinct namespaces with work, deterministically ordered, drive the round.
-        let mut namespaces: BTreeMap<String, NamespaceAllowance> = BTreeMap::new();
+        // Group routes by namespace, deterministically ordered, so each namespace's
+        // slice is spread round-robin across ITS OWN task_queues/nodes.
+        let mut namespaces: BTreeMap<String, NamespacePlan> = BTreeMap::new();
         for route in routes {
-            if namespaces.contains_key(&route.namespace) {
+            if let Some(plan) = namespaces.get_mut(&route.namespace) {
+                plan.routes.push(route.clone());
                 continue;
             }
-            let allowance = self.namespace_allowance(store, &route.namespace).await?;
-            namespaces.insert(route.namespace.clone(), allowance);
+            let headroom = self.namespace_headroom(store, &route.namespace).await?;
+            namespaces.insert(
+                route.namespace.clone(),
+                NamespacePlan {
+                    headroom,
+                    routes: vec![route.clone()],
+                },
+            );
         }
-        // Fair share: at least one row per active namespace so the round-robin
-        // guarantees a quiet tenant a slot; the per-tenant headroom is the backstop.
+        // Per-namespace slice: batch_size ÷ active (≥1) is the GUARANTEED allocation
+        // each active tenant reserves before any tenant can consume the whole batch,
+        // capped per tenant by its headroom. This is the fairness axis — per
+        // NAMESPACE, never per route — so a tenant with many routes cannot drain the
+        // budget on its own routes and starve a quiet single-route tenant.
         let active = u32::try_from(namespaces.len()).unwrap_or(u32::MAX).max(1);
-        let fair_share = batch_size.div_ceil(active).max(1);
+        let per_namespace_slice = batch_size.div_ceil(active).max(1);
         Ok(SweepPlan {
-            routes: routes.to_vec(),
             namespaces,
-            fair_share,
+            per_namespace_slice,
         })
     }
 
@@ -184,70 +215,107 @@ impl Backpressure {
     /// cluster-wide quota; the claimed count is the durable Claimed-row count over
     /// this node's owned shards (NEVER Pending+Claimed — that would wedge a tenant
     /// against its own backlog).
-    async fn namespace_allowance(
+    async fn namespace_headroom(
         &self,
         store: &Arc<dyn OutboxStore>,
         namespace: &str,
-    ) -> Result<NamespaceAllowance, aion_store::StoreError> {
+    ) -> Result<u32, aion_store::StoreError> {
         let ceiling = self
             .fraction
             .per_node_ceiling(self.quota.ceiling(namespace).await);
         let claimed =
             u32::try_from(store.count_claimed_outbox_rows(namespace).await?).unwrap_or(u32::MAX);
-        Ok(NamespaceAllowance {
-            headroom: ceiling.saturating_sub(claimed),
-        })
+        Ok(ceiling.saturating_sub(claimed))
     }
 
-    /// Run the planned round-robin: one scoped, capped claim per route, decrementing
-    /// the owning namespace's remaining headroom and the global batch budget after
-    /// each claim. Stops when the batch budget is exhausted.
+    /// Execute the sweep in two passes: first the GUARANTEED per-namespace slice for
+    /// every active tenant (fairness), then a second pass offering any leftover
+    /// budget to tenants with more pending work (utilization). Rows over a tenant's
+    /// headroom or beyond the batch budget stay durably `Pending`.
     async fn execute_plan(
         &self,
         store: &Arc<dyn OutboxStore>,
         plan: &SweepPlan,
         batch_size: u32,
     ) -> Result<Vec<OutboxRow>, aion_store::StoreError> {
-        let mut remaining: BTreeMap<String, u32> = plan
+        // Remaining headroom per namespace, decremented as its routes are claimed.
+        let mut headroom: BTreeMap<&str, u32> = plan
             .namespaces
             .iter()
-            .map(|(name, allowance)| (name.clone(), allowance.headroom))
+            .map(|(name, ns)| (name.as_str(), ns.headroom))
             .collect();
         let mut budget = batch_size;
         let mut claimed = Vec::new();
-        for route in &plan.routes {
+        // Pass 1 — fairness: every active namespace gets its guaranteed slice first,
+        // capped by its own headroom, distributed round-robin across its routes.
+        for (name, ns) in &plan.namespaces {
+            let ns_headroom = headroom.entry(name.as_str()).or_default();
+            let allocation = plan.per_namespace_slice.min(*ns_headroom).min(budget);
+            let got =
+                Self::claim_namespace_slice(store, &ns.routes, allocation, &mut claimed).await?;
+            *ns_headroom = ns_headroom.saturating_sub(got);
+            budget = budget.saturating_sub(got);
+        }
+        // Pass 2 — utilization: spread any leftover budget over the namespaces that
+        // still have both headroom and unclaimed routes (fairness already honoured).
+        for (name, ns) in &plan.namespaces {
             if budget == 0 {
                 break;
             }
-            let ns_headroom = remaining.get_mut(&route.namespace);
-            let Some(ns_headroom) = ns_headroom else {
-                continue;
-            };
-            let limit = (*ns_headroom).min(plan.fair_share).min(budget);
-            if limit == 0 {
-                continue;
-            }
-            let rows = store.claim_outbox_rows_scoped(route, limit).await?;
-            let got = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+            let ns_headroom = headroom.entry(name.as_str()).or_default();
+            let allocation = (*ns_headroom).min(budget);
+            let got =
+                Self::claim_namespace_slice(store, &ns.routes, allocation, &mut claimed).await?;
             *ns_headroom = ns_headroom.saturating_sub(got);
             budget = budget.saturating_sub(got);
-            claimed.extend(rows);
         }
-        if claimed.is_empty() && !plan.routes.is_empty() {
+        if claimed.is_empty() && !plan.namespaces.is_empty() {
             // Every route was at its ceiling this sweep: rows stay Pending (held),
             // reconsidered next sweep when Claimed rows complete and headroom returns.
             warn!("outbox backpressure held all pending routes at ceiling this sweep");
         }
         Ok(claimed)
     }
+
+    /// Claim up to `allocation` rows for one namespace, distributed round-robin
+    /// across its `routes`, appending them to `claimed`. Returns how many were
+    /// claimed so the caller can decrement the namespace headroom and batch budget.
+    ///
+    /// One pass over the routes suffices: each route is claimed at its running share
+    /// of the remaining allocation, so a route with few pending rows yields the rest
+    /// back to the later routes rather than the allocation being under-used.
+    async fn claim_namespace_slice(
+        store: &Arc<dyn OutboxStore>,
+        routes: &[ClaimScope],
+        allocation: u32,
+        claimed: &mut Vec<OutboxRow>,
+    ) -> Result<u32, aion_store::StoreError> {
+        let mut remaining = allocation;
+        let mut total: u32 = 0;
+        let mut left = u32::try_from(routes.len()).unwrap_or(u32::MAX).max(1);
+        for route in routes {
+            if remaining == 0 {
+                break;
+            }
+            // Even round-robin share of the remaining allocation across the remaining
+            // routes, rounded up so the last route can mop up any residue.
+            let share = remaining.div_ceil(left).max(1).min(remaining);
+            let rows = store.claim_outbox_rows_scoped(route, share).await?;
+            let got = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+            remaining = remaining.saturating_sub(got);
+            total = total.saturating_add(got);
+            claimed.extend(rows);
+            left = left.saturating_sub(1).max(1);
+        }
+        Ok(total)
+    }
 }
 
-/// One sweep's resolved plan: the routes to visit, each namespace's headroom, and
-/// the per-route fair share.
+/// One sweep's resolved plan: each active namespace's headroom + routes, and the
+/// guaranteed per-namespace slice of the batch.
 struct SweepPlan {
-    routes: Vec<ClaimScope>,
-    namespaces: BTreeMap<String, NamespaceAllowance>,
-    fair_share: u32,
+    namespaces: BTreeMap<String, NamespacePlan>,
+    per_namespace_slice: u32,
 }
 
 #[cfg(test)]

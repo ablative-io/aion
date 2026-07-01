@@ -1515,6 +1515,25 @@ mod tests {
         Ok(rows)
     }
 
+    /// Append `count` fresh pending rows in `namespace` on `task_queue`, left
+    /// `Pending`. Used to spread ONE namespace's backlog across several routes.
+    async fn seed_pending_on_queue(
+        store: &Arc<dyn OutboxStore>,
+        namespace: &str,
+        task_queue: &str,
+        count: usize,
+    ) -> Result<(), ServerError> {
+        let rows: Vec<OutboxRow> = (0..count)
+            .map(|_| {
+                pending_row(&WorkflowId::new_v4(), 0)
+                    .with_namespace(namespace)
+                    .with_task_queue(task_queue)
+            })
+            .collect();
+        store.append_outbox_batch(&rows).await?;
+        Ok(())
+    }
+
     async fn count_pending(store: &LibSqlStore, namespace: &str) -> Result<u64, ServerError> {
         // Pending = in-flight − claimed (both durable, namespace-scoped).
         let inflight = store.count_inflight_outbox_rows(namespace).await?;
@@ -1633,6 +1652,55 @@ mod tests {
         Ok(())
     }
 
+    /// FAIRNESS is per-NAMESPACE, not per-ROUTE — the exact case the reviewer proved
+    /// failing under the old per-route budget. A bursty tenant SPREAD ACROSS MANY
+    /// task queues (8 routes, 500 pending) and a quiet single-route tenant (1
+    /// pending) share a small batch (8). Under a per-route budget the bursty tenant's
+    /// 8 routes exhaust the whole batch before the quiet tenant's single route is
+    /// reached, starving it for the sweep. Per-NAMESPACE fairness must reserve the
+    /// quiet tenant a guaranteed slice up front, so its row is claimed THIS sweep
+    /// while the bursty tenant is still served up to its own fair slice.
+    #[tokio::test]
+    async fn quiet_tenant_not_starved_by_bursty_tenant_spread_across_routes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-fairness-routes").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        // Generous ceilings so the ceiling is not the limiter — fairness is.
+        let ns_store = namespace_store_with_quotas(&[("bursty", 1000), ("quiet", 1000)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        // Bursty tenant: 500 pending rows spread evenly across 8 distinct task_queues
+        // (8 routes). Quiet tenant: a single row on one route.
+        for q in 0..8u32 {
+            seed_pending_on_queue(&store, "bursty", &format!("tq-{q}"), 500 / 8).await?;
+        }
+        seed_pending(&store, "quiet", 1).await?;
+
+        // A single small-batch (8) sweep. With a per-route budget, the bursty
+        // tenant's 8 routes consume all 8 before the quiet route is reached.
+        let claimed = backpressure.claim_round_robin(&store, 8).await?;
+        let bursty = claimed.iter().filter(|r| r.namespace == "bursty").count();
+        let quiet = claimed.iter().filter(|r| r.namespace == "quiet").count();
+        assert_eq!(
+            quiet, 1,
+            "the quiet tenant's single row IS claimed this sweep — per-namespace \
+             fairness reserves it a slice even though the bursty tenant has 8 routes"
+        );
+        assert!(
+            bursty >= 1,
+            "the bursty tenant is also served up to its fair slice, not blocked"
+        );
+        assert!(
+            bursty <= 7,
+            "the bursty tenant cannot consume the whole batch and starve the quiet one"
+        );
+        assert_eq!(
+            count_pending(&raw, "quiet").await?,
+            0,
+            "quiet is fully drained this sweep"
+        );
+        Ok(())
+    }
+
     /// EXACTLY-ONCE under throttling: no row is dispatched twice, and the dedup
     /// guard is intact. Two full sweeps under a tight ceiling claim a total set with
     /// NO duplicate dispatch keys, and re-appending an already-staged batch is
@@ -1747,37 +1815,57 @@ mod tests {
     }
 
     /// BYTE-IDENTICAL DEFAULT: with the generous platform default and NO tenant
-    /// override, the round-robin claim admits the same rows the plain unscoped claim
-    /// would — the ceiling never engages for normal load. Proven by claiming the
-    /// same batch two ways and comparing the dispatch-key sets.
+    /// override, the round-robin claim admits the SAME ROW SET the plain unscoped
+    /// claim would — the ceiling never engages for normal load. Proven by seeding the
+    /// SAME logical rows (identical `(workflow_id, ordinal)` → identical dispatch
+    /// keys) into both stores, claiming each way, and asserting the claimed
+    /// dispatch-key SETS are equal (not merely the counts).
     #[tokio::test]
     async fn default_ceiling_claim_matches_unscoped_claim() -> Result<(), Box<dyn std::error::Error>>
     {
         use aion_store::{InMemoryStore, NamespaceStore};
+
+        // One shared set of 10 logical rows drives BOTH stores, so the derived
+        // dispatch keys are identical and the claimed SETS are directly comparable.
+        let shared: Vec<OutboxRow> = (0..10)
+            .map(|ordinal| {
+                pending_row(&WorkflowId::new_v4(), ordinal)
+                    .with_namespace("t")
+                    .with_task_queue("default")
+            })
+            .collect();
 
         // Backpressure store: no tenant override anywhere, generous default 1024.
         let bp_store_raw = open_store("bp-default-bp").await?;
         let bp_store: Arc<dyn OutboxStore> = bp_store_raw.clone();
         let ns_store: Arc<dyn NamespaceStore> = Arc::new(InMemoryStore::default());
         let backpressure = own_all_backpressure(ns_store, 1024);
-        seed_pending(&bp_store, "t", 10).await?;
+        bp_store.append_outbox_batch(&shared).await?;
 
-        // Plain store: the same 10 rows, claimed with the unscoped path.
+        // Plain store: the SAME 10 rows, claimed with the unscoped path.
         let plain_raw = open_store("bp-default-plain").await?;
         let plain: Arc<dyn OutboxStore> = plain_raw.clone();
-        seed_pending(&plain, "t", 10).await?;
+        plain.append_outbox_batch(&shared).await?;
 
         let via_bp = backpressure.claim_round_robin(&bp_store, 16).await?;
         let via_plain = plain.claim_outbox_rows(16).await?;
+
+        // Compare the actual claimed dispatch-key SETS, not just the lengths: this
+        // genuinely proves byte-identical default admission, row for row.
+        let key_set = |rows: &[OutboxRow]| -> std::collections::BTreeSet<String> {
+            rows.iter().map(|row| row.dispatch_key.clone()).collect()
+        };
+        let bp_keys = key_set(&via_bp);
+        let plain_keys = key_set(&via_plain);
         assert_eq!(
-            via_bp.len(),
-            via_plain.len(),
-            "under the generous default the ceiling never engages: same rows claimed"
+            bp_keys, plain_keys,
+            "under the generous default the ceiling never engages: the SAME row set \
+             is claimed, dispatch key for dispatch key"
         );
         assert_eq!(
-            via_bp.len(),
-            10,
-            "all 10 rows claim in one sweep (headroom ≫ backlog)"
+            bp_keys,
+            key_set(&shared),
+            "all 10 seeded rows claim in one sweep (headroom ≫ backlog)"
         );
         // Nothing held on the backpressure path — no Pending remains, exactly as the
         // plain unscoped claim leaves nothing Pending: byte-identical for normal load.
