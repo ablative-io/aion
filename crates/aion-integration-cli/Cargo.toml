@@ -1,0 +1,49 @@
+[package]
+name = "aion-integration-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A second, independent AgentHarness adapter for Aion: a plain-stdout observability-only CLI agent that demuxes interleaved stdout into ActivityEvents and advertises no intervention capabilities. The empirical proof that aion-integrations is a neutral SDK, not a Norn wrapper (NOI-8)."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-integration-cli"
+readme = "README.md"
+keywords = ["aion", "agent", "harness", "observability", "integration"]
+categories = ["api-bindings", "asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-core = { version = "0.8.0", path = "../aion-core" }
+aion-integrations = { version = "0.8.0", path = "../aion-integrations" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "sync",
+] }
+tokio-stream = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+aion-worker = { version = "0.8.0", path = "../aion-worker" }
+chrono = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+uuid = { workspace = true }
