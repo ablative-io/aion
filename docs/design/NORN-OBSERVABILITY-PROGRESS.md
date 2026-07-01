@@ -7,7 +7,7 @@ observability + mid-run intervention control plane, slice by slice.
 - **What it is:** a complete, durable, real-time control plane for agents, built as a **general integration SDK** — Norn is just the *first* adapter, and there is **zero Norn-specific code in aion's platform crates** (mechanically enforced by the `no-norn-in-platform` CI gate).
 - **Transport:** stdio-duplex **JSON-RPC 2.0** (hand-rolled, zero new external deps). **Five neutral capability-gated intervention primitives** (`InjectMessage` / `Cancel` / `PauseResume` / `UpdateBudget` / `RespondToApproval`). Observability persists to a byte-disjoint haematite **`O`-keyspace**, never in the workflow replay log.
 
-_Last updated: 2026-07-01._
+_Last updated: 2026-07-01 — NOI-5 core landed (`ac48e9f3`); transport split out as NOI-5b._
 
 ---
 
@@ -24,7 +24,8 @@ Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
 | **NOI-3** | `aion-integrations` SDK crate — the harness-blind `AgentHarness`/`AgentSession` trait + reusable JSON-RPC-stdio helper | aion | ✅ | `185d92dd` |
 | **NOI-4a** | `aion-integration-norn` adapter — first `AgentHarness` impl, drives a **real** `norn --protocol jsonrpc` process (e2e verified) | aion | ✅ | `7b80f23b` |
 | **NOI-4b** | `aion-worker` harness-blind trait-driver + `aion-cli` composition root (default-on `norn` feature) + **`no-norn-in-platform` CI gate** (proven by planted-edge negative control) | aion | ✅ | `7ef85752` |
-| **NOI-5** | Durable transcript spine: worker publishes events → liminal → **server sequencer** (`store_seq`) → **haematite `O`-keyspace** → **transcript WebSocket** | aion | 🔨 | branch `noi-5-transcript` |
+| **NOI-5** | Durable transcript spine **core**: byte-disjoint haematite **`O`-keyspace** + `ObservabilityStore` compare-and-append + **`ActivityEventPublisher` sequencer** (commit-allocated `store_seq`, retry loop, live tail + resume-by-seq). All negative controls green (concurrent monotonicity, failover dedup, O-vs-E replay-invisibility). | aion | ✅ | `ac48e9f3` |
+| **NOI-5b** | Transport wiring (additive on the proven core): thread `Arc<dyn ObservabilityStore>` through `ServerState`, add the `Transcript` subscription variant + namespace-gated `serve_transcript_socket`, and the worker→liminal publish seam (`ActivityContext.event_sender`) | aion | ⬜ | — |
 | **NOI-6** | Intervention routing: operator → server → liminal PUSH → worker → `session.intervene()` | aion | ⬜ | — |
 | **NOI-7** | Ops-console `TranscriptPanel` + `InterventionControls` (capability-gated) | aion | ⬜ | — |
 | **NOI-8** | Second observability-only adapter — the SDK **generality proof** (two implementations of one trait) | aion | ⬜ | — |
@@ -52,6 +53,6 @@ Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
 
 ## Resume point
 
-**NOI-5 is in flight** (branch `noi-5-transcript`). On its completion: re-gate on a forced recompile
-(with the concurrent-writer `store_seq` monotonicity + kill-9 dedup negative controls),
-merge, push, update this table. Then NOI-6 → NOI-7 → NOI-8, serial. Update this file after each merge.
+**NOI-5 core landed** (`ac48e9f3`, re-gated on a forced `--all-features` recompile, all negative
+controls green). **Next: NOI-5b** (wire the proven spine into `ServerState` + transcript WS route +
+worker→liminal publish seam), then NOI-6 → NOI-7 → NOI-8, serial. Update this file after each merge.
