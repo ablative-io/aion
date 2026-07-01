@@ -160,6 +160,88 @@ impl ActivityDispatcher {
         self.dispatch_over_tiers(activity, &tiers).await
     }
 
+    /// Dispatch `activity` REQUIRING a worker whose advertised node is one of the
+    /// `required` labels, WAITING when none is live and NEVER spilling to a
+    /// node=`None` any-worker dispatch (Control-Plane Phase 2, P2-I1 — the
+    /// `Pinned{L}` hard pin). This is the opposite of [`Self::dispatch_preferring`]:
+    /// a `Prefer` set appends a `None` spill tier; a `Pinned` set has NO `None`
+    /// tier and instead holds on the wait-for-worker backstop until an L-labelled
+    /// worker registers.
+    ///
+    /// Consulted ONLY for an UNPINNED activity (`activity.node == None`): a
+    /// per-activity authored pin always wins and dispatches through
+    /// [`Self::dispatch`] unchanged. The recorded row's `node` is NEVER mutated —
+    /// the required set is a pure dispatch-time worker-selection input in this
+    /// non-replayed path, so replay is untouched (CP-Phase-2 §2.4).
+    ///
+    /// Each retry tries every required label (deterministic [`BTreeSet`] order) via
+    /// a NON-WAITING `workers_for(node = Some(label))` and delivers to the first
+    /// live worker found, preserving the round-robin exactly like
+    /// [`Self::dispatch_to_node`]. When no required label has a live worker across
+    /// the whole set, it awaits [`wait_for_worker`](crate::worker::ConnectedWorkerRegistry::wait_for_worker)
+    /// and retries — the same isolation-stall a per-activity `Some(N)` pin already
+    /// exhibits. An EMPTY required set can never be satisfied by any labelled
+    /// worker, so it stalls (isolation > availability); the caller sets a non-empty
+    /// `Pinned{L}` for a live pin.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dispatch`].
+    pub async fn dispatch_requiring(
+        &self,
+        activity: &ScheduledActivity,
+        required: &std::collections::BTreeSet<String>,
+    ) -> Result<(), ServerError> {
+        let span = info_span!(
+            "activity_dispatch",
+            operation = "activity_dispatch_requiring",
+            namespace = %activity.namespace,
+            task_queue = %activity.task_queue,
+            workflow_id = %activity.workflow_id,
+            activity_id = %activity.activity_id,
+            activity_type = %activity.activity_type,
+            worker_id = tracing::field::Empty,
+        );
+        let span_fields = span.clone();
+        async {
+            loop {
+                for label in required {
+                    self.drain_state
+                        .ensure_accepting(&activity.namespace, &activity.activity_type)?;
+                    let candidates = self.registry.workers_for(
+                        &activity.namespace,
+                        &activity.task_queue,
+                        &activity.activity_type,
+                        Some(label.as_str()),
+                    )?;
+                    if let Some(()) = self
+                        .send_to_candidates(activity, candidates, &span_fields)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                }
+                // No required label had a live worker this pass. WAIT for a worker
+                // to register, then retry the WHOLE required set — never fall back
+                // to a node=None any-worker dispatch (the hard-pin invariant).
+                tracing::info!(
+                    namespace = %activity.namespace,
+                    task_queue = %activity.task_queue,
+                    activity_type = %activity.activity_type,
+                    workflow_id = %activity.workflow_id,
+                    activity_id = %activity.activity_id,
+                    "no worker on a required (Pinned) node; waiting — will NOT spill to any-node"
+                );
+                self.registry.wait_for_worker().await;
+            }
+        }
+        .instrument(span)
+        .await
+        .inspect_err(|error| {
+            log_dispatch_error("activity_dispatch_requiring", activity, error);
+        })
+    }
+
     /// Dispatch `activity` over an ordered `tiers` sequence of node filters, each
     /// a `Some(label)` preference or the final `None` spill (the shared
     /// [`preferred_node_order`](crate::worker::preferred_node_order) output). The
@@ -560,6 +642,125 @@ mod tests {
 
         closed_registration.deregister()?;
         live_registration.deregister()?;
+        Ok(())
+    }
+
+    fn scheduled_unpinned() -> ScheduledActivity {
+        ScheduledActivity {
+            namespace: String::from("tenant-a"),
+            task_queue: String::from("default"),
+            activity_type: String::from("charge-card"),
+            // UNPINNED row: `node == None`, so placement (here a Pinned require) is
+            // the worker-selection input — the row's own node is never set.
+            node: None,
+            workflow_id: workflow_id(),
+            activity_id: activity_id(),
+            run_id: None,
+            input: Payload::new(ContentType::Json, b"{}".to_vec()),
+            attempt: 1,
+            labels: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn required(labels: &[&str]) -> std::collections::BTreeSet<String> {
+        labels.iter().map(|l| (*l).to_owned()).collect()
+    }
+
+    /// P2-I1 gRPC hard-pin: an unpinned row in a `Pinned{n1}` namespace WAITS when
+    /// no `n1` worker is live and NEVER spills to a live any-node worker — the
+    /// opposite of `Prefer`. This test would FAIL under the old fall-through (which
+    /// dispatched `Pinned` to any worker).
+    #[tokio::test]
+    async fn dispatch_requiring_waits_and_never_spills_to_a_wrong_node_worker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let dispatcher = ActivityDispatcher::new(registry.clone());
+        let scheduled = scheduled_unpinned();
+        let types = [String::from("charge-card")];
+
+        // A LIVE worker on the WRONG node (n2) — a Prefer would spill to it; a
+        // Pinned{n1} must NOT.
+        let (wrong_tx, mut wrong_rx) = tokio::sync::mpsc::channel(1);
+        let _wrong = registry.register_namespaces(
+            [String::from("tenant-a")],
+            "default",
+            Some(String::from("n2")),
+            types.iter(),
+            wrong_tx,
+        )?;
+
+        let handle = tokio::spawn({
+            let dispatcher = dispatcher.clone();
+            let scheduled = scheduled.clone();
+            async move {
+                dispatcher
+                    .dispatch_requiring(&scheduled, &required(&["n1"]))
+                    .await
+            }
+        });
+
+        // The wrong-node worker is idle and live, yet dispatch must still be waiting.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !handle.is_finished(),
+            "Pinned{{n1}} must WAIT rather than spill to the live n2 worker"
+        );
+        assert!(
+            wrong_rx.try_recv().is_err(),
+            "the wrong-node (n2) worker must never receive the task"
+        );
+
+        // Bring up the REQUIRED n1 worker: the wait resolves onto it.
+        let (right_tx, mut right_rx) = tokio::sync::mpsc::channel(1);
+        let _right = registry.register_namespaces(
+            [String::from("tenant-a")],
+            "default",
+            Some(String::from("n1")),
+            types.iter(),
+            right_tx,
+        )?;
+
+        handle.await??;
+        assert!(
+            right_rx.recv().await.is_some(),
+            "the required n1 worker receives the task once live"
+        );
+        assert!(
+            wrong_rx.try_recv().is_err(),
+            "the wrong-node worker still never received it"
+        );
+        Ok(())
+    }
+
+    /// P2-I1 determinism: the row's authored `node` stays `None` through a Pinned
+    /// dispatch — placement is a pure selection input, never written back.
+    #[tokio::test]
+    async fn dispatch_requiring_never_mutates_the_rows_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let registry = ConnectedWorkerRegistry::default();
+        let dispatcher = ActivityDispatcher::new(registry.clone());
+        let scheduled = scheduled_unpinned();
+        assert_eq!(scheduled.node, None, "precondition: the row is unpinned");
+        let types = [String::from("charge-card")];
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let _right = registry.register_namespaces(
+            [String::from("tenant-a")],
+            "default",
+            Some(String::from("n1")),
+            types.iter(),
+            tx,
+        )?;
+
+        dispatcher
+            .dispatch_requiring(&scheduled, &required(&["n1"]))
+            .await?;
+
+        assert!(rx.recv().await.is_some(), "the n1 worker received the task");
+        assert_eq!(
+            scheduled.node, None,
+            "the row's authored node MUST remain None through a Pinned dispatch \
+             (the determinism invariant, CP-Phase-2 §2.4)"
+        );
         Ok(())
     }
 

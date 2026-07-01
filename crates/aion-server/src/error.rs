@@ -187,6 +187,31 @@ impl ServerError {
         }
     }
 
+    /// Construct the loud, whole-registration rejection when a worker's advertised
+    /// `node` violates a `Pinned{L}` namespace's placement (Control-Plane Phase 2,
+    /// P2-I1). Names the offending namespace, the worker's advertised node (or
+    /// "none"), and the required label set, so the operator sees exactly why the
+    /// registration was refused. Carried on the namespace-denied wire code — a
+    /// registration refused on isolation grounds is a namespace-authorization
+    /// failure, not a transient dispatch error.
+    #[must_use]
+    pub fn placement_admission_denied(
+        namespace: &str,
+        worker_node: Option<&str>,
+        required: &std::collections::BTreeSet<String>,
+    ) -> Self {
+        let node = worker_node.unwrap_or("none");
+        let required = required
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self::namespace_denied(format!(
+            "worker registration rejected: namespace {namespace} is Pinned to node label(s) \
+             [{required}] but the worker advertises node {node}, which is not in the required set"
+        ))
+    }
+
     /// Construct a deploy-authorization denial carried on the dedicated
     /// `deploy_denied` wire code (deploy is not a namespace operation).
     #[must_use]

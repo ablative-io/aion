@@ -46,7 +46,9 @@ pub use outbox_dispatcher::{
     OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch, WorkerOutboxDispatch,
 };
 pub use outbox_reconciler::{OutboxReconciler, OutboxReconcilerConfig};
-pub use placement_cache::{PlacementCache, preferred_node_order};
+pub use placement_cache::{
+    PlacementCache, WorkerSelection, preferred_node_order, worker_selection_for,
+};
 pub use quota_cache::QuotaCache;
 pub use registry::{
     ConnectedWorkerRegistry, WorkerDelivery, WorkerHandle, WorkerId, WorkerRegistration,

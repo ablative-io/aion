@@ -14,7 +14,7 @@
 //! dispatch-time selection input, never written to the recorded row). The TTL is
 //! deliberately short so an operator's `PUT /placement` takes effect promptly.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -121,10 +121,12 @@ impl PlacementCache {
 /// - `Prefer{L}` → each label in `L` (deterministic [`BTreeSet`](std::collections::BTreeSet)
 ///   order) as `Some(label)`, then a final `None` spill tier (any live worker).
 ///   An empty `L` collapses to just the `None` spill.
-/// - `Unplaced` / `Pinned` → a single `None` tier (any live worker). `Pinned`'s
-///   hard-constraint dispatch enforcement is P2-I1 (#164), out of scope here, so
-///   it dispatches like `Unplaced` for now — see the outbox dispatcher module
-///   docs.
+/// - `Unplaced` → a single `None` tier (any live worker).
+///
+/// `Pinned{L}` is NOT dispatched through this fn: [`worker_selection_for`] routes it
+/// to the NON-spilling [`WorkerSelection::Required`] decision (require an L-labelled
+/// worker, WAIT on absence, never spill — P2-I1, #164). The `Pinned` arm here is only
+/// the internal fall-through of the soft `Prefer` path and never satisfies a hard pin.
 ///
 /// This is consulted ONLY for an unpinned row (`row.node == None`): an authored
 /// `Some(N)` pin is authoritative and never enters this path. The result is a
@@ -141,9 +143,48 @@ pub fn preferred_node_order(placement: &NamespacePlacement) -> Vec<Option<String
             tiers.push(None);
             tiers
         }
-        // Unplaced today, and Pinned until P2-I1 (#164): a single any-worker tier,
-        // byte-identical to the pre-Phase-2 unpinned dispatch.
+        // Unplaced today, and Pinned (which does NOT spill): a single any-worker
+        // tier, byte-identical to the pre-Phase-2 unpinned dispatch. `Pinned` is
+        // routed to a NON-spilling `Required` decision by `worker_selection_for`
+        // BEFORE this fn is reached, so a `Pinned` value here is only the internal
+        // fall-through of the soft `Prefer` path and never satisfies a hard pin.
         NamespacePlacement::Unplaced | NamespacePlacement::Pinned { .. } => vec![None],
+    }
+}
+
+/// How an UNPINNED outbox row (`row.node == None`) must be dispatched given its
+/// namespace's [`NamespacePlacement`] — the SINGLE decision shared by BOTH the
+/// gRPC ([`WorkerOutboxDispatch`](crate::worker::WorkerOutboxDispatch)) and liminal
+/// ([`RegistryLiminalDispatch`](crate::worker::RegistryLiminalDispatch)) dispatch
+/// paths, so the two transports can never diverge on `Prefer` (spill) vs `Pinned`
+/// (require + wait, NEVER spill) semantics.
+///
+/// This is consulted ONLY for an unpinned row: an authored `Some(N)` pin is
+/// authoritative and never enters this path. The result is a pure
+/// worker-SELECTION input; it never mutates the recorded row's `node` (the
+/// determinism invariant, CP-Phase-2 §2.4).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerSelection {
+    /// `Unplaced`/`Prefer`: try the ordered tiers (each preferred label, then the
+    /// `None` spill), stopping at the first tier with a live worker. `Unplaced`
+    /// collapses to the single `None` any-worker tier.
+    PreferTiers(Vec<Option<String>>),
+    /// `Pinned{L}`: require a worker whose advertised node ∈ `L`, and WAIT when
+    /// none is live — NEVER a `None` spill to an any-node worker (CP-Phase-2 §2.5,
+    /// P2-I1). An empty required set can never be satisfied by any labelled worker,
+    /// so it stalls until the namespace's placement is relaxed — the correct
+    /// "isolation > availability" behaviour of a hard pin with no admissible node.
+    Required(BTreeSet<String>),
+}
+
+/// Resolve the [`WorkerSelection`] for an unpinned row from its namespace
+/// placement. The single seam that keeps `Prefer` (soft spill) and `Pinned`
+/// (hard require + wait) identical across the gRPC and liminal transports.
+#[must_use]
+pub fn worker_selection_for(placement: &NamespacePlacement) -> WorkerSelection {
+    match placement {
+        NamespacePlacement::Pinned { nodes } => WorkerSelection::Required(nodes.clone()),
+        other => WorkerSelection::PreferTiers(preferred_node_order(other)),
     }
 }
 
@@ -279,20 +320,57 @@ mod tests {
         assert_eq!(order, vec![None], "an empty prefer set is the spill case");
     }
 
-    /// `Unplaced` and `Pinned` (until P2-I1) both yield a single any-worker tier,
-    /// byte-identical to the pre-Phase-2 unpinned selection.
+    /// `Unplaced` yields a single any-worker tier (the pre-Phase-2 unpinned
+    /// selection). `preferred_node_order` also yields a single `None` tier for
+    /// `Pinned`, but that is NOT the Pinned dispatch path any more: the hard pin is
+    /// resolved by [`worker_selection_for`] into a NON-spilling `Required` decision
+    /// (see below), so `preferred_node_order`'s `Pinned` arm is only the internal
+    /// fall-through of the soft `Prefer` path and never satisfies a hard pin.
     #[test]
-    fn unplaced_and_pinned_are_a_single_any_worker_tier() {
+    fn unplaced_is_a_single_any_worker_tier() {
         assert_eq!(
             preferred_node_order(&NamespacePlacement::Unplaced),
             vec![None]
         );
+    }
+
+    // --- #164 (P2-I1): the shared Prefer-vs-Pinned selection decision ----------
+
+    use super::{WorkerSelection, worker_selection_for};
+
+    /// `Prefer{L}` resolves to the ordered prefer-then-spill tiers (each label,
+    /// then the `None` spill) — the soft, high-availability path.
+    #[test]
+    fn prefer_selects_ordered_tiers_with_a_none_spill() {
         assert_eq!(
-            preferred_node_order(&NamespacePlacement::Pinned {
-                nodes: labels(&["n1"]),
+            worker_selection_for(&NamespacePlacement::Prefer {
+                nodes: labels(&["n2", "n1"]),
             }),
-            vec![None],
-            "Pinned dispatches like Unplaced until its hard-constraint gate (P2-I1)"
+            WorkerSelection::PreferTiers(vec![Some("n1".to_owned()), Some("n2".to_owned()), None,]),
+        );
+    }
+
+    /// `Unplaced` resolves to the single `None` any-worker tier.
+    #[test]
+    fn unplaced_selects_the_single_any_worker_tier() {
+        assert_eq!(
+            worker_selection_for(&NamespacePlacement::Unplaced),
+            WorkerSelection::PreferTiers(vec![None]),
+        );
+    }
+
+    /// `Pinned{L}` resolves to a NON-spilling `Required` decision over exactly the
+    /// required labels — it must NEVER contain a `None` spill tier, the hard-pin
+    /// invariant both transports share (CP-Phase-2 §2.5, P2-I1).
+    #[test]
+    fn pinned_selects_required_labels_and_never_spills() {
+        let selection = worker_selection_for(&NamespacePlacement::Pinned {
+            nodes: labels(&["n1", "n2"]),
+        });
+        assert_eq!(
+            selection,
+            WorkerSelection::Required(labels(&["n1", "n2"])),
+            "Pinned must require its label set with NO None spill tier"
         );
     }
 }

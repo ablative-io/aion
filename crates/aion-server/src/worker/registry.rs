@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use aion_core::{ClusterEvent, WorkerDeathReason, WorkerTransport};
 use aion_proto::{ProtoActivityTask, ProtoRegisterWorker};
-use aion_store::{NamespaceOrigin, NamespaceStore};
+use aion_store::{NamespaceOrigin, NamespacePlacement, NamespaceStore};
 use tokio::sync::{Notify, mpsc};
 
 use crate::cluster_publisher::ClusterEventPublisher;
@@ -345,6 +345,17 @@ impl ConnectedWorkerRegistry {
         // rejection never leaves a half-registered worker behind.
         self.mint_or_gate_namespaces(&namespaces).await?;
         let node = optional_node(&registration.node);
+        // PLACEMENT-ADMISSION GATE (Control-Plane Phase 2, P2-I1). Runs strictly
+        // AFTER the mint hook (so every authorized namespace has a durable record to
+        // read a placement from) and with BOTH the worker's advertised `node` and
+        // the full authorized namespace set in scope. It rejects the WHOLE
+        // registration (Open Decision 6) when the worker's node violates any
+        // `Pinned{L}` namespace it would serve, so only L-node workers ever enter a
+        // hard-pinned namespace's pool. Auth-scoped by construction (it only ever
+        // gates a namespace already authorized above); a no-op with no minter
+        // installed, so default/test registries stay byte-identical.
+        self.enforce_pinned_placement(&namespaces, node.as_deref())
+            .await?;
         self.register_namespaces(
             namespaces,
             registration.task_queue.clone(),
@@ -377,6 +388,50 @@ impl ConnectedWorkerRegistry {
         minter
             .mint_or_gate(namespaces, NamespaceOrigin::WorkerMint)
             .await
+    }
+
+    /// Reject the whole registration when the worker's advertised `node` violates
+    /// any `Pinned{L}` namespace it would serve (Control-Plane Phase 2, P2-I1).
+    ///
+    /// For each authorized namespace whose placement is [`NamespacePlacement::Pinned`],
+    /// the worker's advertised `node` must be `Some(n)` with `n ∈ L`; a `None` node
+    /// or an `n ∉ L` is a loud, whole-registration rejection naming the namespace,
+    /// the node, and the required set. This guarantees only L-node workers ever
+    /// serve a hard-pinned namespace's pool, which is exactly what lets the
+    /// `Some(N ∉ L)` composition case (§2.2) resolve to the correct isolation stall
+    /// at dispatch rather than needing a start-time enumeration of future nodes.
+    ///
+    /// Non-`Pinned` placements ([`NamespacePlacement::Unplaced`]/[`NamespacePlacement::Prefer`])
+    /// are UNAFFECTED — byte-identical registration. A no-op when no minter is
+    /// installed (every default/test registry), so those stay behaviour-identical:
+    /// the gate reads placement from the SAME registry record the minter/placement
+    /// endpoint writes, never a second source of truth.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Namespace`] (placement-admission denial) when the
+    /// worker's node violates a `Pinned` namespace, or [`ServerError::StoreBackend`]
+    /// if a placement read fails at the backend.
+    async fn enforce_pinned_placement(
+        &self,
+        namespaces: &[String],
+        node: Option<&str>,
+    ) -> Result<(), ServerError> {
+        let Some(minter) = &self.minter else {
+            return Ok(());
+        };
+        for namespace in namespaces {
+            let NamespacePlacement::Pinned { nodes } = minter.placement_of(namespace).await? else {
+                continue;
+            };
+            let admitted = node.is_some_and(|n| nodes.contains(n));
+            if !admitted {
+                return Err(ServerError::placement_admission_denied(
+                    namespace, node, &nodes,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Insert an already-authorized worker stream into the default task queue of
@@ -1448,6 +1503,229 @@ mod tests {
 
         assert!(store.get_namespace("alpha").await?.is_some());
         assert!(store.get_namespace("beta").await?.is_some());
+        Ok(())
+    }
+
+    // ---- Placement admission (Control-Plane Phase 2, P2-I1) -----------------
+
+    /// Pre-mint `namespace` and set its placement to `Pinned{nodes}`, returning a
+    /// minting registry over the same store so `accept_registration` reads the
+    /// placement from the SAME durable record.
+    async fn pinned_registry(
+        store: &Arc<dyn NamespaceStore>,
+        namespace: &str,
+        nodes: &[&str],
+    ) -> Result<ConnectedWorkerRegistry, ServerError> {
+        store
+            .register_namespace(namespace, NamespaceOrigin::Explicit)
+            .await?;
+        store
+            .set_namespace_placement(
+                namespace,
+                NamespacePlacement::Pinned {
+                    nodes: nodes.iter().map(|n| (*n).to_owned()).collect(),
+                },
+            )
+            .await?;
+        Ok(minting_registry(store, AutoCreate::Open))
+    }
+
+    /// A worker on a node IN the required set registers successfully into a
+    /// `Pinned{n1}` namespace, and is reachable in the pool.
+    #[tokio::test]
+    async fn pinned_admits_a_worker_on_a_required_node() -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = pinned_registry(&store, "iso", &["n1"]).await?;
+        let (tx, _rx) = mpsc::channel(1);
+
+        let _registration = registry
+            .accept_registration(
+                &guard(),
+                &caller("iso"),
+                &registration_full(&["iso"], "", "n1", &["charge"]),
+                tx,
+            )
+            .await?;
+
+        assert_eq!(
+            registry
+                .workers_for("iso", DEFAULT_TASK_QUEUE, "charge", Some("n1"))?
+                .len(),
+            1,
+            "an n1 worker must be admitted into the Pinned{{n1}} namespace's pool"
+        );
+        Ok(())
+    }
+
+    /// A worker on a node NOT in the required set is rejected — the WHOLE
+    /// registration fails (loud) and no worker is inserted. This would FAIL under
+    /// no admission gate (the worker would join and steal Pinned dispatches).
+    #[tokio::test]
+    async fn pinned_rejects_a_wrong_node_worker() -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = pinned_registry(&store, "iso", &["n1"]).await?;
+        let (tx, _rx) = mpsc::channel(1);
+
+        let denied = registry
+            .accept_registration(
+                &guard(),
+                &caller("iso"),
+                &registration_full(&["iso"], "", "n2", &["charge"]),
+                tx,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(ServerError::Namespace { .. })),
+            "a wrong-node (n2) worker must be rejected from a Pinned{{n1}} namespace"
+        );
+        assert!(
+            registry
+                .workers_for("iso", DEFAULT_TASK_QUEUE, "charge", None)?
+                .is_empty(),
+            "a rejected registration must not insert a worker on any node"
+        );
+        Ok(())
+    }
+
+    /// A worker advertising NO node (`node == ""` → `None`) is rejected from a
+    /// `Pinned{n1}` namespace: an unlabelled worker can never satisfy a hard pin.
+    #[tokio::test]
+    async fn pinned_rejects_a_node_less_worker() -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = pinned_registry(&store, "iso", &["n1"]).await?;
+        let (tx, _rx) = mpsc::channel(1);
+
+        let denied = registry
+            .accept_registration(
+                &guard(),
+                &caller("iso"),
+                &registration_full(&["iso"], "", "", &["charge"]),
+                tx,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(ServerError::Namespace { .. })),
+            "a node-less worker must be rejected from a Pinned{{n1}} namespace"
+        );
+        assert!(
+            registry
+                .workers_for("iso", DEFAULT_TASK_QUEUE, "charge", None)?
+                .is_empty(),
+            "a rejected node-less registration must not insert a worker"
+        );
+        Ok(())
+    }
+
+    /// Reject-WHOLE-registration (Open Decision 6): a worker serving BOTH a
+    /// non-isolated namespace and a `Pinned{n1}` namespace on a wrong node is
+    /// rejected entirely — the compliant namespace does NOT get a partial admit.
+    #[tokio::test]
+    async fn pinned_violation_rejects_the_whole_multi_namespace_registration()
+    -> Result<(), ServerError> {
+        let store = namespace_store();
+        let registry = pinned_registry(&store, "iso", &["n1"]).await?;
+        let (tx, _rx) = mpsc::channel(1);
+
+        let denied = registry
+            .accept_registration(
+                &guard(),
+                &multi_caller(&["free", "iso"]),
+                &registration_full(&["free", "iso"], "", "n2", &["charge"]),
+                tx,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(ServerError::Namespace { .. })),
+            "a wrong-node worker serving a Pinned namespace fails the WHOLE registration"
+        );
+        assert!(
+            registry
+                .workers_for("free", DEFAULT_TASK_QUEUE, "charge", None)?
+                .is_empty(),
+            "the compliant namespace must NOT be partially admitted"
+        );
+        Ok(())
+    }
+
+    /// Unplaced and Prefer namespaces are UNAFFECTED: a node-less worker registers
+    /// normally (byte-identical to the pre-P2-I1 behaviour). Only Pinned gates.
+    #[tokio::test]
+    async fn unplaced_and_prefer_admission_is_unaffected_by_the_pinned_gate()
+    -> Result<(), ServerError> {
+        let store = namespace_store();
+        // `unpl` is left Unplaced (default); `pref` is Prefer{n1}. A node-less
+        // worker must be admitted into BOTH.
+        store
+            .register_namespace("pref", NamespaceOrigin::Explicit)
+            .await?;
+        store
+            .set_namespace_placement(
+                "pref",
+                NamespacePlacement::Prefer {
+                    nodes: ["n1".to_owned()].into_iter().collect(),
+                },
+            )
+            .await?;
+        let registry = minting_registry(&store, AutoCreate::Open);
+
+        let (tx_a, _rx_a) = mpsc::channel(1);
+        let _reg_a = registry
+            .accept_registration(
+                &guard(),
+                &caller("unpl"),
+                &registration_full(&["unpl"], "", "", &["charge"]),
+                tx_a,
+            )
+            .await?;
+        let (tx_b, _rx_b) = mpsc::channel(1);
+        let _reg_b = registry
+            .accept_registration(
+                &guard(),
+                &caller("pref"),
+                &registration_full(&["pref"], "", "", &["charge"]),
+                tx_b,
+            )
+            .await?;
+
+        assert_eq!(
+            registry
+                .workers_for("unpl", DEFAULT_TASK_QUEUE, "charge", None)?
+                .len(),
+            1,
+            "an Unplaced namespace admits a node-less worker unchanged"
+        );
+        assert_eq!(
+            registry
+                .workers_for("pref", DEFAULT_TASK_QUEUE, "charge", None)?
+                .len(),
+            1,
+            "a Prefer namespace admits a node-less worker unchanged (only Pinned gates)"
+        );
+        Ok(())
+    }
+
+    /// A default (no-minter) registry is byte-identical: the placement gate is a
+    /// no-op with no minter installed, so a node-less worker registers freely even
+    /// though there is no way to have set a placement in the first place.
+    #[tokio::test]
+    async fn no_minter_registry_skips_the_placement_gate() -> Result<(), ServerError> {
+        let registry = ConnectedWorkerRegistry::default();
+        let (tx, _rx) = mpsc::channel(1);
+        let _registration = registry
+            .accept_registration(
+                &guard(),
+                &caller("plain"),
+                &registration_full(&["plain"], "", "", &["charge"]),
+                tx,
+            )
+            .await?;
+        assert_eq!(
+            registry
+                .workers_for("plain", DEFAULT_TASK_QUEUE, "charge", None)?
+                .len(),
+            1,
+            "with no minter the placement gate is a no-op — registration is unchanged"
+        );
         Ok(())
     }
 
