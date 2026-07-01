@@ -298,4 +298,64 @@ mod tests {
         );
         Ok(())
     }
+
+    /// PACKAGING-INTEGRITY GUARD (#153).
+    ///
+    /// The ops console is served ENTIRELY from the compile-time embedded bundle,
+    /// so a plain `cargo install` must ship an `index.html` plus every hashed
+    /// asset that `index.html` references, each with real bytes. If the committed
+    /// `ops-console-embed/` bundle is ever dropped from the packaged crate (e.g. a
+    /// stray `exclude` in Cargo.toml, or the assets slipping out of git tracking so
+    /// cargo omits them from the `.crate`) then `rust_embed` compiles an incomplete
+    /// bundle and an installed binary serves an API-only / broken console. That
+    /// failure is invisible to the other embed tests, which only touch
+    /// `index.html`, and to `cargo xtask verify-ops-console`, which needs `bun` and
+    /// so never runs on an end user's machine.
+    ///
+    /// This test walks the embedded index's own asset references and asserts each
+    /// referenced `/assets/...` resolves to non-empty embedded bytes — i.e. the
+    /// exact bundle the installed binary would serve is complete and self-consistent.
+    #[test]
+    fn embedded_bundle_ships_every_asset_index_references() -> TestResult {
+        let index = EmbeddedOpsConsole::get("index.html")
+            .ok_or("embedded ops-console bundle is missing index.html")?;
+        let html = String::from_utf8(index.data.into_owned())?;
+
+        // Extract every `/assets/<file>` reference from src=".."/href=".." attrs.
+        let mut referenced = Vec::new();
+        let mut rest = html.as_str();
+        while let Some(pos) = rest.find("/assets/") {
+            let tail = &rest[pos + 1..]; // drop the leading '/' for the embed key
+            let end = tail
+                .find(['"', '\''])
+                .ok_or("unterminated /assets reference in embedded index.html")?;
+            referenced.push(tail[..end].to_owned());
+            rest = &tail[end..];
+        }
+
+        assert!(
+            !referenced.is_empty(),
+            "embedded index.html references no /assets bundle — the embedded ops \
+             console is empty or a placeholder, so `cargo install` would ship an \
+             API-only binary"
+        );
+
+        for asset in &referenced {
+            let embedded = EmbeddedOpsConsole::get(asset).ok_or_else(|| {
+                format!(
+                    "embedded index.html references `{asset}` but it is NOT in the \
+                     embedded bundle — the packaged crate dropped ops-console \
+                     assets, so `cargo install` serves a broken console. Ensure \
+                     `crates/aion-server/ops-console-embed/**` is git-tracked and \
+                     not excluded from the package."
+                )
+            })?;
+            assert!(
+                !embedded.data.is_empty(),
+                "embedded ops-console asset `{asset}` is present but empty"
+            );
+        }
+
+        Ok(())
+    }
 }
