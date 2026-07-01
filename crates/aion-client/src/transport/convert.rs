@@ -153,6 +153,25 @@ pub(crate) fn decode_cancel_response(
     aion_proto::ProtoCancelResponse {}
 }
 
+pub(crate) fn encode_reopen_request(
+    value: aion_proto::ProtoReopenRequest,
+) -> aion_proto::generated::ReopenRequest {
+    aion_proto::generated::ReopenRequest {
+        namespace: value.namespace,
+        workflow_id: value.workflow_id.map(encode_workflow_id),
+        run_id: value.run_id.map(encode_run_id),
+    }
+}
+
+pub(crate) fn decode_reopen_response(
+    value: aion_proto::generated::ReopenResponse,
+) -> aion_proto::ProtoReopenResponse {
+    aion_proto::ProtoReopenResponse {
+        run_id: value.run_id.map(decode_run_id),
+        status: value.status,
+    }
+}
+
 pub(crate) fn encode_list_request(
     value: aion_proto::ProtoListWorkflowsRequest,
 ) -> aion_proto::generated::ListWorkflowsRequest {

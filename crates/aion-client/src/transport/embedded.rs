@@ -40,6 +40,28 @@ impl EmbeddedWorkflowTransport {
     pub fn new(engine: Arc<aion::Engine>) -> Self {
         Self { engine }
     }
+
+    /// Resolve the target run id: the supplied one, or the latest run from the
+    /// workflow's run chain when omitted (mirrors the server's `resolve_run_id`).
+    async fn resolve_run_id(
+        &self,
+        workflow_id: &aion_core::WorkflowId,
+        run_id: Option<aion_proto::ProtoRunId>,
+    ) -> Result<aion_core::RunId, ClientError> {
+        if let Some(run_id) = run_id {
+            return run_id.try_into().map_err(ClientError::from_wire_error);
+        }
+        let chain = self
+            .engine
+            .store()
+            .read_run_chain(workflow_id)
+            .await
+            .map_err(|error| ClientError::server(error.to_string()))?;
+        chain
+            .last()
+            .map(|summary| summary.run_id.clone())
+            .ok_or_else(|| ClientError::not_found(format!("workflow {workflow_id} not found")))
+    }
 }
 
 #[async_trait]
@@ -123,6 +145,23 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
             .await
             .map_err(|error| map_engine_error(&error))?;
         Ok(aion_proto::ProtoCancelResponse {})
+    }
+
+    async fn reopen(
+        &self,
+        request: aion_proto::ProtoReopenRequest,
+    ) -> Result<aion_proto::ProtoReopenResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let run_id = self.resolve_run_id(&workflow_id, request.run_id).await?;
+        let handle = self
+            .engine
+            .reopen_workflow(&workflow_id, &run_id)
+            .await
+            .map_err(|error| map_engine_error(&error))?;
+        Ok(aion_proto::ProtoReopenResponse {
+            run_id: Some(handle.run_id().clone().into()),
+            status: aion_proto::ProtoWorkflowStatus::from(handle.cached_status()) as i32,
+        })
     }
 
     async fn list_workflows(
@@ -380,6 +419,9 @@ fn embedded_subscription_target(
 fn map_engine_error(error: &aion::EngineError) -> ClientError {
     match error {
         aion::EngineError::WorkflowNotFound { .. } => ClientError::not_found(error.to_string()),
+        // Reopen precondition failure (AD-012): distinct typed variant, never
+        // conflated with not-found or the generic server bucket.
+        aion::EngineError::InvalidState { .. } => ClientError::invalid_state(error.to_string()),
         aion::EngineError::ShuttingDown => ClientError::unavailable(error.to_string()),
         _ => ClientError::server(error.to_string()),
     }

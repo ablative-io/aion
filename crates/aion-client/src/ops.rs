@@ -3,12 +3,14 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use aion_core::{Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_core::{
+    Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+};
 use aion_proto::{
     ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoPayload,
-    ProtoQueryRequest, ProtoRunId, ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoWorkflowId,
-    WireError, decode_core_value, decode_event, decode_workflow_summary, encode_core_value,
-    proto_query_response,
+    ProtoQueryRequest, ProtoReopenRequest, ProtoRunId, ProtoSignalRequest,
+    ProtoStartWorkflowRequest, ProtoWorkflowId, ProtoWorkflowStatus, WireError, decode_core_value,
+    decode_event, decode_workflow_summary, encode_core_value, proto_query_response,
 };
 use aion_store::visibility::ListWorkflowsFilter;
 
@@ -65,6 +67,15 @@ pub struct WorkflowDescription {
     pub summary: WorkflowSummary,
     /// Optional event history when the server includes it.
     pub history: Vec<Event>,
+}
+
+/// Outcome of [`Client::reopen`]: the reopened run and its projected status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReopenOutcome {
+    /// The reopened concrete run identifier (now live again).
+    pub run_id: RunId,
+    /// The projected status after the reopen (Running).
+    pub status: WorkflowStatus,
 }
 
 impl Client {
@@ -275,6 +286,43 @@ impl Client {
             })
             .await?;
         Ok(())
+    }
+
+    /// Reopens a terminal-reopenable run (Failed or Cancelled), re-driving it
+    /// from where it left off. Targets the latest run, or `run_id` when supplied.
+    ///
+    /// Returns the reopened run and its projected status (Running). A run that is
+    /// not a reopenable terminal (not terminal, terminal for a non-reopenable
+    /// reason, or already Running) returns [`ClientError::InvalidState`]; an
+    /// absent workflow returns [`ClientError::NotFound`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when transport, server, or response conversion fails.
+    pub async fn reopen(
+        &self,
+        workflow_id: &WorkflowId,
+        run_id: Option<&RunId>,
+    ) -> Result<ReopenOutcome, ClientError> {
+        let response = self
+            .transport
+            .reopen(ProtoReopenRequest {
+                namespace: self.namespace().to_owned(),
+                workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
+                run_id: run_id.cloned().map(ProtoRunId::from),
+            })
+            .await?;
+        let run_id = response
+            .run_id
+            .ok_or_else(|| ClientError::server("reopen response run id is missing"))?
+            .try_into()
+            .map_err(ClientError::from_wire_error)?;
+        let status = ProtoWorkflowStatus::try_from(response.status)
+            .map_err(|_error| ClientError::server("reopen response status is unknown"))
+            .and_then(|status| {
+                WorkflowStatus::try_from(status).map_err(ClientError::from_wire_error)
+            })?;
+        Ok(ReopenOutcome { run_id, status })
     }
 
     /// Lists workflows matching a filter.
@@ -543,9 +591,9 @@ mod tests {
     use aion_core::{ContentType, Payload, WorkflowFilter, WorkflowId, WorkflowStatus};
     use aion_proto::{
         ProtoCancelResponse, ProtoDescribeWorkflowResponse, ProtoListWorkflowsResponse,
-        ProtoQueryResponse, ProtoRunId, ProtoSignalResponse, ProtoStartWorkflowResponse,
-        ProtoWorkflowId, WireError, encode_core_value, encode_workflow_summary,
-        proto_query_response,
+        ProtoQueryResponse, ProtoReopenResponse, ProtoRunId, ProtoSignalResponse,
+        ProtoStartWorkflowResponse, ProtoWorkflowId, ProtoWorkflowStatus, WireError,
+        encode_core_value, encode_workflow_summary, proto_query_response,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -564,11 +612,13 @@ mod tests {
         last_signal: Mutex<Option<aion_proto::ProtoSignalRequest>>,
         last_query: Mutex<Option<aion_proto::ProtoQueryRequest>>,
         last_cancel: Mutex<Option<aion_proto::ProtoCancelRequest>>,
+        last_reopen: Mutex<Option<aion_proto::ProtoReopenRequest>>,
         last_list: Mutex<Option<aion_proto::ProtoListWorkflowsRequest>>,
         last_describe: Mutex<Option<aion_proto::ProtoDescribeWorkflowRequest>>,
         start_error: Mutex<Option<ClientError>>,
         signal_error: Mutex<Option<ClientError>>,
         query_response: Mutex<Option<Result<ProtoQueryResponse, ClientError>>>,
+        reopen_response: Mutex<Option<Result<ProtoReopenResponse, ClientError>>>,
     }
 
     #[async_trait]
@@ -619,6 +669,20 @@ mod tests {
         ) -> Result<ProtoCancelResponse, ClientError> {
             *self.last_cancel.lock().await = Some(request);
             Ok(ProtoCancelResponse {})
+        }
+
+        async fn reopen(
+            &self,
+            request: aion_proto::ProtoReopenRequest,
+        ) -> Result<ProtoReopenResponse, ClientError> {
+            *self.last_reopen.lock().await = Some(request);
+            if let Some(response) = self.reopen_response.lock().await.take() {
+                return response;
+            }
+            Ok(ProtoReopenResponse {
+                run_id: Some(ProtoRunId::from(run_id())),
+                status: ProtoWorkflowStatus::Running as i32,
+            })
         }
 
         async fn list_workflows(
@@ -939,6 +1003,46 @@ mod tests {
         assert!(describe.include_history);
         assert_eq!(listed.len(), 1);
         assert_eq!(described.history.len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_returns_running_run_and_maps_request() -> Result<(), ClientError> {
+        let stub = Arc::new(StubTransport::default());
+        let client = client_with(Arc::clone(&stub));
+        let id = workflow_id();
+        let run = run_id();
+
+        let outcome = client.reopen(&id, Some(&run)).await?;
+
+        assert_eq!(outcome.status, WorkflowStatus::Running);
+        let request = stub
+            .last_reopen
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| ClientError::server("missing reopen"))?;
+        assert_eq!(request.namespace, "tenant-a");
+        assert!(request.run_id.is_some());
+        Ok(())
+    }
+
+    /// The `InvalidState` wire code maps to the distinct typed
+    /// [`ClientError::InvalidState`], never conflated with not-found.
+    #[tokio::test]
+    async fn reopen_maps_invalid_state_to_distinct_typed_error() -> Result<(), ClientError> {
+        let stub = Arc::new(StubTransport::default());
+        *stub.reopen_response.lock().await = Some(Err(ClientError::from_wire_error(
+            WireError::invalid_state_with_type("InvalidState", "run is not reopenable"),
+        )));
+        let client = client_with(Arc::clone(&stub));
+
+        let result = client.reopen(&workflow_id(), None).await;
+
+        assert!(
+            matches!(result, Err(ClientError::InvalidState { .. })),
+            "got {result:?}"
+        );
         Ok(())
     }
 }

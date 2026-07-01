@@ -195,8 +195,8 @@ mod tests {
         AttemptCapabilities, AttemptsRequest, AttemptsResponse, InterveneRequest, InterveneResponse,
     };
     use aion_core::{
-        ActivityId, InjectPriority, InterventionCapabilities, InterventionKind, InterventionOutcome,
-        InterventionPrimitive, WorkflowId,
+        ActivityId, InjectPriority, InterventionCapabilities, InterventionKind,
+        InterventionOutcome, InterventionPrimitive, WorkflowId,
     };
 
     /// The request body carries the target identity + neutral primitive and

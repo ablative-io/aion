@@ -95,11 +95,8 @@ pub async fn reopen(
     // respawn (invariant #3): built at the history head, it appends the marker
     // and is then handed — the same instance — to resident registration.
     let history_head = history.last().map(Event::seq).unwrap_or_default();
-    let mut recorder =
-        Recorder::resume_at(id.clone(), Arc::clone(&context.store), history_head).with_visibility(
-            run.clone(),
-            Arc::clone(&context.visibility_store),
-        );
+    let mut recorder = Recorder::resume_at(id.clone(), Arc::clone(&context.store), history_head)
+        .with_visibility(run.clone(), Arc::clone(&context.visibility_store));
     recorder
         .record_workflow_reopened(Utc::now(), run.clone(), reopened)
         .await?;
@@ -213,15 +210,11 @@ async fn respawn_and_register(
         .supervision
         .ensure_type_supervisor(workflow_type.clone())?;
 
-    let seam: Arc<dyn ActiveWorkflowRecoverySeam> =
-        Arc::new(ActiveWorkflowRecoverySeamImpl::new(Arc::clone(context.runtime)));
-    let recovered = recover_active_workflow(
-        seam.as_ref(),
-        id,
-        &workflow_type,
-        history,
-        &context.catalog,
-    )?;
+    let seam: Arc<dyn ActiveWorkflowRecoverySeam> = Arc::new(ActiveWorkflowRecoverySeamImpl::new(
+        Arc::clone(context.runtime),
+    ));
+    let recovered =
+        recover_active_workflow(seam.as_ref(), id, &workflow_type, history, &context.catalog)?;
     let (run_id, loaded_version, pid) = match recovered {
         ActiveWorkflowRecovery::Resident {
             run_id,
@@ -230,7 +223,9 @@ async fn respawn_and_register(
         } => (run_id, loaded_version, pid),
         ActiveWorkflowRecovery::ScheduleCoordinator { .. } => {
             return Err(EngineError::InvalidState {
-                reason: format!("workflow {id} run {run} is the schedule coordinator, not reopenable"),
+                reason: format!(
+                    "workflow {id} run {run} is the schedule coordinator, not reopenable"
+                ),
             });
         }
     };

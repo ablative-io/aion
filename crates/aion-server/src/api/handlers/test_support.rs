@@ -5,8 +5,8 @@ use std::sync::Arc;
 use aion::{Engine, EngineBuilder};
 use aion_core::{Event, EventEnvelope, Payload, RunId, WorkflowId};
 use aion_proto::{
-    ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoQueryRequest, ProtoSignalRequest,
-    WireError, WireErrorCode, convert::ProtoPayload,
+    ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoQueryRequest, ProtoReopenRequest,
+    ProtoSignalRequest, WireError, WireErrorCode, convert::ProtoPayload,
 };
 use aion_store::{EventStore, InMemoryStore, WriteToken, visibility::VisibilityStore};
 use chrono::Utc;
@@ -133,6 +133,22 @@ pub(super) async fn append_failed(
     Ok(())
 }
 
+pub(super) async fn append_timed_out(
+    store: &dyn EventStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let events = [
+        started_event()?,
+        Event::WorkflowTimedOut {
+            envelope: event_envelope(2),
+            timeout: "run".to_owned(),
+        },
+    ];
+    store
+        .append(WriteToken::recorder(), &workflow_id(), &events, 0)
+        .await?;
+    Ok(())
+}
+
 pub(super) async fn append_continued_chain(
     store: &dyn EventStore,
     first: &RunId,
@@ -193,6 +209,14 @@ pub(super) fn cancel_request() -> ProtoCancelRequest {
         workflow_id: Some(workflow_id().into()),
         run_id: Some(run_id().into()),
         reason: "test cancellation".to_owned(),
+    }
+}
+
+pub(super) fn reopen_request() -> ProtoReopenRequest {
+    ProtoReopenRequest {
+        namespace: NAMESPACE.to_owned(),
+        workflow_id: Some(workflow_id().into()),
+        run_id: Some(run_id().into()),
     }
 }
 

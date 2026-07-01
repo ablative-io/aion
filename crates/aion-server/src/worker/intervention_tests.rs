@@ -253,7 +253,11 @@ async fn intervenable_attempts_enumerates_only_live_owned_attempts_of_the_workfl
         .intervenable_attempts(&this_workflow)
         .expect("enumeration succeeds");
     attempts.sort_by_key(|(attempt_key, _caps)| attempt_key.attempt);
-    assert_eq!(attempts.len(), 2, "only this workflow's live attempts appear");
+    assert_eq!(
+        attempts.len(),
+        2,
+        "only this workflow's live attempts appear"
+    );
     assert_eq!(attempts[0].0.attempt, 1);
     assert_eq!(attempts[1].0.attempt, 2);
     // Each carries the SAME advertised set the router gates on.

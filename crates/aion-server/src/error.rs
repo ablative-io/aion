@@ -348,6 +348,7 @@ impl ServerError {
 fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
     match source {
         EngineError::WorkflowNotFound { .. } => simple_engine_fields("WorkflowNotFound", source),
+        EngineError::InvalidState { .. } => simple_engine_fields("InvalidState", source),
         EngineError::ScheduleNotFound { .. } => simple_engine_fields("ScheduleNotFound", source),
         EngineError::ShuttingDown => simple_engine_fields("ShuttingDown", source),
         EngineError::Store(store) => store_trace_fields(store),
@@ -429,6 +430,12 @@ fn wire_from_engine(source: &EngineError) -> WireError {
     match source {
         EngineError::WorkflowNotFound { .. } => {
             WireError::not_found_with_type("WorkflowNotFound", source.to_string())
+        }
+        // Reopen precondition failure (AD-012): the run is not a reopenable
+        // terminal. Carried on the dedicated `invalid_state` wire code (gRPC
+        // FailedPrecondition / HTTP 409), distinct from NotFound and Backend.
+        EngineError::InvalidState { reason } => {
+            WireError::invalid_state_with_type("InvalidState", reason.clone())
         }
         EngineError::ScheduleNotFound { .. } => {
             WireError::not_found_with_type("ScheduleNotFound", source.to_string())

@@ -263,8 +263,12 @@ pub(crate) async fn register_recovered_resident(
     // recovery). This is the single-writer seam: no second recorder is ever
     // constructed for a run whose recorder was supplied.
     let recorder = recorder.unwrap_or_else(|| {
-        Recorder::resume_at(workflow_id.clone(), Arc::clone(&context.store), history_head)
-            .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store))
+        Recorder::resume_at(
+            workflow_id.clone(),
+            Arc::clone(&context.store),
+            history_head,
+        )
+        .with_visibility(run_id.clone(), Arc::clone(&context.visibility_store))
     });
     let completion = CompletionNotifier::new();
     let namespace = namespace_from_history(history);

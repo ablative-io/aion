@@ -440,8 +440,7 @@ mod tests {
         assert_eq!(registry.live_pid(&workflow_id)?, Some(1));
 
         // A second insert_if_absent observes the existing occupant untouched.
-        let observed =
-            registry.insert_if_absent((workflow_id.clone(), run.clone()), second)?;
+        let observed = registry.insert_if_absent((workflow_id.clone(), run.clone()), second)?;
         assert_eq!(
             observed.pid(),
             1,

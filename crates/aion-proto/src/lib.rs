@@ -71,6 +71,6 @@ pub use workflow::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
     ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
     ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
-    ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse,
-    proto_query_response,
+    ProtoReopenRequest, ProtoReopenResponse, ProtoSignalRequest, ProtoSignalResponse,
+    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, proto_query_response,
 };

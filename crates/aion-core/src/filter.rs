@@ -671,8 +671,8 @@ mod tests {
     }
 
     #[test]
-    fn failure_projection_attributes_failed_step_and_reason() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn failure_projection_attributes_failed_step_and_reason()
+    -> Result<(), Box<dyn std::error::Error>> {
         let wf = WorkflowId::new(uuid::Uuid::from_u128(1));
         let events = vec![
             started(&wf)?,
@@ -695,7 +695,10 @@ mod tests {
         let summary = WorkflowSummary::from_history(&events).ok_or("summary")?;
         assert_eq!(summary.status, WorkflowStatus::Failed);
         assert_eq!(summary.failed_step.as_deref(), Some("dev_review"));
-        assert_eq!(summary.failure_reason.as_deref(), Some("norn review failed"));
+        assert_eq!(
+            summary.failure_reason.as_deref(),
+            Some("norn review failed")
+        );
         Ok(())
     }
 

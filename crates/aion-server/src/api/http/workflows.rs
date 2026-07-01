@@ -15,8 +15,8 @@ use aion_store::NamespacePlacement;
 use super::auth::HttpCaller;
 use super::clean_dtos::{
     CancelWorkflowRequest, DescribeWorkflowRequest, ListWorkflowsRequest, ListWorkflowsResponse,
-    QueryWorkflowRequest, QueryWorkflowResponse, SignalWorkflowRequest, StartWorkflowRequest,
-    StartWorkflowResponse, core_summary_from_store,
+    QueryWorkflowRequest, QueryWorkflowResponse, ReopenWorkflowRequest, ReopenWorkflowResponse,
+    SignalWorkflowRequest, StartWorkflowRequest, StartWorkflowResponse, core_summary_from_store,
 };
 use super::error::{HttpStartError, HttpWireError};
 use super::payload::describe_response_to_ops_console;
@@ -88,6 +88,18 @@ pub(crate) async fn cancel_workflow(
         .await
         .map(Json)
         .map_err(HttpWireError)
+}
+
+pub(crate) async fn reopen_workflow(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<ReopenWorkflowRequest>,
+) -> Result<Json<ReopenWorkflowResponse>, HttpWireError> {
+    let request = request.try_into().map_err(HttpWireError)?;
+    let response = handlers::reopen(state.namespace_guard(), &caller, request)
+        .await
+        .map_err(HttpWireError)?;
+    ReopenWorkflowResponse::try_from(response).map(Json)
 }
 
 pub(crate) async fn post_list_workflows(
@@ -623,6 +635,67 @@ mod tests {
         let error: WireError = read_json(response).await?;
         assert_eq!(error.code, WireErrorCode::InvalidInput);
         assert!(error.message.contains("{\"name\":\"Ada\"}"));
+        Ok(())
+    }
+
+    /// `POST /workflows/reopen` on a terminal-Completed workflow returns HTTP
+    /// 409 Conflict carrying the typed `invalid_state` wire code (AO-007
+    /// C35/C38): the engine's non-reopenable-terminal precondition, surfaced.
+    #[tokio::test]
+    async fn http_reopen_completed_workflow_is_conflict_invalid_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (engine, store, _visibility_store) = shared_engine().await?;
+        store
+            .append(
+                WriteToken::recorder(),
+                &workflow_id(),
+                &[
+                    started_event()?,
+                    aion_core::Event::SearchAttributesUpdated {
+                        envelope: aion_core::EventEnvelope {
+                            seq: 2,
+                            recorded_at: Utc::now(),
+                            workflow_id: workflow_id(),
+                        },
+                        workflow_id: workflow_id(),
+                        attributes: std::collections::HashMap::from([(
+                            crate::namespace::NAMESPACE_ATTRIBUTE.to_owned(),
+                            aion_core::SearchAttributeValue::String(NAMESPACE.to_owned()),
+                        )]),
+                    },
+                    aion_core::Event::WorkflowCompleted {
+                        envelope: aion_core::EventEnvelope {
+                            seq: 3,
+                            recorded_at: Utc::now(),
+                            workflow_id: workflow_id(),
+                        },
+                        result: aion_core::Payload::from_json(&json!({ "done": true }))?,
+                    },
+                ],
+                0,
+            )
+            .await?;
+        let ownership = StaticWorkflowNamespaces::default();
+        ownership.record(workflow_id(), NAMESPACE)?;
+        let resolver = NamespaceResolver::from_parts(
+            NamespaceMode::SharedEngine,
+            Some(engine),
+            Arc::new(ownership),
+            Arc::new(StaticScheduleNamespaces::default()),
+        );
+        let router = workflow_router(server_state(resolver, runtime_config()).await?);
+
+        let reopen = json!({
+            "namespace": NAMESPACE,
+            "workflow_id": workflow_id().to_string(),
+        });
+        let response = router
+            .oneshot(json_request("/workflows/reopen", &reopen)?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let error: WireError = read_json(response).await?;
+        assert_eq!(error.code, WireErrorCode::InvalidState);
+        assert_eq!(error.error_type.as_deref(), Some("InvalidState"));
         Ok(())
     }
 

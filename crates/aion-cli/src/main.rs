@@ -5,14 +5,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use aion_client::{Client, ClientBuilder, ListPage, StartOptions};
+use aion_client::{Client, ClientBuilder, ClientError, ListPage, StartOptions};
 use aion_core::{WorkflowFilter, WorkflowStatus};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use crate::output::{
-    AcknowledgementOutput, QueryOutput, describe_output, print_json, start_output, to_value,
+    AcknowledgementOutput, QueryOutput, describe_output, print_json, reopen_output, start_output,
+    to_value,
 };
 use crate::payload::{
     empty_query_payload, json_payload, parse_run_id, parse_status, parse_workflow_id,
@@ -276,6 +277,14 @@ enum RemoteCommand {
         #[arg(long)]
         run_id: Option<String>,
     },
+    /// Reopen a terminal-reopenable (Failed or Cancelled) run and re-drive it.
+    Reopen {
+        /// Workflow identifier.
+        workflow_id: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+    },
     /// List workflow executions.
     List {
         /// Optional workflow status filter. Accepted values: running, completed, failed, cancelled, timed-out, continued-as-new.
@@ -460,6 +469,10 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
             reason,
             run_id,
         } => cancel_workflow(client, workflow_id, reason, run_id.as_deref()).await,
+        RemoteCommand::Reopen {
+            workflow_id,
+            run_id,
+        } => reopen_workflow(client, workflow_id, run_id.as_deref()).await,
         RemoteCommand::List { status } => list_workflows(client, *status).await,
         RemoteCommand::Describe {
             workflow_id,
@@ -559,6 +572,36 @@ async fn cancel_workflow(
     })
 }
 
+async fn reopen_workflow(
+    client: &Client,
+    workflow_id: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
+    let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
+    let outcome = client
+        .reopen(&workflow_id, run_id.as_ref())
+        .await
+        .map_err(|error| reopen_error(&workflow_id.to_string(), error))?;
+    to_value(reopen_output(&workflow_id.to_string(), &outcome))
+}
+
+/// Render a reopen failure as a typed, operator-facing message — never a raw
+/// transport error. `InvalidState` names the precondition ("not reopenable"),
+/// `NotFound` is a plain "not found"; everything else keeps the client detail.
+fn reopen_error(workflow_id: &str, error: ClientError) -> anyhow::Error {
+    match error {
+        ClientError::InvalidState { detail } => {
+            anyhow::anyhow!(
+                "workflow {workflow_id} is not reopenable: {}",
+                detail.message
+            )
+        }
+        ClientError::NotFound { .. } => anyhow::anyhow!("workflow {workflow_id} not found"),
+        other => anyhow::anyhow!("failed to reopen workflow {workflow_id}: {other}"),
+    }
+}
+
 async fn list_workflows(client: &Client, status: Option<WorkflowStatus>) -> Result<Value> {
     let filter = WorkflowFilter {
         status,
@@ -634,6 +677,41 @@ mod tests {
             anyhow::bail!("expected describe command");
         };
         assert!(raw);
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_parses_workflow_id_and_optional_run_id() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "reopen", WORKFLOW_ID])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Reopen {
+            workflow_id,
+            run_id,
+        })) = cli.command
+        else {
+            anyhow::bail!("expected reopen command");
+        };
+        assert_eq!(workflow_id, WORKFLOW_ID);
+        assert!(run_id.is_none());
+
+        let cli = Cli::try_parse_from(["aion", "reopen", WORKFLOW_ID, "--run-id", RUN_ID])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Reopen { run_id, .. })) =
+            cli.command
+        else {
+            anyhow::bail!("expected reopen command");
+        };
+        assert_eq!(run_id.as_deref(), Some(RUN_ID));
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_help_documents_the_subcommand() -> anyhow::Result<()> {
+        let mut command = Cli::command();
+        let Some(reopen) = command.find_subcommand_mut("reopen") else {
+            anyhow::bail!("reopen subcommand should be registered");
+        };
+        let help = reopen.render_long_help().to_string();
+        assert!(help.contains("--run-id"));
+        assert!(help.contains("reopen"));
         Ok(())
     }
 
@@ -909,6 +987,7 @@ mod tests {
             vec!["aion", "describe", WORKFLOW_ID],
             vec!["aion", "signal", WORKFLOW_ID, "poke", "--payload", "{}"],
             vec!["aion", "cancel", WORKFLOW_ID],
+            vec!["aion", "reopen", WORKFLOW_ID],
             vec!["aion", "query", WORKFLOW_ID, "state"],
         ];
 
@@ -919,6 +998,7 @@ mod tests {
                     RemoteCommand::Describe { run_id, .. }
                     | RemoteCommand::Signal { run_id, .. }
                     | RemoteCommand::Cancel { run_id, .. }
+                    | RemoteCommand::Reopen { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert!(run_id.is_none()),
                 Command::Server(_)
@@ -961,6 +1041,7 @@ mod tests {
                 "{}",
             ],
             vec!["aion", "cancel", WORKFLOW_ID, "--run-id", RUN_ID],
+            vec!["aion", "reopen", WORKFLOW_ID, "--run-id", RUN_ID],
             vec!["aion", "query", WORKFLOW_ID, "state", "--run-id", RUN_ID],
         ];
 
@@ -970,6 +1051,7 @@ mod tests {
                 Command::Client(ClientCommand::Remote(
                     RemoteCommand::Signal { run_id, .. }
                     | RemoteCommand::Cancel { run_id, .. }
+                    | RemoteCommand::Reopen { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
                 Command::Server(_)

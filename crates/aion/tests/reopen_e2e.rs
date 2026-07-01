@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use aion::{EngineBuilder, EngineError};
 use aion_core::{
-    ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, RunId, SearchAttributeValue,
-    WorkflowError, WorkflowId, WorkflowStatus, status_from_events,
+    ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, RunId,
+    SearchAttributeValue, WorkflowError, WorkflowId, WorkflowStatus, status_from_events,
 };
 use aion_store::{EventStore, InMemoryStore, WriteToken};
 use chrono::Utc;
@@ -239,11 +239,15 @@ async fn double_reopen_of_a_running_run_is_rejected() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn restart_after_reopen_recovers_the_run_as_running()
--> Result<(), Box<dyn std::error::Error>> {
+async fn restart_after_reopen_recovers_the_run_as_running() -> Result<(), Box<dyn std::error::Error>>
+{
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
-    let (workflow_id, run_id) = seed_failed_run(&store, &fixture_package("wait")?.content_hash().to_string(), "default")
-        .await?;
+    let (workflow_id, run_id) = seed_failed_run(
+        &store,
+        &fixture_package("wait")?.content_hash().to_string(),
+        "default",
+    )
+    .await?;
 
     let engine = EngineBuilder::new()
         .store_arc(Arc::clone(&store))

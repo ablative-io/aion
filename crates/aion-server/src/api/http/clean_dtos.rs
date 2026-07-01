@@ -11,9 +11,10 @@
 use aion_core::{WorkflowStatus, WorkflowSummary};
 use aion_proto::{
     ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest,
-    ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoRunId,
-    ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, ProtoWorkflowId,
-    WireError, proto_query_response,
+    ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoReopenRequest,
+    ProtoReopenResponse, ProtoRunId, ProtoSignalRequest, ProtoStartWorkflowRequest,
+    ProtoStartWorkflowResponse, ProtoWorkflowId, ProtoWorkflowStatus, WireError,
+    proto_query_response,
 };
 use aion_store::visibility::{ListWorkflowsFilter, WorkflowSummary as StoreWorkflowSummary};
 use chrono::{DateTime, Utc};
@@ -124,6 +125,48 @@ impl TryFrom<CancelWorkflowRequest> for ProtoCancelRequest {
             run_id: optional_proto_run_id(request.run_id.as_deref())?,
             reason: request.reason,
         })
+    }
+}
+
+/// Clean reopen request: ids are plain UUID strings. Mirrors the cancel request
+/// without a `reason` (reopen carries only a target).
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReopenWorkflowRequest {
+    namespace: String,
+    workflow_id: String,
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+impl TryFrom<ReopenWorkflowRequest> for ProtoReopenRequest {
+    type Error = WireError;
+
+    fn try_from(request: ReopenWorkflowRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            namespace: request.namespace,
+            workflow_id: Some(proto_workflow_id(&request.workflow_id)?),
+            run_id: optional_proto_run_id(request.run_id.as_deref())?,
+        })
+    }
+}
+
+/// Clean reopen response: the reopened run id (plain UUID string) and its
+/// projected status, so the caller learns the run is live again.
+#[derive(Debug, Serialize)]
+pub(crate) struct ReopenWorkflowResponse {
+    run_id: String,
+    status: WorkflowStatus,
+}
+
+impl TryFrom<ProtoReopenResponse> for ReopenWorkflowResponse {
+    type Error = HttpWireError;
+
+    fn try_from(response: ProtoReopenResponse) -> Result<Self, Self::Error> {
+        let run_id = required_uuid(response.run_id.map(|id| id.uuid), "run id")?;
+        let status = ProtoWorkflowStatus::try_from(response.status)
+            .map_err(|_error| HttpWireError(WireError::backend("reopen status is invalid")))?;
+        let status = WorkflowStatus::try_from(status).map_err(HttpWireError)?;
+        Ok(Self { run_id, status })
     }
 }
 
