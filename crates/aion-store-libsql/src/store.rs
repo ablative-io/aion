@@ -318,6 +318,13 @@ impl OutboxStore for LibSqlStore {
         crate::outbox::count_claimed_outbox_rows(self.connection(), namespace).await
     }
 
+    async fn count_claimed_outbox_rows_by_namespace(
+        &self,
+        namespaces: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, u64>, StoreError> {
+        crate::outbox::count_claimed_outbox_rows_by_namespace(self.connection(), namespaces).await
+    }
+
     async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError> {
         crate::outbox::pending_outbox_routes(self.connection()).await
     }

@@ -724,6 +724,58 @@ async fn count_claimed_outbox_rows_counts_only_claimed_not_pending_backlog()
 }
 
 #[tokio::test]
+async fn count_claimed_by_namespace_matches_per_namespace_scalar_counts() -> Result<(), StoreError>
+{
+    // CP2-Q2 perf: the bucketed one-query count must be byte-identical to calling the scalar
+    // per-namespace count once for each namespace — same Claimed-only predicate, one entry per
+    // requested namespace (an absent namespace maps to 0 so the caller indexes unconditionally).
+    let store = open_test_store("count-claimed-bucketed").await?;
+
+    // alpha: 2 claimed; beta: 1 claimed; gamma: only a future-fenced Pending backlog (0 claimed).
+    let mut due = Vec::new();
+    for _ in 0..2 {
+        due.push(
+            pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("alpha"),
+        );
+    }
+    due.push(pending_row(&WorkflowId::new_v4(), 0, "charge", instant(1)?).with_namespace("beta"));
+    let backlog =
+        vec![pending_row(&WorkflowId::new_v4(), 0, "charge", far_future()).with_namespace("gamma")];
+    store.append_outbox_batch(&due).await?;
+    store.append_outbox_batch(&backlog).await?;
+    let claimed = store.claim_outbox_rows(100).await?;
+    assert_eq!(
+        claimed.len(),
+        3,
+        "the three due rows are claimed to Claimed"
+    );
+
+    let namespaces = ["alpha", "beta", "gamma", "delta"];
+    let bucketed = store
+        .count_claimed_outbox_rows_by_namespace(&namespaces)
+        .await?;
+    // Identical to the per-namespace scalar path for every requested namespace.
+    for namespace in namespaces {
+        let scalar = store.count_claimed_outbox_rows(namespace).await?;
+        assert_eq!(
+            bucketed.get(namespace).copied(),
+            Some(scalar),
+            "bucketed count for {namespace} must equal the scalar per-namespace count"
+        );
+    }
+    assert_eq!(bucketed.get("alpha").copied(), Some(2));
+    assert_eq!(bucketed.get("beta").copied(), Some(1));
+    // A namespace with no claimed rows (gamma: only Pending) and an unknown one (delta) map to 0.
+    assert_eq!(bucketed.get("gamma").copied(), Some(0));
+    assert_eq!(
+        bucketed.get("delta").copied(),
+        Some(0),
+        "unknown namespace seeds to 0"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn pending_outbox_routes_enumerates_distinct_claimable_routes() -> Result<(), StoreError> {
     // CP2-Q2: the round-robin probe returns exactly the distinct (namespace, task_queue, node)
     // routes that currently have a claimable Pending row, and NOTHING for a future-fenced route.

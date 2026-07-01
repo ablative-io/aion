@@ -1847,6 +1847,40 @@ impl OutboxStore for HaematiteStore {
         .await
     }
 
+    async fn count_claimed_outbox_rows_by_namespace(
+        &self,
+        namespaces: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, u64>, StoreError> {
+        // ONE owned-shard scan, bucketed by namespace (CP2-Q2 perf): the per-sweep planner needs the
+        // claimed count for every active namespace, and the single-namespace form above re-scans the
+        // whole owned-shard set once PER namespace (the N+1). Collapse to a single scan and tally per
+        // namespace, filtered to the requested set. Byte-identical counts to N calls of the above:
+        // same owned-shard scope, same Claimed-only predicate, same per-namespace scoping.
+        let scope = self.owned_shard_scope();
+        let requested: std::collections::BTreeSet<String> =
+            namespaces.iter().map(|ns| (*ns).to_owned()).collect();
+        self.blocking(move |store| {
+            // Seed every requested namespace at zero so the caller can index unconditionally.
+            let mut counts: std::collections::BTreeMap<String, u64> =
+                requested.iter().map(|ns| (ns.clone(), 0)).collect();
+            let rows: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?;
+            for row in rows {
+                if matches!(row.status, OutboxStatus::Claimed)
+                    && let Some(count) = counts.get_mut(&row.namespace)
+                {
+                    *count = count.saturating_add(1);
+                }
+            }
+            Ok(counts)
+        })
+        .await
+    }
+
     async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError> {
         // Read-only enumeration of the distinct `(namespace, task_queue, node)` routes with a
         // claimable pending row (status Pending AND visible_after passed). Owned-shard scoped so the
@@ -2623,6 +2657,58 @@ mod tests {
         store.complete_outbox_row(&alpha_a.dispatch_key).await?;
         assert_eq!(store.count_claimed_outbox_rows("alpha").await?, 1);
         assert_eq!(store.count_claimed_outbox_rows("beta").await?, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn count_claimed_by_namespace_matches_per_namespace_scalar_counts()
+    -> Result<(), StoreError> {
+        // CP2-Q2 perf: the single bucketed scan must yield byte-identical counts to N scalar
+        // per-namespace scans over the same owned-shard set — same Claimed-only predicate, one
+        // entry per requested namespace (absent maps to 0). Parity with the libSQL backend.
+        let store = store("count-claimed-bucketed")?;
+        let past = Utc::now() - Duration::hours(1);
+        let future = Utc::now() + Duration::days(3650);
+        let mut due = Vec::new();
+        for _ in 0..2 {
+            due.push(pending_row(&WorkflowId::new_v4(), 0, "charge", past).with_namespace("alpha"));
+        }
+        due.push(pending_row(&WorkflowId::new_v4(), 0, "charge", past).with_namespace("beta"));
+        let backlog =
+            vec![pending_row(&WorkflowId::new_v4(), 0, "charge", future).with_namespace("gamma")];
+        store.append_outbox_batch(&due).await?;
+        store.append_outbox_batch(&backlog).await?;
+        let claimed = store.claim_outbox_rows(100).await?;
+        assert_eq!(
+            claimed.len(),
+            3,
+            "the three due rows are claimed to Claimed"
+        );
+
+        let namespaces = ["alpha", "beta", "gamma", "delta"];
+        let bucketed = store
+            .count_claimed_outbox_rows_by_namespace(&namespaces)
+            .await?;
+        for namespace in namespaces {
+            let scalar = store.count_claimed_outbox_rows(namespace).await?;
+            assert_eq!(
+                bucketed.get(namespace).copied(),
+                Some(scalar),
+                "bucketed count for {namespace} must equal the scalar per-namespace count"
+            );
+        }
+        assert_eq!(bucketed.get("alpha").copied(), Some(2));
+        assert_eq!(bucketed.get("beta").copied(), Some(1));
+        assert_eq!(
+            bucketed.get("gamma").copied(),
+            Some(0),
+            "future-fenced Pending is not claimed"
+        );
+        assert_eq!(
+            bucketed.get("delta").copied(),
+            Some(0),
+            "unknown namespace seeds to 0"
+        );
         Ok(())
     }
 

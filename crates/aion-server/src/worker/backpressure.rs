@@ -180,21 +180,39 @@ impl Backpressure {
         batch_size: u32,
     ) -> Result<SweepPlan, aion_store::StoreError> {
         // Group routes by namespace, deterministically ordered, so each namespace's
-        // slice is spread round-robin across ITS OWN task_queues/nodes.
+        // slice is spread round-robin across ITS OWN task_queues/nodes. Routes are
+        // gathered first with an empty headroom; the CLAIMED-only headroom is filled
+        // in below from a SINGLE bucketed claimed-count scan (CP2-Q2 perf) rather than
+        // one owned-shard scan per namespace (the N+1 the old per-namespace path
+        // incurred over the same rows).
         let mut namespaces: BTreeMap<String, NamespacePlan> = BTreeMap::new();
         for route in routes {
-            if let Some(plan) = namespaces.get_mut(&route.namespace) {
-                plan.routes.push(route.clone());
-                continue;
-            }
-            let headroom = self.namespace_headroom(store, &route.namespace).await?;
-            namespaces.insert(
-                route.namespace.clone(),
-                NamespacePlan {
-                    headroom,
-                    routes: vec![route.clone()],
-                },
-            );
+            namespaces
+                .entry(route.namespace.clone())
+                .or_insert_with(|| NamespacePlan {
+                    headroom: 0,
+                    routes: Vec::new(),
+                })
+                .routes
+                .push(route.clone());
+        }
+        // ONE scan over the owned shards, bucketed by namespace, instead of N scans
+        // (one per active namespace). The result is byte-identical to counting each
+        // namespace's Claimed rows separately: same owned-shard scope, same
+        // Claimed-only predicate, one entry per requested namespace.
+        let names: Vec<&str> = namespaces.keys().map(String::as_str).collect();
+        let claimed_by_namespace = store.count_claimed_outbox_rows_by_namespace(&names).await?;
+        for (namespace, plan) in &mut namespaces {
+            // Ceiling is the proportional per-node slice of the namespace's cached
+            // cluster-wide quota; the claimed count is this node's durable Claimed-row
+            // count (NEVER Pending+Claimed — that would wedge a tenant against its own
+            // backlog). Headroom = ceiling − claimed, clamped at zero.
+            let ceiling = self
+                .fraction
+                .per_node_ceiling(self.quota.ceiling(namespace).await);
+            let claimed = u32::try_from(claimed_by_namespace.get(namespace).copied().unwrap_or(0))
+                .unwrap_or(u32::MAX);
+            plan.headroom = ceiling.saturating_sub(claimed);
         }
         // Per-namespace slice: batch_size ÷ active (≥1) is the GUARANTEED allocation
         // each active tenant reserves before any tenant can consume the whole batch,
@@ -207,25 +225,6 @@ impl Backpressure {
             namespaces,
             per_namespace_slice,
         })
-    }
-
-    /// Resolve one namespace's CLAIMED-only headroom: `per_node_ceiling − claimed`.
-    ///
-    /// The ceiling is the proportional per-node slice of the namespace's cached
-    /// cluster-wide quota; the claimed count is the durable Claimed-row count over
-    /// this node's owned shards (NEVER Pending+Claimed — that would wedge a tenant
-    /// against its own backlog).
-    async fn namespace_headroom(
-        &self,
-        store: &Arc<dyn OutboxStore>,
-        namespace: &str,
-    ) -> Result<u32, aion_store::StoreError> {
-        let ceiling = self
-            .fraction
-            .per_node_ceiling(self.quota.ceiling(namespace).await);
-        let claimed =
-            u32::try_from(store.count_claimed_outbox_rows(namespace).await?).unwrap_or(u32::MAX);
-        Ok(ceiling.saturating_sub(claimed))
     }
 
     /// Execute the sweep in two passes: first the GUARANTEED per-namespace slice for
@@ -322,7 +321,189 @@ struct SweepPlan {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::OwnedShardFraction;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use aion_store::{ClaimScope, OutboxRow, OutboxStatus, OutboxStore, StoreError};
+    use async_trait::async_trait;
+    use chrono::{DateTime, Utc};
+
+    use super::{Backpressure, OwnedShardFraction};
+    use crate::worker::QuotaCache;
+
+    /// Mock outbox that holds a fixed set of rows and tallies claimed counts against them, recording
+    /// how many times the scalar per-namespace count and the collapsed bucketed count are invoked so
+    /// the N+1 collapse is observable. Only the read-side methods the planner touches are meaningful;
+    /// the rest are inert stubs (the plan-sweep path never reaches them).
+    struct CountingStore {
+        rows: Vec<OutboxRow>,
+        scalar_count_calls: AtomicUsize,
+        bucketed_count_calls: AtomicUsize,
+    }
+
+    impl CountingStore {
+        fn new(rows: Vec<OutboxRow>) -> Self {
+            Self {
+                rows,
+                scalar_count_calls: AtomicUsize::new(0),
+                bucketed_count_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn claimed_in(&self, namespace: &str) -> u64 {
+            let count = self
+                .rows
+                .iter()
+                .filter(|row| {
+                    row.namespace == namespace && matches!(row.status, OutboxStatus::Claimed)
+                })
+                .count();
+            u64::try_from(count).unwrap_or(u64::MAX)
+        }
+    }
+
+    #[async_trait]
+    impl OutboxStore for CountingStore {
+        async fn append_outbox_batch(&self, _rows: &[OutboxRow]) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn claim_outbox_rows(&self, _limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
+            Ok(Vec::new())
+        }
+        async fn claim_outbox_rows_scoped(
+            &self,
+            _scope: &ClaimScope,
+            _limit: u32,
+        ) -> Result<Vec<OutboxRow>, StoreError> {
+            Ok(Vec::new())
+        }
+        async fn rearm_stale_claimed_outbox_rows(
+            &self,
+            _older_than: DateTime<Utc>,
+            _visible_after: DateTime<Utc>,
+            _limit: u32,
+        ) -> Result<Vec<OutboxRow>, StoreError> {
+            Ok(Vec::new())
+        }
+        async fn complete_outbox_row(&self, _dispatch_key: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn retry_outbox_row(
+            &self,
+            _dispatch_key: &str,
+            _next_attempt: u32,
+            _visible_after: DateTime<Utc>,
+        ) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn fail_outbox_row(&self, _dispatch_key: &str) -> Result<(), StoreError> {
+            Ok(())
+        }
+        async fn count_inflight_outbox_rows(&self, _namespace: &str) -> Result<u64, StoreError> {
+            Ok(0)
+        }
+        async fn count_claimed_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError> {
+            self.scalar_count_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.claimed_in(namespace))
+        }
+        async fn count_claimed_outbox_rows_by_namespace(
+            &self,
+            namespaces: &[&str],
+        ) -> Result<std::collections::BTreeMap<String, u64>, StoreError> {
+            self.bucketed_count_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(namespaces
+                .iter()
+                .map(|ns| ((*ns).to_owned(), self.claimed_in(ns)))
+                .collect())
+        }
+        async fn pending_outbox_routes(&self) -> Result<Vec<ClaimScope>, StoreError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn quota_cache() -> QuotaCache {
+        // Empty namespace store: every ceiling resolves to the generous platform default, so the
+        // headroom is entirely a function of the claimed count the collapse must preserve.
+        let store: Arc<dyn aion_store::NamespaceStore> =
+            Arc::new(aion_store::InMemoryStore::default());
+        QuotaCache::new(store, 100, Duration::from_secs(60))
+    }
+
+    /// A Claimed row in `namespace` on `task_queue` (the count input the headroom subtracts).
+    fn claimed_row(namespace: &str, task_queue: &str) -> OutboxRow {
+        let now = Utc::now();
+        let mut row = OutboxRow::pending(
+            aion_core::WorkflowId::new_v4(),
+            0,
+            "act".to_owned(),
+            aion_core::Payload::new(aion_core::ContentType::Json, Vec::new()),
+            now,
+        )
+        .with_namespace(namespace)
+        .with_task_queue(task_queue);
+        row.status = OutboxStatus::Claimed;
+        row
+    }
+
+    #[tokio::test]
+    async fn collapsed_scan_yields_identical_namespace_buckets_and_one_scan() {
+        // Three namespaces with differing claimed counts spread over several routes each: the
+        // scenario the old path would scan the owned-shard set THREE times for (once per namespace).
+        let rows = vec![
+            claimed_row("alpha", "q1"),
+            claimed_row("alpha", "q2"),
+            claimed_row("alpha", "q1"),
+            claimed_row("beta", "q1"),
+            claimed_row("gamma", "q1"),
+            claimed_row("gamma", "q2"),
+        ];
+        let counting = Arc::new(CountingStore::new(rows));
+        let store: Arc<dyn OutboxStore> = Arc::clone(&counting) as Arc<dyn OutboxStore>;
+        let bp = Backpressure::new(quota_cache(), OwnedShardFraction::own_all());
+
+        // The routes the planner groups by namespace (a bursty tenant spread over many task queues).
+        let routes = vec![
+            ClaimScope::new("alpha", "q1"),
+            ClaimScope::new("alpha", "q2"),
+            ClaimScope::new("beta", "q1"),
+            ClaimScope::new("gamma", "q1"),
+            ClaimScope::new("gamma", "q2"),
+        ];
+
+        // OLD path baseline: each namespace's headroom = ceiling(100) − scalar_claimed(namespace).
+        let expected: std::collections::BTreeMap<&str, u32> =
+            [("alpha", 100 - 3), ("beta", 100 - 1), ("gamma", 100 - 2)]
+                .into_iter()
+                .collect();
+
+        let plan = bp
+            .plan_sweep(&store, &routes, 64)
+            .await
+            .expect("plan resolves");
+
+        // Identical per-namespace headroom buckets to the old per-namespace scans.
+        for (name, ns) in &plan.namespaces {
+            assert_eq!(
+                ns.headroom,
+                expected[name.as_str()],
+                "namespace {name} headroom must match the per-namespace-scan result"
+            );
+        }
+        assert_eq!(plan.namespaces.len(), 3, "one bucket per active namespace");
+
+        // Exactly ONE bucketed scan, and the scalar per-namespace scan is never used on this path.
+        assert_eq!(
+            counting.bucketed_count_calls.load(Ordering::SeqCst),
+            1,
+            "the owned-shard set is scanned exactly once for all namespaces"
+        );
+        assert_eq!(
+            counting.scalar_count_calls.load(Ordering::SeqCst),
+            0,
+            "the collapsed path never falls back to the N per-namespace scans"
+        );
+    }
 
     #[test]
     fn own_all_ceiling_equals_full_quota() {

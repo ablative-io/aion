@@ -422,6 +422,36 @@ pub trait OutboxStore: Send + Sync + 'static {
     /// [`StoreError::Serialization`] when a stored row cannot be decoded.
     async fn count_claimed_outbox_rows(&self, namespace: &str) -> Result<u64, StoreError>;
 
+    /// Counts the CLAIMED outbox rows for each namespace in `namespaces`, in ONE pass (CP2-Q2 perf).
+    ///
+    /// Same semantics as calling [`OutboxStore::count_claimed_outbox_rows`] once per namespace — the
+    /// CLAIMED-only ([`OutboxStatus::Claimed`]), owned-shard-scoped concurrent-executing count that
+    /// feeds the keyed-backpressure headroom — but collapsed into a single scan of the owned-shard
+    /// set instead of N repeated scans over the same rows (the N+1 the per-sweep planner would
+    /// otherwise incur, one full scan per active namespace). The returned map has EXACTLY one entry
+    /// per requested namespace: a namespace with no claimed rows maps to `0`, so the caller can index
+    /// it unconditionally. Namespaces not in `namespaces` are never counted (nor returned).
+    ///
+    /// The default implementation preserves the contract by delegating to the per-namespace method
+    /// (an honest, correct fallback for any store that has not specialised the single-scan form); the
+    /// bundled stores override it with a genuine one-pass scan / grouped query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn count_claimed_outbox_rows_by_namespace(
+        &self,
+        namespaces: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, u64>, StoreError> {
+        let mut counts = std::collections::BTreeMap::new();
+        for namespace in namespaces {
+            let count = self.count_claimed_outbox_rows(namespace).await?;
+            counts.insert((*namespace).to_owned(), count);
+        }
+        Ok(counts)
+    }
+
     /// Enumerates the distinct `(namespace, task_queue, node)` routes that currently have at least
     /// one CLAIMABLE pending row — a row whose `status` is [`OutboxStatus::Pending`] and whose
     /// `visible_after` fence has passed (CP2-Q2).
