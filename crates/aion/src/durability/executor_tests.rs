@@ -65,6 +65,7 @@ fn activity_completed(
         envelope: envelope(seq)?,
         activity_id: ActivityId::from_sequence_position(ordinal),
         result,
+        attempt: 1,
     })
 }
 
@@ -455,10 +456,14 @@ async fn resume_live_activity_records_result_and_replay_uses_cache()
             envelope,
             activity_id,
             result,
+            attempt,
         } => {
             assert_eq!(envelope.seq, 3);
             assert_eq!(activity_id.sequence_position(), 0);
             assert_eq!(result, &live_result);
+            // NOI-0: the single-schedule executor records the completion on the one-based first
+            // (and only) attempt, and replay reads it back.
+            assert_eq!(*attempt, 1);
         }
         other => {
             return Err(format!("expected ActivityCompleted, got {other:?}").into());

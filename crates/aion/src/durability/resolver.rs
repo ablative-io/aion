@@ -403,6 +403,7 @@ mod tests {
             envelope: envelope(seq)?,
             activity_id: ActivityId::from_sequence_position(ordinal),
             result,
+            attempt: 1,
         })
     }
 

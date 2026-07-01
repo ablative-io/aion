@@ -540,6 +540,9 @@ fn mocked_outcome_event(
                 envelope,
                 activity_id: activity_id.clone(),
                 result: result.clone(),
+                // NOI-0: the mocked completion resolves the scheduled activity's first (and only)
+                // delivery — attempt 1 (one-based), matching the sibling `ActivityFailed` mock below.
+                attempt: 1,
             })
         }
         (Event::ActivityScheduled { activity_id, .. }, MockOutcome::ActivityFailed(error)) => {

@@ -323,6 +323,7 @@ mod tests {
                 envelope: envelope(3, 30)?,
                 activity_id,
                 result: payload("activity-result")?,
+                attempt: 1,
             },
             aion_core::Event::TimerStarted {
                 envelope: envelope(4, 40)?,

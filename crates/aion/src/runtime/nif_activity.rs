@@ -249,25 +249,31 @@ pub(super) fn context_error_term(ctx: &mut ProcessContext, error: &NifContextErr
     error_result_term(ctx, &error.error_reason()).unwrap_or(Term::NIL)
 }
 
+/// The schedule-seam descriptor of one activity dispatch: everything the recorder stamps onto the
+/// paired `ActivityScheduled` + `ActivityStarted` beyond the `activity_id`. Grouped so the schedule
+/// seam stays a single cohesive parameter rather than a long positional list.
+pub(crate) struct ScheduledActivity {
+    /// Activity type the worker must execute.
+    pub(super) activity_type: String,
+    /// Opaque activity input payload.
+    pub(super) input: Payload,
+    /// Resolved task queue for this dispatch (NSTQ-4).
+    pub(super) task_queue: String,
+    /// Resolved OPTIONAL node affinity for this dispatch (NODE-4).
+    pub(super) node: Option<String>,
+    /// Genuine one-based delivery attempt this dispatch belongs to (NOI-0).
+    pub(super) attempt: u32,
+}
+
 pub(super) fn record_started(
     ctx: &mut ProcessContext,
     context: &NifContext,
     activity_id: ActivityId,
-    activity_type: String,
-    input: Payload,
-    task_queue: String,
-    node: Option<String>,
+    scheduled: ScheduledActivity,
 ) -> Result<(), Term> {
     let recorded_at = Utc::now();
     context
-        .record_activity_scheduled_started(
-            recorded_at,
-            activity_id,
-            activity_type,
-            input,
-            task_queue,
-            node,
-        )
+        .record_activity_scheduled_started(recorded_at, activity_id, scheduled)
         .map_err(|error| context_error_term(ctx, &error))
 }
 

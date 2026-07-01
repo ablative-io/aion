@@ -794,6 +794,7 @@ async fn stage_fanout(
                 node: None,
                 activity_type: format!("fan:{ordinal}"),
                 input: Payload::from_json(&json!("in")).map_err(demo_error)?,
+                attempt: 1,
             })
         })
         .collect::<Result<_, DemoError>>()?;

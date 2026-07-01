@@ -318,7 +318,23 @@ envelope: EventEnvelope,
 /**
  * Activity being executed.
  */
-activity_id: ActivityId, } } | { "type": "ActivityCompleted", "data": { 
+activity_id: ActivityId, 
+/**
+ * One-based activity attempt number this start belongs to (NOI-0).
+ *
+ * Matches the `attempt` on the [`Event::ActivityFailed`] / [`Event::ActivityCompleted`] /
+ * [`Event::ActivityCancelled`] that terminates the SAME attempt, so
+ * `(workflow, activity, attempt)` is a stable identity across the whole lifecycle — the key
+ * the NOI dedupe/guard/session-id design is built on.
+ *
+ * Replay-safety: histories recorded before this field existed have no `attempt` key on their
+ * `ActivityStarted` events. Decode defaults the missing value to
+ * [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) via `#[serde(default = ...)]` — never panics, never
+ * differs run-to-run. Because real attempts are one-based, `0` is a distinguishable
+ * legacy/unknown sentinel, never a genuine attempt. The encoding of the existing fields is
+ * untouched.
+ */
+attempt: number, } } | { "type": "ActivityCompleted", "data": { 
 /**
  * Recording metadata for this event.
  */
@@ -330,7 +346,20 @@ activity_id: ActivityId,
 /**
  * Opaque activity result payload.
  */
-result: Payload, } } | { "type": "ActivityFailed", "data": { 
+result: Payload, 
+/**
+ * One-based activity attempt number that produced this completion (NOI-0).
+ *
+ * Matches the `attempt` on the [`Event::ActivityStarted`] of the SAME attempt, so a
+ * completed activity carries one consistent `attempt` readable off both its start and its
+ * terminal — the negative-control invariant NOI-0 gates on.
+ *
+ * Replay-safety: histories recorded before this field existed have no `attempt` key on their
+ * `ActivityCompleted` events. Decode defaults the missing value to
+ * [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) via `#[serde(default = ...)]` — never panics, never
+ * differs run-to-run. The encoding of the existing fields is untouched.
+ */
+attempt: number, } } | { "type": "ActivityFailed", "data": { 
 /**
  * Recording metadata for this event.
  */
@@ -354,7 +383,20 @@ envelope: EventEnvelope,
 /**
  * Activity that was cancelled.
  */
-activity_id: ActivityId, } } | { "type": "TimerStarted", "data": { 
+activity_id: ActivityId, 
+/**
+ * One-based activity attempt number that was cancelled (NOI-0).
+ *
+ * Matches the `attempt` on the [`Event::ActivityStarted`] of the SAME attempt, so the
+ * cancellation terminal is attributable to a specific attempt exactly like
+ * [`Event::ActivityFailed`] is.
+ *
+ * Replay-safety: histories recorded before this field existed have no `attempt` key on their
+ * `ActivityCancelled` events. Decode defaults the missing value to
+ * [`LEGACY_ACTIVITY_ATTEMPT`] (`0`) via `#[serde(default = ...)]` — never panics, never
+ * differs run-to-run. The encoding of the existing fields is untouched.
+ */
+attempt: number, } } | { "type": "TimerStarted", "data": { 
 /**
  * Recording metadata for this event.
  */

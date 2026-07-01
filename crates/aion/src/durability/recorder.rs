@@ -504,10 +504,14 @@ impl Recorder {
         &mut self,
         recorded_at: DateTime<Utc>,
         activity_id: ActivityId,
+        attempt: u32,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::ActivityStarted {
             envelope,
             activity_id,
+            // NOI-0: the genuine one-based attempt this start belongs to, threaded from the dispatch
+            // seam so `ActivityStarted` and its terminal share one `(workflow, activity, attempt)`.
+            attempt,
         })
         .await
     }
@@ -523,11 +527,15 @@ impl Recorder {
         recorded_at: DateTime<Utc>,
         activity_id: ActivityId,
         result: Payload,
+        attempt: u32,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::ActivityCompleted {
             envelope,
             activity_id,
             result,
+            // NOI-0: the genuine one-based attempt that produced this completion, consistent with the
+            // `ActivityStarted` of the same attempt.
+            attempt,
         })
         .await
     }
@@ -564,10 +572,14 @@ impl Recorder {
         &mut self,
         recorded_at: DateTime<Utc>,
         activity_id: ActivityId,
+        attempt: u32,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::ActivityCancelled {
             envelope,
             activity_id,
+            // NOI-0: the genuine one-based attempt that was cancelled, consistent with the
+            // `ActivityStarted` of the same attempt.
+            attempt,
         })
         .await
     }
@@ -582,9 +594,14 @@ impl Recorder {
         &mut self,
         recorded_at: DateTime<Utc>,
         ordinal: u64,
+        attempt: u32,
     ) -> Result<(), DurabilityError> {
-        self.record_activity_cancelled(recorded_at, ActivityId::from_sequence_position(ordinal))
-            .await?;
+        self.record_activity_cancelled(
+            recorded_at,
+            ActivityId::from_sequence_position(ordinal),
+            attempt,
+        )
+        .await?;
         let dispatch_key = OutboxRow::dispatch_key_for(&self.workflow_id, ordinal);
         self.store
             .settle_outbox_row_cancelled(&dispatch_key)
@@ -1514,7 +1531,7 @@ mod tests {
             )
             .await?;
         recorder
-            .record_activity_completed(recorded_at(2), activity_id.clone(), payload("result")?)
+            .record_activity_completed(recorded_at(2), activity_id.clone(), payload("result")?, 1)
             .await?;
 
         let history = store.read_history(&workflow_id).await?;

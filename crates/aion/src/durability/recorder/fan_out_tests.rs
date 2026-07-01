@@ -229,6 +229,7 @@ fn fan_out_items(
             node: None,
             activity_type: format!("activity-{ordinal}"),
             input: payload(&format!("input-{ordinal}"))?,
+            attempt: 1,
         });
     }
     Ok(items)
@@ -459,7 +460,10 @@ async fn fan_out_completion_records_first_terminal_for_unresolved_ordinal()
             recorded_at(1),
             0,
             None,
-            FanOutOutcome::Completed(payload("done")?),
+            FanOutOutcome::Completed {
+                result: payload("done")?,
+                attempt: 1,
+            },
         )
         .await?;
 
@@ -499,7 +503,10 @@ async fn fan_out_completion_drops_duplicate_for_resolved_ordinal()
             recorded_at(1),
             7,
             None,
-            FanOutOutcome::Completed(payload("first")?),
+            FanOutOutcome::Completed {
+                result: payload("first")?,
+                attempt: 1,
+            },
         )
         .await?;
     assert_eq!(first, FanOutCompletionResult::Recorded);
@@ -511,7 +518,10 @@ async fn fan_out_completion_drops_duplicate_for_resolved_ordinal()
             recorded_at(2),
             7,
             None,
-            FanOutOutcome::Completed(payload("second")?),
+            FanOutOutcome::Completed {
+                result: payload("second")?,
+                attempt: 1,
+            },
         )
         .await?;
 
@@ -544,6 +554,7 @@ async fn fan_out_completion_drops_for_cancelled_ordinal() -> Result<(), Box<dyn 
         .record_activity_cancelled(
             recorded_at(1),
             aion_core::ActivityId::from_sequence_position(3),
+            1,
         )
         .await?;
     let head_after_cancel = recorder.current_head();
@@ -553,7 +564,10 @@ async fn fan_out_completion_drops_for_cancelled_ordinal() -> Result<(), Box<dyn 
             recorded_at(2),
             3,
             None,
-            FanOutOutcome::Completed(payload("late")?),
+            FanOutOutcome::Completed {
+                result: payload("late")?,
+                attempt: 1,
+            },
         )
         .await?;
 
@@ -634,7 +648,10 @@ async fn fan_out_completion_records_for_scheduled_but_not_terminal_ordinal()
             recorded_at(2),
             0,
             None,
-            FanOutOutcome::Completed(payload("done")?),
+            FanOutOutcome::Completed {
+                result: payload("done")?,
+                attempt: 1,
+            },
         )
         .await?;
 
@@ -683,7 +700,10 @@ async fn fan_out_completion_sequence_conflict_surfaces_without_advancing()
             recorded_at(2),
             0,
             None,
-            FanOutOutcome::Completed(payload("done")?),
+            FanOutOutcome::Completed {
+                result: payload("done")?,
+                attempt: 1,
+            },
         )
         .await;
 

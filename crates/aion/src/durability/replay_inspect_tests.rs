@@ -68,6 +68,7 @@ fn history() -> TestResult<Vec<Event>> {
             envelope: envelope(3, 30)?,
             activity_id,
             result: payload("activity-result")?,
+            attempt: 1,
         },
         Event::TimerStarted {
             envelope: envelope(4, 40)?,

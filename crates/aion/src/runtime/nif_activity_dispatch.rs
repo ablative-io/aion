@@ -218,10 +218,16 @@ fn dispatch_activity_with_context(
                 ctx,
                 &context,
                 activity_id.clone(),
-                call.name.clone(),
-                input_payload,
-                task_queue.clone(),
-                node.clone(),
+                super::nif_activity::ScheduledActivity {
+                    activity_type: call.name.clone(),
+                    input: input_payload,
+                    task_queue: task_queue.clone(),
+                    node: node.clone(),
+                    // NOI-0: stamp the SAME one-based attempt onto the recorded `ActivityStarted`
+                    // that is stamped onto the live `ActivityDispatch` below, so history and the
+                    // worker wire agree.
+                    attempt: call.attempt,
+                },
             )?;
             let labels = labels_from_config(&call.config);
             let request = ActivityDispatch {
@@ -436,7 +442,15 @@ fn take_runtime_completion(
         runtime.take_activity_result(context.pid(), activity_id.sequence_position())
     {
         context
-            .record_activity_completed(chrono::Utc::now(), activity_id, payload.clone())
+            // NOI-0: this completion resolves the single delivery dispatched for this activity, whose
+            // attempt is `FIRST_DELIVERY_ATTEMPT` (no retry executor re-delivers yet). Same source as
+            // the sibling `ActivityFailed` below, so start/terminal share one attempt.
+            .record_activity_completed(
+                chrono::Utc::now(),
+                activity_id,
+                payload.clone(),
+                FIRST_DELIVERY_ATTEMPT,
+            )
             .map_err(|error| error.error_reason())?;
         return Ok(Some(ActivityAwaitStep::Completed(payload.bytes().to_vec())));
     }
@@ -634,6 +648,7 @@ mod tests {
             Event::ActivityStarted {
                 envelope: envelope(&workflow_id, 3),
                 activity_id: ActivityId::from_sequence_position(0),
+                attempt: 1,
             },
             Event::TimerFired {
                 envelope: envelope(&workflow_id, 4),

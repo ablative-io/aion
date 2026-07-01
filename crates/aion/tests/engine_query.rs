@@ -208,6 +208,7 @@ fn run_shape(history: &[Event]) -> Vec<String> {
             Event::ActivityStarted {
                 envelope,
                 activity_id,
+                ..
             } => format!(
                 "{}|astart|{}",
                 envelope.seq,
@@ -217,6 +218,7 @@ fn run_shape(history: &[Event]) -> Vec<String> {
                 envelope,
                 activity_id,
                 result,
+                ..
             } => format!(
                 "{}|acomp|{}|{}",
                 envelope.seq,

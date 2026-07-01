@@ -632,6 +632,7 @@ mod tests {
         Ok(Event::ActivityStarted {
             envelope: envelope(seq)?,
             activity_id: ActivityId::from_sequence_position(ordinal),
+            attempt: 1,
         })
     }
 
@@ -640,6 +641,7 @@ mod tests {
             envelope: envelope(seq)?,
             activity_id: ActivityId::from_sequence_position(ordinal),
             result: payload()?,
+            attempt: 1,
         })
     }
 
