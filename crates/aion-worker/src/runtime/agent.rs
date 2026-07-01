@@ -1,0 +1,191 @@
+//! The harness-blind trait driver: [`spawn_agent`] drives ANY [`AgentHarness`]
+//! generically (NOI-4, §3A.1).
+//!
+//! This is a NEW additive spawn mode beside the worker's existing one-shot
+//! `.output()` capture (the `run_norn_step` path in the norn-fan-worker example,
+//! which stays working and unchanged). It is the single place the worker DRIVES
+//! an agent session:
+//!
+//! - it pumps the session's neutral [`AgentSession::events`] stream OUT to a
+//!   caller-supplied event sink (the worker's transcript delivery — an
+//!   [`mpsc::UnboundedSender<ActivityEvent>`], the `event_sender` NOI-5 wires to
+//!   liminal),
+//! - it feeds neutral commands IN from a caller-supplied control source (the
+//!   `control_receiver` NOI-6 wires from the server's intervention PUSH) to
+//!   [`AgentSession::intervene`], and
+//! - it correlates the single terminal [`AgentSession::wait_result`] into
+//!   [`DispatchOutcome::Completed { output }`][DispatchOutcome::Completed] — the
+//!   same replay-authoritative output the one-shot capture produces today.
+//!
+//! **The worker stays harness-blind.** [`spawn_agent`] is generic over
+//! `AgentHarness`; it never names a concrete adapter, a transport, or a wire
+//! protocol. The concrete harness (Norn, or a future one) is injected by the
+//! binary composition root (aion-cli), never chosen here. This crate depends on
+//! `aion-integrations` for the TRAIT ONLY and has NO edge to
+//! `aion-integration-norn` or `norn` (the §3A.4 invariant, CI-gated).
+//!
+//! # Result/event split (structural, §4.1)
+//!
+//! Events flow only to the event sink; the terminal result flows only from
+//! [`AgentSession::wait_result`]. An event can never be captured as the result
+//! and the result is never delivered as an event — the two are distinct channels
+//! of the session by construction, so the driver never has to disambiguate them.
+
+use aion_core::InterventionCommand;
+use aion_integrations::contract::{AgentHarness, AgentSession};
+use aion_integrations::error::HarnessError;
+use aion_integrations::spec::AgentRunSpec;
+use futures::StreamExt;
+use tokio::sync::mpsc;
+use tracing::{debug, warn};
+
+use crate::activity::ActivityFailure;
+use crate::runtime::loop_::DispatchOutcome;
+
+/// The neutral event sink the driver pumps a session's [`AgentSession::events`]
+/// out to. This is the `event_sender` the worker's [`ActivityContext`] transcript
+/// delivery installs; NOI-5 forwards it onto a liminal events channel.
+///
+/// [`ActivityContext`]: crate::context::ActivityContext
+pub type ActivityEventSender = mpsc::UnboundedSender<aion_core::ActivityEvent>;
+
+/// The neutral command source the driver feeds into a session's
+/// [`AgentSession::intervene`]. This is the `control_receiver` the worker installs
+/// per attempt; NOI-6 delivers server-routed operator commands onto it.
+pub type ControlReceiver = mpsc::UnboundedReceiver<InterventionCommand>;
+
+/// Drives one activity attempt through the neutral [`AgentHarness`] seam and
+/// returns its terminal [`DispatchOutcome`].
+///
+/// This is the harness-blind trait driver (NOI-4). It:
+///
+/// 1. starts the harness for `spec` (spawn/connect + capability handshake),
+/// 2. concurrently pumps the session's [`AgentSession::events`] to `event_sender`
+///    and feeds `control_receiver` commands to [`AgentSession::intervene`] until
+///    the event stream ends, then
+/// 3. awaits [`AgentSession::wait_result`] and maps it into
+///    [`DispatchOutcome::Completed { output }`][DispatchOutcome::Completed].
+///
+/// A `control_receiver` of `None` runs the session with no intervention channel —
+/// the observability-only shape. When present, a command whose primitive the
+/// session does not advertise is rejected by the session with
+/// [`HarnessError::CapabilityNotSupported`]; the driver logs that rejection and
+/// keeps running (a gated command is a normal, non-fatal outcome, not a run
+/// failure).
+///
+/// The event stream ending signals end-of-run: the driver then takes the terminal
+/// result. This is why events must be a distinct channel from the result — the
+/// driver relies on the stream closing (not on inspecting any event) to know the
+/// run is done, and the result arrives only from [`AgentSession::wait_result`].
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] when the harness cannot be started or when the
+/// terminal result cannot be received. A harness-reported application failure
+/// ([`HarnessError::Harness`]) is returned to the caller, which maps it to a
+/// [`DispatchOutcome::Failed`] via [`harness_error_to_outcome`]; transport and
+/// protocol faults are surfaced as-is for the caller to classify.
+pub async fn spawn_agent<H>(
+    harness: &H,
+    spec: AgentRunSpec,
+    event_sender: ActivityEventSender,
+    control_receiver: Option<ControlReceiver>,
+) -> Result<DispatchOutcome, HarnessError>
+where
+    H: AgentHarness,
+{
+    let mut session = harness.start(spec).await?;
+
+    // The events stream is a detached `'static` stream: taking it does NOT borrow
+    // the session, so the driver can still call `intervene`/`wait_result` on the
+    // session while pumping events. This is what lets all three run in one task.
+    let mut events = session.events();
+    let mut control = control_receiver;
+
+    // Pump events out and commands in until the event stream closes (end-of-run).
+    // Commands after the stream closes cannot be delivered — the session is
+    // terminating — so the loop ends with the stream.
+    loop {
+        tokio::select! {
+            biased;
+            // A command from the server-routed control channel. Feed it into the
+            // session; a capability-gated rejection is logged, not fatal.
+            maybe_command = recv_control(&mut control) => {
+                match maybe_command {
+                    Some(command) => deliver_command(&session, command).await,
+                    // The control channel closed: drop it and keep pumping events
+                    // to the terminal result (a closed control channel is not an
+                    // end-of-run signal — only the event stream closing is).
+                    None => control = None,
+                }
+            }
+            event = events.next() => {
+                match event {
+                    Some(event) => {
+                        // A closed event sink means the transcript consumer went
+                        // away; stop forwarding but keep draining to the result.
+                        if event_sender.send(event).is_err() {
+                            debug!("agent driver: event sink closed; stopping event forwarding");
+                            break;
+                        }
+                    }
+                    // End of the event stream == end of run. Take the result next.
+                    None => break,
+                }
+            }
+        }
+    }
+
+    // The single terminal result — the replay-authoritative activity output.
+    let output = session.wait_result().await?;
+    Ok(DispatchOutcome::Completed { output })
+}
+
+/// Receives the next control command, or pends forever when there is no control
+/// channel — so the `select!` arm simply never fires in the no-intervention case.
+async fn recv_control(control: &mut Option<ControlReceiver>) -> Option<InterventionCommand> {
+    match control {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Delivers one command to the session, logging a capability-gated rejection or a
+/// delivery fault without ending the run.
+async fn deliver_command<S>(session: &S, command: InterventionCommand)
+where
+    S: AgentSession,
+{
+    let primitive = command.kind.primitive();
+    match session.intervene(command).await {
+        Ok(()) => debug!(?primitive, "agent driver: intervention delivered"),
+        Err(HarnessError::CapabilityNotSupported { primitive }) => {
+            // A gated command is a normal outcome of capability negotiation, not a
+            // run failure: the server should not route an unadvertised primitive,
+            // but if one arrives the driver rejects it cleanly and keeps running.
+            debug!(%primitive, "agent driver: intervention gated (capability not supported)");
+        }
+        Err(error) => {
+            // A transport/protocol/stale fault delivering a command does not fail
+            // the run — the run continues and its terminal result stands.
+            warn!(?primitive, %error, "agent driver: intervention delivery failed");
+        }
+    }
+}
+
+/// Maps a [`HarnessError`] into a [`DispatchOutcome::Failed`] a caller can report.
+///
+/// A [`HarnessError::Harness`] (the agent ran but reported failure) and a
+/// transport/protocol/stale fault are all retryable activity failures: the
+/// attempt did not produce an accepted result, so the engine re-dispatches. This
+/// keeps the trait driver's failure mapping in one place beside the driver.
+#[must_use]
+pub fn harness_error_to_outcome(error: &HarnessError) -> DispatchOutcome {
+    DispatchOutcome::Failed {
+        failure: ActivityFailure::retryable(error.to_string()).into(),
+    }
+}
+
+#[cfg(test)]
+#[path = "agent_tests.rs"]
+mod tests;

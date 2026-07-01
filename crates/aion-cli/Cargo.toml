@@ -27,6 +27,17 @@ path = "src/main.rs"
 aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
 aion-client = { version = "0.8.0", path = "../aion-client" }
 aion-core = { version = "0.8.0", path = "../aion-core" }
+# The first-party Norn adapter, composed in at the binary root behind the
+# default-on `norn` feature (§3A.3). OPTIONAL and depended on ONLY here (the
+# composition root), NEVER by a platform library crate — the same hygiene the
+# `liminal-transport` feature applies to `liminal-sdk`. A `--no-default-features`
+# build drops it entirely and the platform crates carry zero Norn code, enforced
+# by the `no-norn-in-platform` gate (`cargo xtask no-norn-in-platform`).
+aion-integration-norn = { version = "0.8.0", path = "../aion-integration-norn", optional = true }
+# The harness-integration SDK (the trait the worker drives). Present so the
+# composition root can name the neutral `AgentHarness` seam the injected
+# `NornHarness` satisfies; carries no concrete adapter.
+aion-integrations = { version = "0.8.0", path = "../aion-integrations", optional = true }
 aion-package = { version = "0.8.0", path = "../aion-package" }
 aion-server = { version = "0.8.0", path = "../aion-server" }
 # The instant authoring loop (`aion dev`) reuses the toolchain's external
@@ -65,7 +76,7 @@ tokio-stream = { workspace = true, features = ["net"] }
 # backend and the liminal transport, so `backend = "haematite"` is selectable
 # without a special flag and the runtime default backend is haematite. The slim
 # opt-out is `--no-default-features --features libsql-backend`.
-default = ["haematite-backend", "liminal-transport"]
+default = ["haematite-backend", "liminal-transport", "norn"]
 # Forwarded to the embedded server. Off by default, matching the feature set
 # the standalone `aion-server` binary shipped with.
 auth = ["aion-server/auth"]
@@ -90,3 +101,12 @@ haematite-backend = ["aion-server/haematite-backend"]
 # without it, selecting `outbox.transport = liminal` at runtime is a boot-time
 # configuration error rather than a silent fall-through to gRPC.
 liminal-transport = ["aion-server/liminal-transport"]
+# Composes the first-party Norn adapter (`aion-integration-norn`) into the `aion`
+# binary so the shipped default product drives Norn agents OUT-OF-BOX — the same
+# "our complete experience is the default" thread as `haematite-backend` /
+# `liminal-transport`. ON by default: a stock `cargo build -p aion-cli` links the
+# Norn harness at the composition root. `--no-default-features` drops it and the
+# platform LIBRARY crates build with ZERO Norn code (the §3A.4 invariant). The
+# worker drives the harness through the neutral `AgentHarness` trait; this feature
+# only decides which concrete adapter the binary compiles in.
+norn = ["dep:aion-integration-norn", "dep:aion-integrations"]

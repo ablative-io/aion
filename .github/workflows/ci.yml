@@ -78,6 +78,20 @@ jobs:
       - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  no-norn-in-platform:
+    name: no-norn-in-platform (§3A.4 invariant gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Asserts the platform crates carry ZERO Norn coupling: no cargo-tree
+      # dependency edge to aion-integration-norn/norn*, and no norn-crate
+      # identifier in platform src (allowlisting the doc-comments + test
+      # fixtures). Fails the instant a norn edge is added to a platform crate.
+      - name: cargo xtask no-norn-in-platform
+        run: cargo xtask no-norn-in-platform
+
   test:
     name: test (workspace, default + all-features)
     runs-on: ubuntu-latest
