@@ -8,7 +8,8 @@
 
 use aion_proto::{
     ClusterSubscription, FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription,
-    ProtoWorkflowId, SubscriptionRequest, WireError, subscription_request,
+    ProtoActivityId, ProtoWorkflowId, SubscriptionRequest, TranscriptSubscription, WireError,
+    subscription_request,
 };
 use axum::extract::ws::{Message, WebSocket};
 use serde_json::{Map, Value};
@@ -112,9 +113,16 @@ fn decode_subscription_value(value: &Value) -> Result<SubscriptionRequest, Serve
             )),
         });
     }
+    if let Some(value) = subscription.get("transcript") {
+        return Ok(SubscriptionRequest {
+            subscription: Some(subscription_request::Subscription::Transcript(
+                decode_transcript_subscription(value)?,
+            )),
+        });
+    }
 
     Err(WireError::invalid_input(
-        "websocket subscription must contain per_workflow, filtered, firehose, or cluster",
+        "websocket subscription must contain per_workflow, filtered, firehose, cluster, or transcript",
     )
     .into())
 }
@@ -183,6 +191,74 @@ fn decode_cluster_subscription(value: &Value) -> Result<ClusterSubscription, Ser
         })?,
     };
     Ok(ClusterSubscription { after_seq })
+}
+
+/// Decode the NOI-5b transcript subscription. Namespace-scoped like the
+/// per-workflow arm: it carries `namespace` + `workflow_id`, plus the
+/// `activity_id`/`attempt` axes that pin the `O`-keyspace stream, and an optional
+/// `after_seq` resume cursor (presence-only; range/validity is irrelevant since
+/// `store_seq` is a durable read that returns an empty tail past the head).
+fn decode_transcript_subscription(value: &Value) -> Result<TranscriptSubscription, ServerError> {
+    let object = subscription_object(value, "transcript")?;
+    let workflow_id = decode_workflow_id_value(object.get("workflow_id").ok_or_else(|| {
+        WireError::invalid_input("transcript subscription requires workflow_id")
+    })?)?;
+    let activity_id = decode_activity_id_value(object.get("activity_id").ok_or_else(|| {
+        WireError::invalid_input("transcript subscription requires activity_id")
+    })?)?;
+    let attempt = decode_attempt(object)?;
+    Ok(TranscriptSubscription {
+        namespace: required_string(object, "namespace", "transcript subscription")?.to_owned(),
+        workflow_id: Some(workflow_id),
+        activity_id: Some(activity_id),
+        attempt,
+        after_seq: decode_after_seq(object)?,
+    })
+}
+
+/// Decode the transcript `activity_id`: either a bare unsigned sequence position
+/// or the structured `{ "sequence_position": n }` proto shape.
+fn decode_activity_id_value(value: &Value) -> Result<ProtoActivityId, ServerError> {
+    if let Some(sequence_position) = value.as_u64() {
+        return Ok(ProtoActivityId { sequence_position });
+    }
+    serde_json::from_value::<ProtoActivityId>(value.clone()).map_err(|source| {
+        WireError::invalid_input(format!(
+            "invalid transcript subscription activity_id: {source}"
+        ))
+        .into()
+    })
+}
+
+/// Decode the required transcript `attempt` axis as a `u32`.
+fn decode_attempt(object: &Map<String, Value>) -> Result<u32, ServerError> {
+    match object.get("attempt") {
+        // Absent attempt defaults to 0 (the first attempt's stream), matching the
+        // envelope's default attempt for a not-yet-retried activity.
+        None | Some(Value::Null) => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .and_then(|attempt| u32::try_from(attempt).ok())
+            .ok_or_else(|| {
+                WireError::invalid_input(
+                    "transcript subscription attempt must be an unsigned 32-bit integer",
+                )
+                .into()
+            }),
+    }
+}
+
+/// Decode the optional transcript resume cursor `after_seq` (presence-only).
+fn decode_after_seq(object: &Map<String, Value>) -> Result<Option<u64>, ServerError> {
+    match object.get("after_seq") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            WireError::invalid_input(
+                "transcript subscription after_seq must be an unsigned integer",
+            )
+            .into()
+        }),
+    }
 }
 
 fn decode_firehose_subscription(value: &Value) -> Result<FirehoseSubscription, ServerError> {
@@ -379,6 +455,73 @@ mod tests {
             Some(subscription_request::Subscription::Firehose(_))
         ));
         Ok(())
+    }
+
+    /// NOI-5b: the transcript arm decodes its namespace + workflow/activity/
+    /// attempt axes and the optional `after_seq` cursor. A bare unsigned
+    /// `activity_id` and an absent `attempt` (defaulting to 0) are both accepted.
+    #[test]
+    fn transcript_subscription_decodes_axes_and_cursor() -> Result<(), Box<dyn std::error::Error>> {
+        let workflow_id = uuid::Uuid::from_u128(7).to_string();
+        let request = decode(&json!({
+            "transcript": {
+                "namespace": "tenant-a",
+                "workflow_id": workflow_id,
+                "activity_id": 3,
+                "attempt": 2,
+                "after_seq": 5,
+            }
+        }))?;
+        let Some(subscription_request::Subscription::Transcript(transcript)) = request.subscription
+        else {
+            return Err("expected a transcript subscription".into());
+        };
+        assert_eq!(transcript.namespace, "tenant-a");
+        assert_eq!(
+            transcript.activity_id.map(|id| id.sequence_position),
+            Some(3)
+        );
+        assert_eq!(transcript.attempt, 2);
+        assert_eq!(transcript.after_seq, Some(5));
+        Ok(())
+    }
+
+    #[test]
+    fn transcript_subscription_defaults_attempt_and_cursor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let request = decode(&json!({
+            "transcript": {
+                "namespace": "tenant-a",
+                "workflow_id": uuid::Uuid::from_u128(7).to_string(),
+                "activity_id": 3,
+            }
+        }))?;
+        let Some(subscription_request::Subscription::Transcript(transcript)) = request.subscription
+        else {
+            return Err("expected a transcript subscription".into());
+        };
+        assert_eq!(transcript.attempt, 0, "absent attempt defaults to 0");
+        assert_eq!(
+            transcript.after_seq, None,
+            "absent after_seq is a fresh subscriber"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn transcript_subscription_requires_activity_id() {
+        let error = decode(&json!({
+            "transcript": {
+                "namespace": "tenant-a",
+                "workflow_id": uuid::Uuid::from_u128(7).to_string(),
+            }
+        }))
+        .err()
+        .map(|error| error.to_wire_error());
+        assert_eq!(
+            error.map(|error| error.code),
+            Some(WireErrorCode::InvalidInput)
+        );
     }
 
     #[test]

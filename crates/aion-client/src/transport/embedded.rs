@@ -359,6 +359,18 @@ fn embedded_subscription_target(
                  cluster channel",
             ))
         }
+        Some(aion_proto::subscription_request::Subscription::Transcript(_)) => {
+            // The NOI-5b agent-observability transcript channel is a server-side
+            // projection over the durable `O` keyspace + the server's transcript
+            // sequencer. The embedded in-process transport has no such server
+            // bridge, so a transcript subscription is not serviceable here; reject
+            // it cleanly rather than degrading to a workflow event stream.
+            Err(ClientError::invalid_argument(
+                "agent-observability transcript subscriptions are not supported by the embedded \
+                 in-process transport; connect to an aion-server over gRPC/WebSocket to subscribe \
+                 to the transcript channel",
+            ))
+        }
         None => Err(ClientError::invalid_argument(
             "subscription request is missing its subscription variant",
         )),

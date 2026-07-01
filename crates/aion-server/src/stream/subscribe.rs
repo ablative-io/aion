@@ -157,6 +157,14 @@ pub fn map_subscription_request(
                 "cluster subscription must be served by the cluster channel, not the workflow path",
             ),
         }),
+        // The transcript subscription (NOI-5b) is dispatched to `transcript_stream`
+        // before the workflow path is reached, so it never flows through this
+        // workflow mapper. Reaching here is a routing bug, surfaced loudly.
+        Some(subscription_request::Subscription::Transcript(_)) => Err(ServerError::Wire {
+            wire: aion_proto::WireError::backend(
+                "transcript subscription must be served by the transcript channel, not the workflow path",
+            ),
+        }),
         None => Err(ServerError::Wire {
             wire: aion_proto::WireError::backend("subscription variant is missing"),
         }),

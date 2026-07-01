@@ -456,6 +456,14 @@ impl<'a> SubscriptionScope<'a> {
                     "cluster subscription is deployment-scoped and not served by the namespace guard",
                 ))
             }
+            // The transcript subscription (NOI-5b) is dispatched to its own
+            // socket before the workflow guard path runs and builds its scope
+            // directly, so reaching this generic mapper with one is a routing bug.
+            Some(subscription_request::Subscription::Transcript(_)) => {
+                Err(ServerError::namespace_denied(
+                    "transcript subscription is served by the transcript channel, not this mapper",
+                ))
+            }
             None => Err(ServerError::namespace_denied(
                 "subscription request must name a namespace",
             )),

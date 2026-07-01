@@ -55,6 +55,15 @@ async fn serve_subscription_socket(
         let after_seq = cluster.after_seq;
         return crate::stream::serve_cluster_socket(socket, &state, &caller, after_seq).await;
     }
+    // NOI-5b: the transcript subscription is likewise a NEW ARM of the single
+    // subscription frame — namespace-scoped (unlike the deploy-scoped cluster
+    // arm), carrying its own durable-tail + live-splice contract — so it is
+    // dispatched to its own server before the workflow `subscribe_events` path.
+    if let Some(aion_proto::subscription_request::Subscription::Transcript(transcript)) =
+        &request.subscription
+    {
+        return crate::stream::serve_transcript_socket(socket, &state, &caller, transcript).await;
+    }
     handle_subscription_socket(socket, &state, &caller, &request).await
 }
 
