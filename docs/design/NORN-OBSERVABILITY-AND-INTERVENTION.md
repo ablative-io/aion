@@ -1,7 +1,8 @@
-# Norn Agent Observability + Mid-Run Intervention (DESIGN)
+# Agent Observability + Mid-Run Intervention — the Integration SDK (Norn is the first integration) (DESIGN)
 
 > Status: **design pass, read-only analysis. No production code changed by this doc.**
-> 2026-07-01. Cross-repo: **norn**, **aion** (worker + server + ops-console),
+> 2026-07-01. Cross-repo: **norn**, **aion** (worker + server + ops-console + a new
+> `aion-integrations` SDK crate + a first-party `aion-integration-norn` adapter crate),
 > **liminal**, **haematite**. Written in the lineage of the other design passes
 > ([CONTROL-PLANE.md](./CONTROL-PLANE.md), [CLUSTER-AUTODISCOVERY.md](./CLUSTER-AUTODISCOVERY.md),
 > [HAEMATITE-CLUSTER-SOURCE-OF-TRUTH.md](./HAEMATITE-CLUSTER-SOURCE-OF-TRUTH.md)).
@@ -9,9 +10,23 @@
 > Companion to the Aion observability-layer direction (auto-memory
 > `aion-observability-layer-direction.md`) and the ops-console-out-of-box thread
 > (`ops-console-out-of-box.md`). This doc makes a **specific, locked set of
-> decisions** concrete across the five repos and defends the one crux that governs
+> decisions** concrete across the repos and defends the one crux that governs
 > the whole design: **an intervention is a durable observability record but NOT
 > part of the workflow replay log.**
+>
+> **Framing (LOCKED): this is an INTEGRATION-SDK design, not a Norn-only design.**
+> The aion side is a first-class **harness-integration SDK** — a new `aion-integrations`
+> crate defining an `AgentHarness` trait, reusable building blocks (a ~150-LOC
+> JSON-RPC-2.0-over-stdio helper, capability negotiation, envelope mapping), and a
+> re-export of the neutral `aion-core` types — so that **any** agent harness integrates
+> by "write an adapter against `AgentHarness`," never "edit a platform crate." Norn is the
+> **first integration**, shipped out-of-box, and its adapter lives in a dedicated first-party
+> crate `aion-integration-norn`. The INVARIANT the whole design is built to guarantee:
+> **ZERO Norn-specific code in the aion platform crates** (`aion-core`, `aion-worker`,
+> `aion-server`, `aion-proto`, `aion-proto-generated`, `aion-store*`, `aion-client`, `aion`),
+> enforced by a named CI gate (§3A.4, NOI-8). The neutral contract and the transport below are
+> unchanged by this framing; it reframes only where the ADAPTER physically lives and how the
+> integration surface is packaged.
 
 ## TL;DR (read this first)
 
@@ -395,8 +410,11 @@ channel, and advertises the rest as UNSUPPORTED until the underlying Norn mechan
 This is the ONLY location where the Norn-specific `inbound.rs` types (`frame_message` /
 `ChannelMessage` / `CancellationToken`) are referenced. A **future harness** is "write an
 adapter mapping the neutral primitives it supports to its own control channel," **never**
-"reshape `aion-core`." (Cross-referenced from §6, which describes the same boundary at the
-flow level.)
+"reshape `aion-core`." Physically, "the worker-side per-harness adapter" is a distinct
+first-party crate, **`aion-integration-norn`** (§3A.3), implementing the `AgentHarness` trait
+from the new `aion-integrations` SDK (§3A) — depended on ONLY at the binary composition root
+(aion-cli), never by any platform library crate. (Cross-referenced from §6, which describes the
+same boundary at the flow level.)
 
 **Why the UNSUPPORTED rows are a feature, not a gap.** Having neutral primitives that even
 the FIRST adapter (Norn) does not yet implement is the STRONGEST possible proof the contract
@@ -408,6 +426,215 @@ the **complete contract exists independent of any one harness's coverage** — N
 for whichever harness (Norn included, once the mechanism lands) advertises them. We do NOT
 fabricate Norn internals to fill these rows; "advertised unsupported until the mechanism
 exists" is the honest entry.
+
+---
+
+## 3A. The `aion-integrations` SDK — the harness-integration boundary
+
+§3 placed the shared **DATA TYPES** (`ActivityEvent`, `InterventionCommand`) in `aion-core`,
+for a specific reason: they are neutral DTOs that ride the wire, the server, and the console,
+exactly like `cluster_event.rs`. This section places the shared **INTEGRATION SURFACE** — the
+trait a harness implements and the reusable machinery it reuses — in a **new SDK crate,
+`aion-integrations`**, for a *different* reason: it is a **stable public SDK boundary**, the
+crate a third party depends on to make their harness a first-class Aion integration. Two
+different responsibilities, two different homes; neither is a Norn crate.
+
+**Why a crate here, when §3.1 argued AGAINST a new crate for the types.** §3.1 rejected a
+separate types crate because a data DTO gains nothing from a crate boundary — the byte-disjoint
+`O` keyspace already fences replay authority, and the ts-rs codegen already lives in `aion-core`.
+That reasoning is about *data*. The `AgentHarness` trait is not data: it is a **published
+extension seam** with reusable building blocks and its own semver surface, exactly the category
+the workspace already ships as its own crate. The precedent is exact and in-tree: **`aion-client`
+is a standalone SDK crate** that (1) depends on `aion-core` for neutral types and re-exports the
+ones callers need, (2) defines its extension seam as an `#[async_trait]` trait in a dedicated
+`contract` module (`WorkflowTransport`,
+[transport/contract.rs:12-61](../../../aion/crates/aion-client/src/transport/contract.rs#L12)),
+re-exported from lib.rs
+([aion-client/src/lib.rs:39-44](../../../aion/crates/aion-client/src/lib.rs#L39)), and (3) ships
+a concrete on-by-default adapter behind an optional feature (the embedded engine,
+[aion-client/Cargo.toml:33,46-48](../../../aion/crates/aion-client/Cargo.toml#L33)). `aion-integrations`
+is the *inbound* analogue of `aion-client`: where `aion-client` is the SDK for a caller DRIVING
+Aion, `aion-integrations` is the SDK for a harness Aion drives. A data-DTO stays in `aion-core`
+(§3.1); a public SDK seam gets its own crate (this section). No contradiction — two different
+kinds of thing.
+
+### 3A.1 The `AgentHarness` trait — designed from TWO cases so it is provably general
+
+**The seam is NEW** — there is no existing trait to extend. Repo-wide, aion-worker has no
+agent-event, intervention, capability, or child-stdio concept today; the agent is spawned
+INSIDE a user handler via blocking `std::process::Command::output()`
+([norn-fan-worker main.rs:86-169](../../../aion/examples/norn-fan-worker/src/main.rs#L86)) and the
+runtime never touches the child. `AgentHarness` slots in **one layer below the handler**, at the
+process-spawn boundary — distinct from the existing `ActivityDispatcher` ("how to run this named
+activity", [loop_.rs:26-37](../../../aion/crates/aion-worker/src/runtime/loop_.rs#L26)), which
+stays untouched. It is "how to run THIS agent," a shared seam the worker drives, not a
+per-handler re-implementation (§9 decision 8, strong lean).
+
+To prove the trait is **not Norn-shaped**, it is designed against two deliberately different
+integrations at once:
+
+- **Case (a): Norn** — JSON-RPC-2.0-over-stdio, the full rich path. Advertises the five neutral
+  primitives it supports (`{inject_message, cancel}`), streams `event/*` notifications out,
+  accepts `intervene/*` requests in, returns the `run/execute` Response as the result.
+- **Case (b): a plain-stdout CLI agent** — a deliberately different second integration:
+  **observability-only**. It has no JSON-RPC channel at all; the adapter spawns it, reads its
+  interleaved stdout, and **demuxes mixed stdout into `ActivityEvent`s** (mostly `Raw`, some
+  mapped). It advertises an **EMPTY intervention capability set**, so the console offers no
+  controls and the worker never routes a command to it. Its result is its final stdout/exit
+  status mapped to `DispatchOutcome::Completed`.
+
+Both must fit WITHOUT Norn-isms. The trait therefore speaks only: a spawn/connect, a stream of
+neutral events OUT, a neutral command sink IN, a capability advertisement, and a terminal result.
+Nothing about JSON-RPC, `initialize`, `ChannelMessage`, or stdout-vs-duplex appears in the trait —
+those are adapter-internal. Case (b) is what forces the command sink to be OPTIONAL-by-capability
+(an empty `InterventionCapabilities` is a valid, first-class advertisement, not a degenerate one)
+and forces the event stream to be the demux-agnostic `ActivityEvent` envelope, not a JSON-RPC
+notification.
+
+```rust
+// aion-integrations::contract  (an #[async_trait] seam, mirroring aion-client's
+// WorkflowTransport at transport/contract.rs:12-61)
+#[async_trait]
+pub trait AgentHarness: Send + Sync {
+    type Session: AgentSession;
+
+    /// Spawn or connect the harness for one activity attempt, negotiate capabilities,
+    /// and return a live session. `spec` carries the neutral run identity
+    /// (workflow_id, activity_id, attempt) + input Payload — NO harness-specific config.
+    async fn start(&self, spec: AgentRunSpec) -> Result<Self::Session, HarnessError>;
+}
+
+#[async_trait]
+pub trait AgentSession: Send {
+    /// The capability set negotiated at start — the SERVER/console gate on THIS,
+    /// never on harness identity. Empty set = observability-only (case (b)).
+    fn capabilities(&self) -> &InterventionCapabilities;
+
+    /// Neutral events OUT. For Norn: mapped from event/* notifications. For a
+    /// plain-stdout CLI: demuxed from interleaved stdout (mostly Raw).
+    fn events(&mut self) -> BoxStream<'static, ActivityEvent>;
+
+    /// Neutral commands IN. Adapters whose capability set is empty (case (b))
+    /// reject every command with a "capability not supported" error; the worker
+    /// never routes one to them because the advertised set is empty.
+    async fn intervene(&self, cmd: InterventionCommand) -> Result<(), HarnessError>;
+
+    /// The single terminal result → the SAME DispatchOutcome::Completed { output }
+    /// the one-shot capture produces today (loop_.rs:39-52). For Norn it is the
+    /// id-matched run/execute Response; for a plain-stdout CLI it is final-stdout/exit.
+    async fn wait_result(self) -> Result<Payload, HarnessError>;
+}
+```
+
+The trait is **harness-blind by construction**: `AgentRunSpec` carries only neutral run identity +
+input, `capabilities()` returns the neutral `InterventionCapabilities`, `events()` yields
+`aion-core::ActivityEvent`, `intervene()` takes `aion-core::InterventionCommand`, and
+`wait_result()` yields the same `Payload` shape the current `.output()` capture returns
+([DispatchOutcome loop_.rs:39-52](../../../aion/crates/aion-worker/src/runtime/loop_.rs#L39)).
+No arm names Norn, JSON-RPC, or stdout. (Exact async surface is a NOI-1 detail — stream vs
+callback, associated `Session` vs bare async fns — but the SHAPE is locked by the two cases.)
+
+### 3A.2 Reusable building blocks the SDK provides
+
+`aion-integrations` is not just the trait; it carries the machinery an integrator would otherwise
+re-write, so a stdio-JSON-RPC harness reuses ~150 LOC instead of hand-rolling framing:
+
+- **The ~150-LOC JSON-RPC-2.0-over-stdio helper** (§9.4) — the generic
+  `JsonRpcRequest`/`JsonRpcResponse`/`JsonRpcError` envelope, `Option<id>` notification-vs-request
+  discrimination, id correlation, and the single-serializing-writer discipline (§4.2), lifted from
+  Norn's in-tree MCP prior art
+  ([mcp_server.rs::serve_stdio:206-227](../../../norn/crates/norn/src/integration/mcp_server.rs#L206)).
+  **Any** stdio-JSON-RPC harness adapter (Norn today, a future one tomorrow) reuses this verbatim;
+  it is the single most valuable reusable block. The plain-stdout case (b) does NOT use it — it is
+  a building block, not a mandate.
+- **Capability negotiation** — the `initialize`-handshake helper (§5.0) that reads a child's
+  advertised primitive set into the neutral `InterventionCapabilities`, plus the gate helper the
+  worker uses to refuse an unadvertised primitive before it is ever sent (§6.4).
+- **Envelope-mapping helpers** — the `ActivityEvent` builder + the `Raw`-fallback demux scaffold a
+  mixed-stdout adapter (case (b)) reuses, and the JSON-payload codec pair (`to_payload`/`from_payload`
+  over `aion_core::Payload` with `ContentType::Json`, lifted from
+  [aion-client/src/payload.rs:17-45](../../../aion/crates/aion-client/src/payload.rs#L17)).
+- **Re-exported neutral `aion-core` types** — `ActivityEvent`, `ActivityEventKind`,
+  `InterventionCommand`, `InterventionKind`, `ApprovalDecision`, plus the id types the spec needs —
+  so an integrator has **one dependency** (`aion-integrations`) and never reaches directly into
+  `aion-core` for the integration surface (curated re-export, the aion-client house style, not a
+  blanket `pub use aion_core`).
+
+`aion-integrations` depends on `aion-core` (path + version, like every SDK crate) and inherits
+`[lints] workspace = true` verbatim ([aion-client/Cargo.toml:14-15](../../../aion/crates/aion-client/Cargo.toml#L14)).
+It takes **no** dependency on `aion-integration-norn` — the SDK never knows about any concrete
+adapter (the liminal-transport hygiene rule, §3A.3).
+
+### 3A.3 Where the Norn adapter physically lives — `aion-integration-norn`
+
+The Norn adapter is a **dedicated first-party crate, `aion-integration-norn`**, that depends on
+`aion-integrations` (for the trait + the JSON-RPC-stdio helper) and implements `AgentHarness`
+for Norn. It is the analogue of `aion-worker`'s concrete `liminal` adapter module — the ONE place
+that names Norn's on-wire contract and translates neutral primitives to Norn's native control
+channel (§3.4). **`Norn` itself still does NOT depend on `aion`**: the adapter maps Norn's
+documented `event/*`/`intervene/*` JSON-RPC contract, so Norn stays a standalone harness.
+
+**Platform crates stay Norn-blind by construction.** `aion-integration-norn` is depended on
+**ONLY at the binary composition root** — the worker binary / **aion-cli** — and **NEVER** by the
+platform LIBRARY crates (`aion-core`, `aion-worker`, `aion-server`, `aion-proto`,
+`aion-proto-generated`, `aion-store*`, `aion-client`). This mirrors the PROVEN
+`liminal-transport` pattern exactly: aion-worker/aion-server declare `liminal-sdk` as
+`optional = true`, keep it OFF in the library default, and the **aion-cli binary flips it ON** by
+listing it in `default = [...]` and forwarding the feature to aion-server
+([aion-cli/Cargo.toml default = ["haematite-backend", "liminal-transport"]](../../../aion/crates/aion-cli/Cargo.toml)).
+A `norn` cargo feature follows the same split:
+
+- `aion-cli/Cargo.toml`: `aion-integration-norn = { path = "../aion-integration-norn", optional = true }`,
+  with `norn` listed in aion-cli's `default = [...]` and forwarding to the server the way
+  `liminal-transport = ["aion-server/liminal-transport"]` does today.
+- **The shipped default `aion` binary composes in the Norn adapter** (default-on) so the product
+  **runs Norn out-of-box**, while `--no-default-features` drops it and the LIBRARY crates default
+  to no-norn / byte-identical builds.
+- **`aion-worker` drives ANY `AgentHarness` through the trait, harness-blind.** The worker never
+  names a concrete adapter; the composition root injects the adapter(s) it compiled in, and which
+  harness is active is selected at boot from config, exactly like `store.backend`/`outbox.transport`
+  today ([run.rs](../../../aion/crates/aion-server/src/run.rs)) — a config naming an uncompiled
+  adapter is a boot-time error, never a silent fallthrough.
+
+This is the same "our complete experience is the default, yet the libraries carry no coupling"
+thread as zero-config defaults and the ops-console-out-of-box work: Norn ships on by default in
+the binary; the platform crates never see it. (Whether the Norn adapter is a standalone crate or a
+feature-gated module inside `aion-integrations` — the liminal precedent puts the concrete adapter
+as a gated module inside the SDK crate — is the one open packaging call, §9.2 decision 15; either
+way the invariant §3A.4 binds and the adapter is wired only at the composition root.)
+
+### 3A.4 The INVARIANT and how it is ENFORCED — the `no-norn-in-platform` gate
+
+**INVARIANT (named, LOCKED): ZERO Norn-specific code in the aion platform crates.** The platform
+crate set is: `aion-core`, `aion-worker`, `aion-server`, `aion-proto`, `aion-proto-generated`,
+`aion-store`, `aion-store-haematite`, `aion-store-libsql`, `aion-client`, and the `aion` facade —
+plus **aion-cli's `src/` but NOT its `templates/` tree** (templates are verbatim scaffold emitted
+to user projects and MAY name `norn`). This invariant **holds today** by discipline: no platform
+`Cargo.toml` has a `norn` dependency, and no platform `src` has a norn code/type/protocol coupling
+(the only `norn` strings in compiled platform src are an illustrative task_queue doc-comment at
+[registry.rs:70](../../../aion/crates/aion-server/src/worker/registry.rs#L70) and `#[cfg(test)]`
+routing fixtures in aion-server, neither a dependency).
+
+It is enforced by a **concrete, named CI gate — `no-norn-in-platform`** (a check step, e.g. an
+`xtask` / `ci/` script), which asserts BOTH:
+
+1. **No dependency edge.** The resolved dependency graph of each platform crate has **no `norn`
+   and no `aion-integration-norn` edge** — a `cargo tree -p aion-worker -p aion-server … -i
+   aion-integration-norn` (and `-i norn*`) returns empty. This is the robust check: it is immune to
+   the substring false-positives below.
+2. **No norn identifier in platform src.** A scoped grep asserts no `use`/`import`/`extern` of a
+   norn crate or a `NornEnvelope`-style type in platform `src`, **excluding**
+   `crates/aion-cli/templates/**` (allowed scaffold) and the pre-existing `#[cfg(test)]` routing
+   fixtures + the registry.rs:70 doc-comment (allowlisted, since `norn` there is an arbitrary
+   task_queue string, not a coupling).
+
+The gate **lands at NOI-4** (§9.1) — the slice that first introduces `aion-integration-norn`, i.e.
+the moment any Norn code enters the repo and the invariant *can* be violated. It guards every
+subsequent slice by construction; it is NOT deferred to the end. (NOI-8's second, observability-only
+adapter is the separate *empirical* proof that the trait is general — a shipped second integration —
+but leakage prevention does not wait for it.) A future edit that adds `norn` to a platform
+crate fails the gate — the single biggest risk to the invariant (that it holds by discipline only)
+is thereby closed.
 
 ---
 
@@ -673,7 +900,11 @@ using blocking `.output()` with `Stdio::null` stdin. The runtime never touches c
 stdio. **The JSON-RPC duplex client must be introduced at the process-spawn boundary,
 and it MUST be a shared `aion-worker` helper — not per-handler** (§9 open decision,
 strongly leaned): otherwise every handler re-implements observability and the
-harness-agnostic path has no home.
+harness-agnostic path has no home. Concretely, that shared helper **drives the
+`AgentHarness` trait** (§3A.1): `aion-worker` owns the neutral seam and remains harness-blind;
+the JSON-RPC-stdio machinery lives in the `aion-integrations` SDK (§3A.2), and the
+Norn-specific translation lives in `aion-integration-norn` (§3A.3), composed in only at
+aion-cli. The `spawn_agent` helper below is `aion-worker`'s trait-driver, not a Norn spawner.
 
 Concrete worker changes:
 - **`spawn_agent` helper** in `aion-worker` — a **NEW additive spawn mode** beside the current
@@ -794,7 +1025,7 @@ read-head → append(expected_seq) → on-`SequenceConflict`-re-read-head-and-re
 CORRECTNESS-CRITICAL code, NOT an implementation detail:** it is the only thing that keeps
 `store_seq` monotonic when two appends race for the same `(activity, attempt)` head (one wins,
 the other must re-read the advanced head and retry, still landing monotonically). This is
-exactly why the server owns durability (below) and why NOI-4's negative control must cover
+exactly why the server owns durability (below) and why NOI-5's negative control must cover
 **both** the wrong-allocator case AND the concurrent-writer-retry case (below). The wrong
 approach — a process-local `AtomicU64` à la `ClusterEventPublisher` — is called out above
 precisely because it looks like it allocates but silently resets on failover; it is the WRONG
@@ -1162,7 +1393,7 @@ control** (the `engine/fence.rs` discipline,
   `attempt` readable off `ActivityStarted` AND `ActivityCompleted` (not just
   `ActivityFailed`); a history that predates the field decodes without panic (schema
   back-compat). **Everything below is BLOCKED on NOI-0** — most sharply §5.3 (dedupe) and
-  §6.4 (attempt-guard), realized in NOI-4 (events/dedupe) and NOI-5 (intervention routing).
+  §6.4 (attempt-guard), realized in NOI-5 (events/dedupe) and NOI-6 (intervention routing).
 - **NOI-1 (spike, norn only) — JSON-RPC channel: `initialize` + `run/*` + `event/*`
   round-trip.** Add `--protocol jsonrpc`; on the duplex, answer `initialize` with the child's
   capabilities (`interventions: {inject_message, cancel}`); serve one `run/execute` REQUEST
@@ -1205,21 +1436,52 @@ control** (the `engine/fence.rs` discipline,
   `approval/request`) is emitted, and assert every outbound line is a complete, parseable
   JSON-RPC frame — proving the single serializing writer prevents interleave corruption of the
   shared child stdout.
-- **NOI-3 (aion-worker) — shared JSON-RPC spawn helper.** `spawn_agent` in
-  `aion-worker` — a NEW additive spawn mode beside the one-shot `.output()`; streaming
-  `spawn()` with `--protocol jsonrpc`, `Stdio::piped()` stdin (`ChildStdin` retained); reader
-  demuxes `event/*` notifications → `event_sender` on `ActivityContext` and correlates the
-  terminal `run/execute` Response as the `DispatchOutcome::Completed { output }`;
-  `control_receiver` writes `intervene/*` REQUESTS to `ChildStdin` and awaits acks. **Gate:**
-  the norn-fan-worker example drives a real Norn run end-to-end over JSON-RPC, events drain live
-  (not at exit), a command reaches the child and is acked. **Negative control:** a handler that
-  does NOT spawn an agent still compiles and runs, and the **default one-shot `run_norn_step`
-  path is unchanged** (the JSON-RPC mode is opt-in, not mandatory).
-- **NOI-4 (liminal + server) — events out + sequencer + O keyspace.** *(Blocked on NOI-0 —
+- **NOI-3 (aion-integrations) — the SDK skeleton: `AgentHarness` trait + extracted
+  JSON-RPC-stdio helper.** Create the new `aion-integrations` crate (§3A): the `#[async_trait]
+  AgentHarness`/`AgentSession` seam in a `contract` module (mirroring aion-client's
+  `WorkflowTransport`), the re-exported neutral `aion-core` types, and — **extracted from Norn's
+  in-tree MCP prior art (§9.4) into the SDK** — the ~150-LOC generic JSON-RPC-2.0-over-stdio helper
+  (envelope + `Option<id>` request/notification discrimination + id correlation + the single
+  serializing writer, §4.2) plus the `initialize`-capability-negotiation helper (§5.0) and the
+  `ActivityEvent` envelope-mapping / `Raw`-fallback demux scaffold (§3A.2). `aion-integrations`
+  depends ONLY on `aion-core` and inherits `[lints] workspace = true`. **Gate:** the crate compiles
+  under the full clippy/no-unwrap bar; the JSON-RPC helper round-trips a request/response +
+  notification against an in-crate loopback child; the trait is object-usable by a trivial in-crate
+  test double. **Negative control (SDK neutrality, forward-looking):** `aion-integrations` names
+  ZERO Norn types and has no `norn`/`aion-integration-norn` dependency edge (`cargo tree`), so it is
+  a neutral SDK from the first commit — the seed of the §3A.4 invariant that NOI-8 locks in CI.
+- **NOI-4 (aion-worker drives `AgentHarness` + `aion-integration-norn` implements it) — the
+  trait-driver spawn helper + the first adapter.** Two moves, one slice. **(i) aion-worker drives
+  the trait:** `spawn_agent` in `aion-worker` — a NEW additive spawn mode beside the one-shot
+  `.output()` — is the trait DRIVER, generic over `AgentHarness` (§3A.1), never naming a concrete
+  adapter: streaming `spawn()`/connect, reader demuxes the session's `events()` → `event_sender` on
+  `ActivityContext` and correlates the terminal result as `DispatchOutcome::Completed { output }`;
+  `control_receiver` feeds `session.intervene(cmd)`. aion-worker stays harness-blind. **(ii)
+  `aion-integration-norn` implements `AgentHarness` for Norn (§3A.3):** the concrete adapter crate,
+  built on the SDK's JSON-RPC-stdio helper — spawns Norn with `--protocol jsonrpc`, `Stdio::piped()`
+  stdin (`ChildStdin` retained), maps `event/*` notifications → `ActivityEvent`, correlates the
+  id-matched `run/execute` Response as the result, and writes neutral commands out as `intervene/*`
+  REQUESTS awaiting acks. It is depended on ONLY at the composition root (aion-cli, default-on `norn`
+  feature); the platform library crates never name it. **Gate:** the norn-fan-worker example drives a
+  real Norn run end-to-end through `aion-worker`'s trait-driver against the `aion-integration-norn`
+  adapter, events drain live (not at exit), a command reaches the child and is acked. **Negative
+  control:** a handler that does NOT spawn an agent still compiles and runs, and the **default
+  one-shot `run_norn_step` path is unchanged** (the JSON-RPC mode is opt-in, not mandatory).
+  **The `no-norn-in-platform` CI gate (§3A.4) LANDS HERE — the moment the first Norn code
+  (`aion-integration-norn`) exists in the repo.** This is deliberate: the invariant must be enforced
+  by construction from the instant it *can* be violated, not asserted until the end. The gate
+  asserts, across the ENTIRE platform crate set (`aion-core`/`aion-worker`/`aion-server`/`aion-proto`/
+  `aion-proto-generated`/`aion-store*`/`aion-client`/the `aion` facade), BOTH: (1) no `cargo tree`
+  dependency edge to `aion-integration-norn`/`norn*`; (2) no `norn` identifier in platform `src`
+  (scoped grep, `templates/**` + the allowlisted test fixtures/doc-comment excepted). Every slice
+  after NOI-4 is then guarded — a future edit adding a `norn` edge to a platform crate fails CI.
+- **NOI-5 (liminal + server) — events out + sequencer + O keyspace.** *(Blocked on NOI-0 —
   the dedupe key needs a durable `attempt` on `ActivityStarted/Completed/Cancelled`.)* Worker
   publishes to a
-  liminal events channel; server bridge (new `ActivityEventPublisher`) stamps commit-allocated
-  `store_seq`, writes the `O` keyspace, fans out on a new transcript WS subscription. **Gate:**
+  liminal events channel via the harness session's `events()` stream (§3A.1); server bridge (new
+  `ActivityEventPublisher`) stamps commit-allocated
+  `store_seq`, writes the `O` keyspace, fans out on a new transcript WS subscription. **(Blocked on
+  NOI-3/NOI-4 — the events ride the `AgentHarness` session's `events()` stream.)** **Gate:**
   a live transcript streams to a WS client and resumes by `store_seq` after reconnect with no
   gap. **Negative control (THE key durability test):** kill-9 the worker mid-run; the adopting
   worker resumes the same session; two emitters for one `(wf,act,attempt)` **dedupe** and
@@ -1234,12 +1496,14 @@ control** (the `engine/fence.rs` discipline,
     strictly-monotonic `store_seq`. Assert no lost/duplicated/out-of-order `store_seq` results
     from the race — proving the read-head/retry loop (not the store) is what enforces
     monotonicity, and that the server serialization + retry is exercised, not assumed.
-- **NOI-5 (server + liminal PUSH) — intervention routing.** *(Blocked on NOI-0 — the
+- **NOI-6 (server + liminal PUSH) — intervention routing.** *(Blocked on NOI-0 — the
   attempt-guard no-op needs a durable `attempt` on the terminal activity events.)*
   `attempt → owning-worker`
   back-index resolving via durable shard-owner state; namespace-scoped intervene endpoint;
-  liminal PUSH to the owning worker. This slice exercises the **full neutral command set**
-  through the Norn adapter: the ones Norn supports (`InjectMessage`, `Cancel`) drive the agent
+  liminal PUSH to the owning worker, delivered into the harness session's `intervene(cmd)` sink
+  (§3A.1). This slice exercises the **full neutral command set**
+  through the `aion-integration-norn` adapter: the ones Norn supports (`InjectMessage`, `Cancel`)
+  drive the agent
   end-to-end, and the ones the Norn adapter advertises unsupported (`PauseResume`,
   `UpdateBudget`, `RespondToApproval`) each return a clean "capability not supported"
   rejection rather than silently succeeding. **Gate:** an operator `InjectMessage { priority:
@@ -1248,24 +1512,35 @@ control** (the `engine/fence.rs` discipline,
   attempt is cleanly rejected as unsupported (the capability gate). **Negative control:** a
   command to a finished/migrated attempt is a no-op with an honest NACK (the `attempt` guard,
   §6.4); after failover the command routes to the CURRENT owner, never a stale/dead worker.
-- **NOI-6 (ops-console) — TranscriptPanel + InterventionControls.** Transcript render + delta
+- **NOI-7 (ops-console) — TranscriptPanel + InterventionControls.** Transcript render + delta
   coalescing + capability-gated controls. **Gate:** the panel shows a live transcript with
   token deltas coalescing into messages (no flicker), and the intervention control is HIDDEN
   for a harness that did not advertise the capability.
-- **NOI-7 (harness-agnostic) — SECOND adapter, both directions.** A mock/non-Norn harness
-  gets its own worker-side adapter: outbound, its interleaved-stdout events demux into
-  `Raw`/mapped envelopes; inbound, it advertises at least `{inject_message, cancel}` and its
-  adapter maps those **neutral** primitives onto its own control channel. **Gate / negative
-  control (the real proof the contract is neutral):** the mock adapter actually DRIVES at
-  least `InjectMessage` + `Cancel` through the neutral contract end-to-end — operator command
-  → server → PUSH → worker → mock adapter → mock agent — AND correctly REJECTS at least one
-  primitive it advertises unsupported (e.g. `RespondToApproval`) with a "capability not
-  supported" NACK, proving **both** the contract neutrality and the capability gate in one
-  test. All of this with `aion-core`/wire/server code UNCHANGED and naming ZERO harness types.
-  This is what forces those layers to stay harness-blind; if adding a second working adapter
-  required touching them, the contract was Norn-with-a-flag, not neutral. (A harness that
-  genuinely cannot take control commands advertises nothing and the console offers no controls
-  — a separate, weaker case than the driven mock above.)
+- **NOI-8 (SECOND integration — THE empirical proof `aion-integrations` is a real SDK).** This is
+  the slice that turns "an SDK" from a well-argued design into a *shipped* proof: it lands a
+  **second, independent `AgentHarness` implementation** against `aion-integrations` (§3A.1). Two
+  implementations of one trait are what make the boundary a real SDK rather than a Norn wrapper.
+  (The leakage guard — the `no-norn-in-platform` CI gate — already landed at **NOI-4** and has
+  guarded every slice since; NOI-8 is the *generality* proof, not the leakage guard.) The second implementation is deliberately of a
+  **different shape** — the plain-stdout / observability-only CLI agent of case (b): its adapter
+  demuxes interleaved stdout into `Raw`/mapped `ActivityEvent`s and advertises an **EMPTY
+  intervention capability set** (no control channel at all). A richer mock that DOES advertise
+  `{inject_message, cancel}` is also driven so both branches of the trait are exercised.
+  **Gate / negative control (the real proof the contract is neutral):** (1) the observability-only
+  case (b) adapter streams a live transcript with NO controls offered, proving an empty-capability
+  integration is first-class; (2) the interveneable mock actually DRIVES `InjectMessage` + `Cancel`
+  through the neutral contract end-to-end — operator command → server → PUSH → worker →
+  `AgentHarness::intervene` → mock agent — AND correctly REJECTS at least one primitive it
+  advertises unsupported (e.g. `RespondToApproval`) with a "capability not supported" NACK; (3) all
+  of this with `aion-core`/`aion-integrations`/wire/server/`aion-worker` code UNCHANGED and naming
+  ZERO harness types. This is what forces those layers to stay harness-blind; if adding a second
+  working integration required touching them, the contract was Norn-with-a-flag, not neutral.
+  **(Re: the leakage gate — it is NOT introduced here; the `no-norn-in-platform` gate (§3A.4)
+  landed at NOI-4 and re-runs on every slice.)** For reference that gate is the `cargo tree`
+  no-`norn`/no-`aion-integration-norn`
+  dependency-edge check across all platform crates + the scoped-grep identifier check (with the
+  `templates/**` + test-fixture allowlist), wired as a named CI step so the invariant stops holding
+  by discipline and starts holding by construction.
 
 **Feature-gate** the JSON-RPC/observability driven mode so a feature-off Norn build and a
 feature-off worker can drop it before the on/off-by-default call is made (§9.3 open decision).
@@ -1290,7 +1565,7 @@ feature-off worker can drop it before the on/off-by-default call is made (§9.3 
    stdin to be the JSON-RPC read half; arg/file remain accepted fallbacks.
 5. **Events transport: out-of-band liminal channel vs a new `WorkerToServer` gRPC variant.**
    LEAN: out-of-band liminal (observability is a separate subsystem; zero proto churn for
-   events). Confirm the worker reuses its existing liminal connection vs opens its own (NOI-3/4).
+   events). Confirm the worker reuses its existing liminal connection vs opens its own (NOI-4/5).
 6. **Intervention transport: liminal PUSH vs a new `ServerToWorker` oneof.** LEAN: PUSH (keeps
    the intervention path on the same out-of-band transport, no proto change); the `Cancel`
    template is the fallback if PUSH addressing is awkward.
@@ -1338,6 +1613,14 @@ feature-off worker can drop it before the on/off-by-default call is made (§9.3 
     e.g. `-32001 attempt superseded`) vs **protocol bug** (`-32601 Method not found` from the
     child). No `error.data` disambiguation is needed — the three are already distinct
     codes/classes by construction.
+15. **Norn adapter packaging: a standalone `aion-integration-norn` crate vs a feature-gated
+    module inside `aion-integrations` (§3A.3).** LEAN: a **standalone crate** — it keeps the
+    neutral SDK provably free of any concrete adapter and makes "two implementations of one trait"
+    (NOI-8) a real cross-crate proof. The liminal precedent, however, puts the concrete adapter as
+    a feature-gated module inside the SDK crate ([aion-worker/src/runtime/liminal.rs](../../../aion/crates/aion-worker/src/runtime/liminal.rs),
+    behind `liminal-transport`), which is simpler and equally valid. EITHER WAY the §3A.4
+    invariant binds and the adapter is wired only at the aion-cli composition root (default-on
+    `norn` feature); the choice is packaging ergonomics, not a change to the boundary.
 
 ### 9.3 Biggest risks (honest)
 
@@ -1350,8 +1633,8 @@ feature-off worker can drop it before the on/off-by-default call is made (§9.3 
   the **server-single-writer + `SequenceConflict` read-head/retry loop is itself
   correctness-critical code**, not an implementation detail: on a concurrent-append race the
   loser must re-read the advanced head and retry to stay monotonic. This is the #1 correctness
-  risk and NOI-4's mandatory negative control targets **both** the wrong-allocator case AND the
-  concurrent-writer-retry case (§9.1 NOI-4).
+  risk and NOI-5's mandatory negative control targets **both** the wrong-allocator case AND the
+  concurrent-writer-retry case (§9.1 NOI-5).
 - **Durable attempt identity is a FOUNDATIONAL PREREQUISITE, not an open question
   (NOI-0).** Dedupe requires a stable `(workflow, activity, attempt)` key, but **today only
   `ActivityFailed` carries `attempt: u32`; `ActivityStarted`, `ActivityCompleted`, and
@@ -1361,7 +1644,7 @@ feature-off worker can drop it before the on/off-by-default call is made (§9.3 
   session-id — so without a durable attempt on the terminal activity events the keys are
   ambiguous and **nothing else can be built**. This is no longer flagged as "open": it is
   the hard gate **NOI-0** (land a durable `attempt` field on
-  `ActivityStarted/Completed/Cancelled` in `aion-core`), and NOI-4/NOI-5 (and §5.3, §6.4)
+  `ActivityStarted/Completed/Cancelled` in `aion-core`), and NOI-5/NOI-6 (and §5.3, §6.4)
   are explicitly **BLOCKED on it**.
 - **The intervention-vs-retry residual (§7.5).** The clean crux covers agent-behavioral
   interventions; state-affecting effects are deliberately excluded from agent-stdin
@@ -1407,7 +1690,7 @@ feature-off worker can drop it before the on/off-by-default call is made (§9.3 
   `PressureEnforcer` wiring is a later slice in the same pipeline.
 - **The agent-process spawn lives in USER handler code today** (norn-fan-worker), not the
   reusable runtime. Any design that only edits the example does NOT generalize — the shared
-  `spawn_agent` helper (NOI-3) is mandatory, not optional.
+  `spawn_agent` helper (NOI-4) is mandatory, not optional.
 - **Two Norn taxonomies must not be conflated.** The live `AgentEventKind` stream and the
   durable `SessionEvent` timeline overlap but differ in shape/field names
   ([events.rs:114](../../../norn/crates/norn/src/session/events.rs#L114)); the `event/*` contract
@@ -1417,11 +1700,23 @@ feature-off worker can drop it before the on/off-by-default call is made (§9.3 
   today (not in `Event`, not in the WS protocol, not in `aion-core` —
   [cluster_event.rs:23](../../../aion/crates/aion-core/src/cluster_event.rs#L23) has only a
   deferred metrics note). This is a real cross-repo build, not a UI add.
+- **The `no-norn-in-platform` invariant is enforced BY CONSTRUCTION from NOI-4 (§3A.4).** No platform
+  `Cargo.toml` has a `norn` dep and no platform `src` has a norn coupling today; the named CI gate
+  (`cargo tree` dependency-edge check across all platform crates + scoped-grep identifier check with
+  the `templates/**`/test-fixture allowlist) **lands at NOI-4 — the slice that first introduces
+  `aion-integration-norn`** — so the invariant becomes a mechanical guarantee the instant Norn code
+  can enter the repo, and every subsequent slice is guarded. The residual risk is only sequencing: if
+  NOI-4 were built without landing its gate, the invariant would hold by discipline until it did — so
+  the gate is part of NOI-4's definition-of-done, not a later slice. (NOI-8's second, observability-only
+  adapter is a *separate* concern — the empirical proof the trait is general, not the leakage guard.)
 
 ### 9.4 Transport dependency decision (LOCKED — lightest high-quality approach)
 
 **Decision: hand-roll a tiny (~120–180 LOC) JSON-RPC 2.0 framing layer over `serde_json`.
-Add ZERO new crates.** This is the lightest high-quality approach per the dep-hygiene audit:
+Add ZERO new *third-party* crates.** (The layer LIVES in the new first-party `aion-integrations`
+SDK crate as a reusable building block, §3A.2 — that is a workspace crate carrying our own code,
+not a new external dependency; the "zero new crates" claim is about the Cargo.lock package graph.)
+This is the lightest high-quality approach per the dep-hygiene audit:
 
 - `serde` + `serde_json` (1.0.150) + `tokio` + `async-trait` are ALREADY present in every
   affected workspace, so the hand-rolled layer adds **no new `[[package]]`** to any Cargo.lock —
@@ -1493,9 +1788,15 @@ agent, tees `event/*` to a **liminal channel**, and forwards commands via **limi
 **aion-server is the sequencer**, stamping a **commit-allocated `store_seq`** and writing an
 append-only **haematite `'O'`-region keyspace** per `(workflow, activity, attempt)` that is
 byte-provably disjoint from the `E`-stream replay log, while fanning out to the ops-console
-WebSocket. Shared types live as new **`aion-core`** modules (`activity_event.rs` +
+WebSocket. Shared **data types** live as new **`aion-core`** modules (`activity_event.rs` +
 `intervention.rs`, beside `cluster_event.rs`; `ts-rs`-derived for the
-console); **Norn does not depend on aion** — the worker adapter owns the translation, which is
+console), while the shared **integration surface** — the `AgentHarness` trait, the reusable
+JSON-RPC-stdio helper, capability negotiation, and envelope mapping — lives in a new first-party
+**`aion-integrations` SDK crate** (the inbound analogue of `aion-client`), and the concrete Norn
+adapter lives in **`aion-integration-norn`**, composed into the shipped `aion` binary at the
+aion-cli root (default-on `norn` feature) so Norn runs out-of-box while the platform library crates
+stay Norn-blind — the **ZERO-Norn-in-platform** invariant enforced by the `no-norn-in-platform` CI
+gate. **Norn does not depend on aion** — the adapter owns the translation, which is
 required anyway for the capability-gated **harness-agnostic** path (non-JSON-RPC harnesses fall
 back to mixed-stdout demux for observability and offer no intervention). The transport is a
 **hand-rolled ~150-LOC JSON-RPC 2.0 layer over `serde_json`, zero new crates**, lifted from
