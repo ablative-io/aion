@@ -11,7 +11,7 @@ grpc_address = "127.0.0.1:50051"    # gRPC API + worker protocol
 [store]
 backend = "haematite"               # durable ablative event store (the default)
 data_dir = "aion-data"              # haematite database directory, created on start
-# shard_count = 1                   # shards on a fresh database (default 1)
+# shard_count = 4096                 # shards on a fresh database (default 4096)
 #
 # Lightweight alternative — embedded libSQL (requires the `libsql-backend`
 # feature: build with `cargo install aion-cli --features libsql-backend`):

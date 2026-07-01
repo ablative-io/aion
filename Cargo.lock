@@ -220,7 +220,7 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite",
+ "haematite 0.4.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
  "saffron",
@@ -256,7 +256,7 @@ dependencies = [
  "dashmap",
  "fs4",
  "futures",
- "haematite",
+ "haematite 0.4.0",
  "http-body-util",
  "jsonwebtoken",
  "libsql",
@@ -307,7 +307,7 @@ dependencies = [
  "aion-store",
  "async-trait",
  "chrono",
- "haematite",
+ "haematite 0.4.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -1925,6 +1925,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "haematite"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4036b108a66180e1fcfbf8802eb570b49def7e96c41f3406d900c37314a001c"
+dependencies = [
+ "beamr",
+ "blake3",
+ "crc32fast",
+ "dashmap",
+ "log",
+ "lru",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2822,7 +2841,7 @@ dependencies = [
  "async-trait",
  "beamr",
  "chrono",
- "haematite",
+ "haematite 0.3.0",
  "jsonschema",
  "rand 0.10.1",
  "serde_json",
@@ -2854,7 +2873,7 @@ dependencies = [
  "anyhow",
  "beamr",
  "clap",
- "haematite",
+ "haematite 0.3.0",
  "liminal-rs",
  "serde",
  "serde_json",

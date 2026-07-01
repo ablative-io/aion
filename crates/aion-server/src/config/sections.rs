@@ -75,20 +75,21 @@ pub struct StoreConfig {
     /// `backend = haematite`; ignored by every other backend. The directory is
     /// opened if it already holds a haematite database, otherwise created.
     pub data_dir: Option<String>,
-    /// Number of haematite shards to create on a fresh database. Defaults to 64.
+    /// Number of haematite shards to create on a fresh database. Defaults to 4096.
     ///
     /// This is a generous, IMMUTABLE virtual-shard count: nodes own shard
     /// *ranges* and routing is `BLAKE3(key) % shard_count` with no reshard path,
     /// so a single-node deployment can later grow into a cluster WITHOUT a data
     /// migration — but only up to `shard_count` nodes, and the value is fixed at
-    /// create. 64 is chosen over a Temporal-style 512 because Aion's dominant
-    /// case is zero-config single-node, where boot probes every shard and writes
-    /// roughly one small file per shard: an empty 512-shard DB costs ~7s boot and
-    /// ~515 files, vs ~1s and ~67 files at 64, while 64 nodes is ample cluster
-    /// headroom for this workload. Set it explicitly (config or
-    /// `AION_STORE_SHARD_COUNT`) for larger clusters. Ignored by every other
-    /// backend, and ignored when opening an existing haematite database (the
-    /// on-disk shard count wins).
+    /// create. 4096 is a deliberately high ceiling: haematite (>= 0.4.0)
+    /// materializes shard actors LAZILY (spawned on first touch), so a fresh
+    /// 4096-shard database boots in ~tens of milliseconds rather than the ~24s an
+    /// eager engine would cost — the count no longer taxes zero-config
+    /// single-node first-boot, while giving effectively-unreachable cluster and
+    /// per-tenant-isolation headroom (unlike Temporal's low `numHistoryShards`
+    /// default). Set it explicitly (config or `AION_STORE_SHARD_COUNT`) to
+    /// override. Ignored by every other backend, and ignored when opening an
+    /// existing haematite database (the on-disk shard count wins).
     pub shard_count: usize,
     /// Optional distributed-cluster membership for the haematite backend (SS-2).
     ///
@@ -581,7 +582,7 @@ impl Default for StoreConfig {
             url: None,
             owned_shards: Vec::new(),
             data_dir: Some(DEFAULT_HAEMATITE_DATA_DIR.to_owned()),
-            shard_count: 64,
+            shard_count: 4096,
             cluster: None,
         }
     }

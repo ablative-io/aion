@@ -1406,8 +1406,9 @@ mod tests {
         assert_eq!(config.store.backend, StoreBackend::Haematite);
         assert_eq!(config.store.data_dir.as_deref(), Some("aion-data"));
         // Generous immutable virtual-shard default: cluster-capable without
-        // taxing single-node first-boot (see StoreConfig::shard_count docs).
-        assert_eq!(config.store.shard_count, 64);
+        // taxing single-node first-boot (lazy shard materialization, haematite
+        // >= 0.4.0; see StoreConfig::shard_count docs).
+        assert_eq!(config.store.shard_count, 4096);
         assert_eq!(config.store.url, None);
         assert_eq!(config.server.grpc_address.to_string(), "127.0.0.1:50051");
         assert_eq!(config.server.listen_address.to_string(), "127.0.0.1:8080");
