@@ -328,6 +328,56 @@ impl ServerState {
         }
     }
 
+    /// Build shared state from explicit parts with BOTH a caller-supplied
+    /// durable namespace registry AND a caller-supplied JWKS cache.
+    ///
+    /// The combined seam of [`Self::from_parts_with_namespace_store`] (seed the
+    /// durable registry the control-plane read/create paths observe) and
+    /// [`Self::from_parts_with_jwks`] (validate bearer tokens against an injected
+    /// issuer): an enumerated caller can exercise the real JWT authorization path
+    /// against a seeded registry without a full [`Self::build`] boot.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn from_parts_with_namespace_store_and_jwks(
+        namespace_resolver: NamespaceResolver,
+        runtime: RuntimeConfig,
+        namespace_store: Arc<dyn NamespaceStore>,
+        jwks_cache: JwksCache,
+    ) -> Self {
+        let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
+        Self {
+            inner: Arc::new(ServerStateInner {
+                namespace_guard: NamespaceGuard::new(namespace_resolver),
+                runtime,
+                worker_registry: ConnectedWorkerRegistry::default(),
+                pending_activities: PendingActivities::default(),
+                heartbeat_tracker,
+                drain_state: DrainState::default(),
+                metrics: None,
+                health: None,
+                activity_mock_registry: None,
+                outbox_store: None,
+                namespace_store,
+                outbox_wake: Arc::new(tokio::sync::Notify::new()),
+                cluster_publisher: crate::cluster_publisher::ClusterEventPublisher::new(
+                    Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                ),
+                cluster_self_node: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_responder: None,
+                #[cfg(feature = "haematite-backend")]
+                cluster_store: None,
+                #[cfg(feature = "haematite-backend")]
+                watched_peers: Vec::new(),
+                #[cfg(feature = "haematite-backend")]
+                shard_directory: None,
+                #[cfg(feature = "haematite-backend")]
+                request_forwarder: None,
+                jwks_cache: Some(jwks_cache),
+            }),
+        }
+    }
+
     /// Build shared state from explicit parts with a caller-supplied JWKS cache.
     ///
     /// Embedders that construct their own [`JwksCache`] (for example against a
