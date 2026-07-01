@@ -76,9 +76,9 @@ saffron = { version = "0.1", features = ["std"] }
 hostname = "0.4"
 beamr = { version = "0.11.0", features = ["json"] }
 haematite = "0.4.0"
-liminal = { package = "liminal-rs", version = "0.2.1" }
-liminal-sdk = "0.2.1"
-liminal-server = "0.2.1"
+liminal = { package = "liminal-rs", version = "0.2.2" }
+liminal-sdk = "0.2.2"
+liminal-server = "0.2.2"
 tempfile = "3.27.0"
 tokio-stream = "0.1.18"
 ts-rs = { version = "12.0.1", features = ["chrono-impl", "uuid-impl", "no-serde-warnings"] }
@@ -94,13 +94,3 @@ prometheus = "0.14.0"
 base64 = "0.22.1"
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
-
-# NOI-5b/NOI-6 tails: the live worker->server observability event bus needs the
-# `PushClient::publish` + `ConnectionNotifier::on_channel_publish` seam added to the
-# local liminal checkout (unpublished). Point the published liminal crates at the
-# local workspace so aion builds against them; drop this patch once liminal is
-# republished with the observability-drain seam.
-[patch.crates-io]
-liminal-rs = { path = "../liminal/crates/liminal" }
-liminal-sdk = { path = "../liminal/crates/liminal-sdk" }
-liminal-server = { path = "../liminal/crates/liminal-server" }
