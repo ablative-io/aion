@@ -7,7 +7,7 @@ observability + mid-run intervention control plane, slice by slice.
 - **What it is:** a complete, durable, real-time control plane for agents, built as a **general integration SDK** — Norn is just the *first* adapter, and there is **zero Norn-specific code in aion's platform crates** (mechanically enforced by the `no-norn-in-platform` CI gate).
 - **Transport:** stdio-duplex **JSON-RPC 2.0** (hand-rolled, zero new external deps). **Five neutral capability-gated intervention primitives** (`InjectMessage` / `Cancel` / `PauseResume` / `UpdateBudget` / `RespondToApproval`). Observability persists to a byte-disjoint haematite **`O`-keyspace**, never in the workflow replay log.
 
-_Last updated: 2026-07-02 — **NOI-8 landed (`7d86900a`, merged `21a90b73`); the NOI-0..8 arc is COMPLETE.** The SDK is proven general (two independent `AgentHarness` impls) with platform crates byte-unchanged. Remaining tails are the NOI-5b/NOI-6 deferrals (worker-runtime drain arm + live liminal self-registration), tracked below._
+_Last updated: 2026-07-02 — **NOI FULLY COMPLETE, including the live tails.** NOI-0..8 landed + the NOI-5b/6 tails closed (merged `f85c9707` on published liminal 0.2.2): a real deployed `aion worker serve` streams durable transcripts live and takes interventions on the self-registered session. Nothing deferred._
 
 ---
 
@@ -60,11 +60,20 @@ byte-unchanged, gate-#2 e2e spot-read + negative controls confirmed by mutation)
 COMPLETE** — a durable, real-time, harness-neutral observability + intervention control plane, proven
 general by two independent `AgentHarness` implementations.
 
-**Remaining NOI tails (deferrals, not new slices):**
-- **NOI-5b tail** — worker-runtime drain arm + the concrete liminal Channel-Publish event bus (§5.1/§9);
-  the handler-facing seam is in, real-worker-runtime durable emission depends on it.
-- **NOI-6 tail** — the liminal-worker execute path does not yet drive `spawn_agent` / self-register
-  sessions (seam + registry in place); gates operating a real running agent from the ops console live.
+**NOI tails — ✅ CLOSED (nothing deferred).** Merged to aion main `f85c9707` on published liminal
+0.2.2 (the worker→server observability-drain seam shipped in liminal-sdk/liminal-server 0.2.2).
+- **NOI-5b tail ✅** — the live worker-runtime drain arm + concrete liminal Channel-Publish event bus:
+  the liminal execute path installs a real `ActivityContext.event_sender` that drains events live (at
+  tool boundaries) → liminal → server `ActivityEventPublisher` → `O`-keyspace.
+- **NOI-6 tail ✅** — the liminal execute path drives `spawn_agent` and self-registers each session in
+  the `ControlRegistry` keyed by `(workflow, activity, attempt)`, so a pushed `InterventionRequest`
+  reaches the live `session.intervene()`.
+- **Composition root ✅** — added a real `aion worker serve` CLI subcommand (the shipped binary had no
+  worker-serve entrypoint at all) that routes through `serve_with_redial` with the composed harness;
+  also fixed a real defect (an agent-only worker advertised no activity types, so the server could
+  never select it). Gate: the live e2e over real liminal TCP asserts a transcript streams durable +
+  served MID-RUN, and a pushed InjectMessage/Cancel reaches the self-registered session. `no-norn`
+  green; platform crates stayed harness-blind.
 
 Two committed strategic design docs sit beside this one: `ZERO-CONFIG-CLUSTER-FORMATION.md` and
 `WORKER-DEPLOYMENT.md`, both gated on #146 (CSOT-1 phase-1 substrate landed on haematite main
