@@ -13,17 +13,45 @@ import {
   TableRow,
 } from '@/components/ui';
 import type { AionSocketError, ConnectionStatus, NamespaceRecord } from '@/lib/api';
+import { createConfiguredApiClient } from '@/lib/config';
 import { cn } from '@/lib/utils';
+import type { Namespace, NamespacePlacementWire } from '@/types';
 
-import { type NamespaceRegistryResult, useNamespaceRegistry } from '../hooks/useNamespaceRegistry';
+import {
+  type NamespaceQuota,
+  type NamespaceRegistryResult,
+  useNamespaceRegistry,
+} from '../hooks/useNamespaceRegistry';
+import { PlacementControl, type SetPlacement } from './PlacementControl';
+import { QuotaBadge } from './QuotaBadge';
 
 /**
- * The live namespace registry panel (Control-Plane Phase 1, S8).
+ * The live namespace registry panel (Control-Plane Phase 1 S8; Phase 2 P2-I2 +
+ * P2-Q3).
  *
  * Renders the REAL durable namespace set (loaded from `GET /namespaces/records`)
  * and appends/updates rows LIVE from the `NamespaceCreated` socket delta — no
- * refresh, no mock data. Columns: name, created, last seen, origin.
+ * refresh, no mock data. Columns: name, placement (with an operator editor),
+ * quota (a live in-flight/ceiling badge), created, last seen, origin.
+ *
+ * Placement folds a live `NamespacePlacementChanged` delta; the quota badge folds
+ * the server's periodic `NamespaceQuotaState` push. Both are socket-first: the
+ * server pushes, the client folds — never a client poll.
  */
+
+/**
+ * Set a namespace's placement through a configured, credential-bearing client
+ * scoped to THAT namespace, so the `x-aion-namespaces` grant header includes the
+ * target (the endpoint's `authorize_namespace` check needs it). In auth-off
+ * operator mode the server authorizes regardless; under real auth the caller must
+ * hold the grant, which this scoping supplies.
+ */
+function defaultSetPlacement(
+  namespace: Namespace,
+  placement: NamespacePlacementWire
+): Promise<void> {
+  return createConfiguredApiClient({ namespace }).setNamespacePlacement(namespace, placement);
+}
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
   connected: 'Live',
@@ -48,13 +76,19 @@ const ORIGIN_LABEL: Record<string, string> = {
 export type NamespaceRegistryPanelProps = {
   /** Override the hook result (tests/storybook); defaults to the live hook. */
   registry?: NamespaceRegistryResult;
+  /**
+   * Override the placement-set action (tests); defaults to the configured,
+   * credential-bearing client's `PUT /namespaces/{name}/placement`.
+   */
+  onSetPlacement?: SetPlacement;
 };
 
-export function NamespaceRegistryPanel({ registry }: NamespaceRegistryPanelProps) {
+export function NamespaceRegistryPanel({ registry, onSetPlacement }: NamespaceRegistryPanelProps) {
   // The hook is the single live source; tests inject a result instead of the
   // socket + fetch so this component stays purely presentational under test.
   const live = useNamespaceRegistry();
-  const { namespaces, loadState, loadError, status, socketError } = registry ?? live;
+  const { namespaces, quotas, loadState, loadError, status, socketError } = registry ?? live;
+  const setPlacement = onSetPlacement ?? defaultSetPlacement;
 
   return (
     <section className="flex flex-col gap-4" aria-label="Namespace registry">
@@ -63,24 +97,39 @@ export function NamespaceRegistryPanel({ registry }: NamespaceRegistryPanelProps
           <h1 className="font-semibold text-[var(--text-primary)] text-xl">Namespaces</h1>
           <p className="text-[var(--text-muted)] text-sm">
             The live durable namespace registry. New namespaces appear the moment a worker
-            registers, a workflow starts, or one is created — no refresh.
+            registers, a workflow starts, or one is created — no refresh. Placement and quota update
+            live.
           </p>
         </div>
         <ConnectionPill status={status} error={socketError} />
       </header>
 
-      <NamespaceRegistryBody namespaces={namespaces} loadState={loadState} loadError={loadError} />
+      <NamespaceRegistryBody
+        namespaces={namespaces}
+        quotas={quotas}
+        loadState={loadState}
+        loadError={loadError}
+        onSetPlacement={setPlacement}
+      />
     </section>
   );
 }
 
 type NamespaceRegistryBodyProps = {
   namespaces: NamespaceRecord[];
+  quotas: Record<string, NamespaceQuota>;
   loadState: NamespaceRegistryResult['loadState'];
   loadError: Error | null;
+  onSetPlacement: SetPlacement;
 };
 
-function NamespaceRegistryBody({ namespaces, loadState, loadError }: NamespaceRegistryBodyProps) {
+function NamespaceRegistryBody({
+  namespaces,
+  quotas,
+  loadState,
+  loadError,
+  onSetPlacement,
+}: NamespaceRegistryBodyProps) {
   if (loadState === 'loading' && namespaces.length === 0) {
     return <LoadingSkeleton />;
   }
@@ -104,15 +153,23 @@ function NamespaceRegistryBody({ namespaces, loadState, loadError }: NamespaceRe
     );
   }
 
-  return <NamespaceTable namespaces={namespaces} />;
+  return <NamespaceTable namespaces={namespaces} quotas={quotas} onSetPlacement={onSetPlacement} />;
 }
 
-function NamespaceTable({ namespaces }: { namespaces: NamespaceRecord[] }) {
+type NamespaceTableProps = {
+  namespaces: NamespaceRecord[];
+  quotas: Record<string, NamespaceQuota>;
+  onSetPlacement: SetPlacement;
+};
+
+function NamespaceTable({ namespaces, quotas, onSetPlacement }: NamespaceTableProps) {
   return (
     <Table>
       <TableHeader>
         <TableRow>
           <TableHead>Name</TableHead>
+          <TableHead>Placement</TableHead>
+          <TableHead>Quota</TableHead>
           <TableHead>Created</TableHead>
           <TableHead>Last seen</TableHead>
           <TableHead>Origin</TableHead>
@@ -122,6 +179,16 @@ function NamespaceTable({ namespaces }: { namespaces: NamespaceRecord[] }) {
         {namespaces.map((record) => (
           <TableRow key={record.name} data-namespace={record.name}>
             <TableCell className="font-medium text-[var(--text-primary)]">{record.name}</TableCell>
+            <TableCell>
+              <PlacementControl
+                namespace={record.name}
+                placement={record.placement}
+                onSetPlacement={onSetPlacement}
+              />
+            </TableCell>
+            <TableCell>
+              <QuotaBadge quota={quotas[record.name]} />
+            </TableCell>
             <TableCell className="text-[var(--text-muted)]">
               <FormattedInstant value={record.createdAt} />
             </TableCell>

@@ -11,6 +11,9 @@ export const AW_REST_CONTRACT = {
     history: '/workflows/describe',
     namespaces: '/namespaces',
     namespaceRecords: '/namespaces/records',
+    // `{name}` is substituted with the URL-encoded namespace at call time; this
+    // is the auth-scoped quorum-CAS `PUT` that sets a namespace's placement.
+    namespacePlacement: '/namespaces/{name}/placement',
     whoami: '/whoami',
     eventSearch: '/events/search',
     clusterCommand: '/cluster/command',
@@ -25,6 +28,7 @@ export const AW_REST_CONTRACT = {
     history: 'POST',
     namespaces: 'GET',
     namespaceRecords: 'GET',
+    namespacePlacement: 'PUT',
     whoami: 'GET',
     workflowsPlain: 'GET',
     workflowsCount: 'GET',

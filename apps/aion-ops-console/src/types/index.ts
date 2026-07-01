@@ -14,6 +14,7 @@ export type {
   Event,
   EventEnvelope,
   Namespace,
+  NamespacePlacementWire,
   Payload,
   RunId,
   TimerId,

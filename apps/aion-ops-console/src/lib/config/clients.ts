@@ -4,7 +4,7 @@ import { AionClusterStreamManager } from '@/lib/api/cluster-stream';
 import { AionEventWebSocketManager, type SocketCredentials } from '@/lib/api/websocket';
 import type { Namespace } from '@/types';
 
-import { buildCredentials, type OpsConsoleConfig, getOpsConsoleConfig } from './env';
+import { buildCredentials, getOpsConsoleConfig, type OpsConsoleConfig } from './env';
 
 /**
  * Single source of configured clients. Every call site that previously did a

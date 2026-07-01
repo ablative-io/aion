@@ -21,6 +21,9 @@ pub mod outbox_reconciler;
 /// Short-TTL per-namespace placement cache for the dispatcher (Control-Plane
 /// Phase 2, P2-P3).
 pub mod placement_cache;
+/// Throttled per-namespace quota-state broadcaster for the ops-console live badge
+/// (Control-Plane Phase 2, P2-Q3).
+pub mod quota_broadcast;
 /// Short-TTL per-namespace concurrency-quota cache for the dispatcher's keyed
 /// backpressure (Control-Plane Phase 2, P2-Q2).
 pub mod quota_cache;
@@ -49,6 +52,7 @@ pub use outbox_reconciler::{OutboxReconciler, OutboxReconcilerConfig};
 pub use placement_cache::{
     PlacementCache, WorkerSelection, preferred_node_order, worker_selection_for,
 };
+pub use quota_broadcast::QuotaBroadcaster;
 pub use quota_cache::QuotaCache;
 pub use registry::{
     ConnectedWorkerRegistry, WorkerDelivery, WorkerHandle, WorkerId, WorkerRegistration,
