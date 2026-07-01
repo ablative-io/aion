@@ -67,7 +67,6 @@ dependencies = [
  "aion-server",
  "aion-store",
  "aion-toolchain",
- "aion-worker",
  "anyhow",
  "chrono",
  "clap",

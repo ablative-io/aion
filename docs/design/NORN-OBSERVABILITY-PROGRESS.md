@@ -7,7 +7,7 @@ observability + mid-run intervention control plane, slice by slice.
 - **What it is:** a complete, durable, real-time control plane for agents, built as a **general integration SDK** — Norn is just the *first* adapter, and there is **zero Norn-specific code in aion's platform crates** (mechanically enforced by the `no-norn-in-platform` CI gate).
 - **Transport:** stdio-duplex **JSON-RPC 2.0** (hand-rolled, zero new external deps). **Five neutral capability-gated intervention primitives** (`InjectMessage` / `Cancel` / `PauseResume` / `UpdateBudget` / `RespondToApproval`). Observability persists to a byte-disjoint haematite **`O`-keyspace**, never in the workflow replay log.
 
-_Last updated: 2026-07-02 — **NOI FULLY COMPLETE, including the live tails.** NOI-0..8 landed + the NOI-5b/6 tails closed (merged `f85c9707` on published liminal 0.2.2): a real deployed `aion worker serve` streams durable transcripts live and takes interventions on the self-registered session. Nothing deferred._
+_Last updated: 2026-07-02 — **NOI FULLY COMPLETE, including the live tails.** NOI-0..8 landed + the NOI-5b/6 tails closed (merged `f85c9707` on published liminal 0.2.2): a real deployed worker streams durable transcripts live and takes interventions on the self-registered session. Nothing deferred. (The interim `aion worker serve` CLI shortcut that exercised these library seams has since been removed; a proper worker is a separately-built binary that installs the same `serve_with_redial` / composed-harness seams.)_
 
 ---
 
@@ -68,12 +68,15 @@ general by two independent `AgentHarness` implementations.
 - **NOI-6 tail ✅** — the liminal execute path drives `spawn_agent` and self-registers each session in
   the `ControlRegistry` keyed by `(workflow, activity, attempt)`, so a pushed `InterventionRequest`
   reaches the live `session.intervene()`.
-- **Composition root ✅** — added a real `aion worker serve` CLI subcommand (the shipped binary had no
-  worker-serve entrypoint at all) that routes through `serve_with_redial` with the composed harness;
-  also fixed a real defect (an agent-only worker advertised no activity types, so the server could
-  never select it). Gate: the live e2e over real liminal TCP asserts a transcript streams durable +
-  served MID-RUN, and a pushed InjectMessage/Cancel reaches the self-registered session. `no-norn`
-  green; platform crates stayed harness-blind.
+- **Composition root ✅** — proved the composed-harness serve path end-to-end via the
+  `serve_with_redial` library seam with the composed harness threaded in; also fixed a real defect (an
+  agent-only worker advertised no activity types, so the server could never select it). Gate: the live
+  e2e over real liminal TCP asserts a transcript streams durable + served MID-RUN, and a pushed
+  InjectMessage/Cancel reaches the self-registered session. `no-norn` green; platform crates stayed
+  harness-blind. (An interim `aion worker serve` CLI subcommand originally drove this seam as a
+  shortcut; it has since been removed — a proper worker is a separately-built binary that installs the
+  same `serve_with_redial` / composed-harness seams. The e2e still covers those library seams
+  directly.)
 
 Two committed strategic design docs sit beside this one: `ZERO-CONFIG-CLUSTER-FORMATION.md` and
 `WORKER-DEPLOYMENT.md`, both gated on #146 (CSOT-1 phase-1 substrate landed on haematite main

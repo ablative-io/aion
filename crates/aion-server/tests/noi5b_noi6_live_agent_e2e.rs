@@ -603,8 +603,8 @@ fn push_dispatch(state: &ServerState, worker_id: aion_server::worker::WorkerId) 
 }
 
 /// THE PRODUCTION-SERVE WIRING TEST (NOI-5b/NOI-6): prove the reconnect-to-survivor
-/// serve entrypoint (`serve_with_redial`) — the path the shipped `aion worker serve`
-/// composition root drives — actually INSTALLS the composed agent harness, by
+/// serve entrypoint (`serve_with_redial`) — the library seam a real worker binary
+/// installs — actually INSTALLS the composed agent harness, by
 /// serving through an EMPTY typed registry and asserting an agent dispatch still runs
 /// the live agent path (streams a transcript event) instead of failing with no
 /// handler.
@@ -643,7 +643,7 @@ async fn serve_with_redial_installs_the_composed_harness() -> Result<(), TestErr
         .subscribe(stream_key(), None);
 
     // Drive the PRODUCTION serve entrypoint with the harness bundled as an
-    // `AgentHarnessConfig` — the exact shape the `aion worker serve` composition root
+    // `AgentHarnessConfig` — the exact shape a real worker binary's composition root
     // passes — over an EMPTY typed registry (no handler for ACTIVITY_TYPE).
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop);
