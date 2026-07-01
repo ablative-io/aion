@@ -7,7 +7,7 @@ observability + mid-run intervention control plane, slice by slice.
 - **What it is:** a complete, durable, real-time control plane for agents, built as a **general integration SDK** — Norn is just the *first* adapter, and there is **zero Norn-specific code in aion's platform crates** (mechanically enforced by the `no-norn-in-platform` CI gate).
 - **Transport:** stdio-duplex **JSON-RPC 2.0** (hand-rolled, zero new external deps). **Five neutral capability-gated intervention primitives** (`InjectMessage` / `Cancel` / `PauseResume` / `UpdateBudget` / `RespondToApproval`). Observability persists to a byte-disjoint haematite **`O`-keyspace**, never in the workflow replay log.
 
-_Last updated: 2026-07-01 — NOI-5 core landed (`ac48e9f3`); transport split out as NOI-5b._
+_Last updated: 2026-07-01 — NOI-5b landed (`16d4f213`); durable transcript path wired end to end. Next: NOI-6._
 
 ---
 
@@ -25,7 +25,7 @@ Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
 | **NOI-4a** | `aion-integration-norn` adapter — first `AgentHarness` impl, drives a **real** `norn --protocol jsonrpc` process (e2e verified) | aion | ✅ | `7b80f23b` |
 | **NOI-4b** | `aion-worker` harness-blind trait-driver + `aion-cli` composition root (default-on `norn` feature) + **`no-norn-in-platform` CI gate** (proven by planted-edge negative control) | aion | ✅ | `7ef85752` |
 | **NOI-5** | Durable transcript spine **core**: byte-disjoint haematite **`O`-keyspace** + `ObservabilityStore` compare-and-append + **`ActivityEventPublisher` sequencer** (commit-allocated `store_seq`, retry loop, live tail + resume-by-seq). All negative controls green (concurrent monotonicity, failover dedup, O-vs-E replay-invisibility). | aion | ✅ | `ac48e9f3` |
-| **NOI-5b** | Transport wiring (additive on the proven core): thread `Arc<dyn ObservabilityStore>` through **all 5** `ServerState` constructors (haematite → durable `O`-keyspace impl; other backends → in-memory impl; transcript sequencer served on every boot), add the `Transcript` subscription variant (proto oneof tag 5 + `StreamedActivityEvent` frame) + **namespace-gated** `serve_transcript_socket` (reuses the per-workflow anti-leak gate; durable-tail replay + live-splice, no gap/dup), and the additive worker→server publish seam (`ActivityContext.event_sender` + `emit_event`, no-op without a seam). E2E proof green (live delivery, resume-by-`store_seq`, ephemeral-never-persisted, denial). Generated-types diff + `verify-ops-console` + `no-norn-in-platform` clean. **Deferred:** the worker-runtime drain arm + the concrete liminal Channel-Publish event bus (the §5.1/§9 spike) — the handler-facing seam is in place, the runtime→liminal→server bus lands with NOI-6's transport. | aion | ✅ | _(pending)_ |
+| **NOI-5b** | Transport wiring (additive on the proven core): thread `Arc<dyn ObservabilityStore>` through **all 5** `ServerState` constructors (haematite → durable `O`-keyspace impl; other backends → in-memory impl; transcript sequencer served on every boot), add the `Transcript` subscription variant (proto oneof tag 5 + `StreamedActivityEvent` frame) + **namespace-gated** `serve_transcript_socket` (reuses the per-workflow anti-leak gate; durable-tail replay + live-splice, no gap/dup), and the additive worker→server publish seam (`ActivityContext.event_sender` + `emit_event`, no-op without a seam). E2E proof green (live delivery, resume-by-`store_seq`, ephemeral-never-persisted, denial). Generated-types diff + `verify-ops-console` + `no-norn-in-platform` clean. **Deferred:** the worker-runtime drain arm + the concrete liminal Channel-Publish event bus (the §5.1/§9 spike) — the handler-facing seam is in place, the runtime→liminal→server bus lands with NOI-6's transport. | aion | ✅ | `16d4f213` |
 | **NOI-6** | Intervention routing: operator → server → liminal PUSH → worker → `session.intervene()` | aion | ⬜ | — |
 | **NOI-7** | Ops-console `TranscriptPanel` + `InterventionControls` (capability-gated) | aion | ⬜ | — |
 | **NOI-8** | Second observability-only adapter — the SDK **generality proof** (two implementations of one trait) | aion | ⬜ | — |
@@ -45,9 +45,10 @@ Legend: ✅ landed & green on `main` · 🔨 building · ⬜ pending
 
 ## Needs Tom (open decisions, not blocking the NOI chain)
 
-- **4096 shard default** (#169b) — held for an explicit "yes 4096" (one-way door, cross-repo).
-- **AD-012 reopen** (#150) — keep the idea / finish it / drop the WIP branch.
+- ~~**4096 shard default** (#169b)~~ — ✅ DONE: haematite 0.4.0 published, aion default → 4096 (`af4bad09`).
+- **AD-012 reopen** (#150) — ✅ decided: fold into the reopen/resume feature (Failed+Cancelled reopen + Paused resume; design done, ADR-022 namespace-auth); stale empty WIP branch to be deleted.
 - Live-in-browser verifies (#138) + the Sydney hardware demo (#118) need Tom at the keyboard.
+- **liminal republish** on haematite 0.4.0 — collapse the temporary two-version tree (awaiting Tom's crates.io publish nod).
 
 ---
 
