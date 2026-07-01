@@ -135,7 +135,21 @@ ended_at: string | null,
 /**
  * Parent workflow identifier for child-workflow executions, if the store has one.
  */
-parent: WorkflowId | null, };
+parent: WorkflowId | null, 
+/**
+ * The step (activity type) that failed, populated ONLY for a workflow whose
+ * current-lease terminal is [`Event::WorkflowFailed`] and whose failure has a
+ * terminal activity failure to attribute it to (e.g. `dev_review`). This is
+ * the workflow *step*, never a brief id or label. `None` for every
+ * healthy/running/completed/cancelled workflow, so list renderers show no
+ * empty failure column for non-failed rows.
+ */
+failed_step?: string | null, 
+/**
+ * The terminal `WorkflowFailed` error message, populated ONLY for a workflow
+ * whose current-lease terminal is [`Event::WorkflowFailed`]. `None` otherwise.
+ */
+failure_reason?: string | null, };
 
 export type SearchAttributeType = "String" | "Int" | "Float" | "Bool" | "Datetime" | "KeywordList";
 
