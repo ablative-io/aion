@@ -1,5 +1,7 @@
 //! Worker activity dispatch runtime support.
 
+/// Harness-blind trait driver (NOI-4): `spawn_agent` drives any `AgentHarness`.
+pub mod agent;
 /// Typed activity dispatch and payload conversion helpers.
 pub mod dispatch;
 /// Liminal worker transport (LSUB-1): receive pushed dispatches, execute, reply.
@@ -19,6 +21,7 @@ pub mod loop_;
 /// Dispatch-outcome reporting and runtime-channel draining.
 pub(crate) mod report;
 
+pub use agent::{ActivityEventSender, ControlReceiver, harness_error_to_outcome, spawn_agent};
 pub use dispatch::{TypedActivityDispatcher, decode_payload, encode_payload};
 #[cfg(feature = "liminal-transport")]
 pub use liminal::{DispatchRequest, DispatchResponse, LiminalActivityWorker};

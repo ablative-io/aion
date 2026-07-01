@@ -75,8 +75,8 @@ pub use runtime::liminal::{DispatchRequest, DispatchResponse, LiminalActivityWor
 #[cfg(feature = "liminal-transport")]
 pub use runtime::serve_with_redial;
 pub use runtime::{
-    ActivityDispatcher, DispatchOutcome, NoShutdown, ServeEnd, SessionHealth,
-    TypedActivityDispatcher, decode_payload, encode_payload, serve_activity_tasks,
-    serve_activity_tasks_until,
+    ActivityDispatcher, ActivityEventSender, ControlReceiver, DispatchOutcome, NoShutdown,
+    ServeEnd, SessionHealth, TypedActivityDispatcher, decode_payload, encode_payload,
+    harness_error_to_outcome, serve_activity_tasks, serve_activity_tasks_until, spawn_agent,
 };
 pub use worker::{EmptyActivitySet, Worker, WorkerBuilder, run_worker_with_session};

@@ -59,6 +59,8 @@ version = "0.8.0"
 dependencies = [
  "aion-client",
  "aion-core",
+ "aion-integration-norn",
+ "aion-integrations",
  "aion-package",
  "aion-proto",
  "aion-rs",
@@ -347,8 +349,10 @@ name = "aion-worker"
 version = "0.8.0"
 dependencies = [
  "aion-core",
+ "aion-integrations",
  "aion-proto",
  "async-trait",
+ "chrono",
  "futures",
  "hostname",
  "liminal-rs",

@@ -17,6 +17,12 @@ workspace = true
 
 [dependencies]
 aion-core = { version = "0.8.0", path = "../aion-core" }
+# The harness-integration SDK — the TRAIT ONLY (`AgentHarness`/`AgentSession`).
+# The worker drives ANY harness generically through this seam; it must NEVER
+# depend on a concrete adapter (`aion-integration-norn`) or on `norn` itself
+# (the §3A.4 no-norn-in-platform invariant). The concrete harness is injected by
+# the binary composition root (aion-cli), never named here.
+aion-integrations = { version = "0.8.0", path = "../aion-integrations" }
 aion-proto = { version = "0.8.0", path = "../aion-proto", features = ["generated"] }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
@@ -55,3 +61,5 @@ liminal-transport = ["dep:liminal-sdk", "dep:liminal"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }
+# The trait-driver tests stamp `ActivityEvent`/`InterventionCommand` timestamps.
+chrono = { workspace = true }

@@ -24,6 +24,7 @@ mod codegen;
 mod deploy;
 mod dev;
 mod generate;
+mod harness;
 mod input;
 mod inspect;
 mod new;
@@ -336,6 +337,11 @@ async fn main() -> ExitCode {
         // The server owns its own reporting contract: tracing-logged errors
         // and the operations exit codes (2 = config, 130 = forced).
         Command::Server(ref args) => {
+            // Report the agent harness composed into this binary at the root
+            // (§3A.3): the default build ships Norn out-of-box; a
+            // `--no-default-features` build reports none. The worker drives
+            // whichever harness is compiled in through the neutral trait.
+            harness::announce_composed_harness();
             // `--open` is a CLI-only nicety: resolve the served URL from the
             // effective config and, once the listener is reachable, open it in
             // the browser. Best-effort — a failure to open never blocks the run.
