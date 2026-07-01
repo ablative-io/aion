@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Boxes, Wifi, WifiOff } from 'lucide-react';
 
 import { EmptyState } from '@/components/EmptyState';
@@ -17,11 +18,13 @@ import { createConfiguredApiClient } from '@/lib/config';
 import { cn } from '@/lib/utils';
 import type { Namespace, NamespacePlacementWire } from '@/types';
 
+import { namespaceQueryKey } from '../context/NamespaceContext';
 import {
   type NamespaceQuota,
   type NamespaceRegistryResult,
   useNamespaceRegistry,
 } from '../hooks/useNamespaceRegistry';
+import { type CreateNamespace, CreateNamespaceControl } from './CreateNamespaceControl';
 import { PlacementControl, type SetPlacement } from './PlacementControl';
 import { QuotaBadge } from './QuotaBadge';
 
@@ -81,12 +84,22 @@ export type NamespaceRegistryPanelProps = {
    * credential-bearing client's `PUT /namespaces/{name}/placement`.
    */
   onSetPlacement?: SetPlacement;
+  /**
+   * Override the create action (tests); defaults to the real `POST /namespaces`
+   * via a namespace-scoped configured client.
+   */
+  onCreateNamespace?: CreateNamespace;
 };
 
-export function NamespaceRegistryPanel({ registry, onSetPlacement }: NamespaceRegistryPanelProps) {
+export function NamespaceRegistryPanel({
+  registry,
+  onSetPlacement,
+  onCreateNamespace,
+}: NamespaceRegistryPanelProps) {
   // The hook is the single live source; tests inject a result instead of the
   // socket + fetch so this component stays purely presentational under test.
   const live = useNamespaceRegistry();
+  const queryClient = useQueryClient();
   const { namespaces, quotas, loadState, loadError, status, socketError } = registry ?? live;
   const setPlacement = onSetPlacement ?? defaultSetPlacement;
 
@@ -103,6 +116,15 @@ export function NamespaceRegistryPanel({ registry, onSetPlacement }: NamespaceRe
         </div>
         <ConnectionPill status={status} error={socketError} />
       </header>
+
+      <CreateNamespaceControl
+        {...(onCreateNamespace === undefined ? {} : { onCreate: onCreateNamespace })}
+        onCreated={() => {
+          // The live row arrives via the NamespaceCreated socket delta; this only
+          // refreshes the react-query namespace list that feeds the selector.
+          void queryClient.invalidateQueries({ queryKey: namespaceQueryKey });
+        }}
+      />
 
       <NamespaceRegistryBody
         namespaces={namespaces}
