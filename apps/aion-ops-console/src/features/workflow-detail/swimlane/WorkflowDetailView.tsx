@@ -135,12 +135,10 @@ function WorkflowDetailViewContent({
   return (
     <section className="space-y-4">
       <header className="space-y-2">
-        <p className="text-[var(--text-muted)] text-sm">Namespace {namespace}</p>
+        <p className="text-muted-foreground text-sm">Namespace {namespace}</p>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-semibold text-2xl text-[var(--text-primary)]">
-              Workflow {workflowId}
-            </h1>
+            <h1 className="font-semibold text-2xl text-foreground">Workflow {workflowId}</h1>
             <StatusBadge
               isLive={isLive}
               isTerminal={isTerminal}
@@ -212,19 +210,19 @@ function FailureContextPanel({ context }: { context: ReturnType<typeof deriveFai
 
   return (
     <dl
-      className="flex flex-col gap-1 rounded-md border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 p-3 text-sm"
+      className="flex flex-col gap-1 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
       data-testid="failure-context"
     >
       {context.failedStep !== null ? (
         <div className="flex gap-2">
-          <dt className="text-[var(--text-muted)]">Failed step</dt>
-          <dd className="font-mono text-[var(--text-primary)]">{context.failedStep}</dd>
+          <dt className="text-muted-foreground">Failed step</dt>
+          <dd className="font-mono text-foreground">{context.failedStep}</dd>
         </div>
       ) : null}
       {context.failureReason !== null ? (
         <div className="flex gap-2">
-          <dt className="text-[var(--text-muted)]">Reason</dt>
-          <dd className="text-[var(--text-secondary)]">{context.failureReason}</dd>
+          <dt className="text-muted-foreground">Reason</dt>
+          <dd className="text-secondary-foreground">{context.failureReason}</dd>
         </div>
       ) : null}
     </dl>
@@ -235,7 +233,7 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (mode: ViewM
   return (
     <fieldset
       aria-label="Detail view mode"
-      className="inline-flex rounded-lg border border-[var(--border-default)] p-0.5"
+      className="inline-flex rounded-lg border border-border p-0.5"
     >
       <ToggleButton
         active={mode === 'swimlane'}
@@ -259,7 +257,7 @@ function ToggleButton({
   return (
     <Button
       aria-pressed={active}
-      className={cn('h-7 px-3 text-xs', active && 'bg-[var(--surface-hover)]')}
+      className={cn('h-7 px-3 text-xs', active && 'bg-surface-hover')}
       onClick={onClick}
       type="button"
       variant="ghost"

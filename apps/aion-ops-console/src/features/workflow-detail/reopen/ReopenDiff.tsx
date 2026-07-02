@@ -18,15 +18,12 @@ type ReopenDiffProps = {
   onReopened?: (runId: string) => void;
 };
 
-// Disposition palette. Reused/superseded reuse house tokens; "will re-run" uses a
-// literal amber because no amber token exists in index.css yet and S6 must not edit
-// that shared file — a missing var() would render transparent (a silent failure).
-const AMBER = '#f59e0b';
-
+// Disposition palette: semantic status tokens (green = preserved, amber = will
+// re-run, red = superseded), per the VISION doc's reading of the diff.
 const DISPOSITION_COLOR: Record<ReopenDisposition, string> = {
-  reused: 'var(--accent-cyan)',
-  redispatch: AMBER,
-  superseded: 'var(--destructive)',
+  reused: 'var(--status-success)',
+  redispatch: 'var(--status-warning)',
+  superseded: 'var(--status-danger)',
 };
 
 const DISPOSITION_LABEL: Record<ReopenDisposition, string> = {
@@ -74,15 +71,13 @@ export function ReopenDiff({
   return (
     <aside
       aria-label={`Reopen preview for workflow ${workflowId}`}
-      className="flex h-full w-full max-w-2xl flex-col gap-4 border-[var(--border-default)] border-l bg-[var(--card)] p-5"
+      className="flex h-full w-full max-w-2xl flex-col gap-4 border-border border-l bg-card p-5"
       data-testid="reopen-diff"
     >
       <header className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[var(--text-muted)] text-xs uppercase tracking-wide">Reopen preview</p>
-          <h2 className="font-semibold text-[var(--text-primary)] text-lg">
-            Workflow {workflowId}
-          </h2>
+          <p className="text-muted-foreground text-xs uppercase tracking-wide">Reopen preview</p>
+          <h2 className="font-semibold text-foreground text-lg">Workflow {workflowId}</h2>
         </div>
         <Button aria-label="Close reopen preview" onClick={onClose} type="button" variant="ghost">
           <X className="size-4" />
@@ -90,13 +85,13 @@ export function ReopenDiff({
       </header>
 
       {plan.reopenable ? (
-        <p className="text-[var(--text-secondary)] text-sm">
+        <p className="text-secondary-foreground text-sm">
           Reopening re-dispatches {plan.reopened.length} terminal-failed activit
           {plan.reopened.length === 1 ? 'y' : 'ies'}; the reset cursor supersedes the recorded
           failure from sequence {plan.cursorResetSeq}.
         </p>
       ) : (
-        <p className="text-[var(--text-muted)] text-sm">
+        <p className="text-muted-foreground text-sm">
           This run has no terminal-failed activity without a later success. Nothing would
           re-dispatch — reopen is not applicable.
         </p>
@@ -107,7 +102,7 @@ export function ReopenDiff({
         <DiffColumn rows={afterRows} title="After (projected)" />
       </div>
 
-      <footer className="flex flex-col gap-2 border-[var(--border-default)] border-t pt-4">
+      <footer className="flex flex-col gap-2 border-border border-t pt-4">
         <Button
           data-testid="reopen-commit"
           disabled={!plan.reopenable || namespace === null || submitState === 'submitting'}
@@ -141,7 +136,7 @@ type ReopenNoticeProps = {
 function ReopenNotice({ submitState, result, error, reopenable, namespace }: ReopenNoticeProps) {
   if (submitState === 'error' && error !== null) {
     return (
-      <p className="text-[var(--destructive)] text-xs" data-testid="reopen-error" role="alert">
+      <p className="text-destructive text-xs" data-testid="reopen-error" role="alert">
         {error.message}
       </p>
     );
@@ -149,7 +144,7 @@ function ReopenNotice({ submitState, result, error, reopenable, namespace }: Reo
   if (submitState === 'settled' && result !== null) {
     return (
       <Badge
-        className="self-start border-emerald-500/40 bg-emerald-500/10 text-emerald-500"
+        className="self-start border-success/40 bg-success-glow text-success"
         data-testid="reopen-outcome"
         variant="outline"
       >
@@ -159,20 +154,20 @@ function ReopenNotice({ submitState, result, error, reopenable, namespace }: Reo
   }
   if (!reopenable) {
     return (
-      <p className="text-[var(--text-muted)] text-xs" role="note">
+      <p className="text-muted-foreground text-xs" role="note">
         Nothing would re-dispatch — this run has no terminal-failed activity to reopen.
       </p>
     );
   }
   if (namespace === null) {
     return (
-      <p className="text-[var(--text-muted)] text-xs" role="note">
+      <p className="text-muted-foreground text-xs" role="note">
         Select a namespace to scope the reopen command.
       </p>
     );
   }
   return (
-    <p className="text-[var(--text-muted)] text-xs" role="note">
+    <p className="text-muted-foreground text-xs" role="note">
       Committing re-dispatches the failed tail; the live view reflects the run returning to Running.
     </p>
   );
@@ -186,11 +181,11 @@ type DiffColumnProps = {
 function DiffColumn({ title, rows }: DiffColumnProps) {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="font-medium text-[var(--text-secondary)] text-xs uppercase tracking-wide">
+      <h3 className="font-medium text-secondary-foreground text-xs uppercase tracking-wide">
         {title}
       </h3>
       {rows.length === 0 ? (
-        <p className="text-[var(--text-muted)] text-sm">No activities.</p>
+        <p className="text-muted-foreground text-sm">No activities.</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {rows.map((row) => (
@@ -207,7 +202,7 @@ function DiffRow({ row }: { row: ReopenActivityRow }) {
 
   return (
     <li
-      className="flex flex-col gap-1 rounded-md border border-[var(--border-default)] bg-[var(--surface-base)] p-2.5"
+      className="flex flex-col gap-1 rounded-md border border-border bg-surface-base p-2.5"
       data-disposition={row.disposition}
     >
       <div className="flex items-center gap-2">
@@ -218,22 +213,22 @@ function DiffRow({ row }: { row: ReopenActivityRow }) {
         />
         <span
           className={cn(
-            'font-mono text-[var(--text-primary)] text-sm',
-            struck && 'text-[var(--text-muted)] line-through'
+            'font-mono text-foreground text-sm',
+            struck && 'text-muted-foreground line-through'
           )}
         >
           {row.activityType ?? `activity ${row.activityId}`}
         </span>
-        <span className="ml-auto text-[var(--text-muted)] text-xs">
+        <span className="ml-auto text-muted-foreground text-xs">
           {DISPOSITION_LABEL[row.disposition]}
         </span>
       </div>
-      <div className="flex items-center gap-3 text-[var(--text-muted)] text-xs">
+      <div className="flex items-center gap-3 text-muted-foreground text-xs">
         <span>seq {row.decidedAtSeq}</span>
         {row.attempts > 0 ? <span>{row.attempts} attempt(s)</span> : null}
       </div>
       {row.failureMessage !== null && row.disposition === 'superseded' ? (
-        <p className="text-[var(--destructive)] text-xs">{row.failureMessage}</p>
+        <p className="text-destructive text-xs">{row.failureMessage}</p>
       ) : null}
     </li>
   );

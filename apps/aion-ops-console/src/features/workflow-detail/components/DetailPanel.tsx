@@ -27,7 +27,7 @@ function DetailPanel({ entry, onClose }: DetailPanelProps) {
   return (
     <aside
       aria-label={`Event detail for seq ${entry.sequence}`}
-      className="flex w-full max-w-md shrink-0 flex-col gap-4 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] p-4"
+      className="flex w-full max-w-md shrink-0 flex-col gap-4 rounded-xl border border-border bg-surface-elevated p-4"
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
@@ -35,9 +35,7 @@ function DetailPanel({ entry, onClose }: DetailPanelProps) {
             <Badge variant="outline">seq {entry.envelope.seq}</Badge>
             <Badge variant="secondary">{entry.kind}</Badge>
           </div>
-          <h2 className="break-words font-medium text-[var(--text-primary)] text-sm">
-            {entry.summary}
-          </h2>
+          <h2 className="break-words font-medium text-foreground text-sm">{entry.summary}</h2>
         </div>
         <Button
           aria-label="Close detail panel"
@@ -61,7 +59,7 @@ function DetailPanel({ entry, onClose }: DetailPanelProps) {
       </dl>
 
       <div>
-        <h3 className="mb-2 font-medium text-[var(--text-secondary)] text-xs uppercase tracking-wide">
+        <h3 className="mb-2 font-medium text-secondary-foreground text-xs uppercase tracking-wide">
           Payload
         </h3>
         <PayloadView label="Decoded payload" payload={entry.payload ?? lastEvent?.data ?? null} />
@@ -73,8 +71,8 @@ function DetailPanel({ entry, onClose }: DetailPanelProps) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-2">
-      <dt className="text-[var(--text-muted)] text-xs uppercase tracking-wide">{label}</dt>
-      <dd className="min-w-0 break-words text-right font-mono text-[var(--text-secondary)] text-xs">
+      <dt className="text-muted-foreground text-xs uppercase tracking-wide">{label}</dt>
+      <dd className="min-w-0 break-words text-right font-mono text-secondary-foreground text-xs">
         {value}
       </dd>
     </div>

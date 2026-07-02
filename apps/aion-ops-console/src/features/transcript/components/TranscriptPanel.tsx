@@ -24,9 +24,9 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
 };
 
 const STATUS_STYLES: Record<ConnectionStatus, string> = {
-  connected: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500',
-  disconnected: 'border-destructive/40 bg-destructive/10 text-destructive',
-  reconnecting: 'border-amber-500/40 bg-amber-500/10 text-amber-500',
+  connected: 'border-success/40 bg-success-glow text-success',
+  disconnected: 'border-danger/40 bg-danger-glow text-danger',
+  reconnecting: 'border-warning/40 bg-warning-glow text-warning',
 };
 
 export type TranscriptPanelProps = {
@@ -73,11 +73,11 @@ export function TranscriptPanelContent({
 
   return (
     <section
-      className="flex max-h-[70vh] min-h-0 flex-col gap-3 rounded-xl border border-[var(--border-default)] p-3"
+      className="flex max-h-[70vh] min-h-0 flex-col gap-3 rounded-xl border border-border p-3"
       data-testid="transcript-panel"
     >
       <header className="flex items-center justify-between gap-2">
-        <h2 className="font-semibold text-[var(--text-primary)] text-sm">Agent transcript</h2>
+        <h2 className="font-semibold text-foreground text-sm">Agent transcript</h2>
         <Badge
           aria-label={`Transcript ${STATUS_LABELS[status].toLowerCase()}`}
           className={cn('gap-1.5', STATUS_STYLES[status])}
@@ -88,7 +88,7 @@ export function TranscriptPanelContent({
       </header>
       {socketError === null ? null : (
         <p
-          className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 text-xs"
+          className="rounded-lg border border-warning/40 bg-warning-glow p-2 text-warning text-xs"
           data-testid="transcript-socket-error"
           role="status"
         >
@@ -96,9 +96,7 @@ export function TranscriptPanelContent({
         </p>
       )}
       {entries.length === 0 ? (
-        <p className="py-6 text-center text-[var(--text-muted)] text-sm">
-          No transcript events yet.
-        </p>
+        <p className="py-6 text-center text-muted-foreground text-sm">No transcript events yet.</p>
       ) : (
         <TranscriptList entries={entries} />
       )}

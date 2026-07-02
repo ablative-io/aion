@@ -23,9 +23,9 @@ export type NodeCardProps = {
 };
 
 const DOT_STYLE: Record<NodeLivenessState, string> = {
-  live: 'bg-[var(--accent-cyan)]',
-  dark: 'bg-[var(--destructive)]',
-  unknown: 'border border-[var(--text-muted)] bg-transparent',
+  live: 'bg-primary',
+  dark: 'bg-danger',
+  unknown: 'border border-muted-foreground bg-transparent',
 };
 
 const LABEL: Record<NodeLivenessState, string> = {
@@ -35,8 +35,8 @@ const LABEL: Record<NodeLivenessState, string> = {
 };
 
 const LABEL_COLOR: Record<NodeLivenessState, string> = {
-  live: 'var(--accent-cyan)',
-  dark: 'var(--destructive)',
+  live: 'var(--status-live)',
+  dark: 'var(--status-danger)',
   unknown: 'var(--text-muted)',
 };
 
@@ -61,16 +61,14 @@ export function NodeCard({
     <div
       className={cn(
         'flex flex-col gap-3 rounded-md border p-4 transition-colors',
-        isDark
-          ? 'border-[var(--destructive)]/40 bg-[var(--destructive)]/5 opacity-70'
-          : 'border-[var(--border-default)] bg-[var(--card)]'
+        isDark ? 'border-destructive/40 bg-destructive/5 opacity-70' : 'border-border bg-card'
       )}
       data-liveness={state}
       data-node-index={node.index}
     >
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[var(--text-primary)] text-sm">{node.label}</span>
-        <span className="font-mono text-[var(--text-muted)] text-xs">:{node.httpPort}</span>
+        <span className="font-mono text-foreground text-sm">{node.label}</span>
+        <span className="font-mono text-muted-foreground text-xs">:{node.httpPort}</span>
       </div>
 
       <div className="flex items-center gap-2">
@@ -81,34 +79,32 @@ export function NodeCard({
       </div>
 
       {state === 'unknown' ? (
-        <p className="text-[var(--text-muted)] text-xs">no health response</p>
+        <p className="text-muted-foreground text-xs">no health response</p>
       ) : null}
       {isDark && livenessError !== null ? (
-        <p className="text-[var(--destructive)] text-xs">{livenessError}</p>
+        <p className="text-destructive text-xs">{livenessError}</p>
       ) : null}
 
-      <div className="flex items-center gap-2 border-[var(--border-default)] border-t pt-2">
-        <span className="font-mono text-[var(--text-secondary)] text-sm">
-          shard {node.ownedShard}
-        </span>
+      <div className="flex items-center gap-2 border-border border-t pt-2">
+        <span className="font-mono text-secondary-foreground text-sm">shard {node.ownedShard}</span>
         {ownsActiveShard ? (
           <span
             className="font-mono text-xs"
             data-owner-marker="true"
-            style={{ color: 'var(--accent-cyan)' }}
+            style={{ color: 'var(--status-live)' }}
           >
             ◀ owner
           </span>
         ) : null}
         {preKill && node.ownedShard === 0 && !ownsActiveShard ? (
-          <span className="font-mono text-[var(--text-muted)] text-xs">pre-kill</span>
+          <span className="font-mono text-muted-foreground text-xs">pre-kill</span>
         ) : null}
       </div>
 
       {workers !== null ? (
-        <span className="font-mono text-[var(--text-secondary)] text-xs">wk: {workers}</span>
+        <span className="font-mono text-secondary-foreground text-xs">wk: {workers}</span>
       ) : (
-        <span className="font-mono text-[var(--text-muted)] text-xs" title={metricsError ?? ''}>
+        <span className="font-mono text-muted-foreground text-xs" title={metricsError ?? ''}>
           wk: —
         </span>
       )}

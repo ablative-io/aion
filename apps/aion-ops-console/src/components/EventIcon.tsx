@@ -28,42 +28,42 @@ type EventIconMetadata = {
 };
 
 const toneClasses: Record<EventIconTone, string> = {
-  neutral: 'bg-[var(--surface-hover)] text-[var(--text-muted)]',
-  success: 'bg-emerald-500/15 text-emerald-400',
-  danger: 'bg-red-500/15 text-red-400',
-  warning: 'bg-amber-500/15 text-amber-400',
-  info: 'bg-sky-500/15 text-sky-400',
+  neutral: 'bg-surface-hover text-muted-foreground',
+  success: 'bg-success-glow text-success',
+  danger: 'bg-danger-glow text-danger',
+  warning: 'bg-warning-glow text-warning',
+  info: 'bg-live-glow text-live',
 };
 
 const EVENT_ICON_METADATA: Record<EventIconKind, EventIconMetadata> = {
   lifecycle: {
     label: 'Workflow lifecycle event',
-    className: 'ring-emerald-400/20',
+    className: 'ring-success/20',
     Icon: CheckCircle2,
   },
   activity: {
     label: 'Activity event',
-    className: 'ring-violet-400/20',
+    className: 'ring-special/20',
     Icon: Activity,
   },
   timer: {
     label: 'Timer event',
-    className: 'ring-sky-400/20',
+    className: 'ring-live/20',
     Icon: Timer,
   },
   signal: {
     label: 'Signal event',
-    className: 'ring-fuchsia-400/20',
+    className: 'ring-special/20',
     Icon: Bell,
   },
   child: {
     label: 'Child workflow event',
-    className: 'ring-cyan-400/20',
+    className: 'ring-live/20',
     Icon: GitBranch,
   },
   generic: {
     label: 'Workflow event',
-    className: 'ring-zinc-400/20',
+    className: 'ring-border',
     Icon: CircleDot,
   },
 };

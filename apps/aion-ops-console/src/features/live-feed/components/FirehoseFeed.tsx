@@ -76,8 +76,8 @@ export function FirehoseFeedContent({
     <section className="space-y-4" aria-label="Live event firehose">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="font-semibold text-lg text-[var(--text-primary)]">Live firehose</h2>
-          <p className="text-[var(--text-muted)] text-sm">Namespace {namespace}</p>
+          <h2 className="font-semibold text-lg text-foreground">Live firehose</h2>
+          <p className="text-muted-foreground text-sm">Namespace {namespace}</p>
         </div>
         <ConnectionIndicatorContent error={error} status={status} />
       </header>
@@ -91,7 +91,7 @@ export function FirehoseFeedContent({
           {error.message}
         </div>
       ) : status !== 'connected' ? (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-amber-800 text-sm">
+        <div className="rounded-lg border border-warning/30 bg-warning-glow p-3 text-warning text-sm">
           {status === 'reconnecting'
             ? 'Socket dropped; reconnecting and resubscribing to the firehose.'
             : 'Live socket is disconnected.'}
@@ -107,19 +107,17 @@ export function FirehoseFeedContent({
         <ol className="space-y-2" aria-label="Firehose events">
           {events.toReversed().map((event) => (
             <li
-              className="rounded-lg border border-[var(--border-muted)] bg-[var(--surface-panel)] p-3"
+              className="rounded-lg border border-border-subtle bg-surface-elevated p-3"
               key={eventSequence(event)}
             >
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-                <span className="font-mono text-[var(--text-muted)]">
-                  seq {eventSequence(event)}
-                </span>
-                <span className="font-medium text-[var(--text-primary)]">{event.type}</span>
-                <span className="text-[var(--text-muted)]">
+                <span className="font-mono text-muted-foreground">seq {eventSequence(event)}</span>
+                <span className="font-medium text-foreground">{event.type}</span>
+                <span className="text-muted-foreground">
                   workflow {event.data.envelope.workflow_id}
                 </span>
               </div>
-              <time className="text-[var(--text-muted)] text-xs" dateTime={eventRecordedAt(event)}>
+              <time className="text-muted-foreground text-xs" dateTime={eventRecordedAt(event)}>
                 {eventRecordedAt(event)}
               </time>
             </li>

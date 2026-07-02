@@ -29,7 +29,7 @@ export function RouteError() {
         <section className="flex-1 py-6">
           <ErrorState error={error} message={message} title={title} />
           <Link
-            className="mt-4 inline-block text-[var(--accent-cyan)] text-sm underline-offset-4 hover:underline"
+            className="mt-4 inline-block text-primary text-sm underline-offset-4 hover:underline"
             to={workflowListPath}
           >
             Back to workflows

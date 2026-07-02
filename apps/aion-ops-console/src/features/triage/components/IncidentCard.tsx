@@ -18,12 +18,12 @@ type KindTone = {
 // gated classes never reach a card (the view renders them as awaiting-support
 // rows), but the map is total so a future promoted class is forced to pick a tone.
 const KIND_TONE: Record<IncidentKind, KindTone> = {
-  'workflow-failure': { rail: 'border-l-red-400/70 text-red-300', glyph: '✕' },
-  'workflow-stuck': { rail: 'border-l-amber-400/70 text-amber-300', glyph: '◷' },
-  'dead-worker': { rail: 'border-l-red-400/70 text-red-300', glyph: '☠' },
-  'outbox-failed': { rail: 'border-l-amber-400/70 text-amber-300', glyph: '⇄' },
-  'fenced-rejection': { rail: 'border-l-violet-400/70 text-violet-300', glyph: '⊘' },
-  'shard-adoption': { rail: 'border-l-sky-400/70 text-sky-300', glyph: '★' },
+  'workflow-failure': { rail: 'border-l-danger/70 text-danger', glyph: '✕' },
+  'workflow-stuck': { rail: 'border-l-warning/70 text-warning', glyph: '◷' },
+  'dead-worker': { rail: 'border-l-danger/70 text-danger', glyph: '☠' },
+  'outbox-failed': { rail: 'border-l-warning/70 text-warning', glyph: '⇄' },
+  'fenced-rejection': { rail: 'border-l-special/70 text-special', glyph: '⊘' },
+  'shard-adoption': { rail: 'border-l-live/70 text-live', glyph: '★' },
 };
 
 export function IncidentCard({ incident }: IncidentCardProps) {
@@ -31,7 +31,7 @@ export function IncidentCard({ incident }: IncidentCardProps) {
 
   return (
     <article
-      className={`flex items-center gap-4 border border-[var(--border-default)] border-l-4 ${tone.rail} bg-[var(--surface-default)] px-4 py-3`}
+      className={`flex items-center gap-4 border border-border border-l-4 ${tone.rail} bg-surface-default px-4 py-3`}
       data-incident-kind={incident.kind}
     >
       <span aria-hidden className={`font-mono text-lg ${tone.rail}`}>
@@ -39,10 +39,10 @@ export function IncidentCard({ incident }: IncidentCardProps) {
       </span>
 
       <div className="min-w-0 flex-1">
-        <p className="truncate font-medium text-[var(--text-primary)] text-sm">{incident.title}</p>
-        <p className="truncate text-[var(--text-muted)] text-xs">{incident.detail}</p>
+        <p className="truncate font-medium text-foreground text-sm">{incident.title}</p>
+        <p className="truncate text-muted-foreground text-xs">{incident.detail}</p>
         {incident.at === null ? null : (
-          <p className="text-[var(--text-muted)] text-xs">{incident.at}</p>
+          <p className="text-muted-foreground text-xs">{incident.at}</p>
         )}
       </div>
 
@@ -58,10 +58,7 @@ function IncidentAction({ incident }: { incident: Incident }) {
       : workflowDetailHref(incident.target.workflowId, incident.target.seq);
 
   return (
-    <Link
-      className="shrink-0 text-[var(--accent-cyan)] text-sm underline-offset-4 hover:underline"
-      to={href}
-    >
+    <Link className="shrink-0 text-primary text-sm underline-offset-4 hover:underline" to={href}>
       {incident.actionLabel} →
     </Link>
   );

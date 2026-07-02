@@ -13,9 +13,9 @@ const STATUS_LABELS: Record<ConnectionStatus, string> = {
 };
 
 const STATUS_STYLES: Record<ConnectionStatus, string> = {
-  connected: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500',
-  disconnected: 'border-destructive/40 bg-destructive/10 text-destructive',
-  reconnecting: 'border-amber-500/40 bg-amber-500/10 text-amber-500',
+  connected: 'border-success/40 bg-success-glow text-success',
+  disconnected: 'border-danger/40 bg-danger-glow text-danger',
+  reconnecting: 'border-warning/40 bg-warning-glow text-warning',
 };
 
 export type ConnectionIndicatorContentProps = {

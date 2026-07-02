@@ -125,8 +125,8 @@ export function NewAboveBanner({ count, onShow }: NewAboveBannerProps) {
     count === 1 ? '1 new workflow started above' : `${count} new workflows started above`;
 
   return (
-    <div className="flex items-center justify-between rounded-md border border-[var(--border-default)] bg-[var(--surface-hover)] px-3 py-2 text-sm">
-      <span className="text-[var(--text-muted)]">{label}</span>
+    <div className="flex items-center justify-between rounded-md border border-border bg-surface-hover px-3 py-2 text-sm">
+      <span className="text-muted-foreground">{label}</span>
       <Button type="button" variant="outline" size="sm" onClick={onShow}>
         Jump to top
       </Button>

@@ -28,35 +28,35 @@ export function ExactlyOnceCounter({
   overCount,
 }: ExactlyOnceCounterProps) {
   return (
-    <section className="flex flex-col items-center gap-3 rounded-md border border-[var(--border-default)] bg-[var(--card)] py-10">
-      <p className="font-medium text-[0.7rem] text-[var(--text-muted)] uppercase tracking-[0.35em]">
+    <section className="flex flex-col items-center gap-3 rounded-md border border-border bg-card py-10">
+      <p className="font-medium text-[0.7rem] text-muted-foreground uppercase tracking-[0.35em]">
         exactly once
       </p>
 
       <div className="flex items-baseline gap-4 font-mono">
-        <span aria-hidden="true" style={{ color: 'var(--accent-cyan)' }}>
+        <span aria-hidden="true" style={{ color: 'var(--status-live)' }}>
           ▶
         </span>
         <span
           className="font-bold text-7xl tracking-tight tabular-nums sm:text-8xl"
-          style={{ color: overCount ? 'var(--destructive)' : 'var(--text-primary)' }}
+          style={{ color: overCount ? 'var(--status-danger)' : 'var(--text-primary)' }}
         >
           {completed} / {arity ?? '?'}
         </span>
       </div>
 
-      <p className="text-[var(--text-muted)] text-sm">
+      <p className="text-muted-foreground text-sm">
         completed activities · zero duplicates across the kill
       </p>
 
       <div className="flex gap-2">
         {stale ? (
-          <span className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-amber-500 text-xs">
+          <span className="rounded border border-warning/40 bg-warning-glow px-2 py-0.5 text-warning text-xs">
             stale · stream not confirmed
           </span>
         ) : null}
         {overCount ? (
-          <span className="rounded border border-[var(--destructive)]/40 bg-[var(--destructive)]/10 px-2 py-0.5 text-[var(--destructive)] text-xs">
+          <span className="rounded border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-destructive text-xs">
             OVER-COUNT — contract violated
           </span>
         ) : null}

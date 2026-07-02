@@ -93,8 +93,8 @@ function relativeLabel(observedAtSeq: number, startedAt: number | null): string 
 
 const TONE_COLOR: Record<LogRow['tone'], string> = {
   event: 'var(--text-secondary)',
-  health: 'var(--destructive)',
-  adoption: 'var(--accent-cyan)',
+  health: 'var(--status-danger)',
+  adoption: 'var(--status-live)',
 };
 
 export function EventLog({ events, synthetic, startedAt }: EventLogProps) {
@@ -122,18 +122,18 @@ export function EventLog({ events, synthetic, startedAt }: EventLogProps) {
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-[var(--border-default)] bg-[var(--card)] p-4">
-      <span className="font-medium text-[0.7rem] text-[var(--text-muted)] uppercase tracking-[0.2em]">
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
+      <span className="font-medium text-[0.7rem] text-muted-foreground uppercase tracking-[0.2em]">
         event log
       </span>
 
       {rows.length === 0 ? (
-        <p className="text-[var(--text-muted)] text-sm">no events yet</p>
+        <p className="text-muted-foreground text-sm">no events yet</p>
       ) : (
         <ol className="flex flex-col gap-1 font-mono text-xs">
           {rows.map((row) => (
             <li className="flex items-baseline gap-3" key={row.id}>
-              <span className="w-14 shrink-0 text-right text-[var(--text-muted)]">
+              <span className="w-14 shrink-0 text-right text-muted-foreground">
                 {offsetFor(row)}
               </span>
               <span aria-hidden="true" style={{ color: TONE_COLOR[row.tone] }}>
@@ -142,7 +142,7 @@ export function EventLog({ events, synthetic, startedAt }: EventLogProps) {
               <span className="w-44 shrink-0" style={{ color: TONE_COLOR[row.tone] }}>
                 {row.label}
               </span>
-              <span className="truncate text-[var(--text-muted)]">{row.detail}</span>
+              <span className="truncate text-muted-foreground">{row.detail}</span>
             </li>
           ))}
         </ol>

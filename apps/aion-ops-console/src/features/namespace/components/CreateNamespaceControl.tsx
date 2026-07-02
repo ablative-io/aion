@@ -84,7 +84,7 @@ export function CreateNamespaceControl({ onCreate, onCreated }: CreateNamespaceC
 
   return (
     <form
-      className="flex flex-wrap items-end gap-2 rounded-lg border border-[var(--border-default)] p-3"
+      className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-3"
       onSubmit={submit}
       aria-label="Create namespace"
     >
@@ -99,8 +99,8 @@ export function CreateNamespaceControl({ onCreate, onCreated }: CreateNamespaceC
           aria-label="New namespace name"
           className={cn(
             'h-9 w-56 rounded-lg border bg-transparent px-3 font-mono text-sm',
-            'border-[var(--border-default)] text-[var(--text-primary)]',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]'
+            'border-border text-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
           )}
         />
       </label>
@@ -111,7 +111,7 @@ export function CreateNamespaceControl({ onCreate, onCreated }: CreateNamespaceC
         <p
           className={cn(
             'w-full text-xs',
-            feedback.kind === 'error' ? 'text-destructive' : 'text-[var(--text-muted)]'
+            feedback.kind === 'error' ? 'text-destructive' : 'text-muted-foreground'
           )}
           role={feedback.kind === 'error' ? 'alert' : 'status'}
         >

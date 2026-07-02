@@ -17,14 +17,14 @@ function ActivityGroup({ entry }: ActivityGroupProps) {
     <div>
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">{entry.status}</Badge>
-        <span className="text-[var(--text-muted)] text-sm">Activity id {entry.activityId}</span>
+        <span className="text-muted-foreground text-sm">Activity id {entry.activityId}</span>
         {entry.failures.length > 0 ? (
-          <span className="text-amber-400 text-sm">{entry.failures.length} failed attempt(s)</span>
+          <span className="text-warning text-sm">{entry.failures.length} failed attempt(s)</span>
         ) : null}
       </div>
       <Button
         aria-expanded={open}
-        className="mt-3 h-auto px-0 text-[var(--text-secondary)]"
+        className="mt-3 h-auto px-0 text-secondary-foreground"
         onClick={() => setOpen((current) => !current)}
         type="button"
         variant="ghost"
@@ -33,12 +33,12 @@ function ActivityGroup({ entry }: ActivityGroupProps) {
         Activity lifecycle details
       </Button>
       {open ? (
-        <div className="mt-3 space-y-3 rounded-lg border border-[var(--border-default)] p-3">
+        <div className="mt-3 space-y-3 rounded-lg border border-border p-3">
           <LifecycleLine label="Scheduled" present={entry.scheduled !== null} />
           <LifecycleLine label="Started" present={entry.started !== null} />
           {entry.failures.map((failure) => (
-            <div className="rounded-md bg-red-500/10 p-3" key={failure.sequence}>
-              <div className="font-medium text-red-300 text-sm">
+            <div className="rounded-md bg-danger-glow p-3" key={failure.sequence}>
+              <div className="font-medium text-danger text-sm">
                 Failed attempt {failure.attempt} at sequence {failure.sequence}
               </div>
               <PayloadView label="Failure payload" payload={failure.error} />
@@ -55,8 +55,8 @@ function ActivityGroup({ entry }: ActivityGroupProps) {
 function LifecycleLine({ label, present }: { label: string; present: boolean }) {
   return (
     <div className="flex items-center justify-between text-sm">
-      <span className="text-[var(--text-secondary)]">{label}</span>
-      <span className={present ? 'text-emerald-400' : 'text-[var(--text-muted)]'}>
+      <span className="text-secondary-foreground">{label}</span>
+      <span className={present ? 'text-success' : 'text-muted-foreground'}>
         {present ? 'seen' : 'not seen'}
       </span>
     </div>

@@ -49,19 +49,17 @@ function Scrubber({ entries, scrubSeq, onScrub }: ScrubberProps) {
   return (
     <fieldset
       aria-label="Execution scrubber"
-      className="flex items-center gap-3 rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-3"
+      className="flex items-center gap-3 rounded-xl border border-border bg-surface-elevated px-4 py-3"
     >
-      <span className="shrink-0 text-[var(--text-muted)] text-xs uppercase tracking-wide">
-        Scrub
-      </span>
+      <span className="shrink-0 text-muted-foreground text-xs uppercase tracking-wide">Scrub</span>
       <input
         aria-label="Scrub to recorded sequence"
         aria-valuetext={
           isLive ? 'Live (latest recorded sequence)' : `Sequence ${stops[activeIndex]}`
         }
         className={cn(
-          'h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-[var(--surface-hover)]',
-          'accent-[var(--accent-cyan)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-cyan)]'
+          'h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-surface-hover',
+          'accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
         )}
         max={lastIndex}
         min={0}
@@ -72,14 +70,14 @@ function Scrubber({ entries, scrubSeq, onScrub }: ScrubberProps) {
       />
       <output
         aria-live="polite"
-        className="w-28 shrink-0 text-right text-[var(--text-primary)] text-xs tabular-nums"
+        className="w-28 shrink-0 text-right text-foreground text-xs tabular-nums"
       >
         {isLive ? (
-          <span className="text-[var(--accent-cyan)]">live · seq {stops[lastIndex]}</span>
+          <span className="text-primary">live · seq {stops[lastIndex]}</span>
         ) : (
           <span>
             seq {stops[activeIndex]}{' '}
-            <span className="text-[var(--text-muted)]">of {stops[lastIndex]}</span>
+            <span className="text-muted-foreground">of {stops[lastIndex]}</span>
           </span>
         )}
       </output>

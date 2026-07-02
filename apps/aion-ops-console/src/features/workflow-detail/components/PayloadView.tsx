@@ -16,7 +16,7 @@ function PayloadView({ payload, label = 'Payload' }: PayloadViewProps) {
   const formattedPayload = stringifyPayload(payload);
 
   return (
-    <div className="mt-3 rounded-lg border border-[var(--border-default)] bg-[var(--surface-base)]">
+    <div className="mt-3 rounded-lg border border-border bg-surface-base">
       <Button
         aria-expanded={open}
         className="h-auto w-full justify-start rounded-lg px-3 py-2 text-left"
@@ -25,13 +25,13 @@ function PayloadView({ payload, label = 'Payload' }: PayloadViewProps) {
         variant="ghost"
       >
         <ChevronRight className={cn('size-4 transition-transform', open && 'rotate-90')} />
-        <span className="font-medium text-[var(--text-secondary)] text-xs uppercase tracking-wide">
+        <span className="font-medium text-secondary-foreground text-xs uppercase tracking-wide">
           {label}
         </span>
-        <span className="truncate text-[var(--text-muted)] text-sm">{payloadSummary(payload)}</span>
+        <span className="truncate text-muted-foreground text-sm">{payloadSummary(payload)}</span>
       </Button>
       {open ? (
-        <pre className="max-h-72 overflow-auto border-[var(--border-default)] border-t p-3 text-[var(--text-secondary)] text-xs leading-relaxed">
+        <pre className="max-h-72 overflow-auto border-border border-t p-3 text-secondary-foreground text-xs leading-relaxed">
           {formattedPayload}
         </pre>
       ) : null}

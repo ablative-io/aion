@@ -189,7 +189,7 @@ function FailoverViewInner({
       />
 
       {surfacedError !== null ? (
-        <p className="rounded-md border border-[var(--destructive)]/40 bg-[var(--destructive)]/5 px-4 py-2 text-[var(--destructive)] text-sm">
+        <p className="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-2 text-destructive text-sm">
           back-fill error: {surfacedError}
         </p>
       ) : null}

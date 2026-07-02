@@ -26,8 +26,8 @@ export type TranscriptEventRowProps = {
 /** How one entry renders: a short human label, its accent, and the body text. */
 type RowPresentation = { label: string; tone: string; body: string };
 
-const MUTED_TONE = 'text-[var(--text-muted)]';
-const PRIMARY_TONE = 'text-[var(--text-primary)]';
+const MUTED_TONE = 'text-muted-foreground';
+const PRIMARY_TONE = 'text-foreground';
 
 /** Presentation for a classified single event. */
 function eventPresentation(kind: ActivityEventKind): RowPresentation {
@@ -37,13 +37,13 @@ function eventPresentation(kind: ActivityEventKind): RowPresentation {
     case 'ToolCall':
       return {
         label: `Tool call · ${kind.tool}`,
-        tone: 'text-sky-500',
+        tone: 'text-live',
         body: `${kind.call_id}\n${stringify(kind.input)}`,
       };
     case 'ToolResult':
       return {
         label: 'Tool result',
-        tone: kind.is_error ? 'text-destructive' : 'text-emerald-500',
+        tone: kind.is_error ? 'text-danger' : 'text-success',
         body: `${kind.call_id}\n${stringify(kind.output)}`,
       };
     case 'Progress':
@@ -51,7 +51,7 @@ function eventPresentation(kind: ActivityEventKind): RowPresentation {
     case 'Stop':
       return {
         label: `Stop · ${kind.reason.stop}`,
-        tone: 'text-amber-500',
+        tone: 'text-warning',
         body: stopBody(kind.reason),
       };
     case 'Delta':
@@ -72,7 +72,7 @@ function rawPresentation(kind: Extract<ActivityEventKind, { kind: 'Raw' }>): Row
   if (reasoning !== null) {
     return {
       label: 'Reasoning',
-      tone: 'text-violet-500',
+      tone: 'text-special',
       body:
         reasoning.summaries.length > 0
           ? reasoning.summaries.join('\n\n')
@@ -139,10 +139,10 @@ export function TranscriptEntryRow({ entry, isNew = false }: TranscriptEntryRowP
       data-event-kind={event.kind.kind}
       data-ephemeral={event.ephemeral}
     >
-      <div className="rounded-lg border border-[var(--border-default)] bg-[var(--surface-default)] p-3">
+      <div className="rounded-lg border border-border bg-surface-default p-3">
         <div className="mb-1 flex items-center justify-between gap-2">
           <span className={`font-medium text-xs ${tone}`}>{label}</span>
-          <span className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+          <span className="flex items-center gap-2 text-[10px] text-muted-foreground">
             {event.agent_role}
             {event.ephemeral ? (
               <Badge className="h-4 px-1 text-[9px]" variant="outline">
@@ -151,7 +151,7 @@ export function TranscriptEntryRow({ entry, isNew = false }: TranscriptEntryRowP
             ) : null}
           </span>
         </div>
-        <pre className="whitespace-pre-wrap break-words font-mono text-[var(--text-primary)] text-xs">
+        <pre className="whitespace-pre-wrap break-words font-mono text-foreground text-xs">
           {body}
         </pre>
       </div>

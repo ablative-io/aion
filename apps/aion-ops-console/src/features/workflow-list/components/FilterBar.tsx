@@ -20,7 +20,7 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
   }
 
   return (
-    <div className="grid gap-3 rounded-lg border border-[var(--border-default)] p-4 md:grid-cols-4">
+    <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-4">
       <label className="flex flex-col gap-2 text-sm font-medium">
         Workflow type
         <input

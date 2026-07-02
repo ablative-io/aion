@@ -15,7 +15,7 @@ export type SearchFormProps = {
 };
 
 const FIELD_CLASS =
-  'h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus:border-[var(--text-muted)]';
+  'h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus:border-muted-foreground';
 
 /**
  * Field-aware event-search inputs (plan §4.5). All fields are optional and
@@ -39,7 +39,7 @@ export function SearchForm({
 
   return (
     <form
-      className="grid gap-3 rounded-lg border border-[var(--border-default)] p-4 md:grid-cols-3"
+      className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-3"
       onSubmit={handleSubmit}
     >
       <TextField
@@ -92,7 +92,7 @@ export function SearchForm({
           Clear
         </Button>
         {isEmpty ? (
-          <p className="text-[var(--text-muted)] text-sm">
+          <p className="text-muted-foreground text-sm">
             Set at least one field to search; an empty query is not run.
           </p>
         ) : null}

@@ -26,18 +26,18 @@ function elapsedLabel(elapsedMs: number | null): string {
  */
 export function AdoptionStrip({ oldOwnerLabel, newOwnerLabel, moment }: AdoptionStripProps) {
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-[var(--border-default)] bg-[var(--card)] p-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-center gap-3">
-        <span className="font-medium text-[0.7rem] text-[var(--text-muted)] uppercase tracking-[0.2em]">
+        <span className="font-medium text-[0.7rem] text-muted-foreground uppercase tracking-[0.2em]">
           shard 0 ownership
         </span>
         <span className="flex items-center gap-2 font-mono text-sm">
-          <span className="text-[var(--text-secondary)]">{oldOwnerLabel}</span>
-          <span aria-hidden="true" style={{ color: 'var(--destructive)' }}>
+          <span className="text-secondary-foreground">{oldOwnerLabel}</span>
+          <span aria-hidden="true" style={{ color: 'var(--status-danger)' }}>
             ──✕──▶
           </span>
           <span
-            style={{ color: newOwnerLabel === null ? 'var(--text-muted)' : 'var(--accent-cyan)' }}
+            style={{ color: newOwnerLabel === null ? 'var(--text-muted)' : 'var(--status-live)' }}
           >
             {newOwnerLabel ?? 'awaiting adoption'}
           </span>
@@ -46,14 +46,14 @@ export function AdoptionStrip({ oldOwnerLabel, newOwnerLabel, moment }: Adoption
 
       <div className="font-mono text-sm">
         {moment.adopted ? (
-          <span style={{ color: 'var(--accent-cyan)' }}>
+          <span style={{ color: 'var(--status-live)' }}>
             adopted @ {elapsedLabel(moment.elapsedMs)}
-            <span className="ml-2 text-[var(--text-muted)] text-xs">
+            <span className="ml-2 text-muted-foreground text-xs">
               {moment.degraded ? 'inferred · approximate' : 'instant'}
             </span>
           </span>
         ) : (
-          <span className="text-[var(--text-muted)]">adoption inferred — instant unavailable</span>
+          <span className="text-muted-foreground">adoption inferred — instant unavailable</span>
         )}
       </div>
     </div>

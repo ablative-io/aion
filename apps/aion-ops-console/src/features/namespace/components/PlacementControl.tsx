@@ -35,17 +35,17 @@ const KIND_META: Record<PlacementKind, { label: string; meaning: string; badge: 
   unplaced: {
     label: 'Unplaced',
     meaning: 'Default — any live worker.',
-    badge: 'text-[var(--text-muted)]',
+    badge: 'text-muted-foreground',
   },
   prefer: {
     label: 'Prefer (soft)',
     meaning: 'Prefer these nodes; spill to any live worker when absent.',
-    badge: 'border-sky-500/40 bg-sky-500/10 text-sky-500',
+    badge: 'border-live/40 bg-live-glow text-live',
   },
   pinned: {
     label: 'Pinned (hard)',
     meaning: 'Require these nodes; workers must be on the label set (isolated).',
-    badge: 'border-violet-500/40 bg-violet-500/10 text-violet-500',
+    badge: 'border-special/40 bg-special-glow text-special',
   },
 };
 
@@ -104,7 +104,7 @@ function PlacementSummary({ placement }: { placement: NamespacePlacementWire }) 
         {isPlacementKind(placement.kind) ? meta.label : placement.kind}
       </Badge>
       {placement.nodes.length > 0 ? (
-        <span className="font-mono text-[var(--text-muted)] text-xs">
+        <span className="font-mono text-muted-foreground text-xs">
           {placement.nodes.join(', ')}
         </span>
       ) : null}
@@ -168,8 +168,8 @@ function PlacementEditor({ namespace, placement, onSetPlacement, onDone }: Place
             aria-label="Node labels (comma separated)"
             className={cn(
               'h-9 rounded-lg border bg-transparent px-3 font-mono text-sm',
-              'border-[var(--border-default)] text-[var(--text-primary)]',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]'
+              'border-border text-foreground',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
             )}
           />
         ) : null}
@@ -180,7 +180,7 @@ function PlacementEditor({ namespace, placement, onSetPlacement, onDone }: Place
           Cancel
         </Button>
       </div>
-      <p className="text-[var(--text-muted)] text-xs">{KIND_META[kind].meaning}</p>
+      <p className="text-muted-foreground text-xs">{KIND_META[kind].meaning}</p>
       {error === null ? null : <p className="text-destructive text-xs">{error}</p>}
     </fieldset>
   );

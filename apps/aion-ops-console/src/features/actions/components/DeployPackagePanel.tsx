@@ -65,12 +65,12 @@ export function DeployPackagePanel({ apiClient }: DeployPackagePanelProps) {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-3 rounded-lg border border-[var(--border-default)] p-4">
+      <div className="space-y-3 rounded-lg border border-border p-4">
         <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={fileInputId}>
           Package archive (.aion)
           <input
             accept=".aion,application/octet-stream"
-            className="text-[var(--text-secondary)] text-sm file:mr-3 file:rounded-md file:border file:border-[var(--border-default)] file:bg-transparent file:px-3 file:py-1.5 file:text-[var(--text-primary)] file:text-sm"
+            className="text-secondary-foreground text-sm file:mr-3 file:rounded-md file:border file:border-border file:bg-transparent file:px-3 file:py-1.5 file:text-foreground file:text-sm"
             id={fileInputId}
             type="file"
             onChange={(event) => {
@@ -79,23 +79,21 @@ export function DeployPackagePanel({ apiClient }: DeployPackagePanelProps) {
           />
         </label>
         {selectedName === null ? null : (
-          <p className="text-[var(--text-muted)] text-sm">
-            Selected: <span className="font-mono text-[var(--text-primary)]">{selectedName}</span>
+          <p className="text-muted-foreground text-sm">
+            Selected: <span className="font-mono text-foreground">{selectedName}</span>
           </p>
         )}
         <div className="flex items-center gap-3">
           <Button disabled={!canUpload} onClick={handleUpload} type="button">
             {deploy.isPending ? 'Deploying…' : 'Deploy package'}
           </Button>
-          {readError === null ? null : (
-            <p className="text-[var(--destructive)] text-sm">{readError}</p>
-          )}
+          {readError === null ? null : <p className="text-destructive text-sm">{readError}</p>}
         </div>
         <DeployOutcome error={deploy.error} isError={deploy.isError} result={deploy.data ?? null} />
       </div>
 
       <section className="space-y-3" aria-label="Loaded versions">
-        <h3 className="font-medium text-[var(--text-primary)] text-sm">Loaded versions</h3>
+        <h3 className="font-medium text-foreground text-sm">Loaded versions</h3>
         <VersionsBody
           error={versions.error}
           isError={versions.isError}
@@ -126,8 +124,8 @@ export function DeployOutcome({ isError, error, result }: DeployOutcomeProps) {
   }
 
   return (
-    <div className="rounded-lg border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan-glow)] p-4">
-      <h3 className="font-medium text-[var(--text-primary)] text-sm">
+    <div className="rounded-lg border border-primary/40 bg-primary-glow p-4">
+      <h3 className="font-medium text-foreground text-sm">
         {result.freshlyLoaded ? 'Package deployed' : 'Already resident (idempotent)'}
       </h3>
       <dl className="mt-2 space-y-1 text-sm">
@@ -174,23 +172,15 @@ export function VersionsBody({ isError, isLoading, error, onRetry, versions }: V
       {versions.map((version) => (
         <li
           key={`${version.workflowType}:${version.contentHash}`}
-          className="flex items-center justify-between gap-4 rounded-md border border-[var(--border-default)] px-4 py-3"
+          className="flex items-center justify-between gap-4 rounded-md border border-border px-4 py-3"
         >
           <span className="flex flex-col">
-            <span className="font-medium text-[var(--text-primary)] text-sm">
-              {version.workflowType}
-            </span>
-            <span className="font-mono text-[var(--text-muted)] text-xs">
-              {version.contentHash}
-            </span>
+            <span className="font-medium text-foreground text-sm">{version.workflowType}</span>
+            <span className="font-mono text-muted-foreground text-xs">{version.contentHash}</span>
           </span>
           <span className="flex flex-col items-end text-xs">
-            <span className="text-[var(--text-muted)]">{version.manifestVersion}</span>
-            <span
-              className={
-                version.routeActive ? 'text-[var(--accent-cyan)]' : 'text-[var(--text-muted)]'
-              }
-            >
+            <span className="text-muted-foreground">{version.manifestVersion}</span>
+            <span className={version.routeActive ? 'text-primary' : 'text-muted-foreground'}>
               {version.routeActive ? 'route-active' : 'inactive'}
             </span>
           </span>
@@ -219,8 +209,8 @@ function deployErrorMessage(error: unknown): string | undefined {
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <dt className="text-[var(--text-muted)]">{label}</dt>
-      <dd className="font-mono text-[var(--text-primary)]">{value}</dd>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-mono text-foreground">{value}</dd>
     </div>
   );
 }

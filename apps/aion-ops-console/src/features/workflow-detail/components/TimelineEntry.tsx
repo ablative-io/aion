@@ -17,17 +17,15 @@ function TimelineEntry({ entry, selected = false, onSelect }: TimelineEntryProps
 
   return (
     <li className="relative flex gap-4 pb-6 last:pb-0">
-      <div className="absolute top-11 bottom-0 left-5 w-px bg-[var(--border-default)] last:hidden" />
+      <div className="absolute top-11 bottom-0 left-5 w-px bg-border last:hidden" />
       <div className="relative z-10">
         <EventIcon kind={entry.kind} tone={toneForEntry(entry)} />
       </div>
       <article
         aria-current={selected ? 'true' : undefined}
         className={cn(
-          'min-w-0 flex-1 rounded-xl border bg-[var(--surface-elevated)] p-4',
-          selected
-            ? 'border-[var(--accent-cyan)] ring-1 ring-[var(--accent-cyan)]'
-            : 'border-[var(--border-default)]'
+          'min-w-0 flex-1 rounded-xl border bg-surface-elevated p-4',
+          selected ? 'border-primary ring-1 ring-primary' : 'border-border'
         )}
       >
         <header className="flex flex-wrap items-start justify-between gap-3">
@@ -35,7 +33,7 @@ function TimelineEntry({ entry, selected = false, onSelect }: TimelineEntryProps
             className={cn(
               'min-w-0 space-y-1 text-left',
               selectable &&
-                'cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-cyan)]'
+                'cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
             )}
             disabled={!selectable}
             onClick={selectable ? () => onSelect(entry) : undefined}
@@ -43,11 +41,11 @@ function TimelineEntry({ entry, selected = false, onSelect }: TimelineEntryProps
           >
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">seq {entry.sequence}</Badge>
-              <time className="text-[var(--text-muted)] text-xs" dateTime={entry.recordedAt}>
+              <time className="text-muted-foreground text-xs" dateTime={entry.recordedAt}>
                 {formatRecordedAt(entry.recordedAt)}
               </time>
             </div>
-            <h3 className="font-medium text-[var(--text-primary)]">{entry.summary}</h3>
+            <h3 className="font-medium text-foreground">{entry.summary}</h3>
           </button>
           <Badge variant="secondary">{kindLabel(entry)}</Badge>
         </header>
@@ -71,7 +69,7 @@ function TimelineBody({ entry }: { entry: TimelineEntryModel }) {
     return (
       <div className="mt-3 space-y-3">
         <a
-          className="text-[var(--accent-cyan)] text-sm underline-offset-4 hover:underline"
+          className="text-primary text-sm underline-offset-4 hover:underline"
           href={`/workflows/${entry.childWorkflowId}`}
         >
           Open child workflow {entry.childWorkflowId}
@@ -85,7 +83,7 @@ function TimelineBody({ entry }: { entry: TimelineEntryModel }) {
     return (
       <div className="mt-3 space-y-3">
         <a
-          className="text-[var(--accent-cyan)] text-sm underline-offset-4 hover:underline"
+          className="text-primary text-sm underline-offset-4 hover:underline"
           href={`/workflows/${entry.targetWorkflowId}`}
         >
           Open target workflow {entry.targetWorkflowId}
