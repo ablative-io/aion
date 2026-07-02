@@ -2,9 +2,10 @@
 //!
 //! [`AgentHarness::start`] spawns `norn --protocol jsonrpc` with piped stdin/stdout (stderr is
 //! inherited so Norn's human logs go straight to the parent's stderr, never into the structured
-//! channel), performs the `initialize` handshake to read Norn's advertised
-//! [`InterventionCapabilities`], issues the `run/execute` request carrying the spec's input as the
-//! prompt, and hands the outstanding `run/execute` id to a [`NornSession`] whose reader pump
+//! channel), performs the `initialize` handshake — gating on the advertised
+//! `protocol: "norn-driven/1"` version and reading Norn's advertised
+//! [`InterventionCapabilities`] — issues the `run/execute` request carrying the spec's input as
+//! the prompt, and hands the outstanding `run/execute` id to a [`NornSession`] whose reader pump
 //! captures its Response as the terminal result.
 //!
 //! The harness names the `norn` binary by path but takes **no** cargo dependency on Norn: the wire
@@ -202,6 +203,11 @@ fn take_child_io(
 
 /// Sends `initialize` and reads its Response, returning the negotiated capabilities.
 ///
+/// The result is gated on `protocol: "norn-driven/1"` (inside
+/// [`translate::parse_capabilities`]): a missing or different version is a
+/// [`HarnessError::Protocol`] naming the expected and received values — the honest "your norn
+/// binary is stale" signal, raised before any run is issued.
+///
 /// The handshake is synchronous request/response before the run starts, so the pre-run reads here
 /// consume only the `initialize` Response — event notifications only begin after `run/execute`.
 async fn handshake<R, W>(
@@ -215,7 +221,7 @@ where
     let request = JsonRpcRequest::new(init_id.clone(), protocol::METHOD_INITIALIZE, None);
     connection.send_request(&request).await?;
     let result = read_response_for(connection, &init_id).await?;
-    Ok(translate::parse_capabilities(&result))
+    translate::parse_capabilities(&result)
 }
 
 /// Reads inbound frames until the Response for `expected_id` arrives, returning its `result`.

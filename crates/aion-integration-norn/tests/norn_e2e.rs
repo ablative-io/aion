@@ -10,8 +10,12 @@
 //!    [`AgentSession::events`] and translate into neutral events,
 //! 3. **an intervene reaches the child and is acked** — a neutral [`InterventionKind::InjectMessage`]
 //!    maps to `intervene/injectMessage`, reaches the running Norn agent, and its ack resolves, and
-//! 4. **`wait_result` returns the [`Payload`]** — the id-matched `run/execute` Response is captured
-//!    as the terminal activity output.
+//! 4. **`wait_result` returns the [`Payload`]** — the id-matched `run/execute` Response carries the
+//!    versioned stop envelope (`envelope_version: 1`), and the completed run's `output` VALUE (a
+//!    JSON string for this schema-less run) is captured as the terminal activity output.
+//!
+//! The handshake also gates on the `initialize` result's `protocol: "norn-driven/1"` field, so a
+//! stale `norn` binary fails `harness.start` with a protocol error rather than running.
 //!
 //! It is `#[ignore]`d because it spawns the real `norn` binary (slow), consistent with the repo's
 //! other slow e2e tests. Run it explicitly:
@@ -191,15 +195,20 @@ async fn norn_harness_drives_a_real_run_end_to_end() {
     // Drop the events stream so the pump stops forwarding; the terminal result is read next.
     drop(events);
 
-    // (4) wait_result returns the Payload — the id-matched run/execute Response.
+    // (4) wait_result returns the Payload — the id-matched run/execute Response's stop envelope,
+    //     interpreted by the adapter: a completed schema-less run yields the `output` VALUE, a
+    //     JSON string carrying the agent's final text (here the mock provider's canned reply).
     let payload = tokio::time::timeout(Duration::from_secs(30), session.wait_result())
         .await
         .expect("wait_result must resolve within the timeout")
         .expect("wait_result returns the terminal payload");
     assert_eq!(payload.content_type(), &ContentType::Json);
     let decoded = payload.to_json().expect("the result payload is JSON");
+    let text = decoded.as_str().unwrap_or_else(|| {
+        panic!("a schema-less completed run's output is a JSON string, got {decoded}")
+    });
     assert!(
-        decoded.get("result").is_some() || decoded.get("output").is_some(),
-        "the run/execute result envelope carries the activity output: {decoded}"
+        text.contains("hello from the mock provider"),
+        "the output carries the agent's final text: {text}"
     );
 }

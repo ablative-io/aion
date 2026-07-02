@@ -220,8 +220,19 @@ fn response_into_ack(response: JsonRpcResponse) -> Result<(), HarnessError> {
 
 /// Interprets a `run/execute` Response as the terminal [`Payload`].
 ///
-/// A success `result` is captured as a JSON [`Payload`] (the replay-authoritative activity
-/// output); an error object surfaces as [`HarnessError::Harness`].
+/// The success `result` is Norn's versioned stop envelope (`envelope_version: 1`), interpreted by
+/// [`translate::run_result_to_output`]:
+///
+/// - `stop.reason == "completed"` → the neutral [`Payload`] is the envelope's `output` VALUE
+///   serialized as JSON (a JSON string for schema-less runs; the JSON object itself when Norn ran
+///   with an output schema — never stringified twice),
+/// - any other `stop.reason` → [`HarnessError::Harness`] carrying the whole `stop` object (reason
+///   + per-variant detail) verbatim, so the caller can judge retry,
+/// - a `null` result (a prompt that resolved entirely to a local slash command) →
+///   [`HarnessError::Harness`] — an agent activity must produce output,
+/// - a non-envelope result → [`HarnessError::Protocol`] naming what was missing.
+///
+/// An error object on the Response surfaces as [`HarnessError::Harness`].
 fn response_into_payload(response: JsonRpcResponse) -> Result<Payload, HarnessError> {
     if let Some(error) = response.error {
         return Err(HarnessError::harness(format!(
@@ -229,11 +240,21 @@ fn response_into_payload(response: JsonRpcResponse) -> Result<Payload, HarnessEr
             error.code, error.message
         )));
     }
-    let result = response.result.ok_or_else(|| {
-        HarnessError::protocol("run/execute response carried neither result nor error")
-    })?;
-    let bytes = serde_json::to_vec(&result).map_err(|source| {
-        HarnessError::protocol(format!("run result is not encodable: {source}"))
+    // Per the driven-mode contract a prompt that resolves entirely to a local slash command is
+    // answered with a success Response whose `result` is null. On this transport a JSON `null`
+    // result and an absent one both decode to `None` (and per JSON-RPC a response carries exactly
+    // one of result/error), so both land here.
+    let result = match response.result {
+        None | Some(serde_json::Value::Null) => {
+            return Err(HarnessError::harness(
+                "run resolved to a local slash command; no output",
+            ));
+        }
+        Some(result) => result,
+    };
+    let output = translate::run_result_to_output(&result)?;
+    let bytes = serde_json::to_vec(&output).map_err(|source| {
+        HarnessError::protocol(format!("run output is not encodable: {source}"))
     })?;
     Ok(Payload::new(ContentType::Json, bytes))
 }
@@ -316,6 +337,37 @@ mod tests {
         )
     }
 
+    /// A `run/execute` success result in the versioned stop-envelope shape a completed run
+    /// carries (the fields beyond `envelope_version`/`stop`/`output` are realistic passengers).
+    fn completed_envelope(output: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "envelope_version": 1,
+            "stop": { "reason": "completed" },
+            "output": output,
+            "usage": { "input_tokens": 12, "output_tokens": 3 },
+            "model": "mock-model",
+            "session_id": "step-042",
+            "events": [],
+            "diagnostics": [],
+        })
+    }
+
+    /// A non-completed stop envelope with the given internally-tagged `stop` object.
+    fn stopped_envelope(stop: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "envelope_version": 1,
+            "stop": stop,
+            "output": null,
+            "model": "mock-model",
+            "session_id": "step-042",
+        })
+    }
+
+    /// Runs [`response_into_payload`] on a success Response carrying `result`.
+    fn payload_of(result: serde_json::Value) -> Result<Payload, HarnessError> {
+        response_into_payload(JsonRpcResponse::success(JsonRpcId::number(1), result))
+    }
+
     fn inject_command() -> InterventionCommand {
         InterventionCommand {
             workflow_id: WorkflowId::new(Uuid::nil()),
@@ -371,7 +423,7 @@ mod tests {
         // Close the run so wait_result completes and the stream ends.
         peer.send_response(&JsonRpcResponse::success(
             run_id,
-            json!({ "result": "completed" }),
+            completed_envelope(&json!("all done")),
         ))
         .await
         .unwrap();
@@ -393,14 +445,14 @@ mod tests {
         // Only the id-matched run/execute Response is the result.
         peer.send_response(&JsonRpcResponse::success(
             run_id,
-            json!({ "output": { "answer": 7 }, "result": "completed" }),
+            completed_envelope(&json!({ "answer": 7 })),
         ))
         .await
         .unwrap();
 
         let payload = session.wait_result().await.unwrap();
         let decoded = payload.to_json().unwrap();
-        assert_eq!(decoded["output"]["answer"], json!(7));
+        assert_eq!(decoded, json!({ "answer": 7 }));
     }
 
     #[tokio::test]
@@ -500,11 +552,108 @@ mod tests {
         // Now the real result.
         peer.send_response(&JsonRpcResponse::success(
             run_id,
-            json!({ "result": "completed" }),
+            completed_envelope(&json!("the real result")),
         ))
         .await
         .unwrap();
         let payload = session.wait_result().await.unwrap();
-        assert_eq!(payload.to_json().unwrap()["result"], json!("completed"));
+        assert_eq!(payload.to_json().unwrap(), json!("the real result"));
+    }
+
+    // --- response_into_payload: the stop-envelope branches ---
+
+    #[test]
+    fn completed_string_output_is_the_json_string_payload() {
+        // A schema-less run's output is a string: the payload is that VALUE serialized as JSON —
+        // one layer of quoting, never stringified twice.
+        let payload = payload_of(completed_envelope(&json!("the final answer"))).unwrap();
+        assert_eq!(payload.content_type(), &ContentType::Json);
+        assert_eq!(payload.to_json().unwrap(), json!("the final answer"));
+    }
+
+    #[test]
+    fn completed_structured_output_passes_through_as_the_object() {
+        // With an output schema, `output` is the validated JSON object: it passes through as-is.
+        let output = json!({ "verdict": "pass", "notes": ["a", "b"] });
+        let payload = payload_of(completed_envelope(&output)).unwrap();
+        assert_eq!(payload.to_json().unwrap(), output);
+    }
+
+    #[test]
+    fn each_non_completed_stop_reason_surfaces_with_its_detail_verbatim() {
+        // Every non-completed reason is a harness error whose message carries the reason AND its
+        // per-variant detail fields — the caller judges retry on that text.
+        let cases: Vec<(serde_json::Value, Vec<&str>)> = vec![
+            (
+                json!({ "reason": "schema_unreachable", "attempts": 3,
+                        "validation_errors": ["missing field `verdict`"] }),
+                vec![
+                    "schema_unreachable",
+                    "attempts",
+                    "3",
+                    "validation_errors",
+                    "missing field `verdict`",
+                ],
+            ),
+            (
+                json!({ "reason": "max_iterations" }),
+                vec!["max_iterations"],
+            ),
+            (
+                json!({ "reason": "timed_out", "elapsed_ms": 300_000, "iterations": 12 }),
+                vec!["timed_out", "elapsed_ms", "300000", "iterations", "12"],
+            ),
+            (json!({ "reason": "cancelled" }), vec!["cancelled"]),
+            (
+                json!({ "reason": "truncated", "truncation": "max_tokens", "iterations": 2 }),
+                vec!["truncated", "truncation", "max_tokens", "iterations", "2"],
+            ),
+        ];
+        for (stop, fragments) in cases {
+            let error = payload_of(stopped_envelope(&stop)).unwrap_err();
+            assert!(
+                matches!(error, HarnessError::Harness { .. }),
+                "a non-completed stop is a harness error, got {error:?}"
+            );
+            let message = error.to_string();
+            for fragment in fragments {
+                assert!(
+                    message.contains(fragment),
+                    "stop {stop} must surface `{fragment}` verbatim, got: {message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn null_result_is_the_slash_command_harness_error() {
+        // A prompt that resolves entirely to a local slash command is answered with a success
+        // Response whose result is JSON null — an agent activity must produce output.
+        let response: JsonRpcResponse =
+            serde_json::from_value(json!({ "jsonrpc": "2.0", "id": 1, "result": null })).unwrap();
+        let error = response_into_payload(response).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Harness { .. }),
+            "a null result is a harness error, got {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "harness reported failure: run resolved to a local slash command; no output"
+        );
+    }
+
+    #[test]
+    fn non_envelope_result_is_a_protocol_error_never_a_silent_passthrough() {
+        // The pre-envelope result shape must be rejected naming what was missing.
+        let error = payload_of(json!({ "result": "completed", "output": "x" })).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Protocol { .. }),
+            "an unknown result shape is a protocol error, got {error:?}"
+        );
+        assert!(error.to_string().contains("envelope_version"));
+
+        let error = payload_of(json!({ "envelope_version": 1, "output": "x" })).unwrap_err();
+        assert!(matches!(error, HarnessError::Protocol { .. }));
+        assert!(error.to_string().contains("`stop`"));
     }
 }
