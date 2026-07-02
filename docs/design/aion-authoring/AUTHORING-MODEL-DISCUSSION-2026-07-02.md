@@ -2,7 +2,7 @@
 type: discussion
 cluster: aion-authoring
 title: Authoring model — architecture discussion & open questions (2026-07-02)
-status: OPEN — Tom "still not totally convinced"; resume next session
+status: OPEN — converging; see Addendum (types-first verified feasible, top-down scaffolding + file inputs settled, syntax flavour = the main remaining call)
 related:
   - ./DESIGN.md                              # the aion-authoring cluster design (ADR-014)
   - ./COMPETITIVE-RESEARCH-2026-07-02.md     # 24-engine landscape + Aion proposal
@@ -180,6 +180,76 @@ These are safe, additive, and unblock everything else:
   workflow needs no separate worker; the primitive + stored body already exist.
 - **Put the `aion new agent` scaffold on the generated path** — today it's a static
   template, so new users get the worst experience.
+
+## Addendum — later session, 2026-07-02 (post-compaction continuation)
+
+The conversation resumed and moved several open items. Newly established:
+
+1. **The "multi-quarter Gleam type reader" objection is dead.** `gleam export
+   package-interface` (verified against `examples/order-saga`) emits machine-readable
+   JSON with every public function's parameter/return types AND every type's
+   constructors with field names/types. The compiler does the type-reading; types-first
+   codegen needs no hand-written parser. This resolves the ADR-014 contradiction in
+   favour of **types-first**; `schemas/*.json` becomes a *generated* artifact (emitted
+   for external reference — agents, HTTP clients, docs), never authored.
+2. **"The `.aion` file IS the canonical model."** Because the DSL is declarative and
+   closed, parsing it yields the exact graph and printing the graph yields the file
+   back. The visual editor is another *editor of the same file* (Windmill-style clean
+   diffs) — no surface↔surface sync protocol. Gleam-authored workflows remain the
+   full-power tier, view-only graph rendering later. This dissolves the "fast cut vs
+   canonical-model (quarters)" fork from Open Question 2.
+3. **Top-down scaffold-first authoring is a peer to code-first** (Tom's flow): sketch
+   the workflow + shapes first, `aion check` reports not-implemented actions,
+   `aion scaffold <action> [--rust --worker <name>]` generates typed stubs (in-VM Gleam
+   default; Rust/Python worker structs + handler skeletons generated FROM the contract).
+   Generation always flows contract → worker. Options later for add-to-existing-worker
+   vs new worker, and saved scaffold templates.
+4. **File/directory inputs** (kills the "cat JSON into the workflow" inelegance):
+   structured inputs (`brief: Brief` ← `--input brief=./brief.json`) are parsed +
+   validated by the CLI at start and embedded in history; bulk inputs (`File`/`Dir` ←
+   `--input corpus=./sources/`) are snapshotted into the **haematite content-addressed
+   store** and the workflow receives a durable hash handle — replay-safe (immutable),
+   cross-node safe (fetch by hash), size-safe (history stores a hash, not megabytes).
+   The workflow never does I/O; the boundary and the actions do.
+5. **Syntax flavour exploration** → `syntax-sketches/` (new folder): the same workflow
+   (fan-out + retry + durable gate + timeout + diamond revision + compensation) rendered
+   in JS-lookalike, YAML, canonical JSON, Nix-flavour, Gleam/Elixir pipes — and, after
+   Tom's decisive constraint, **F: a real-TypeScript subset**.
+6. **The AI-authorship constraint (Tom) reset the syntax verdict.** The primary workflow
+   authors will be AI agents; a bespoke lookalike syntax gives LLMs plausible-but-wrong
+   priors ("we want the syntax, not the language"). TOML was evaluated and rejected
+   (YAML's wounds + nesting hostility). **New lean — sketch F:** the workflow file IS
+   TypeScript — parsed by a real TS parser, typechecked by `tsc` against a `.d.ts`
+   generated from the action contracts, subset-enforced, **statically extracted, never
+   executed** (no Node runtime; the engine still runs Gleam; determinism stays
+   by-construction). Correct priors for AI authors, tsc diagnostics as the
+   self-correction loop, free editor tooling. Precedents: AssemblyScript, Encore.ts.
+   Second AI lane: the canonical JSON + schema means agents with structured output can
+   author the graph directly (syntactically-invalid output impossible), rendered to the
+   `.ts` surface for human review. Starlark noted as Python-shaped runner-up.
+
+7. **Tom's aesthetic steer reset the verdict again → sketch G (step document).** He
+   doesn't love TS as the surface ("we want the syntax, not the language" — meaning a
+   *document*, not a program): define the types/schemas, then lay out the control flow
+   as a described step sequence, "borderline almost like markdown." Three independent
+   pulls toward the document shape (the TOML question, "the YAML thing comes across so
+   cleanly", the markdown instinct). **Sketch G keeps flavour B's document shape and
+   fixes its three wounds by designing the format:** (1) one tiny familiar expression
+   grammar in designated fields (`do:`/`when:`/`finish:`), typechecked by `aion check`
+   against the contracts; (2) `when:` + `as:` conditional REBINDING kills the switch
+   contortion; (3) calls look like calls (bare names = references, quotes = strings).
+   Real YAML carrier (standard parsers/editors/JSON Schema). For a *data* format the
+   AI-drift risk mostly evaporates (schema validation / constrained decoding) — G is the
+   safest AI-authoring surface of all flavours. `about:` prose per step is load-bearing:
+   canvas labels, `aion doc` markdown render, and **live ops-console narration of a
+   running workflow** (NOI fit). Fan-out bodies are one call (multi-step per item = a
+   child workflow — keeps documents flat). F stays compatible as a later code-first
+   VIEW via the canonical model ("multiple languages to work from"). Nobody ever edits
+   the generated Gleam — compiler-output status.
+
+Still open after the addendum: Tom's read of sketch G; the expression micro-grammar's
+exact boundary; `on failure:` shape for multi-step compensation; `types:` inline vs
+sibling file in the scaffold; step-name canonical form (spaces vs snake_case).
 
 ## Also captured (not this conversation, but adjacent)
 `COMPETITIVE-RESEARCH-2026-07-02.md` — an 11-agent sweep over 24 engines
