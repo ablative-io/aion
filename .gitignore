@@ -37,3 +37,6 @@ __pycache__
 .meridian/worksites/
 .claude/
 aion.db
+
+# Testing
+aion-data/
