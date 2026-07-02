@@ -19,12 +19,10 @@
 //// the parent workflow and is independently dispatchable as its own `[[workflow]]`
 //// entry (open question Q6).
 
-import aion/codec
 import aion/duration
 import aion/query
 import aion/workflow
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 import gleam/int
 import {{name}}/activities
 import {{name}}/codecs_workflows
@@ -61,37 +59,15 @@ pub fn definition() -> workflow.WorkflowDefinition(
 
 /// Engine entry point for one child execution.
 ///
-/// The runtime delivers the start input as a raw JSON string. Success and
-/// failure are both encoded back to JSON text here: the engine records these
-/// exact payloads as the child terminal, and the awaiting parent decodes
-/// them with the same codecs `{{name}}/codecs_workflows` exports.
+/// The runtime delivers the start input as a raw JSON string;
+/// `workflow.entrypoint` decodes it with the definition's input codec, drives
+/// `execute`, and encodes the outcome back to JSON text. The engine records
+/// those exact payloads as the child terminal, and the awaiting parent decodes
+/// them with the same codecs `{{name}}/codecs_workflows` exports. An
+/// undecodable input records the SDK's documented
+/// `{"aion_error":"input_decode",...}` envelope as the failure payload.
 pub fn run(raw_input: Dynamic) -> Result(String, String) {
-  case decode.run(raw_input, decode.string) {
-    Ok(raw_json) ->
-      case codecs_workflows.dev_flow_input_codec().decode(raw_json) {
-        Ok(input) ->
-          case execute(input) {
-            Ok(output) ->
-              Ok(codecs_workflows.dev_flow_result_codec().encode(output))
-            Error(dev_flow_error) ->
-              Error(codecs_workflows.dev_flow_error_codec().encode(dev_flow_error))
-          }
-        Error(codec.DecodeError(reason: reason, path: _)) ->
-          Error(
-            codecs_workflows.dev_flow_error_codec().encode(DevFlowStageFailed(
-              stage: "decode_input",
-              message: "failed to decode dev child input: " <> reason,
-            )),
-          )
-      }
-    Error(_) ->
-      Error(
-        codecs_workflows.dev_flow_error_codec().encode(DevFlowStageFailed(
-          stage: "decode_input",
-          message: "dev child input payload was not a string",
-        )),
-      )
-  }
+  workflow.entrypoint(definition(), raw_input)
 }
 
 /// Typed workflow body: concurrent start-up, then the bounded verify-fix

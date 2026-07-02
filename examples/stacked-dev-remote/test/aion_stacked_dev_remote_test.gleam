@@ -21,7 +21,6 @@ import gleam/option
 import gleam/string
 import gleeunit
 import gleeunit/should
-import stacked_dev_remote as stacked_dev
 import stacked_dev/activities
 import stacked_dev/codecs_brief
 import stacked_dev/codecs_flow
@@ -39,6 +38,7 @@ import stacked_dev/types.{
   StackedDevInput, StackedDevStatus, VerdictApproved, VerifyExhausted, Workspace,
   Worktree,
 }
+import stacked_dev_remote as stacked_dev
 import support/fixtures
 import support/shims
 
@@ -186,6 +186,10 @@ pub fn full_pipeline_happy_path_approves_first_round_test() {
   result.build_warm.ok |> should.be_true
   result.verify_rounds |> should.equal(1)
   result.review_rounds |> should.equal(1)
+  // The success-path teardown outcome is surfaced on the result, never
+  // swallowed: the local teardown removed the worktree, so cleaned rides
+  // through as True.
+  result.workspace_cleaned |> should.be_true
 
   // Provisioning is two real yg verbs: add the branch, then provision it.
   shims.invocations(shim_set, "yg", "branch add") |> should.equal(1)

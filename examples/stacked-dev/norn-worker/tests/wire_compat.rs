@@ -12,10 +12,10 @@ use std::fmt::Debug;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use stacked_dev_worker::dispatch::{
+use stacked_dev_worker_norn::dispatch::{
     BriefOutcome, DispatchError, DispatchInput, DispatchResult, StackedDevError,
 };
-use stacked_dev_worker::types::{
+use stacked_dev_worker_norn::types::{
     AcceptanceVerdict, Alignment, AssembleInput, AssembledWave, Attestation, BriefDevInput,
     BriefDevResult, BriefDocument, BriefRequirement, BuildWarm, ChangeKind, CheckResult,
     CheckVerdict, ChecklistClaim, Claim, DevBlock, DevEnrichment, DevInput, DevReport, DevResult,

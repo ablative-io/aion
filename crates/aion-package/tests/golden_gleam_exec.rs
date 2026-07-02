@@ -1,19 +1,20 @@
 //! Executes a generated wire-compat golden against a real `gleam test`, proving
-//! the golden's schema-derived literal is byte-exact what `gleam_json` produces
+//! the golden's type-derived literal is byte-exact what `gleam_json` produces
 //! on the Erlang target for the risky value shapes — a Float (`0.0`, never `0`),
 //! an optional field omitted from the wire, an enum rendered as its first
 //! variant's wire string, and a nested record — none of which the all-`String`/
 //! `Int` `examples/order-saga` golden ever exercises (checklist C3).
 //!
-//! The generator (`activity_golden.rs`) derives both the canonical Gleam sample
-//! and the expected JSON literal from the schema, so the only thing that can
-//! make this fail is a genuine disagreement between the derived literal and real
-//! `gleam_json`. That disagreement is exactly what this test exists to catch:
-//! the Rust `.contains()` unit tests prove the generator's *intent*, this proves
-//! the *output* survives a round-trip through `gleam_json` on the BEAM.
-//!
-//! The whole thing is driven through the `aion_package` library API — never the
-//! `aion` binary — so it builds even while the `aion-cli` crate is mid-edit.
+//! Types-first: the risky shapes are AUTHORED as Gleam types appended to the
+//! example's types module, the real compiler exports the package interface,
+//! and the whole pipeline (interface → model → codecs module → emitted
+//! schemas → wrappers/golden) runs through the `aion_package` library API —
+//! never the `aion` binary — before `gleam test` executes the golden. The
+//! generator derives both the canonical Gleam sample and the expected JSON
+//! literal from the same model the codecs come from, so the only thing that
+//! can make this fail is a genuine disagreement between the derived literal
+//! and real `gleam_json`. A second leg deletes every generated file and
+//! regenerates, asserting the round-trip is byte-identical.
 //!
 //! Per project policy this never uses `#[ignore]`: when the `gleam` toolchain is
 //! absent it logs a skip line and returns `Ok(())`; when `gleam` is present it
@@ -24,42 +25,49 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aion_package::{
-    ActivityDeclaration, CodegenMode, Tier, codegen_project, generate_activities, generate_codecs,
+    ActivityDeclaration, CodegenMode, Tier, boundary_types_from_interface, emit_schemas,
+    generate_activities, generate_codecs,
 };
 
 type TestError = Box<dyn std::error::Error>;
 
-/// The schema that exercises every risky wire shape in one type, used as the
-/// input of the `golden_probe` activity. Its stem `golden_input` yields the
-/// root record `GoldenInput`, the nested record `GoldenInputLine`, and the enum
-/// `GoldenInputKind`.
+/// The authored Gleam types that exercise every risky wire shape in one value
+/// type, appended to the example's types module and used as the input of the
+/// `golden_probe` activity.
 ///
-/// - `ratio` (`number`, required) → a `Float`, whose zero value is `0.0` (the
-///   shape order-saga never has — its only numbers are `integer`).
-/// - `line` (nested `object`, required) → the record `GoldenInputLine`, whose
-///   wire literal is a nested `{...}` object.
-/// - `kind` (string `enum`, required) → `GoldenInputKind`, whose sample is the
-///   first variant and whose literal is that variant's wire string.
-/// - `note` (`string`, *not* required) → an `option.Option(String)` whose
-///   sample is `option.None` and is omitted from the wire literal entirely.
-const GOLDEN_INPUT_SCHEMA: &str = r#"{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "required": ["ratio", "line", "kind"],
-  "additionalProperties": false,
-  "properties": {
-    "ratio": { "type": "number" },
-    "line": {
-      "type": "object",
-      "required": ["sku"],
-      "additionalProperties": false,
-      "properties": { "sku": { "type": "string" } }
-    },
-    "kind": { "type": "string", "enum": ["standard", "rush"] },
-    "note": { "type": "string" }
-  }
+/// - `ratio: Float` (required) → a `Float`, whose zero value is `0.0` (the
+///   shape order-saga never has — its only numbers are `Int`).
+/// - `line: GoldenInputLine` (required) → a nested record, whose wire literal
+///   is a nested `{...}` object.
+/// - `kind: GoldenInputKind` (required) → an enum, whose sample is the first
+///   variant and whose literal is that variant's wire string (the type-name
+///   prefix stripped: `GoldenInputKindStandard` → `"standard"`).
+/// - `note: option.Option(String)` → an optional field whose sample is
+///   `option.None` and is omitted from the wire literal entirely.
+const GOLDEN_INPUT_TYPES: &str = r"
+import gleam/option
+
+/// Wire-shape probe input for the golden gate.
+pub type GoldenInput {
+  GoldenInput(
+    ratio: Float,
+    line: GoldenInputLine,
+    kind: GoldenInputKind,
+    note: option.Option(String),
+  )
 }
-"#;
+
+/// Nested record on the probe input.
+pub type GoldenInputLine {
+  GoldenInputLine(sku: String)
+}
+
+/// Enum on the probe input.
+pub type GoldenInputKind {
+  GoldenInputKindStandard
+  GoldenInputKindRush
+}
+";
 
 /// The hand-written stub body the generated `golden_probe` wrapper references
 /// via `activities.golden_probe`. It never executes during `gleam test` (the
@@ -191,6 +199,27 @@ fn run_gleam_test(project: &Path) -> Result<(bool, String), TestError> {
     Ok((output.status.success(), combined))
 }
 
+/// Runs `gleam export package-interface` in `project` and returns the JSON.
+/// The staged example compiles as committed (the appended probe types are
+/// additive), so no rename-aside dance is needed here.
+fn export_interface(project: &Path) -> Result<Vec<u8>, TestError> {
+    let out = project.join("build/test-interface.json");
+    let output = Command::new("gleam")
+        .args(["export", "package-interface", "--out"])
+        .arg(&out)
+        .current_dir(project)
+        .output()
+        .map_err(|error| format!("failed to spawn `gleam export package-interface`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`gleam export package-interface` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(fs::read(&out)?)
+}
+
 #[test]
 fn generated_golden_passes_real_gleam_test_for_float_optional_enum_and_nested()
 -> Result<(), TestError> {
@@ -204,13 +233,12 @@ fn generated_golden_passes_real_gleam_test_for_float_optional_enum_and_nested()
 
     let (_temp, project) = stage_order_saga()?;
 
-    // Add the schema that introduces the Float, optional, enum, and nested
-    // record into the generated `_io.gleam`. `codegen_project`/`generate_codecs`
-    // parse every `schemas/*.json`, so dropping the file in is enough.
-    fs::write(
-        project.join("schemas/golden_input.json"),
-        GOLDEN_INPUT_SCHEMA,
-    )?;
+    // Author the types that introduce the Float, optional, enum, and nested
+    // record into the types module — the types-first front door.
+    let io_path = project.join("src/aion_order_saga_io.gleam");
+    let mut io_module = fs::read_to_string(&io_path)?;
+    io_module.push_str(GOLDEN_INPUT_TYPES);
+    fs::write(&io_path, io_module)?;
 
     // The generated `golden_probe` wrapper references `activities.golden_probe`;
     // give the hand-written activities module a type-checking stub so the
@@ -220,12 +248,15 @@ fn generated_golden_passes_real_gleam_test_for_float_optional_enum_and_nested()
     activities.push_str(GOLDEN_PROBE_BODY);
     fs::write(&activities_path, activities)?;
 
-    // Generate the io types/codecs and the activity plumbing — including the
-    // wire-compat golden test the rest of this test executes — straight through
-    // the library API, never the `aion` binary.
-    codegen_project(&project, CodegenMode::Write)?;
-    generate_codecs(&project, CodegenMode::Write)?;
-    generate_activities(&project, &declarations(), CodegenMode::Write)?;
+    // Run the full types-first pipeline through the library API: interface →
+    // model → codecs module + emitted schemas → activity plumbing (including
+    // the wire-compat golden the rest of this test executes).
+    let package_name = "aion_order_saga";
+    let interface = export_interface(&project)?;
+    let types = boundary_types_from_interface(&interface, package_name)?;
+    generate_codecs(&project, &types, CodegenMode::Write)?;
+    emit_schemas(&project, package_name, &types, CodegenMode::Write)?;
+    generate_activities(&project, &declarations(), &types, CodegenMode::Write)?;
 
     // Cheap structural guard: assert the generated golden actually exercises
     // each risky shape, so a future generator change that stops emitting one is
@@ -274,14 +305,41 @@ fn generated_golden_passes_real_gleam_test_for_float_optional_enum_and_nested()
         .into());
     }
 
+    // Round-trip: delete every generated file and regenerate — byte-identical.
+    let generated = [
+        "src/aion_order_saga_codecs.gleam",
+        "src/aion_order_saga_activity_wrappers.gleam",
+        "worker/worker.py",
+        "test/aion_order_saga_wire_compat_test.gleam",
+        "schemas/golden_input.json",
+        "schemas/order_input.json",
+    ];
+    let mut snapshot = Vec::new();
+    for relative in generated {
+        let path = project.join(relative);
+        snapshot.push((relative, fs::read(&path)?));
+        fs::remove_file(&path)?;
+    }
+    generate_codecs(&project, &types, CodegenMode::Write)?;
+    emit_schemas(&project, package_name, &types, CodegenMode::Write)?;
+    generate_activities(&project, &declarations(), &types, CodegenMode::Write)?;
+    for (relative, original) in &snapshot {
+        let regenerated = fs::read(project.join(relative))?;
+        if &regenerated != original {
+            return Err(
+                format!("round-trip drift in {relative}: regeneration not byte-identical").into(),
+            );
+        }
+    }
+
     // The proof: run the generated golden through real `gleam_json` on the BEAM.
-    // A non-zero exit means the schema-derived literal disagrees with what
+    // A non-zero exit means the type-derived literal disagrees with what
     // `gleam_json` actually produces — exactly the latent wire-compat bug this
     // gate exists to surface — so it fails the Rust test with gleam's output.
     let (ok, combined) = run_gleam_test(&project)?;
     if !ok {
         return Err(format!(
-            "`gleam test` failed on the generated wire-compat golden — the schema-derived \
+            "`gleam test` failed on the generated wire-compat golden — the type-derived \
              literal does not match real `gleam_json` output. This is a wire-compat BLOCKER, \
              not a flaky test.\n\n{combined}"
         )

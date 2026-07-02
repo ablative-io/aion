@@ -99,11 +99,22 @@ pub(crate) fn load_config(root: &Path) -> Result<ProjectConfig, PackagingError> 
     validate(root, raw)
 }
 
-/// Reads and parses one declared JSON-Schema file.
+/// Reads and parses one declared JSON-Schema file. A missing file gets the
+/// actionable [`PackagingError::SchemaMissing`] — schemas are generated
+/// artifacts, so the fix on a fresh clone is `aion generate`, not restoring a
+/// hand-authored file.
 pub(crate) fn load_schema(path: &Path) -> Result<serde_json::Value, PackagingError> {
-    let bytes = fs::read(path).map_err(|source| PackagingError::SchemaRead {
-        path: path.to_path_buf(),
-        source,
+    let bytes = fs::read(path).map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            PackagingError::SchemaMissing {
+                path: path.to_path_buf(),
+            }
+        } else {
+            PackagingError::SchemaRead {
+                path: path.to_path_buf(),
+                source,
+            }
+        }
     })?;
     serde_json::from_slice(&bytes).map_err(|source| PackagingError::SchemaParse {
         path: path.to_path_buf(),
@@ -623,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_schema_file_returns_schema_read_with_path() -> TestResult {
+    fn missing_schema_file_returns_actionable_schema_missing() -> TestResult {
         let root = fixture::temp_project(
             "config-schema-missing",
             &[
@@ -634,11 +645,16 @@ mod tests {
         let result = load_config(&root);
         fs::remove_dir_all(&root)?;
 
-        assert!(matches!(
-            result,
-            Err(PackagingError::SchemaRead { path, .. })
-                if path == root.join("schemas/input.json")
-        ));
+        let Err(PackagingError::SchemaMissing { path }) = result else {
+            return Err(format!("expected SchemaMissing, got {result:?}").into());
+        };
+        assert_eq!(path, root.join("schemas/input.json"));
+        // The error must point at generation, not at restoring a hand file.
+        let message = PackagingError::SchemaMissing { path }.to_string();
+        assert!(
+            message.contains("aion generate") && message.contains("generated artifacts"),
+            "missing-schema error must be actionable: {message}"
+        );
         Ok(())
     }
 

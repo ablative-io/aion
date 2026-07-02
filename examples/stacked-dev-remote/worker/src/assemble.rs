@@ -121,10 +121,9 @@ fn resolve_one(design_dir: &str, brief_id: &str) -> Result<WaveEntry, String> {
         read_json::<DecisionsFile>(&format!("{design_dir}/decisions.json"))
             .map(|f| f.decisions)
             .unwrap_or_default();
-    let roadmap: Vec<RoadmapItem> =
-        read_json::<RoadmapFile>(&format!("{design_dir}/roadmap.json"))
-            .map(|f| f.items)
-            .unwrap_or_default();
+    let roadmap: Vec<RoadmapItem> = read_json::<RoadmapFile>(&format!("{design_dir}/roadmap.json"))
+        .map(|f| f.items)
+        .unwrap_or_default();
     Ok(build_entry(&loaded, &decisions, &roadmap, design_dir))
 }
 

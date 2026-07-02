@@ -160,13 +160,16 @@ mod tests {
     use super::{WorkflowTestFacts, emit_scaffold_module};
     use crate::codegen::activity_model::{ResolvedActivity, ResolvedType};
     use crate::codegen::declaration::{ActivityDeclaration, Tier};
-    use crate::codegen::schema::{GleamType, SchemaArtifact};
+    use crate::codegen::model::{BoundaryType, GleamType};
 
-    fn artifact() -> SchemaArtifact {
-        SchemaArtifact {
+    fn artifact() -> BoundaryType {
+        BoundaryType {
             file: PathBuf::from("schemas/placeholder.json"),
             stem: "placeholder".to_owned(),
-            root: GleamType::String,
+            root: GleamType::Named {
+                type_name: "Placeholder".to_owned(),
+                fn_prefix: "placeholder".to_owned(),
+            },
             defs: Vec::new(),
         }
     }
@@ -182,19 +185,19 @@ mod tests {
 
     fn resolved<'a>(
         declaration: &'a ActivityDeclaration,
-        art: &'a SchemaArtifact,
+        art: &'a BoundaryType,
     ) -> ResolvedActivity<'a> {
         ResolvedActivity {
             declaration,
             input: ResolvedType {
                 gleam_type: declaration.input_type.clone(),
                 fn_prefix: "order".to_owned(),
-                artifact: art,
+                boundary: art,
             },
             output: ResolvedType {
                 gleam_type: declaration.output_type.clone(),
                 fn_prefix: "receipt".to_owned(),
-                artifact: art,
+                boundary: art,
             },
         }
     }

@@ -29,7 +29,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::arms::{arm_label, split_arms};
 use super::error::StructureError;
 use super::model::{EdgeKind, GraphEdge, GraphNode, NodeId, NodePrimitive};
-use super::reader::{end_of_call, find_open_brace, leading_local_call, match_brace};
+use super::reader::{
+    end_of_call, find_open_brace, last_identifier_argument, leading_local_call, match_brace,
+};
 use super::scan::Token;
 
 /// The number of tokens of an unmodellable shape captured into an `Opaque`
@@ -194,6 +196,11 @@ impl<'a> ControlFlowExtractor<'a> {
                         index = end_of_call(self.tokens, index, body.end);
                         continue;
                     }
+                    if right == "define" {
+                        let after = self.follow_define(index, body.end, &mut region, stack)?;
+                        index = after;
+                        continue;
+                    }
                     index += 1;
                 }
                 Token::Ident(name) if self.is_local_call(name, index) => {
@@ -210,6 +217,40 @@ impl<'a> ControlFlowExtractor<'a> {
             }
         }
         Ok(region)
+    }
+
+    /// Follows the typed entry function named by a `<alias>.define(...)` call
+    /// into the workflow graph, returning the index just past the call.
+    ///
+    /// The `workflow.entrypoint(definition(), raw_input)` shim reaches its
+    /// orchestration only through the definition: `run` calls `definition()`,
+    /// whose `define(...)` call carries the typed entry (`execute`) as its
+    /// last bare-identifier argument — a function *value*, never applied with
+    /// parens, so the local-call arm cannot follow it. This arm resolves that
+    /// argument (the same reading `facts.rs` uses) and walks it as the
+    /// sequential region, guarded by the existing recursion stack. A `define`
+    /// whose last argument is not a bare identifier (a closure, a qualified
+    /// reference) is a no-op walk. A module whose entry both calls its typed
+    /// entry directly *and* reaches `define(...)` would walk the entry twice
+    /// and duplicate its subgraph; no such module exists, and the chosen
+    /// semantics (both walked) is pinned by a test.
+    fn follow_define(
+        &mut self,
+        index: usize,
+        end: usize,
+        region: &mut Region,
+        stack: &mut Vec<String>,
+    ) -> Result<usize, StructureError> {
+        let after = end_of_call(self.tokens, index, end);
+        if let Some(entry) = last_identifier_argument(self.tokens, index + 1, after) {
+            let call = self.follow_named(&entry, &region.tail, stack)?;
+            if call.primitives > 0 {
+                region.head = region.head.or(call.head);
+                region.tail = call.tail;
+                region.primitives += call.primitives;
+            }
+        }
+        Ok(after)
     }
 
     /// Walks a body that may be pruned: takes a checkpoint, walks, and if the

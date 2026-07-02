@@ -97,11 +97,16 @@ fn generated_test_scaffold_compiles_under_gleam_build() -> Result<(), TestError>
     let (_temp, project) = stage_order_saga()?;
     let project_str = project.to_str().ok_or("project path is not valid UTF-8")?;
 
+    // The example commits a filled-in scaffold (the scaffold is write-once and
+    // author-owned after generation); delete it so this gate proves the
+    // PRISTINE scaffold is regenerated and compiles.
+    let scaffold = project.join("test/order_saga_scaffold_test.gleam");
+    fs::remove_file(&scaffold)?;
+
     let (ok, output) = run_aion(&["generate", project_str])?;
     assert!(ok, "`aion generate` failed:\n{output}");
 
     // The scaffold was emitted for the single workflow.
-    let scaffold = project.join("test/order_saga_scaffold_test.gleam");
     assert!(
         scaffold.is_file(),
         "the test scaffold was not generated at {}",

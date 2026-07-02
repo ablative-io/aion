@@ -151,7 +151,15 @@ async fn main() -> anyhow::Result<()> {
             blocking(shell.clone(), handlers::request_review),
         )?
         .register_activity("land", blocking(shell.clone(), handlers::land))?
-        .register_activity("teardown_workspace", blocking(shell.clone(), handlers::teardown_workspace))?
+        // `teardown_workspace` is DELIBERATELY not registered: this
+        // package's workflow never dispatches it, and both stacked-dev
+        // workers default to the shared "default" task queue — serving the
+        // name here would let another package's teardown land on this
+        // host, silently answer `cleaned: false` against the wrong
+        // filesystem, and (while ledger bug #14 is open) execute pending
+        // teardowns from old failed histories the moment this worker
+        // connects. The handler stays as tested parity code for when this
+        // bundle's workflow gains a teardown dispatch.
         .register_activity("scout", blocking(shell.clone(), handlers::scout))?
         .register_activity("dev_review", blocking(shell.clone(), handlers::dev_review))?
         .register_activity(

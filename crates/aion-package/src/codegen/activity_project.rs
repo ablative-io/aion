@@ -1,28 +1,31 @@
 //! The activity-plumbing generator (`aion generate`).
 //!
 //! Given a package's parsed activity declarations (extracted from its typed
-//! Gleam `manifest()` by the CLI — this library never spawns a process) and its
-//! `schemas/*.json`, this module resolves each declared value type to its
-//! schema artifact and emits the plumbing that today is hand-mirrored across
-//! five-to-seven files: the codec module, the typed activity wrappers, the
+//! Gleam `manifest()` by the CLI — this library never spawns a process) and
+//! its boundary-type model (mapped from the exported package interface by
+//! [`super::interface`]), this module resolves each declared value type to its
+//! boundary type and emits the plumbing that used to be hand-mirrored across
+//! five-to-seven files: the codecs module, the typed activity wrappers, the
 //! per-tier worker handler stubs and registration, and the wire-compat golden.
 //!
-//! Generation is a pure, deterministic function of the declarations and
-//! schemas: declaration order and schema property order are preserved, names
-//! come from pure helpers, and nothing reads the wall clock or iterates a
-//! `HashMap` into output. The whole artifact set is rendered before any file is
-//! touched, so a parse or resolution error leaves the tree untouched, and a
-//! delete-all-and-regenerate round-trip is byte-identical. [`CodegenMode::Check`]
-//! re-renders and byte-compares instead of writing, for CI drift gates.
+//! Generation is a pure, deterministic function of the declarations and the
+//! model: declaration order and field order are preserved, names come from
+//! pure helpers, and nothing reads the wall clock or iterates a `HashMap`
+//! into output. The whole artifact set is rendered before any file is
+//! touched, so a resolution error leaves the tree untouched, and a
+//! delete-all-and-regenerate round-trip is byte-identical.
+//! [`CodegenMode::Check`] re-renders and byte-compares instead of writing,
+//! for CI drift gates.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::activity_model::{ResolvedActivity, ResolvedType};
+use super::codec_module;
 use super::declaration::{ActivityDeclaration, Tier};
 use super::error::CodegenError;
-use super::project::{CodegenMode, check_on_disk, parse_project_schemas, read_package_name};
-use super::schema::{GleamType, SchemaArtifact};
+use super::model::{BoundaryType, GleamType};
+use super::project::{CodegenMode, check_on_disk, read_package_name};
 use super::test_scaffold::{self, WorkflowTestFacts};
 use super::{activity_golden, activity_worker_python, activity_worker_rust, activity_wrappers};
 use crate::structure::extract_workflow_facts;
@@ -57,10 +60,10 @@ pub struct CodecReport {
 }
 
 /// Generates (or, in [`CodegenMode::Check`], verifies) the package's codecs
-/// module `src/<package>_codecs.gleam` from its `schemas/*.json`.
+/// module `src/<package>_codecs.gleam` from its boundary types.
 ///
-/// The codecs are derived from the schemas alone — not the activity
-/// declarations — so this can run *before* the package's `manifest()` is
+/// The codecs are derived from the types module alone — not the activity
+/// declarations — so this runs *before* the package's `manifest()` is
 /// executed to extract the declarations: the author's activities module
 /// references `codecs.<type>_codec()`, which must already compile for the
 /// extraction build to succeed. [`generate_activities`] emits the remaining
@@ -68,17 +71,19 @@ pub struct CodecReport {
 ///
 /// # Errors
 ///
-/// Returns a [`CodegenError`] for an unreadable `gleam.toml`/`schemas/`, an
-/// unsupported schema construct, a write failure, or — in check mode — a
-/// missing or drifted codecs module.
-pub fn generate_codecs(root: &Path, mode: CodegenMode) -> Result<CodecReport, CodegenError> {
+/// Returns a [`CodegenError`] for an unreadable `gleam.toml`, a write
+/// failure, or — in check mode — a missing or drifted codecs module.
+pub fn generate_codecs(
+    root: &Path,
+    types: &[BoundaryType],
+    mode: CodegenMode,
+) -> Result<CodecReport, CodegenError> {
     let package_name = read_package_name(root)?;
-    let schemas = parse_project_schemas(root)?;
     let relative = format!("src/{package_name}_codecs.gleam");
     let artifact = ActivityArtifact {
         path: root.join(&relative),
         relative: relative.clone(),
-        contents: activity_wrappers::emit_codecs_module(&package_name, &schemas),
+        contents: codec_module::emit_codecs_module(&package_name, types),
     };
     let written = match mode {
         CodegenMode::Write => {
@@ -97,23 +102,23 @@ pub fn generate_codecs(root: &Path, mode: CodegenMode) -> Result<CodecReport, Co
 }
 
 /// Generates (or, in [`CodegenMode::Check`], verifies) the activity plumbing
-/// for the package at `root` from its `declarations` and `schemas/*.json`.
+/// for the package at `root` from its `declarations` and boundary `types`.
 ///
 /// # Errors
 ///
-/// Returns a [`CodegenError`] for an unreadable `gleam.toml`/`schemas/`, an
-/// unsupported schema construct, a declared value type with no matching schema
-/// ([`CodegenError::ActivitySchemaMissing`]), a write failure, or — in check
-/// mode — a missing or drifted generated file. No file is written if rendering
-/// any artifact fails.
+/// Returns a [`CodegenError`] for an unreadable `gleam.toml`, a declared
+/// value type not present in the types module
+/// ([`CodegenError::ActivityTypeMissing`]), a write failure, or — in check
+/// mode — a missing or drifted generated file. No file is written if
+/// rendering any artifact fails.
 pub fn generate_activities(
     root: &Path,
     declarations: &[ActivityDeclaration],
+    types: &[BoundaryType],
     mode: CodegenMode,
 ) -> Result<ActivityReport, CodegenError> {
     let package_name = read_package_name(root)?;
-    let schemas = parse_project_schemas(root)?;
-    let resolved = resolve(declarations, &schemas)?;
+    let resolved = resolve(&package_name, declarations, types)?;
     let artifacts = build_artifacts(root, &package_name, &resolved)?;
 
     let written = match mode {
@@ -137,41 +142,41 @@ pub fn generate_activities(
 /// The result of generating (or checking) a workflow's `aion/testing` skeleton.
 #[derive(Debug)]
 pub struct TestScaffoldReport {
-    /// The generated scaffold module path, relative to the project root.
+    /// The scaffold module path, relative to the project root.
     pub module_relative: String,
-    /// The number of activities pre-mocked in the scaffold.
+    /// The number of activities pre-mocked in a freshly-written scaffold.
     pub mocked_activities: usize,
     /// The number of clock advances scaffolded (one per durable timer).
     pub timer_advances: usize,
-    /// Whether the module was written (`Write`) or only checked (`Check`).
+    /// Whether the module was written (`false` when it already existed or in
+    /// check mode).
     pub written: bool,
 }
 
-/// Generates (or, in [`CodegenMode::Check`], verifies) the `aion/testing`
-/// skeleton `test/<entry_module>_scaffold_test.gleam` for the workflow whose
-/// typed entry lives in `src/<entry_module>.gleam`.
+/// Generates the `aion/testing` skeleton
+/// `test/<entry_module>_scaffold_test.gleam` for the workflow whose typed
+/// entry lives in `src/<entry_module>.gleam`.
 ///
-/// The skeleton mocks each declared activity, advances the simulated clock once
-/// per durable timer the workflow arms, and asserts the typed entry function
-/// replays deterministically — targeting the existing `aion/testing` harness,
-/// with every author hole left as a labelled `todo` (no invented defaults,
-/// ADR-001).
+/// Unlike the do-not-edit artifacts, the scaffold is written **once**: it is
+/// a fill-in starting point the author owns after generation, so a write run
+/// leaves an existing scaffold untouched, and [`CodegenMode::Check`] only
+/// requires the file to exist (never byte-compares it against a fresh
+/// render, which would flag every filled-in `todo` as drift).
 ///
 /// # Errors
 ///
-/// Returns a [`CodegenError`] for an unreadable `gleam.toml`/`schemas/`, an
-/// unsupported schema construct, a declared value type with no matching schema,
-/// an unreadable or facts-less entry-module source, a write failure, or — in
-/// check mode — a missing or drifted scaffold.
+/// Returns a [`CodegenError`] for an unreadable `gleam.toml`, an unresolved
+/// declared value type, an unreadable or facts-less entry-module source, a
+/// write failure, or — in check mode — a missing scaffold.
 pub fn generate_test_scaffold(
     root: &Path,
     entry_module: &str,
     declarations: &[ActivityDeclaration],
+    types: &[BoundaryType],
     mode: CodegenMode,
 ) -> Result<TestScaffoldReport, CodegenError> {
     let package_name = read_package_name(root)?;
-    let schemas = parse_project_schemas(root)?;
-    let resolved = resolve(declarations, &schemas)?;
+    let resolved = resolve(&package_name, declarations, types)?;
 
     let source_path = root.join("src").join(format!("{entry_module}.gleam"));
     let source =
@@ -184,35 +189,47 @@ pub fn generate_test_scaffold(
         reason: error.to_string(),
     })?;
 
+    let relative = format!("test/{entry_module}_scaffold_test.gleam");
+    let path = root.join(&relative);
+    if mode == CodegenMode::Check {
+        if !path.is_file() {
+            return Err(CodegenError::CheckMissing { path });
+        }
+        return Ok(TestScaffoldReport {
+            module_relative: relative,
+            mocked_activities: resolved.len(),
+            timer_advances: facts.timer_count,
+            written: false,
+        });
+    }
+    if path.is_file() {
+        // The author owns a scaffold once it exists; never clobber their
+        // filled-in test.
+        return Ok(TestScaffoldReport {
+            module_relative: relative,
+            mocked_activities: resolved.len(),
+            timer_advances: facts.timer_count,
+            written: false,
+        });
+    }
+
     let test_facts = WorkflowTestFacts {
         entry_module,
         entry_function: &facts.typed_entry_function,
         timer_count: facts.timer_count,
     };
-    let contents = test_scaffold::emit_scaffold_module(&package_name, &test_facts, &resolved);
-
-    let relative = format!("test/{entry_module}_scaffold_test.gleam");
     let artifact = ActivityArtifact {
-        path: root.join(&relative),
+        path,
         relative: relative.clone(),
-        contents,
+        contents: test_scaffold::emit_scaffold_module(&package_name, &test_facts, &resolved),
     };
-    let written = match mode {
-        CodegenMode::Write => {
-            write_artifact(&artifact)?;
-            true
-        }
-        CodegenMode::Check => {
-            check_on_disk(&artifact.path, &artifact.contents)?;
-            false
-        }
-    };
+    write_artifact(&artifact)?;
 
     Ok(TestScaffoldReport {
         module_relative: relative,
         mocked_activities: resolved.len(),
         timer_advances: facts.timer_count,
-        written,
+        written: true,
     })
 }
 
@@ -230,29 +247,40 @@ fn write_artifact(artifact: &ActivityArtifact) -> Result<(), CodegenError> {
     })
 }
 
-/// Resolves each declaration's input and output value types to the schema
-/// artifacts that generate them, preserving declaration order.
+/// Resolves each declaration's input and output value types to the boundary
+/// types that generate their codecs, preserving declaration order.
 fn resolve<'a>(
+    package_name: &str,
     declarations: &'a [ActivityDeclaration],
-    schemas: &'a [SchemaArtifact],
+    types: &'a [BoundaryType],
 ) -> Result<Vec<ResolvedActivity<'a>>, CodegenError> {
-    // Map each generated Gleam type name to its artifact and function prefix.
-    // Only object/enum schemas (named roots) back an activity value type.
-    let mut by_type: HashMap<&str, (&SchemaArtifact, &str)> = HashMap::with_capacity(schemas.len());
-    for artifact in schemas {
+    let mut by_type: HashMap<&str, (&BoundaryType, &str)> = HashMap::with_capacity(types.len());
+    for boundary in types {
         if let GleamType::Named {
             type_name,
             fn_prefix,
-        } = &artifact.root
+        } = &boundary.root
         {
-            by_type.insert(type_name.as_str(), (artifact, fn_prefix.as_str()));
+            by_type.insert(type_name.as_str(), (boundary, fn_prefix.as_str()));
         }
     }
 
     let mut resolved = Vec::with_capacity(declarations.len());
     for declaration in declarations {
-        let input = resolve_type(declaration, "input", &declaration.input_type, &by_type)?;
-        let output = resolve_type(declaration, "output", &declaration.output_type, &by_type)?;
+        let input = resolve_type(
+            package_name,
+            declaration,
+            "input",
+            &declaration.input_type,
+            &by_type,
+        )?;
+        let output = resolve_type(
+            package_name,
+            declaration,
+            "output",
+            &declaration.output_type,
+            &by_type,
+        )?;
         resolved.push(ResolvedActivity {
             declaration,
             input,
@@ -262,36 +290,34 @@ fn resolve<'a>(
     Ok(resolved)
 }
 
-/// Resolves one declared value type name to its schema artifact.
+/// Resolves one declared value type name to its boundary type.
 fn resolve_type<'a>(
+    package_name: &str,
     declaration: &ActivityDeclaration,
     role: &'static str,
     type_name: &str,
-    by_type: &HashMap<&str, (&'a SchemaArtifact, &str)>,
+    by_type: &HashMap<&str, (&'a BoundaryType, &str)>,
 ) -> Result<ResolvedType<'a>, CodegenError> {
-    let (artifact, fn_prefix) =
+    let (boundary, fn_prefix) =
         by_type
             .get(type_name)
-            .ok_or_else(|| CodegenError::ActivitySchemaMissing {
+            .ok_or_else(|| CodegenError::ActivityTypeMissing {
                 activity: declaration.name.clone(),
                 role,
                 type_name: type_name.to_owned(),
-                path: PathBuf::from(format!(
-                    "schemas/{}.json",
-                    super::names::pascal_to_snake(type_name)
-                )),
+                module: format!("{package_name}_io"),
             })?;
     Ok(ResolvedType {
         gleam_type: type_name.to_owned(),
         fn_prefix: (*fn_prefix).to_owned(),
-        artifact,
+        boundary,
     })
 }
 
 /// Renders every generated activity artifact in a deterministic order: the
 /// typed wrappers module first, then a worker plumbing module and (for remote
 /// tiers) a wire-compat golden per non-empty tier. The codecs module is owned
-/// by [`generate_codecs`] (it is schema-driven and must precede declaration
+/// by [`generate_codecs`] (it is types-driven and must precede declaration
 /// extraction), so it is not re-emitted here.
 fn build_artifacts(
     root: &Path,
@@ -331,7 +357,7 @@ fn build_artifacts(
 
     // One wire-compat golden covering every remote activity, in declaration
     // order: a Gleam SDK-side test that pins each value type's encoded wire
-    // shape against a literal derived from the schema, worker-language-agnostic.
+    // shape against a literal derived from the type, worker-language-agnostic.
     let remote: Vec<&ResolvedActivity> = resolved
         .iter()
         .filter(|a| a.declaration.tier.is_remote())
@@ -393,37 +419,53 @@ mod tests {
     use super::{generate_activities, generate_codecs};
     use crate::codegen::declaration::{ActivityDeclaration, Tier};
     use crate::codegen::error::CodegenError;
+    use crate::codegen::model::{BoundaryType, Field, GleamType, RecordDef, TypeDef};
     use crate::codegen::project::CodegenMode;
     use crate::project::fixture;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const GLEAM_TOML: &str = "name = \"demo\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n";
-    const ORDER_SCHEMA: &[u8] = br#"{
-        "type": "object",
-        "required": ["order_id", "amount"],
-        "additionalProperties": false,
-        "properties": {
-            "order_id": { "type": "string" },
-            "amount": { "type": "integer" }
+
+    fn boundary(type_name: &str, fields: Vec<(&str, GleamType, bool)>) -> BoundaryType {
+        let stem = crate::codegen::names::pascal_to_snake(type_name);
+        BoundaryType {
+            file: PathBuf::from(format!("schemas/{stem}.json")),
+            stem: stem.clone(),
+            root: GleamType::Named {
+                type_name: type_name.to_owned(),
+                fn_prefix: stem.clone(),
+            },
+            defs: vec![TypeDef::Record(RecordDef {
+                type_name: type_name.to_owned(),
+                fn_prefix: stem,
+                fields: fields
+                    .into_iter()
+                    .map(|(wire, ty, required)| Field {
+                        wire: wire.to_owned(),
+                        ty,
+                        required,
+                    })
+                    .collect(),
+            })],
         }
-    }"#;
-    const RECEIPT_SCHEMA: &[u8] = br#"{
-        "type": "object",
-        "required": ["payment_id"],
-        "additionalProperties": false,
-        "properties": { "payment_id": { "type": "string" } }
-    }"#;
+    }
+
+    fn model() -> Vec<BoundaryType> {
+        vec![
+            boundary(
+                "Order",
+                vec![
+                    ("order_id", GleamType::String, true),
+                    ("amount", GleamType::Int, true),
+                ],
+            ),
+            boundary("Receipt", vec![("payment_id", GleamType::String, true)]),
+        ]
+    }
 
     fn project(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        fixture::temp_project(
-            label,
-            &[
-                ("gleam.toml", GLEAM_TOML.as_bytes()),
-                ("schemas/order.json", ORDER_SCHEMA),
-                ("schemas/receipt.json", RECEIPT_SCHEMA),
-            ],
-        )
+        fixture::temp_project(label, &[("gleam.toml", GLEAM_TOML.as_bytes())])
     }
 
     fn declaration(input: &str, output: &str) -> ActivityDeclaration {
@@ -438,13 +480,14 @@ mod tests {
     #[test]
     fn write_then_check_round_trips_and_detects_drift() -> TestResult {
         let root = project("activity-write")?;
+        let types = model();
         let declarations = [declaration("Order", "Receipt")];
 
-        let codecs = generate_codecs(&root, CodegenMode::Write)?;
+        let codecs = generate_codecs(&root, &types, CodegenMode::Write)?;
         assert!(codecs.written);
         assert!(root.join("src/demo_codecs.gleam").is_file());
 
-        let report = generate_activities(&root, &declarations, CodegenMode::Write)?;
+        let report = generate_activities(&root, &declarations, &types, CodegenMode::Write)?;
         assert!(report.written);
         let relatives: Vec<&str> = report
             .artifacts
@@ -464,15 +507,15 @@ mod tests {
         }
 
         // A clean tree passes --check.
-        generate_codecs(&root, CodegenMode::Check)?;
-        generate_activities(&root, &declarations, CodegenMode::Check)?;
+        generate_codecs(&root, &types, CodegenMode::Check)?;
+        generate_activities(&root, &declarations, &types, CodegenMode::Check)?;
 
         // A hand-edit to a generated file is caught.
         let wrappers = root.join("src/demo_activity_wrappers.gleam");
         let mut tampered = fs::read_to_string(&wrappers)?;
         tampered.push_str("\n// hand edit\n");
         fs::write(&wrappers, &tampered)?;
-        let result = generate_activities(&root, &declarations, CodegenMode::Check);
+        let result = generate_activities(&root, &declarations, &types, CodegenMode::Check);
         let Err(CodegenError::CheckDrift { path }) = result else {
             fs::remove_dir_all(&root)?;
             return Err(format!("expected CheckDrift, got {result:?}").into());
@@ -486,6 +529,7 @@ mod tests {
     #[test]
     fn in_vm_tier_emits_neither_worker_nor_golden() -> TestResult {
         let root = project("activity-invm")?;
+        let types = model();
         let declarations = [ActivityDeclaration {
             name: "charge".to_owned(),
             tier: Tier::InVm,
@@ -493,7 +537,7 @@ mod tests {
             output_type: "Receipt".to_owned(),
         }];
 
-        let report = generate_activities(&root, &declarations, CodegenMode::Write)?;
+        let report = generate_activities(&root, &declarations, &types, CodegenMode::Write)?;
         let relatives: Vec<&str> = report
             .artifacts
             .iter()
@@ -509,24 +553,26 @@ mod tests {
     }
 
     #[test]
-    fn declared_type_without_a_schema_errors() -> TestResult {
+    fn declared_type_without_a_boundary_type_errors() -> TestResult {
         let root = project("activity-missing")?;
+        let types = model();
         let declarations = [declaration("Order", "NoSuchType")];
 
-        let result = generate_activities(&root, &declarations, CodegenMode::Write);
-        let Err(CodegenError::ActivitySchemaMissing {
+        let result = generate_activities(&root, &declarations, &types, CodegenMode::Write);
+        let Err(CodegenError::ActivityTypeMissing {
             activity,
             role,
             type_name,
-            ..
+            module,
         }) = result
         else {
             fs::remove_dir_all(&root)?;
-            return Err(format!("expected ActivitySchemaMissing, got {result:?}").into());
+            return Err(format!("expected ActivityTypeMissing, got {result:?}").into());
         };
         assert_eq!(activity, "charge");
         assert_eq!(role, "output");
         assert_eq!(type_name, "NoSuchType");
+        assert_eq!(module, "demo_io");
 
         fs::remove_dir_all(&root)?;
         Ok(())

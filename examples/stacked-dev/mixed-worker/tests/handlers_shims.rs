@@ -15,9 +15,9 @@ use std::error::Error;
 use std::path::Path;
 
 use aion_worker::{ActivityFailure, Classification};
-use stacked_dev_worker::handlers;
-use stacked_dev_worker::shell::Shell;
-use stacked_dev_worker::types::{
+use stacked_dev_worker_mixed::handlers;
+use stacked_dev_worker_mixed::shell::Shell;
+use stacked_dev_worker_mixed::types::{
     Alignment, AssembleInput, Attestation, BriefDocument, BriefRequirement, CheckVerdict, Claim,
     DevInput, EnrichInput, Enrichment, ExecutionBlock, ExecutionStatus, ExecutionVerdict,
     GateBlock, GateInput, GateScope, GateVerdict, Isolation, LandInput, Placement, ProvisionInput,
@@ -181,8 +181,57 @@ fn provision_rejects_unimplemented_isolation_modes() -> TestResult {
     Ok(())
 }
 
+/// `yg branch add` failing for the base name probes `-attempt-N` suffixes
+/// until one is free, so a re-run of a brief provisions a FRESH branch instead
+/// of failing on the leftover one.
 #[test]
-fn provision_failing_yg_is_terminal_with_diagnostics() -> TestResult {
+fn provision_probes_attempt_suffixes_when_the_base_branch_exists() -> TestResult {
+    let shims = Shims::new()?;
+    // `yg branch add` refuses the bare name AND -attempt-2 (both "exist"),
+    // accepts -attempt-3; provision creates the worktree wherever it is told.
+    shims.write(
+        "yg",
+        r#"case "$1 $2" in
+  "branch add")
+    case "$3" in
+      *-attempt-3) exit 0 ;;
+      *) echo 'branch already exists' >&2; exit 3 ;;
+    esac
+    ;;
+  "branch provision") mkdir -p "$5"; exit 0 ;;
+  *) echo "unknown yg subcommand: $1 $2" >&2; exit 64 ;;
+esac"#,
+    )?;
+    let repo_root = shims.root_string();
+
+    let provisioned = handlers::provision_workspace(
+        &shims.shell(),
+        ProvisionInput {
+            repo_root: repo_root.clone(),
+            brief_id: "brief-7".to_owned(),
+            base_ref: "main".to_owned(),
+            placement: Placement::Local,
+            isolation: Isolation::Worktree,
+        },
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    assert_eq!(provisioned.branch, "stacked-dev-brief-7-attempt-3");
+    assert_eq!(
+        provisioned.path,
+        format!("{repo_root}/.yggdrasil-worktrees/stacked-dev-brief-7-attempt-3")
+    );
+    let log = shims.log("yg");
+    assert!(log.contains("branch add stacked-dev-brief-7 main"));
+    assert!(log.contains("branch add stacked-dev-brief-7-attempt-2 main"));
+    assert!(log.contains("branch add stacked-dev-brief-7-attempt-3 main"));
+    Ok(())
+}
+
+/// When every candidate branch name is refused, the probing gives up with a
+/// loud terminal failure naming the base — never an infinite loop.
+#[test]
+fn provision_with_no_free_branch_name_is_terminal() -> TestResult {
     let shims = Shims::new()?;
     shims.write("yg", "echo 'branch already exists' >&2\nexit 3")?;
 
@@ -198,8 +247,10 @@ fn provision_failing_yg_is_terminal_with_diagnostics() -> TestResult {
     )
     .err()
     .ok_or("failing yg must fail the activity")?;
-    assert_terminal(&failure, "yg branch add failed — exit status 3");
-    assert_terminal(&failure, "branch already exists");
+    assert_terminal(
+        &failure,
+        "could not find an unused branch name after 1000 attempts (base: stacked-dev-brief-7)",
+    );
     Ok(())
 }
 
@@ -303,7 +354,9 @@ fn dev_parses_the_canned_dev_report() -> TestResult {
         }
     }
     let log = shims.log("claude");
-    assert!(log.contains("--print --dangerously-skip-permissions --name stacked-dev-brief-7"));
+    assert!(log.contains(
+        "--print --dangerously-skip-permissions --setting-sources user --name stacked-dev-brief-7"
+    ));
     assert!(log.contains("--output-format json"));
     assert!(log.contains("Implement the brief..."), "prompt rides last");
     Ok(())
@@ -381,7 +434,10 @@ fn dev_resume_resumes_the_session_and_carries_the_feedback() -> TestResult {
     assert_eq!(resumed.summary, "applied feedback");
     assert_eq!(resumed.enrichments.len(), 1);
     let log = shims.log("claude");
-    assert!(log.contains("--print --dangerously-skip-permissions --resume stacked-dev-brief-7"));
+    assert!(log.contains(
+        "--print --dangerously-skip-permissions --setting-sources user --resume \
+         stacked-dev-brief-7"
+    ));
     assert!(
         log.contains("error: unused variable count"),
         "the diagnostics must reach claude's argv"
@@ -556,12 +612,12 @@ fn request_review_sends_collective_dm_to_each_reviewer() -> TestResult {
             workspace: workspace.clone(),
             brief_id: "brief-7".to_owned(),
             reviewers: vec!["sample-reviewer".to_owned()],
-            dev_result: stacked_dev_worker::types::DevResult {
+            dev_result: stacked_dev_worker_mixed::types::DevResult {
                 session_id: "stacked-dev-brief-7".to_owned(),
                 files_touched: Vec::new(),
                 summary: "implemented the brief".to_owned(),
             },
-            gate_result: stacked_dev_worker::types::GateResult {
+            gate_result: stacked_dev_worker_mixed::types::GateResult {
                 verdict: GateVerdict::Pass,
             },
             workflow_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
@@ -595,7 +651,7 @@ fn land_commits_then_merges_the_branch_into_its_parent_via_yg() -> TestResult {
             workspace: workspace(shims.root_string()),
             repo_root: shims.root_string(),
             base_ref: "main".to_owned(),
-            dev_result: stacked_dev_worker::types::DevResult {
+            dev_result: stacked_dev_worker_mixed::types::DevResult {
                 session_id: "stacked-dev-brief-7".to_owned(),
                 files_touched: Vec::new(),
                 summary: "implemented the brief".to_owned(),
@@ -629,7 +685,7 @@ fn land_with_nothing_to_commit_is_terminal() -> TestResult {
             workspace: workspace(shims.root_string()),
             repo_root: shims.root_string(),
             base_ref: "main".to_owned(),
-            dev_result: stacked_dev_worker::types::DevResult {
+            dev_result: stacked_dev_worker_mixed::types::DevResult {
                 session_id: "s".to_owned(),
                 files_touched: Vec::new(),
                 summary: String::new(),
@@ -659,7 +715,7 @@ fn land_with_failing_merge_is_terminal() -> TestResult {
             workspace: workspace(shims.root_string()),
             repo_root: shims.root_string(),
             base_ref: "main".to_owned(),
-            dev_result: stacked_dev_worker::types::DevResult {
+            dev_result: stacked_dev_worker_mixed::types::DevResult {
                 session_id: "s".to_owned(),
                 files_touched: Vec::new(),
                 summary: String::new(),
@@ -1096,7 +1152,7 @@ fn brief_value(
 fn assemble(
     design: &Design,
     wave: &[&str],
-) -> Result<stacked_dev_worker::types::AssembledWave, ActivityFailure> {
+) -> Result<stacked_dev_worker_mixed::types::AssembledWave, ActivityFailure> {
     handlers::assemble_wave(
         &Shell::inherited(),
         AssembleInput {

@@ -92,6 +92,40 @@ jobs:
       - name: cargo xtask no-norn-in-platform
         run: cargo xtask no-norn-in-platform
 
+  # Every nested standalone crate (own Cargo.lock, NOT a workspace member) gets
+  # the same build/clippy/test bar as the workspace, run in its own directory.
+  # These crates rot silently otherwise: no workspace gate compiles them, so an
+  # aion-worker API change (or a crate rename) breaks them without any lane
+  # going red — exactly what happened to norn-fan-worker (#181) and the
+  # stacked-dev workers' test suites.
+  standalone-crates:
+    name: standalone crates (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - examples/norn-fan-worker
+          - examples/stacked-dev/mixed-worker
+          - examples/stacked-dev/norn-worker
+          - examples/stacked-dev-remote/worker
+          - .meridian/workflows/stacked-dev/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - name: cargo build
+        working-directory: ${{ matrix.crate }}
+        run: cargo build
+      - name: cargo clippy --all-targets -- -D warnings
+        working-directory: ${{ matrix.crate }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        working-directory: ${{ matrix.crate }}
+        run: cargo test
+
   test:
     name: test (workspace, default + all-features)
     runs-on: ubuntu-latest
@@ -109,6 +143,28 @@ jobs:
         run: cargo test --workspace
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features
+
+  # Types-first drift gate (ADR-014): the committed examples/order-saga must
+  # be byte-current against what `aion generate` derives from its authored
+  # types module — codecs module, emitted schemas, wrappers, worker, golden,
+  # and the workflow.toml activities list. A hand-edit to any generated
+  # artifact (or a type edit committed without regenerating) fails here
+  # naming the drifted file. Additive job: composes with the other lanes.
+  codegen-drift:
+    name: codegen-drift (aion generate --check on examples/order-saga)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `aion generate` drives the real Gleam toolchain (interface export +
+      # manifest probe), so the BEAM + gleam must be present.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          gleam-version: '1.17.0'
+      - name: aion generate --check (examples/order-saga)
+        run: cargo run -p aion-cli --bin aion -- generate examples/order-saga --check
 
   # ----------------------------------------------------------------------- #
   # SLOW LANE — the real OS-process failover gates (kill-9 + graceful). These

@@ -36,11 +36,11 @@ pub fn definition() {
     request_codec(),
     greeting_codec(),
     workflow_error_codec(),
-    run,
+    execute,
   )
 }
 
-pub fn run(input: Request) -> Result(Greeting, String) {
+pub fn execute(input: Request) -> Result(Greeting, String) {
   // Durable workflow logic goes here.
   Ok(Greeting(message: "Hello, " <> input.name <> "!"))
 }
@@ -50,29 +50,17 @@ pub fn run(input: Request) -> Result(Greeting, String) {
 
 ## The engine entry point
 
-The typed function above is what tests and tooling call. The function the **engine** calls — the `entry_function` named in `workflow.toml` — has a fixed contract: it receives the start input as a **raw JSON string inside a `Dynamic`** and must return its success value re-encoded as a JSON string:
+The typed function above is what tests and tooling call. The function the **engine** calls — the `entry_function` named in `workflow.toml` — has a fixed contract: it receives the start input as a **raw JSON string inside a `Dynamic`** and must return its success value re-encoded as a JSON string. `workflow.entrypoint` is that adapter, assembled from the definition's own codecs and typed entry function, so the engine entry is a one-line shim:
 
 ```gleam
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 
-pub fn run(raw_input: Dynamic) -> Result(String, MyError) {
-  case decode.run(raw_input, decode.string) {
-    Ok(raw_json) ->
-      case request_codec().decode(raw_json) {
-        Ok(input) ->
-          case execute(input) {
-            Ok(output) -> Ok(output_codec().encode(output))
-            Error(workflow_error) -> Error(workflow_error)
-          }
-        Error(_) -> Error(MyError("failed to decode workflow input"))
-      }
-    Error(_) -> Error(MyError("workflow input payload was not a string"))
-  }
+pub fn run(raw_input: Dynamic) -> Result(String, String) {
+  workflow.entrypoint(definition(), raw_input)
 }
 ```
 
-Keep the typed body (`execute`) separate so the harness can test it directly. The repository's [workflow authoring guide](https://github.com/ablative-io/aion/blob/main/docs/guides/workflows.md) covers the contract and the determinism rules in full.
+`Ok` encodes with the definition's output codec and typed failure with its error codec, so an awaiting parent decodes both with the same codecs it already holds. An undecodable input records the fixed JSON envelope `{"aion_error":"input_decode","reason":...,"path":[...]}` as the failure payload. Keep the typed body (`execute`) separate so the harness can test it directly. The repository's [workflow authoring guide](https://github.com/ablative-io/aion/blob/main/docs/guides/workflows.md) covers the contract and the determinism rules in full.
 
 ## Declare and call activities
 

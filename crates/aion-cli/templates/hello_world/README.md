@@ -9,8 +9,13 @@ start → complete, no activities.
 - `src/{{name}}.gleam` — the workflow. Edit the typed `handle` function; the
   raw engine plumbing below the generated-code marker decodes/encodes JSON
   for you.
+- `src/{{name}}_io.gleam` — the authored boundary types (the source of
+  truth, types-first). Edit a type, then run `aion generate .`.
+- `src/{{name}}_codecs.gleam` — JSON codecs generated from the types by
+  `aion generate`. Do not edit; regenerate.
 - `workflow.toml` — packaging descriptor read by `aion package`.
-- `schemas/` — JSON Schemas for the workflow input and output.
+- `schemas/` — JSON Schema artifacts emitted from the types by
+  `aion generate`. Do not edit; regenerate.
 - `aion.toml` — development server configuration.
 
 ## Run it

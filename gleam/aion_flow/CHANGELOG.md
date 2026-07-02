@@ -2,13 +2,16 @@
 
 ## 0.5.0
 
-<!-- REBASE NOTE (CUT 3): the 0.5.0 version bump itself is owned by Cut 2
-     (generated run(raw_input) entrypoints); this section only contributes the
-     in-VM dispatch entry below. If Cut 2 lands first, merge this entry into
-     its 0.5.0 section; if this cut lands first, Cut 2 adds the gleam.toml
-     bump and its own entries here. -->
-
 ### Added
+
+- **`workflow.entrypoint(definition, raw_input)`** — the engine-facing run
+  adapter assembled from a `WorkflowDefinition`'s codecs and typed entry
+  function, so a workflow module's engine entry collapses to the one-line shim
+  `pub fn run(raw_input: Dynamic) { workflow.entrypoint(definition(), raw_input) }`.
+  Success encodes with the output codec and typed failure with the error codec
+  (byte-identical to the hand-written adapter); an undecodable input yields the
+  documented `{"aion_error":"input_decode","reason":...,"path":[...]}` JSON
+  envelope as the failure payload.
 
 - **In-VM execution tier** (CUT 3): `activity.execution_tier(a, InVm)` routes
   a dispatch through the engine's new arity-4 `dispatch_activity_in_vm` wire,

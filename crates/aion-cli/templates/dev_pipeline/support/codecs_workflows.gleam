@@ -1,14 +1,15 @@
 //// JSON codecs for the workflow-level inputs, outputs, typed errors, and
 //// status replies of the three workflow entries.
 ////
-//// Every input/output codec here is built ON the schema-generated module
-//// (`{{name}}_io`, regenerated with `aion codegen`): the generated
-//// encoder/decoder owns the wire shape, and `{{name}}/io_convert`
-//// maps it to the domain types the workflow bodies use — so the schemas in
-//// `schemas/` are the single source of truth for workflow I/O, and schema
-//// drift is a compile error or a `--check` failure, never silent. The typed
-//// workflow ERRORS and the live STATUS replies have no schemas (they are
-//// not dispatch-boundary payloads), so their codecs stay hand-written here.
+//// Every input/output codec here is built ON the generated codecs module
+//// (`{{name}}_codecs`, regenerated with `aion generate` from the authored
+//// types in `{{name}}_io`): the generated encoder/decoder owns the wire
+//// shape, and `{{name}}/io_convert` maps it to the domain types the
+//// workflow bodies use — so the types module is the single source of truth
+//// for workflow I/O, and type drift is a compile error or a `--check`
+//// failure, never silent. The typed workflow ERRORS and the live STATUS
+//// replies are not dispatch-boundary payloads, so their codecs stay
+//// hand-written here.
 ////
 //// Activity-payload codecs live in `{{name}}/codecs_core` (workspace,
 //// startup, dev, checks) and `{{name}}/codecs_flow` (review, land).
@@ -24,7 +25,7 @@ import {{name}}/types.{
   StageFailed, StartupFailed, VerifyExhausted, VerifyFixExhausted, Workspace,
   WorkspaceWide, Worktree,
 }
-import {{name}}_io as generated
+import {{name}}_codecs as generated
 import aion/codec
 import gleam/dynamic/decode
 import gleam/json

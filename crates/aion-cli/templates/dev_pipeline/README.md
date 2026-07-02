@@ -25,11 +25,13 @@ re-registered at every stage transition.
 - `workflow.toml` — three `[[workflow]]` entries (parent + two children),
   each independently dispatchable; the parent composes the children with
   `workflow.spawn_and_wait`.
-- `schemas/` — six JSON Schemas, one input/output pair per entry. **The
-  single source of truth for workflow-level I/O.**
-- `src/{{name}}_io.gleam` — types + JSON codecs **generated from the
-  schemas** by `aion codegen` (the scaffold already ran it). Do not edit;
-  regenerate.
+- `src/{{name}}_io.gleam` — the authored boundary types. **The single
+  source of truth for workflow-level I/O** (types-first, ADR-014).
+- `src/{{name}}_codecs.gleam` — JSON codecs **generated from the types**
+  by `aion generate`. Do not edit; regenerate.
+- `schemas/` — JSON Schema artifacts **emitted from the types** by
+  `aion generate` (packaging validation, `aion input` skeletons, and
+  external reference read these). Do not edit; regenerate.
 - `src/{{name}}.gleam`, `src/{{name}}_dev.gleam`, `src/{{name}}_gate.gleam`
   — the three workflows.
 - `src/{{name}}/` — domain types, codecs, typed activity constructors,
@@ -42,26 +44,27 @@ re-registered at every stage transition.
   activities (its own crate against the published `aion-worker` SDK), with
   wire-compat and shim-driven handler tests.
 
-## Schemas are the source of truth — regenerate, never edit
+## Types are the source of truth — regenerate, never edit
 
-`src/{{name}}_io.gleam` is generated. After **every** schema edit:
+`src/{{name}}_codecs.gleam` and `schemas/*.json` are generated. After
+**every** edit to the types in `src/{{name}}_io.gleam`:
 
 ```sh
-aion codegen .
+aion generate .
 gleam build
 ```
 
-and commit the schema and the regenerated module together. In CI, gate on
+and commit the types and the regenerated artifacts together. In CI, gate on
 drift:
 
 ```sh
-aion codegen . --check
+aion generate . --check
 ```
 
 The workflow-level codecs in `src/{{name}}/codecs_workflows.gleam` are built
-on the generated module and convert to the domain types in
+on the generated codecs module and convert to the domain types in
 `src/{{name}}/types.gleam` (see `src/{{name}}/io_convert.gleam`), so a
-schema change that alters a wire shape is a compile error — never silent
+type change that alters a wire shape is a compile error — never silent
 drift. Typed workflow errors, status replies, and activity payloads are not
 dispatch-boundary payloads and keep hand-written codecs.
 

@@ -169,6 +169,34 @@ pub(super) fn first_argument_reference(args: &[Token]) -> Option<String> {
     None
 }
 
+/// Returns the last top-level bare-identifier argument in a call's argument
+/// range `[start, end)` — the entry function passed to `workflow.define`. Only
+/// identifiers at the call's own paren depth are considered, so a nested call's
+/// arguments are never mistaken for the entry function. A qualified or other
+/// non-bare argument at that depth clears the candidate: the entry function is
+/// a bare reference, not a qualified expression.
+pub(super) fn last_identifier_argument(
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<String> {
+    let upper = end.min(tokens.len());
+    let mut depth = 0_i32;
+    let mut last: Option<String> = None;
+    for token in tokens.iter().take(upper).skip(start) {
+        match token {
+            Token::OpenParen => depth += 1,
+            Token::CloseParen => depth -= 1,
+            // A bare identifier directly inside the call's own parens (depth 1)
+            // is a candidate entry function; the last one wins.
+            Token::Ident(word) if depth == 1 => last = Some(word.clone()),
+            Token::Qualified { .. } if depth == 1 => last = None,
+            _ => {}
+        }
+    }
+    last
+}
+
 /// Reads the name of a leading bare local-function call in the scrutinee
 /// `[start, end)`: an [`Token::Ident`] immediately followed by `(`. Returns the
 /// function name, or `None` when the scrutinee does not open with such a call.
@@ -244,6 +272,32 @@ mod tests {
         assert_eq!(
             run_activity_name(&tokens),
             Some("reserve_inventory".to_owned())
+        );
+    }
+
+    #[test]
+    fn last_identifier_argument_reads_the_define_entry() {
+        let tokens = tokenise("(\"gate\", codecs.a(), codecs.b(), codecs.c(), execute)");
+        assert_eq!(
+            last_identifier_argument(&tokens, 0, tokens.len()),
+            Some("execute".to_owned())
+        );
+    }
+
+    #[test]
+    fn last_identifier_argument_rejects_a_qualified_last_argument() {
+        let tokens = tokenise("(\"gate\", codecs.a(), helpers.execute)");
+        assert_eq!(last_identifier_argument(&tokens, 0, tokens.len()), None);
+    }
+
+    #[test]
+    fn last_identifier_argument_ignores_nested_call_arguments() {
+        // `input` sits at depth 2 inside `wrap(input)`; only `execute` is at
+        // the call's own depth.
+        let tokens = tokenise("(\"gate\", wrap(input), execute)");
+        assert_eq!(
+            last_identifier_argument(&tokens, 0, tokens.len()),
+            Some("execute".to_owned())
         );
     }
 

@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use aion_worker::ActivityFailure;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use crate::schemas::{DEV_OUTPUT_SCHEMA, REVIEW_OUTPUT_SCHEMA, SCOUT_OUTPUT_SCHEMA};
 use crate::shell::{CliRun, Shell};
@@ -179,7 +179,7 @@ fn warm_build(shell: &Shell, workspace: &Workspace) -> Result<StartupResult, Act
 ///
 /// Claude Code has no --workspace-root flag, so the working directory is set
 /// to the worktree path. The --name flag sets a deterministic session name
-/// that dev_resume can later --resume by.
+/// that `dev_resume` can later --resume by.
 fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure> {
     let session_id = input.workspace.branch.clone();
     let envs = claude_envs();

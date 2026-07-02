@@ -1,137 +1,141 @@
-# Schema codegen guide
+# Types-first codegen guide
 
-`aion codegen` generates Gleam types and JSON codecs from a workflow
-project's JSON Schemas, so the schemas stay the single source of truth.
-Hand-written codecs drift: a field added to a decoder but not the schema
-(or the reverse) passes `gleam build` and then fails dispatch-boundary
+`aion generate` derives every wire-shaped artifact from a workflow project's
+**authored Gleam types**, so the types stay the single source of truth
+(ADR-014). Hand-written codecs drift: a field added to a decoder but not the
+type (or the reverse) passes `gleam build` and then fails dispatch-boundary
 validation at runtime. Generated codecs cannot drift — they are recomputed
-from the schemas, and `--check` turns any divergence into a CI failure.
+from the types, and `--check` turns any divergence into a CI failure.
+
+`schemas/*.json` is a **generated artifact** in this model — emitted from the
+types for the consumers that need a schema document (packaging validation,
+`aion input` skeletons, agents, HTTP clients, docs) — never authored.
 
 ## What it does
 
 ```sh
-aion codegen <project-dir>      # write src/<package>_io.gleam
-aion codegen <project-dir> --check   # CI gate: fail if the file is stale
+aion generate <project-dir>           # write every derived artifact
+aion generate <project-dir> --check   # CI gate: fail if any file is stale
 ```
 
-The command runs entirely locally. It:
+The command runs locally and drives the Gleam toolchain. It:
 
-1. validates `workflow.toml` (every referenced schema must exist, parse,
-   and live directly under `schemas/`),
-2. reads **every** `schemas/*.json` in filename order, preserving each
-   document's property order,
-3. writes one module, `src/<package>_io.gleam` (`<package>` is the `name`
-   from `gleam.toml`), containing — per schema — a Gleam type plus a
-   `<stem>_to_json` encoder and `<stem>_decoder` decoder pair built on
-   `gleam/json` and `gleam/dynamic/decode`.
+1. reads the boundary types declared in `src/<package>_io.gleam`
+   (`<package>` is the `name` from `gleam.toml`) via
+   `gleam export package-interface` — the compiler does the type reading,
+2. writes `src/<package>_codecs.gleam`: per type, a `<prefix>_to_json`
+   encoder, a `<prefix>_decoder`, and a typed `<prefix>_codec()` built on
+   `gleam/json`, `gleam/dynamic/decode`, and `aion/codec`,
+3. emits one `schemas/<snake_type>.json` document per public type, each
+   carrying a `$comment` generated marker,
+4. and — when the package declares activities via the `manifest()` its
+   `src/<package>_activities.gleam` exports — the typed
+   `activity.new` wrappers, the per-tier worker module
+   (`worker/worker.py` / `worker/src/main.rs`), the remote wire-compat
+   golden, the `workflow.toml` activities list, and a **write-once** test
+   scaffold (`test/<entry>_scaffold_test.gleam`, yours to fill in; never
+   overwritten). A package without an activities module skips this phase.
 
-Generation is deterministic: the same schemas always produce a
-byte-identical module (schema files in filename order, properties in
-document order). Nothing is written if any schema fails — there are no
-partial outputs.
+Generation is deterministic: the same types always produce byte-identical
+artifacts (types in name order, fields in declared order). Nothing is
+written if any type fails — there are no partial outputs.
+
+## The authored types module
+
+`src/<package>_io.gleam` is **types-only**: declaring a function, constant,
+or type alias in it is a loud error, because codecs are generated *from* the
+types, never hand-written beside them.
+
+| Authored Gleam type | Wire shape |
+| --- | --- |
+| single-constructor type, constructor named like the type, all fields labelled | JSON object; wire key = label, field order = declared order, `additionalProperties: false` |
+| multi-constructor type, all constructors zero-arity | JSON string; wire value = `snake_case` of the constructor with the type-name prefix stripped (`InputPlacementLocal` on `InputPlacement` → `"local"`; an unprefixed `Created` → `"created"`) |
+| `String` / `Int` / `Float` / `Bool` | `"string"` / `"integer"` / `"number"` / `"boolean"` |
+| `List(t)` | `"array"` with `items` |
+| `option.Option(t)` at field position | optional wire field: omitted from `required`, omitted from the wire when `None` |
+| reference to a sibling type in the same module | inlined structurally in the emitted schema; the codec calls the sibling's generated functions |
+
+**Everything else fails loudly** naming the module, type, and field. Out of
+scope in v1 (deliberately, not accidentally):
+
+- generic types, opaque types, type aliases,
+- cross-module field types (`Dict`, `birl.Time`, …), tuples, function types,
+- nested `Option` (`Option(Option(t))`, `List(Option(t))`),
+- unlabelled record fields, mixed-arity constructors,
+- recursive types (a cycle cannot be emitted as an inline JSON schema),
+- per-variant wire-string overrides (rename the constructor instead),
+- two type names deriving the same snake_case prefix.
 
 ## The do-not-edit contract
 
-The generated module starts with:
+The generated codecs module starts with:
 
 ```gleam
-//// Generated by aion codegen — do not edit; regenerate from schemas/.
+//// Generated by aion generate — do not edit; regenerate from the project's types module.
 ```
 
-Never edit (or reformat) the file by hand; change the schema and re-run
-`aion codegen`. In CI, run `aion codegen <project-dir> --check` — it exits
-non-zero naming the drifted file whenever the module on disk does not match
-what the schemas generate. A good habit is: edit schema → `aion codegen .`
-→ `gleam build` → commit both files together.
-
-## Supported schema subset (v1)
-
-| Schema construct | Generated Gleam |
-| --- | --- |
-| `"type": "object"` with `properties` (+ `required`, `additionalProperties: false` or absent) | record type, one constructor, one labelled field per property in document order |
-| nested object property | auxiliary record named by the property path (`workspace` inside `gate_input.json` → `GateInputWorkspace`) |
-| `"type": "string"` | `String` |
-| `"type": "integer"` | `Int` |
-| `"type": "number"` | `Float` (the JSON value must be float-formatted; `1` does not decode as `Float` on the BEAM) |
-| `"type": "boolean"` | `Bool` |
-| `"type": "array"` with `items` of a supported type | `List(t)`; an object/enum item type's name gains an `item` segment (`steps` → `InputStepsItem`) |
-| string `enum` | custom type, one constructor per value (`InputPlacementLocal`, ...), the exact wire string preserved by the codecs |
-| property not listed in `required` | `option.Option(t)`; omitted from the wire when `None` on encode, decoded via `decode.optional_field` |
-
-Top-level scalar/array schemas (e.g. an output schema of
-`{ "type": "string" }`) generate the encoder/decoder pair without a type
-declaration.
-
-Annotation and validation keywords that do not change the generated *type*
-are accepted and ignored — `$schema`, `title`, `description`, `examples`,
-`deprecated`, `minLength`/`maxLength`, `pattern`, `format`,
-`minimum`/`maximum`, `exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`,
-`minItems`/`maxItems`, `uniqueItems`. They still apply: the packaging-side
-schema enforces them at the dispatch boundary.
-
-**Everything else fails loudly** with a typed error naming the schema file
-and the JSON pointer of the offending construct. Out of scope in v1
-(deliberately, not accidentally):
-
-- `$ref` / `$defs` indirection,
-- `oneOf` / `anyOf` / `allOf` / `not` (including const-tagged unions),
-- `const` and `default`,
-- `additionalProperties` other than `false` (open objects),
-- type unions (`"type": ["string", "null"]`) and `"type": "null"`,
-- non-string enums, boolean schemas.
-
-Naming constraints, also enforced loudly: schema file stems and property
-names must be valid Gleam snake_case identifiers (and not reserved words);
-enum values must be letters/digits separated by `_` or `-`. If two schema
-locations derive the same Gleam name, generation fails naming both origins.
-
-## Example
-
-`schemas/event.json`:
+and every emitted schema carries:
 
 ```json
-{
-  "type": "object",
-  "required": ["kind", "tags"],
-  "additionalProperties": false,
-  "properties": {
-    "kind": { "type": "string", "enum": ["created", "closed_out"] },
-    "tags": { "type": "array", "items": { "type": "string" } },
-    "note": { "type": "string" }
-  }
-}
+"$comment": "Generated by aion generate from src/<package>_io.gleam — do not edit; run `aion generate`."
 ```
 
-generates (excerpt):
+Never edit these by hand; change the type and re-run `aion generate`. In CI,
+run `aion generate <project-dir> --check` — it exits non-zero naming the
+drifted file whenever any artifact on disk does not match what the types
+generate. A good habit: edit type → `aion generate .` → `gleam build` →
+commit the type and its regenerated artifacts together.
 
-```gleam
-pub type Event {
-  Event(
-    kind: EventKind,
-    tags: List(String),
-    note: option.Option(String),
-  )
-}
+A marked schema whose type was renamed away is removed by the next write
+run; a **stray unmarked `*.json` in `schemas/` is always an error** — it is
+either a leftover authored schema (migrate it, below) or a hand-written file
+that would be a second source of truth.
 
-pub type EventKind {
-  EventKindCreated
-  EventKindClosedOut
-}
+## Migrating a schema-first project (`aion codegen` is gone)
 
-pub fn event_to_json(value: Event) -> json.Json
-pub fn event_decoder() -> decode.Decoder(Event)
-```
+The `aion codegen` subcommand (schemas → io module) has been **removed**:
+authored `schemas/*.json` was the schema-first source of truth, and
+types-first replaces it. The migration is mechanical, because every
+schema-first project already has the generated io module — which *is* the
+types module:
 
-Use the pair anywhere a codec is needed — for example with the SDK's
-`aion/codec`:
+1. **Make the io module authored and types-only.** In
+   `src/<package>_io.gleam`, delete the `//// Generated by aion codegen`
+   header and delete every `pub fn` (the `*_to_json`/`*_decoder` functions —
+   they move to the generated codecs module). Keep the `pub type`
+   declarations exactly as they are; they are now yours.
+2. **Delete the authored schemas.** `rm schemas/*.json` — they become
+   emitted artifacts.
+3. **Run `aion generate .`** It regenerates the codecs module (now carrying
+   the encoders/decoders), the wrappers/worker/golden, and emits marked
+   `schemas/*.json` in place of the authored ones. The emitted file names
+   match the old ones (`OrderInput` → `schemas/order_input.json`), so
+   `workflow.toml`'s `input_schema`/`output_schema` paths keep working.
+4. **Fix any direct io-function call sites.** Code that called
+   `<package>_io.<prefix>_to_json(..)` now calls
+   `<package>_codecs.<prefix>_to_json(..)`; the types keep importing from
+   `<package>_io`.
+5. **Review the diff.** Wire shapes are unchanged (the wire-compat golden
+   proves it), but validation-only keywords a type cannot express
+   (`minLength`, `minimum`, …) are dropped from the emitted schemas — the
+   type system owns structure; value constraints are not part of v1.
+6. `gleam build`, `gleam test`, commit everything together.
 
-```gleam
-codec.json_codec(my_flow_io.event_to_json, my_flow_io.event_decoder())
-```
+`examples/order-saga` was migrated exactly this way and is pinned in CI with
+`aion generate --check`.
+
+Note on enum wire strings: types-first derives them canonically from the
+constructor names (prefix-stripped snake_case). A schema-first project whose
+enum wire values matched its generated constructors — every project generated
+by `aion codegen` did — migrates with identical wire strings; the regenerated
+wire-compat golden proves it either way.
+
+On a fresh clone of a types-first project the emitted schemas may be absent;
+`aion package`/`aion deploy` will tell you to run `aion generate` first.
 
 ## When to run it
 
-- After every schema edit (then `gleam build` and commit module + schema
-  together).
-- In CI, before the build: `aion codegen . --check` — a drifted or
-  hand-edited module fails the pipeline naming the file.
+- After every edit to the types module or the activity declarations (then
+  `gleam build` and commit source + regenerated artifacts together).
+- In CI, before the build: `aion generate . --check` — a drifted or
+  hand-edited artifact fails the pipeline naming the file.

@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",
@@ -24,8 +24,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-integrations"
+version = "0.8.0"
+dependencies = [
+ "aion-core",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "aion-proto"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
  "aion-proto-generated",
@@ -41,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "aion-proto-generated"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -54,9 +67,10 @@ dependencies = [
 
 [[package]]
 name = "aion-worker"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aion-core",
+ "aion-integrations",
  "aion-proto",
  "async-trait",
  "futures",
