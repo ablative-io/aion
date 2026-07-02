@@ -226,10 +226,12 @@ fn response_into_ack(response: JsonRpcResponse) -> Result<(), HarnessError> {
 /// - `stop.reason == "completed"` → the neutral [`Payload`] is the envelope's `output` VALUE
 ///   serialized as JSON (a JSON string for schema-less runs; the JSON object itself when Norn ran
 ///   with an output schema — never stringified twice),
-/// - any other `stop.reason` → [`HarnessError::Harness`] carrying the whole `stop` object (reason
-///   + per-variant detail) verbatim, so the caller can judge retry,
+/// - any other `stop.reason` → [`HarnessError::Harness`] carrying the whole `stop` object
+///   (reason plus per-variant detail) verbatim — and the partial `output`, when the envelope
+///   carried one — so the caller can judge retry (or accept the partial),
 /// - a `null` result (a prompt that resolved entirely to a local slash command) →
 ///   [`HarnessError::Harness`] — an agent activity must produce output,
+/// - a result-less, error-less Response (a broken peer) → [`HarnessError::Protocol`],
 /// - a non-envelope result → [`HarnessError::Protocol`] naming what was missing.
 ///
 /// An error object on the Response surfaces as [`HarnessError::Harness`].
@@ -240,12 +242,17 @@ fn response_into_payload(response: JsonRpcResponse) -> Result<Payload, HarnessEr
             error.code, error.message
         )));
     }
-    // Per the driven-mode contract a prompt that resolves entirely to a local slash command is
-    // answered with a success Response whose `result` is null. On this transport a JSON `null`
-    // result and an absent one both decode to `None` (and per JSON-RPC a response carries exactly
-    // one of result/error), so both land here.
+    // The envelope type keeps key presence: `None` means the frame carried NO `result` key — with
+    // `error` also absent that is a broken peer, not a payload. A PRESENT `"result": null`
+    // (`Some(Value::Null)`) is the contract's answer for a prompt that resolved entirely to a
+    // local slash command.
     let result = match response.result {
-        None | Some(serde_json::Value::Null) => {
+        None => {
+            return Err(HarnessError::protocol(
+                "run/execute response carried neither result nor error",
+            ));
+        }
+        Some(serde_json::Value::Null) => {
             return Err(HarnessError::harness(
                 "run resolved to a local slash command; no output",
             ));
@@ -352,12 +359,13 @@ mod tests {
         })
     }
 
-    /// A non-completed stop envelope with the given internally-tagged `stop` object.
-    fn stopped_envelope(stop: &serde_json::Value) -> serde_json::Value {
+    /// A non-completed stop envelope with the given internally-tagged `stop` object and `output`
+    /// (`null` for the reasons that carry none; the partial for those that may).
+    fn stopped_envelope(stop: &serde_json::Value, output: &serde_json::Value) -> serde_json::Value {
         json!({
             "envelope_version": 1,
             "stop": stop,
-            "output": null,
+            "output": output,
             "model": "mock-model",
             "session_id": "step-042",
         })
@@ -580,37 +588,62 @@ mod tests {
     }
 
     #[test]
-    fn each_non_completed_stop_reason_surfaces_with_its_detail_verbatim() {
+    fn each_non_completed_stop_reason_surfaces_with_its_detail_and_partial_verbatim() {
         // Every non-completed reason is a harness error whose message carries the reason AND its
-        // per-variant detail fields — the caller judges retry on that text.
-        let cases: Vec<(serde_json::Value, Vec<&str>)> = vec![
+        // per-variant detail fields — the caller judges retry on that text. The reasons that may
+        // hold a partial `output` (timed_out / truncated / schema_unreachable) must carry it in
+        // the same message, labelled, so an accept-the-partial policy stays reachable.
+        let cases: Vec<(serde_json::Value, serde_json::Value, Vec<&str>)> = vec![
             (
                 json!({ "reason": "schema_unreachable", "attempts": 3,
                         "validation_errors": ["missing field `verdict`"] }),
+                json!({ "notes": "best attempt" }),
                 vec![
                     "schema_unreachable",
                     "attempts",
                     "3",
                     "validation_errors",
                     "missing field `verdict`",
+                    "partial output: {\"notes\":\"best attempt\"}",
                 ],
             ),
             (
                 json!({ "reason": "max_iterations" }),
+                json!(null),
                 vec!["max_iterations"],
             ),
             (
                 json!({ "reason": "timed_out", "elapsed_ms": 300_000, "iterations": 12 }),
-                vec!["timed_out", "elapsed_ms", "300000", "iterations", "12"],
+                json!("a half-written summary"),
+                vec![
+                    "timed_out",
+                    "elapsed_ms",
+                    "300000",
+                    "iterations",
+                    "12",
+                    "partial output: \"a half-written summary\"",
+                ],
             ),
-            (json!({ "reason": "cancelled" }), vec!["cancelled"]),
+            (
+                json!({ "reason": "cancelled" }),
+                json!(null),
+                vec!["cancelled"],
+            ),
             (
                 json!({ "reason": "truncated", "truncation": "max_tokens", "iterations": 2 }),
-                vec!["truncated", "truncation", "max_tokens", "iterations", "2"],
+                json!("cut off mid-sente"),
+                vec![
+                    "truncated",
+                    "truncation",
+                    "max_tokens",
+                    "iterations",
+                    "2",
+                    "partial output: \"cut off mid-sente\"",
+                ],
             ),
         ];
-        for (stop, fragments) in cases {
-            let error = payload_of(stopped_envelope(&stop)).unwrap_err();
+        for (stop, output, fragments) in cases {
+            let error = payload_of(stopped_envelope(&stop, &output)).unwrap_err();
             assert!(
                 matches!(error, HarnessError::Harness { .. }),
                 "a non-completed stop is a harness error, got {error:?}"
@@ -620,6 +653,12 @@ mod tests {
                 assert!(
                     message.contains(fragment),
                     "stop {stop} must surface `{fragment}` verbatim, got: {message}"
+                );
+            }
+            if output.is_null() {
+                assert!(
+                    !message.contains("partial output"),
+                    "a null output must not fabricate a partial: {message}"
                 );
             }
         }
@@ -639,6 +678,52 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "harness reported failure: run resolved to a local slash command; no output"
+        );
+    }
+
+    #[test]
+    fn a_response_with_neither_result_nor_error_is_a_protocol_error() {
+        // A frame with NO `result` key and no `error` is a broken peer — distinct from the legal
+        // `"result": null` slash-command answer above.
+        let response: JsonRpcResponse =
+            serde_json::from_value(json!({ "jsonrpc": "2.0", "id": 1 })).unwrap();
+        let error = response_into_payload(response).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Protocol { .. }),
+            "a result-less, error-less response is a protocol error, got {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("carried neither result nor error"),
+            "the error names the broken frame: {error}"
+        );
+    }
+
+    #[test]
+    fn completed_envelope_with_present_null_output_passes_null_through() {
+        // `"output": null` on a completed envelope is a legal null output — the payload is JSON
+        // null, never an error.
+        let payload = payload_of(completed_envelope(&json!(null))).unwrap();
+        assert_eq!(payload.to_json().unwrap(), json!(null));
+    }
+
+    #[test]
+    fn completed_envelope_missing_the_output_key_is_a_protocol_error() {
+        // The contract says completed ALWAYS carries `output`; an absent key is off-contract.
+        let error = payload_of(json!({
+            "envelope_version": 1,
+            "stop": { "reason": "completed" },
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Protocol { .. }),
+            "a completed envelope without output is a protocol error, got {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("completed envelope carried no output field")
         );
     }
 
