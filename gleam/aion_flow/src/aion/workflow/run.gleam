@@ -1,6 +1,7 @@
 //// workflow.run (recorded activity dispatch) + now + random (determinism bindings)
 
 import aion/activity.{type Activity}
+import aion/codec
 import aion/duration
 import aion/error
 import aion/internal/ffi
@@ -54,8 +55,8 @@ pub fn run_with_default(
   let encoded_input = input_codec.encode(activity.input(activity_value))
 
   case
-    ffi.dispatch_activity(
-      activity.name(activity_value),
+    dispatch(
+      activity_value,
       encoded_input,
       activity_config(activity_value, workflow_default_task_queue),
     )
@@ -77,6 +78,61 @@ pub fn run_with_default(
       }
     }
     Error(raw_error) -> Error(activity_error(raw_error))
+  }
+}
+
+/// Route one dispatch on the activity's selected execution tier.
+///
+/// `Some(InVm)` crosses the arity-4 in-VM wire, carrying a thunk that composes
+/// the captured input, the runner, and the output codec — the engine records
+/// the same `ActivityScheduled`/`ActivityStarted` pair as a remote dispatch
+/// and runs the thunk in a linked child process. Every other selection
+/// (absence, or a remote tier) keeps today's arity-3 remote wire untouched.
+/// Both paths return the same correlation id and converge on the same
+/// `await_activity_result`, so replay is byte-identical across tiers.
+fn dispatch(
+  activity_value: Activity(i, o),
+  encoded_input: String,
+  config: String,
+) -> Result(String, String) {
+  case activity.selected_tier(activity_value) {
+    Some(activity.InVm) ->
+      ffi.dispatch_activity_in_vm(
+        activity.name(activity_value),
+        encoded_input,
+        config,
+        in_vm_thunk(activity_value),
+      )
+    // Deliberately exhaustive (no `_` arm): a future `Tier` variant must make
+    // an explicit routing decision here instead of silently defaulting to the
+    // remote wire.
+    Some(activity.RemotePython) | Some(activity.RemoteRust) | None ->
+      ffi.dispatch_activity(
+        activity.name(activity_value),
+        encoded_input,
+        config,
+      )
+  }
+}
+
+/// Build the zero-argument thunk an in-VM dispatch hands the engine.
+///
+/// The thunk closes over the typed input, the runner, and the output codec, so
+/// the child process needs no input decode: it runs the runner and encodes the
+/// outcome. Errors are encoded to the EXACT prefixed reason strings the
+/// `activity_error` parser below consumes, preserving `ActivityError` kind
+/// fidelity across the process boundary with zero new conventions.
+fn in_vm_thunk(
+  activity_value: Activity(i, o),
+) -> fn() -> Result(String, String) {
+  let runner = activity.runner(activity_value)
+  let input = activity.input(activity_value)
+  let output_codec = activity.output_codec(activity_value)
+  fn() {
+    case runner(input) {
+      Ok(output) -> Ok(output_codec.encode(output))
+      Error(runner_error) -> Error(encode_activity_error(runner_error))
+    }
   }
 }
 
@@ -163,6 +219,33 @@ fn parse_int(raw: String, label: String) -> Result(Int, error.EngineError) {
   }
 }
 
+/// Encode a runner's `ActivityError` to the prefixed reason vocabulary that
+/// `activity_error` below parses — the exact inverse, so kind fidelity
+/// (`retryable:` vs `terminal:` and friends) survives the in-VM child-process
+/// boundary. Detail payloads are dropped, matching what the parser
+/// reconstructs (`details: ""`) for remote failures on the same wire. An
+/// `ActivityEngineFailure` crosses unprefixed: the parser's fallthrough arm
+/// maps any unprefixed reason back to `ActivityEngineFailure`.
+fn encode_activity_error(runner_error: error.ActivityError) -> String {
+  case runner_error {
+    error.Retryable(message: message, details: _) -> "retryable:" <> message
+    error.Terminal(message: message, details: _) -> "terminal:" <> message
+    error.ActivityTimedOut(error.TimedOut(message: message)) ->
+      "timeout:" <> message
+    error.ActivityCancelled(error.Cancelled(reason: reason)) ->
+      "cancelled:" <> reason
+    error.ActivityNonDeterministic(error.NonDeterminismViolation(
+      message: message,
+    )) -> "non_determinism:" <> message
+    error.ActivityDecodeFailed(codec.DecodeError(reason: reason, path: path)) ->
+      "terminal:activity output decode failed at "
+      <> string.join(path, ".")
+      <> ": "
+      <> reason
+    error.ActivityEngineFailure(message: message) -> message
+  }
+}
+
 fn activity_error(raw: String) -> error.ActivityError {
   case string.starts_with(raw, "retryable:") {
     True -> error.Retryable(message: string.drop_start(raw, 10), details: "")
@@ -219,6 +302,17 @@ fn activity_config(
     // Optional per-activity node affinity (NODE-4). `null` = no pin (dispatch to
     // any worker in the pool); there is no workflow-level node default to carry.
     #("node", optional_string(activity.selected_node(activity_value))),
+    // Optional execution-tier selection (canonical `tier_to_string` values).
+    // `null` = no selection = the remote wire. The engine's remote dispatch
+    // rejects `"in_vm"` arriving on the arity-3 wire as a defense: an in-VM
+    // selection must cross the arity-4 wire that carries the thunk.
+    #(
+      "tier",
+      optional_string(option.map(
+        activity.selected_tier(activity_value),
+        activity.tier_to_string,
+      )),
+    ),
   ])
   |> json.to_string
 }

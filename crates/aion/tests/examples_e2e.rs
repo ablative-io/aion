@@ -31,6 +31,7 @@ const EXAMPLE_PROJECTS: &[&str] = &[
     "order-fulfillment",
     "hello-world",
     "stacked-dev",
+    "invm-demo",
 ];
 
 #[tokio::test]
@@ -58,6 +59,54 @@ async fn every_example_archive_loads_into_the_engine() -> Result<(), Box<dyn std
         );
         engine.shutdown()?;
     }
+    Ok(())
+}
+
+/// The in-VM demo runs end-to-end with NO activity dispatcher configured:
+/// its single `shout` activity is `execution_tier(InVm)`, so the runner
+/// executes in a linked child process inside the engine — the whole point of
+/// the example is that no worker (and no dispatcher seam) exists.
+#[tokio::test]
+async fn invm_demo_example_runs_end_to_end_without_a_dispatcher()
+-> Result<(), Box<dyn std::error::Error>> {
+    let package = example_build::built_package("examples/invm-demo", "invm_demo")?;
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .load_workflows(package)
+        .build()
+        .await?;
+
+    let input = Payload::from_json(&json!({ "name": "sydney" }))?;
+    let handle = engine
+        .start_workflow(
+            "invm_demo",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
+        .await?;
+    let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
+    let payload = result.map_err(|error| format!("invm-demo failed: {error:?}"))?;
+    let output: serde_json::Value = serde_json::from_slice(payload.bytes())?;
+    assert_eq!(output, json!("SYDNEY!!!"));
+
+    // The in-VM dispatch recorded remote-shaped history: Scheduled, Started,
+    // and Completed for the single `shout` activity.
+    let history = store.read_history(handle.workflow_id()).await?;
+    assert!(history.iter().any(|event| matches!(
+        event,
+        Event::ActivityScheduled { activity_type, .. } if activity_type == "shout"
+    )));
+    assert!(
+        history
+            .iter()
+            .any(|event| matches!(event, Event::ActivityCompleted { .. }))
+    );
+
+    engine.shutdown()?;
     Ok(())
 }
 

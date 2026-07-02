@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+
+[[workflow]]
+entry_module = "invm_demo"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["shout"]
+output = "invm-demo.aion"

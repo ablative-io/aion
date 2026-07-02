@@ -173,6 +173,28 @@ pub(super) fn resolve_node(config: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Read the OPTIONAL execution-tier selection from a dispatch `config` JSON
+/// (the SDK's `activity_config` emits canonical `tier_to_string` values, or
+/// JSON `null` for no selection).
+///
+/// This is a routing DEFENSE seam, not a router: the remote arity-3 wire and
+/// the collect fan-out reject `"in_vm"` here (an in-VM dispatch must cross the
+/// arity-4 wire that carries the runner thunk), and every other value —
+/// absence, `null`, a remote tier, malformed JSON, a non-string — resolves to
+/// `None`-or-passthrough exactly like [`resolve_node`]'s "never fail a
+/// dispatch over routing metadata" stance. Remote tier VALUES are display
+/// metadata to the engine today.
+pub(super) fn config_tier(config: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(config).ok()?;
+    value
+        .get("tier")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The canonical in-VM tier wire value (`activity.tier_to_string(InVm)`).
+pub(super) const IN_VM_TIER: &str = "in_vm";
+
 pub(super) fn runtime_context(state: &EngineNifState) -> Result<RuntimeContext, NifContextError> {
     let guard = state
         .runtime_context
@@ -303,7 +325,7 @@ pub(super) fn activity_id_from_correlation(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_node, resolve_task_queue};
+    use super::{config_tier, resolve_node, resolve_task_queue};
 
     /// Build the activity-dispatch config the SDK's `activity_config` emits,
     /// with the two task-queue selection fields set to the supplied JSON.
@@ -438,5 +460,27 @@ mod tests {
     fn malformed_config_resolves_to_no_node_affinity() {
         // Invalid JSON never takes down a dispatch over routing metadata.
         assert_eq!(resolve_node("{not json"), None);
+    }
+
+    #[test]
+    fn tier_selection_is_read_from_config() {
+        assert_eq!(
+            config_tier(r#"{"labels":{},"tier":"in_vm"}"#),
+            Some("in_vm".to_owned())
+        );
+        assert_eq!(
+            config_tier(r#"{"labels":{},"tier":"remote_rust"}"#),
+            Some("remote_rust".to_owned())
+        );
+    }
+
+    #[test]
+    fn absent_null_or_malformed_tier_resolves_to_no_selection() {
+        // JSON null (the SDK's "no selection"), absence (a config predating the
+        // field), a non-string, and malformed JSON all read as no selection.
+        assert_eq!(config_tier(r#"{"labels":{},"tier":null}"#), None);
+        assert_eq!(config_tier(r#"{"labels":{}}"#), None);
+        assert_eq!(config_tier(r#"{"tier":7}"#), None);
+        assert_eq!(config_tier("{not json"), None);
     }
 }

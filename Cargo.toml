@@ -74,7 +74,8 @@ fs4 = "1.1"
 notify = "8.2"
 saffron = { version = "0.1", features = ["std"] }
 hostname = "0.4"
-beamr = { version = "0.11.0", features = ["json"] }
+# 0.12.0 adds `Scheduler::spawn_link_closure` (in-VM activity tier).
+beamr = { version = "0.12.0", features = ["json"] }
 haematite = "0.4.0"
 liminal = { package = "liminal-rs", version = "0.2.2" }
 liminal-sdk = "0.2.2"

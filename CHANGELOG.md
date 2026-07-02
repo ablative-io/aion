@@ -22,6 +22,28 @@ whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
   its wire shapes are unchanged (pinned by the regenerated wire-compat
   golden and a semantic schema-equivalence gate).
 
+### Engine — in-VM execution tier (CUT 3)
+
+- **`InVm` activities now execute for real**: a new engine NIF
+  `aion_flow_ffi:dispatch_activity_in_vm/4` spawns the SDK-composed runner
+  thunk as a LINKED child process of the workflow process (beamr 0.12.0's
+  `Scheduler::spawn_link_closure`, which deep-copies the thunk's environment
+  into the child heap). Recorded-result semantics are identical to remote
+  activities by construction: the same ordinal/correlation allocation, the
+  same `ActivityScheduled`/`ActivityStarted`/terminal shape (task queue,
+  node, and attempt stamped; NO event-schema change — the tier is routing,
+  not recorded), the same correlation-keyed completion delivery the await
+  path records. The runner runs once live; replay returns the recording
+  without re-execution; a runner crash surfaces as a terminal
+  `ActivityFailed` (the workflow process survives); node death after
+  `Started` recovers through the existing replay-reopen path (the SDK
+  re-supplies the thunk on every replay); `with_timeout` scope expiry over a
+  hanging runner records the durable timeout failure unchanged. Defenses:
+  tier `in_vm` on the arity-3 remote wire and in-VM members in `collect_*`
+  fan-outs are refused before anything is recorded. `aion_flow` gains
+  `activity.execution_tier`/`selected_tier` (see its own changelog). New
+  worker-free example: `examples/invm-demo`.
+
 ## 0.6.1 — 2026-06-13
 
 ### Engine (via beamr 0.6.1)

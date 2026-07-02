@@ -54,6 +54,10 @@ fn dispatch_activity(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Te
     super::nif_activity_dispatch::dispatch_activity_impl(args, ctx)
 }
 
+fn dispatch_activity_in_vm(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
+    super::nif_activity_in_vm::dispatch_activity_in_vm_impl(args, ctx)
+}
+
 fn await_activity_result(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Term> {
     super::nif_activity_dispatch::await_activity_result_impl(args, ctx)
 }
@@ -86,6 +90,14 @@ pub(super) fn engine_nif_entries() -> Vec<NifEntry> {
         NifEntry::new(
             Mfa::new(FFI_MODULE, "dispatch_activity", 3),
             dispatch_activity,
+        ),
+        // The in-VM wire is non-dirty by the same reasoning as the remote
+        // wire: the NIF itself only resolves/records and spawns — the runner
+        // executes in its own linked child process, and the blocking exit
+        // wait lives on the Tokio blocking pool, never a scheduler thread.
+        NifEntry::new(
+            Mfa::new(FFI_MODULE, "dispatch_activity_in_vm", 4),
+            dispatch_activity_in_vm,
         ),
         NifEntry::new(
             Mfa::new(FFI_MODULE, "await_activity_result", 1),
@@ -235,10 +247,11 @@ mod tests {
             .map(|entry| entry.mfa.display())
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(entries.len(), 22);
+        assert_eq!(entries.len(), 23);
         assert_eq!(unique.len(), entries.len());
         for normal_nif in [
             "dispatch_activity",
+            "dispatch_activity_in_vm",
             "await_activity_result",
             "workflow_id",
             "now",
@@ -267,6 +280,7 @@ mod tests {
                 .filter(|entry| !matches!(
                     entry.mfa.function.as_str(),
                     "dispatch_activity"
+                        | "dispatch_activity_in_vm"
                         | "await_activity_result"
                         | "workflow_id"
                         | "now"
@@ -287,6 +301,7 @@ mod tests {
                 .all(|entry| entry.is_dirty)
         );
         for name in [
+            "dispatch_activity_in_vm",
             "collect_all",
             "collect_race",
             "collect_map",

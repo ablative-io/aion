@@ -172,7 +172,7 @@ name = "aion-nif"
 version = "0.8.0"
 dependencies = [
  "aion-core",
- "beamr",
+ "beamr 0.12.0",
  "serde",
  "serde_json",
 ]
@@ -232,7 +232,7 @@ dependencies = [
  "aion-store-haematite",
  "aion-store-libsql",
  "async-trait",
- "beamr",
+ "beamr 0.12.0",
  "chrono",
  "dashmap",
  "fs4",
@@ -671,6 +671,38 @@ name = "beamr"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0347be985ae9cc2291819b79f7b2336ec0b2390b6edbbbad57d08239a7f789b6"
+dependencies = [
+ "base64 0.22.1",
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
+ "cranelift-native",
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-queue",
+ "dashmap",
+ "flate2",
+ "getrandom 0.4.2",
+ "gleam-types",
+ "io-uring",
+ "libc",
+ "md5",
+ "num_cpus",
+ "rand 0.10.1",
+ "rustix 1.1.4",
+ "serde_json",
+ "tokio",
+ "unicode-segmentation",
+ "web-time",
+ "zstd",
+]
+
+[[package]]
+name = "beamr"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66e317cc4d3c11ffd5a95efd821dbace7c0ff9086c457712533e71d996edbf46"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -1929,7 +1961,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4036b108a66180e1fcfbf8802eb570b49def7e96c41f3406d900c37314a001c"
 dependencies = [
- "beamr",
+ "beamr 0.11.0",
  "blake3",
  "crc32fast",
  "dashmap",
@@ -2838,7 +2870,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb368857f287987e3c8629eaccceac5b88f0390287d545f0bea94fcead2b5110"
 dependencies = [
  "async-trait",
- "beamr",
+ "beamr 0.11.0",
  "chrono",
  "haematite",
  "jsonschema",
@@ -2870,7 +2902,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55a6e464003f2e57b65ef383f1feade00059fcd00ff0b94b383158e7c7d07c16"
 dependencies = [
  "anyhow",
- "beamr",
+ "beamr 0.11.0",
  "clap",
  "haematite",
  "liminal-rs",

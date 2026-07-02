@@ -75,6 +75,18 @@ pub struct RuntimeHandle {
     nif_state: Arc<super::nif_state::EngineNifState>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    /// Live in-VM activity children per workflow pid.
+    ///
+    /// A BEAM link tears a child down when its workflow dies ABNORMALLY, but
+    /// a `Normal` exit never propagates through links (classic BEAM
+    /// semantics), so a workflow that completes while an in-VM runner is
+    /// still executing — e.g. after a `with_timeout` expiry abandoned the
+    /// await — would orphan the child forever, pinning its exit watcher's
+    /// blocking thread. The workflow process monitor kills any children
+    /// still registered here when the workflow exits (for any reason), and
+    /// [`Self::shutdown`] kills every remaining child so no watcher outlives
+    /// the scheduler.
+    in_vm_children: Arc<dashmap::DashMap<Pid, std::collections::HashSet<Pid>>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
     signal_delivery: SignalDeliveryConfig,
@@ -129,6 +141,7 @@ impl RuntimeHandle {
             nif_state,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            in_vm_children: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
@@ -285,6 +298,98 @@ impl RuntimeHandle {
         Ok(pid)
     }
 
+    /// Spawn an in-VM activity child process linked to its workflow parent,
+    /// running a zero-arity closure (the SDK-composed runner thunk).
+    ///
+    /// beamr deep-copies the closure's environment into the child's own heap
+    /// before the child becomes runnable (`Scheduler::spawn_link_closure`), so
+    /// no spawn heap is retained here and the caller's heap may move (GC) the
+    /// moment this returns. The child does not trap exits: workflow
+    /// cancellation propagates through the link, and an abnormal child exit is
+    /// observed by the in-VM completion watcher via [`Self::in_vm_child_outcome`].
+    ///
+    /// No parent readiness wait is performed: the only production caller is
+    /// the dispatch NIF executing ON the parent process, which is therefore
+    /// already materialized (a readiness poll on an `Executing` slot would be
+    /// pointless at best).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Runtime`] when the parent is not live, the term
+    /// is not a zero-arity closure, or its module cannot be resolved.
+    pub fn spawn_activity_closure(
+        &self,
+        parent_pid: Pid,
+        closure_term: Term,
+    ) -> Result<Pid, EngineError> {
+        self.release_dead_spawn_heaps();
+        self.ensure_live_pid(parent_pid)?;
+        let pid = self
+            .scheduler
+            .spawn_link_closure(parent_pid, closure_term)
+            .map_err(runtime_error_from_display)?;
+        self.record_spawned_pid(pid);
+        self.in_vm_children
+            .entry(parent_pid)
+            .or_default()
+            .insert(pid);
+        // Close the external-kill registration race: if the workflow died
+        // between the liveness check above and this registration, the
+        // monitor's `kill_in_vm_children` sweep may already have run (and
+        // beamr's link may never have been established — a caller that died
+        // mid-spawn yields an UNLINKED child), which would leave a hanging
+        // runner alive until engine shutdown. Re-checking AFTER registration
+        // makes both orderings safe: a parent death after this point observes
+        // the registration and is swept by the monitor; a death before it is
+        // torn down here (both kill paths are idempotent — the sweep guards
+        // with `is_live`).
+        if !self.is_live(parent_pid) {
+            self.kill_in_vm_children(parent_pid);
+            return Err(EngineError::Runtime {
+                reason: format!(
+                    "in-vm activity child spawn: parent workflow process {parent_pid} exited during spawn"
+                ),
+            });
+        }
+        Ok(pid)
+    }
+
+    /// Drop a finished in-VM child from its workflow's teardown set (called
+    /// by the exit watcher once the child's outcome is decoded).
+    pub(crate) fn deregister_in_vm_child(&self, parent_pid: Pid, child_pid: Pid) {
+        if let Some(mut children) = self.in_vm_children.get_mut(&parent_pid) {
+            children.remove(&child_pid);
+        }
+        self.in_vm_children
+            .remove_if(&parent_pid, |_, children| children.is_empty());
+    }
+
+    /// Kill every in-VM activity child still registered for `workflow_pid`.
+    ///
+    /// Invoked by the workflow process monitor on workflow exit: a `Normal`
+    /// exit does not propagate through BEAM links, so a completed workflow
+    /// would otherwise orphan a still-running runner (and pin its exit
+    /// watcher's blocking thread forever). Killing writes the child's exit
+    /// tombstone, which unblocks the watcher; its delivery to the dead
+    /// workflow is refused and nothing is retained.
+    pub(crate) fn kill_in_vm_children(&self, workflow_pid: Pid) {
+        let Some((_, children)) = self.in_vm_children.remove(&workflow_pid) else {
+            return;
+        };
+        for child_pid in children {
+            if self.is_live(child_pid) {
+                tracing::debug!(
+                    workflow_pid,
+                    child_pid,
+                    "killing orphaned in-vm activity child on workflow exit"
+                );
+                self.scheduler
+                    .terminate_process(child_pid, ExitReason::Kill);
+            }
+            self.release_spawn_heaps(child_pid);
+        }
+    }
+
     /// Return whether the registered native activity entry is dirty for arity 1.
     #[must_use]
     pub fn is_dirty(&self, module: &str, function: &str) -> bool {
@@ -362,6 +467,19 @@ impl RuntimeHandle {
         // lost wakeups for a running scheduler, and pending follow-ups are
         // moot once the scheduler stops.
         self.wake_confirmer.shutdown();
+        // Kill every still-live in-VM activity child BEFORE stopping the
+        // scheduler: the kill writes each child's exit tombstone while the
+        // scheduler can still process it, releasing the exit watchers'
+        // blocking threads (`run_until_exit` polls tombstones forever and
+        // would otherwise pin its thread past this shutdown).
+        let workflow_pids: Vec<Pid> = self
+            .in_vm_children
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+        for workflow_pid in workflow_pids {
+            self.kill_in_vm_children(workflow_pid);
+        }
         self.scheduler.shutdown();
         self.spawn_heaps.clear();
         Ok(())
@@ -651,6 +769,8 @@ fn register_all_bifs(
 }
 
 mod delivery;
+
+pub(crate) use delivery::InVmChildOutcome;
 
 #[cfg(test)]
 #[path = "handle/test_support.rs"]
