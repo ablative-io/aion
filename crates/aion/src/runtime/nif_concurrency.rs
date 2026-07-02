@@ -70,13 +70,27 @@ fn decode_spec_list(
         let encoded = decode_string_arg(head).map_err(|error| {
             error_result_term(ctx, &format!("{label}: activity spec: {error}")).unwrap_or(Term::NIL)
         })?;
-        let spec = serde_json::from_str(&encoded).map_err(|error| {
+        let spec: ActivitySpec = serde_json::from_str(&encoded).map_err(|error| {
             error_result_term(
                 ctx,
                 &format!("{label}: invalid activity spec JSON: {error}"),
             )
             .unwrap_or(Term::NIL)
         })?;
+        // Defense twin of the arity-3 dispatch wire: fan-out members dispatch
+        // remotely and carry no runner thunk, so an in-VM selection is refused
+        // at decode time — before any ordinal is pinned or event recorded.
+        if spec.selects_in_vm() {
+            return Err(error_result_term(
+                ctx,
+                &format!(
+                    "{label}: activity {} selects tier in_vm — in-VM activities cannot \
+                     join a collect fan-out (dispatch them individually via workflow.run)",
+                    spec.spec_name()
+                ),
+            )
+            .unwrap_or(Term::NIL));
+        }
         specs.push(spec);
         tail = next_tail;
     }

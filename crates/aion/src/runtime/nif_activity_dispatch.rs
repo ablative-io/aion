@@ -33,6 +33,18 @@ pub(super) fn dispatch_activity_impl(
         )
         .unwrap_or(Term::NIL));
     };
+    // Defense: an in-VM selection must cross the arity-4 wire that carries the
+    // runner thunk. Refused BEFORE any ordinal allocation or resolve, so
+    // nothing is recorded.
+    if super::nif_activity::config_tier(&config).as_deref() == Some(super::nif_activity::IN_VM_TIER)
+    {
+        return Ok(error_result_term(
+            ctx,
+            "dispatch_activity: tier in_vm cannot cross the remote dispatch wire — \
+             in-VM dispatch requires dispatch_activity_in_vm/4 carrying the runner thunk",
+        )
+        .unwrap_or(Term::NIL));
+    }
     let Some(pid) = ctx.pid() else {
         return Ok(
             error_result_term(ctx, "dispatch_activity: missing calling process pid")
@@ -146,9 +158,17 @@ fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
 ///
 /// The retry executor (unbuilt; the retry POLICY rides in the `config` JSON,
 /// `gleam/aion_flow/src/aion/workflow/run.gleam`, and is consumed by nothing
-/// yet) re-invokes with the incremented attempt when it lands — the wire and
-/// the [`ActivityDispatcher`] seam are ready for it. This is the single
-/// documented producer-side constant; no consumer guesses an attempt.
+/// yet — for EVERY tier, in-VM included) re-invokes with the incremented
+/// attempt when it lands — the wire and the [`ActivityDispatcher`] seam are
+/// ready for it. This is the single documented producer-side constant; no
+/// consumer guesses an attempt.
+///
+/// In-VM retry-seam constraint: unlike remote activities, whose retries can be
+/// driven by outbox re-delivery to a worker, an in-VM retry must be driven
+/// from a seam that HOLDS THE RUNNER — the dispatch NIF itself (replay's
+/// reopen path re-supplies the thunk on every re-execution of workflow code)
+/// or an SDK-level loop. A future retry executor cannot re-deliver an in-VM
+/// attempt from outside the workflow process.
 pub(super) const FIRST_DELIVERY_ATTEMPT: u32 = 1;
 
 /// Grouped parameters for the activity being dispatched.

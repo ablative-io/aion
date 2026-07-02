@@ -10,6 +10,7 @@ in:
 - `aion_child_fixture.erl` / `.beam`
 - `aion_collect_fixture.erl` / `.beam`
 - `aion_fixture_query.erl` / `.beam`
+- `aion_invm_fixture.erl` / `.beam`
 
 The test suite loads the committed `.beam` bytes through `RuntimeHandle` and
 through `.aion` package loading, so running `cargo test` does **not** require an
@@ -84,6 +85,27 @@ the collect's terminals recorded but the run still live:
   `timeout:deadline expired` scope error.
 - `queryable_all/1` registers a `state` query handler first, then runs
   `all_two/1`.
+
+`aion_invm_fixture` exercises the in-VM activity dispatch wire
+(`aion_flow_ffi:dispatch_activity_in_vm/4`) for `tests/invm_activity_e2e.rs`.
+Every entry dispatches a runner thunk the engine spawns as a linked child
+process; the thunks bump the test-host NIF `invm_test_host:bump/1` (registered
+by the test binary) keyed by the workflow input, so runs-once and replay
+proofs count real runner executions:
+
+- `run_once_gated/1` dispatches one in-VM activity (payload = the bump count)
+  and gates completion on a `release` signal for crash/restart choreography.
+- `fail_retryable/1` returns `{error, <<"retryable:boom">>}` from the runner
+  (prefixed-reason kind fidelity across the child boundary).
+- `crash/1` badmatches inside the runner: the child dies abnormally and the
+  workflow survives to observe the synthesized terminal failure as data.
+- `hang/1` parks the runner forever (cancel-mid-activity link teardown).
+- `hang_with_timeout/1` parks the runner under an expiring 300 ms
+  `with_timeout` scope, pinning the canonical `timeout:deadline expired`
+  durable failure, then gates on `release`.
+- `bad_thunk/1` and `remote_tier_defense/1` drive the two refused wires (a
+  non-closure thunk on arity-4; tier `"in_vm"` on the remote arity-3 wire)
+  and return the refusal reasons; both record nothing.
 
 `aion_fixture_query` exercises the workflow-query yield-point pump protocol
 (`aion_flow_ffi:register_query/2`, `reply_query/2`, `reply_query_error/2`,

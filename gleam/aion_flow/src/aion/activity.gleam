@@ -42,9 +42,13 @@ pub type RetryPolicy {
 ///
 /// The tier is authored data, not an invented default. `aion generate` reads it
 /// to decide which worker handler stub and registration entry to emit, and
-/// whether a wire-compat golden is generated (remote tiers only). It is a
-/// generation-time concern: it never rides the runtime `Activity` value or the
-/// recorded history.
+/// whether a wire-compat golden is generated (remote tiers only). Since the
+/// in-VM dispatch tier landed, the tier ALSO rides the runtime `Activity`
+/// value as an optional selection (see `execution_tier`): `Some(InVm)` routes
+/// the dispatch through the engine's linked in-VM child-process path, while
+/// absence (`None`) — and every remote tier — keeps today's remote worker
+/// wire. The tier is still never recorded in history: like the dispatcher
+/// choice, it is routing, not workflow-visible nondeterminism.
 pub type Tier {
   /// Runs in-process inside the BEAM VM via a registered NIF.
   InVm
@@ -75,14 +79,15 @@ pub opaque type Activity(i, o) {
     labels: List(#(String, String)),
     task_queue: Option(String),
     node: Option(String),
+    tier: Option(Tier),
   )
 }
 
 /// Build a typed activity value with no retry, timeout, or heartbeat config.
 ///
 /// Absence of config is intentional data: there are no hidden defaults. In
-/// particular, an activity with no `retry` decorator runs exactly once when it
-/// is dispatched by the engine.
+/// particular, an activity with no `retry` decorator carries no policy and an
+/// activity with no `execution_tier` decorator dispatches on the remote wire.
 pub fn new(
   name: String,
   input: i,
@@ -102,6 +107,7 @@ pub fn new(
     labels: [],
     task_queue: None,
     node: None,
+    tier: None,
   )
 }
 
@@ -122,6 +128,7 @@ pub fn retry(activity: Activity(i, o), policy: RetryPolicy) -> Activity(i, o) {
     labels: activity.labels,
     task_queue: activity.task_queue,
     node: activity.node,
+    tier: activity.tier,
   )
 }
 
@@ -142,6 +149,7 @@ pub fn timeout(
     labels: activity.labels,
     task_queue: activity.task_queue,
     node: activity.node,
+    tier: activity.tier,
   )
 }
 
@@ -162,6 +170,7 @@ pub fn heartbeat(
     labels: activity.labels,
     task_queue: activity.task_queue,
     node: activity.node,
+    tier: activity.tier,
   )
 }
 
@@ -190,6 +199,7 @@ pub fn label(
     labels: list.append(activity.labels, [#(key, value)]),
     task_queue: activity.task_queue,
     node: activity.node,
+    tier: activity.tier,
   )
 }
 
@@ -218,6 +228,7 @@ pub fn task_queue(activity: Activity(i, o), name: String) -> Activity(i, o) {
     labels: activity.labels,
     task_queue: Some(name),
     node: activity.node,
+    tier: activity.tier,
   )
 }
 
@@ -246,6 +257,38 @@ pub fn node(activity: Activity(i, o), name: String) -> Activity(i, o) {
     labels: activity.labels,
     task_queue: activity.task_queue,
     node: Some(name),
+    tier: activity.tier,
+  )
+}
+
+/// Select the execution tier this activity dispatches on.
+///
+/// `InVm` routes the dispatch through the engine's in-VM path: the activity's
+/// runner executes ONCE, live, inside a linked child process of the workflow
+/// process — no remote worker, no task-queue routing — while its recorded
+/// history (`ActivityScheduled`/`ActivityStarted`/terminal) and replay
+/// semantics stay byte-identical to a remote dispatch. Remote tiers
+/// (`RemotePython`/`RemoteRust`) keep the remote worker wire; selecting one is
+/// equivalent to selecting nothing today.
+///
+/// Absence is intentional data, exactly like retry/timeout/heartbeat: an
+/// activity built with `new` and no `execution_tier` decorator carries no
+/// selection (`None`) and dispatches on the remote wire — today's exact
+/// behavior. Later calls replace earlier values; the SDK does not merge.
+pub fn execution_tier(activity: Activity(i, o), tier: Tier) -> Activity(i, o) {
+  Activity(
+    name: activity.name,
+    input: activity.input,
+    input_codec: activity.input_codec,
+    output_codec: activity.output_codec,
+    runner: activity.runner,
+    retry_policy: activity.retry_policy,
+    timeout: activity.timeout,
+    heartbeat: activity.heartbeat,
+    labels: activity.labels,
+    task_queue: activity.task_queue,
+    node: activity.node,
+    tier: Some(tier),
   )
 }
 
@@ -313,6 +356,14 @@ pub fn selected_task_queue(activity: Activity(i, o)) -> Option(String) {
 /// node affinity has no workflow-level default: `None` is final.
 pub fn selected_node(activity: Activity(i, o)) -> Option(String) {
   activity.node
+}
+
+/// Return the explicitly selected execution tier, if one exists.
+///
+/// Absence (`None`) means no `execution_tier` decorator was applied, so the
+/// dispatch takes the remote worker wire — today's exact behavior.
+pub fn selected_tier(activity: Activity(i, o)) -> Option(Tier) {
+  activity.tier
 }
 
 /// A typed binding of a value type's name to its codec.

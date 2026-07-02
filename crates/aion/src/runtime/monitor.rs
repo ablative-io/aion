@@ -59,6 +59,12 @@ impl RuntimeHandle {
                     outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
                 runtime.release_spawn_heaps(pid);
                 runtime.nif_state().cleanup_process(pid);
+                // A Normal workflow exit does not propagate through BEAM
+                // links, so any in-VM activity child still running (e.g.
+                // abandoned by a with_timeout expiry) must be torn down
+                // here — the exit side of the "side effects die with the
+                // run" contract, and what unblocks the child's exit watcher.
+                runtime.kill_in_vm_children(pid);
                 // D5: completions delivered after the workflow stopped
                 // awaiting them (race losers, post-exit deliveries) are
                 // never taken; drop them with the process.

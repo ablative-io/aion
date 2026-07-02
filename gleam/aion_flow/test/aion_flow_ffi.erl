@@ -8,6 +8,7 @@
 
 -export([
     dispatch_activity/3,
+    dispatch_activity_in_vm/4,
     await_activity_result/1,
     workflow_id/0,
     now/0,
@@ -49,6 +50,18 @@ dispatch_activity(Name, Input, Config) ->
         {ok, Handler} -> Handler(Input);
         error -> legacy_run_activity(Name, Input, Config)
     end,
+    CorrelationId = next_activity_correlation(),
+    erlang:put({aion_activity_result, self(), CorrelationId}, Result),
+    {ok, CorrelationId}.
+
+%% In-VM tier double: like the engine's arity-4 NIF, the thunk itself is the
+%% runner — no mock lookup, no worker. The thunk's Result is stored verbatim
+%% for the same await path, so tests observe genuine in-VM routing (the SDK
+%% composed the runner into the thunk) rather than a mock interception.
+dispatch_activity_in_vm(Name, Input, Config, Thunk) ->
+    observe(<<"activity_in_vm:", Name/binary, ":", Input/binary>>),
+    erlang:put({aion_activity_config, self(), Name}, Config),
+    Result = Thunk(),
     CorrelationId = next_activity_correlation(),
     erlang:put({aion_activity_result, self(), CorrelationId}, Result),
     {ok, CorrelationId}.

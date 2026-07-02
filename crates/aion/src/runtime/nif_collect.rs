@@ -47,6 +47,22 @@ pub(super) struct ActivitySpec {
     config: String,
 }
 
+impl ActivitySpec {
+    /// Defense twin of the arity-3 dispatch wire's tier check: fan-out members
+    /// are dispatched remotely, so a member selecting the in-VM tier must be
+    /// refused at decode time (CUT 3 scopes in-VM to the single-dispatch
+    /// arity-4 wire; fan-out carries no runner thunks).
+    pub(super) fn selects_in_vm(&self) -> bool {
+        super::nif_activity::config_tier(&self.config).as_deref()
+            == Some(super::nif_activity::IN_VM_TIER)
+    }
+
+    /// Activity name for decode-time diagnostics.
+    pub(super) fn spec_name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Engine seams one collect invocation resolves against.
 pub(super) struct CollectDeps {
     pub(super) registry: Arc<Registry>,
@@ -887,6 +903,24 @@ mod tests {
     use crate::runtime::{RuntimeConfig, RuntimeHandle};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Fan-out members dispatch remotely: only an explicit in-VM selection is
+    /// refused; every other tier value (absence, null, remote tiers, junk)
+    /// passes through untouched.
+    #[test]
+    fn only_an_explicit_in_vm_selection_is_refused_from_fan_out() -> TestResult {
+        let spec = |config: &str| -> Result<ActivitySpec, serde_json::Error> {
+            serde_json::from_str(&format!(
+                r#"{{"name":"member","input":"\"in\"","config":"{}"}}"#,
+                config.replace('"', "\\\"")
+            ))
+        };
+        assert!(spec(r#"{"tier":"in_vm"}"#)?.selects_in_vm());
+        assert!(!spec(r#"{"tier":"remote_rust"}"#)?.selects_in_vm());
+        assert!(!spec(r#"{"tier":null}"#)?.selects_in_vm());
+        assert!(!spec(r#"{"labels":{}}"#)?.selects_in_vm());
+        Ok(())
+    }
 
     /// A dispatcher whose async dispatch never resolves: the schedule path
     /// records `ActivityScheduled`+`ActivityStarted` durably, spawns the

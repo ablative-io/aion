@@ -21,6 +21,20 @@ pub fn dispatch_activity(
   config: String,
 ) -> Result(String, String)
 
+/// In-VM tier dispatch: the arity-4 wire additionally carries the runner
+/// thunk (input capture + runner + output encode composed by
+/// `aion/workflow/run`). The engine records the identical
+/// `ActivityScheduled`/`ActivityStarted` pair as the arity-3 remote wire and
+/// spawns the thunk as a linked child process; the returned correlation id
+/// feeds the same `await_activity_result`.
+@external(erlang, "aion_flow_ffi", "dispatch_activity_in_vm")
+pub fn dispatch_activity_in_vm(
+  name: String,
+  input: String,
+  config: String,
+  thunk: fn() -> Result(String, String),
+) -> Result(String, String)
+
 @external(erlang, "aion_flow_ffi", "await_activity_result")
 pub fn await_activity_result(correlation_id: String) -> Result(String, String)
 
