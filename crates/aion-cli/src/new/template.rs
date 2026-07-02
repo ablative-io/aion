@@ -36,7 +36,9 @@ pub enum Template {
     /// review, parameterised by prompts and a review deadline. The three
     /// agent steps are worker-served activities; the human approval pause is
     /// a durable `workflow.receive` with a timeout. Bundles no agent runtime
-    /// — the driver stays worker-side. Requires `--worker rust`.
+    /// — the driver stays worker-side. Workflow I/O codecs and schemas are
+    /// generated from the authored types module by `aion generate`. Requires
+    /// `--worker rust`.
     Agent,
 }
 
@@ -674,11 +676,11 @@ mod tests {
 
     #[test]
     fn types_first_templates_ship_marked_generated_artifacts() {
-        // hello_world and dev_pipeline are on the types-first path: they ship
-        // an AUTHORED types module plus pre-generated artifacts carrying the
-        // generated markers, so `aion generate` recognises and reproduces
-        // them (a stray unmarked schema would be a loud error).
-        for template in [Template::HelloWorld, Template::DevPipeline] {
+        // hello_world, dev_pipeline, and agent are on the types-first path:
+        // they ship an AUTHORED types module plus pre-generated artifacts
+        // carrying the generated markers, so `aion generate` recognises and
+        // reproduces them (a stray unmarked schema would be a loud error).
+        for template in [Template::HelloWorld, Template::DevPipeline, Template::Agent] {
             for (path, contents) in template.files() {
                 if path.starts_with("schemas/") {
                     assert!(

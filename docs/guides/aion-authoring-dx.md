@@ -94,9 +94,9 @@ aion new <name> --template agent --worker rust
 - `--template <value>` — `value_enum`, default `hello-world`. Values: `hello-world`, `approval-flow`, `saga`, `dev-pipeline`, `agent`.
 - `--worker <lang>` — `value_enum` (`rust`). **Required for `agent`** (and `dev-pipeline`): the agent steps are worker-served activities, so a `worker/` crate is scaffolded. Omitting it for `agent` is a loud refusal (`template.rs::worker_requirement_reason`).
 
-**Emits** (`crates/aion-cli/templates/agent/`): `src/<name>.gleam` (the workflow, from `project.gleam`), `workflow.toml`, `schemas/{input,output}.json`, `README.md`, and a `worker/` crate (`Cargo.toml` + `src/main.rs` with trivial echo handlers — replace these with your agent driver). Prints a JSON `NewOutput { project, path, template, worker, files, next_steps }`.
+**Emits** (`crates/aion-cli/templates/agent/`): `src/<name>_io.gleam` (the **authored boundary types**, the types-first source of truth), `src/<name>_codecs.gleam` (**pre-generated** JSON codecs), `schemas/{input,output,step_input,step_output,decision,review_signal,agent_status}.json` (**pre-generated**, marker-carrying), `src/<name>.gleam` (the workflow, from `project.gleam`), `workflow.toml`, `README.md`, and a `worker/` crate (`Cargo.toml` + `src/main.rs` with trivial echo handlers — replace these with your agent driver). Prints a JSON `NewOutput { project, path, template, worker, files, next_steps }`.
 
-The scaffold is hand-written Gleam with hand-written codecs — the agent template is not yet on the types-first generated path (`hello-world` and `dev-pipeline` are). See §7 for its anatomy.
+The scaffold is on the types-first generated path (like `hello-world` and `dev-pipeline`): the shipped codecs module and schemas are byte-identical to what `aion generate` reproduces from `src/<name>_io.gleam`, so `aion generate . --check` passes on a fresh scaffold. Because the template pins the published hex `aion_flow` 0.4.x (which predates `activity.declare`/`aion/manifest` and `workflow.entrypoint`), the workflow keeps the generated-marker `run` adapter and the worker `main.rs` stays hand-authored with structs mirroring the step types; the declared-activities `manifest()` path (generated wrappers, worker `main.rs`, wire-compat golden) lands with the 0.5.0 publish. See §7 for its anatomy.
 
 ### 4.2 `aion dev [path] --gleam-path <PATH> [--debounce-ms <MS>]` (WA-002)
 
@@ -254,7 +254,8 @@ The relevant sections (`crates/aion-server/src/config/{mod,env}.rs`):
 The scaffolded `src/<name>.gleam` (from `templates/agent/project.gleam`) is a durable
 **scout → act → verify → signal-gated review** loop. Key facts an agent extending it needs:
 
-- **Start input** `AgentInput { task_id, scout_prompt, act_prompt, verify_prompt, review_timeout_ms: Int }` — all fields **required**; `review_timeout_ms` is the human-review deadline in milliseconds (no default, ADR-003). Use `aion input <name>` to get a valid skeleton.
+- **Boundary types** live in `src/<name>_io.gleam` (authored, types-first); `aion generate` derives `src/<name>_codecs.gleam` and every `schemas/*.json` from them.
+- **Start input** `Input { task_id, scout_prompt, act_prompt, verify_prompt, review_timeout_ms: Int }` — all fields **required**; `review_timeout_ms` is the human-review deadline in milliseconds (no default, ADR-003). Use `aion input <name>` to get a valid skeleton.
 - **Loop** (`handle`): `set_status("scouting")` → `run_step("scout", …)` → `set_status("acting")` → `run_step("act", …)` (fed `scout` output as context) → `set_status("verifying")` → `run_step("verify", …)` → `set_status("awaiting_review")` → `await_review`.
 - **Each step** is `workflow.run(step_activity(stage, StepInput{task_id,prompt,context})) -> StepOutput{result}` — a **worker-served activity**. The in-module `local_step` is a stub used **only** by the `aion/testing` harness; a deployed run dispatches to the connected `worker/`. **No step deadline** — agentic work runs unbounded until the worker answers (ADR-003). The worker bundles the agent runtime, not the workflow (ADR-011).
 - **Approval pause** (`await_review`): `workflow.with_timeout(fn() { workflow.receive(review_signal()) }, duration.milliseconds(review_timeout_ms))` — a **durable signal wait** raced against the deadline, **not** a poll loop. The run suspends (seconds or weeks), survives restarts, and stays `Running` while suspended (invariant #4).
@@ -298,8 +299,9 @@ cd my_agent
 # 2. Gate determinism early (and wire this into CI).
 aion check --deterministic .
 
-# 3. (If using codegen-driven templates) regenerate artifacts + the test scaffold.
-#    The agent template is hand-written, so this is a no-op for it; shown for completeness.
+# 3. Verify the pre-generated artifacts (codecs module + schemas) match the
+#    authored types module src/my_agent_io.gleam; rerun `aion generate .`
+#    after editing a boundary type.
 aion generate . --check     # CI drift gate
 
 # 4. Start a server with the dev + deploy surfaces enabled (config or env):

@@ -91,6 +91,73 @@ fn hello_world_scaffold_generate_round_trips_byte_identically() -> Result<(), Te
     Ok(())
 }
 
+/// The agent template's types-first gate, mirroring the hello-world one:
+/// the scaffold ships an authored types module plus pre-generated artifacts
+/// (codecs module, seven emitted schemas), a real `aion generate` over the
+/// fresh scaffold must reproduce every one byte-identically (write mode
+/// leaves no diff; `--check` passes), then the project must build.
+#[test]
+fn agent_scaffold_generate_round_trips_byte_identically() -> Result<(), TestError> {
+    let temp_dir = tempfile::tempdir()?;
+    let (project, report) = common::scaffold_project(
+        temp_dir.path(),
+        "agent_gen_gate",
+        &["--template", "agent", "--worker", "rust"],
+    )?;
+    let files = report["files"]
+        .as_array()
+        .ok_or("scaffold report must list files")?;
+    assert!(
+        files
+            .iter()
+            .any(|file| file == "src/agent_gen_gate_io.gleam"),
+        "the report must list the authored types module: {report}"
+    );
+    common::patch_aion_flow_to_workspace(&project)?;
+
+    // Snapshot the shipped pre-generated artifacts.
+    let generated = [
+        "src/agent_gen_gate_codecs.gleam",
+        "schemas/input.json",
+        "schemas/output.json",
+        "schemas/step_input.json",
+        "schemas/step_output.json",
+        "schemas/decision.json",
+        "schemas/review_signal.json",
+        "schemas/agent_status.json",
+    ];
+    let mut snapshot = Vec::new();
+    for relative in generated {
+        snapshot.push((relative, std::fs::read(project.join(relative))?));
+    }
+
+    // A real generate run must be a byte-level no-op over the scaffold.
+    let output = common::run_cli(&project, &["generate", "."])?;
+    let report = common::success_json(&output)?;
+    assert_eq!(report["action"], "written");
+    assert_eq!(report["types_module"], "src/agent_gen_gate_io.gleam");
+    assert_eq!(
+        report["workflow_toml"], "skipped",
+        "a package without an activities manifest skips the activity phases \
+         (the declare API needs the 0.5.x SDK; the template pins hex 0.4.x): {report}"
+    );
+    for (relative, original) in &snapshot {
+        let regenerated = std::fs::read(project.join(relative))?;
+        assert!(
+            &regenerated == original,
+            "{relative} drifted: the shipped template artifact does not match what \
+             `aion generate` produces — regenerate the template file"
+        );
+    }
+
+    // `--check` agrees, and the scaffold builds.
+    let check = common::run_cli(&project, &["generate", ".", "--check"])?;
+    let check_report = common::success_json(&check)?;
+    assert_eq!(check_report["action"], "checked");
+    common::gleam_build(&project)?;
+    Ok(())
+}
+
 #[test]
 fn approval_flow_template_builds_and_packages() -> Result<(), TestError> {
     build_and_package("approval_build_gate", "approval-flow")
