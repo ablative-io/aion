@@ -17,6 +17,14 @@
  * See docs/design/OPS-CONSOLE-DESIGN-LANGUAGE.md — tokens are decided here
  * once and consumed everywhere through the @theme mapping below. Components
  * never hardcode palette colors or reach for raw var(--…) classes.
+ *
+ * ENFORCED: src/__tests__/token-discipline.test.ts scans every source file
+ * and fails the suite on raw color literals (#hex, numeric rgb()/rgba()/
+ * hsl()/oklch()) and Tailwind stock-palette classes (cyan-400, zinc-900, …)
+ * anywhere outside this file. Use the semantic tokens/utilities (bg-live,
+ * text-success, border-danger, bg-surface-*, var(--…) without fallbacks).
+ * The rare genuinely un-tokenizable line appends an inline comment on the
+ * same line — "token-exempt: <reason>" — with the reason mandatory prose.
  */
 :root {
   --radius: 0.625rem;

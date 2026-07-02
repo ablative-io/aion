@@ -94,7 +94,7 @@ function Knob({
         'rounded-lg border px-2.5 py-1 text-xs transition-colors duration-150',
         'outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]',
         active
-          ? 'border-transparent font-semibold text-[var(--surface-base,#0f0f14)]'
+          ? 'border-transparent font-semibold text-[var(--surface-base)]'
           : 'border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
       )}
       style={active ? { backgroundColor: KIT_ACCENT } : undefined}

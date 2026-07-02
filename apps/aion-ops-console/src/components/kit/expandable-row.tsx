@@ -61,8 +61,8 @@ export function ExpandableRow({
   return (
     <div
       className={cn(
-        'rounded-lg border border-[var(--border-subtle,rgba(255,255,255,0.04))]',
-        'bg-[var(--surface-elevated,#16161d)]',
+        'rounded-lg border border-[var(--border-subtle)]',
+        'bg-[var(--surface-elevated)]',
         className
       )}
       data-slot="expandable-row"
@@ -93,9 +93,7 @@ export function ExpandableRow({
                 key={pip}
                 className={cn(
                   'size-1.5 rounded-full',
-                  pip < pipsFilled
-                    ? 'bg-[var(--accent-primary,#d4845a)]'
-                    : 'bg-[var(--surface-hover)]'
+                  pip < pipsFilled ? 'bg-[var(--accent-primary)]' : 'bg-[var(--surface-hover)]'
                 )}
               />
             ))}
@@ -113,7 +111,7 @@ export function ExpandableRow({
       >
         <div
           ref={detailRef}
-          className="border-t border-[var(--border-subtle,rgba(255,255,255,0.04))] px-3 py-2.5 text-sm text-[var(--text-secondary)]"
+          className="border-t border-[var(--border-subtle)] px-3 py-2.5 text-sm text-[var(--text-secondary)]"
         >
           {children}
         </div>

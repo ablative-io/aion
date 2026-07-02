@@ -87,7 +87,7 @@ export function FloatingPanelTrigger({
           aria-haspopup="dialog"
           className={cn(
             'inline-flex items-center gap-2 rounded-lg border border-[var(--border-default)]',
-            'bg-[var(--surface-elevated,#16161d)] px-3 py-1.5 text-xs text-[var(--text-secondary)]',
+            'bg-[var(--surface-elevated)] px-3 py-1.5 text-xs text-[var(--text-secondary)]',
             'transition-colors duration-150 hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
             'outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]',
             className
@@ -129,12 +129,12 @@ export function FloatingPanelContent({
           className={cn(
             'absolute left-0 top-0 z-50 flex w-80 flex-col overflow-hidden rounded-xl',
             'border border-[var(--border-default)] shadow-xl backdrop-blur-xl',
-            'bg-[var(--glass-bg,oklch(0.16_0.01_280/0.85))] outline-none',
+            'bg-[var(--glass-bg)] outline-none',
             className
           )}
           data-slot="floating-panel-content"
         >
-          <div className="flex items-center justify-between border-b border-[var(--border-subtle,rgba(255,255,255,0.04))] px-4 py-2.5">
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-2.5">
             <span className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--text-secondary)]">
               {panel.title}
             </span>
@@ -170,7 +170,7 @@ export function FloatingPanelFooter({
     <div
       className={cn(
         'flex items-center justify-end gap-2 border-t px-4 py-2.5',
-        'border-[var(--border-subtle,rgba(255,255,255,0.04))]',
+        'border-[var(--border-subtle)]',
         className
       )}
     >
