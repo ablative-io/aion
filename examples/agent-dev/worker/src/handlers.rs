@@ -274,8 +274,59 @@ pub fn assistant_provision(
             "git clone",
         )?;
     }
+    materialize_skill_resources(Path::new(&repo_dir))?;
 
     Ok(AssistantWorkspace { path: repo_dir })
+}
+
+/// The assistant's skill documents, embedded at compile time so every session
+/// gets them regardless of whether an aion repository is present. They are
+/// the assistant's primary operating manual; the repository is optional
+/// enrichment on top.
+const SKILL_RESOURCES: [(&str, &str); 5] = [
+    (
+        "ENVIRONMENT.md",
+        include_str!("../../../assistant/resources/ENVIRONMENT.md"),
+    ),
+    (
+        "SCAFFOLD.md",
+        include_str!("../../../assistant/resources/SCAFFOLD.md"),
+    ),
+    (
+        "COMMANDS.md",
+        include_str!("../../../assistant/resources/COMMANDS.md"),
+    ),
+    (
+        "SDK.md",
+        include_str!("../../../assistant/resources/SDK.md"),
+    ),
+    (
+        "TROUBLESHOOTING.md",
+        include_str!("../../../assistant/resources/TROUBLESHOOTING.md"),
+    ),
+];
+
+/// Write the embedded skill documents into `<workspace>/.assistant/resources/`
+/// — inside the workspace so the harness's confined file tools can read them,
+/// dot-prefixed so they stay out of the way of the operator's actual work
+/// (and untracked-but-ignorable inside a repo clone).
+fn materialize_skill_resources(workspace: &Path) -> Result<(), ActivityFailure> {
+    let resources = workspace.join(".assistant").join("resources");
+    std::fs::create_dir_all(&resources).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "cannot create skill-resource directory {}: {source}",
+            resources.display()
+        ))
+    })?;
+    for (name, contents) in SKILL_RESOURCES {
+        std::fs::write(resources.join(name), contents).map_err(|source| {
+            ActivityFailure::terminal(format!(
+                "cannot write skill resource {name} into {}: {source}",
+                resources.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Claim `<root>/<run_id>` for this provision attempt. A collision is this
