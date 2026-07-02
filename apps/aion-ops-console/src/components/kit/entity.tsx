@@ -81,10 +81,10 @@ export type EntityProps = {
 };
 
 const ENTITY_FORM_CLASS: Record<EntityForm, string> = {
-  pill: 'h-9 max-w-xs cursor-pointer rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated,#16161d)] px-3 hover:bg-[var(--surface-hover)]',
-  card: 'w-88 rounded-xl border border-[var(--border-default)] bg-[var(--surface-card,#1a1a22)] shadow-lg',
+  pill: 'h-9 max-w-xs cursor-pointer rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 hover:bg-[var(--surface-hover)]',
+  card: 'w-88 rounded-xl border border-[var(--border-default)] bg-[var(--surface-card)] shadow-lg',
   window:
-    'flex h-full w-full flex-col rounded-xl border border-[var(--border-default)] bg-[var(--surface-card,#1a1a22)] shadow-xl',
+    'flex h-full w-full flex-col rounded-xl border border-[var(--border-default)] bg-[var(--surface-card)] shadow-xl',
 };
 
 export function Entity({
@@ -191,7 +191,7 @@ function EntityExpandedSurface({
 }) {
   return (
     <>
-      <div className="flex items-center gap-2 border-b border-[var(--border-subtle,rgba(255,255,255,0.04))] px-4 py-3">
+      <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
         <StatusDot status={status} pulse={status === 'live' || status === 'running'} />
         <span className="min-w-0 truncate text-sm font-semibold text-[var(--text-primary)]">
           {name}

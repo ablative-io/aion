@@ -79,7 +79,7 @@ export function MorphingPopoverTrigger({
           onClick={() => morph.setOpen(true)}
           className={cn(
             'inline-flex items-center gap-2 rounded-lg border border-[var(--border-default)]',
-            'bg-[var(--surface-elevated,#16161d)] px-3 py-1.5 text-xs text-[var(--text-secondary)]',
+            'bg-[var(--surface-elevated)] px-3 py-1.5 text-xs text-[var(--text-secondary)]',
             'transition-colors duration-150 hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
             'outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]',
             className
@@ -120,7 +120,7 @@ export function MorphingPopoverContent({
           className={cn(
             // Glass is sanctioned for summoned surfaces (design language §tokens).
             'absolute left-0 top-0 z-50 min-w-56 rounded-xl border border-[var(--border-default)]',
-            'bg-[var(--glass-bg,oklch(0.16_0.01_280/0.85))] p-3 shadow-xl backdrop-blur-xl',
+            'bg-[var(--glass-bg)] p-3 shadow-xl backdrop-blur-xl',
             'outline-none',
             className
           )}

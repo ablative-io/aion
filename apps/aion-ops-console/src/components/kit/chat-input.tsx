@@ -60,9 +60,9 @@ const ESCALATION_LABEL: Record<EscalationLevel, string> = {
 
 // Distinct visual states per escalation level; red family reserved for kill.
 const ESCALATION_CLASS: Record<EscalationLevel, string> = {
-  interrupt: 'text-[var(--surface-base,#0f0f14)]',
-  shutdown: 'bg-[var(--status-warning,#fbbf24)] text-[var(--surface-base,#0f0f14)]',
-  kill: 'bg-[var(--status-danger,#f87171)] text-[var(--surface-base,#0f0f14)] ring-2 ring-[var(--status-danger-glow,rgba(248,113,113,0.12))]',
+  interrupt: 'text-[var(--surface-base)]',
+  shutdown: 'bg-[var(--status-warning)] text-[var(--surface-base)]',
+  kill: 'bg-[var(--status-danger)] text-[var(--surface-base)] ring-2 ring-[var(--status-danger-glow)]',
 };
 
 export function ChatInputMorph({
@@ -166,7 +166,7 @@ export function ChatInputMorph({
       layout={!reducedMotion}
       transition={transition}
       className={cn(
-        'overflow-hidden border border-[var(--border-default)] bg-[var(--surface-elevated,#16161d)]',
+        'overflow-hidden border border-[var(--border-default)] bg-[var(--surface-elevated)]',
         isExpanded ? 'rounded-xl shadow-lg' : 'h-9 rounded-full hover:bg-[var(--surface-hover)]',
         className
       )}
@@ -218,7 +218,7 @@ export function ChatInputMorph({
                 className={cn(
                   'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-colors duration-150',
                   'outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]',
-                  streaming ? ESCALATION_CLASS[escalation] : 'text-[var(--surface-base,#0f0f14)]'
+                  streaming ? ESCALATION_CLASS[escalation] : 'text-[var(--surface-base)]'
                 )}
                 style={
                   streaming && escalation !== 'interrupt'
@@ -254,7 +254,7 @@ export function ChatInputMorph({
             {capabilities?.map((capability) => (
               <span
                 key={capability}
-                className="rounded-full border border-[var(--border-subtle,rgba(255,255,255,0.04))] bg-[var(--surface-hover)] px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] text-[var(--text-secondary)]"
+                className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-hover)] px-2 py-0.5 text-[10px] uppercase tracking-[0.15em] text-[var(--text-secondary)]"
                 data-slot="chat-capability"
               >
                 {capability}
