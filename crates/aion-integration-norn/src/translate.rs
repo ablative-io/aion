@@ -324,7 +324,8 @@ fn event_attribution(params: &Value) -> (Uuid, String) {
 /// Classifies a notification into an [`ActivityEventKind`] and whether it is ephemeral.
 ///
 /// Dispatches on the coarse `event/*` method, then refines on the params' native `type` label.
-/// The delta arm is the only ephemeral one (WS-forward only, never persisted).
+/// Per-token streams (text/thinking deltas, `tool_call_delta`) are the ephemeral arms
+/// (WS-forward only, never persisted).
 fn classify_event(method: &str, params: &Value) -> (ActivityEventKind, bool) {
     let event_type = params.get(protocol::EVENT_TYPE).and_then(Value::as_str);
     match method {
@@ -388,8 +389,9 @@ fn tool_result_kind(params: &Value) -> ActivityEventKind {
 
 /// Builds a progress kind (and its ephemeral flag) from an `event/progress` notification.
 ///
-/// Token/thinking deltas map to an ephemeral [`ActivityEventKind::Delta`]; a usage estimate maps
-/// to a persisted [`ProgressDetail::UsageEstimate`]; anything else to a [`ProgressDetail::Note`].
+/// Token/thinking deltas map to an ephemeral [`ActivityEventKind::Delta`] and tool-argument
+/// deltas to an ephemeral [`ProgressDetail::Note`]; a usage estimate maps to a persisted
+/// [`ProgressDetail::UsageEstimate`]; anything else to a persisted [`ProgressDetail::Note`].
 fn progress_kind(event_type: Option<&str>, params: &Value) -> (ActivityEventKind, bool) {
     match event_type {
         Some("text_delta" | "thinking_delta") => {
@@ -398,6 +400,15 @@ fn progress_kind(event_type: Option<&str>, params: &Value) -> (ActivityEventKind
                 text_fragment: string_field(params, "text"),
             };
             (delta, true)
+        }
+        // Tool-argument streaming is per-token, like text/thinking deltas: durable
+        // persistence would write thousands of rows per large tool call for data
+        // the finalized tool_call event already carries in full.
+        Some("tool_call_delta") => {
+            let detail = ProgressDetail::Note {
+                text: "tool_call_delta".to_owned(),
+            };
+            (ActivityEventKind::Progress { detail }, true)
         }
         Some("usage_estimate") => {
             let detail = ProgressDetail::UsageEstimate {
@@ -560,6 +571,26 @@ mod tests {
                 assert_eq!(text_fragment, "wor");
             }
             other => panic!("expected Delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_delta_notification_is_ephemeral() {
+        let p = params(
+            json!({ "type": "tool_call_delta", "text": "{\"pa" }),
+            "root",
+        );
+        let event = notification_to_event(&identity(), 3, "event/progress", &p);
+        assert!(
+            event.ephemeral,
+            "tool-argument deltas are per-token and must never be persisted"
+        );
+        assert_eq!(event.store_seq, None);
+        match event.kind {
+            ActivityEventKind::Progress {
+                detail: ProgressDetail::Note { text },
+            } => assert_eq!(text, "tool_call_delta"),
+            other => panic!("expected Progress::Note, got {other:?}"),
         }
     }
 
