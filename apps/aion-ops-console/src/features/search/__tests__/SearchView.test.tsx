@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
@@ -9,6 +9,7 @@ import { KeybindingsProvider } from '@/lib/keybindings';
 import type { Event, Namespace } from '@/types';
 
 import { SearchView } from '../components/SearchView';
+import { eventSearchDraftStore } from '../lib/eventSearchDraft';
 
 const NAMESPACE = 'default' as Namespace;
 
@@ -79,6 +80,32 @@ describe('SearchView', () => {
 
     expect(markup).toContain('an empty query is not run');
     expect(markup).toContain('disabled=""');
+  });
+});
+
+describe('SearchView drafts', () => {
+  afterEach(() => {
+    eventSearchDraftStore.getState().clearDraft();
+  });
+
+  test('query fields are restored on return (draft survives unmount)', () => {
+    // Simulate the write-through a previous mount performed before navigating away.
+    eventSearchDraftStore.getState().setDraft({
+      eventType: 'DraftedTimerFired',
+      errorText: 'drafted-boom',
+    });
+
+    const markup = render();
+    expect(markup).toContain('DraftedTimerFired');
+    expect(markup).toContain('drafted-boom');
+  });
+
+  test('a cleared draft renders a pristine form (the Clear-button path)', () => {
+    eventSearchDraftStore.getState().setDraft({ eventType: 'DraftedTimerFired' });
+    eventSearchDraftStore.getState().clearDraft();
+
+    const markup = render();
+    expect(markup).not.toContain('DraftedTimerFired');
   });
 });
 

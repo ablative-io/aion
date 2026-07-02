@@ -23,6 +23,10 @@ export type DeployPackagePanelProps = {
  * `ArrayBuffer` and posts the raw bytes. A cluster running with
  * `[deploy] enabled=false` answers 404 — rendered as an explicit "deploy
  * disabled" state, never as a fake-empty success.
+ *
+ * Deliberately no draft store (src/lib/state): the panel's only input is the
+ * file picker, and a browser file selection cannot be programmatically
+ * restored — persisting just the name would fake a selection that is gone.
  */
 export function DeployPackagePanel({ apiClient }: DeployPackagePanelProps) {
   const fileInputId = useId();

@@ -5,10 +5,12 @@ import { workflowDetailHref } from '@/app/routePaths';
 import { ErrorState } from '@/components/ErrorState';
 import { Button } from '@/components/ui';
 import type { ApiClient } from '@/lib/api';
+import { useDraft } from '@/lib/state';
 import type { Namespace } from '@/types';
 
 import { useStartWorkflow } from '../hooks/useStartWorkflow';
 import { parseJsonInput } from '../lib/jsonInput';
+import { startWorkflowDraftStore } from '../lib/startWorkflowDraft';
 
 export type StartWorkflowFormProps = {
   namespace: Namespace | null;
@@ -40,50 +42,59 @@ export function StartWorkflowForm({
   initialWorkflowType,
 }: StartWorkflowFormProps) {
   const ids = useFieldIds();
-  const [workflowType, setWorkflowType] = useState(initialWorkflowType ?? '');
-  const [namespaceEntry, setNamespaceEntry] = useState('');
+  // Field state lives in a sessionStorage-backed draft store (src/lib/state):
+  // navigating away and back restores a half-filled form.
+  const { draft, updateDraft, clearDraft } = useDraft(startWorkflowDraftStore);
+  const [inputError, setInputError] = useState<string | null>(null);
+  // Snapshot of the namespace a submit targeted: the draft clears on a
+  // confirmed start, but the success panel must keep reporting the namespace
+  // the run actually used.
+  const [startedNamespace, setStartedNamespace] = useState<Namespace | null>(null);
 
   // A palette deep-link (`/actions?workflow_type=X`) can land while this route
   // is already mounted — same-route navigation re-renders without remounting —
-  // so a changed deep-link value must sync into the field, not just seed it.
+  // so a deep-link value must sync into the field (and its draft), not just seed it.
   useEffect(() => {
     if (initialWorkflowType !== undefined) {
-      setWorkflowType(initialWorkflowType);
+      updateDraft({ workflowType: initialWorkflowType });
     }
-  }, [initialWorkflowType]);
-  const [routingKey, setRoutingKey] = useState('');
-  const [taskQueue, setTaskQueue] = useState('');
-  const [inputText, setInputText] = useState('');
-  const [inputError, setInputError] = useState<string | null>(null);
+  }, [initialWorkflowType, updateDraft]);
 
   // No selected namespace on a fresh server: fall back to the free-form entry,
   // which the start path mints on use. A selected namespace always takes it.
-  const trimmedEntry = namespaceEntry.trim();
+  const trimmedEntry = draft.namespaceEntry.trim();
   const effectiveNamespace: Namespace | null =
     namespace ?? (trimmedEntry.length > 0 ? (trimmedEntry as Namespace) : null);
 
   const start = useStartWorkflow({ namespace: effectiveNamespace, apiClient });
-  const trimmedType = workflowType.trim();
+  const trimmedType = draft.workflowType.trim();
   const canSubmit = effectiveNamespace !== null && trimmedType.length > 0 && !start.isPending;
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setInputError(null);
 
-    const parsed = parseJsonInput(inputText);
+    const parsed = parseJsonInput(draft.inputText);
     if (!parsed.ok) {
       setInputError(parsed.error);
       return;
     }
 
-    const trimmedRoutingKey = routingKey.trim();
-    const trimmedTaskQueue = taskQueue.trim();
-    start.mutate({
-      workflowType: trimmedType,
-      input: parsed.value,
-      ...(trimmedRoutingKey.length === 0 ? {} : { routingKey: trimmedRoutingKey }),
-      ...(trimmedTaskQueue.length === 0 ? {} : { taskQueue: trimmedTaskQueue }),
-    });
+    const trimmedRoutingKey = draft.routingKey.trim();
+    const trimmedTaskQueue = draft.taskQueue.trim();
+    setStartedNamespace(effectiveNamespace);
+    start.mutate(
+      {
+        workflowType: trimmedType,
+        input: parsed.value,
+        ...(trimmedRoutingKey.length === 0 ? {} : { routingKey: trimmedRoutingKey }),
+        ...(trimmedTaskQueue.length === 0 ? {} : { taskQueue: trimmedTaskQueue }),
+      },
+      {
+        // A confirmed start consumes the draft; a failed one keeps it for retry.
+        onSuccess: () => clearDraft(),
+      }
+    );
   }
 
   return (
@@ -96,8 +107,8 @@ export function StartWorkflowForm({
               className={FIELD_CLASS}
               id={ids.namespace}
               placeholder="e.g. orders — created on start if new"
-              value={namespaceEntry}
-              onChange={(event) => setNamespaceEntry(event.currentTarget.value)}
+              value={draft.namespaceEntry}
+              onChange={(event) => updateDraft({ namespaceEntry: event.currentTarget.value })}
             />
             <span className="font-normal text-muted-foreground text-xs">
               No namespace is selected. Type one to target — an unseen namespace is created when the
@@ -111,8 +122,8 @@ export function StartWorkflowForm({
             className={FIELD_CLASS}
             id={ids.workflowType}
             placeholder="e.g. EmailDigest"
-            value={workflowType}
-            onChange={(event) => setWorkflowType(event.currentTarget.value)}
+            value={draft.workflowType}
+            onChange={(event) => updateDraft({ workflowType: event.currentTarget.value })}
           />
         </label>
         <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={ids.input}>
@@ -121,8 +132,8 @@ export function StartWorkflowForm({
             className={AREA_CLASS}
             id={ids.input}
             placeholder='{} or {"to": "ops@aion"}'
-            value={inputText}
-            onChange={(event) => setInputText(event.currentTarget.value)}
+            value={draft.inputText}
+            onChange={(event) => updateDraft({ inputText: event.currentTarget.value })}
           />
           <span className="font-normal text-muted-foreground text-xs">
             Blank sends an empty object. The engine requires a payload.
@@ -134,8 +145,8 @@ export function StartWorkflowForm({
             className={FIELD_CLASS}
             id={ids.routingKey}
             placeholder="steers placement; blank = unsteered"
-            value={routingKey}
-            onChange={(event) => setRoutingKey(event.currentTarget.value)}
+            value={draft.routingKey}
+            onChange={(event) => updateDraft({ routingKey: event.currentTarget.value })}
           />
         </label>
         <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={ids.taskQueue}>
@@ -144,8 +155,8 @@ export function StartWorkflowForm({
             className={FIELD_CLASS}
             id={ids.taskQueue}
             placeholder="default activity queue; blank = namespace default"
-            value={taskQueue}
-            onChange={(event) => setTaskQueue(event.currentTarget.value)}
+            value={draft.taskQueue}
+            onChange={(event) => updateDraft({ taskQueue: event.currentTarget.value })}
           />
         </label>
         <div className="flex items-center gap-3">
@@ -159,7 +170,7 @@ export function StartWorkflowForm({
       <StartOutcome
         error={start.error}
         isError={start.isError}
-        namespace={effectiveNamespace}
+        namespace={startedNamespace ?? effectiveNamespace}
         result={start.data ?? null}
       />
     </div>
