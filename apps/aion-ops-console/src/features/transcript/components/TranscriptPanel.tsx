@@ -5,7 +5,7 @@ import type { TranscriptTarget } from '@/lib/api/transcript-stream';
 import { cn } from '@/lib/utils';
 
 import { type TranscriptEntry, useTranscript } from '../hooks/useTranscript';
-import { TranscriptEventRow } from './TranscriptEventRow';
+import { TranscriptList } from './TranscriptList';
 
 /**
  * Live agent-transcript panel (NOI-7).
@@ -73,7 +73,7 @@ export function TranscriptPanelContent({
 
   return (
     <section
-      className="flex min-h-0 flex-col gap-3 rounded-xl border border-[var(--border-default)] p-3"
+      className="flex max-h-[70vh] min-h-0 flex-col gap-3 rounded-xl border border-[var(--border-default)] p-3"
       data-testid="transcript-panel"
     >
       <header className="flex items-center justify-between gap-2">
@@ -100,11 +100,7 @@ export function TranscriptPanelContent({
           No transcript events yet.
         </p>
       ) : (
-        <ol className="flex min-h-0 flex-col gap-2 overflow-y-auto">
-          {entries.map((entry) => (
-            <TranscriptEventRow event={entry.event} key={entry.key} />
-          ))}
-        </ol>
+        <TranscriptList entries={entries} />
       )}
     </section>
   );

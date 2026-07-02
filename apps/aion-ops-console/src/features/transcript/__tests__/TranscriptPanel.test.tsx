@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { AttemptCapabilities } from '@/lib/api';
 import type { ActivityEvent } from '@/types';
-import { TranscriptEventRow } from '../components/TranscriptEventRow';
+import { resolveSelectedAttempt } from '../components/AttemptTranscriptView';
+import { TranscriptEntryRow, TranscriptEventRow } from '../components/TranscriptEventRow';
 import { TranscriptPanelContent } from '../components/TranscriptPanel';
 import { sortAttempts } from '../hooks/useActivityAttempts';
 import type { TranscriptEntry } from '../hooks/useTranscript';
@@ -49,13 +50,15 @@ describe('TranscriptPanelContent', () => {
     expect(markup).toContain('Reconnecting');
   });
 
-  test('renders the ordered transcript entries', () => {
+  test('renders the ordered transcript entries inside the bounded scroll region', () => {
     const entries: TranscriptEntry[] = [
       {
+        type: 'event',
         key: 'seq:0',
         event: event({ kind: 'Message', role: { role: 'Assistant' }, text: 'hi' }, 0),
       },
       {
+        type: 'event',
         key: 'seq:1',
         event: event({ kind: 'ToolCall', tool: 'read_file', call_id: 'c1', input: {} }, 1),
       },
@@ -71,6 +74,78 @@ describe('TranscriptPanelContent', () => {
     expect(markup).toContain('hi');
     expect(markup).toContain('Tool call · read_file');
     expect(markup).toContain('Live');
+    expect(markup).toContain('data-testid="transcript-scroll"');
+  });
+});
+
+describe('TranscriptEntryRow', () => {
+  test('a coalesced delta stream renders as ONE live streaming row with the accumulated text', () => {
+    const entry: TranscriptEntry = {
+      type: 'stream',
+      key: 'stream:agent:msg_1',
+      messageId: 'msg_1',
+      text: ' the diagnostics crate',
+      event: event({ kind: 'Delta', message_id: 'msg_1', text_fragment: ' crate' }, null),
+    };
+    const markup = renderToStaticMarkup(<TranscriptEntryRow entry={entry} />);
+    expect(markup).toContain('Message · streaming');
+    expect(markup).toContain(' the diagnostics crate');
+    expect(markup).toContain('data-ephemeral="true"');
+    expect(markup).toContain('live');
+  });
+
+  test('a note run renders as ONE counted progress row, not a row per chunk', () => {
+    const noteEvent = event(
+      { kind: 'Progress', detail: { detail: 'Note', text: 'tool_call_delta' } },
+      5
+    );
+    const entry: TranscriptEntry = {
+      type: 'notes',
+      key: 'seq:1',
+      text: 'tool_call_delta',
+      count: 5,
+      seqs: [1, 2, 3, 4, 5],
+      event: noteEvent,
+    };
+    const markup = renderToStaticMarkup(<TranscriptEntryRow entry={entry} />);
+    expect(markup).toContain('tool_call_delta ×5');
+  });
+
+  test('a reasoning_item raw renders its summary text, never the encrypted blob', () => {
+    const markup = renderToStaticMarkup(
+      <TranscriptEventRow
+        event={event(
+          {
+            kind: 'Raw',
+            source: 'event/item',
+            value: {
+              type: 'reasoning_item',
+              item: {
+                id: 'rs_1',
+                encrypted_content: 'gAAAA-opaque-blob',
+                content: [],
+                summary: [{ type: 'summary_text', text: '**Planning for review**' }],
+              },
+            },
+          },
+          7
+        )}
+      />
+    );
+    expect(markup).toContain('Reasoning');
+    expect(markup).toContain('**Planning for review**');
+    expect(markup).not.toContain('gAAAA-opaque-blob');
+    expect(markup).not.toContain('encrypted_content');
+  });
+
+  test('a genuinely unknown raw value keeps the generic JSON fallback', () => {
+    const markup = renderToStaticMarkup(
+      <TranscriptEventRow
+        event={event({ kind: 'Raw', source: 'event/mystery', value: { widget: 7 } }, 8)}
+      />
+    );
+    expect(markup).toContain('Raw · event/mystery');
+    expect(markup).toContain('widget');
   });
 });
 
@@ -118,5 +193,30 @@ describe('sortAttempts', () => {
       '3:2',
       '4:2',
     ]);
+  });
+});
+
+describe('resolveSelectedAttempt', () => {
+  const one: AttemptCapabilities = { activityId: 3, attempt: 1, capabilities: { supported: [] } };
+  const two: AttemptCapabilities = { activityId: 4, attempt: 1, capabilities: { supported: [] } };
+
+  test('auto-selects the attempt when exactly one is live and nothing was picked', () => {
+    expect(resolveSelectedAttempt([one], null)).toEqual(one);
+  });
+
+  test('selects nothing when several attempts are live and nothing was picked', () => {
+    expect(resolveSelectedAttempt([one, two], null)).toBeNull();
+  });
+
+  test('a manual pick wins over the single-attempt default', () => {
+    expect(resolveSelectedAttempt([one, two], '4:1')).toEqual(two);
+  });
+
+  test('falls back to the single live attempt when the picked one is gone', () => {
+    expect(resolveSelectedAttempt([one], '9:9')).toEqual(one);
+  });
+
+  test('selects nothing when there are no live attempts', () => {
+    expect(resolveSelectedAttempt([], null)).toBeNull();
   });
 });
