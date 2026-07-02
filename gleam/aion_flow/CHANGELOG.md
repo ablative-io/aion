@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0
+
+<!-- REBASE NOTE (CUT 3): the 0.5.0 version bump itself is owned by Cut 2
+     (generated run(raw_input) entrypoints); this section only contributes the
+     in-VM dispatch entry below. If Cut 2 lands first, merge this entry into
+     its 0.5.0 section; if this cut lands first, Cut 2 adds the gleam.toml
+     bump and its own entries here. -->
+
+### Added
+
+- **In-VM execution tier** (CUT 3): `activity.execution_tier(a, InVm)` routes
+  a dispatch through the engine's new arity-4 `dispatch_activity_in_vm` wire,
+  which spawns the SDK-composed runner thunk (input capture + runner + output
+  codec) as a linked child process of the workflow process — no remote
+  worker, no task-queue subscription. Recorded-result semantics are identical
+  to remote activities: the runner executes once, the result is recorded in
+  history, and replay returns the recording without re-execution; a runner
+  crash surfaces as a proper terminal `ActivityFailed` (the workflow process
+  survives). The `Activity` value gains an optional `tier` selection
+  (`selected_tier`; absence = the remote wire, today's exact behavior), the
+  dispatch config JSON gains a `"tier"` field (canonical `tier_to_string`
+  values, `null` when unselected), and runner errors cross the child boundary
+  on the existing prefixed reason vocabulary (`retryable:`/`terminal:`/...),
+  so `ActivityError` kind fidelity is preserved with zero new conventions.
+  In-VM activities cannot join `collect_*` fan-outs (engine-refused at decode
+  time); dispatch them individually via `workflow.run`.
+
 ## 0.3.0
 
 ### Fixed

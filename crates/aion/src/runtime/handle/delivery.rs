@@ -45,12 +45,44 @@ impl RuntimeHandle {
                 .map_or_else(
                     || ActivityError {
                         kind: ActivityErrorKind::Terminal,
-                        message: format!("activity process {activity_pid} exited: {reason:?}"),
+                        message: activity_exit_message(activity_pid, reason),
                         details: None,
                     },
                     |entry| entry.clone(),
                 );
             self.deliver_activity_error(parent_pid, activity_pid, error)
+        }
+    }
+
+    /// Block until an in-VM activity child exits and decode its outcome.
+    ///
+    /// The child body is the SDK-composed runner thunk, whose Gleam `Result`
+    /// crosses the exit boundary verbatim: a `Normal` exit carrying
+    /// `{ok, JsonBin}` is a completion, `{error, ReasonBin}` is a failure
+    /// whose reason already uses the SDK's prefixed vocabulary
+    /// (`retryable:`/`terminal:`/...), and an abnormal exit (runner panic,
+    /// `let assert`, NIF badarg) synthesizes a `terminal:`-prefixed reason
+    /// mirroring [`Self::propagate_activity_outcome`]'s trapped-exit message.
+    /// A `Normal` exit with any other result shape is a defect surfaced as a
+    /// terminal failure, never a hang.
+    ///
+    /// Deliberately NOT keyed through the legacy `(parent, child_pid)` maps:
+    /// the caller delivers the decoded outcome by correlation id into the
+    /// ordinal-keyed two-phase maps, the same regime the remote wire uses.
+    pub(crate) fn in_vm_child_outcome(&self, child_pid: Pid) -> InVmChildOutcome {
+        let (reason, owned_result) = self.scheduler.run_until_exit(child_pid);
+        self.release_spawn_heaps(child_pid);
+        if reason == ExitReason::Normal {
+            decode_in_vm_result(owned_result.root()).unwrap_or_else(|| {
+                InVmChildOutcome::Failed(format!(
+                    "terminal:activity process {child_pid} returned an unexpected result shape"
+                ))
+            })
+        } else {
+            InVmChildOutcome::Failed(format!(
+                "terminal:{}",
+                activity_exit_message(child_pid, reason)
+            ))
         }
     }
 
@@ -596,6 +628,48 @@ fn activity_failure(message: String) -> ActivityError {
         kind: ActivityErrorKind::Terminal,
         message,
         details: None,
+    }
+}
+
+/// The one canonical message for an activity child that exited abnormally,
+/// shared by the trapped-exit propagation path and the in-VM outcome decode.
+fn activity_exit_message(activity_pid: Pid, reason: ExitReason) -> String {
+    format!("activity process {activity_pid} exited: {reason:?}")
+}
+
+/// Outcome of one in-VM activity child, decoded at its exit boundary.
+///
+/// Both variants carry the raw wire string the correlation-keyed delivery
+/// path expects: a completion carries the runner's output-codec JSON, a
+/// failure carries the SDK's prefixed reason vocabulary.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum InVmChildOutcome {
+    /// Normal exit with `{ok, JsonBin}`: the encoded activity output.
+    Completed(String),
+    /// Normal exit with `{error, ReasonBin}`, or a synthesized reason for an
+    /// abnormal exit / unexpected result shape.
+    Failed(String),
+}
+
+/// Decode the thunk child's exit result term (`{ok, Bin} | {error, Bin}`).
+///
+/// Returns `None` for any other shape — including non-UTF-8 payload bytes —
+/// so the caller synthesizes a terminal failure instead of guessing.
+fn decode_in_vm_result(term: beamr::term::Term) -> Option<InVmChildOutcome> {
+    let tuple = beamr::term::boxed::Tuple::new(term)?;
+    if tuple.arity() != 2 {
+        return None;
+    }
+    let tag = tuple.get(0)?;
+    let value = tuple.get(1)?;
+    let bin = beamr::term::binary_ref::BinaryRef::new(value)?;
+    let text = String::from_utf8(bin.as_bytes().to_vec()).ok()?;
+    if tag == beamr::term::Term::atom(Atom::OK) {
+        Some(InVmChildOutcome::Completed(text))
+    } else if tag == beamr::term::Term::atom(Atom::ERROR) {
+        Some(InVmChildOutcome::Failed(text))
+    } else {
+        None
     }
 }
 

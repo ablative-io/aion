@@ -4,6 +4,19 @@
 //! process, and provides the plumbing that surfaces the child outcome back to
 //! that workflow. The AD append path records Activity events. AT policy
 //! machinery consumes surfaced activity errors to decide any future retry.
+//!
+//! PRODUCTION PATH NOTE (CUT 3): the production in-VM tier now dispatches
+//! through `aion_flow_ffi:dispatch_activity_in_vm/4`
+//! (`runtime::nif_activity_in_vm`), which spawns the SDK-supplied runner thunk
+//! via [`RuntimeHandle::spawn_activity_closure`] (a beamr closure spawn whose
+//! environment is deep-copied into the child heap) and delivers the outcome on
+//! the correlation/ordinal-keyed two-phase maps — NOT through this module's
+//! `(parent, child_pid)`-keyed propagation. The closure variant deliberately
+//! lives on the runtime boundary rather than here: this module's contract is
+//! beamr-type-free (payloads in, pids out), while a closure is irreducibly a
+//! runtime `Term`. The named-function variant below remains the seam for
+//! registered/generated in-VM entrypoints and owns the dirty-scheduling
+//! decision for that path.
 
 use aion_core::{ActivityError, Payload};
 
