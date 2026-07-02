@@ -8,11 +8,18 @@ import type { WorkflowFilter } from '@/types';
  */
 export const ASSISTANT_WORKFLOW_TYPE = 'assistant';
 
-/** Starts the next round; payload `{ message }`. */
+/**
+ * The ONE control signal the session listens on — the engine's selective
+ * receive parks on exactly this name, discriminating in the payload:
+ * `{ message }` starts the next round, `{ end: true }` ends the session
+ * (OperatorEnded). There is deliberately NO separate end signal.
+ */
 export const ASSISTANT_CONTINUE_SIGNAL = 'assistant_continue';
 
-/** Finishes the session; payload `{}`. */
-export const ASSISTANT_END_SIGNAL = 'assistant_end';
+/** The end-of-session payload for {@link ASSISTANT_CONTINUE_SIGNAL}. */
+export function assistantEndPayload(): JsonRecord {
+  return { end: true };
+}
 
 /** The `POST /workflows/start` input for an assistant session. */
 export type AssistantSessionInput = {

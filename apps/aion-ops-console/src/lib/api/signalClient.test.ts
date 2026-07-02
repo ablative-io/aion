@@ -45,12 +45,12 @@ test('sendSignal omits the payload key entirely for a payload-less signal', asyn
   const calls: Request[] = [];
   const client = clientReturning({}, calls);
 
-  await client.sendSignal(workflowId, 'assistant_end', { namespace });
+  await client.sendSignal(workflowId, 'nudge', { namespace });
 
   expect(await calls[0]?.clone().json()).toEqual({
     namespace,
     workflow_id: workflowId,
-    signal_name: 'assistant_end',
+    signal_name: 'nudge',
   });
 });
 

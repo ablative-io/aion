@@ -21,7 +21,10 @@ export type AssistantChatMode = 'live' | 'awaiting' | 'connecting' | 'ended';
 export type AssistantModeInputs = {
   /** Projected terminal outcome exists (Completed/Failed/Cancelled/TimedOut). */
   isTerminal: boolean;
-  /** The live-attempt enumeration has answered (loadState === 'ready'). */
+  /**
+   * The live-attempt enumeration has a trustworthy answer — 'ready', or
+   * 'refreshing' (a re-enumeration keeps the previous answer on screen).
+   */
   attemptsReady: boolean;
   liveAttemptCount: number;
 };

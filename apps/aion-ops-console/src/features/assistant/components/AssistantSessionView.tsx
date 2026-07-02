@@ -11,7 +11,7 @@ import { ACTION_IDS, useAction } from '@/lib/keybindings';
 import type { InterventionOutcome, Namespace, WorkflowId } from '@/types';
 
 import { useAssistantSignal } from '../hooks/useAssistantSignal';
-import { ASSISTANT_CONTINUE_SIGNAL, ASSISTANT_END_SIGNAL } from '../lib/contract';
+import { ASSISTANT_CONTINUE_SIGNAL, assistantEndPayload } from '../lib/contract';
 import {
   type AssistantChatMode,
   deriveAssistantMode,
@@ -26,7 +26,8 @@ import {
  * (see {@link deriveAssistantMode}): while an attempt is live it intervenes
  * (InjectMessage, interrupt priority — the existing NOI-7 path); when the round
  * has ended and the workflow awaits continuation it signals
- * `assistant_continue { message }`. Ending the session signals `assistant_end`.
+ * `assistant_continue { message }`. Ending the session sends the SAME signal
+ * with the `{ end: true }` payload — the workflow listens on exactly one name.
  * All state is real — history + socket + live-attempt enumeration; no polling.
  */
 
@@ -42,21 +43,33 @@ export function AssistantSessionView({ namespace, workflowId }: AssistantSession
     history: historyQuery.data ?? [],
     workflowId,
   });
-  const { attempts, loadState, refresh } = useActivityAttempts({ workflowId, namespace });
+  const { attempts, loadState, loadError, refresh } = useActivityAttempts({
+    workflowId,
+    namespace,
+  });
 
   // Attempt liveness changes exactly when lifecycle events land on the socket
   // (activity started/completed, signal received) — re-enumerate then. This is
-  // event-driven refresh, not a poll; the initial load is the hook's own.
+  // event-driven refresh, not a poll; the initial load is the hook's own, so
+  // the first count (the history backfill) is the baseline, not a change.
+  const historyLoaded = historyQuery.isSuccess;
   const eventCount = live.events.length;
+  const enumeratedCountRef = useRef<number | null>(null);
   useEffect(() => {
-    if (eventCount > 0) {
+    if (!historyLoaded) {
+      return;
+    }
+    if (enumeratedCountRef.current !== null && eventCount !== enumeratedCountRef.current) {
       refresh();
     }
-  }, [eventCount, refresh]);
+    enumeratedCountRef.current = eventCount;
+  }, [historyLoaded, eventCount, refresh]);
 
   const mode = deriveAssistantMode({
     isTerminal: live.isTerminal,
-    attemptsReady: loadState === 'ready',
+    // A re-enumeration keeps the previous answer trustworthy — the mode (and
+    // the mounted chat dock) must not flap to 'connecting' on every event.
+    attemptsReady: loadState === 'ready' || loadState === 'refreshing',
     liveAttemptCount: attempts.length,
   });
   // The hook returns attempts ascending — the newest is the round in flight.
@@ -111,6 +124,18 @@ export function AssistantSessionView({ namespace, workflowId }: AssistantSession
       />
     );
   }
+  // A broken enumeration means the send verb has no trustworthy target — a
+  // visible error with retry, never an eternal 'Connecting…'. A terminal
+  // session doesn't need the enumeration, so 'ended' still renders.
+  if (loadState === 'error' && mode !== 'ended') {
+    return (
+      <ErrorState
+        error={loadError}
+        onRetry={refresh}
+        title="Could not enumerate this session's live attempts"
+      />
+    );
+  }
 
   const cancelAttempt = () => {
     if (attempt === null) {
@@ -156,8 +181,9 @@ export function AssistantSessionView({ namespace, workflowId }: AssistantSession
   };
 
   const endSession = () => {
-    // Contract: `assistant_end {}` — an explicit empty-object payload.
-    void signal.submit(ASSISTANT_END_SIGNAL, {}).catch(() => {});
+    // Contract: `assistant_continue { end: true }` — the one signal name the
+    // workflow's selective receive parks on; the payload discriminates.
+    void signal.submit(ASSISTANT_CONTINUE_SIGNAL, assistantEndPayload()).catch(() => {});
   };
 
   // Cancel is offered ONLY when the live attempt's harness advertises it.

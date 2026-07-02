@@ -22,9 +22,9 @@ export {
 } from './hooks/useAssistantSignal';
 export {
   ASSISTANT_CONTINUE_SIGNAL,
-  ASSISTANT_END_SIGNAL,
   ASSISTANT_WORKFLOW_TYPE,
   type AssistantSessionInput,
+  assistantEndPayload,
   assistantSessionsFilter,
   assistantStartInput,
 } from './lib/contract';

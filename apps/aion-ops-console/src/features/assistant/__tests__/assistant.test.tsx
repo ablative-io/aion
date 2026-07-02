@@ -11,7 +11,9 @@ import type { WorkflowSummary } from '@/types';
 import { AssistantSessionRows } from '../components/AssistantSessionList';
 import { ModeChip, SessionDock } from '../components/AssistantSessionView';
 import {
+  ASSISTANT_CONTINUE_SIGNAL,
   ASSISTANT_WORKFLOW_TYPE,
+  assistantEndPayload,
   assistantSessionsFilter,
   assistantStartInput,
 } from '../lib/contract';
@@ -113,6 +115,13 @@ test('the contract start input carries objective + repo_path (blank travels as e
     objective: 'fix the flaky test',
     repo_path: '',
   });
+});
+
+test('ending a session rides the ONE continue signal with the end discriminator', () => {
+  // The workflow's selective receive parks on exactly `assistant_continue`;
+  // there is deliberately NO separate end signal name in the contract.
+  expect(ASSISTANT_CONTINUE_SIGNAL).toBe('assistant_continue');
+  expect(assistantEndPayload()).toEqual({ end: true });
 });
 
 // --- the docked chat makes its send verb obvious per mode ---
