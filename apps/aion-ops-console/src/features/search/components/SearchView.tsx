@@ -7,14 +7,15 @@ import { ErrorState } from '@/components/ErrorState';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import type { ApiClient, EventSearchResult } from '@/lib/api';
 import { ACTION_IDS, useAction } from '@/lib/keybindings';
+import { useDraft } from '@/lib/state';
 import type { Namespace } from '@/types';
 
 import {
   buildEventSearchQuery,
-  EMPTY_EVENT_SEARCH_FORM,
   type EventSearchFormState,
   useEventSearch,
 } from '../hooks/useEventSearch';
+import { eventSearchDraftStore } from '../lib/eventSearchDraft';
 import { SearchForm } from './SearchForm';
 
 export type SearchViewProps = {
@@ -44,7 +45,9 @@ function wantsFieldFocus(state: unknown): boolean {
  * each surface to visible state — results are never fabricated.
  */
 export function SearchView({ namespace, client }: SearchViewProps) {
-  const [formState, setFormState] = useState<EventSearchFormState>(EMPTY_EVENT_SEARCH_FORM);
+  // Field state lives in a sessionStorage-backed draft store (src/lib/state):
+  // navigating away and back restores the query fields.
+  const { draft: formState, updateDraft, clearDraft } = useDraft(eventSearchDraftStore);
   const [submitted, setSubmitted] = useState<EventSearchFormState | null>(null);
   const firstFieldRef = useRef<HTMLInputElement | null>(null);
   const location = useLocation();
@@ -82,7 +85,7 @@ export function SearchView({ namespace, client }: SearchViewProps) {
   }
 
   function handleClear() {
-    setFormState(EMPTY_EVENT_SEARCH_FORM);
+    clearDraft();
     setSubmitted(null);
   }
 
@@ -106,7 +109,7 @@ export function SearchView({ namespace, client }: SearchViewProps) {
             firstFieldRef={firstFieldRef}
             isEmpty={isEmpty}
             isLoading={search.isFetching}
-            onChange={setFormState}
+            onChange={updateDraft}
             onClear={handleClear}
             onSubmit={handleSubmit}
             value={formState}

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -12,6 +12,7 @@ import { ActionsView } from '../components/ActionsView';
 import { DeployOutcome, VersionsBody } from '../components/DeployPackagePanel';
 import { StartOutcome, StartWorkflowForm } from '../components/StartWorkflowForm';
 import { parseJsonInput } from '../lib/jsonInput';
+import { startWorkflowDraftStore } from '../lib/startWorkflowDraft';
 
 const NAMESPACE = 'default' as Namespace;
 
@@ -77,6 +78,43 @@ describe('StartWorkflowForm', () => {
     expect(markup).toContain('Start workflow');
     // A selected namespace takes precedence, so the free-form hint is absent.
     expect(markup).not.toContain('created when the run starts');
+  });
+});
+
+describe('StartWorkflowForm drafts', () => {
+  afterEach(() => {
+    startWorkflowDraftStore.getState().clearDraft();
+  });
+
+  test('a half-filled form is restored on return (draft survives unmount)', () => {
+    // Simulate the write-through a previous mount performed before navigating away.
+    startWorkflowDraftStore.getState().setDraft({
+      workflowType: 'DraftedDigest',
+      inputText: '{"to": "ops-draft"}',
+      routingKey: 'draft-rk-7',
+    });
+
+    const markup = wrap(<StartWorkflowForm namespace={NAMESPACE} />);
+    expect(markup).toContain('DraftedDigest');
+    expect(markup).toContain('ops-draft');
+    expect(markup).toContain('draft-rk-7');
+  });
+
+  test('the free-form namespace entry is drafted too', () => {
+    startWorkflowDraftStore.getState().setDraft({ namespaceEntry: 'drafted-namespace' });
+
+    const markup = wrap(<StartWorkflowForm namespace={null} />);
+    expect(markup).toContain('drafted-namespace');
+  });
+
+  test('a cleared draft renders a pristine form (the confirmed-start path)', () => {
+    startWorkflowDraftStore.getState().setDraft({ workflowType: 'DraftedDigest' });
+    // The submit handler clears the draft on a confirmed start; the next
+    // mount must not resurrect the consumed draft.
+    startWorkflowDraftStore.getState().clearDraft();
+
+    const markup = wrap(<StartWorkflowForm namespace={NAMESPACE} />);
+    expect(markup).not.toContain('DraftedDigest');
   });
 });
 
