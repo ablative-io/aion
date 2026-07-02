@@ -21,6 +21,26 @@ backlog item (#130) and absorbs tasks #198/#201.
 - **Operate, not observe.** Same doctrine as ops-console-out-of-box: every
   surface the operator can see, they can act on.
 - **Real data only, socket-first** (standing; unchanged).
+- **Nothing requires manual refresh. Ever.** If any part of a page updates
+  live, all of it does. A "Refresh" button is an admission that a view was
+  wired to a request/response endpoint when the data it needs is already
+  flowing — or should be — on a stream the page holds. The live-attempts
+  list is the canonical offender: the swimlane above it updates live from
+  the workflow event stream while the attempts list (a wrap of the
+  intervention router's REST enumeration) sits stale behind a button.
+  Rule: views DERIVE from streams; REST is for actions and cold loads only.
+
+## The step/attempt navigator (kills the Refresh button)
+
+Replace the "Agent attempts" list with a step navigator derived from the
+workflow event stream the page already subscribes to (plus history for cold
+load): every attempt — running or finished — appears the moment its
+ActivityScheduled/Started event flows, flips state on its terminal event, and
+is selectable to load its durable transcript. Live attempts carry the chat/
+intervene controls; finished ones are read-only. Selection auto-follows the
+newest live attempt unless the operator has pinned one. No Refresh button.
+This is the same substrate the Gantt click-through needs — one model, two
+views.
 
 ## The transcript surface
 
