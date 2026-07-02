@@ -29,6 +29,7 @@ import {
   useReducedMotionTransition,
 } from '@/components/kit';
 import { cn } from '@/lib/utils';
+import { TokenPalette } from './TokenPalette';
 
 // The design lookbook: every kit component in every state, with knobs. This
 // is the human verification surface for Phase 0 — not linked from the nav,
@@ -47,6 +48,7 @@ export function KitLookbook() {
         </p>
       </header>
 
+      <PaletteSection />
       <SpringsSection />
       <StatusSection />
       <EntitySection />
@@ -94,13 +96,24 @@ function Knob({
         'rounded-lg border px-2.5 py-1 text-xs transition-colors duration-150',
         'outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]',
         active
-          ? 'border-transparent font-semibold text-[var(--surface-base,#0f0f14)]'
+          ? 'border-transparent font-semibold text-[var(--surface-base)]'
           : 'border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
       )}
       style={active ? { backgroundColor: KIT_ACCENT } : undefined}
     >
       {children}
     </button>
+  );
+}
+
+function PaletteSection() {
+  return (
+    <Section
+      title="Palette"
+      note="Every color token, resolved live from the active theme — the tuning surface. Ratios are WCAG contrast; statuses show the real 10px dot on canvas."
+    >
+      <TokenPalette />
+    </Section>
   );
 }
 
@@ -157,7 +170,7 @@ function StatusSection() {
   return (
     <Section
       title="Status vocabulary"
-      note="One way to say it everywhere: dot + glow. Live pulses; terracotta acts; no cyan."
+      note="One way to say it everywhere: dot + glow. Live pulses; blue acts; terracotta demands attention; no cyan."
     >
       <div className="flex flex-wrap items-center gap-6">
         {ALL_STATUSES.map((status) => (

@@ -13,7 +13,8 @@
 @custom-variant light (&:is(.light *));
 
 /*
- * The one token vocabulary (meridian's architecture, terracotta accent).
+ * The one token vocabulary (meridian's architecture, strategy-blue action
+ * accent, terracotta reserved for attention).
  * See docs/design/OPS-CONSOLE-DESIGN-LANGUAGE.md — tokens are decided here
  * once and consumed everywhere through the @theme mapping below. Components
  * never hardcode palette colors or reach for raw var(--…) classes.
@@ -54,24 +55,30 @@
   --surface-hover: #252530;
   --surface-code: #0d0d12;
 
-  /* Alpha-white hairline borders; focus ring is the accent at 50% */
+  /* Alpha-white hairline borders; focus ring is the action accent at 50% */
   --border-subtle: rgba(255, 255, 255, 0.04);
   --border-default: rgba(255, 255, 255, 0.08);
-  --border-focus: rgba(212, 132, 90, 0.5);
+  --border-focus: rgba(107, 150, 209, 0.5);
 
   /* Text ladder */
   --text-primary: #f4f4f5;
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
 
-  /* Primary accent: terracotta (act) */
-  --accent-primary: #d4845a;
-  --accent-primary-hover: #c97143;
-  --accent-primary-glow: rgba(212, 132, 90, 0.12);
+  /* Action/interactive accent: brand strategy-blue (#4a6fa5 brightened for
+   * the dark canvas — 6.1:1 on #121218). Calm, recedes until needed. */
+  --accent-primary: #6b96d1;
+  --accent-primary-hover: #7fa7dc;
+  --accent-primary-glow: rgba(107, 150, 209, 0.12);
+
+  /* Attention accent: terracotta — the standout chip, pinned markers, brand
+   * moments. Spent sparingly or it devalues. Never for interactive chrome. */
+  --accent-attention: #d4845a;
+  --accent-attention-glow: rgba(212, 132, 90, 0.12);
 
   /* Semantic status set, each with a 12%-alpha glow companion */
-  --status-success: #4ade80;
-  --status-success-glow: rgba(74, 222, 128, 0.12);
+  --status-success: #74b584;
+  --status-success-glow: rgba(116, 181, 132, 0.12);
   --status-warning: #fbbf24;
   --status-warning-glow: rgba(251, 191, 36, 0.12);
   --status-danger: #f87171;
@@ -90,7 +97,7 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.28);
   --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.35);
-  --shadow-glow: 0 0 24px rgba(212, 132, 90, 0.15);
+  --shadow-glow: 0 0 24px rgba(107, 150, 209, 0.15);
   --shadow-glow-live: 0 0 24px rgba(79, 184, 178, 0.15);
 
   /* shadcn aliases — same values, so stock components speak the vocabulary */
@@ -99,7 +106,8 @@
   --popover: var(--surface-card);
   --popover-foreground: var(--text-primary);
   --primary: var(--accent-primary);
-  --primary-foreground: #121218;
+  /* 6.3:1 on the blue — near-black beats white (3.0:1) here */
+  --primary-foreground: #0b0f14;
   --secondary: var(--surface-hover);
   --secondary-foreground: var(--text-secondary);
   --muted: var(--surface-hover);
@@ -127,18 +135,21 @@
 
   --border-subtle: rgba(0, 0, 0, 0.04);
   --border-default: rgba(0, 0, 0, 0.08);
-  --border-focus: rgba(176, 100, 58, 0.5);
+  --border-focus: rgba(61, 95, 149, 0.5);
 
   --text-primary: #18181b;
   --text-secondary: #52525b;
   --text-muted: #71717a;
 
-  --accent-primary: #b0643a;
-  --accent-primary-hover: #9c5530;
-  --accent-primary-glow: rgba(176, 100, 58, 0.1);
+  --accent-primary: #3d5f95;
+  --accent-primary-hover: #34517f;
+  --accent-primary-glow: rgba(61, 95, 149, 0.1);
 
-  --status-success: #16a34a;
-  --status-success-glow: rgba(22, 163, 74, 0.1);
+  --accent-attention: #b0643a;
+  --accent-attention-glow: rgba(176, 100, 58, 0.1);
+
+  --status-success: #3e7d52;
+  --status-success-glow: rgba(62, 125, 82, 0.1);
   --status-warning: #d97706;
   --status-warning-glow: rgba(217, 119, 6, 0.1);
   --status-danger: #dc2626;
@@ -154,7 +165,7 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.05);
   --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.08);
-  --shadow-glow: 0 0 24px rgba(176, 100, 58, 0.12);
+  --shadow-glow: 0 0 24px rgba(61, 95, 149, 0.12);
   --shadow-glow-live: 0 0 24px rgba(47, 139, 134, 0.12);
 
   --card: var(--surface-card);
@@ -202,6 +213,8 @@
   --color-primary-hover: var(--accent-primary-hover);
   --color-primary-glow: var(--accent-primary-glow);
   --color-primary-foreground: var(--primary-foreground);
+  --color-attention: var(--accent-attention);
+  --color-attention-glow: var(--accent-attention-glow);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -276,8 +289,9 @@
     font-size: 0.875em;
   }
 
+  /* Selection is an act, so it takes the action accent at low alpha */
   ::selection {
-    background: rgba(212, 132, 90, 0.35);
+    background: rgba(107, 150, 209, 0.35);
     color: var(--text-primary);
   }
 
