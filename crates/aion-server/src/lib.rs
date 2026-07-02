@@ -75,5 +75,6 @@ pub use namespace::{
 pub use run::run;
 pub use state::ServerState;
 pub use worker::{
-    HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport, TaskLiveness,
+    HeartbeatSweeper, HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport,
+    TaskLiveness,
 };

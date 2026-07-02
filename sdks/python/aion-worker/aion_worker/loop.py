@@ -46,6 +46,15 @@ ActivityExecutionContext: TypeAlias = ActivityContext
 _InFlightKey: TypeAlias = tuple[str, int]
 
 
+@dataclass(frozen=True)
+class _InFlightEntry:
+    """One in-flight activity: identity for the liveness pump, handle for cancellation."""
+
+    workflow_id: WorkflowId
+    activity_id: ActivityId
+    handle: ActivityCancellationHandle
+
+
 class ShutdownRequested:
     """Sentinel returned when the serve loop observes shutdown."""
 
@@ -143,8 +152,19 @@ async def serve(
     unacked = tracker if tracker is not None else UnackedResultTracker()
     semaphore = asyncio.Semaphore(config.max_concurrency)
     running: set[asyncio.Task[None]] = set()
-    in_flight: dict[_InFlightKey, ActivityCancellationHandle] = {}
+    in_flight: dict[_InFlightKey, _InFlightEntry] = {}
     stream = session.receive_tasks().__aiter__()
+    # The RUNTIME owns liveness (#176): a session registered against a server
+    # heartbeat window automatically heartbeats every in-flight activity at a
+    # quarter-window cadence, so the server's heartbeat sweeper only ever
+    # expires a genuinely dead/wedged process — never a healthy worker running
+    # a legitimately long activity. Sessions without a window (fakes, tests)
+    # never pump. Explicit `ActivityContext.heartbeat` calls remain the way to
+    # attach PROGRESS payloads.
+    window_seconds = _heartbeat_window_seconds(session)
+    pump: asyncio.Task[None] | None = None
+    if window_seconds is not None:
+        pump = asyncio.create_task(_pump_liveness(session, in_flight, window_seconds))
 
     try:
         while True:
@@ -178,9 +198,18 @@ async def serve(
             # caller's drop-budget reset decision measures connected time,
             # never drain time. No awaits may precede this capture.
             health.stream_ended_at = clock()
+        # The pump lives exactly as long as the receive loop (mirroring the
+        # Rust runtime): once the stream has ended the session is either dead
+        # or being torn down, so automatic beats stop before the drain.
+        if pump is not None:
+            pump.cancel()
+            try:
+                await pump
+            except asyncio.CancelledError:
+                pass
         if shutdown is not None and shutdown.is_set():
-            for handle in in_flight.values():
-                handle.cancel()
+            for entry in in_flight.values():
+                entry.handle.cancel()
         if running:
             await asyncio.gather(*running)
 
@@ -443,7 +472,7 @@ async def _run_and_report(
     task: ActivityTask,
     tracker: UnackedResultTracker,
     semaphore: asyncio.Semaphore,
-    in_flight: dict[_InFlightKey, ActivityCancellationHandle],
+    in_flight: dict[_InFlightKey, _InFlightEntry],
     health: SessionHealth | None,
 ) -> None:
     key = _in_flight_key(task.workflow_id, task.activity_id)
@@ -466,7 +495,11 @@ async def _run_and_report(
             session=session,
             content_type=task.input.content_type,
         )
-        in_flight[key] = ActivityCancellationHandle(context)
+        in_flight[key] = _InFlightEntry(
+            workflow_id=task.workflow_id,
+            activity_id=task.activity_id,
+            handle=ActivityCancellationHandle(context),
+        )
         outcome = await dispatcher.dispatch(task, context)
         await _report_outcome(session, task, outcome, tracker)
         if health is not None:
@@ -527,7 +560,7 @@ async def _report_outcome(
     logger.info("reported activity failure", extra=_log_fields(task.workflow_id, task.activity_id, task.activity_type))
 
 
-def _handle_control_event(event: WorkerSessionEvent, in_flight: dict[_InFlightKey, ActivityCancellationHandle]) -> None:
+def _handle_control_event(event: WorkerSessionEvent, in_flight: dict[_InFlightKey, _InFlightEntry]) -> None:
     if isinstance(event, ActivityCancelled):
         logger.info(
             "received cooperative activity cancellation",
@@ -536,9 +569,57 @@ def _handle_control_event(event: WorkerSessionEvent, in_flight: dict[_InFlightKe
                 "activity_id": event.activity_id.sequence_position,
             },
         )
-        handle = in_flight.get(_in_flight_key(event.workflow_id, event.activity_id))
-        if handle is not None:
-            handle.cancel()
+        entry = in_flight.get(_in_flight_key(event.workflow_id, event.activity_id))
+        if entry is not None:
+            entry.handle.cancel()
+
+
+def _heartbeat_window_seconds(session: WorkerSession) -> float | None:
+    """Server-assigned liveness window for this session, in seconds.
+
+    Read through the session's optional ``heartbeat_window_seconds`` method
+    (implemented by :class:`aion_worker.session.GrpcWorkerSession` from the
+    ``RegisterAck``). Sessions without it — every fake in the test suite —
+    never pump, keeping the loop byte-identical to its pre-pump behaviour.
+    """
+
+    window = getattr(session, "heartbeat_window_seconds", None)
+    if window is None:
+        return None
+    seconds = window()
+    if seconds is None or seconds <= 0:
+        return None
+    return float(seconds)
+
+
+async def _pump_liveness(
+    session: WorkerSession,
+    in_flight: dict[_InFlightKey, _InFlightEntry],
+    window_seconds: float,
+) -> None:
+    """Automatically heartbeat every in-flight activity at a quarter-window cadence.
+
+    The server's heartbeat sweeper expires any worker whose in-flight task
+    goes a full window without a heartbeat — that is dead/wedged-PROCESS
+    detection, and a healthy process running a legitimately long handler must
+    never trip it, so keeping tasks beating is the runtime's job, not each
+    handler's (#176). A wedged event loop stops this pump and is correctly
+    expired. Automatic beats never carry progress; explicit
+    :meth:`aion_worker.ActivityContext.heartbeat` calls own that channel.
+    """
+
+    interval = max(window_seconds / 4.0, 0.001)
+    while True:
+        await asyncio.sleep(interval)
+        for entry in list(in_flight.values()):
+            try:
+                await session.send_heartbeat(entry.workflow_id, entry.activity_id, None)
+            except Exception as exc:
+                # The session's send path is broken; the receive stream is
+                # about to surface the same transport failure and end the
+                # serve loop, so stop pumping rather than spamming failures.
+                logger.warning("automatic liveness heartbeat failed; pump stopped: %s", exc)
+                return
 
 
 def _in_flight_key(workflow_id: WorkflowId, activity_id: ActivityId) -> _InFlightKey:

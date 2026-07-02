@@ -3,12 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
+use tracing::{error, info, warn};
 
 use aion_core::{ActivityId, Payload, WorkflowId};
 use aion_proto::{ProtoHeartbeat, WireError};
 
 use crate::error::ServerError;
+use crate::shutdown::DrainState;
 use crate::worker::dispatch::{
     ActivityCompletion, ActivityCompletionOutcome, ActivityCompletionSink, lost_worker_error,
 };
@@ -145,6 +147,12 @@ impl HeartbeatTracker {
 
     /// Record a worker heartbeat without completing the activity.
     ///
+    /// Every heartbeat refreshes the task's liveness stamp. The progress
+    /// payload is only overwritten when the heartbeat CARRIES one: the worker
+    /// runtime's automatic liveness beats are payload-free and interleave
+    /// with explicit handler progress heartbeats, and a liveness beat must
+    /// never erase the handler's most recent progress report.
+    ///
     /// # Errors
     ///
     /// Returns a stable wire error for malformed heartbeats or unknown in-flight tasks.
@@ -161,7 +169,9 @@ impl HeartbeatTracker {
             return Err(wire_error("heartbeat task is not in flight"));
         };
         liveness.last_heartbeat_at = now;
-        liveness.last_progress = decoded.progress;
+        if decoded.progress.is_some() {
+            liveness.last_progress = decoded.progress;
+        }
         Ok(HeartbeatUpdate {
             liveness: liveness.clone(),
         })
@@ -328,6 +338,155 @@ impl HeartbeatTracker {
         self.inner
             .lock()
             .map_err(|_| ServerError::lock_poisoned("worker heartbeat tracker"))
+    }
+}
+
+/// Sweep cadence derived from the operator's `worker.heartbeat_window`: a
+/// quarter of the window, clamped to `[1s, window]` (the default 30s window
+/// sweeps every 7.5s).
+///
+/// Deliberately derived rather than a separate config knob: the window is the
+/// operational contract ("a silent worker is dead after this long"), and the
+/// sweep cadence is an implementation detail of enforcing it — a quarter-window
+/// cadence bounds detection latency at `window + window/4` while keeping the
+/// sweep cheap. A window shorter than one second (test configurations) sweeps
+/// once per window rather than sub-second-spinning, and a zero window is
+/// floored at one millisecond because `tokio::time::interval` rejects a zero
+/// period.
+#[must_use]
+pub fn sweep_interval(heartbeat_window: Duration) -> Duration {
+    /// `tokio::time::interval` panics on a zero period, so even a
+    /// (misconfigured) zero window gets a positive cadence.
+    const MINIMUM_PERIOD: Duration = Duration::from_millis(1);
+    /// Target lower bound: sweeping more often than once a second buys no
+    /// meaningful detection latency against real heartbeat windows.
+    const TARGET_FLOOR: Duration = Duration::from_secs(1);
+    let ceiling = heartbeat_window.max(MINIMUM_PERIOD);
+    // The floor never exceeds the ceiling, so `clamp` cannot panic.
+    (heartbeat_window / 4).clamp(TARGET_FLOOR.min(ceiling), ceiling)
+}
+
+/// Production driver of [`HeartbeatTracker::fail_expired_workers`] (#176).
+///
+/// The tracker records per-task liveness, and the stream-teardown sweep fails a
+/// worker whose stream ENDS — but a worker whose stream stays open while its
+/// process wedges (stops heartbeating without disconnecting) was never expired
+/// by anything on the boot path, so its in-flight dispatches waited forever.
+/// This interval task is that missing caller: each tick fails every worker with
+/// a task beyond its heartbeat window, deregistering it with the provable
+/// [`WorkerDeathReason::Timeout`](aion_core::WorkerDeathReason::Timeout) and
+/// surfacing its tasks as retryable lost-worker failures through the shared
+/// completion sink. It shares the server's shutdown watch, so it drains with
+/// the transports (mirroring
+/// [`OutboxDispatcher::run`](crate::worker::OutboxDispatcher::run)).
+///
+/// Double-fail safety: this sweep and the stream-teardown path
+/// ([`HeartbeatTracker::fail_disconnected_worker`]) can both observe the same
+/// dead worker. Both funnel into the same idempotent core —
+/// `deregister_with_reason` is a no-op for an already-removed worker (no
+/// duplicate WS3 delta, no metrics double-count) and the tracker removes each
+/// task as it fails it — so whichever path runs second sees an empty report and
+/// never double-completes an activity.
+pub struct HeartbeatSweeper<S> {
+    tracker: HeartbeatTracker,
+    registry: ConnectedWorkerRegistry,
+    sink: S,
+    drain: DrainState,
+    heartbeat_window: Duration,
+    interval: Duration,
+}
+
+impl<S> HeartbeatSweeper<S>
+where
+    S: ActivityCompletionSink + Send + Sync + 'static,
+{
+    /// Build a sweeper over the server's shared liveness tracker, worker
+    /// registry, completion sink, and drain gate. The cadence is derived from
+    /// `heartbeat_window` by [`sweep_interval`].
+    #[must_use]
+    pub fn new(
+        tracker: HeartbeatTracker,
+        registry: ConnectedWorkerRegistry,
+        sink: S,
+        drain: DrainState,
+        heartbeat_window: Duration,
+    ) -> Self {
+        let interval = sweep_interval(heartbeat_window);
+        Self {
+            tracker,
+            registry,
+            sink,
+            drain,
+            heartbeat_window,
+            interval,
+        }
+    }
+
+    /// Run the expiry sweep until `shutdown` flips to `true`.
+    ///
+    /// A tracker/registry error during a sweep is logged and retried next tick
+    /// rather than tearing the task down — a transient failure must not
+    /// silently stop dead-worker detection. Shutdown is observed both while
+    /// waiting for the next tick and re-checked before each sweep, exactly like
+    /// the outbox dispatcher's run loop.
+    pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
+        info!(
+            sweep_interval_ms = self.interval.as_millis(),
+            heartbeat_window_ms = self.heartbeat_window.as_millis(),
+            "worker heartbeat sweeper started"
+        );
+        let mut ticks = tokio::time::interval(self.interval);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = ticks.tick() => {
+                    if *shutdown.borrow() {
+                        break;
+                    }
+                    self.sweep_once(Instant::now());
+                }
+                changed = shutdown.changed() => {
+                    // A receive error means every sender dropped; treat that as
+                    // a shutdown request rather than spinning.
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+        info!("worker heartbeat sweeper stopped");
+    }
+
+    /// Fail every currently-expired worker once, logging each lost-worker
+    /// report at warn (mirroring the stream-teardown sweep's logging).
+    fn sweep_once(&self, now: Instant) {
+        let reports = match self
+            .tracker
+            .fail_expired_workers(&self.registry, &self.sink, now)
+        {
+            Ok(reports) => reports,
+            Err(sweep_error) => {
+                error!(
+                    error = %sweep_error,
+                    "heartbeat expiry sweep failed; retrying next tick"
+                );
+                return;
+            }
+        };
+        for report in &reports {
+            warn!(
+                worker_id = ?report.worker_id,
+                failed_tasks = report.tasks.len(),
+                "worker heartbeat window expired with in-flight activities; \
+                 deregistered and surfaced as retryable lost-worker failures"
+            );
+        }
+        if !reports.is_empty() {
+            // In-flight accounting may have just reached zero; wake any drain
+            // waiter so shutdown does not sit out its full timeout (mirrors
+            // the stream-teardown sweep).
+            self.drain.notify_activity_drained();
+        }
     }
 }
 
@@ -586,6 +745,63 @@ mod tests {
         Ok(())
     }
 
+    /// The worker runtime's AUTOMATIC liveness beats carry no payload and
+    /// interleave with explicit handler progress heartbeats: a payload-free
+    /// beat must refresh the liveness stamp WITHOUT erasing the handler's
+    /// most recent progress report.
+    #[test]
+    fn payload_free_heartbeat_refreshes_liveness_without_clearing_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let window = Duration::from_secs(5);
+        let tracker = HeartbeatTracker::new(window);
+        let worker_id = WorkerIdForTest::registered()?;
+        let workflow_id = workflow_id();
+        let activity_id = activity_id(12);
+        let start = Instant::now();
+
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id.clone(),
+            },
+            start,
+        )?;
+        let progress = payload(&json!({"percent": 80}))?;
+        tracker.record_heartbeat(
+            worker_id,
+            heartbeat(
+                workflow_id.clone(),
+                activity_id.clone(),
+                Some(progress.clone()),
+            ),
+            start + Duration::from_secs(1),
+        )?;
+
+        // An automatic liveness beat: no payload, later timestamp.
+        let update = tracker.record_heartbeat(
+            worker_id,
+            heartbeat(workflow_id.clone(), activity_id.clone(), None),
+            start + Duration::from_secs(4),
+        )?;
+
+        assert_eq!(
+            update.liveness.last_progress,
+            Some(progress),
+            "a payload-free liveness beat must not erase handler progress"
+        );
+        assert!(
+            tracker.is_live(
+                worker_id,
+                &workflow_id,
+                &activity_id,
+                start + Duration::from_secs(8)
+            )?,
+            "the payload-free beat must still refresh the liveness stamp"
+        );
+        Ok(())
+    }
+
     #[test]
     fn malformed_heartbeat_missing_ids_is_wire_error() -> Result<(), Box<dyn std::error::Error>> {
         let worker_id = WorkerIdForTest::registered()?;
@@ -647,5 +863,33 @@ mod tests {
             let (_registry, _registration, worker_id) = registry_with_worker()?;
             Ok(worker_id)
         }
+    }
+
+    #[test]
+    fn sweep_interval_is_quarter_window_clamped_to_one_second_and_window() {
+        // The default 30s window sweeps every 7.5s (quarter-window).
+        assert_eq!(
+            sweep_interval(Duration::from_secs(30)),
+            Duration::from_millis(7_500)
+        );
+        // A short window's quarter (500ms) is floored at 1s.
+        assert_eq!(
+            sweep_interval(Duration::from_secs(2)),
+            Duration::from_secs(1)
+        );
+        // A very long window's quarter stays within the [1s, window] band.
+        assert_eq!(
+            sweep_interval(Duration::from_secs(3_600)),
+            Duration::from_secs(900)
+        );
+        // A sub-second (test) window sweeps once per window, never spinning
+        // sub-window nor waiting longer than the window itself.
+        assert_eq!(
+            sweep_interval(Duration::from_millis(200)),
+            Duration::from_millis(200)
+        );
+        // A zero window is floored at the minimum positive period rather than
+        // producing the zero interval `tokio::time::interval` rejects.
+        assert_eq!(sweep_interval(Duration::ZERO), Duration::from_millis(1));
     }
 }

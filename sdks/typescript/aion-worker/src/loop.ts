@@ -457,53 +457,137 @@ async function receiveUntilClosed(
 	health: SessionHealth,
 ): Promise<void> {
 	const iterator = session.receiveTasks()[Symbol.asyncIterator]();
-	for (;;) {
-		// A clean close is the iterator completing (`done: true`) or the
-		// session yielding its `closed` event. A rejection from `next()` is a
-		// stream error and must propagate to the caller for retryable /
-		// fail-fast classification — never be converted into a silent close.
-		const next = await iterator.next();
-		if (next.done === true) {
-			return;
+	// The RUNTIME owns liveness (#176): a session registered against a server
+	// heartbeat window automatically heartbeats every in-flight activity at a
+	// quarter-window cadence, so the server's heartbeat sweeper only ever
+	// expires a genuinely dead/wedged process — never a healthy worker running
+	// a legitimately long activity. Sessions without a window (fakes, tests)
+	// never pump. Explicit `ActivityContext` heartbeats remain the way to
+	// attach PROGRESS payloads. The pump lives exactly as long as this
+	// receive loop, mirroring the Rust and Python runtimes.
+	const inFlight = new Map<string, InFlightIdentity>();
+	const pump = startLivenessPump(session, inFlight, options.logger);
+	try {
+		for (;;) {
+			// A clean close is the iterator completing (`done: true`) or the
+			// session yielding its `closed` event. A rejection from `next()` is a
+			// stream error and must propagate to the caller for retryable /
+			// fail-fast classification — never be converted into a silent close.
+			const next = await iterator.next();
+			if (next.done === true) {
+				return;
+			}
+			const event = next.value;
+			if (event.kind === "closed") {
+				return;
+			}
+			if (event.kind === "drained") {
+				// Latch the drain classification and stop pulling: in-flight work
+				// finishes and reports via the caller's `running` drain.
+				options.logger?.info(
+					"worker received server drain; finishing in-flight work before reconnect",
+				);
+				health.drainReceived = true;
+				return;
+			}
+			if (event.kind === "resultAck") {
+				// Acks are bookkeeping, not work: consumed without a concurrency
+				// slot. An unknown ack is a logged no-op.
+				acknowledgeResult(event.workflowId, event.activityId, options);
+				continue;
+			}
+			// Only tasks occupy a concurrency slot; acks and drains were handled
+			// above without one.
+			await waitForSlot(running, options.config.maxConcurrency);
+			options.logger?.info("worker received activity task", {
+				workflowId: event.task.workflowId,
+				activityId: event.task.activityId,
+				activityType: event.task.activityType,
+				attempt: event.task.attempt,
+			});
+			const inFlightKey = `${event.task.workflowId} ${event.task.activityId}`;
+			inFlight.set(inFlightKey, {
+				workflowId: event.task.workflowId,
+				activityId: event.task.activityId,
+			});
+			const taskPromise = dispatchAndReport(
+				event.task,
+				session,
+				options,
+				health,
+			).finally(() => {
+				inFlight.delete(inFlightKey);
+				running.delete(taskPromise);
+			});
+			running.add(taskPromise);
 		}
-		const event = next.value;
-		if (event.kind === "closed") {
-			return;
-		}
-		if (event.kind === "drained") {
-			// Latch the drain classification and stop pulling: in-flight work
-			// finishes and reports via the caller's `running` drain.
-			options.logger?.info(
-				"worker received server drain; finishing in-flight work before reconnect",
-			);
-			health.drainReceived = true;
-			return;
-		}
-		if (event.kind === "resultAck") {
-			// Acks are bookkeeping, not work: consumed without a concurrency
-			// slot. An unknown ack is a logged no-op.
-			acknowledgeResult(event.workflowId, event.activityId, options);
-			continue;
-		}
-		// Only tasks occupy a concurrency slot; acks and drains were handled
-		// above without one.
-		await waitForSlot(running, options.config.maxConcurrency);
-		options.logger?.info("worker received activity task", {
-			workflowId: event.task.workflowId,
-			activityId: event.task.activityId,
-			activityType: event.task.activityType,
-			attempt: event.task.attempt,
-		});
-		const taskPromise = dispatchAndReport(
-			event.task,
-			session,
-			options,
-			health,
-		).finally(() => {
-			running.delete(taskPromise);
-		});
-		running.add(taskPromise);
+	} finally {
+		pump.stop();
 	}
+}
+
+/** Identity of one in-flight activity, targeted by the liveness pump. */
+interface InFlightIdentity {
+	readonly workflowId: string;
+	readonly activityId: string;
+}
+
+/** Handle for stopping the automatic liveness pump with its receive loop. */
+interface LivenessPump {
+	stop(): void;
+}
+
+/**
+ * Starts the automatic liveness pump: every quarter of the server-assigned
+ * heartbeat window it heartbeats each in-flight activity, with no progress
+ * payload (explicit handler heartbeats own the progress channel). The
+ * server's heartbeat sweeper expires any worker whose in-flight task goes a
+ * full window without a heartbeat — that is dead/wedged-PROCESS detection,
+ * and a healthy process running a legitimately long handler must never trip
+ * it, so keeping tasks beating is the runtime's job, not each handler's
+ * (#176). A wedged event loop stops this pump and is correctly expired. A
+ * failed beat stops the pump: the receive stream is about to surface the
+ * same transport failure and end the serve loop.
+ */
+function startLivenessPump(
+	session: WorkerSession,
+	inFlight: ReadonlyMap<string, InFlightIdentity>,
+	logger: WorkerLogger | undefined,
+): LivenessPump {
+	const windowMs = session.heartbeatWindowMs?.();
+	if (windowMs === undefined || windowMs <= 0) {
+		return { stop: () => undefined };
+	}
+	const intervalMs = Math.max(windowMs / 4, 1);
+	let stopped = false;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const beat = async (): Promise<void> => {
+		for (const entry of [...inFlight.values()]) {
+			try {
+				await session.sendHeartbeat(entry.workflowId, entry.activityId);
+			} catch (error) {
+				logger?.warn("automatic liveness heartbeat failed; pump stopped", {
+					message: error instanceof Error ? error.message : String(error),
+				});
+				return;
+			}
+		}
+		if (!stopped) {
+			timer = setTimeout(run, intervalMs);
+		}
+	};
+	const run = (): void => {
+		void beat();
+	};
+	timer = setTimeout(run, intervalMs);
+	return {
+		stop: (): void => {
+			stopped = true;
+			if (timer !== undefined) {
+				clearTimeout(timer);
+			}
+		},
+	};
 }
 
 /**

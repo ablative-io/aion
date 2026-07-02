@@ -760,6 +760,37 @@ impl ServerState {
         self.inner.request_forwarder.as_ref()
     }
 
+    /// Spawn the worker heartbeat expiry sweeper (#176): the production driver
+    /// of [`HeartbeatTracker::fail_expired_workers`], failing every worker with
+    /// an in-flight task beyond the operator's `worker.heartbeat_window` and
+    /// deregistering it with the provable
+    /// [`WorkerDeathReason::Timeout`](aion_core::WorkerDeathReason::Timeout).
+    ///
+    /// Always spawned on the server boot path — dead-worker detection is a
+    /// liveness correctness property, not an opt-in feature. The cadence is
+    /// derived from the heartbeat window
+    /// ([`sweep_interval`](crate::worker::sweep_interval): a quarter of the
+    /// window clamped to `[1s, window]`, so the default 30s window sweeps every
+    /// 7.5s); there is deliberately no separate config knob. The task exits
+    /// when `shutdown` flips to `true`, exactly like the transports; the
+    /// returned handle may be dropped to detach it (dropping a tokio
+    /// `JoinHandle` never cancels the task) and is returned so tests can await
+    /// clean shutdown.
+    #[must_use]
+    pub fn spawn_heartbeat_sweeper(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        let sweeper = crate::worker::HeartbeatSweeper::new(
+            self.inner.heartbeat_tracker.clone(),
+            self.inner.worker_registry.clone(),
+            self.inner.pending_activities.clone(),
+            self.inner.drain_state.clone(),
+            self.inner.runtime.worker.heartbeat_window,
+        );
+        tokio::spawn(sweeper.run(shutdown))
+    }
+
     /// Spawn the SS-5b cluster supervisor: a background task that watches every
     /// declared peer's replication liveness and, on a confirmed peer death,
     /// calls `adopt_shards` for that peer's shards on THIS node's live engine —

@@ -89,8 +89,13 @@ pub struct SessionHealth {
 
 /// Runs the worker receive loop until the session's task stream completes.
 ///
-/// The loop only forwards explicit handler heartbeats and cancellation flags. It
-/// never emits automatic heartbeats, never enforces heartbeat timeouts, and never
+/// The RUNTIME owns liveness: for a session that carries a server-assigned
+/// heartbeat window ([`WorkerSession::heartbeat_window`]), the loop
+/// automatically heartbeats every in-flight activity at a quarter-window
+/// cadence, so a healthy worker running a legitimately long activity is never
+/// expired by the server's heartbeat sweeper. Explicit handler heartbeats
+/// remain the way to attach PROGRESS payloads; they are forwarded as they
+/// arrive. The loop never enforces heartbeat timeouts locally and never
 /// aborts running handler tasks on cancellation.
 ///
 /// Every computed dispatch outcome is recorded in `tracker` before its report
@@ -126,8 +131,18 @@ where
 
 /// Runs the worker receive loop until the session's task stream completes.
 ///
-/// The loop only forwards explicit handler heartbeats and cancellation flags. It
-/// never emits automatic heartbeats, never enforces heartbeat timeouts, and never
+/// The RUNTIME owns liveness (#176): when the session carries a
+/// server-assigned heartbeat window ([`WorkerSession::heartbeat_window`],
+/// from the `RegisterAck`), the loop automatically sends a liveness heartbeat
+/// for EVERY in-flight activity at a quarter-window cadence
+/// ([`liveness_pump_interval`]). The server's heartbeat sweeper expires any
+/// worker whose in-flight task exceeds the window without a heartbeat — that
+/// is dead/wedged-PROCESS detection, and a healthy process running a
+/// multi-minute handler must never trip it, so keeping tasks beating is the
+/// runtime's job, not each handler's. A wedged process (deadlocked loop,
+/// stopped host) stops pumping and is correctly expired. Explicit handler
+/// heartbeats remain the way to attach PROGRESS payloads and are forwarded as
+/// they arrive; the loop never enforces heartbeat timeouts locally and never
 /// aborts running handler tasks on cancellation.
 ///
 /// Every computed dispatch outcome is recorded in `tracker` before its report
@@ -171,6 +186,7 @@ where
     let semaphore = Arc::new(Semaphore::new(config.max_concurrency));
     let (result_sender, heartbeat_sender, mut channels) = runtime_channels();
     let heartbeat_bookkeeper = HeartbeatBookkeeper::default();
+    let mut liveness_pump = liveness_pump_for(session);
     let mut stream = session.receive_tasks();
     let mut in_flight = HashMap::<ActivityExecutionKey, InFlightActivity>::new();
     let mut pending_error = None;
@@ -195,27 +211,32 @@ where
             // is only reported when the stream ends (the server-side dispatch
             // would time out against a healthy worker).
             finished = channels.results.recv() => {
-                if let Some(finished) = finished {
-                    report_finished(
-                        session,
-                        &heartbeat_bookkeeper,
-                        finished,
-                        &mut in_flight,
-                        tracker,
-                        &mut health.tasks_reported,
-                        &mut pending_error,
-                    )
-                    .await;
-                }
+                consume_finished(
+                    session,
+                    &heartbeat_bookkeeper,
+                    finished,
+                    &mut in_flight,
+                    tracker,
+                    health,
+                    &mut pending_error,
+                )
+                .await;
             }
             // Handler heartbeats are forwarded as they arrive for the same
             // reason: the server's liveness window must be beatable while the
             // stream is idle.
             request = channels.heartbeats.recv() => {
-                if let Some(request) = request {
-                    forward_heartbeat(session, &heartbeat_bookkeeper, request, &mut pending_error)
-                        .await;
-                }
+                forward_heartbeat(session, &heartbeat_bookkeeper, request, &mut pending_error)
+                    .await;
+            }
+            // Automatic liveness beats for every in-flight activity: the
+            // runtime — not each handler — keeps the server's per-task
+            // heartbeat window satisfied while a handler legitimately runs
+            // longer than the window. Disabled while nothing is in flight
+            // (an idle worker has no tracked task to keep alive).
+            () = tick_liveness_pump(&mut liveness_pump), if !in_flight.is_empty() => {
+                pump_liveness(session, &heartbeat_bookkeeper, &in_flight, &mut pending_error)
+                    .await;
             }
             event = stream.next() => {
                 let Some(event) = event else { break; };
@@ -364,19 +385,128 @@ where
     }
 }
 
-/// Forwards one handler heartbeat to the session, recording the first error.
-async fn forward_heartbeat<S>(
+/// Build the automatic liveness pump for a session: sessions registered
+/// against a server heartbeat window ([`WorkerSession::heartbeat_window`])
+/// beat every in-flight activity at a quarter-window cadence so the server's
+/// expiry sweeper only ever fires on a genuinely dead/wedged process.
+/// Sessions without a window (fakes, tests) never pump — byte-identical to
+/// the pre-pump loop.
+fn liveness_pump_for<S>(session: &S) -> Option<tokio::time::Interval>
+where
+    S: WorkerSession,
+{
+    session.heartbeat_window().map(|window| {
+        let mut ticks = tokio::time::interval(liveness_pump_interval(window));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticks
+    })
+}
+
+/// Consume one queued dispatch outcome (a `None` channel read is a no-op)
+/// and report it through the session, mirroring the drain path's
+/// [`report_finished`].
+async fn consume_finished<S>(
     session: &mut S,
     heartbeat_bookkeeper: &HeartbeatBookkeeper,
-    request: HeartbeatRequest,
+    finished: Option<DispatchFinished>,
+    in_flight: &mut HashMap<ActivityExecutionKey, InFlightActivity>,
+    tracker: &mut UnackedResultTracker,
+    health: &mut SessionHealth,
     pending_error: &mut Option<WorkerError>,
 ) where
     S: WorkerSession,
 {
-    record_first_error(
-        pending_error,
-        crate::protocol::send_heartbeat(session, heartbeat_bookkeeper, request).await,
-    );
+    if let Some(finished) = finished {
+        report_finished(
+            session,
+            heartbeat_bookkeeper,
+            finished,
+            in_flight,
+            tracker,
+            &mut health.tasks_reported,
+            pending_error,
+        )
+        .await;
+    }
+}
+
+/// Automatic liveness-heartbeat cadence derived from the server-assigned
+/// heartbeat window: a quarter of the window, floored at one millisecond
+/// (`tokio::time::interval` rejects a zero period).
+///
+/// The server expires a task once it goes longer than the WHOLE window
+/// without a heartbeat, so a quarter-window pump gives roughly four beats per
+/// window — comfortably inside the contract even when an individual beat is
+/// delayed by a busy loop iteration. Deliberately derived rather than
+/// configurable: the window is the server operator's contract, and the pump
+/// cadence is an implementation detail of honouring it (mirroring the
+/// server's own derived sweep cadence).
+#[must_use]
+pub(crate) fn liveness_pump_interval(heartbeat_window: std::time::Duration) -> std::time::Duration {
+    (heartbeat_window / 4).max(std::time::Duration::from_millis(1))
+}
+
+/// Resolves on the next automatic liveness tick, or never for sessions
+/// without a server-assigned heartbeat window (fakes and unregistered
+/// sessions never pump).
+async fn tick_liveness_pump(pump: &mut Option<tokio::time::Interval>) {
+    match pump {
+        Some(ticks) => {
+            ticks.tick().await;
+        }
+        None => future::pending().await,
+    }
+}
+
+/// Sends one automatic liveness heartbeat (no progress payload) for every
+/// in-flight activity, recording the first send error. A liveness beat never
+/// carries progress — explicit handler heartbeats own the progress channel.
+async fn pump_liveness<S>(
+    session: &mut S,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    in_flight: &HashMap<ActivityExecutionKey, InFlightActivity>,
+    pending_error: &mut Option<WorkerError>,
+) where
+    S: WorkerSession,
+{
+    for key in in_flight.keys() {
+        record_first_error(
+            pending_error,
+            crate::protocol::send_heartbeat(
+                session,
+                heartbeat_bookkeeper,
+                HeartbeatRequest {
+                    workflow_id: key.workflow_id.clone(),
+                    activity_id: key.activity_id.clone(),
+                    detail: None,
+                },
+            )
+            .await,
+        );
+        if pending_error.is_some() {
+            // The session send path is broken; the loop is about to exit
+            // with this error, so further beats are pointless.
+            return;
+        }
+    }
+}
+
+/// Forwards one queued handler heartbeat (a `None` channel read is a no-op)
+/// to the session, recording the first error.
+async fn forward_heartbeat<S>(
+    session: &mut S,
+    heartbeat_bookkeeper: &HeartbeatBookkeeper,
+    request: Option<HeartbeatRequest>,
+    pending_error: &mut Option<WorkerError>,
+) where
+    S: WorkerSession,
+{
+    if let Some(request) = request {
+        record_first_error(
+            pending_error,
+            crate::protocol::send_heartbeat(session, heartbeat_bookkeeper, request).await,
+        );
+    }
 }
 
 /// Clears the acknowledged tracker entry; an unknown ack (already cleared on
