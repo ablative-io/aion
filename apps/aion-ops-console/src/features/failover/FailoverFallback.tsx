@@ -109,18 +109,18 @@ export function FailoverFallback({
   const done = Math.min(tally.count, SEED_ARITY);
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6 font-mono text-[var(--text-primary)]">
+    <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6 font-mono text-foreground">
       <header className="flex flex-col gap-1">
-        <p className="text-[0.7rem] text-[var(--text-muted)] uppercase tracking-[0.3em]">
+        <p className="text-[0.7rem] text-muted-foreground uppercase tracking-[0.3em]">
           AION · FAILOVER · FALLBACK
         </p>
-        <p className="text-[var(--text-muted)] text-xs">
+        <p className="text-muted-foreground text-xs">
           pure-poll floor · ns: {cluster.namespace} · WS not required
         </p>
       </header>
 
       <section className="flex flex-col gap-2">
-        <span className="text-[var(--text-muted)] text-xs uppercase tracking-wide">nodes</span>
+        <span className="text-muted-foreground text-xs uppercase tracking-wide">nodes</span>
         {liveness.map(({ node, state }) => (
           <div className="flex items-center gap-3 text-sm" key={node.index}>
             <span
@@ -129,9 +129,9 @@ export function FailoverFallback({
               style={{
                 backgroundColor:
                   state === 'live'
-                    ? 'var(--accent-cyan)'
+                    ? 'var(--status-live)'
                     : state === 'dark'
-                      ? 'var(--destructive)'
+                      ? 'var(--status-danger)'
                       : 'transparent',
                 border: state === 'unknown' ? '1px solid var(--text-muted)' : 'none',
               }}
@@ -141,9 +141,9 @@ export function FailoverFallback({
               style={{
                 color:
                   state === 'live'
-                    ? 'var(--accent-cyan)'
+                    ? 'var(--status-live)'
                     : state === 'dark'
-                      ? 'var(--destructive)'
+                      ? 'var(--status-danger)'
                       : 'var(--text-muted)',
               }}
             >
@@ -153,34 +153,34 @@ export function FailoverFallback({
         ))}
       </section>
 
-      <section className="flex flex-col items-center gap-1 rounded-md border border-[var(--border-default)] py-8">
-        <span className="text-[var(--text-muted)] text-xs uppercase tracking-[0.3em]">
+      <section className="flex flex-col items-center gap-1 rounded-md border border-border py-8">
+        <span className="text-muted-foreground text-xs uppercase tracking-[0.3em]">
           exactly once
         </span>
         <span className="font-bold text-7xl tabular-nums">
           {done} / {SEED_ARITY}
         </span>
         {cluster.workflowId === null ? (
-          <span className="text-[var(--text-muted)] text-xs">
+          <span className="text-muted-foreground text-xs">
             no ?workflow= seeded — pass the workload id to count
           </span>
         ) : null}
         {historyQuery.isError ? (
-          <span className="text-[var(--destructive)] text-xs">
+          <span className="text-destructive text-xs">
             describe poll failed: {historyQuery.error.message}
           </span>
         ) : null}
       </section>
 
       <section className="flex flex-col gap-1">
-        <span className="text-[var(--text-muted)] text-xs uppercase tracking-wide">event tail</span>
+        <span className="text-muted-foreground text-xs uppercase tracking-wide">event tail</span>
         {events.length === 0 ? (
-          <span className="text-[var(--text-muted)] text-sm">no events</span>
+          <span className="text-muted-foreground text-sm">no events</span>
         ) : (
           <ol className="flex flex-col gap-0.5 text-xs">
             {events.slice(-EVENT_TAIL).map((event) => (
               <li
-                className="text-[var(--text-secondary)]"
+                className="text-secondary-foreground"
                 key={`${event.data.envelope.seq}:${event.type}`}
               >
                 #{event.data.envelope.seq} {event.type}

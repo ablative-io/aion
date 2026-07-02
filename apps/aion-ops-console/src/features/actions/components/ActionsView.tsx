@@ -39,14 +39,14 @@ export function ActionsView({
   return (
     <div className="space-y-8 py-4">
       <header>
-        <h1 className="font-medium text-[var(--text-primary)] text-xl">Actions</h1>
-        <p className="text-[var(--text-muted)] text-sm">
+        <h1 className="font-medium text-foreground text-xl">Actions</h1>
+        <p className="text-muted-foreground text-sm">
           Start a workflow run or deploy a package. Success is shown only after the server confirms.
         </p>
       </header>
 
       <section className="space-y-3" aria-label="Start workflow">
-        <h2 className="font-medium text-[var(--text-secondary)] text-sm uppercase tracking-[0.15em]">
+        <h2 className="font-medium text-secondary-foreground text-sm uppercase tracking-[0.15em]">
           Start workflow
         </h2>
         <StartWorkflowForm apiClient={startClient} namespace={namespace} />
@@ -54,7 +54,7 @@ export function ActionsView({
 
       {deployGranted ? (
         <section className="space-y-3" aria-label="Deploy package">
-          <h2 className="font-medium text-[var(--text-secondary)] text-sm uppercase tracking-[0.15em]">
+          <h2 className="font-medium text-secondary-foreground text-sm uppercase tracking-[0.15em]">
             Deploy package
           </h2>
           <DeployPackagePanel apiClient={deployClient} />

@@ -20,7 +20,7 @@ export function NotFound() {
         title="Page not found"
       />
       <Link
-        className="inline-block text-[var(--accent-cyan)] text-sm underline-offset-4 hover:underline"
+        className="inline-block text-primary text-sm underline-offset-4 hover:underline"
         to={workflowListPath}
       >
         Back to workflows

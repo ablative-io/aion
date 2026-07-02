@@ -42,8 +42,8 @@ function TriageViewInner({ client }: { client?: ApiClient | undefined }) {
   return (
     <section className="space-y-6" aria-label="Incidents">
       <header className="space-y-1">
-        <h1 className="font-medium text-[var(--text-primary)] text-lg">Incidents</h1>
-        <p className="text-[var(--text-muted)] text-sm">
+        <h1 className="font-medium text-foreground text-lg">Incidents</h1>
+        <p className="text-muted-foreground text-sm">
           Ranked by urgency. Failures and timeouts first, then stuck-running workflows.
         </p>
       </header>
@@ -107,21 +107,21 @@ function GatedFeedSection({ feeds }: { feeds: readonly GatedFeed[] }) {
 
   return (
     <section aria-label="Awaiting server support" className="space-y-2">
-      <h2 className="font-medium text-[var(--text-muted)] text-xs uppercase tracking-wide">
+      <h2 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
         Awaiting server support
       </h2>
       <ul className="space-y-1">
         {feeds.map((feed) => (
           <li
-            className="flex items-center gap-3 border border-[var(--border-default)] border-dashed px-4 py-2"
+            className="flex items-center gap-3 border border-border border-dashed px-4 py-2"
             data-gated-kind={feed.kind}
             key={feed.kind}
           >
-            <span aria-hidden className="font-mono text-[var(--text-muted)] text-sm">
+            <span aria-hidden className="font-mono text-muted-foreground text-sm">
               ◌
             </span>
-            <span className="text-[var(--text-primary)] text-sm">{feed.label}</span>
-            <span className="text-[var(--text-muted)] text-xs">— {feed.reason}</span>
+            <span className="text-foreground text-sm">{feed.label}</span>
+            <span className="text-muted-foreground text-xs">— {feed.reason}</span>
           </li>
         ))}
       </ul>

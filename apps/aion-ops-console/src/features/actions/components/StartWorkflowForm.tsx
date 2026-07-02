@@ -17,9 +17,9 @@ export type StartWorkflowFormProps = {
 };
 
 const FIELD_CLASS =
-  'h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus:border-[var(--text-muted)]';
+  'h-9 rounded-md border border-input bg-transparent px-3 text-sm outline-none focus:border-muted-foreground';
 const AREA_CLASS =
-  'min-h-28 rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm outline-none focus:border-[var(--text-muted)]';
+  'min-h-28 rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm outline-none focus:border-muted-foreground';
 
 /**
  * Start a workflow run. Namespace-scoped command authority (ADR-022): no deploy
@@ -73,10 +73,7 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
 
   return (
     <div className="space-y-4">
-      <form
-        className="grid gap-3 rounded-lg border border-[var(--border-default)] p-4"
-        onSubmit={handleSubmit}
-      >
+      <form className="grid gap-3 rounded-lg border border-border p-4" onSubmit={handleSubmit}>
         {namespace === null ? (
           <label className="flex flex-col gap-2 font-medium text-sm" htmlFor={ids.namespace}>
             Namespace
@@ -87,7 +84,7 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
               value={namespaceEntry}
               onChange={(event) => setNamespaceEntry(event.currentTarget.value)}
             />
-            <span className="font-normal text-[var(--text-muted)] text-xs">
+            <span className="font-normal text-muted-foreground text-xs">
               No namespace is selected. Type one to target — an unseen namespace is created when the
               run starts.
             </span>
@@ -112,7 +109,7 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
             value={inputText}
             onChange={(event) => setInputText(event.currentTarget.value)}
           />
-          <span className="font-normal text-[var(--text-muted)] text-xs">
+          <span className="font-normal text-muted-foreground text-xs">
             Blank sends an empty object. The engine requires a payload.
           </span>
         </label>
@@ -140,9 +137,7 @@ export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormPro
           <Button disabled={!canSubmit} type="submit">
             {start.isPending ? 'Starting…' : 'Start workflow'}
           </Button>
-          {inputError === null ? null : (
-            <p className="text-[var(--destructive)] text-sm">{inputError}</p>
-          )}
+          {inputError === null ? null : <p className="text-destructive text-sm">{inputError}</p>}
         </div>
       </form>
 
@@ -174,15 +169,15 @@ export function StartOutcome({ isError, error, namespace, result }: StartOutcome
   }
 
   return (
-    <div className="rounded-lg border border-[var(--accent-cyan)]/40 bg-[var(--accent-cyan-glow)] p-4">
-      <h3 className="font-medium text-[var(--text-primary)] text-sm">Workflow started</h3>
+    <div className="rounded-lg border border-primary/40 bg-primary-glow p-4">
+      <h3 className="font-medium text-foreground text-sm">Workflow started</h3>
       <dl className="mt-2 space-y-1 text-sm">
         <Detail label="Namespace" value={namespace ?? ''} />
         <Detail label="Workflow ID" value={result.workflowId} />
         <Detail label="Run ID" value={result.runId} />
       </dl>
       <Link
-        className="mt-3 inline-block text-[var(--accent-cyan)] text-sm underline-offset-4 hover:underline"
+        className="mt-3 inline-block text-primary text-sm underline-offset-4 hover:underline"
         to={workflowDetailHref(result.workflowId)}
       >
         Open run →
@@ -194,8 +189,8 @@ export function StartOutcome({ isError, error, namespace, result }: StartOutcome
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <dt className="text-[var(--text-muted)]">{label}</dt>
-      <dd className="font-mono text-[var(--text-primary)]">{value}</dd>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-mono text-foreground">{value}</dd>
     </div>
   );
 }

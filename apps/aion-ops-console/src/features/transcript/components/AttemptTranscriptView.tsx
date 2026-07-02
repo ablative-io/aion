@@ -89,7 +89,7 @@ export function AttemptTranscriptView({ workflowId, namespace }: AttemptTranscri
   return (
     <section className="flex flex-col gap-3">
       <header className="flex items-center justify-between gap-2">
-        <h2 className="font-semibold text-[var(--text-primary)] text-sm">Agent attempts</h2>
+        <h2 className="font-semibold text-foreground text-sm">Agent attempts</h2>
         <Button className="h-7 px-3 text-xs" onClick={refresh} type="button" variant="outline">
           Refresh
         </Button>
@@ -160,7 +160,7 @@ function AttemptList({
           <li key={id}>
             <Button
               aria-pressed={selectedId === id}
-              className={cn('h-7 px-3 text-xs', selectedId === id && 'bg-[var(--surface-hover)]')}
+              className={cn('h-7 px-3 text-xs', selectedId === id && 'bg-surface-hover')}
               onClick={() => onSelect(id)}
               type="button"
               variant="ghost"

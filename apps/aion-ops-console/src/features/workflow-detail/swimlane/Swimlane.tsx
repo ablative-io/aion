@@ -65,7 +65,7 @@ function Swimlane({ entries, selectedSequence, onSelect, scrubSeq = null }: Swim
   return (
     <section
       aria-label="Workflow swimlane"
-      className="overflow-x-auto rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]"
+      className="overflow-x-auto rounded-xl border border-border bg-surface-elevated"
     >
       <div style={{ minWidth: LANE_LABEL_WIDTH + trackWidth }}>
         <SeqAxis
@@ -73,7 +73,7 @@ function Swimlane({ entries, selectedSequence, onSelect, scrubSeq = null }: Swim
           sequences={layout.sequences}
           trackWidth={trackWidth}
         />
-        <ul aria-label="Lanes" className="divide-y divide-[var(--border-default)]">
+        <ul aria-label="Lanes" className="divide-y divide-border">
           {layout.lanes.map((lane) => (
             <LaneRow
               collapsed={collapsed.has(lane.id)}
@@ -101,9 +101,9 @@ function SeqAxis({
   labelWidth: number;
 }) {
   return (
-    <div className="flex border-[var(--border-default)] border-b bg-[var(--surface-base)]">
+    <div className="flex border-border border-b bg-surface-base">
       <div
-        className="shrink-0 px-3 py-1 text-[var(--text-muted)] text-xs uppercase tracking-wide"
+        className="shrink-0 px-3 py-1 text-muted-foreground text-xs uppercase tracking-wide"
         style={{ width: labelWidth }}
       >
         Lane
@@ -111,7 +111,7 @@ function SeqAxis({
       <div className="relative" style={{ width: trackWidth }}>
         {sequences.map((seq, rank) => (
           <span
-            className="absolute top-1 text-[10px] text-[var(--text-muted)] tabular-nums"
+            className="absolute top-1 text-[10px] text-muted-foreground tabular-nums"
             key={`axis:${seq}`}
             style={{ left: rank * COLUMN_WIDTH + 4 }}
           >
@@ -142,14 +142,14 @@ function LaneRow({
     <li className="flex items-stretch">
       <button
         aria-expanded={!collapsed}
-        className="flex w-[168px] shrink-0 items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-cyan)]"
+        className="flex w-[168px] shrink-0 items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={onToggle}
         type="button"
       >
         <EventIcon kind={lane.kind as EventIconKind} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[var(--text-primary)] text-xs">{lane.label}</span>
-          <span className="block text-[10px] text-[var(--text-muted)]">
+          <span className="block truncate text-foreground text-xs">{lane.label}</span>
+          <span className="block text-[10px] text-muted-foreground">
             {lane.bars.length} {lane.bars.length === 1 ? 'event' : 'events'}
             {collapsed ? ' · collapsed' : ''}
           </span>

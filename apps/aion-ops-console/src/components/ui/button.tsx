@@ -10,32 +10,20 @@ const buttonVariants = cva(
     'font-medium transition-all duration-150 disabled:pointer-events-none disabled:opacity-50',
     "[&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0",
     '[&_svg]:shrink-0 outline-none focus-visible:ring-2',
-    'focus-visible:ring-[var(--border-focus)]',
+    'focus-visible:ring-ring',
   ],
   {
     variants: {
       variant: {
-        default: [
-          'bg-[var(--accent-cyan)] text-[var(--surface-base)]',
-          'hover:bg-[var(--accent-cyan)]/90',
-        ],
-        destructive: [
-          'bg-[var(--destructive)] text-[var(--destructive-foreground)]',
-          'hover:opacity-90',
-        ],
+        default: ['bg-primary text-primary-foreground', 'hover:bg-primary/90'],
+        destructive: ['bg-destructive text-destructive-foreground', 'hover:opacity-90'],
         outline: [
-          'border border-[var(--border-default)] bg-transparent',
-          'hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]',
+          'border border-border bg-transparent',
+          'hover:bg-surface-hover hover:text-foreground',
         ],
-        secondary: [
-          'bg-[var(--surface-hover)] text-[var(--text-secondary)]',
-          'hover:text-[var(--text-primary)]',
-        ],
-        ghost: [
-          'hover:bg-[var(--surface-hover)] text-[var(--text-muted)]',
-          'hover:text-[var(--text-primary)]',
-        ],
-        link: 'text-[var(--accent-cyan)] underline-offset-4 hover:underline',
+        secondary: ['bg-surface-hover text-secondary-foreground', 'hover:text-foreground'],
+        ghost: ['hover:bg-surface-hover text-muted-foreground', 'hover:text-foreground'],
+        link: 'text-primary underline-offset-4 hover:underline',
       },
       size: {
         default: 'h-11 px-5',

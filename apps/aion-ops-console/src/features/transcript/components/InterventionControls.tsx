@@ -52,7 +52,7 @@ export function InterventionControls({
   const supported = attempt.capabilities.supported;
   if (supported.length === 0) {
     return (
-      <p className="text-[var(--text-muted)] text-xs" data-testid="intervention-none">
+      <p className="text-muted-foreground text-xs" data-testid="intervention-none">
         This attempt is observability-only — its harness advertises no intervention controls.
       </p>
     );
@@ -72,7 +72,7 @@ export function InterventionControls({
 
   return (
     <section className="flex flex-col gap-2" data-testid="intervention-controls">
-      <h3 className="font-medium text-[var(--text-primary)] text-xs">Intervene</h3>
+      <h3 className="font-medium text-foreground text-xs">Intervene</h3>
       <ul className="flex flex-col gap-2">
         {supported.map((primitive) => (
           <li key={primitive.primitive}>
@@ -112,7 +112,7 @@ function PrimitiveControl({
       <div className="flex flex-col gap-1.5">
         <textarea
           aria-label="Message to inject"
-          className="min-h-16 rounded-lg border border-[var(--border-default)] bg-[var(--surface-default)] p-2 text-xs"
+          className="min-h-16 rounded-lg border border-border bg-surface-default p-2 text-xs"
           onChange={(fieldEvent) => onInjectTextChange(fieldEvent.target.value)}
           placeholder="Steer the agent (interrupt-priority)…"
           value={injectText}
@@ -214,17 +214,17 @@ function describeOutcome(outcome: InterventionOutcome): { label: string; tone: s
     case 'Applied':
       return {
         label: 'Applied',
-        tone: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500',
+        tone: 'border-success/40 bg-success-glow text-success',
       };
     case 'CapabilityNotSupported':
       return {
         label: `Not supported: ${outcome.primitive.primitive}`,
-        tone: 'border-amber-500/40 bg-amber-500/10 text-amber-600',
+        tone: 'border-warning/40 bg-warning-glow text-warning',
       };
     case 'StaleTarget':
       return {
         label: `Too late: ${outcome.detail}`,
-        tone: 'border-amber-500/40 bg-amber-500/10 text-amber-600',
+        tone: 'border-warning/40 bg-warning-glow text-warning',
       };
   }
 }

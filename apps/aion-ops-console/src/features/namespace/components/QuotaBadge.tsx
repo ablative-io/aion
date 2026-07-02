@@ -26,7 +26,7 @@ export function QuotaBadge({ quota }: QuotaBadgeProps) {
     return (
       <Badge
         variant="outline"
-        className="w-fit font-mono text-[var(--text-muted)]"
+        className="w-fit font-mono text-muted-foreground"
         aria-label="Quota pending first snapshot"
       >
         —
@@ -41,9 +41,7 @@ export function QuotaBadge({ quota }: QuotaBadgeProps) {
       variant="outline"
       className={cn(
         'w-fit gap-1.5 font-mono',
-        atCeiling
-          ? 'border-amber-500/40 bg-amber-500/10 text-amber-500'
-          : 'text-[var(--text-secondary)]'
+        atCeiling ? 'border-warning/40 bg-warning-glow text-warning' : 'text-secondary-foreground'
       )}
       aria-label={
         atCeiling

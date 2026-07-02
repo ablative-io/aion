@@ -48,8 +48,8 @@ export function AppNav({ items, currentPath, renderLink }: AppNavProps) {
         const className = cn(
           'border-b-2 pb-1 transition-colors',
           active
-            ? 'border-[var(--text-primary)] font-medium text-[var(--text-primary)]'
-            : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+            ? 'border-foreground font-medium text-foreground'
+            : 'border-transparent text-muted-foreground hover:text-foreground'
         );
 
         return (

@@ -41,9 +41,9 @@ const STATUS_LABEL: Record<ConnectionStatus, string> = {
 };
 
 const STATUS_COLOR: Record<ConnectionStatus, string> = {
-  connected: 'var(--accent-cyan)',
+  connected: 'var(--status-live)',
   reconnecting: 'var(--text-muted)',
-  disconnected: 'var(--destructive)',
+  disconnected: 'var(--status-danger)',
 };
 
 export function ClusterProvenance({
@@ -57,8 +57,8 @@ export function ClusterProvenance({
   error,
 }: ClusterProvenanceProps) {
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-[var(--border-default)] bg-[var(--card)] px-3 py-2 font-mono text-xs">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[var(--text-secondary)]">
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-card px-3 py-2 font-mono text-xs">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-secondary-foreground">
         <span className="flex items-center gap-1.5">
           <span
             aria-hidden="true"
@@ -76,17 +76,17 @@ export function ClusterProvenance({
       </div>
 
       {failedOver ? (
-        <p className="font-semibold text-[var(--accent-cyan)]">
+        <p className="font-semibold text-primary">
           ⚠ viewing a survivor — reads have failed over from the configured owner.
         </p>
       ) : null}
 
       {error !== null ? (
-        <p className="text-[var(--destructive)]">cluster stream error: {error.message}</p>
+        <p className="text-destructive">cluster stream error: {error.message}</p>
       ) : null}
 
       {!primed && error === null ? (
-        <p className="text-[var(--text-muted)]">awaiting cluster snapshot…</p>
+        <p className="text-muted-foreground">awaiting cluster snapshot…</p>
       ) : null}
     </div>
   );

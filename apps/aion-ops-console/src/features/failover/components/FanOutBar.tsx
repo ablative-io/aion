@@ -32,16 +32,16 @@ export function FanOutBar({ label, completed, arity, stale }: FanOutBarProps) {
       : 0;
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-[var(--border-default)] bg-[var(--card)] p-4">
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="font-medium text-[0.7rem] text-[var(--text-muted)] uppercase tracking-[0.2em]">
+          <span className="font-medium text-[0.7rem] text-muted-foreground uppercase tracking-[0.2em]">
             fan-out
           </span>
-          <span className="font-mono text-[var(--text-secondary)] text-sm">{label}</span>
+          <span className="font-mono text-secondary-foreground text-sm">{label}</span>
         </div>
         {stale ? (
-          <span className="rounded border border-[var(--destructive)]/40 bg-[var(--destructive)]/10 px-2 py-0.5 text-[var(--destructive)] text-xs">
+          <span className="rounded border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-destructive text-xs">
             progress stream lost
           </span>
         ) : null}
@@ -58,13 +58,13 @@ export function FanOutBar({ label, completed, arity, stale }: FanOutBarProps) {
                   segment < filled
                     ? stale
                       ? 'var(--text-muted)'
-                      : 'var(--accent-cyan)'
+                      : 'var(--status-live)'
                     : 'var(--accent)',
               }}
             />
           ))}
         </div>
-        <span className="font-mono text-[var(--text-secondary)] text-sm">
+        <span className="font-mono text-secondary-foreground text-sm">
           {completed} / {arity ?? '?'} tasks
         </span>
       </div>

@@ -59,8 +59,8 @@ export function SearchView({ namespace, client }: SearchViewProps) {
   return (
     <section aria-label="Event search" className="space-y-4 py-4">
       <header>
-        <h1 className="font-medium text-[var(--text-primary)] text-xl">Event search</h1>
-        <p className="text-[var(--text-muted)] text-sm">
+        <h1 className="font-medium text-foreground text-xl">Event search</h1>
+        <p className="text-muted-foreground text-sm">
           Search recorded workflow events by field; results open the swimlane at the matching event.
         </p>
       </header>
@@ -154,16 +154,16 @@ function SearchResultRow({ result }: { result: EventSearchResult }) {
   return (
     <li>
       <Link
-        className="flex items-center justify-between gap-4 rounded-md border border-[var(--border-default)] px-4 py-3 hover:border-[var(--text-muted)]"
+        className="flex items-center justify-between gap-4 rounded-md border border-border px-4 py-3 hover:border-muted-foreground"
         to={workflowDetailHref(workflowId, seq)}
       >
         <span className="flex flex-col">
-          <span className="font-medium text-[var(--text-primary)] text-sm">{event.type}</span>
-          <span className="text-[var(--text-muted)] text-xs">{workflowId}</span>
+          <span className="font-medium text-foreground text-sm">{event.type}</span>
+          <span className="text-muted-foreground text-xs">{workflowId}</span>
         </span>
         <span className="flex flex-col items-end">
-          <span className="font-mono text-[var(--text-muted)] text-xs">seq {seq}</span>
-          <span className="text-[var(--text-muted)] text-xs">
+          <span className="font-mono text-muted-foreground text-xs">seq {seq}</span>
+          <span className="text-muted-foreground text-xs">
             {formatRecordedAt(event.data.envelope.recorded_at)}
           </span>
         </span>

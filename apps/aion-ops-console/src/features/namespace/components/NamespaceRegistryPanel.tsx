@@ -63,9 +63,9 @@ const STATUS_LABEL: Record<ConnectionStatus, string> = {
 };
 
 const STATUS_STYLE: Record<ConnectionStatus, string> = {
-  connected: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500',
-  disconnected: 'border-destructive/40 bg-destructive/10 text-destructive',
-  reconnecting: 'border-amber-500/40 bg-amber-500/10 text-amber-500',
+  connected: 'border-success/40 bg-success-glow text-success',
+  disconnected: 'border-danger/40 bg-danger-glow text-danger',
+  reconnecting: 'border-warning/40 bg-warning-glow text-warning',
 };
 
 /** Friendly text for the known origin labels; unknown labels pass through raw. */
@@ -107,8 +107,8 @@ export function NamespaceRegistryPanel({
     <section className="flex flex-col gap-4" aria-label="Namespace registry">
       <header className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <h1 className="font-semibold text-[var(--text-primary)] text-xl">Namespaces</h1>
-          <p className="text-[var(--text-muted)] text-sm">
+          <h1 className="font-semibold text-foreground text-xl">Namespaces</h1>
+          <p className="text-muted-foreground text-sm">
             The live durable namespace registry. New namespaces appear the moment a worker
             registers, a workflow starts, or one is created — no refresh. Placement and quota update
             live.
@@ -200,7 +200,7 @@ function NamespaceTable({ namespaces, quotas, onSetPlacement }: NamespaceTablePr
       <TableBody>
         {namespaces.map((record) => (
           <TableRow key={record.name} data-namespace={record.name}>
-            <TableCell className="font-medium text-[var(--text-primary)]">{record.name}</TableCell>
+            <TableCell className="font-medium text-foreground">{record.name}</TableCell>
             <TableCell>
               <PlacementControl
                 namespace={record.name}
@@ -211,10 +211,10 @@ function NamespaceTable({ namespaces, quotas, onSetPlacement }: NamespaceTablePr
             <TableCell>
               <QuotaBadge quota={quotas[record.name]} />
             </TableCell>
-            <TableCell className="text-[var(--text-muted)]">
+            <TableCell className="text-muted-foreground">
               <FormattedInstant value={record.createdAt} />
             </TableCell>
-            <TableCell className="text-[var(--text-muted)]">
+            <TableCell className="text-muted-foreground">
               <FormattedInstant value={record.lastSeen} />
             </TableCell>
             <TableCell>
@@ -263,7 +263,7 @@ function ConnectionPill({
         {STATUS_LABEL[status]}
       </Badge>
       {error === null ? null : (
-        <p className="max-w-64 text-right text-[var(--text-muted)] text-xs">{error.message}</p>
+        <p className="max-w-64 text-right text-muted-foreground text-xs">{error.message}</p>
       )}
     </div>
   );

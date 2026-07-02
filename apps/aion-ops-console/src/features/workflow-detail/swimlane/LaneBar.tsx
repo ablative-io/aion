@@ -28,9 +28,9 @@ function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
       aria-label={`${bar.label} (seq ${bar.sequence})`}
       className={cn(
         'absolute top-1 flex h-7 items-center overflow-hidden rounded-md border text-left',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-cyan)]',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         STATUS_CLASSES[bar.status],
-        selected && 'ring-2 ring-[var(--accent-cyan)]'
+        selected && 'ring-2 ring-primary'
       )}
       data-bar-status={bar.status}
       data-marker={bar.isMarker ? 'true' : undefined}
@@ -40,7 +40,7 @@ function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
       type="button"
     >
       {bar.isMarker ? null : <AttemptSegments bar={bar} columnWidth={columnWidth} />}
-      <span className="relative z-10 truncate px-2 text-[11px] text-[var(--text-primary)]">
+      <span className="relative z-10 truncate px-2 text-[11px] text-foreground">
         {bar.isMarker ? '' : bar.label}
         {bar.childWorkflowId ? <span className="ml-1 opacity-70">↳</span> : null}
       </span>
@@ -65,7 +65,7 @@ function AttemptSegments({ bar, columnWidth }: { bar: SwimlaneBar; columnWidth: 
         return (
           <span
             aria-hidden="true"
-            className="absolute top-0 bottom-0 w-px bg-[var(--border-default)]"
+            className="absolute top-0 bottom-0 w-px bg-border"
             data-attempt-divider="true"
             key={`${bar.id}:attempt:${rank}`}
             style={{ left: Math.max(1, offset) }}
@@ -77,13 +77,13 @@ function AttemptSegments({ bar, columnWidth }: { bar: SwimlaneBar; columnWidth: 
 }
 
 const STATUS_CLASSES: Record<BarStatus, string> = {
-  running: 'border-sky-400/40 bg-sky-500/20',
-  completed: 'border-emerald-400/40 bg-emerald-500/20',
-  failed: 'border-red-400/50 bg-red-500/25',
-  cancelled: 'border-amber-400/40 bg-amber-500/20',
-  'timed-out': 'border-amber-400/50 bg-amber-500/25',
-  fired: 'border-sky-400/40 bg-sky-500/15',
-  marker: 'border-zinc-400/40 bg-[var(--surface-hover)]',
+  running: 'border-live/40 bg-live/20',
+  completed: 'border-success/40 bg-success/20',
+  failed: 'border-danger/50 bg-danger/25',
+  cancelled: 'border-warning/40 bg-warning/20',
+  'timed-out': 'border-warning/50 bg-warning/25',
+  fired: 'border-live/40 bg-live-glow',
+  marker: 'border-border bg-surface-hover',
 };
 
 export { LaneBar };

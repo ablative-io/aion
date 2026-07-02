@@ -12,7 +12,7 @@ export function WorkflowRow({ workflow }: WorkflowRowProps) {
     <TableRow>
       <TableCell className="font-mono text-xs">
         <Link
-          className="text-[var(--accent-cyan)] underline-offset-4 hover:underline"
+          className="text-primary underline-offset-4 hover:underline"
           to={generatePath('/workflows/:id', { id: workflow.workflow_id })}
         >
           {workflow.workflow_id}
@@ -51,10 +51,10 @@ function FailureContext({
   }
 
   return (
-    <div className="flex flex-col gap-0.5 text-[var(--text-muted)] text-xs">
+    <div className="flex flex-col gap-0.5 text-muted-foreground text-xs">
       {hasStep ? (
         <span>
-          Failed at <span className="font-mono text-[var(--text-secondary)]">{failedStep}</span>
+          Failed at <span className="font-mono text-secondary-foreground">{failedStep}</span>
         </span>
       ) : null}
       {hasReason ? <span className="line-clamp-2 max-w-xs">{reason}</span> : null}
