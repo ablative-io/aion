@@ -137,28 +137,49 @@ async fn run_norn_step(
         }
     };
 
-    if !output.status.success() {
-        return Err(ActivityFailure::retryable(format!(
+    // The hardened norn prints the SAME versioned stop envelope as driven mode
+    // (`envelope_version: 1` + `stop` tagged on `reason` + `output`), and a
+    // non-completed stop exits 1 but STILL prints the envelope — so parse
+    // stdout first and prefer the envelope's reason + detail; the exit-status
+    // + stderr error covers runs that never reached an envelope (spawn, arg,
+    // or auth failures print nothing useful on stdout).
+    match serde_json::from_slice::<Value>(&output.stdout) {
+        Ok(envelope) => envelope_into_answer(&envelope),
+        Err(_) if !output.status.success() => Err(ActivityFailure::retryable(format!(
             "norn exited {}: {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        ))),
+        Err(error) => Err(ActivityFailure::retryable(format!(
+            "norn output was not JSON: {error}"
+        ))),
     }
+}
 
-    let envelope: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
-        ActivityFailure::retryable(format!("norn output was not JSON: {error}"))
+/// Interpret Norn's printed stop envelope — the same `envelope_version: 1`
+/// shape driven mode returns, with `stop` internally tagged on `reason` — into
+/// the step's answer.
+///
+/// `stop.reason == "completed"` yields the output string; any other reason is
+/// a retryable failure carrying the whole `stop` object verbatim (the reason
+/// plus its per-variant detail such as `elapsed_ms` or `validation_errors`),
+/// so the engine re-dispatches and the failure text says why.
+fn envelope_into_answer(envelope: &Value) -> Result<String, ActivityFailure> {
+    let stop = envelope.get("stop").ok_or_else(|| {
+        ActivityFailure::retryable(
+            "norn output is not a stop envelope (no `stop` object)".to_owned(),
+        )
     })?;
-
-    // The envelope's top-level `result` is the typed run outcome; only
-    // `"completed"` is a real success. Anything else (a stop reason like
-    // max-iterations or a refusal) is a retryable failure rather than a
-    // success-that-looks-like-success.
-    match envelope.get("result").and_then(Value::as_str) {
+    match stop.get("reason").and_then(Value::as_str) {
         Some("completed") => {}
-        other => {
+        Some(_) => {
             return Err(ActivityFailure::retryable(format!(
-                "norn did not complete (result={})",
-                other.unwrap_or("<missing>")
+                "norn did not complete: {stop}"
+            )));
+        }
+        None => {
+            return Err(ActivityFailure::retryable(format!(
+                "norn stop object carries no string `reason`: {stop}"
             )));
         }
     }

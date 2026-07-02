@@ -6,11 +6,11 @@
 //! - AGENT activities `scout`, `dev`, `review`: routed through the composed
 //!   [`NornHarness`] (observable + intervenable). Input is the prompt string,
 //!   output the agent's answer string. Each run's Norn session id is
-//!   `{workflow_id}-{activity_type}` and its `--workspace-root` is the run's
-//!   own clone `<workspace root>/{workflow_id}/repo` — the placeholders are
-//!   expanded per run by the adapter, and the workspace root is the SAME
-//!   resolved root the `provision` handler clones under (resolved once here,
-//!   threaded to both).
+//!   `{workflow_id}-{activity_type}` and its `--workspace-root` AND `-C`
+//!   (tool-execution cwd) are the run's own clone
+//!   `<workspace root>/{workflow_id}/repo` — the placeholders are expanded per
+//!   run by the adapter, and the workspace root is the SAME resolved root the
+//!   `provision` handler clones under (resolved once here, threaded to both).
 //! - PLAIN registry activities `provision`, `gate`, `land`: synchronous
 //!   handler bodies in [`agent_dev_worker::handlers`], adapted onto the async
 //!   handler signature via `spawn_blocking`.
@@ -55,20 +55,28 @@ const REDIAL_MAX_BACKOFF: Duration = Duration::from_millis(500);
 ///
 /// `workspace_root` is the SAME resolved root the `provision` handler clones
 /// under: every agent round works inside the run's own clone
-/// (`<root>/{workflow_id}/repo`), and its session id
-/// (`{workflow_id}-{activity_type}` + `--resume-if-exists`) is stable per
-/// `(run, round)` so a re-dispatch after a failover RESUMES the session
-/// rather than starting over. `--fast` selects Norn's fast model tier.
+/// (`<root>/{workflow_id}/repo`). `--workspace-root` confines the file tools
+/// to that clone, and `-C` sets the tool EXECUTION cwd to the same directory —
+/// without it the agent's bash commands would run in the worker's own cwd,
+/// outside the clone. Its session id (`{workflow_id}-{activity_type}` +
+/// `--resume-if-exists`) is stable per `(run, round)` so a re-dispatch after a
+/// failover RESUMES the session rather than starting over. `--fast` selects
+/// Norn's fast model tier.
 ///
 /// The advertised capabilities are exactly the neutral primitives the Norn
 /// adapter's intervention translation supports today (`InjectMessage` +
 /// `Cancel`); advertising more would promise interventions the harness
 /// rejects.
 fn composed_agent_harness(norn_bin: &str, workspace_root: &Path) -> AgentHarnessConfig {
+    // The run's own clone — the ONE template both the file-tool confinement
+    // (--workspace-root) and the tool-execution cwd (-C) point at.
+    let run_clone = format!("{}/{{workflow_id}}/repo", workspace_root.display());
     let harness: Arc<dyn DynAgentHarness> = Arc::new(
         NornHarness::with_binary(norn_bin)
             .with_arg("--workspace-root")
-            .with_arg(format!("{}/{{workflow_id}}/repo", workspace_root.display()))
+            .with_arg(run_clone.clone())
+            .with_arg("-C")
+            .with_arg(run_clone)
             .with_arg("--session-id")
             .with_arg("{workflow_id}-{activity_type}")
             .with_arg("--resume-if-exists")

@@ -139,11 +139,31 @@ pub struct JsonRpcResponse {
     /// The id of the request this response answers.
     pub id: JsonRpcId,
     /// The success payload, when the call succeeded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// `None` means the `result` key was ABSENT from the frame; a present `"result": null`
+    /// decodes to `Some(Value::Null)` (via [`deserialize_present_value`]). The spec makes the
+    /// distinction load-bearing: `null` is a legal success payload, while a response carrying
+    /// neither `result` nor `error` is a broken frame — the two must not be conflated.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub result: Option<serde_json::Value>,
     /// The error payload, when the call failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
+}
+
+/// Deserializes a field whose KEY PRESENCE matters: serde invokes `deserialize_with` only when
+/// the key is present, so this captures the value verbatim — including JSON `null`, which becomes
+/// `Some(Value::Null)` instead of collapsing into the absent-key `None` that plain
+/// `Option<Value>` would produce. The absent-key case is covered by `#[serde(default)]`.
+fn deserialize_present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 impl JsonRpcResponse {
@@ -278,6 +298,41 @@ mod tests {
             matches!(response.error, Some(error) if error.code == error_codes::METHOD_NOT_FOUND),
             "an error response carries the code"
         );
+    }
+
+    #[test]
+    fn a_present_null_result_decodes_as_some_null() -> Result<(), serde_json::Error> {
+        // `"result": null` is a legal success payload and must stay distinguishable from a frame
+        // that carries no `result` key at all.
+        let response: JsonRpcResponse = serde_json::from_value(json!({
+            "jsonrpc": "2.0", "id": 1, "result": null
+        }))?;
+        assert_eq!(response.result, Some(serde_json::Value::Null));
+        let wire = serde_json::to_value(&response)?;
+        assert!(
+            wire.as_object()
+                .is_some_and(|frame| frame.contains_key("result")),
+            "a present null result round-trips with the key on the wire"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_absent_result_decodes_as_none() -> Result<(), serde_json::Error> {
+        // A frame with neither `result` nor `error` (a broken peer) decodes with `result: None`,
+        // never fabricated into a null payload.
+        let response: JsonRpcResponse = serde_json::from_value(json!({
+            "jsonrpc": "2.0", "id": 1
+        }))?;
+        assert!(response.result.is_none());
+        assert!(response.error.is_none());
+        let wire = serde_json::to_value(&response)?;
+        assert!(
+            wire.as_object()
+                .is_some_and(|frame| !frame.contains_key("result")),
+            "an absent result stays absent on the wire"
+        );
+        Ok(())
     }
 
     #[test]

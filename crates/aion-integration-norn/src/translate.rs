@@ -11,8 +11,11 @@
 //!   ([`InterventionKind::PauseResume`] / [`UpdateBudget`] / [`RespondToApproval`]) is rejected
 //!   with [`HarnessError::CapabilityNotSupported`] and never sent.
 //!
-//! Plus [`parse_capabilities`], which reads Norn's `initialize` result into the neutral
-//! [`InterventionCapabilities`] the server/console gate on.
+//! Plus [`parse_capabilities`], which gates the `initialize` result on the driven-mode protocol
+//! version (`norn-driven/1`) and reads it into the neutral [`InterventionCapabilities`] the
+//! server/console gate on, and [`run_result_to_output`], which interprets the `run/execute`
+//! versioned stop envelope into the run's `output` value (or the honest error a non-completed
+//! stop is).
 //!
 //! [`UpdateBudget`]: InterventionKind::UpdateBudget
 //! [`RespondToApproval`]: InterventionKind::RespondToApproval
@@ -43,26 +46,156 @@ pub struct EventIdentity {
     pub attempt: u32,
 }
 
-/// Reads Norn's `initialize` result into the neutral [`InterventionCapabilities`].
+/// Reads Norn's `initialize` result into the neutral [`InterventionCapabilities`], gating on the
+/// driven-mode protocol version first.
+///
+/// The result must advertise `protocol: "norn-driven/1"` (which replaced the old
+/// `protocolVersion: "2.0"`); a missing or different value is a [`HarnessError::Protocol`] naming
+/// the expected and received values — the honest "your norn binary is stale" signal, surfaced
+/// before any run is issued.
 ///
 /// Norn advertises a `capabilities.interventions` array of neutral primitive labels
 /// (`inject_message`, `cancel`, …). Unknown labels are ignored (forward-compat), and a missing
 /// array yields the empty (observability-only) set — never an error, because an empty capability
 /// advertisement is first-class.
-#[must_use]
-pub fn parse_capabilities(initialize_result: &Value) -> InterventionCapabilities {
+///
+/// # Errors
+///
+/// Returns [`HarnessError::Protocol`] when the `protocol` field is missing or is not exactly
+/// [`protocol::PROTOCOL_VERSION`]; a present-but-wrong value (any JSON type) is rendered
+/// verbatim in the message.
+pub fn parse_capabilities(
+    initialize_result: &Value,
+) -> Result<InterventionCapabilities, HarnessError> {
+    match initialize_result.get(protocol::PROTOCOL_KEY) {
+        Some(received) if received.as_str() == Some(protocol::PROTOCOL_VERSION) => {}
+        // A present-but-wrong value — including a non-string — is reported as the JSON actually
+        // received (a string renders quoted), never misdescribed as a missing field.
+        Some(received) => {
+            return Err(HarnessError::protocol(format!(
+                "norn driven-mode protocol mismatch: expected {:?}, received {received} — \
+                 the norn binary is stale or incompatible with this adapter",
+                protocol::PROTOCOL_VERSION,
+            )));
+        }
+        None => {
+            return Err(HarnessError::protocol(format!(
+                "norn driven-mode protocol mismatch: expected {:?}, received no `{}` field — \
+                 the norn binary is stale or incompatible with this adapter",
+                protocol::PROTOCOL_VERSION,
+                protocol::PROTOCOL_KEY,
+            )));
+        }
+    }
     let labels = initialize_result
         .get(protocol::CAPABILITIES_KEY)
         .and_then(|caps| caps.get(protocol::INTERVENTIONS_KEY))
         .and_then(Value::as_array);
     let Some(labels) = labels else {
-        return InterventionCapabilities::none();
+        return Ok(InterventionCapabilities::none());
     };
     let primitives = labels
         .iter()
         .filter_map(Value::as_str)
         .filter_map(capability_label_to_primitive);
-    InterventionCapabilities::from_primitives(primitives)
+    Ok(InterventionCapabilities::from_primitives(primitives))
+}
+
+/// Interprets a `run/execute` success result — the versioned stop envelope — into the run's
+/// `output` value, or the honest error a non-completion is.
+///
+/// - `stop.reason == "completed"` → `Ok` with the `output` VALUE as-is (a JSON string for
+///   schema-less runs, a JSON object when Norn ran with an output schema — never re-stringified).
+/// - any other `stop.reason` (`schema_unreachable`, `max_iterations`, `timed_out`, `cancelled`,
+///   `truncated`) → [`HarnessError::Harness`] whose message carries the whole `stop` object
+///   verbatim, so the reason AND its per-variant detail fields (`elapsed_ms`, `attempts`,
+///   `validation_errors`, `truncation`, …) survive into the error text the caller judges retry
+///   on. When the envelope also carries a non-null `output` (the partial a `timed_out` /
+///   `truncated` / `schema_unreachable` stop may hold), it rides in the same message, labelled
+///   `partial output:` and bounded at [`PARTIAL_OUTPUT_MESSAGE_BYTES`], so a caller's
+///   accept-the-partial policy stays reachable.
+/// - a `completed` envelope with the `output` KEY ABSENT → [`HarnessError::Protocol`] — the
+///   contract says a completed run always carries `output`. A present `"output": null` is a
+///   legal null output and passes through.
+/// - a result that is not the envelope shape (no `envelope_version` / `stop` / `stop.reason`) →
+///   [`HarnessError::Protocol`] naming what was missing — no silent passthrough of unknown
+///   shapes.
+///
+/// # Errors
+///
+/// Returns [`HarnessError::Protocol`] for a non-envelope result or a completed envelope without
+/// an `output` field, and [`HarnessError::Harness`] for every non-`completed` stop.
+pub fn run_result_to_output(result: &Value) -> Result<Value, HarnessError> {
+    if result.get(protocol::ENVELOPE_VERSION_KEY).is_none() {
+        return Err(HarnessError::protocol(format!(
+            "run/execute result is not a norn stop envelope: missing `{}`",
+            protocol::ENVELOPE_VERSION_KEY,
+        )));
+    }
+    let stop = result.get(protocol::STOP_KEY).ok_or_else(|| {
+        HarnessError::protocol(format!(
+            "run/execute result is not a norn stop envelope: missing `{}`",
+            protocol::STOP_KEY,
+        ))
+    })?;
+    let reason = stop
+        .get(protocol::STOP_REASON_KEY)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            HarnessError::protocol(format!(
+                "run/execute result is not a norn stop envelope: `{}` carries no string `{}`",
+                protocol::STOP_KEY,
+                protocol::STOP_REASON_KEY,
+            ))
+        })?;
+    if reason != protocol::STOP_REASON_COMPLETED {
+        // The whole stop object goes into the message so the reason and its per-variant detail
+        // fields (timed_out{elapsed_ms,iterations}, schema_unreachable{attempts,
+        // validation_errors}, truncated{truncation,iterations}) survive verbatim for the caller
+        // to judge retry on. A partial `output` rides along, clearly labelled, so accepting the
+        // partial stays a reachable caller policy.
+        let mut message = format!("run stopped without completing: stop: {stop}");
+        if let Some(partial) = result
+            .get(protocol::OUTPUT_KEY)
+            .filter(|output| !output.is_null())
+        {
+            message.push_str("; partial output: ");
+            message.push_str(&bounded_for_message(&partial.to_string()));
+        }
+        return Err(HarnessError::harness(message));
+    }
+    // The contract says a completed envelope ALWAYS carries `output`; a frame without the key is
+    // off-contract. A present `"output": null` is a legal null output and passes through.
+    match result.get(protocol::OUTPUT_KEY) {
+        Some(output) => Ok(output.clone()),
+        None => Err(HarnessError::protocol(
+            "completed envelope carried no output field",
+        )),
+    }
+}
+
+/// The most of a non-completed run's partial `output` that rides in the harness-error message.
+///
+/// The bound is presentational truncation of an ERROR MESSAGE, not data loss — the run has
+/// already failed; it only keeps an enormous partial from bloating the persisted failure text.
+const PARTIAL_OUTPUT_MESSAGE_BYTES: usize = 4000;
+
+/// Bounds `rendered` to [`PARTIAL_OUTPUT_MESSAGE_BYTES`], appending an explicit truncation
+/// marker when it was cut. The cut lands on a char boundary so the message stays valid UTF-8.
+fn bounded_for_message(rendered: &str) -> String {
+    if rendered.len() <= PARTIAL_OUTPUT_MESSAGE_BYTES {
+        return rendered.to_owned();
+    }
+    let mut end = PARTIAL_OUTPUT_MESSAGE_BYTES;
+    while !rendered.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}… [partial output truncated for this message: {} of {} bytes shown]",
+        &rendered[..end],
+        end,
+        rendered.len()
+    )
 }
 
 /// Maps a neutral capability label Norn advertises onto its [`InterventionPrimitive`].
@@ -556,15 +689,16 @@ mod tests {
         }
     }
 
-    // --- capabilities parse ---
+    // --- capabilities parse (behind the protocol-version gate) ---
 
     #[test]
     fn parse_capabilities_reads_norns_advertised_set() {
-        // The exact shape Norn's `initialize_capabilities()` emits.
+        // The exact shape Norn's `initialize` result emits.
         let init = json!({
+            "protocol": "norn-driven/1",
             "capabilities": { "interventions": ["inject_message", "cancel"] }
         });
-        let caps = parse_capabilities(&init);
+        let caps = parse_capabilities(&init).unwrap();
         assert!(caps.supports_primitive(InterventionPrimitive::InjectMessage));
         assert!(caps.supports_primitive(InterventionPrimitive::Cancel));
         assert!(!caps.supports_primitive(InterventionPrimitive::PauseResume));
@@ -572,7 +706,8 @@ mod tests {
 
     #[test]
     fn parse_capabilities_missing_array_is_empty_set() {
-        let caps = parse_capabilities(&json!({ "capabilities": {} }));
+        let init = json!({ "protocol": "norn-driven/1", "capabilities": {} });
+        let caps = parse_capabilities(&init).unwrap();
         assert!(
             caps.is_empty(),
             "no interventions advertised = observability-only"
@@ -582,11 +717,208 @@ mod tests {
     #[test]
     fn parse_capabilities_ignores_unknown_labels() {
         let init = json!({
+            "protocol": "norn-driven/1",
             "capabilities": { "interventions": ["inject_message", "teleport"] }
         });
-        let caps = parse_capabilities(&init);
+        let caps = parse_capabilities(&init).unwrap();
         assert!(caps.supports_primitive(InterventionPrimitive::InjectMessage));
         // "teleport" is unknown and silently ignored, never fabricated into a primitive.
         assert_eq!(caps.supported.len(), 1);
+    }
+
+    // --- the protocol-version gate ---
+
+    #[test]
+    fn missing_protocol_field_is_a_protocol_error_naming_expected_and_received() {
+        // The pre-norn-driven/1 shape: `protocolVersion: "2.0"` and no `protocol` field. This is
+        // the "your norn binary is stale" signal.
+        let init = json!({
+            "protocolVersion": "2.0",
+            "capabilities": { "interventions": ["inject_message", "cancel"] }
+        });
+        let error = parse_capabilities(&init).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Protocol { .. }),
+            "a stale advertisement is a protocol error, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("norn-driven/1"),
+            "the error names the expected version: {message}"
+        );
+        assert!(
+            message.contains("no `protocol` field"),
+            "the error names what was received: {message}"
+        );
+    }
+
+    #[test]
+    fn different_protocol_version_is_a_protocol_error_naming_expected_and_received() {
+        let init = json!({
+            "protocol": "norn-driven/2",
+            "capabilities": { "interventions": ["inject_message"] }
+        });
+        let error = parse_capabilities(&init).unwrap_err();
+        assert!(matches!(error, HarnessError::Protocol { .. }));
+        let message = error.to_string();
+        assert!(
+            message.contains("norn-driven/1") && message.contains("norn-driven/2"),
+            "the error names the expected AND received versions: {message}"
+        );
+    }
+
+    #[test]
+    fn non_string_protocol_field_is_reported_as_the_value_received() {
+        // A present-but-non-string `protocol` (e.g. `1`) must be reported as what actually
+        // arrived, never misdescribed as a missing field.
+        let error = parse_capabilities(&json!({ "protocol": 1 })).unwrap_err();
+        assert!(matches!(error, HarnessError::Protocol { .. }));
+        let message = error.to_string();
+        assert!(
+            message.contains("received 1"),
+            "the error renders the received JSON value: {message}"
+        );
+        assert!(
+            !message.contains("no `protocol` field"),
+            "a present field must not be reported as missing: {message}"
+        );
+    }
+
+    // --- the run/execute stop envelope ---
+
+    #[test]
+    fn completed_envelope_yields_the_output_value_as_is() {
+        let envelope = json!({
+            "envelope_version": 1,
+            "stop": { "reason": "completed" },
+            "output": { "answer": 7 },
+        });
+        assert_eq!(
+            run_result_to_output(&envelope).unwrap(),
+            json!({ "answer": 7 }),
+            "a structured output passes through as the value, never re-stringified"
+        );
+    }
+
+    #[test]
+    fn non_completed_stop_is_a_harness_error_carrying_the_stop_object_and_partial() {
+        let envelope = json!({
+            "envelope_version": 1,
+            "stop": { "reason": "timed_out", "elapsed_ms": 30000, "iterations": 4 },
+            "output": "a half-written summary",
+        });
+        let error = run_result_to_output(&envelope).unwrap_err();
+        assert!(matches!(error, HarnessError::Harness { .. }));
+        let message = error.to_string();
+        for fragment in ["timed_out", "elapsed_ms", "30000", "iterations", "4"] {
+            assert!(
+                message.contains(fragment),
+                "the stop detail survives verbatim ({fragment}): {message}"
+            );
+        }
+        assert!(
+            message.contains("partial output: \"a half-written summary\""),
+            "the partial output rides the message, labelled: {message}"
+        );
+    }
+
+    #[test]
+    fn non_completed_stop_with_null_output_carries_no_partial_label() {
+        // `max_iterations`/`cancelled` envelopes carry `output: null` — nothing to preserve, so
+        // the message must not fabricate a partial.
+        let envelope = json!({
+            "envelope_version": 1,
+            "stop": { "reason": "max_iterations" },
+            "output": null,
+        });
+        let error = run_result_to_output(&envelope).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            !message.contains("partial output"),
+            "a null output is not a partial: {message}"
+        );
+    }
+
+    #[test]
+    fn an_enormous_partial_output_is_bounded_with_an_explicit_marker() {
+        // The bound is presentational truncation of the error MESSAGE, not data loss — the run
+        // already failed. The marker makes the cut explicit.
+        let huge = "x".repeat(10_000);
+        let envelope = json!({
+            "envelope_version": 1,
+            "stop": { "reason": "truncated", "truncation": "max_tokens", "iterations": 2 },
+            "output": huge,
+        });
+        let error = run_result_to_output(&envelope).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("partial output: "),
+            "the partial still rides, bounded: {message:.120}"
+        );
+        assert!(
+            message.contains("truncated for this message"),
+            "the truncation marker is explicit"
+        );
+        assert!(
+            message.len() < 5_000,
+            "the message is bounded, got {} bytes",
+            message.len()
+        );
+    }
+
+    #[test]
+    fn a_completed_envelope_without_the_output_key_is_a_protocol_error() {
+        // The contract says completed ALWAYS carries `output`; an absent key is off-contract and
+        // must never be silently coerced into a null payload.
+        let envelope = json!({
+            "envelope_version": 1,
+            "stop": { "reason": "completed" },
+        });
+        let error = run_result_to_output(&envelope).unwrap_err();
+        assert!(
+            matches!(error, HarnessError::Protocol { .. }),
+            "a completed envelope without output is a protocol error, got {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("completed envelope carried no output field"),
+            "the error names the off-contract shape: {error}"
+        );
+    }
+
+    #[test]
+    fn a_completed_envelope_with_a_present_null_output_passes_null_through() {
+        // A present `"output": null` is a legal null output, distinct from a missing key.
+        let envelope = json!({
+            "envelope_version": 1,
+            "stop": { "reason": "completed" },
+            "output": null,
+        });
+        assert_eq!(run_result_to_output(&envelope).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn a_result_without_envelope_version_is_a_protocol_error_naming_it() {
+        // The pre-envelope shape must never silently pass through.
+        let error = run_result_to_output(&json!({ "result": "completed" })).unwrap_err();
+        assert!(matches!(error, HarnessError::Protocol { .. }));
+        assert!(error.to_string().contains("envelope_version"));
+    }
+
+    #[test]
+    fn a_result_without_stop_is_a_protocol_error_naming_it() {
+        let error =
+            run_result_to_output(&json!({ "envelope_version": 1, "output": "x" })).unwrap_err();
+        assert!(matches!(error, HarnessError::Protocol { .. }));
+        assert!(error.to_string().contains("`stop`"));
+    }
+
+    #[test]
+    fn a_stop_without_a_string_reason_is_a_protocol_error() {
+        let envelope = json!({ "envelope_version": 1, "stop": { "reason": 3 } });
+        let error = run_result_to_output(&envelope).unwrap_err();
+        assert!(matches!(error, HarnessError::Protocol { .. }));
+        assert!(error.to_string().contains("`reason`"));
     }
 }
