@@ -601,6 +601,9 @@ async fn run_agent_dispatch(
         request.workflow_id.clone(),
         activity_id,
         attempt,
+        // The dispatched activity-type name is neutral run identity the harness may
+        // use (e.g. to label the run); it is threaded verbatim from the request.
+        request.activity_type.clone(),
         Payload::new(ContentType::Json, request.input.clone()),
     );
     // Stream the transcript LIVE over the connection while the agent runs.

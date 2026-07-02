@@ -226,6 +226,7 @@ mod tests {
             WorkflowId::new(Uuid::nil()),
             ActivityId::from_sequence_position(4),
             2,
+            "mock-activity",
             Payload::new(ContentType::Json, b"\"in\"".to_vec()),
         )
     }

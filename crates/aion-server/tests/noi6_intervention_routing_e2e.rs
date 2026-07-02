@@ -145,6 +145,7 @@ fn spawn_live_session(
         key.workflow_id.clone(),
         key.activity_id.clone(),
         key.attempt,
+        "agent-activity",
         Payload::new(ContentType::Json, b"\"in\"".to_vec()),
     );
     let driver = tokio::spawn(async move {

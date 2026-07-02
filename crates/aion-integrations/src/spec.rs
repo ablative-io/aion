@@ -5,9 +5,9 @@ use aion_core::{ActivityId, Payload, WorkflowId};
 /// The neutral identity + input for one agent run (one activity attempt).
 ///
 /// Carries only what every harness needs to run an attempt: the `(workflow, activity, attempt)`
-/// key and the input [`Payload`]. It names **no** harness-specific configuration — an adapter
-/// holds any harness-specific settings itself (constructed when the [`crate::AgentHarness`] is
-/// built), keeping this spec harness-blind.
+/// key, the activity-type name the engine dispatched, and the input [`Payload`]. It names **no**
+/// harness-specific configuration — an adapter holds any harness-specific settings itself
+/// (constructed when the [`crate::AgentHarness`] is built), keeping this spec harness-blind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentRunSpec {
     /// The workflow this activity attempt belongs to.
@@ -16,6 +16,12 @@ pub struct AgentRunSpec {
     pub activity_id: ActivityId,
     /// The attempt number of the activity being run.
     pub attempt: u32,
+    /// The activity-type name the engine dispatched to this run (e.g. `"dev"`).
+    ///
+    /// Neutral run identity, not harness configuration: it is the same type name the workflow
+    /// definition routed on, so an adapter can label or parameterise a run by what the engine
+    /// asked for without the spec learning anything harness-specific.
+    pub activity_type: String,
     /// The activity input handed to the agent.
     pub input: Payload,
 }
@@ -27,12 +33,14 @@ impl AgentRunSpec {
         workflow_id: WorkflowId,
         activity_id: ActivityId,
         attempt: u32,
+        activity_type: impl Into<String>,
         input: Payload,
     ) -> Self {
         Self {
             workflow_id,
             activity_id,
             attempt,
+            activity_type: activity_type.into(),
             input,
         }
     }
@@ -50,11 +58,18 @@ mod tests {
         let activity_id = ActivityId::from_sequence_position(4);
         let input = Payload::new(ContentType::Json, b"{}".to_vec());
 
-        let spec = AgentRunSpec::new(workflow_id.clone(), activity_id.clone(), 2, input.clone());
+        let spec = AgentRunSpec::new(
+            workflow_id.clone(),
+            activity_id.clone(),
+            2,
+            "dev",
+            input.clone(),
+        );
 
         assert_eq!(spec.workflow_id, workflow_id);
         assert_eq!(spec.activity_id, activity_id);
         assert_eq!(spec.attempt, 2);
+        assert_eq!(spec.activity_type, "dev");
         assert_eq!(spec.input, input);
     }
 }

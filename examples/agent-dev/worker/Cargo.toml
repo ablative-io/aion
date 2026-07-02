@@ -1,0 +1,59 @@
+# Generic mixed worker for the agent_dev proof: three Norn AGENT rounds
+# (scout/dev/review) driven through the composed harness path over the liminal
+# server-push transport, plus three PLAIN registry activities (provision, gate,
+# land) that shell to the real CLIs owning each step.
+#
+# Standalone (NOT a workspace member) like the other example workers, but it
+# consumes the worktree's local crates by PATH: the seam this worker builds on
+# (AgentRunSpec.activity_type + the norn adapter's {placeholder} expansion and
+# child-env removal) is unpublished.
+#
+# The agent_dev GLEAM package (the workflow side of the contract) is authored
+# elsewhere; the wire types here are defined from the shared contract, and
+# wire-compat pinning against the real Gleam codecs happens at integration.
+[package]
+name = "agent-dev-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Generic mixed (agent + plain) liminal worker for the agent_dev proof."
+
+[lib]
+name = "agent_dev_worker"
+
+[[bin]]
+name = "agent-dev-worker"
+path = "src/main.rs"
+
+[workspace]
+
+# Out-of-workspace crates cannot inherit the repo's `[workspace.lints]`, so
+# the same strict set is pinned here verbatim — this crate is held to the
+# identical clippy/rustc bar as every workspace member.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+# The composition root's concrete adapter + the neutral integration contract it
+# is erased through — the same pair norn-fan-worker composes.
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

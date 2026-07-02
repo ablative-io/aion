@@ -50,6 +50,7 @@ fn spec() -> AgentRunSpec {
         WorkflowId::new_v4(),
         ActivityId::from_sequence_position(1),
         1,
+        "cli-activity",
         Payload::new(ContentType::Json, b"run the task".to_vec()),
     )
 }
