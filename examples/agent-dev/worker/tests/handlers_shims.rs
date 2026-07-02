@@ -231,6 +231,7 @@ fn gate_pass_runs_clippy_then_tests() -> TestResult {
         &shims.shell(),
         GateInput {
             path: shims.root_string(),
+            branch: "agent-dev-TEST".to_owned(),
         },
     )
     .map_err(|failure| failure.message().to_owned())?;
@@ -266,6 +267,7 @@ exit 0"#,
         &shims.shell(),
         GateInput {
             path: shims.root_string(),
+            branch: "agent-dev-TEST".to_owned(),
         },
     )
     .map_err(|failure| failure.message().to_owned())?;
@@ -305,6 +307,7 @@ exit 0"#,
         &shims.shell(),
         GateInput {
             path: shims.root_string(),
+            branch: "agent-dev-TEST".to_owned(),
         },
     )
     .map_err(|failure| failure.message().to_owned())?;
@@ -332,6 +335,7 @@ fn gate_that_cannot_run_at_all_is_a_loud_terminal_failure() -> TestResult {
         &shims.shell(),
         GateInput {
             path: shims.root_string(),
+            branch: "agent-dev-TEST".to_owned(),
         },
     )
     .err()
@@ -352,6 +356,7 @@ fn gate_against_a_missing_workspace_is_the_explicit_diagnostic() -> TestResult {
         &shims.shell(),
         GateInput {
             path: format!("{}/never-provisioned/repo", shims.root_string()),
+            branch: "agent-dev-TEST".to_owned(),
         },
     )
     .err()

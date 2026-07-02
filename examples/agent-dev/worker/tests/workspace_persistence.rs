@@ -278,6 +278,7 @@ fn missing_workspace_fails_with_the_explicit_diagnostic() {
         &Shell::inherited(),
         GateInput {
             path: dead.to_string_lossy().into_owned(),
+            branch: "agent-dev-TEST".to_owned(),
         },
     )
     .err()

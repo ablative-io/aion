@@ -282,7 +282,7 @@ fn unique_suffix() -> String {
 /// command cannot RUN at all (missing `cargo`, dead working directory) —
 /// that is a broken environment, not a gate verdict.
 pub fn gate(shell: &Shell, input: GateInput) -> Result<GateResult, ActivityFailure> {
-    let GateInput { path } = input;
+    let GateInput { path, branch: _ } = input;
     require_workspace_dir(&path)?;
     for (context, args) in GATE_COMMANDS {
         let command_run = shell.run("cargo", args, &path).map_err(|failure| {

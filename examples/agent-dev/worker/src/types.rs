@@ -37,12 +37,12 @@ pub struct Workspace {
     pub branch: String,
 }
 
-/// Input of the `gate` activity: the workspace to check.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct GateInput {
-    /// Absolute path of the workspace clone the gate runs in.
-    pub path: String,
-}
+/// Input of the `gate` activity: the workspace to check. Per the contract,
+/// the workflow passes the `provision` output record through WHOLE — this is
+/// the full [`Workspace`] shape, not a projection, so the wire matches the
+/// Gleam `workspace_to_json` codec byte for byte (no reliance on serde's
+/// unknown-field tolerance).
+pub type GateInput = Workspace;
 
 /// Output of the `gate` activity: a recorded verdict, never an error — a
 /// gate that RAN and failed is data the workflow routes on.
