@@ -8,7 +8,8 @@
     "session_id",
     "build_warm",
     "verify_rounds",
-    "review_rounds"
+    "review_rounds",
+    "workspace_cleaned"
   ],
   "additionalProperties": false,
   "properties": {
@@ -48,6 +49,9 @@
     "review_rounds": {
       "type": "integer",
       "minimum": 1
+    },
+    "workspace_cleaned": {
+      "type": "boolean"
     }
   }
 }

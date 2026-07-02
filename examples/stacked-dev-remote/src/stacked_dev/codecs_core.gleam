@@ -69,10 +69,17 @@ pub fn provision_input_codec() -> codec.Codec(ProvisionInput) {
         #("placement", json.string(placement_to_string(input.placement))),
         #("isolation", json.string(isolation_to_string(input.isolation))),
       ]
-      case input.clone_url {
+      let with_clone_url = case input.clone_url {
         option.Some(url) ->
-          json.object(list.append(base, [#("clone_url", json.string(url))]))
-        option.None -> json.object(base)
+          list.append(base, [#("clone_url", json.string(url))])
+        option.None -> base
+      }
+      case input.run_id {
+        option.Some(run_id) ->
+          json.object(
+            list.append(with_clone_url, [#("run_id", json.string(run_id))]),
+          )
+        option.None -> json.object(with_clone_url)
       }
     },
     provision_input_decoder(),
@@ -92,6 +99,11 @@ pub fn provision_input_decoder() -> decode.Decoder(ProvisionInput) {
     option.None,
     decode.map(decode.string, option.Some),
   )
+  use run_id <- decode.optional_field(
+    "run_id",
+    option.None,
+    decode.map(decode.string, option.Some),
+  )
   decode.success(ProvisionInput(
     repo_root: repo_root,
     brief_id: brief_id,
@@ -99,6 +111,7 @@ pub fn provision_input_decoder() -> decode.Decoder(ProvisionInput) {
     placement: placement,
     isolation: isolation,
     clone_url: clone_url,
+    run_id: run_id,
   ))
 }
 

@@ -41,6 +41,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
+import gleam/option
 import stacked_dev/activities
 import stacked_dev/codecs_flow
 import stacked_dev/codecs_workflows
@@ -58,7 +59,7 @@ import stacked_dev/types.{
   ReviewCapExhausted, ReviewDrifted, ReviewDriftedInChild, ReviewEnrichment,
   ReviewRejected, ReviewRequest, ReviewTimedOut, ReviewVerdict, ScoutEnrichment,
   ScoutFailed, ScoutFailedInChild, StackedDevResult, StackedDevStatus,
-  StageFailed, TeardownInput, VerdictApproved, VerifyExhausted,
+  StageFailed, TeardownInput, TornDown, VerdictApproved, VerifyExhausted,
   VerifyFixExhausted, WorkspaceWide,
 }
 
@@ -130,16 +131,27 @@ pub fn execute(
   let result = execute_with_workspace(input, workspace)
   case result {
     // Success: the work has landed on the tree parent, so the now-merged
-    // branch and its worktree are safe to clean up. Teardown runs ONLY here.
-    Ok(_) -> {
-      teardown(input, workspace)
-      result
-    }
+    // branch and its worktree are safe to clean up. Teardown runs ONLY
+    // here, and its outcome rides on the result instead of being
+    // swallowed: `workspace_cleaned: False` means teardown refused or
+    // failed, so the per-run directory was RETAINED on the worker host
+    // and needs manual pruning (README, retention and pruning).
+    Ok(landed) ->
+      Ok(
+        StackedDevResult(
+          ..landed,
+          workspace_cleaned: teardown(input, workspace),
+        ),
+      )
     // Failure: the workspace — worktree, branch, and every committed dev
     // round — is preserved INTACT so the run can be reopened and resumed from
     // the failed step. Destroying it here would defeat the entire point of
     // durable resume, so teardown NEVER runs on a failure path. (Cleaning the
     // build cache is fine; deleting the work product is not — and was the bug.)
+    // Remote clones make the same promise across host reboots: they live in
+    // a stable per-run directory under the worker's workspace root
+    // (AION_WORKSPACE_ROOT, default ~/.aion/clones), never in the OS temp
+    // dir a reboot purges (#175).
     Error(_) -> result
   }
 }
@@ -168,15 +180,23 @@ fn execute_with_workspace(
   }
 }
 
-fn teardown(input: StackedDevInput, workspace: Workspace) -> Nil {
-  let _ =
+/// Run the success-path teardown and report whether the workspace was
+/// actually removed. `False` — a refusal (`cleaned: false`, e.g. a
+/// workspace outside the worker's resolved root is never guessed at or
+/// deleted) or a teardown failure — never fails the run (the work has
+/// already landed); it is surfaced as `workspace_cleaned` on the result.
+fn teardown(input: StackedDevInput, workspace: Workspace) -> Bool {
+  case
     workflow.run(
       activities.teardown_workspace(TeardownInput(
         workspace: workspace,
         repo_root: input.repo_root,
       )),
     )
-  Nil
+  {
+    Ok(TornDown(branch: _, cleaned: cleaned)) -> cleaned
+    Error(_) -> False
+  }
 }
 
 /// Derive the outer arc's `DevResult` from the brief_dev child's dev report:
@@ -206,6 +226,21 @@ fn changed_files(dev_report: stage_io.DevReport) -> List(String) {
 }
 
 fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
+  // The workflow execution's unique id (recorded in WorkflowStarted, stable
+  // across replay) keys the remote clone's per-run directory under the
+  // worker's stable workspace root (#175) — brief ids alone can collide
+  // across re-dispatches. A colliding run_id directory can only be this
+  // execution's own earlier partial attempt, so the worker renames it aside
+  // (never deletes) and re-provisions — reopen-driven crash recovery
+  // re-executes provision with this same id.
+  use run_id <- result_try(case workflow.id() {
+    Ok(run_id) -> Ok(run_id)
+    Error(error.EngineFailure(message: message)) ->
+      Error(ProvisionFailed(
+        message: "workflow id unavailable — cannot key the remote workspace directory: "
+        <> message,
+      ))
+  })
   case
     workflow.run(
       activities.provision_workspace(ProvisionInput(
@@ -215,6 +250,7 @@ fn provision(input: StackedDevInput) -> Result(Workspace, StackedDevError) {
         placement: input.placement,
         isolation: input.isolation,
         clone_url: input.clone_url,
+        run_id: option.Some(run_id),
       )),
     )
   {
@@ -632,6 +668,10 @@ fn land(
         build_warm: brief_dev_result.build_warm,
         verify_rounds: brief_dev_result.verify_rounds,
         review_rounds: round,
+        // Placeholder: `execute` overwrites this with the real teardown
+        // outcome after the success-path teardown runs; failure paths
+        // never construct a result.
+        workspace_cleaned: False,
       ))
     }
     Error(activity_error) ->

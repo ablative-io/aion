@@ -64,7 +64,7 @@ where checkable:
 
 | # | State | Item | Verification |
 |---|-------|------|--------------|
-| **#8** | 🐞 real data loss | Remote-worker temp-dir cleanup — worker temp dirs not cleaned up | session §8; real disk-leak / potential data loss. Highest-priority orphan. |
+| **#8** | ✅ RESOLVED (#175, fixed, this change) | Remote-worker volatile temp-dir workspaces — stacked-dev workers cloned into OS temp (`mktemp -d` / `/tmp/stacked-dev-clones`), recorded the path in durable history; a reboot/temp-reaper purge lost unpushed dev-round commits on resume | Handler-side fix in both worker variants (`examples/stacked-dev-remote/worker`, `.meridian/workflows/stacked-dev/worker`): clones now live at `<AION_WORKSPACE_ROOT \|\| ~/.aion/clones>/<run_id>/repo` (root must be absolute — relative roots are CWD-dependent and refused); a colliding run_id directory is renamed aside to `<run_id>.superseded-<unique>` — never reused, never deleted; teardown scoped strictly under the canonicalized root (temp-parent heuristic + `rm -rf` exhaustion fallback deleted), removes the per-run dir plus its superseded siblings, and surfaces its outcome as `workspace_cleaned` on the workflow result; missing workspace = explicit terminal diagnostic. SCOPE CAVEAT: run_id threading from `workflow.id()` exists in the `examples/stacked-dev-remote` **workflow only** — the `.meridian` bundle's Gleam codecs carry no `clone_url`/`run_id`, so that bundle cannot dispatch remote clones at all (remote placement terminal-fails at provision); its worker-side changes are defensive parity, unreachable until the bundle codecs are regenerated. RETENTION (deliberate, not a leak fix): failed runs keep their per-run directory for salvage and nothing GCs the root — pruning guidance in `examples/stacked-dev-remote/README.md` ("Retention and pruning"). Loss repro + lifecycle (incl. superseded sweep) pinned by `worker/tests/workspace_persistence.rs` in both variants. |
 | **#14** | 🐞 | Teardown fires eagerly on worker connect — pending teardown activities from previously-failed workflows execute immediately when a fresh worker connects, destroying failure evidence | session §14. |
 | **#6** | 🐞 | Workflow-ID mismatch in server bridge logs | session §6. |
 | **#7** | 🐞 | `collect_race` recovery gap | session §7. |
@@ -106,10 +106,10 @@ recorded here so it is **not misread as in-flight**:
 - **Has a design doc, no ledger line:** #146, #147, worker-deployment, zero-config
   formation, NOI observability, DIST-003 catch-up (all §1/§4 above).
 - **No design doc, no ledger line:** dashboard ADR-020..031 (only ADR entries), the
-  `SESSION-2026-06-15` orphan bugs #6/#7/#8/#13/#14, AW-009 R3 TLS, worker
-  heartbeat-expiry loop.
-- **Live bugs worth an issue TODAY:** #8 remote-worker temp-dir cleanup (data loss),
-  #14 eager teardown (destroys evidence), worker heartbeat-expiry loop (failover
-  liveness).
+  `SESSION-2026-06-15` orphan bugs #6/#7/#13/#14 (#8 now RESOLVED via #175, fixed,
+  this change), AW-009 R3 TLS, worker heartbeat-expiry loop.
+- **Live bugs worth an issue TODAY:** #14 eager teardown (destroys evidence), worker
+  heartbeat-expiry loop (failover liveness). (#8 remote-worker volatile-workspace
+  data loss: RESOLVED via #175, fixed, this change.)
 - **Parked, record-so-not-misread:** RM-021..029 authoring / `aion_kit` (no `aion_kit`
   package exists).

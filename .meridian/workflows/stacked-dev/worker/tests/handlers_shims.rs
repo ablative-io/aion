@@ -140,6 +140,8 @@ fn provision_creates_the_worktree_directory() -> TestResult {
             base_ref: "main".to_owned(),
             placement: Placement::Local,
             isolation: Isolation::Worktree,
+            clone_url: None,
+            run_id: None,
         },
     )
     .map_err(|failure| failure.message().to_owned())?;
@@ -170,8 +172,12 @@ fn provision_rejects_unimplemented_isolation_modes() -> TestResult {
             repo_root: shims.root_string(),
             brief_id: "brief-7".to_owned(),
             base_ref: "main".to_owned(),
-            placement: Placement::Remote,
+            // Local placement: remote placement takes the clone path, so the
+            // isolation typed-seam refusal lives on the local arm.
+            placement: Placement::Local,
             isolation: Isolation::Vm,
+            clone_url: None,
+            run_id: None,
         },
     )
     .err()
@@ -194,6 +200,8 @@ fn provision_failing_yg_is_terminal_with_diagnostics() -> TestResult {
             base_ref: "main".to_owned(),
             placement: Placement::Local,
             isolation: Isolation::Worktree,
+            clone_url: None,
+            run_id: None,
         },
     )
     .err()
@@ -303,7 +311,7 @@ fn dev_parses_the_canned_dev_report() -> TestResult {
         }
     }
     let log = shims.log("norn");
-    assert!(log.contains("--print --session-id stacked-dev-brief-7"));
+    assert!(log.contains("--session-id stacked-dev-brief-7"));
     assert!(log.contains(&format!("--workspace-root {}", shims.root_string())));
     assert!(log.contains("--output-format json"));
     assert!(log.contains("Implement the brief..."), "prompt rides last");
@@ -384,7 +392,7 @@ fn dev_resume_resumes_the_session_and_carries_the_feedback() -> TestResult {
     assert_eq!(resumed.summary, "applied feedback");
     assert_eq!(resumed.enrichments.len(), 1);
     let log = shims.log("norn");
-    assert!(log.contains("--print --resume stacked-dev-brief-7"));
+    assert!(log.contains("--resume stacked-dev-brief-7"));
     assert!(
         log.contains("error: unused variable count"),
         "the diagnostics must reach norn's argv"
@@ -606,6 +614,7 @@ fn land_commits_then_merges_the_branch_into_its_parent_via_yg() -> TestResult {
                 files_touched: Vec::new(),
                 summary: "implemented the brief".to_owned(),
             },
+            clone_url: None,
         },
     )
     .map_err(|failure| failure.message().to_owned())?;
@@ -640,6 +649,7 @@ fn land_with_nothing_to_commit_is_terminal() -> TestResult {
                 files_touched: Vec::new(),
                 summary: String::new(),
             },
+            clone_url: None,
         },
     )
     .err()
@@ -670,6 +680,7 @@ fn land_with_failing_merge_is_terminal() -> TestResult {
                 files_touched: Vec::new(),
                 summary: String::new(),
             },
+            clone_url: None,
         },
     )
     .err()
@@ -794,8 +805,8 @@ fn stage_parser_accepts_bare_then_envelope_then_fails_on_a_third_shape() -> Test
     .err()
     .ok_or("a third shape must fail the activity")?;
     assert_terminal(&failure, "produced unparseable output");
-    assert_terminal(&failure, "bare report shape");
-    assert_terminal(&failure, "{\"output\": …}");
+    assert_terminal(&failure, "bare: ");
+    assert_terminal(&failure, "envelope: ");
     Ok(())
 }
 

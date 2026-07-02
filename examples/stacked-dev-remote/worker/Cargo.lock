@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.6.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4d504eb1ae4dc3c6d7fb34b64b90cafd4fe60661cf15d98544b22240b29b9c7"
+checksum = "a8fd7bc27116bd4e8d14de82439977fbd1f5cac8becbb94d912e2564eed1a5db"
 dependencies = [
  "chrono",
  "serde",
@@ -27,34 +27,48 @@ dependencies = [
 
 [[package]]
 name = "aion-proto"
-version = "0.6.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72fd3fc15fb87d442cace1ac8fd31c51da23a67a58843cf0af4f7bedfb193fb"
+checksum = "5399de4e07da6f4c32ac79f4befaca0b1eeb6b1de252b536f0e376fc987dcdc7"
 dependencies = [
  "aion-core",
+ "aion-proto-generated",
  "chrono",
  "prost",
- "protoc-bin-vendored",
  "serde",
  "serde_json",
  "thiserror",
  "tonic",
- "tonic-build",
  "tonic-prost",
- "tonic-prost-build",
  "uuid",
 ]
 
 [[package]]
-name = "aion-worker"
-version = "0.6.0"
+name = "aion-proto-generated"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "179386c6991e0d322a7d7ff0a2f4b46eaaccb4ea53c70b9a4948e310ecf39418"
+checksum = "2a9690879dbe86f1ad7e206d15e73a7f238d0b73bc1933d9e6f384543a9ad9d9"
+dependencies = [
+ "prost",
+ "protoc-bin-vendored",
+ "serde",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "aion-worker"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b532fbf52e3c55978f0acf92e213d05a234396c3770219eb6a1e28bf6dd4f50"
 dependencies = [
  "aion-core",
  "aion-proto",
  "async-trait",
  "futures",
+ "hostname",
  "prost",
  "serde",
  "serde_json",
@@ -399,6 +413,17 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
+]
 
 [[package]]
 name = "http"
