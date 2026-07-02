@@ -17,10 +17,13 @@
 //! keys). A stray key in the ambient environment would otherwise take
 //! precedence and fail.
 //!
-//! Note: live per-step *observability* (streaming the agent's tool calls and
-//! messages out as it works) is deliberately NOT done here — that is a real
-//! cross-cutting subsystem (a harness-agnostic, haematite-durable agent-event
-//! stream) being designed separately, not a per-worker file dump.
+//! Beyond the typed `fan:N` handlers, this worker is the reference "proper
+//! worker" wiring: it composes the first-party [`NornHarness`] at its binary
+//! root (mirroring `crates/aion-cli/src/harness.rs`) and threads the erased
+//! [`AgentHarnessConfig`] through `serve_with_redial`, so a dispatch of the
+//! neutral `agent` activity type drives a live, observable, intervenable Norn
+//! session through the neutral `AgentHarness` trait. The `fan:N` handlers stay
+//! on the plain registry path (single short turns; no per-step event stream).
 //!
 //! Usage:
 //!   norn-fan-worker --address 127.0.0.1:PORT [--address 127.0.0.1:PORT2 ...]
@@ -30,8 +33,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+use aion_integration_norn::NornHarness;
+use aion_integrations::{DynAgentHarness, InterventionCapabilities, InterventionPrimitive};
 use aion_worker::{
-    ActivityContext, ActivityFailure, ActivityRegistry, HandlerFuture, WorkerConfig,
+    ActivityContext, ActivityFailure, ActivityRegistry, AgentHarnessConfig, HandlerFuture,
+    RedialTiming, WorkerConfig,
 };
 use serde_json::Value;
 
@@ -71,6 +77,11 @@ const REDIAL_MAX_BACKOFF: Duration = Duration::from_millis(500);
 /// activity slot forever; on elapse we surface a retryable failure and the
 /// engine re-dispatches.
 const NORN_STEP_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// The neutral activity-type name routed through the composed agent harness
+/// rather than the typed registry (the same name the production serve-wiring
+/// gate `noi5b_noi6_live_agent_e2e.rs` registers for).
+const AGENT_ACTIVITY_TYPE: &str = "agent";
 
 /// The fixture passes each member the JSON string `"in"`, so the handler decodes
 /// a [`String`] (matching `liminal-fan-worker`'s `FanInput`). The prompt comes
@@ -172,6 +183,28 @@ async fn run_norn_step(
 /// name (the `fan:N` activity type's colon is replaced with a dash).
 fn session_id_for(identity: &str, activity_type: &str) -> String {
     format!("{identity}-{}", activity_type.replace(':', "-"))
+}
+
+/// Compose the agent harness at the binary root — the ONE place this worker
+/// names a concrete [`AgentHarness`](aion_integrations::AgentHarness) adapter,
+/// mirroring the `aion` binary's composition root
+/// (`crates/aion-cli/src/harness.rs`). The serve path drives it only through
+/// the erased neutral trait ([`DynAgentHarness`]), so swapping the adapter
+/// touches this function alone.
+///
+/// The advertised capabilities are exactly the neutral primitives the Norn
+/// adapter's intervention translation supports today (`InjectMessage` +
+/// `Cancel`); advertising more would promise interventions the harness rejects.
+fn composed_agent_harness(norn_bin: &str) -> AgentHarnessConfig {
+    let harness: Arc<dyn DynAgentHarness> = Arc::new(NornHarness::with_binary(norn_bin));
+    AgentHarnessConfig::new(
+        harness,
+        [AGENT_ACTIVITY_TYPE],
+        InterventionCapabilities::from_primitives([
+            InterventionPrimitive::InjectMessage,
+            InterventionPrimitive::Cancel,
+        ]),
+    )
 }
 
 /// Build the activity registry: one handler per `fan:N` type, each running a real
@@ -284,6 +317,12 @@ fn main() -> anyhow::Result<()> {
 
     let registry = build_registry(&args.norn_bin, &args.identity)?;
 
+    // The composed agent harness, threaded through the serve entrypoint so a
+    // dispatch of the neutral `agent` activity type drives a real Norn session
+    // (observable + intervenable) — the reference "proper worker" wiring. The
+    // typed `fan:N` registry handlers above are untouched by it.
+    let agent = composed_agent_harness(&args.norn_bin);
+
     // Never stop on our own; the demo ends the worker with a kill.
     let stop = AtomicBool::new(false);
     let ready_file = args.ready_file.clone();
@@ -291,9 +330,9 @@ fn main() -> anyhow::Result<()> {
         args.candidates,
         &config,
         &registry,
-        REDIAL_INITIAL_BACKOFF,
-        REDIAL_MAX_BACKOFF,
+        RedialTiming::new(REDIAL_INITIAL_BACKOFF, REDIAL_MAX_BACKOFF),
         &stop,
+        Some(&agent),
         move || {
             if let Some(path) = ready_file.as_ref()
                 && let Err(error) = std::fs::write(path, b"connected")

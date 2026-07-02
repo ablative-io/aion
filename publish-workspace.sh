@@ -21,6 +21,11 @@
 # - cargo 1.92 waits for each crate to propagate to the index before returning,
 #   so ordering is handled; the retry loop covers rate-limits (429), 5xx, and
 #   any residual index lag.
+# - AFTER publishing aion-worker: bump the standalone example crates' crates.io
+#   pins (examples/stacked-dev/*, examples/stacked-dev-remote/worker,
+#   .meridian/workflows/stacked-dev/worker) and refresh their lockfiles, or the
+#   CI standalone-crates lane goes red on the release PR (checklist C15,
+#   docs/design/aion-publish/checklist.json).
 
 set -u -o pipefail
 

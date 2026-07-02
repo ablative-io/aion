@@ -92,6 +92,46 @@ jobs:
       - name: cargo xtask no-norn-in-platform
         run: cargo xtask no-norn-in-platform
 
+  # Every nested standalone crate (own Cargo.lock, NOT a workspace member) gets
+  # the same build/clippy/test bar as the workspace, run in its own directory.
+  # These crates rot silently otherwise: no workspace gate compiles them, so an
+  # aion-worker API change (or a crate rename) breaks them without any lane
+  # going red — exactly what happened to norn-fan-worker (#181) and the
+  # stacked-dev workers' test suites.
+  standalone-crates:
+    name: standalone crates (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - examples/norn-fan-worker
+          - examples/stacked-dev/mixed-worker
+          - examples/stacked-dev/norn-worker
+          # TODO(#175): the two crates below are owned by the in-flight
+          # stacked-dev-remote branch and do NOT pass on current main
+          # (examples/stacked-dev-remote/worker fails to build against its
+          # aion-worker pin; .meridian/workflows/stacked-dev/worker builds but
+          # its tests do not compile). Uncomment both when that branch lands so
+          # this lane guards them too.
+          # - examples/stacked-dev-remote/worker
+          # - .meridian/workflows/stacked-dev/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - name: cargo build
+        working-directory: ${{ matrix.crate }}
+        run: cargo build
+      - name: cargo clippy --all-targets -- -D warnings
+        working-directory: ${{ matrix.crate }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        working-directory: ${{ matrix.crate }}
+        run: cargo test
+
   test:
     name: test (workspace, default + all-features)
     runs-on: ubuntu-latest
