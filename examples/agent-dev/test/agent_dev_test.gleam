@@ -9,8 +9,10 @@
 //// end to end, not unit-tested in isolation.
 
 import agent_dev
+import agent_dev_codecs as codecs
 import agent_dev_io as io
 import aion/error
+import gleam/dynamic
 import gleam/list
 import gleam/string
 import gleeunit
@@ -149,16 +151,22 @@ pub fn gate_cap_exhaustion_is_a_disposition_and_skips_land_test() {
   |> should.be_true
 }
 
-pub fn gate_re_entry_never_overruns_the_review_cap_test() {
+pub fn gate_fail_with_spent_review_budget_terminates_without_a_dev_round_test() {
   // The edge case: the dev<->review budget is spent on the FIRST review
-  // (cap 1, review passes round one), then the gate fails and re-enters the
-  // bounded review loop. The cumulative cap must not be overrun: the
-  // re-entry runs NO further review and the run terminates as
-  // review_cap_exhausted at exactly one dev<->review round.
+  // (cap 1, review passes round one), then the gate fails with gate budget
+  // remaining. The review budget is checked BEFORE the gate-feedback dev
+  // round: the run terminates immediately as review_cap_exhausted with NO
+  // further dev or review dispatch (a diagnostics round could never be
+  // reviewed or gated), pairing the last REAL review (a pass) with the
+  // failing gate detail honestly.
   let handlers = harness.passing()
   harness.register(
     Handlers(
       ..handlers,
+      dev: fn(prompt) {
+        let _ = harness.counter_next("re-entry-dev")
+        Ok("DEV-REPORT\n" <> prompt)
+      },
       review: fn(_prompt) {
         let _ = harness.counter_next("re-entry-review")
         Ok(harness.pass_verdict_text)
@@ -176,6 +184,14 @@ pub fn gate_re_entry_never_overruns_the_review_cap_test() {
   result.disposition |> should.equal(io.ReviewCapExhausted)
   result.dev_review_rounds |> should.equal(1)
   result.gate_rounds |> should.equal(1)
+  // The honest pairing: the last real review passed; the failing gate
+  // result (with its diagnostics) says why the run is exhausted anyway.
+  result.last_review.pass |> should.be_true
+  result.gate_detail.pass |> should.be_false
+  result.gate_detail.diagnostics |> should.equal("tests: 1 failed")
+  // Exactly ONE dev dispatch ran — the initial round; no diagnostics round
+  // was dispatched after the gate failure (the probe is invocation two).
+  harness.counter_next("re-entry-dev") |> should.equal(2)
   // Exactly one review dispatch ran (the probe is invocation two).
   harness.counter_next("re-entry-review") |> should.equal(2)
 }
@@ -231,6 +247,40 @@ pub fn unparseable_verdict_after_reask_counts_as_a_failed_round_test() {
   // Exactly two review dispatches: the round and its ONE re-ask (probe is
   // three) — the re-ask is bounded, not a loop.
   harness.counter_next("garbage-review") |> should.equal(3)
+}
+
+pub fn zero_dev_review_cap_is_rejected_at_input_decode_test() {
+  // A degenerate review budget never reaches the workflow body: the decoded-
+  // input validation rejects it through the documented input_decode envelope,
+  // naming the field. No activity runs (no handlers are registered here —
+  // any dispatch would fail loudly).
+  let raw =
+    codecs.input_codec().encode(
+      io.Input(..harness.base_input(), dev_review_cap: 0),
+    )
+
+  let assert Error(payload) = agent_dev.run(dynamic.string(raw))
+
+  payload
+  |> string.contains("\"aion_error\":\"input_decode\"")
+  |> should.be_true
+  payload
+  |> string.contains("dev_review_cap must be >= 1, got 0")
+  |> should.be_true
+  payload |> string.contains("\"path\":[\"dev_review_cap\"]") |> should.be_true
+}
+
+pub fn negative_gate_cap_is_rejected_at_input_decode_test() {
+  let raw =
+    codecs.input_codec().encode(io.Input(..harness.base_input(), gate_cap: -3))
+
+  let assert Error(payload) = agent_dev.run(dynamic.string(raw))
+
+  payload
+  |> string.contains("\"aion_error\":\"input_decode\"")
+  |> should.be_true
+  payload |> string.contains("gate_cap must be >= 1, got -3") |> should.be_true
+  payload |> string.contains("\"path\":[\"gate_cap\"]") |> should.be_true
 }
 
 pub fn activity_failure_is_a_typed_stage_error_test() {

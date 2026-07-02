@@ -11,7 +11,11 @@
 ////
 //// The dev<->review loop is bounded by `dev_review_cap` (cumulative across
 //// the whole run, including the inner loops that gate failures re-enter);
-//// the gate loop by `gate_cap`. Exhausting a cap is a terminal DISPOSITION
+//// the gate loop by `gate_cap`. Both caps must be >= 1 — a degenerate budget
+//// of 0 (or negative) is rejected at the input boundary (the decoded-input
+//// validation layered on the generated input codec), so the run fails at
+//// input decode with the offending field named, never with surprising loop
+//// behaviour. Exhausting a cap is a terminal DISPOSITION
 //// (`ReviewCapExhausted` / `GateCapExhausted`) carried in the output, never
 //// an error — and `land` is skipped on exhausted dispositions, leaving the
 //// workspace intact for inspection.
@@ -37,10 +41,12 @@ import agent_dev/verdict
 import agent_dev_codecs as codecs
 import agent_dev_io as io
 import aion/activity
+import aion/codec
 import aion/error
 import aion/query
 import aion/workflow
 import gleam/dynamic.{type Dynamic}
+import gleam/int
 
 /// Name of the live `{phase, round}` status query this workflow answers.
 pub const status_query_name = "agent_dev_status"
@@ -53,10 +59,48 @@ pub fn definition() -> workflow.WorkflowDefinition(
 ) {
   workflow.define(
     "agent_dev",
-    codecs.input_codec(),
+    validated_input_codec(),
     codecs.output_codec(),
     codecs.agent_dev_error_codec(),
     execute,
+  )
+}
+
+/// The generated input codec with the decoded-input validation layered on
+/// decode: after the generated decoder accepts the JSON shape, the loop
+/// budgets are checked (`dev_review_cap >= 1`, `gate_cap >= 1`). A degenerate
+/// cap is a `DecodeError` naming the field, so it surfaces through the same
+/// `{"aion_error":"input_decode",...}` envelope as any other bad input.
+/// Encoding is the generated encoder, untouched.
+fn validated_input_codec() -> codec.Codec(io.Input) {
+  let generated = codecs.input_codec()
+  codec.Codec(encode: generated.encode, decode: fn(raw_json) {
+    case generated.decode(raw_json) {
+      Ok(input) -> validate_caps(input)
+      Error(decode_error) -> Error(decode_error)
+    }
+  })
+}
+
+/// Both loop budgets must be at least 1: a cap of 0 or negative would either
+/// still run one round (gate) or skip the loop it exists to bound (review) —
+/// surprising either way, so it is rejected at the boundary. No defaults are
+/// invented; the caller must state a real budget.
+fn validate_caps(input: io.Input) -> Result(io.Input, codec.DecodeError) {
+  case input.dev_review_cap >= 1 {
+    False -> Error(cap_decode_error("dev_review_cap", input.dev_review_cap))
+    True ->
+      case input.gate_cap >= 1 {
+        False -> Error(cap_decode_error("gate_cap", input.gate_cap))
+        True -> Ok(input)
+      }
+  }
+}
+
+fn cap_decode_error(field: String, value: Int) -> codec.DecodeError {
+  codec.DecodeError(
+    reason: field <> " must be >= 1, got " <> int.to_string(value),
+    path: [field],
   )
 }
 
@@ -89,16 +133,10 @@ pub fn execute(input: io.Input) -> Result(io.Output, io.AgentDevError) {
     prompts.dev_start(input, plan),
   ))
 
-  // The dev<->review loop. The first entry is at round 0, so with
-  // `dev_review_cap >= 1` the placeholder fallback verdict is never
-  // surfaced — it only matters on a gate re-entry already at the cap.
-  use loop <- result_try(review_loop(
-    input,
-    dev_report,
-    False,
-    0,
-    not_yet_reviewed(),
-  ))
+  // The dev<->review loop. The first entry is at round 0 and
+  // `dev_review_cap >= 1` is guaranteed by the input boundary, so at least
+  // one real review always runs.
+  use loop <- result_try(review_loop(input, dev_report, False, 0))
   case loop.passed {
     // The dev<->review budget is spent before any gate ran: terminate as
     // review_cap_exhausted with an honest "gate not run" detail.
@@ -134,63 +172,47 @@ type ReviewLoop {
 /// budget (`dev_review_cap`) is spent. Each non-passing round resumes the
 /// dev session with the blockers, then re-reviews the new report.
 ///
-/// The cap is checked BEFORE each review so the budget is never overrun:
-/// when `rounds_so_far` has already reached the cap on entry (only reachable
-/// on a gate-driven re-entry), no further review runs and the loop
-/// terminates as exhausted carrying `fallback_review` (the last verdict that
-/// actually ran), keeping the cap a true cumulative ceiling.
+/// Every caller enters with budget remaining (`rounds_so_far <
+/// dev_review_cap`): the first entry is at round 0 with the cap validated
+/// `>= 1` at the input boundary, a gate-driven re-entry is guarded in
+/// `gate_loop`, and the recursion below only continues under the cap — so
+/// each entry runs exactly one real review and the budget is never overrun.
 fn review_loop(
   input: io.Input,
   dev_report: String,
   review_started: Bool,
   rounds_so_far: Int,
-  fallback_review: io.ReviewVerdict,
 ) -> Result(ReviewLoop, io.AgentDevError) {
-  case rounds_so_far >= input.dev_review_cap {
+  use _ <- result_try(set_status("reviewing", rounds_so_far + 1))
+  use review_verdict <- result_try(run_review(input, dev_report, review_started))
+  let rounds = rounds_so_far + 1
+  case review_verdict.pass {
     True ->
       Ok(ReviewLoop(
-        review: fallback_review,
-        dev_review_rounds: rounds_so_far,
-        review_started: review_started,
-        passed: False,
+        review: review_verdict,
+        dev_review_rounds: rounds,
+        review_started: True,
+        passed: True,
       ))
-    False -> {
-      use _ <- result_try(set_status("reviewing", rounds_so_far + 1))
-      use review_verdict <- result_try(run_review(
-        input,
-        dev_report,
-        review_started,
-      ))
-      let rounds = rounds_so_far + 1
-      case review_verdict.pass {
+    False ->
+      case rounds >= input.dev_review_cap {
         True ->
           Ok(ReviewLoop(
             review: review_verdict,
             dev_review_rounds: rounds,
             review_started: True,
-            passed: True,
+            passed: False,
           ))
-        False ->
-          case rounds >= input.dev_review_cap {
-            True ->
-              Ok(ReviewLoop(
-                review: review_verdict,
-                dev_review_rounds: rounds,
-                review_started: True,
-                passed: False,
-              ))
-            False -> {
-              use _ <- result_try(set_status("developing", rounds + 1))
-              use revised <- result_try(run_agent(
-                activities.dev,
-                "dev",
-                prompts.dev_review_feedback(review_verdict),
-              ))
-              review_loop(input, revised, True, rounds, review_verdict)
-            }
-          }
+        False -> {
+          use _ <- result_try(set_status("developing", rounds + 1))
+          use revised <- result_try(run_agent(
+            activities.dev,
+            "dev",
+            prompts.dev_review_feedback(review_verdict),
+          ))
+          review_loop(input, revised, True, rounds)
+        }
       }
-    }
   }
 }
 
@@ -226,12 +248,14 @@ fn run_review(
 
 // --- the gate loop -----------------------------------------------------------
 
-/// Run the gate, then while it fails and the gate budget (`gate_cap`)
-/// remains, resume the dev session with the diagnostics, re-enter the
-/// bounded dev<->review loop (cumulative cap), and re-gate. A passing gate
-/// lands and finishes as `Passed`; a spent gate budget finishes as
-/// `GateCapExhausted`; a spent dev<->review budget inside a re-entry
-/// finishes as `ReviewCapExhausted`. Exhausted dispositions never land.
+/// Run the gate, then while it fails and BOTH budgets remain, resume the dev
+/// session with the diagnostics, re-enter the bounded dev<->review loop
+/// (cumulative cap), and re-gate. A passing gate lands and finishes as
+/// `Passed`; a spent gate budget finishes as `GateCapExhausted`; a spent
+/// dev<->review budget — checked BEFORE the gate-feedback dev round, since a
+/// dev round that can never be reviewed or re-gated is pure waste — finishes
+/// as `ReviewCapExhausted`, carrying the last real review alongside the
+/// failing gate detail. Exhausted dispositions never land.
 fn gate_loop(
   input: io.Input,
   workspace: io.Workspace,
@@ -244,8 +268,11 @@ fn gate_loop(
   case gate_detail.pass {
     True -> land_and_finish(input, workspace, loop, gate_detail, gate_rounds)
     False ->
-      case gate_rounds >= input.gate_cap {
-        True ->
+      case
+        gate_rounds >= input.gate_cap,
+        loop.dev_review_rounds >= input.dev_review_cap
+      {
+        True, _ ->
           Ok(build_output(
             io.GateCapExhausted,
             loop.review,
@@ -254,7 +281,20 @@ fn gate_loop(
             gate_rounds,
             workspace,
           ))
-        False -> {
+        False, True ->
+          // The dev<->review budget is already spent: no diagnostics dev
+          // round is dispatched (its output could never be reviewed or
+          // gated). Terminate with the last real review and this failing
+          // gate result, honestly paired.
+          Ok(build_output(
+            io.ReviewCapExhausted,
+            loop.review,
+            gate_detail,
+            loop.dev_review_rounds,
+            gate_rounds,
+            workspace,
+          ))
+        False, False -> {
           use _ <- result_try(set_status(
             "developing",
             loop.dev_review_rounds + 1,
@@ -269,7 +309,6 @@ fn gate_loop(
             revised,
             loop.review_started,
             loop.dev_review_rounds,
-            loop.review,
           ))
           case inner.passed {
             False ->
@@ -410,14 +449,6 @@ fn build_output(
 /// records "not run" honestly, never a fake pass.
 fn gate_not_run() -> io.GateDetail {
   io.GateDetail(pass: False, diagnostics: "")
-}
-
-/// The placeholder fallback for the first `review_loop` entry. Never
-/// surfaced: the first entry is at round 0 with `dev_review_cap >= 1`, so a
-/// real review always runs before any exhaustion. `pass: False` keeps it
-/// honest if it ever were observed.
-fn not_yet_reviewed() -> io.ReviewVerdict {
-  io.ReviewVerdict(pass: False, blockers: [], summary: "no review has run yet")
 }
 
 /// The honest verdict recorded when the reviewer's reply carried no
