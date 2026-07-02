@@ -57,6 +57,9 @@ worker heartbeat sweeper starting, gRPC on `50051`, HTTP on `8080`, and the
 liminal worker listener on `50061`. The ops console is now at
 **http://127.0.0.1:8080**.
 
+The demo config carries `[deploy] enabled = true` — without it the console
+shows "Deploy is disabled" and packages can only be pre-loaded at startup.
+
 ## 3. Deploy the package (through the console)
 
 Console → deploy → upload `examples/agent-dev/agent-dev.aion`.
