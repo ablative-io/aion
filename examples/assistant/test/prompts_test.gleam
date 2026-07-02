@@ -28,7 +28,10 @@ pub fn first_round_carries_the_objective_and_workspace_test() {
 
 pub fn first_round_teaches_ground_truth_over_memory_test() {
   let prompt = prompts.first_round(harness.base_input(), workspace())
-  contains(prompt, "never from memory")
+  contains(prompt, "from memory")
+  contains(prompt, ".assistant/resources/")
+  contains(prompt, "ENVIRONMENT.md")
+  contains(prompt, "SCAFFOLD.md")
   contains(prompt, "docs/GETTING-STARTED.md")
   contains(prompt, "docs/guides/")
   contains(prompt, "gleam/aion_flow/src/aion/")
@@ -65,11 +68,17 @@ pub fn first_round_states_the_file_tool_confinement_test() {
   contains(prompt, "shell")
 }
 
-pub fn first_round_without_a_repo_is_honest_about_it_test() {
+pub fn first_round_without_a_repo_self_serves_a_clone_test() {
   let input = io.Input(objective: "explain signals", repo_path: "")
   let prompt = prompts.first_round(input, workspace())
   contains(prompt, "scratch git workspace")
-  contains(prompt, "NO aion repository")
+  contains(prompt, "No repository was attached")
+  contains(
+    prompt,
+    "git clone --depth 1 https://github.com/ablative-io/aion.git",
+  )
+  contains(prompt, "private")
+  contains(prompt, ".assistant/resources/")
 }
 
 pub fn continuation_is_the_operator_message_verbatim_test() {
