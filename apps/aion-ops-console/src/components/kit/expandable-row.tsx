@@ -94,7 +94,7 @@ export function ExpandableRow({
                 className={cn(
                   'size-1.5 rounded-full',
                   pip < pipsFilled
-                    ? 'bg-[var(--accent-primary,#d4845a)]'
+                    ? 'bg-[var(--accent-primary,#6b96d1)]'
                     : 'bg-[var(--surface-hover)]'
                 )}
               />

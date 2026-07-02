@@ -20,10 +20,10 @@ export type OmniPaletteProps = {
   client?: PaletteEntityClient | undefined;
 };
 
-// Terracotta selection accent with a local fallback until the Phase-0 token
-// pass defines --accent-primary globally; the token wins once it exists.
+// Selection rides the action accent; the local var keeps the /12 alpha
+// utility below readable.
 const PALETTE_STYLE = {
-  '--palette-accent': 'var(--accent-primary, #d4845a)',
+  '--palette-accent': 'var(--accent-primary)',
 } as CSSProperties;
 
 const ITEM_CLASS = cn(

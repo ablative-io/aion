@@ -7,26 +7,26 @@ import { cn } from '@/lib/utils';
 export type KitStatus = 'healthy' | 'running' | 'failed' | 'special' | 'live' | 'idle';
 
 export const KIT_STATUS_COLOR: Record<KitStatus, string> = {
-  healthy: 'var(--status-success, #4ade80)',
+  healthy: 'var(--status-success, #74b584)',
   running: 'var(--status-warning, #fbbf24)',
   failed: 'var(--status-danger, #f87171)',
   special: 'var(--status-special, #a78bfa)',
-  live: 'var(--status-live, #4fb3ae)',
+  live: 'var(--status-live, #4fb8b2)',
   idle: 'var(--text-muted, #71717a)',
 };
 
 export const KIT_STATUS_GLOW: Record<KitStatus, string> = {
-  healthy: 'var(--status-success-glow, rgba(74,222,128,0.12))',
+  healthy: 'var(--status-success-glow, rgba(116,181,132,0.12))',
   running: 'var(--status-warning-glow, rgba(251,191,36,0.12))',
   failed: 'var(--status-danger-glow, rgba(248,113,113,0.12))',
   special: 'var(--status-special-glow, rgba(167,139,250,0.12))',
-  live: 'var(--status-live-glow, rgba(79,179,174,0.12))',
+  live: 'var(--status-live-glow, rgba(79,184,178,0.12))',
   idle: 'var(--surface-hover, #252530)',
 };
 
-/** The primary accent (terracotta) — act/selection/focus. Never cyan. */
-export const KIT_ACCENT = 'var(--accent-primary, #d4845a)';
-export const KIT_ACCENT_GLOW = 'var(--accent-primary-glow, rgba(212,132,90,0.12))';
+/** The action accent (brand strategy-blue) — act/selection/focus. Never cyan. */
+export const KIT_ACCENT = 'var(--accent-primary, #6b96d1)';
+export const KIT_ACCENT_GLOW = 'var(--accent-primary-glow, rgba(107,150,209,0.12))';
 
 export type StatusDotProps = {
   status: KitStatus;
