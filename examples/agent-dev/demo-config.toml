@@ -1,0 +1,26 @@
+# Server configuration for the agent-dev live demo (see RUNBOOK.md).
+#
+# Identical to the repo's dev-config.toml plus the outbox/liminal block the
+# agent-dev worker requires: the worker connects IN to the server's liminal
+# listener (server-push dispatch), so the outbox must be commissioned and the
+# listener address set.
+
+workflow_packages = []
+
+[server]
+listen_address = "127.0.0.1:8080"
+grpc_address = "127.0.0.1:50051"
+
+[store]
+backend = "haematite"
+data_dir = "aion-data"
+
+[runtime]
+query_timeout_ms = 10000
+
+[namespaces]
+default = "default"
+
+[outbox]
+enabled = true
+liminal_listen_address = "127.0.0.1:50061"
