@@ -29,12 +29,19 @@ export type PaletteGroupInput = {
 
 const ENTITY_HEADINGS: Record<PaletteEntityKind, string> = {
   workflow: 'Workflows',
+  assistant: 'Assistant sessions',
   namespace: 'Namespaces',
   package: 'Packages',
   worker: 'Workers',
 };
 
-const ENTITY_ORDER: readonly PaletteEntityKind[] = ['workflow', 'namespace', 'package', 'worker'];
+const ENTITY_ORDER: readonly PaletteEntityKind[] = [
+  'workflow',
+  'assistant',
+  'namespace',
+  'package',
+  'worker',
+];
 
 /**
  * Assemble the palette's grouped result set for a mode: `everything` = recents

@@ -11,6 +11,11 @@ export const incidentsPath = '/incidents';
 export const failoverPath = '/failover';
 export const actionsPath = '/actions';
 export const namespacesPath = '/registry';
+// The assistant panel: session list + per-session detail. `/assistant` is NOT
+// a reserved API path (assets.rs reserves only workflows/events), so the SPA
+// fallback serves index.html on a hard refresh of either route.
+export const assistantPath = '/assistant';
+export const assistantSessionPath = '/assistant/:id';
 // The kit lookbook: the human verification surface for the motion kit. Route
 // only — deliberately absent from the nav.
 export const kitPath = '/kit';
@@ -42,6 +47,14 @@ export function actionsHref() {
 
 export function namespacesHref() {
   return namespacesPath;
+}
+
+export function assistantHref() {
+  return assistantPath;
+}
+
+export function assistantSessionHref(workflowId: string) {
+  return generatePath(assistantSessionPath, { id: workflowId });
 }
 
 export function kitHref() {

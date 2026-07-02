@@ -13,7 +13,9 @@ export const ACTION_IDS = {
   goWorkflows: 'go.workflows',
   goEvents: 'go.events',
   goNamespaces: 'go.namespaces',
+  goAssistant: 'go.assistant',
   focusSearch: 'search.focus',
+  assistantFocusChat: 'assistant.focus-chat',
 } as const;
 
 export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
@@ -58,9 +60,23 @@ export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
     defaultBinding: 'g n',
   },
   {
+    id: ACTION_IDS.goAssistant,
+    title: 'Go to assistant',
+    scope: 'global',
+    defaultBinding: 'g a',
+  },
+  {
     id: ACTION_IDS.focusSearch,
     title: 'Focus search',
     scope: 'global',
     defaultBinding: '/',
+  },
+  {
+    id: ACTION_IDS.assistantFocusChat,
+    title: 'Focus assistant chat',
+    scope: 'view',
+    defaultBinding: 'mod+i',
+    // ⌘I is meta-modified, so firing from a focused field never eats a keystroke.
+    allowInInputs: true,
   },
 ];

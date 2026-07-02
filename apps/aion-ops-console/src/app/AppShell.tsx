@@ -9,6 +9,7 @@ import { PaletteHost } from '@/features/palette';
 import { GlobalActions } from './GlobalActions';
 import {
   actionsPath,
+  assistantPath,
   failoverPath,
   incidentsPath,
   namespacesPath,
@@ -23,6 +24,7 @@ const NAV_ITEMS: readonly AppNavItem[] = [
   { href: namespacesPath, label: 'Namespaces', activePrefix: namespacesPath },
   { href: searchPath, label: 'Search', activePrefix: searchPath },
   { href: actionsPath, label: 'Actions', activePrefix: actionsPath },
+  { href: assistantPath, label: 'Assistant', activePrefix: assistantPath },
   { href: incidentsPath, label: 'Incidents', activePrefix: incidentsPath },
   { href: failoverPath, label: 'Failover', activePrefix: failoverPath },
 ];

@@ -1,9 +1,19 @@
-import { actionsPath, failoverPath, namespacesPath, workflowDetailHref } from '@/app/routePaths';
+import {
+  actionsPath,
+  assistantSessionHref,
+  failoverPath,
+  namespacesPath,
+  workflowDetailHref,
+} from '@/app/routePaths';
+// Deep import (not the feature index): the palette loads eagerly with the
+// shell, and the index would drag the whole lazily-routed assistant feature
+// into the main chunk. The contract module is dependency-light by design.
+import { assistantSessionsFilter } from '@/features/assistant/lib/contract';
 import type { ApiClient } from '@/lib/api';
 import type { Namespace, WorkflowFilter } from '@/types';
 
 /** Entity kinds the palette can find. Each result deep-links to a real surface. */
-export type PaletteEntityKind = 'workflow' | 'namespace' | 'package' | 'worker';
+export type PaletteEntityKind = 'workflow' | 'assistant' | 'namespace' | 'package' | 'worker';
 
 export type PaletteEntity = {
   kind: PaletteEntityKind;
@@ -80,6 +90,27 @@ export async function fetchPaletteEntities(
           subtitle: `${workflow.workflow_type} · ${workflow.status}`,
           keywords: [workflow.workflow_type, workflow.status],
           href: workflowDetailHref(workflow.workflow_id),
+        }));
+      },
+    },
+    {
+      label: 'assistant sessions',
+      load: async () => {
+        if (options.namespace === null) {
+          return [];
+        }
+        const page = await client.queryWorkflows(
+          assistantSessionsFilter(),
+          { limit: WORKFLOW_PAGE_LIMIT },
+          { namespace: options.namespace }
+        );
+        return page.items.map((session) => ({
+          kind: 'assistant' as const,
+          id: `assistant:${session.workflow_id}`,
+          title: session.workflow_id,
+          subtitle: `assistant · ${session.status}`,
+          keywords: ['assistant', 'session', session.status],
+          href: assistantSessionHref(session.workflow_id),
         }));
       },
     },

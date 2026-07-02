@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { FOCUS_SEARCH_STATE } from '@/features/search';
 import { ACTION_IDS, useAction } from '@/lib/keybindings';
 
-import { namespacesPath, searchPath, workflowListPath } from './routePaths';
+import { assistantPath, namespacesPath, searchPath, workflowListPath } from './routePaths';
 
 /**
  * Registers the shell's global action handlers with the central keybinding
@@ -17,6 +17,7 @@ export function GlobalActions() {
   useAction(ACTION_IDS.goWorkflows, () => navigate(workflowListPath));
   useAction(ACTION_IDS.goEvents, () => navigate(searchPath));
   useAction(ACTION_IDS.goNamespaces, () => navigate(namespacesPath));
+  useAction(ACTION_IDS.goAssistant, () => navigate(assistantPath));
   // Chrome only navigates; the search view owns focusing its own field (it
   // reads this router state after its lazy chunk mounts, and while mounted it
   // registers its own later handler that wins registry precedence).

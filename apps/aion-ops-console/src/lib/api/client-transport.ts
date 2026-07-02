@@ -21,6 +21,9 @@ export const AW_REST_CONTRACT = {
     eventSearch: '/events/search',
     clusterCommand: '/cluster/command',
     workflowStart: '/workflows/start',
+    // Deliver a named signal to a running workflow (namespace-scoped like
+    // cancel/intervene). The server DTO is `SignalWorkflowRequest`.
+    workflowSignal: '/workflows/signal',
     // NOI-7: the mid-run intervention endpoint + the live-attempt enumeration
     // (both namespace-scoped like signal/cancel).
     workflowIntervene: '/workflows/intervene',
@@ -45,6 +48,7 @@ export const AW_REST_CONTRACT = {
     workflowsCount: 'GET',
     eventSearch: 'POST',
     workflowStart: 'POST',
+    workflowSignal: 'POST',
     workflowIntervene: 'POST',
     workflowAttempts: 'POST',
     workflowReopen: 'POST',
@@ -60,6 +64,8 @@ export const AW_REST_CONTRACT = {
     filter: 'filter',
     workflowId: 'workflow_id',
     runId: 'run_id',
+    signalName: 'signal_name',
+    payload: 'payload',
     includeHistory: 'include_history',
     query: 'query',
     pagination: {
