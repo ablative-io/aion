@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use aion_worker::{ActivityContext, ActivityFailure, HandlerFuture, Worker, WorkerConfig};
 use anyhow::{Context, bail};
-use stacked_dev_worker::handlers;
-use stacked_dev_worker::shell::Shell;
-use stacked_dev_worker::types::ReviewRequest;
+use stacked_dev_worker_mixed::handlers;
+use stacked_dev_worker_mixed::shell::Shell;
+use stacked_dev_worker_mixed::types::ReviewRequest;
 
 /// Parsed CLI arguments.
 struct Args {

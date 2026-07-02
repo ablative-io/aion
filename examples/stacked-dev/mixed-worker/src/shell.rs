@@ -115,6 +115,14 @@ impl Shell {
     /// Like [`run`](Self::run) but injects additional environment variables
     /// into the child process (e.g. `CLAUDE_CONFIG_DIR` for headless Claude
     /// Code invocations).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`CliFailure::SpawnFailed`] when `cwd` is not a directory
+    /// or the process cannot start, and [`CliFailure::ExecutableNotFound`]
+    /// when `executable` does not resolve on the effective search path. A
+    /// non-zero exit status is NOT an error — it is recorded data on the
+    /// returned [`CliRun`].
     pub fn run_with_envs(
         &self,
         executable: &str,
