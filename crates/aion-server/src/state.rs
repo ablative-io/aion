@@ -222,14 +222,13 @@ impl ServerState {
         let pending_activities = PendingActivities::default();
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
         let drain_state = DrainState::default();
-        let dispatcher = WorkerActivityDispatcher::new(
-            worker_registry.clone(),
-            runtime.default_namespace.clone(),
-            heartbeat_tracker.clone(),
-        )
-        .with_pending(pending_activities.clone())
-        .with_drain_state(drain_state.clone())
-        .with_tokio_handle(tokio::runtime::Handle::current());
+        let (dispatcher, attempt_owners) = build_bridge_dispatcher(
+            &runtime,
+            &worker_registry,
+            &pending_activities,
+            &heartbeat_tracker,
+            &drain_state,
+        );
         let (activity_dispatcher, activity_mock_registry) =
             decorate_activity_dispatcher(dispatcher, runtime.dev.enabled);
 
@@ -264,7 +263,7 @@ impl ServerState {
                 outbox_wake,
                 cluster_publisher,
                 transcript_publisher,
-                attempt_owners: crate::worker::AttemptOwnerIndex::new(),
+                attempt_owners,
                 cluster_self_node,
                 #[cfg(feature = "haematite-backend")]
                 cluster_responder,
@@ -1006,6 +1005,32 @@ fn install_outbox_delivery(
 ///
 /// Dark by default: with the dev surface off the engine gets the bare production
 /// dispatcher and there is no mocking path at all (CN4).
+/// Compose the engine-seam bridge dispatcher over the state's shared parts.
+///
+/// Also mints the NOI-6 attempt→owner index and returns it alongside: the
+/// bridge binds each liminal-delivered attempt into it for the dispatch's
+/// lifetime, and the state stores the SAME instance for the intervention
+/// router to read, so the ops console can enumerate and target live attempts.
+fn build_bridge_dispatcher(
+    runtime: &RuntimeConfig,
+    worker_registry: &ConnectedWorkerRegistry,
+    pending_activities: &PendingActivities,
+    heartbeat_tracker: &HeartbeatTracker,
+    drain_state: &DrainState,
+) -> (WorkerActivityDispatcher, crate::worker::AttemptOwnerIndex) {
+    let attempt_owners = crate::worker::AttemptOwnerIndex::new();
+    let dispatcher = WorkerActivityDispatcher::new(
+        worker_registry.clone(),
+        runtime.default_namespace.clone(),
+        heartbeat_tracker.clone(),
+    )
+    .with_pending(pending_activities.clone())
+    .with_drain_state(drain_state.clone())
+    .with_tokio_handle(tokio::runtime::Handle::current())
+    .with_attempt_owners(attempt_owners.clone());
+    (dispatcher, attempt_owners)
+}
+
 fn decorate_activity_dispatcher(
     dispatcher: WorkerActivityDispatcher,
     dev_enabled: bool,

@@ -929,16 +929,15 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
         // `request_for_row` stamp the worker echoes into its session key). See
         // `LiminalActivityWorker::execute` / `run_agent_dispatch`.
         let _owner_guard = self.attempt_owners.as_ref().map(|owners| {
-            let key = super::intervention::AttemptKey::new(
-                row.workflow_id.clone(),
-                ActivityId::from_sequence_position(row.ordinal),
-                row.attempt.saturating_add(1),
-            );
-            owners.bind(key.clone(), worker.id());
-            AttemptOwnerGuard {
-                owners: owners.clone(),
-                key,
-            }
+            AttemptOwnerGuard::bind(
+                owners.clone(),
+                super::intervention::AttemptKey::new(
+                    row.workflow_id.clone(),
+                    ActivityId::from_sequence_position(row.ordinal),
+                    row.attempt.saturating_add(1),
+                ),
+                worker.id(),
+            )
         });
 
         // Push the dispatch to the worker and block for its correlated reply. The
@@ -964,11 +963,28 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
 }
 
 /// RAII guard that releases an [`AttemptOwnerIndex`](super::intervention::AttemptOwnerIndex)
-/// binding when the dispatch call returns — on the reply, an error, or a panic — so
+/// binding when the dispatch resolves — on the reply, an error, or a panic — so
 /// the back-index tracks exactly the attempts currently in flight (NOI-6).
-struct AttemptOwnerGuard {
+///
+/// Shared by both liminal dispatch arms: the outbox row wait holds it across
+/// its blocking `dispatch` call, and the engine-seam bridge hands it to the
+/// dispatch's reply-router thread, which drops it on every exit path.
+pub(crate) struct AttemptOwnerGuard {
     owners: super::intervention::AttemptOwnerIndex,
     key: super::intervention::AttemptKey,
+}
+
+impl AttemptOwnerGuard {
+    /// Bind `key` to `worker` in `owners` and return the guard that releases
+    /// the binding on drop.
+    pub(crate) fn bind(
+        owners: super::intervention::AttemptOwnerIndex,
+        key: super::intervention::AttemptKey,
+        worker: super::registry::WorkerId,
+    ) -> Self {
+        owners.bind(key.clone(), worker);
+        Self { owners, key }
+    }
 }
 
 impl Drop for AttemptOwnerGuard {

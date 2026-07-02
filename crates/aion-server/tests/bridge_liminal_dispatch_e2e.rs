@@ -46,6 +46,11 @@
 //! - `dispatch_attempt_reaches_the_handler` — the engine-provided `attempt`
 //!   rides the liminal wire and reaches the handler's `ActivityContext`
 //!   exactly as it does over gRPC (a retry is not re-stamped as attempt 1).
+//! - `bridge_dispatch_is_enumerable_for_intervention_while_in_flight` — the
+//!   dispatch is bound into the NOI-6 attempt→owner back-index for exactly its
+//!   in-flight window, so the ops console's live-attempts enumeration sees it
+//!   while it runs (transcript target + intervention routing) and releases it
+//!   once it resolves.
 #![cfg(feature = "liminal-transport")]
 
 use std::collections::BTreeMap;
@@ -188,6 +193,7 @@ impl RunningServer {
         .with_pending(self.state.pending_activities().clone())
         .with_drain_state(self.state.drain_state().clone())
         .with_tokio_handle(tokio::runtime::Handle::current())
+        .with_attempt_owners(self.state.attempt_owners().clone())
     }
 
     fn wait_for_registered_worker(&self, activity_type: &str) -> Result<(), TestError> {
@@ -784,6 +790,97 @@ async fn bridge_dispatch_failure_surfaces_retryable_classification() -> Result<(
         0,
         "a failed liminal dispatch must clear its in-flight tracking"
     );
+
+    worker.stop()?;
+    server.shutdown()?;
+    Ok(())
+}
+
+/// THE CONSOLE'S VIEW (NOI-6/NOI-7): a bridge-dispatched liminal activity is
+/// bound into the attempt→owner back-index for exactly its in-flight window, so
+/// the ops console's live-attempts enumeration (`intervenable_attempts`, the
+/// read behind `POST /workflows/attempts`) sees it while it runs and stops
+/// seeing it once it resolves. This is the operator-reported regression: the
+/// bind existed only on the outbox row arm, so every bridge-dispatched agent
+/// step left the console's attempt list empty — no transcript target, no
+/// intervention controls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bridge_dispatch_is_enumerable_for_intervention_while_in_flight() -> Result<(), TestError> {
+    let server = RunningServer::start(DEFAULT_WINDOW)?;
+    let executions = Arc::new(AtomicUsize::new(0));
+    let worker = ServedWorker::spawn(
+        server.address.to_string(),
+        worker_activity_registry(executions)?,
+    );
+    server.wait_for_registered_worker(SLOW)?;
+
+    let dispatcher = Arc::new(server.bridge_dispatcher());
+    let workflow_id = WorkflowId::new(Uuid::new_v4());
+
+    // A RETRY-shaped dispatch: the enumeration must expose the engine's real
+    // attempt (the key the worker stamps its intervention session with).
+    let request = ActivityDispatch {
+        attempt: 2,
+        ..dispatch_request(
+            &workflow_id,
+            0,
+            SLOW,
+            &serde_json::json!({ "resource": "intervenable" }),
+        )
+    };
+    let dispatch = {
+        let dispatcher = Arc::clone(&dispatcher);
+        tokio::spawn(futures::future::lazy(move |_| dispatcher.dispatch(request)))
+    };
+
+    // While the SLOW handler runs, the console's enumeration sees the attempt.
+    let router = server.state.intervention_router();
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    let attempts = loop {
+        let attempts = router
+            .intervenable_attempts(&workflow_id)
+            .map_err(test_error)?;
+        if !attempts.is_empty() {
+            break attempts;
+        }
+        if Instant::now() > deadline {
+            return Err(test_error(
+                "the in-flight bridge dispatch never appeared in the live-attempts enumeration",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let (key, _capabilities) = &attempts[0];
+    assert_eq!(key.workflow_id, workflow_id);
+    assert_eq!(key.activity_id, ActivityId::from_sequence_position(0));
+    assert_eq!(
+        key.attempt, 2,
+        "the enumeration must carry the engine's real attempt, not a re-stamp"
+    );
+
+    // Once the dispatch resolves, the binding is released: a finished attempt
+    // is never offered as an intervention target.
+    let result = tokio::time::timeout(Duration::from_secs(20), dispatch)
+        .await
+        .map_err(|_| test_error("bridge dispatch did not resolve within the test deadline"))?
+        .map_err(test_error)?;
+    result.map_err(test_error)?;
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        if router
+            .intervenable_attempts(&workflow_id)
+            .map_err(test_error)?
+            .is_empty()
+        {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(test_error(
+                "the resolved dispatch was never released from the live-attempts enumeration",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     worker.stop()?;
     server.shutdown()?;

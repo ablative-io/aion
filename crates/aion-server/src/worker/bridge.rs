@@ -300,6 +300,12 @@ pub struct WorkerActivityDispatcher {
     heartbeat_tracker: HeartbeatTracker,
     drain_state: DrainState,
     tokio_handle: Option<tokio::runtime::Handle>,
+    /// NOI-6 attempt→owner back-index. When installed, each liminal-delivered
+    /// dispatch binds its `(workflow, activity, attempt)` to the owning worker
+    /// for the dispatch's lifetime, so the intervention router (and the ops
+    /// console's live-attempts enumeration) can see and target it. `None`
+    /// (isolated tests) binds nothing.
+    attempt_owners: Option<super::intervention::AttemptOwnerIndex>,
 }
 
 impl std::fmt::Debug for WorkerActivityDispatcher {
@@ -331,7 +337,23 @@ impl WorkerActivityDispatcher {
             heartbeat_tracker,
             drain_state: DrainState::default(),
             tokio_handle: None,
+            attempt_owners: None,
         }
+    }
+
+    /// Share the server's NOI-6 attempt→owner back-index so liminal-delivered
+    /// dispatches are visible (and targetable) to the intervention router for
+    /// exactly as long as they are in flight. The production boot passes
+    /// `ServerState`'s index — the SAME instance `intervenable_attempts` and
+    /// `intervene` read — or the console's live-attempts list stays empty for
+    /// every bridge-dispatched agent step.
+    #[must_use]
+    pub fn with_attempt_owners(
+        mut self,
+        attempt_owners: super::intervention::AttemptOwnerIndex,
+    ) -> Self {
+        self.attempt_owners = Some(attempt_owners);
+        self
     }
 
     /// Share a caller-supplied pending-activities tracker.
@@ -563,6 +585,15 @@ impl WorkerActivityDispatcher {
     /// dispatch alive under the #176 expiry sweeper. It carries no run context
     /// (`run_id: None`), byte-identical to the gRPC bridge task's `run_id: None`
     /// (OBX-011).
+    ///
+    /// A successful push also binds the attempt into the NOI-6 attempt→owner
+    /// back-index (when installed) with the SAME `(workflow, activity, attempt)`
+    /// key the worker stamps its intervention session with, exactly as the
+    /// outbox liminal arm binds each row dispatch — so the ops console can
+    /// enumerate this live attempt and route interventions to its worker. The
+    /// binding is released when the reply router exits (reply, abandonment, or
+    /// disconnect — every path). The gRPC arm carries no bind because the agent
+    /// harness seam exists only on the liminal worker transport.
     #[cfg(feature = "liminal-transport")]
     fn send_liminal_activity_task(
         &self,
@@ -576,12 +607,13 @@ impl WorkerActivityDispatcher {
         let heartbeat_window_ms =
             u64::try_from(self.heartbeat_tracker.heartbeat_window().as_millis())
                 .unwrap_or(u64::MAX);
+        let attempt = task.attempt;
         let request = super::liminal_transport::DispatchRequest {
             activity_type: activity_type.to_owned(),
             workflow_id: workflow_id.clone(),
             ordinal: activity_id.sequence_position(),
             run_id: None,
-            attempt: task.attempt,
+            attempt,
             labels: task.labels.into_iter().collect(),
             heartbeat_window_ms,
             input: task.input.map(|payload| payload.bytes).unwrap_or_default(),
@@ -606,7 +638,27 @@ impl WorkerActivityDispatcher {
                 return Err(reason);
             }
         };
-        self.spawn_liminal_reply_router(worker_id, awaiter, workflow_id, activity_id);
+        // NOI-6: the attempt is live on `worker_id` from this push until the
+        // router resolves it — bind it for exactly that window (the guard is
+        // dropped when the router thread exits).
+        let owner_binding = self.attempt_owners.as_ref().map(|owners| {
+            super::liminal_transport::AttemptOwnerGuard::bind(
+                owners.clone(),
+                super::intervention::AttemptKey::new(
+                    workflow_id.clone(),
+                    activity_id.clone(),
+                    attempt,
+                ),
+                worker_id,
+            )
+        });
+        self.spawn_liminal_reply_router(
+            worker_id,
+            awaiter,
+            workflow_id,
+            activity_id,
+            owner_binding,
+        );
         Ok(())
     }
 
@@ -656,6 +708,7 @@ impl WorkerActivityDispatcher {
         awaiter: liminal_server::server::connection::PushReplyAwaiter,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
+        owner_binding: Option<super::liminal_transport::AttemptOwnerGuard>,
     ) {
         let pending = self.pending.clone();
         let heartbeat_tracker = self.heartbeat_tracker.clone();
@@ -663,6 +716,10 @@ impl WorkerActivityDispatcher {
         let workflow_id = workflow_id.clone();
         let activity_id = activity_id.clone();
         std::thread::spawn(move || {
+            // Owns the NOI-6 attempt binding for the dispatch's lifetime: it
+            // drops (releasing the back-index entry) when this router exits,
+            // on every path — reply, abandonment, disconnect, or panic.
+            let _owner_binding = owner_binding;
             route_liminal_reply(
                 &pending,
                 &heartbeat_tracker,
