@@ -1,0 +1,23 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# One entry — the operator-paced assistant session. `assistant` is an agent
+# activity (one prompt string in, one terminal-text string out) served by the
+# agent-dev worker, which drives it through the norn harness so every round
+# is observable and intervenable; `assistant_provision` is a plain worker
+# activity that materialises the session workspace. The session is bounded at
+# 50 agent rounds; between rounds it waits on the `assistant_continue` signal
+# ({"message": ...} continues, {"end": true} ends cleanly).
+#
+# The timeout sizes the longest legitimate session: an operator conversation
+# left open across a working week. Individual agent rounds carry no step
+# timeout by design — a wedged round is cancelled/intervened, never timed out.
+
+[[workflow]]
+entry_module = "assistant"
+entry_function = "run"
+timeout_seconds = 604800
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["assistant_provision", "assistant"]
+output = "assistant.aion"

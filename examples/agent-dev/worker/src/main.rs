@@ -3,17 +3,21 @@
 //! Serves two kinds of activity over the liminal server-push transport
 //! ([`aion_worker::serve_with_redial`], same wiring as `norn-fan-worker`):
 //!
-//! - AGENT activities `scout`, `dev`, `review`: routed through the composed
+//! - AGENT activities `scout`, `dev`, `review` (the `agent_dev` workflow)
+//!   and `assistant` (the `assistant` workflow): routed through the composed
 //!   [`NornHarness`] (observable + intervenable). Input is the prompt string,
 //!   output the agent's answer string. Each run's Norn session id is
 //!   `{workflow_id}-{activity_type}` and its `--workspace-root` AND `-C`
 //!   (tool-execution cwd) are the run's own clone
 //!   `<workspace root>/{workflow_id}/repo` — the placeholders are expanded per
 //!   run by the adapter, and the workspace root is the SAME resolved root the
-//!   `provision` handler clones under (resolved once here, threaded to both).
-//! - PLAIN registry activities `provision`, `gate`, `land`: synchronous
-//!   handler bodies in [`agent_dev_worker::handlers`], adapted onto the async
-//!   handler signature via `spawn_blocking`.
+//!   provision handlers clone under (resolved once here, threaded to both).
+//!   The session id carries the activity TYPE, not the attempt: every
+//!   dispatch of the same type in one run resumes ONE session, which is what
+//!   makes the assistant's multi-round conversation continuous.
+//! - PLAIN registry activities `provision`, `assistant_provision`, `gate`,
+//!   `land`: synchronous handler bodies in [`agent_dev_worker::handlers`],
+//!   adapted onto the async handler signature via `spawn_blocking`.
 //!
 //! Auth: Norn is invoked with `OPENAI_API_KEY` REMOVED from its child
 //! environment (via the adapter's `without_env`) so it uses the operator's
@@ -38,8 +42,10 @@ use aion_worker::{
 };
 
 /// The agent activity types routed through the composed harness rather than
-/// the typed registry — the three Norn rounds of the `agent_dev` workflow.
-const AGENT_ACTIVITY_TYPES: [&str; 3] = ["scout", "dev", "review"];
+/// the typed registry — the three Norn rounds of the `agent_dev` workflow
+/// plus the `assistant` workflow's session round. ONE worker binary serves
+/// both packages; a separately managed assistant worker is a later phase.
+const AGENT_ACTIVITY_TYPES: [&str; 4] = ["scout", "dev", "review", "assistant"];
 
 /// Lower bound on the reconnect backoff between candidate dials.
 const REDIAL_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
@@ -124,13 +130,19 @@ where
     }
 }
 
-/// Build the plain activity registry: `provision` (clones under the resolved
-/// `workspace_root`), `gate`, and `land`.
+/// Build the plain activity registry: `provision` and `assistant_provision`
+/// (both materialise workspaces under the resolved `workspace_root`),
+/// `gate`, and `land`.
 fn build_registry(shell: &Shell, workspace_root: &Path) -> anyhow::Result<Arc<ActivityRegistry>> {
     let provision = {
         let shell = shell.clone();
         let root = workspace_root.to_path_buf();
         move |input| handlers::provision(&shell, &root, input)
+    };
+    let assistant_provision = {
+        let shell = shell.clone();
+        let root = workspace_root.to_path_buf();
+        move |input| handlers::assistant_provision(&shell, &root, input)
     };
     let gate = {
         let shell = shell.clone();
@@ -142,6 +154,7 @@ fn build_registry(shell: &Shell, workspace_root: &Path) -> anyhow::Result<Arc<Ac
     };
     let registry = ActivityRegistry::new()
         .register_activity("provision", blocking(provision))?
+        .register_activity("assistant_provision", blocking(assistant_provision))?
         .register_activity("gate", blocking(gate))?
         .register_activity("land", blocking(land))?;
     Ok(Arc::new(registry))

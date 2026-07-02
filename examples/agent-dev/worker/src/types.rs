@@ -1,15 +1,16 @@
-//! Wire types for the `agent_dev` workflow contract.
+//! Wire types for the `agent_dev` and `assistant` workflow contracts.
 //!
-//! THE RULE: the `agent_dev` Gleam package is the contract source, and its
-//! emitted schemas (`examples/agent-dev/schemas/`) are the wire contract —
-//! this module conforms to them, never the other way round. A `wire_compat`
-//! pinning test against those schema files lands post-merge. Deserialization
-//! is tolerant of extra fields, matching the Gleam field-decoder convention.
+//! THE RULE: the Gleam packages are the contract source, and their emitted
+//! schemas (`examples/agent-dev/schemas/`, `examples/assistant/schemas/`)
+//! are the wire contract — this module conforms to them, never the other way
+//! round. The `wire_compat` pinning test holds each type to its Gleam codec
+//! shape byte for byte. Deserialization is tolerant of extra fields,
+//! matching the Gleam field-decoder convention.
 //!
-//! The three AGENT activity types (`scout`, `dev`, `review`) do not appear
-//! here: their input is a plain JSON `String` (the prompt) and their output a
-//! plain JSON `String` (the agent's answer), carried by the composed harness
-//! path rather than a typed registry handler.
+//! The AGENT activity types (`scout`, `dev`, `review`, `assistant`) do not
+//! appear here: their input is a plain JSON `String` (the prompt) and their
+//! output a plain JSON `String` (the agent's answer), carried by the
+//! composed harness path rather than a typed registry handler.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,27 @@ pub struct Workspace {
     pub path: String,
     /// The working branch (`agent-dev-<brief_id>`), checked out in the clone.
     pub branch: String,
+}
+
+/// Input of the `assistant_provision` activity (the `assistant` workflow
+/// package): materialise the session workspace at `<root>/<run_id>/repo` — a
+/// clone of `repo_path` when given, a fresh scratch git workspace when empty.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AssistantProvisionInput {
+    /// The repository the session grounds its answers in: a local path or
+    /// clone URL. Empty means no repository — provision a scratch workspace.
+    pub repo_path: String,
+    /// The workflow id string, passed IN THE ACTIVITY INPUT by the workflow.
+    /// Keys the per-run workspace directory `<root>/<run_id>/repo`.
+    pub run_id: String,
+}
+
+/// Output of the `assistant_provision` activity: the provisioned session
+/// workspace.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AssistantWorkspace {
+    /// Absolute path of the session workspace (`<root>/<run_id>/repo`).
+    pub path: String,
 }
 
 /// Input of the `gate` activity: the workspace to check. Per the contract,
