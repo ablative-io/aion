@@ -1,35 +1,47 @@
-//! Local `generate` subcommand: declare-once activity codegen.
+//! Local `generate` subcommand: types-first codec + activity codegen.
 //!
-//! Turns a package's typed activity declarations — the `manifest()` its
-//! `src/<package>_activities.gleam` exports — into all the plumbing that must
-//! agree byte-for-byte: the `<package>_io` types/codecs, the `<package>_codecs`
-//! typed codec wrappers, the `<package>_activity_wrappers` constructors, the
-//! per-tier worker module, and the remote wire-compat golden. The pure
-//! generators live in `aion_package`; this command orchestrates the phases and
-//! owns the one step the library cannot — running the Gleam toolchain to
-//! execute `manifest()` and read back the declarations.
+//! The authored source of truth is the package's Gleam types module
+//! `src/<package>_io.gleam` (ADR-014, resolved types-first 2026-07-02).
+//! `aion generate` derives everything wire-shaped from it: the
+//! `<package>_codecs` module (encoders/decoders/typed codecs), the emitted
+//! `schemas/*.json` artifacts, and — when the package declares activities via
+//! the `manifest()` its `src/<package>_activities.gleam` exports — the
+//! `<package>_activity_wrappers` constructors, the per-tier worker module,
+//! the remote wire-compat golden, the `workflow.toml` activities list, and a
+//! write-once test scaffold. The pure generators live in `aion_package`; this
+//! command orchestrates the phases and owns the steps the library cannot —
+//! running the Gleam toolchain to export the package interface and to execute
+//! `manifest()`.
 //!
-//! The declarations are the single source of truth (ADR-014). Extracting them
-//! means *running* `manifest()`, which means building the package — but the
-//! workflow module imports the generated wrappers, which do not exist yet on a
-//! fresh project or after the round-trip deletes them. So extraction first
-//! renames aside (in place, restored on completion or error) every source
-//! module that transitively imports the wrappers module, builds and runs a
-//! throwaway probe against the activities module alone, then restores. Nothing
-//! is written to a server; the whole command runs locally.
+//! Both toolchain steps must build the package, but the generated modules the
+//! build would need may not exist yet (fresh project, or the round-trip
+//! deleted them). So each toolchain pass first renames aside (in place,
+//! restored on completion or error) the target generated modules and every
+//! source module that transitively imports them, runs the toolchain against
+//! the surviving sources, then restores:
+//!
+//! - the **interface pass** sets aside `{<pkg>_codecs, <pkg>_activity_wrappers}`
+//!   and their importers, leaving the types module (which imports neither) to
+//!   compile standalone for `gleam export package-interface`;
+//! - the **manifest pass** sets aside `{<pkg>_activity_wrappers}` and its
+//!   importers — the freshly generated codecs module must remain, because the
+//!   author's activities module references `codecs.<type>_codec()`.
+//!
+//! Nothing is written to a server; the whole command runs locally.
 //!
 //! `--check` compares every *generated* file against a fresh in-memory
 //! regeneration and never writes one, but it is not side-effect-free: it still
-//! drives the toolchain to read the declarations, so the same transient
-//! rename-aside/probe/restore happens during the build.
+//! drives the toolchain, so the same transient rename-aside/restore happens
+//! during the builds.
 //!
-//! Extraction is **single-flight per project**: the rename-aside/probe/restore
-//! dance mutates the source tree in place, so two concurrent `aion generate`
-//! runs on the same project would set aside the same modules and collide. An
-//! exclusive `.aiongen.lock` file (created atomically with `create_new`) is
-//! held for the whole of extraction; a second concurrent run fails fast with a
-//! clear error rather than corrupting the tree, and the lock is removed on
-//! every exit path — success, `bail!`, or panic — by its RAII guard.
+//! Each toolchain pass is **single-flight per project**: the
+//! rename-aside/restore dance mutates the source tree in place, so two
+//! concurrent `aion generate` runs on the same project would set aside the
+//! same modules and collide. An exclusive `.aiongen.lock` file (created
+//! atomically with `create_new`) is held for the whole of a pass; a second
+//! concurrent run fails fast with a clear error rather than corrupting the
+//! tree, and the lock is removed on every exit path — success, `bail!`, or
+//! panic — by its RAII guard.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -38,8 +50,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aion_package::{
-    ActivityDeclaration, CodegenMode, codegen_project, generate_activities, generate_codecs,
-    generate_test_scaffold, parse_declarations,
+    ActivityDeclaration, BoundaryType, CodegenMode, boundary_types_from_interface, emit_schemas,
+    generate_activities, generate_codecs, generate_test_scaffold, parse_declarations,
 };
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -68,32 +80,55 @@ const PROBE_DOC: &str =
     "//// Temporary manifest-extraction probe written by `aion generate`. Safe to delete.";
 
 /// Advisory single-flight lock file, created exclusively at the project root for
-/// the duration of one extraction so two concurrent runs cannot set aside the
-/// same modules and collide. Held by [`ExtractionLock`], removed on every exit.
+/// the duration of one toolchain pass so two concurrent runs cannot set aside
+/// the same modules and collide. Held by [`ExtractionLock`], removed on every
+/// exit.
 const LOCK_FILE: &str = ".aiongen.lock";
+
+/// Where the interface pass has `gleam export package-interface` write its
+/// JSON, relative to the project root. Lives under `build/` (toolchain-owned,
+/// gitignored) and is removed after it is read.
+const INTERFACE_OUT: &str = "build/.aiongen-interface.json";
 
 /// JSON document printed on stdout after a successful `generate` run.
 #[derive(Serialize)]
 struct GenerateOutput {
-    /// Generated `src/<package>_io.gleam`, relative to the project root.
-    io_module: String,
+    /// The authored types module the generation derives from, relative to the
+    /// project root (never written by this command).
+    types_module: String,
     /// Generated `src/<package>_codecs.gleam`, relative to the project root.
     codecs_module: String,
+    /// Every emitted `schemas/*.json` artifact, in type-name order.
+    schemas_emitted: Vec<String>,
+    /// Stale emitted schemas removed by this run (types renamed away).
+    schemas_removed: Vec<String>,
     /// Every generated activity file (wrappers, worker, golden), in order.
+    /// Empty for a package without an activities module.
     activity_modules: Vec<String>,
-    /// Generated `test/<entry_module>_scaffold_test.gleam`, relative to the root.
-    test_scaffold: String,
+    /// `test/<entry_module>_scaffold_test.gleam` (write-once; kept when the
+    /// author has filled it in). `None` for a package without activities.
+    test_scaffold: Option<String>,
     /// Number of activity declarations the package's `manifest()` returned.
     declarations: usize,
     /// `synced` when the workflow.toml activities list was rewritten,
-    /// `unchanged` when it already matched, `checked` under `--check`.
+    /// `unchanged` when it already matched, `checked` under `--check`,
+    /// `skipped` for a package without an activities module.
     workflow_toml: &'static str,
     /// `written` for a generation run, `checked` for `--check`.
     action: &'static str,
 }
 
-/// Runs the `generate` subcommand: derives every per-activity artifact from the
-/// package's typed declarations, or verifies them with `--check`.
+/// The activity-phase results folded into [`GenerateOutput`].
+struct ActivityPhase {
+    activity_modules: Vec<String>,
+    test_scaffold: Option<String>,
+    declarations: usize,
+    workflow_toml: &'static str,
+}
+
+/// Runs the `generate` subcommand: derives every artifact from the package's
+/// authored types module (and, when present, its activity declarations), or
+/// verifies them with `--check`.
 pub(crate) fn run(path: &Path, check: bool) -> Result<Value> {
     let mode = if check {
         CodegenMode::Check
@@ -102,60 +137,107 @@ pub(crate) fn run(path: &Path, check: bool) -> Result<Value> {
     };
     let package_name = read_gleam_package_name(path)?;
 
-    // Phase 1-2: the schema-derived modules, which must exist on disk before
-    // the package will build for declaration extraction.
-    let io = codegen_project(path, mode)
-        .with_context(|| format!("failed to generate the io module for {}", path.display()))?;
-    let codecs = generate_codecs(path, mode).with_context(|| {
+    // Phase A: have the compiler export the package interface for the
+    // authored types module (types-first front door, ADR-014).
+    let interface_json = export_package_interface(path, &package_name)?;
+
+    // Phase B: map the interface into the boundary-type model.
+    let types =
+        boundary_types_from_interface(&interface_json, &package_name).with_context(|| {
+            format!("failed to read the boundary types of src/{package_name}_io.gleam")
+        })?;
+
+    // Phase C: the codecs module, which must exist on disk before the package
+    // will build for declaration extraction.
+    let codecs = generate_codecs(path, &types, mode).with_context(|| {
         format!(
             "failed to generate the codecs module for {}",
             path.display()
         )
     })?;
 
-    // Phase 3: run the package's `manifest()` to read the declarations.
-    let manifest_json = extract_declarations(path, &package_name)?;
+    // Phase D: the emitted schemas/*.json artifacts (packaging, `aion input`,
+    // and external reference read these).
+    let schemas = emit_schemas(path, &package_name, &types, mode)
+        .with_context(|| format!("failed to emit the schema artifacts for {}", path.display()))?;
+
+    // Phase E: the declaration-driven activity plumbing, for packages that
+    // declare activities via `src/<package>_activities.gleam` `manifest()`.
+    let activity = activity_phase(path, &package_name, &types, mode)?;
+
+    to_value(GenerateOutput {
+        types_module: format!("src/{package_name}_io.gleam"),
+        codecs_module: codecs.module_relative,
+        schemas_emitted: schemas.emitted,
+        schemas_removed: schemas.removed,
+        activity_modules: activity.activity_modules,
+        test_scaffold: activity.test_scaffold,
+        declarations: activity.declarations,
+        workflow_toml: activity.workflow_toml,
+        action: if check { "checked" } else { "written" },
+    })
+}
+
+/// Runs the activity phases (manifest extraction, wrappers/worker/golden,
+/// workflow.toml sync, test scaffold) when the package has an activities
+/// module; a package without one — a pure-workflow project — skips them.
+fn activity_phase(
+    path: &Path,
+    package_name: &str,
+    types: &[BoundaryType],
+    mode: CodegenMode,
+) -> Result<ActivityPhase> {
+    let activities_file = path
+        .join("src")
+        .join(format!("{package_name}_activities.gleam"));
+    if !activities_file.is_file() {
+        return Ok(ActivityPhase {
+            activity_modules: Vec::new(),
+            test_scaffold: None,
+            declarations: 0,
+            workflow_toml: "skipped",
+        });
+    }
+
+    // Run the package's `manifest()` to read the declarations.
+    let manifest_json = extract_declarations(path, package_name)?;
     let declarations = parse_declarations(&manifest_json).with_context(|| {
         format!(
             "failed to parse the activity manifest emitted by {package_name}_activities.manifest()"
         )
     })?;
 
-    // Phase 4: the declaration-derived plumbing.
-    let activities = generate_activities(path, &declarations, mode).with_context(|| {
+    // The declaration-derived plumbing.
+    let activities = generate_activities(path, &declarations, types, mode).with_context(|| {
         format!(
             "failed to generate the activity plumbing for {}",
             path.display()
         )
     })?;
 
-    // Phase 5: keep the workflow.toml activities list in step with the
-    // declared names.
+    // Keep the workflow.toml activities list in step with the declared names.
     let workflow_toml = sync_workflow_activities(path, &declarations, mode)?;
 
-    // Phase 6: the per-workflow `aion/testing` skeleton — each activity mocked,
-    // a clock advance per durable timer, and a replay-determinism assertion.
+    // The per-workflow `aion/testing` skeleton — write-once: an existing
+    // (possibly author-filled) scaffold is kept.
     let entry_module = read_entry_module(path)?;
-    let scaffold =
-        generate_test_scaffold(path, &entry_module, &declarations, mode).with_context(|| {
+    let scaffold = generate_test_scaffold(path, &entry_module, &declarations, types, mode)
+        .with_context(|| {
             format!(
                 "failed to generate the test scaffold for {}",
                 path.display()
             )
         })?;
 
-    to_value(GenerateOutput {
-        io_module: io.module_relative,
-        codecs_module: codecs.module_relative,
+    Ok(ActivityPhase {
         activity_modules: activities
             .artifacts
             .iter()
             .map(|artifact| artifact.relative.clone())
             .collect(),
-        test_scaffold: scaffold.module_relative,
+        test_scaffold: Some(scaffold.module_relative),
         declarations: declarations.len(),
         workflow_toml,
-        action: if check { "checked" } else { "written" },
     })
 }
 
@@ -217,48 +299,83 @@ fn read_gleam_package_name(root: &Path) -> Result<String> {
         .with_context(|| format!("{} has no `name` field", gleam_toml.display()))
 }
 
-/// Builds and runs a probe that prints `manifest()` as JSON, returning the raw
-/// JSON bytes. Source modules that transitively import the generated wrappers
-/// are renamed aside for the build so the package compiles without them, and
-/// restored before this returns (or on error).
-fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
-    let src = root.join("src");
-    let activities_module = format!("{package_name}_activities");
-    let activities_file = src.join(format!("{activities_module}.gleam"));
-    if !activities_file.is_file() {
+/// Exports the package interface with the generated modules set aside,
+/// returning the raw interface JSON. The authored types module imports
+/// neither generated module, so it survives the aside and compiles standalone.
+fn export_package_interface(root: &Path, package_name: &str) -> Result<Vec<u8>> {
+    let types_file = root.join("src").join(format!("{package_name}_io.gleam"));
+    if !types_file.is_file() {
         bail!(
-            "expected {} to exist and export `pub fn manifest() -> List(activity.Declaration)`; \
-             the declarations are the single source of truth `aion generate` reads",
-            activities_file.display()
+            "expected {} to exist and declare the workflow's boundary types; it is the authored \
+             source of truth `aion generate` derives every codec and schema from (ADR-014)",
+            types_file.display()
         );
     }
-
-    // A prior extraction killed mid-flight (SIGKILL / power loss, which no
-    // `Drop` can cover) can leave renamed-aside modules and a stale probe in
-    // the tree. Recover them before touching anything, so the build sees the
-    // real sources.
-    recover_leftover_scratch(&src)?;
-
-    // Take the single-flight lock before mutating the tree: a second concurrent
-    // `aion generate` on this project fails fast here rather than colliding on
-    // the rename-aside step. The guard removes the lock on every exit path
-    // below — success, `bail!`, or panic — via its `Drop`.
-    let _lock = ExtractionLock::acquire(root)?;
-
+    let codecs_module = format!("{package_name}_codecs");
     let wrappers_module = format!("{package_name}_activity_wrappers");
-    // Set aside every module that transitively imports the to-be-generated
-    // wrappers — in `src/` and in `test/`. The generated test scaffold lives in
-    // `test/` and imports the workflow module (which reaches the wrappers), so a
-    // prior run's scaffold would otherwise break this extraction build. Test
-    // module reachability is resolved through the `src/` import graph, so both
-    // trees are scanned into one map.
-    let blocking = modules_reaching(root, &wrappers_module)?;
+    let golden_module = format!("{package_name}_wire_compat_test");
+    let (_lock, _scratch) = begin_toolchain_pass(
+        root,
+        &[&codecs_module, &wrappers_module, &golden_module],
+        None,
+    )?;
 
-    let mut scratch = ExtractionScratch::default();
-    for module_file in blocking {
-        scratch.rename_aside(&module_file)?;
+    // Absolute, because the child process resolves a relative `--out` against
+    // ITS working directory (the project root), not ours.
+    let out_path = std::path::absolute(root.join(INTERFACE_OUT))
+        .with_context(|| format!("failed to resolve {INTERFACE_OUT} under {}", root.display()))?;
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    scratch.write_probe(&src, &activities_module)?;
+    let output = Command::new("gleam")
+        .args(["export", "package-interface", "--out"])
+        .arg(&out_path)
+        .current_dir(root)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run `gleam export package-interface` in {} (is a gleam toolchain \
+                 with `export package-interface` on PATH?)",
+                root.display()
+            )
+        })?;
+    // `_scratch` restores the renamed modules when it drops at the end of this
+    // function, including on the bail! paths below.
+    if !output.status.success() {
+        bail!(
+            "interface export failed: `gleam export package-interface` exited with {} in {} — \
+             the types module src/{package_name}_io.gleam (and every module not reaching the \
+             generated codecs/wrappers) must compile standalone\n{}",
+            output.status,
+            root.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let json = fs::read(&out_path)
+        .with_context(|| format!("failed to read the exported {}", out_path.display()))?;
+    // Best-effort cleanup: the file lives under the gitignored build/ tree.
+    let _ = fs::remove_file(&out_path);
+    Ok(json)
+}
+
+/// Builds and runs a probe that prints `manifest()` as JSON, returning the raw
+/// JSON bytes. The generated wrappers module and every source module that
+/// transitively imports it are renamed aside for the build so the package
+/// compiles without them, and restored before this returns (or on error). The
+/// freshly generated codecs module stays: the author's activities module
+/// references `codecs.<type>_codec()`.
+fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
+    let activities_module = format!("{package_name}_activities");
+    let wrappers_module = format!("{package_name}_activity_wrappers");
+    // The golden is regenerated by this run too: a stale one references the
+    // OLD codecs surface and would break the probe build.
+    let golden_module = format!("{package_name}_wire_compat_test");
+    let (_lock, _scratch) = begin_toolchain_pass(
+        root,
+        &[&wrappers_module, &golden_module],
+        Some(&activities_module),
+    )?;
 
     let output = Command::new("gleam")
         .args(["run", "-m", PROBE_MODULE])
@@ -270,7 +387,7 @@ fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
                 root.display()
             )
         })?;
-    // `scratch` restores the renamed modules and removes the probe when it
+    // `_scratch` restores the renamed modules and removes the probe when it
     // drops at the end of this function, including on the bail! paths below.
     if !output.status.success() {
         bail!(
@@ -283,16 +400,57 @@ fn extract_declarations(root: &Path, package_name: &str) -> Result<Vec<u8>> {
     extract_marked_json(&output.stdout)
 }
 
+/// Shared preamble of both toolchain passes: recover crash leftovers, take the
+/// single-flight lock, rename aside the target generated modules and every
+/// module that transitively imports one, and (for the manifest pass) write the
+/// probe module. Returns the RAII guards; dropping them restores the tree and
+/// releases the lock on every exit path — success, `bail!`, or panic.
+fn begin_toolchain_pass(
+    root: &Path,
+    aside_targets: &[&str],
+    probe_activities_module: Option<&str>,
+) -> Result<(ExtractionLock, ExtractionScratch)> {
+    let src = root.join("src");
+    // A prior pass killed mid-flight (SIGKILL / power loss, which no `Drop`
+    // can cover) can leave renamed-aside modules and a stale probe in the
+    // tree. Recover them before touching anything, so the build sees the real
+    // sources.
+    recover_leftover_scratch(&src)?;
+
+    // Take the single-flight lock before mutating the tree: a second
+    // concurrent `aion generate` on this project fails fast here rather than
+    // colliding on the rename-aside step.
+    let lock = ExtractionLock::acquire(root)?;
+
+    // Set aside the target generated modules themselves (a stale one may no
+    // longer compile against the edited types module — this includes the
+    // generated wire-compat golden in `test/`) and every module that
+    // transitively imports one — in `src/` and in `test/`. The generated test
+    // scaffold lives in `test/` and imports the workflow module (which
+    // reaches the wrappers), so a prior run's scaffold would otherwise break
+    // the build. Test module reachability is resolved through the `src/`
+    // import graph, so both trees are scanned into one map.
+    let blocking = modules_reaching(root, aside_targets)?;
+    let mut scratch = ExtractionScratch::default();
+    for module_file in blocking {
+        scratch.rename_aside(&module_file)?;
+    }
+    if let Some(activities_module) = probe_activities_module {
+        scratch.write_probe(&src, activities_module)?;
+    }
+    Ok((lock, scratch))
+}
+
 /// Returns the source files of every module under the project's `src/` and
-/// `test/` trees that transitively imports `target` (the to-be-generated
-/// wrappers module), so they can be set aside while the package is built for
-/// declaration extraction.
+/// `test/` trees that is one of the `targets` (a generated module being
+/// regenerated) or transitively imports one, so they can be set aside while
+/// the package is built for a toolchain pass.
 ///
 /// Both trees are collected into one import map, each module named relative to
 /// its own tree root (the Gleam module-name convention), so a `test/` module's
 /// reachability resolves through the `src/` import graph. `test/` is optional —
 /// a project without one is collected from `src/` alone.
-fn modules_reaching(root: &Path, target: &str) -> Result<Vec<PathBuf>> {
+fn modules_reaching(root: &Path, targets: &[&str]) -> Result<Vec<PathBuf>> {
     let mut imports: HashMap<String, (PathBuf, Vec<String>)> = HashMap::new();
     let src = root.join("src");
     collect_modules(&src, &src, &mut imports)?;
@@ -303,7 +461,11 @@ fn modules_reaching(root: &Path, target: &str) -> Result<Vec<PathBuf>> {
 
     let mut blocking = Vec::new();
     for (module, (file, _)) in &imports {
-        if reaches(module, target, &imports, &mut Vec::new()) {
+        let is_target = targets.iter().any(|target| target == module);
+        let reaches_target = targets
+            .iter()
+            .any(|target| reaches(module, target, &imports, &mut Vec::new()));
+        if is_target || reaches_target {
             blocking.push(file.clone());
         }
     }
@@ -827,6 +989,63 @@ mod tests {
     fn missing_marker_is_an_error() {
         let stdout = b"some unrelated output\n";
         assert!(extract_marked_json(stdout).is_err());
+    }
+
+    #[test]
+    fn modules_reaching_sets_aside_targets_and_their_importers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::modules_reaching;
+
+        // A realistic tree: the two generated modules exist on disk (stale
+        // copies being regenerated), the activities module imports the codecs,
+        // the workflow imports the wrappers, and one module reaches neither.
+        let temp = tempfile::tempdir()?;
+        let src = temp.path().join("src");
+        std::fs::create_dir(&src)?;
+        std::fs::write(src.join("demo_io.gleam"), "pub type Input { Input }\n")?;
+        std::fs::write(src.join("demo_codecs.gleam"), "import demo_io\n")?;
+        std::fs::write(
+            src.join("demo_activity_wrappers.gleam"),
+            "import demo_activities\nimport demo_codecs\nimport demo_io\n",
+        )?;
+        std::fs::write(src.join("demo_activities.gleam"), "import demo_codecs\n")?;
+        std::fs::write(
+            src.join("workflow.gleam"),
+            "import demo_activity_wrappers\n",
+        )?;
+        std::fs::write(src.join("standalone.gleam"), "import demo_io\n")?;
+
+        // The interface pass targets {codecs, wrappers}: both target files and
+        // everything reaching either are set aside; the types module and the
+        // standalone module survive.
+        let mut aside = modules_reaching(temp.path(), &["demo_codecs", "demo_activity_wrappers"])?;
+        aside.sort();
+        let names: Vec<String> = aside
+            .iter()
+            .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "demo_activities.gleam",
+                "demo_activity_wrappers.gleam",
+                "demo_codecs.gleam",
+                "workflow.gleam",
+            ]
+        );
+
+        // The manifest pass targets {wrappers} only: the codecs module and the
+        // activities module (which imports only codecs) survive.
+        let aside = modules_reaching(temp.path(), &["demo_activity_wrappers"])?;
+        let names: Vec<String> = aside
+            .iter()
+            .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["demo_activity_wrappers.gleam", "workflow.gleam"]
+        );
+        Ok(())
     }
 
     #[test]

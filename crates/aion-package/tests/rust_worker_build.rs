@@ -8,22 +8,21 @@
 //! generated worker that cannot build, with green CI.
 //!
 //! This test closes that gap end to end: it builds a realistic source project
-//! in a temp dir, drives the `aion_package` library generators
-//! ([`codegen_project`], [`generate_codecs`], [`generate_activities`]) to emit
+//! in a temp dir, maps a captured package-interface document through the real
+//! types-first front end ([`boundary_types_from_interface`]), drives the
+//! library generators ([`generate_codecs`], [`generate_activities`]) to emit
 //! the do-not-edit `worker/src/main.rs`, wraps it in a compilable crate with a
 //! `path` dependency on the in-tree `aion-worker`, supplies a hand-written
 //! `handlers.rs` whose stub signatures match what `register_activity` requires,
 //! and runs a nested `cargo build`. A non-zero build is a real generator/SDK
 //! mismatch and fails this test, surfacing `cargo`'s own stderr.
 //!
-//! The schemas deliberately exercise the emitter's interesting paths: an
-//! optional field (`Option<T>` + `#[serde(default, skip_serializing_if = …)]`),
-//! a Rust-keyword field name (`match` → `r#match`), a string `enum`, a nested
-//! record, and a list (`Vec<T>`). Note that the Gleam-facing schema layer
-//! rejects any property whose name is a *Gleam* reserved word (so `type` can
-//! never reach the Rust emitter), but `match` is a Rust keyword that is a valid
-//! Gleam label, so it is the honest way to drive the `r#`-escaping path through
-//! the real pipeline.
+//! The boundary types deliberately exercise the emitter's interesting paths:
+//! an optional field (`Option<T>` + `#[serde(default, skip_serializing_if = …)]`),
+//! a Rust-keyword field name (`match` → `r#match`), an enum, a nested
+//! record, and a list (`Vec<T>`). `match` is a Rust keyword that is a valid
+//! Gleam label, so it is the honest way to drive the `r#`-escaping path
+//! through the real pipeline.
 //!
 //! The nested build pulls the worker's full dependency tree (tokio, tonic) and
 //! is slow on a cold cache — that is the point, and it is acceptable. The build
@@ -34,7 +33,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aion_package::{
-    ActivityDeclaration, CodegenMode, Tier, codegen_project, generate_activities, generate_codecs,
+    ActivityDeclaration, CodegenMode, Tier, boundary_types_from_interface, emit_schemas,
+    generate_activities, generate_codecs,
 };
 
 type TestError = Box<dyn std::error::Error>;
@@ -42,50 +42,65 @@ type TestError = Box<dyn std::error::Error>;
 /// `gleam.toml` naming the generated module prefix (`src/demo_*.gleam`).
 const GLEAM_TOML: &str = "name = \"demo\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n";
 
-/// `workflow.toml` referencing the two activity value schemas. `codegen_project`
-/// validates this descriptor before emitting `src/demo_io.gleam`.
-const WORKFLOW_TOML: &str = r#"[[workflow]]
-entry_module = "demo"
-entry_function = "run"
-timeout_seconds = 30
-input_schema = "schemas/charge_input.json"
-output_schema = "schemas/receipt.json"
-activities = ["charge_payment"]
-"#;
-
-/// The activity input type (`ChargeInput`). Drives every interesting emitter
-/// path: a required scalar, an optional scalar (`Option<String>`), a list
-/// (`Vec<String>`), a Rust-keyword field name (`match` → `r#match`), a nested
-/// record (`ChargeInputCustomer`), and a string enum (`ChargeInputKind`).
-const CHARGE_INPUT_SCHEMA: &[u8] = br#"{
-  "type": "object",
-  "required": ["order_id", "tags", "match", "customer", "kind"],
-  "additionalProperties": false,
-  "properties": {
-    "order_id": { "type": "string" },
-    "note": { "type": "string" },
-    "tags": { "type": "array", "items": { "type": "string" } },
-    "match": { "type": "string" },
-    "customer": {
-      "type": "object",
-      "required": ["customer_id"],
-      "additionalProperties": false,
-      "properties": {
-        "customer_id": { "type": "string" },
-        "vip": { "type": "boolean" }
+/// The exported package interface for the fixture's types module, in the
+/// exact shape `gleam export package-interface` produces. The activity input
+/// type (`ChargeInput`) drives every interesting emitter path: a required
+/// scalar, an optional scalar (`Option<String>`), a list (`Vec<String>`), a
+/// Rust-keyword field name (`match` → `r#match`), a nested record
+/// (`ChargeInputCustomer`, with its own optional `vip`), and an enum
+/// (`ChargeInputKind`). The output type (`Receipt`) is a single required
+/// scalar field, enough for the handler stub to construct a value with no
+/// imports.
+const INTERFACE_JSON: &str = r#"{
+  "name": "demo",
+  "version": "0.1.0",
+  "modules": {
+    "demo_io": {
+      "type-aliases": {}, "constants": {}, "functions": {},
+      "types": {
+        "ChargeInput": {
+          "parameters": 0,
+          "constructors": [{
+            "name": "ChargeInput",
+            "parameters": [
+              { "label": "order_id", "type": { "kind": "named", "name": "String", "module": "gleam", "package": "", "parameters": [] } },
+              { "label": "note", "type": { "kind": "named", "name": "Option", "module": "gleam/option", "package": "gleam_stdlib", "parameters": [ { "kind": "named", "name": "String", "module": "gleam", "package": "", "parameters": [] } ] } },
+              { "label": "tags", "type": { "kind": "named", "name": "List", "module": "gleam", "package": "", "parameters": [ { "kind": "named", "name": "String", "module": "gleam", "package": "", "parameters": [] } ] } },
+              { "label": "match", "type": { "kind": "named", "name": "String", "module": "gleam", "package": "", "parameters": [] } },
+              { "label": "customer", "type": { "kind": "named", "name": "ChargeInputCustomer", "module": "demo_io", "package": "demo", "parameters": [] } },
+              { "label": "kind", "type": { "kind": "named", "name": "ChargeInputKind", "module": "demo_io", "package": "demo", "parameters": [] } }
+            ]
+          }]
+        },
+        "ChargeInputCustomer": {
+          "parameters": 0,
+          "constructors": [{
+            "name": "ChargeInputCustomer",
+            "parameters": [
+              { "label": "customer_id", "type": { "kind": "named", "name": "String", "module": "gleam", "package": "", "parameters": [] } },
+              { "label": "vip", "type": { "kind": "named", "name": "Option", "module": "gleam/option", "package": "gleam_stdlib", "parameters": [ { "kind": "named", "name": "Bool", "module": "gleam", "package": "", "parameters": [] } ] } }
+            ]
+          }]
+        },
+        "ChargeInputKind": {
+          "parameters": 0,
+          "constructors": [
+            { "name": "ChargeInputKindStandard", "parameters": [] },
+            { "name": "ChargeInputKindExpress", "parameters": [] }
+          ]
+        },
+        "Receipt": {
+          "parameters": 0,
+          "constructors": [{
+            "name": "Receipt",
+            "parameters": [
+              { "label": "payment_id", "type": { "kind": "named", "name": "String", "module": "gleam", "package": "", "parameters": [] } }
+            ]
+          }]
+        }
       }
-    },
-    "kind": { "type": "string", "enum": ["standard", "express"] }
+    }
   }
-}"#;
-
-/// The activity output type (`Receipt`): a single required scalar field, enough
-/// for the handler stub to construct a value with no imports.
-const RECEIPT_SCHEMA: &[u8] = br#"{
-  "type": "object",
-  "required": ["payment_id"],
-  "additionalProperties": false,
-  "properties": { "payment_id": { "type": "string" } }
 }"#;
 
 /// Absolute path to the `aion-worker` crate, for the worker's `path` dependency.
@@ -105,27 +120,25 @@ fn write_file(root: &Path, relative: &str, contents: &[u8]) -> Result<(), TestEr
     Ok(())
 }
 
-/// Lays down the minimal source project the generators read: a `gleam.toml`, a
-/// `workflow.toml`, and the two value schemas under `schemas/`.
+/// Lays down the minimal source project the generators read: a `gleam.toml`
+/// and an empty `src/`.
 fn stage_source_project(root: &Path) -> Result<(), TestError> {
     write_file(root, "gleam.toml", GLEAM_TOML.as_bytes())?;
-    write_file(root, "workflow.toml", WORKFLOW_TOML.as_bytes())?;
-    write_file(root, "schemas/charge_input.json", CHARGE_INPUT_SCHEMA)?;
-    write_file(root, "schemas/receipt.json", RECEIPT_SCHEMA)?;
-    // `codegen_project` writes `src/demo_io.gleam` directly and does not create
-    // the `src/` directory itself, so it must already exist.
     std::fs::create_dir_all(root.join("src"))?;
     Ok(())
 }
 
 /// Runs the library generators that emit `worker/src/main.rs`, in the order the
-/// CLI uses: schema-driven codecs first, then the declaration-driven plumbing.
+/// CLI uses: the interface-derived model first, then the codecs module +
+/// emitted schemas, then the declaration-driven plumbing.
 fn generate_worker(root: &Path) -> Result<(), TestError> {
-    // The codecs and the io module are Gleam artifacts the CLI always emits;
-    // running them here proves the whole generation path the worker rides on,
-    // not just the Rust emitter in isolation.
-    codegen_project(root, CodegenMode::Write)?;
-    generate_codecs(root, CodegenMode::Write)?;
+    // The model comes through the real interface front end, and the codecs
+    // module and schema artifacts are emitted too; running them here proves
+    // the whole generation path the worker rides on, not just the Rust
+    // emitter in isolation.
+    let types = boundary_types_from_interface(INTERFACE_JSON.as_bytes(), "demo")?;
+    generate_codecs(root, &types, CodegenMode::Write)?;
+    emit_schemas(root, "demo", &types, CodegenMode::Write)?;
 
     let declarations = vec![ActivityDeclaration {
         name: "charge_payment".to_owned(),
@@ -133,7 +146,7 @@ fn generate_worker(root: &Path) -> Result<(), TestError> {
         input_type: "ChargeInput".to_owned(),
         output_type: "Receipt".to_owned(),
     }];
-    generate_activities(root, &declarations, CodegenMode::Write)?;
+    generate_activities(root, &declarations, &types, CodegenMode::Write)?;
 
     let main_rs = root.join("worker/src/main.rs");
     if !main_rs.is_file() {

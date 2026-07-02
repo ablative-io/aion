@@ -3,6 +3,25 @@
 All aion crates share one workspace version; entries below cover the
 whole stack (crates.io) plus the `aion_flow` Gleam SDK (hex) where noted.
 
+## Unreleased
+
+### Authoring (types-first, ADR-014)
+
+- **Types-first codec generation; schema-first removed.** The authored
+  source of truth is now the Gleam types module `src/<package>_io.gleam`
+  (types only). `aion generate` reads it via
+  `gleam export package-interface` and derives the codecs module
+  (`src/<package>_codecs.gleam`, now carrying the encoders/decoders), the
+  EMITTED `schemas/*.json` artifacts (marked, never authored), and the
+  activity plumbing. **`aion codegen` is removed** — migrate by stripping
+  the generated header and functions from the io module, deleting the
+  authored schemas, and running `aion generate .` (full recipe in
+  docs/guides/codegen.md). The test scaffold is now write-once (an
+  author-filled scaffold is never overwritten, and `--check` only requires
+  it to exist). `examples/order-saga` is migrated and drift-gated in CI;
+  its wire shapes are unchanged (pinned by the regenerated wire-compat
+  golden and a semantic schema-equivalence gate).
+
 ## 0.6.1 — 2026-06-13
 
 ### Engine (via beamr 0.6.1)

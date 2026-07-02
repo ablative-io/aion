@@ -39,6 +39,58 @@ fn hello_world_template_builds_and_packages() -> Result<(), TestError> {
     build_and_package("hello_build_gate", "hello-world")
 }
 
+/// The types-first scaffold smoke gate: `aion new` ships an authored types
+/// module plus pre-generated artifacts (codecs module, emitted schemas), and
+/// a real `aion generate` over the fresh scaffold must reproduce every one of
+/// them byte-identically (write mode leaves no diff; `--check` passes), then
+/// the project must build.
+#[test]
+fn hello_world_scaffold_generate_round_trips_byte_identically() -> Result<(), TestError> {
+    let temp_dir = tempfile::tempdir()?;
+    let (project, _report) = common::scaffold_project(
+        temp_dir.path(),
+        "hello_gen_gate",
+        &["--template", "hello-world"],
+    )?;
+    common::patch_aion_flow_to_workspace(&project)?;
+
+    // Snapshot the shipped pre-generated artifacts.
+    let generated = [
+        "src/hello_gen_gate_codecs.gleam",
+        "schemas/input.json",
+        "schemas/output.json",
+    ];
+    let mut snapshot = Vec::new();
+    for relative in generated {
+        snapshot.push((relative, std::fs::read(project.join(relative))?));
+    }
+
+    // A real generate run must be a byte-level no-op over the scaffold.
+    let output = common::run_cli(&project, &["generate", "."])?;
+    let report = common::success_json(&output)?;
+    assert_eq!(report["action"], "written");
+    assert_eq!(report["types_module"], "src/hello_gen_gate_io.gleam");
+    assert_eq!(
+        report["workflow_toml"], "skipped",
+        "a no-activities package skips the activity phases: {report}"
+    );
+    for (relative, original) in &snapshot {
+        let regenerated = std::fs::read(project.join(relative))?;
+        assert!(
+            &regenerated == original,
+            "{relative} drifted: the shipped template artifact does not match what \
+             `aion generate` produces — regenerate the template file"
+        );
+    }
+
+    // `--check` agrees, and the scaffold builds.
+    let check = common::run_cli(&project, &["generate", ".", "--check"])?;
+    let check_report = common::success_json(&check)?;
+    assert_eq!(check_report["action"], "checked");
+    common::gleam_build(&project)?;
+    Ok(())
+}
+
 #[test]
 fn approval_flow_template_builds_and_packages() -> Result<(), TestError> {
     build_and_package("approval_build_gate", "approval-flow")
@@ -92,10 +144,10 @@ fn saga_worker_crate_passes_cargo_check() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The dev-pipeline gate: scaffold (worker required) → the scaffold already
-/// ran codegen (`--check` passes, the module is listed and on disk) →
-/// `gleam build` → `aion package` produces the three declared archives →
-/// the scaffolded hermetic `gleam test` suite passes.
+/// The dev-pipeline gate: scaffold (worker required) → the shipped
+/// pre-generated artifacts match a real `aion generate --check` → `gleam
+/// build` → `aion package` produces the three declared archives → the
+/// scaffolded hermetic `gleam test` suite passes.
 // Ignored: this gate downloads the `gleam_json` hex dependency from
 // https://hex.pm during `gleam build`/`gleam test`, so it fails in a normal
 // offline `cargo test --workspace`. Run deliberately when online with:
@@ -116,19 +168,21 @@ fn dev_pipeline_template_builds_packages_and_passes_its_tests() -> Result<(), Te
         .ok_or("scaffold report must list files")?;
     assert!(
         files.iter().any(|file| file == "src/pipe_gate_io.gleam"),
-        "the report must list the generated module: {report}"
+        "the report must list the authored types module: {report}"
     );
     assert!(
         project.join("src/pipe_gate_io.gleam").is_file(),
-        "codegen must have written the module during scaffolding"
+        "the scaffold must ship the authored types module"
     );
 
-    // The generated module matches the schemas exactly: --check passes.
-    let check = common::run_cli(&project, &["codegen", ".", "--check"])?;
+    common::patch_aion_flow_to_workspace(&project)?;
+
+    // The shipped codecs module and emitted schemas match what the types
+    // module generates exactly: a real `aion generate --check` passes.
+    let check = common::run_cli(&project, &["generate", ".", "--check"])?;
     let check_report = common::success_json(&check)?;
     assert_eq!(check_report["action"], "checked");
 
-    common::patch_aion_flow_to_workspace(&project)?;
     common::gleam_build(&project)?;
 
     // Three archives, one per [[workflow]] entry.

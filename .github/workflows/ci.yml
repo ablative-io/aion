@@ -110,6 +110,28 @@ jobs:
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features
 
+  # Types-first drift gate (ADR-014): the committed examples/order-saga must
+  # be byte-current against what `aion generate` derives from its authored
+  # types module — codecs module, emitted schemas, wrappers, worker, golden,
+  # and the workflow.toml activities list. A hand-edit to any generated
+  # artifact (or a type edit committed without regenerating) fails here
+  # naming the drifted file. Additive job: composes with the other lanes.
+  codegen-drift:
+    name: codegen-drift (aion generate --check on examples/order-saga)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `aion generate` drives the real Gleam toolchain (interface export +
+      # manifest probe), so the BEAM + gleam must be present.
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27'
+          gleam-version: '1.17.0'
+      - name: aion generate --check (examples/order-saga)
+        run: cargo run -p aion-cli --bin aion -- generate examples/order-saga --check
+
   # ----------------------------------------------------------------------- #
   # SLOW LANE — the real OS-process failover gates (kill-9 + graceful). These
   # PASS on main since #157 (the per-shard failover seam now forwards through the

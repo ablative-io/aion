@@ -4,19 +4,19 @@
 //! pinning the type's encoded wire shape:
 //!
 //! ```gleam
-//! io.<prefix>_to_json(<canonical sample>) |> json.to_string |> should.equal("<literal>")
+//! codecs.<prefix>_to_json(<canonical sample>) |> json.to_string |> should.equal("<literal>")
 //! ```
 //!
 //! Both the canonical Gleam sample value and the expected compact-JSON literal
-//! are *derived* from the same schema the codecs come from (checklist C3) — no
-//! hand-written literal — by walking the record/enum definitions: required
-//! scalars take their zero value (`""`, `0`, `0.0`, `false`), lists take the
-//! empty list, nested records and enums recurse, and an optional field takes
-//! `option.None`, which the encoder omits from the wire, so it never appears in
-//! the literal. The literal is exactly what `json.to_string` produces for that
-//! value (compact, keys in field order), so the test is a true fixed point: it
-//! passes the moment the codecs and the literal agree and fails the instant a
-//! wire shape moves.
+//! are *derived* from the same boundary-type model the codecs come from
+//! (checklist C3) — no hand-written literal — by walking the record/enum
+//! definitions: required scalars take their zero value (`""`, `0`, `0.0`,
+//! `false`), lists take the empty list, nested records and enums recurse, and
+//! an optional field takes `option.None`, which the encoder omits from the
+//! wire, so it never appears in the literal. The literal is exactly what
+//! `json.to_string` produces for that value (compact, keys in field order),
+//! so the test is a true fixed point: it passes the moment the codecs and the
+//! literal agree and fails the instant a wire shape moves.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -25,19 +25,19 @@ use std::path::Path;
 use super::activity_model::{ResolvedActivity, ResolvedType};
 use super::activity_wrappers::GENERATED_ACTIVITY_HEADER;
 use super::error::CodegenError;
-use super::schema::{EnumDef, GleamType, RecordDef, TypeDef};
+use super::model::{EnumDef, GleamType, RecordDef, TypeDef};
 
 /// Emits `test/<pkg>_wire_compat_test.gleam`: one gleeunit test per distinct
 /// value type the remote `activities` carry (input before output, declaration
 /// order, deduplicated by type name), each pinning the type's encoded wire
-/// shape against a literal derived from its schema.
+/// shape against a literal derived from its boundary type.
 ///
 /// # Errors
 ///
 /// Returns [`CodegenError::GoldenTypeUnresolved`] if a value type or a nested
-/// field references a named type absent from its schema artifact — a generator
-/// invariant violation, never bad author input, since the schema walker emits
-/// every nested record and enum into the artifact.
+/// field references a named type absent from its boundary type's definitions —
+/// a generator invariant violation, never bad author input, since the
+/// interface front-end collects every referenced definition into the closure.
 pub(crate) fn emit(
     package_name: &str,
     activities: &[&ResolvedActivity],
@@ -57,9 +57,10 @@ pub(crate) fn emit(
         "//// Wire-compat goldens for the `{package_name}` remote activities: each test pins"
     );
     out.push_str(
-        "//// a value type's encoded wire shape against a literal derived from its schema.\n",
+        "//// a value type's encoded wire shape against a literal derived from its type.\n",
     );
     out.push('\n');
+    let _ = writeln!(out, "import {package_name}_codecs as codecs");
     let _ = writeln!(out, "import {package_name}_io as io");
     out.push_str("import gleam/json\n");
     if used_option {
@@ -70,7 +71,7 @@ pub(crate) fn emit(
     for (prefix, value, literal) in &tests {
         let _ = write!(
             out,
-            "\npub fn {prefix}_wire_test() {{\n  io.{prefix}_to_json({value})\n  \
+            "\npub fn {prefix}_wire_test() {{\n  codecs.{prefix}_to_json({value})\n  \
              |> json.to_string\n  |> should.equal(\"{}\")\n}}\n",
             gleam_escape(literal)
         );
@@ -101,9 +102,9 @@ fn value_type_sample(
 ) -> Result<(String, String), CodegenError> {
     named_sample(
         &value_type.gleam_type,
-        &value_type.artifact.defs,
+        &value_type.boundary.defs,
         &value_type.gleam_type,
-        value_type.artifact.file.as_path(),
+        value_type.boundary.file.as_path(),
         used_option,
     )
 }
@@ -118,7 +119,7 @@ fn named_sample(
 ) -> Result<(String, String), CodegenError> {
     let def = defs
         .iter()
-        .find(|def| type_def_name(def) == type_name)
+        .find(|def| def.type_name() == type_name)
         .ok_or_else(|| CodegenError::GoldenTypeUnresolved {
             root_type: root_type.to_owned(),
             missing: type_name.to_owned(),
@@ -200,14 +201,6 @@ fn type_sample(
     })
 }
 
-/// The generated type name of a definition.
-fn type_def_name(def: &TypeDef) -> &str {
-    match def {
-        TypeDef::Record(record) => &record.type_name,
-        TypeDef::Enum(definition) => &definition.type_name,
-    }
-}
-
 /// Escapes a JSON literal for embedding inside a Gleam double-quoted string.
 fn gleam_escape(literal: &str) -> String {
     literal.replace('\\', "\\\\").replace('"', "\\\"")
@@ -221,13 +214,14 @@ mod tests {
     use crate::codegen::activity_model::{ResolvedActivity, ResolvedType};
     use crate::codegen::declaration::{ActivityDeclaration, Tier};
     use crate::codegen::error::CodegenError;
-    use crate::codegen::schema::{
-        EnumDef, EnumVariant, Field, GleamType, RecordDef, SchemaArtifact, TypeDef,
+    use crate::codegen::model::{
+        BoundaryType, EnumDef, EnumVariant, Field, GleamType, RecordDef, TypeDef,
     };
 
-    /// `OrderInputLine` -> `order_input_line`, matching the schema walker's
-    /// derived function prefixes. Delegates to the canonical helper so the test
-    /// and production share one PascalCase→snake conversion.
+    /// `OrderInputLine` -> `order_input_line`, matching the interface
+    /// front-end's derived function prefixes. Delegates to the canonical
+    /// helper so the test and production share one PascalCase→snake
+    /// conversion.
     fn snake(pascal: &str) -> String {
         crate::codegen::names::pascal_to_snake(pascal)
     }
@@ -251,13 +245,12 @@ mod tests {
         TypeDef::Record(RecordDef {
             type_name: type_name.to_owned(),
             fn_prefix: snake(type_name),
-            pointer: String::new(),
             fields,
         })
     }
 
-    fn artifact(type_name: &str, defs: Vec<TypeDef>) -> SchemaArtifact {
-        SchemaArtifact {
+    fn boundary(type_name: &str, defs: Vec<TypeDef>) -> BoundaryType {
+        BoundaryType {
             file: PathBuf::from(format!("schemas/{}.json", snake(type_name))),
             stem: snake(type_name),
             root: named(type_name),
@@ -276,20 +269,20 @@ mod tests {
 
     fn resolved<'a>(
         declaration: &'a ActivityDeclaration,
-        input: &'a SchemaArtifact,
-        output: &'a SchemaArtifact,
+        input: &'a BoundaryType,
+        output: &'a BoundaryType,
     ) -> ResolvedActivity<'a> {
         ResolvedActivity {
             declaration,
             input: ResolvedType {
                 gleam_type: declaration.input_type.clone(),
                 fn_prefix: snake(&declaration.input_type),
-                artifact: input,
+                boundary: input,
             },
             output: ResolvedType {
                 gleam_type: declaration.output_type.clone(),
                 fn_prefix: snake(&declaration.output_type),
-                artifact: output,
+                boundary: output,
             },
         }
     }
@@ -297,7 +290,7 @@ mod tests {
     #[test]
     fn all_required_scalars_pin_to_a_zero_value_literal() -> Result<(), Box<dyn std::error::Error>>
     {
-        let order = artifact(
+        let order = boundary(
             "OrderInput",
             vec![record_def(
                 "OrderInput",
@@ -309,7 +302,7 @@ mod tests {
                 ],
             )],
         );
-        let receipt = artifact(
+        let receipt = boundary(
             "Receipt",
             vec![record_def(
                 "Receipt",
@@ -323,6 +316,7 @@ mod tests {
         let module = emit("order_saga", &refs)?;
 
         assert!(module.starts_with(super::GENERATED_ACTIVITY_HEADER));
+        assert!(module.contains("import order_saga_codecs as codecs\n"));
         assert!(module.contains("import order_saga_io as io\n"));
         assert!(module.contains("import gleam/json\n"));
         assert!(module.contains("import gleeunit/should\n"));
@@ -330,7 +324,7 @@ mod tests {
         assert!(!module.contains("import gleam/option"));
         assert!(module.contains(
             "pub fn order_input_wire_test() {\n  \
-             io.order_input_to_json(io.OrderInput(order_id: \"\", quantity: 0, amount: 0.0, rush: False))\n  \
+             codecs.order_input_to_json(io.OrderInput(order_id: \"\", quantity: 0, amount: 0.0, rush: False))\n  \
              |> json.to_string\n  \
              |> should.equal(\"{\\\"order_id\\\":\\\"\\\",\\\"quantity\\\":0,\\\"amount\\\":0.0,\\\"rush\\\":false}\")\n}\n"
         ));
@@ -345,7 +339,7 @@ mod tests {
         // OrderInput { order_id: String (req), tags: List(String) (req),
         //   line: OrderInputLine (req, nested record),
         //   kind: OrderInputKind (req, enum), note: String (optional) }
-        let order = artifact(
+        let order = boundary(
             "OrderInput",
             vec![
                 record_def(
@@ -365,7 +359,6 @@ mod tests {
                 TypeDef::Enum(EnumDef {
                     type_name: "OrderInputKind".to_owned(),
                     fn_prefix: "order_input_kind".to_owned(),
-                    pointer: "/properties/kind".to_owned(),
                     variants: vec![
                         EnumVariant {
                             constructor: "OrderInputKindStandard".to_owned(),
@@ -379,7 +372,7 @@ mod tests {
                 }),
             ],
         );
-        let ok = artifact(
+        let ok = boundary(
             "Ok",
             vec![record_def("Ok", vec![field("done", GleamType::Bool, true)])],
         );
@@ -395,7 +388,7 @@ mod tests {
         // first variant; list is empty; optional `note` is None and omitted
         // from the literal.
         assert!(module.contains(
-            "io.order_input_to_json(io.OrderInput(order_id: \"\", tags: [], \
+            "codecs.order_input_to_json(io.OrderInput(order_id: \"\", tags: [], \
              line: io.OrderInputLine(sku: \"\"), kind: io.OrderInputKindStandard, \
              note: option.None))"
         ));
@@ -409,14 +402,14 @@ mod tests {
     fn unresolved_named_type_is_an_internal_error() -> Result<(), Box<dyn std::error::Error>> {
         // A field references a named type with no matching def — a generator
         // invariant violation that must surface, not panic.
-        let broken = artifact(
+        let broken = boundary(
             "OrderInput",
             vec![record_def(
                 "OrderInput",
                 vec![field("line", named("MissingLine"), true)],
             )],
         );
-        let out = artifact("Ok", vec![record_def("Ok", vec![])]);
+        let out = boundary("Ok", vec![record_def("Ok", vec![])]);
         let place = declaration("place", "OrderInput", "Ok");
         let activities = [resolved(&place, &broken, &out)];
         let refs: Vec<&ResolvedActivity> = activities.iter().collect();

@@ -49,6 +49,18 @@ pub enum PackagingError {
         reason: String,
     },
 
+    /// A declared JSON-Schema file does not exist. Schemas are generated
+    /// artifacts (emitted from the project's types module), so on a fresh
+    /// clone they are absent until the project is generated.
+    #[error(
+        "schema {path} does not exist; schemas/*.json are generated artifacts — \
+         run `aion generate` to emit them from the project's types module"
+    )]
+    SchemaMissing {
+        /// Resolved path of the schema file that was expected.
+        path: PathBuf,
+    },
+
     /// A declared JSON-Schema file could not be read.
     #[error("failed to read schema {path}: {source}")]
     SchemaRead {

@@ -29,8 +29,8 @@ pub enum Template {
     /// The durable dev pipeline: an agent develops a brief, a scoped
     /// verify-fix loop, a workspace gate, human review by signal, land —
     /// three composed workflows plus a CLI-shelling worker. Workflow-level
-    /// I/O codecs are generated from the schemas by `aion codegen`.
-    /// Requires `--worker rust`.
+    /// I/O codecs and schemas are generated from the authored types module
+    /// by `aion generate`. Requires `--worker rust`.
     DevPipeline,
     /// A durable agent loop: scout → act → verify → signal-gated human
     /// review, parameterised by prompts and a review deadline. The three
@@ -74,6 +74,18 @@ const HELLO_WORLD_FILES: &[ManifestFile] = &[
     (
         "workflow.toml",
         include_str!("../../templates/hello_world/workflow.toml"),
+    ),
+    // Authored source of truth: the boundary types (types-first, ADR-014).
+    (
+        "src/{{name}}_io.gleam",
+        include_str!("../../templates/hello_world/project_io.gleam"),
+    ),
+    // Pre-generated artifacts, byte-identical to what `aion generate`
+    // reproduces from the types module (proven by the scaffold gates), so
+    // the fresh scaffold builds without running the toolchain.
+    (
+        "src/{{name}}_codecs.gleam",
+        include_str!("../../templates/hello_world/project_codecs.gleam"),
     ),
     (
         "schemas/input.json",
@@ -161,29 +173,100 @@ const DEV_PIPELINE_FILES: &[ManifestFile] = &[
         "workflow.toml",
         include_str!("../../templates/dev_pipeline/workflow.toml"),
     ),
+    // Authored source of truth: the boundary types (types-first, ADR-014).
+    (
+        "src/{{name}}_io.gleam",
+        include_str!("../../templates/dev_pipeline/project_io.gleam"),
+    ),
+    // Pre-generated artifacts, byte-identical to what `aion generate`
+    // reproduces from the types module (proven by the scaffold gates).
+    (
+        "src/{{name}}_codecs.gleam",
+        include_str!("../../templates/dev_pipeline/project_codecs.gleam"),
+    ),
     (
         "schemas/input.json",
         include_str!("../../templates/dev_pipeline/schemas/input.json"),
+    ),
+    (
+        "schemas/input_placement.json",
+        include_str!("../../templates/dev_pipeline/schemas/input_placement.json"),
+    ),
+    (
+        "schemas/input_isolation.json",
+        include_str!("../../templates/dev_pipeline/schemas/input_isolation.json"),
     ),
     (
         "schemas/output.json",
         include_str!("../../templates/dev_pipeline/schemas/output.json"),
     ),
     (
+        "schemas/output_build_warm.json",
+        include_str!("../../templates/dev_pipeline/schemas/output_build_warm.json"),
+    ),
+    (
         "schemas/dev_input.json",
         include_str!("../../templates/dev_pipeline/schemas/dev_input.json"),
+    ),
+    (
+        "schemas/dev_input_workspace.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_input_workspace.json"),
+    ),
+    (
+        "schemas/dev_input_workspace_placement.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_input_workspace_placement.json"),
+    ),
+    (
+        "schemas/dev_input_workspace_isolation.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_input_workspace_isolation.json"),
     ),
     (
         "schemas/dev_output.json",
         include_str!("../../templates/dev_pipeline/schemas/dev_output.json"),
     ),
     (
+        "schemas/dev_output_dev_result.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_output_dev_result.json"),
+    ),
+    (
+        "schemas/dev_output_build_warm.json",
+        include_str!("../../templates/dev_pipeline/schemas/dev_output_build_warm.json"),
+    ),
+    (
         "schemas/gate_input.json",
         include_str!("../../templates/dev_pipeline/schemas/gate_input.json"),
     ),
     (
+        "schemas/gate_input_workspace.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_input_workspace.json"),
+    ),
+    (
+        "schemas/gate_input_workspace_placement.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_input_workspace_placement.json"),
+    ),
+    (
+        "schemas/gate_input_workspace_isolation.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_input_workspace_isolation.json"),
+    ),
+    (
+        "schemas/gate_input_scope.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_input_scope.json"),
+    ),
+    (
+        "schemas/gate_input_scope_kind.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_input_scope_kind.json"),
+    ),
+    (
         "schemas/gate_output.json",
         include_str!("../../templates/dev_pipeline/schemas/gate_output.json"),
+    ),
+    (
+        "schemas/gate_output_verdict.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_output_verdict.json"),
+    ),
+    (
+        "schemas/gate_output_verdict_outcome.json",
+        include_str!("../../templates/dev_pipeline/schemas/gate_output_verdict_outcome.json"),
     ),
     (
         "src/{{name}}.gleam",
@@ -379,18 +462,6 @@ impl Template {
         }
     }
 
-    /// Whether the scaffold runs `aion codegen` after writing files, to
-    /// generate `src/<name>_io.gleam` from the emitted schemas. The
-    /// template's sources import that module, so scaffolding without it
-    /// would not compile.
-    #[must_use]
-    pub fn generates_codecs(self) -> bool {
-        match self {
-            Self::HelloWorld | Self::ApprovalFlow | Self::Saga | Self::Agent => false,
-            Self::DevPipeline => true,
-        }
-    }
-
     /// All templates, for manifest-completeness tests.
     #[cfg(test)]
     pub fn all() -> &'static [Self] {
@@ -537,44 +608,24 @@ mod tests {
             );
         }
         assert!(Template::DevPipeline.worker_requirement_reason().is_some());
-        assert!(Template::DevPipeline.generates_codecs());
     }
 
     #[test]
-    fn worker_free_templates_neither_require_a_worker_nor_run_codegen() {
+    fn worker_free_templates_do_not_require_a_worker() {
         for template in [Template::HelloWorld, Template::ApprovalFlow, Template::Saga] {
             assert!(
                 template.worker_requirement_reason().is_none(),
                 "template {} must not require a worker",
                 template.id()
             );
-            assert!(
-                !template.generates_codecs(),
-                "template {} must not run codegen",
-                template.id()
-            );
         }
     }
 
     #[test]
-    fn only_the_dev_pipeline_runs_codegen() {
-        for template in Template::all() {
-            assert_eq!(
-                template.generates_codecs(),
-                *template == Template::DevPipeline,
-                "only the dev-pipeline template runs codegen; {} disagrees",
-                template.id()
-            );
-        }
-    }
-
-    #[test]
-    fn agent_template_requires_a_worker_without_codegen() {
+    fn agent_template_requires_a_worker() {
         // The agent loop's three steps are worker-served and the driver is
-        // worker-side, so the template demands `--worker rust`; its codecs are
-        // hand-written in the workflow source, so it does not run codegen.
+        // worker-side, so the template demands `--worker rust`.
         assert!(Template::Agent.worker_requirement_reason().is_some());
-        assert!(!Template::Agent.generates_codecs());
     }
 
     #[test]
@@ -622,16 +673,32 @@ mod tests {
     }
 
     #[test]
-    fn dev_pipeline_schemas_avoid_codegen_rejected_constructs() {
-        // `aion codegen` v1 loudly rejects $ref/$defs indirection; the
-        // template's schemas must stay inside the supported subset or the
-        // scaffold itself would fail.
-        for (path, contents) in Template::DevPipeline.files() {
-            if path.starts_with("schemas/") {
-                for forbidden in ["$ref", "$defs", "oneOf", "anyOf", "allOf"] {
+    fn types_first_templates_ship_marked_generated_artifacts() {
+        // hello_world and dev_pipeline are on the types-first path: they ship
+        // an AUTHORED types module plus pre-generated artifacts carrying the
+        // generated markers, so `aion generate` recognises and reproduces
+        // them (a stray unmarked schema would be a loud error).
+        for template in [Template::HelloWorld, Template::DevPipeline] {
+            for (path, contents) in template.files() {
+                if path.starts_with("schemas/") {
                     assert!(
-                        !contents.contains(forbidden),
-                        "{path} must not use {forbidden}: aion codegen rejects it"
+                        contents.contains("Generated by aion generate from src/"),
+                        "template {} schema {path} must carry the generated marker",
+                        template.id()
+                    );
+                }
+                if path == "src/{{name}}_codecs.gleam" {
+                    assert!(
+                        contents.starts_with("//// Generated by aion generate"),
+                        "template {} codecs module must carry the generated header",
+                        template.id()
+                    );
+                }
+                if path == "src/{{name}}_io.gleam" {
+                    assert!(
+                        !contents.contains("do not edit"),
+                        "template {} types module must be authored, not generated",
+                        template.id()
                     );
                 }
             }
