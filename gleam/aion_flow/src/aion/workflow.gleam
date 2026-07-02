@@ -14,8 +14,10 @@ import aion/signal
 import aion/workflow/concurrency
 import aion/workflow/continuation
 import aion/workflow/define as definition
+import aion/workflow/entrypoint as entry
 import aion/workflow/run as dispatch
 import aion/workflow/timer
+import gleam/dynamic.{type Dynamic}
 import gleam/option.{type Option}
 
 pub type Timestamp =
@@ -222,4 +224,23 @@ pub fn entry_fn(
   definition: WorkflowDefinition(input, output, workflow_error),
 ) -> fn(input) -> Result(output, workflow_error) {
   definition.entry_fn(definition)
+}
+
+/// Drive a workflow's typed entry from the engine's raw spawn argument,
+/// making the hand-written `run` adapter a one-line shim:
+///
+/// ```gleam
+/// pub fn run(raw_input: Dynamic) -> Result(String, String) {
+///   workflow.entrypoint(definition(), raw_input)
+/// }
+/// ```
+///
+/// Success encodes with the definition's output codec, typed failure with its
+/// error codec (byte-identical to the hand-written adapter); an undecodable
+/// input yields the documented `{"aion_error":"input_decode",...}` envelope.
+pub fn entrypoint(
+  definition: WorkflowDefinition(input, output, workflow_error),
+  raw_input: Dynamic,
+) -> Result(String, String) {
+  entry.entrypoint(definition, raw_input)
 }
