@@ -14,14 +14,23 @@ use std::process::Command;
 
 type TestError = Box<dyn std::error::Error>;
 
-/// The five files `aion generate` produces for order-saga, relative to the
-/// project root.
+/// The files `aion generate` produces for order-saga, relative to the
+/// project root. The types module `src/aion_order_saga_io.gleam` is NOT here:
+/// it is the authored source of truth (types-first, ADR-014) and generation
+/// never writes it.
 const GENERATED: &[&str] = &[
-    "src/aion_order_saga_io.gleam",
     "src/aion_order_saga_codecs.gleam",
     "src/aion_order_saga_activity_wrappers.gleam",
     "worker/worker.py",
     "test/aion_order_saga_wire_compat_test.gleam",
+    "schemas/cancel_shipment_input.json",
+    "schemas/compensation_output.json",
+    "schemas/inventory_reservation.json",
+    "schemas/order_input.json",
+    "schemas/payment_receipt.json",
+    "schemas/refund_payment_input.json",
+    "schemas/release_inventory_input.json",
+    "schemas/shipment.json",
 ];
 
 fn repo_root() -> PathBuf {
@@ -103,9 +112,18 @@ fn run_generate(project: &Path, check: bool) -> Result<(bool, String), TestError
 fn generate_round_trips_check_gates_and_invents_no_defaults() -> Result<(), TestError> {
     let (_temp, project) = stage_order_saga()?;
 
+    // The authored types module must never be written by generation.
+    let types_module = project.join("src/aion_order_saga_io.gleam");
+    let authored_before = fs::read(&types_module)?;
+
     // First generation must succeed and leave a clean tree.
     let (ok, output) = run_generate(&project, false)?;
     assert!(ok, "first `aion generate` failed:\n{output}");
+    assert_eq!(
+        fs::read(&types_module)?,
+        authored_before,
+        "generation must never touch the authored types module"
+    );
 
     // Round-trip (C6): snapshot, delete every generated file, regenerate, and
     // require byte-identical output — this also exercises the extraction

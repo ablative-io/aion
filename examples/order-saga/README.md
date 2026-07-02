@@ -52,28 +52,33 @@ OrderInput
 
 ## Source layout: declare once, generate the rest
 
-Each activity is declared exactly once (ADR-014) — its name, tier, and typed
-input/output — in `src/aion_order_saga_activities.gleam`'s `manifest()`, next to
-the activity bodies. Everything that must agree byte-for-byte is generated from
-that declaration by `aion generate` and carries a do-not-edit header:
+Everything is declared exactly once (ADR-014, types-first): the boundary
+types live in `src/aion_order_saga_io.gleam`, and each activity — its name,
+tier, and typed input/output — in `src/aion_order_saga_activities.gleam`'s
+`manifest()`, next to the activity bodies. Everything that must agree
+byte-for-byte is generated from those two authored sources by
+`aion generate` and carries a do-not-edit marker:
 
 | File | Authored by |
 | --- | --- |
+| `src/aion_order_saga_io.gleam` (boundary types) | you |
 | `src/aion_order_saga_activities.gleam` (`manifest()` + bodies) | you |
 | `src/order_saga.gleam` (workflow orchestration) | you |
 | `worker/handlers.py` (Python activity bodies) | you |
-| `schemas/*.json` (value-type schemas) | you |
-| `src/aion_order_saga_io.gleam` (types + codecs) | generated |
-| `src/aion_order_saga_codecs.gleam` (typed codecs) | generated |
+| `src/aion_order_saga_codecs.gleam` (encoders/decoders + typed codecs) | generated |
+| `schemas/*.json` (emitted schema artifacts) | generated |
 | `src/aion_order_saga_activity_wrappers.gleam` (`activity.new` wrappers) | generated |
 | `worker/worker.py` (worker plumbing → `handlers.py`) | generated |
 | `test/aion_order_saga_wire_compat_test.gleam` (wire goldens) | generated |
 | the `activities` list in `workflow.toml` | generated |
 
-Run `aion generate examples/order-saga` after editing a declaration or schema,
-and `aion generate examples/order-saga --check` in CI — it regenerates every
-file in memory and fails if any on-disk copy has drifted, so a hand-edit to
-generated output is a build error.
+(`test/order_saga_scaffold_test.gleam` is generated once as a fill-in
+skeleton and then owned by you; `aion generate` never overwrites it.)
+
+Run `aion generate examples/order-saga` after editing a type or a
+declaration, and `aion generate examples/order-saga --check` in CI — it
+regenerates every file in memory and fails if any on-disk copy has drifted,
+so a hand-edit to generated output is a build error.
 
 You will:
 

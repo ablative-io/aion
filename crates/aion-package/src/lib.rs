@@ -45,9 +45,10 @@ pub mod version;
 pub use beam::{BeamModule, BeamSet, RESERVED_MODULE_NAMES};
 pub use builder::PackageBuilder;
 pub use codegen::{
-    ActivityArtifact, ActivityDeclaration, ActivityReport, CodecReport, CodegenError, CodegenMode,
-    CodegenReport, TestScaffoldReport, Tier, build_input_skeleton, codegen_project,
-    generate_activities, generate_codecs, generate_test_scaffold, parse_declarations,
+    ActivityArtifact, ActivityDeclaration, ActivityReport, BoundaryType, CodecReport, CodegenError,
+    CodegenMode, SchemaEmitReport, TestScaffoldReport, Tier, boundary_types_from_interface,
+    build_input_skeleton, emit_schemas, generate_activities, generate_codecs,
+    generate_test_scaffold, parse_declarations,
 };
 pub use error::PackageError;
 pub use extraction::ExtractionLimits;

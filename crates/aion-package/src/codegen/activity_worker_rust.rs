@@ -25,7 +25,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use super::activity_model::ResolvedActivity;
-use super::schema::{EnumDef, Field, GleamType, RecordDef, TypeDef};
+use super::model::{EnumDef, Field, GleamType, RecordDef, TypeDef};
 
 /// Rust do-not-edit banner. A plain module-doc line; `aion generate --check`
 /// byte-compares the whole file, so the banner is the contract, not a parsed
@@ -76,23 +76,15 @@ fn ordered_type_defs<'a>(activities: &[&'a ResolvedActivity<'a>]) -> Vec<&'a Typ
     let mut seen: HashSet<&str> = HashSet::new();
     let mut defs: Vec<&TypeDef> = Vec::new();
     for activity in activities {
-        for artifact in [activity.input.artifact, activity.output.artifact] {
-            for def in &artifact.defs {
-                if seen.insert(type_def_name(def)) {
+        for boundary in [activity.input.boundary, activity.output.boundary] {
+            for def in &boundary.defs {
+                if seen.insert(def.type_name()) {
                     defs.push(def);
                 }
             }
         }
     }
     defs
-}
-
-/// The generated Gleam/Rust type name of a definition.
-fn type_def_name(def: &TypeDef) -> &str {
-    match def {
-        TypeDef::Record(record) => &record.type_name,
-        TypeDef::Enum(definition) => &definition.type_name,
-    }
 }
 
 /// Emits a `serde` struct for a record. Optional fields become `Option<T>` and
@@ -309,12 +301,12 @@ mod tests {
     use super::{emit, is_rust_keyword, rust_field_ident, rust_type};
     use crate::codegen::activity_model::{ResolvedActivity, ResolvedType};
     use crate::codegen::declaration::{ActivityDeclaration, Tier};
-    use crate::codegen::schema::{
-        EnumDef, EnumVariant, Field, GleamType, RecordDef, SchemaArtifact, TypeDef,
+    use crate::codegen::model::{
+        BoundaryType, EnumDef, EnumVariant, Field, GleamType, RecordDef, TypeDef,
     };
 
-    fn record(type_name: &str, fields: Vec<Field>) -> SchemaArtifact {
-        SchemaArtifact {
+    fn record(type_name: &str, fields: Vec<Field>) -> BoundaryType {
+        BoundaryType {
             file: PathBuf::from(format!("schemas/{}.json", type_name.to_lowercase())),
             stem: type_name.to_lowercase(),
             root: GleamType::Named {
@@ -324,7 +316,6 @@ mod tests {
             defs: vec![TypeDef::Record(RecordDef {
                 type_name: type_name.to_owned(),
                 fn_prefix: type_name.to_lowercase(),
-                pointer: String::new(),
                 fields,
             })],
         }
@@ -349,20 +340,20 @@ mod tests {
 
     fn resolved<'a>(
         declaration: &'a ActivityDeclaration,
-        input: &'a SchemaArtifact,
-        output: &'a SchemaArtifact,
+        input: &'a BoundaryType,
+        output: &'a BoundaryType,
     ) -> ResolvedActivity<'a> {
         ResolvedActivity {
             declaration,
             input: ResolvedType {
                 gleam_type: declaration.input_type.clone(),
                 fn_prefix: declaration.input_type.to_lowercase(),
-                artifact: input,
+                boundary: input,
             },
             output: ResolvedType {
                 gleam_type: declaration.output_type.clone(),
                 fn_prefix: declaration.output_type.to_lowercase(),
-                artifact: output,
+                boundary: output,
             },
         }
     }
@@ -495,7 +486,6 @@ mod tests {
         tier.defs.push(TypeDef::Enum(EnumDef {
             type_name: "JobKind".to_owned(),
             fn_prefix: "job_kind".to_owned(),
-            pointer: "/properties/kind".to_owned(),
             variants: vec![
                 EnumVariant {
                     constructor: "JobKindFast".to_owned(),

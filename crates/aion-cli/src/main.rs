@@ -21,7 +21,6 @@ use crate::payload::{
 };
 
 mod check_deterministic;
-mod codegen;
 mod deploy;
 mod dev;
 mod generate;
@@ -112,37 +111,24 @@ enum ClientCommand {
     /// pipeline; `--worker rust` required). `--worker rust` additionally
     /// scaffolds a `worker/` crate serving the template's activities.
     New(new::NewArgs),
-    /// Generate Gleam types and JSON codecs from a project's JSON Schemas.
+    /// Generate every derived artifact from a package's authored Gleam types.
     ///
-    /// Runs entirely locally: reads `workflow.toml` and every
-    /// `schemas/*.json` in the project root, and writes one deterministic
-    /// module (`src/<package>_io.gleam`, do not edit) containing a Gleam
-    /// type plus an encoder/decoder pair per schema — the schemas stay the
-    /// single source of truth and the codecs cannot drift. Schema constructs
-    /// outside the supported subset fail loudly with the file and JSON
-    /// pointer; see docs/guides/codegen.md for the subset table.
-    Codegen {
-        /// Workflow project root containing `workflow.toml` and `schemas/`.
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        /// Verify the generated module on disk is current instead of
-        /// writing; exits non-zero naming the drifted file (CI gate).
-        #[arg(long)]
-        check: bool,
-    },
-    /// Generate every per-activity artifact from a package's typed declarations.
-    ///
-    /// Runs locally and drives the Gleam toolchain: reads the declarations its
-    /// `src/<package>_activities.gleam` returns from `manifest()`, then writes
-    /// the io types/codecs, the typed codec wrappers, the `activity.new`
-    /// wrappers, the per-tier worker module, the remote wire-compat golden, and
-    /// the `workflow.toml` activities list — all do-not-edit and derived, so an
-    /// activity is declared once instead of hand-mirrored across files. With
-    /// `--check`, regenerates everything in memory and exits non-zero if any
-    /// on-disk generated file differs (CI drift gate).
+    /// Runs locally and drives the Gleam toolchain (types-first, ADR-014):
+    /// reads the boundary types declared in `src/<package>_io.gleam` via
+    /// `gleam export package-interface`, then writes the codecs module, the
+    /// emitted `schemas/*.json` artifacts, and — when the package declares
+    /// activities via `src/<package>_activities.gleam` `manifest()` — the
+    /// typed `activity.new` wrappers, the per-tier worker module, the remote
+    /// wire-compat golden, and the `workflow.toml` activities list. All
+    /// do-not-edit and derived, so a type or activity is declared once
+    /// instead of hand-mirrored across files. Types outside the supported
+    /// subset fail loudly naming the type and field; see
+    /// docs/guides/codegen.md. With `--check`, regenerates everything in
+    /// memory and exits non-zero if any on-disk generated file differs (CI
+    /// drift gate).
     Generate {
         /// Workflow project root containing `gleam.toml`, `workflow.toml`,
-        /// `schemas/`, and `src/<package>_activities.gleam`.
+        /// and `src/<package>_io.gleam`.
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Verify every generated file on disk is current instead of writing;
@@ -399,7 +385,6 @@ async fn main() -> ExitCode {
 async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
     match command {
         ClientCommand::New(args) => new::run(args),
-        ClientCommand::Codegen { path, check } => codegen::run(path, *check),
         ClientCommand::Generate { path, check } => generate::run(path, *check),
         ClientCommand::Check {
             path,
@@ -760,45 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn codegen_defaults_to_current_directory_without_check() -> anyhow::Result<()> {
-        let cli = Cli::try_parse_from(["aion", "codegen"])?;
-
-        let Command::Client(ClientCommand::Codegen { path, check }) = cli.command else {
-            anyhow::bail!("expected codegen command");
-        };
-        assert_eq!(path, Path::new("."));
-        assert!(!check);
-        Ok(())
-    }
-
-    #[test]
-    fn codegen_accepts_path_and_check() -> anyhow::Result<()> {
-        let cli = Cli::try_parse_from(["aion", "codegen", "examples/hello-world", "--check"])?;
-
-        let Command::Client(ClientCommand::Codegen { path, check }) = cli.command else {
-            anyhow::bail!("expected codegen command");
-        };
-        assert_eq!(path, Path::new("examples/hello-world"));
-        assert!(check);
-        Ok(())
-    }
-
-    #[test]
-    fn codegen_help_documents_the_contract() -> anyhow::Result<()> {
-        let mut command = Cli::command();
-        let Some(codegen) = command.find_subcommand_mut("codegen") else {
-            anyhow::bail!("codegen subcommand should be registered");
-        };
-        let help = codegen.render_long_help().to_string();
-
-        assert!(help.contains("--check"));
-        assert!(help.contains("schemas/*.json"));
-        assert!(help.contains("do not edit"));
-        assert!(help.contains("fail loudly"));
-        Ok(())
-    }
-
-    #[test]
     fn package_defaults_to_current_directory_without_build_or_out() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "package"])?;
 
@@ -1010,7 +956,6 @@ mod tests {
                         | RemoteCommand::Inspect { .. },
                     )
                     | ClientCommand::New(_)
-                    | ClientCommand::Codegen { .. }
                     | ClientCommand::Generate { .. }
                     | ClientCommand::Check { .. }
                     | ClientCommand::Input { .. }
@@ -1064,7 +1009,6 @@ mod tests {
                         | RemoteCommand::Inspect { .. },
                     )
                     | ClientCommand::New(_)
-                    | ClientCommand::Codegen { .. }
                     | ClientCommand::Generate { .. }
                     | ClientCommand::Check { .. }
                     | ClientCommand::Input { .. }

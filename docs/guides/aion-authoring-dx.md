@@ -10,7 +10,7 @@
 > with this guide centred on the three most recently landed:
 > **WA-002** (`aion dev` + dev server), **WA-006** (`aion new agent`),
 > **WA-007** (`aion check --deterministic`, generated test scaffolds, `aion input`).
-> The earlier WA-001/003/004/005 commands (`aion codegen`/`generate`, `aion package`,
+> The earlier WA-001/003/004/005 commands (`aion generate` — which replaced the removed `aion codegen`, `aion package`,
 > `aion deploy`, `aion inspect`, the `/authoring/*` compile API) are referenced where
 > a runbook needs them and marked *prior-landed*.
 
@@ -96,7 +96,7 @@ aion new <name> --template agent --worker rust
 
 **Emits** (`crates/aion-cli/templates/agent/`): `src/<name>.gleam` (the workflow, from `project.gleam`), `workflow.toml`, `schemas/{input,output}.json`, `README.md`, and a `worker/` crate (`Cargo.toml` + `src/main.rs` with trivial echo handlers — replace these with your agent driver). Prints a JSON `NewOutput { project, path, template, worker, files, next_steps }`.
 
-The scaffold is hand-written Gleam with hand-written codecs — it does **not** run `aion codegen` (only `dev-pipeline` does). See §7 for its anatomy.
+The scaffold is hand-written Gleam with hand-written codecs — the agent template is not yet on the types-first generated path (`hello-world` and `dev-pipeline` are). See §7 for its anatomy.
 
 ### 4.2 `aion dev [path] --gleam-path <PATH> [--debounce-ms <MS>]` (WA-002)
 
