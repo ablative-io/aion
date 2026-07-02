@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router';
 
+import { FOCUS_SEARCH_STATE } from '@/features/search';
 import { ACTION_IDS, useAction } from '@/lib/keybindings';
 
 import { namespacesPath, searchPath, workflowListPath } from './routePaths';
@@ -16,14 +17,10 @@ export function GlobalActions() {
   useAction(ACTION_IDS.goWorkflows, () => navigate(workflowListPath));
   useAction(ACTION_IDS.goEvents, () => navigate(searchPath));
   useAction(ACTION_IDS.goNamespaces, () => navigate(namespacesPath));
-  useAction(ACTION_IDS.focusSearch, () => {
-    navigate(searchPath);
-    // Focus the search view's first field once it has mounted. The registry
-    // already swallowed the "/" keystroke, so nothing leaks into the field.
-    requestAnimationFrame(() => {
-      document.querySelector<HTMLInputElement>('main input')?.focus();
-    });
-  });
+  // Chrome only navigates; the search view owns focusing its own field (it
+  // reads this router state after its lazy chunk mounts, and while mounted it
+  // registers its own later handler that wins registry precedence).
+  useAction(ACTION_IDS.focusSearch, () => navigate(searchPath, { state: FOCUS_SEARCH_STATE }));
 
   return null;
 }

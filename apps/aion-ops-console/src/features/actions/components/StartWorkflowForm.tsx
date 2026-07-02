@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router';
 
 import { workflowDetailHref } from '@/app/routePaths';
@@ -42,6 +42,15 @@ export function StartWorkflowForm({
   const ids = useFieldIds();
   const [workflowType, setWorkflowType] = useState(initialWorkflowType ?? '');
   const [namespaceEntry, setNamespaceEntry] = useState('');
+
+  // A palette deep-link (`/actions?workflow_type=X`) can land while this route
+  // is already mounted — same-route navigation re-renders without remounting —
+  // so a changed deep-link value must sync into the field, not just seed it.
+  useEffect(() => {
+    if (initialWorkflowType !== undefined) {
+      setWorkflowType(initialWorkflowType);
+    }
+  }, [initialWorkflowType]);
   const [routingKey, setRoutingKey] = useState('');
   const [taskQueue, setTaskQueue] = useState('');
   const [inputText, setInputText] = useState('');

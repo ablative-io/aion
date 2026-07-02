@@ -97,8 +97,12 @@ export class KeybindingRegistry {
 
   /** The effective binding spec for an action (override or default). */
   bindingFor(id: string): string {
-    const overrides = this.loadOverrides();
-    return overrides[id] ?? this.mustGet(id).definition.defaultBinding;
+    const fallback = this.mustGet(id).definition.defaultBinding;
+    const override = this.loadOverrides()[id];
+    // Same fallback rule as the constructor's dispatch path: an unparseable
+    // persisted override yields the default. The display path (formatFor
+    // renders in always-mounted chrome) must never crash on a bad blob.
+    return override !== undefined && safeParse(override) !== null ? override : fallback;
   }
 
   /** The effective binding formatted for this platform (⌘K / Sup+K). */

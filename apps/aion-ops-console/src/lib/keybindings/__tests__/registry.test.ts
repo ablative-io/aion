@@ -109,6 +109,37 @@ test('overrides persist to storage and rebind matching', () => {
   expect(JSON.parse(storage.data.get(KEYBINDINGS_STORAGE_KEY) ?? '{}')).toEqual({});
 });
 
+test('an unparseable persisted override falls back to the default on BOTH paths', () => {
+  const storage = memoryStorage();
+  // Hand-edited localStorage is the sanctioned remap path today; a typo'd or
+  // forbidden spec must degrade to the default, never crash chrome rendering.
+  storage.setItem(
+    KEYBINDINGS_STORAGE_KEY,
+    JSON.stringify({ 'palette.open': 'ctrl+k', 'go.workflows': 'total garbage spec here' })
+  );
+  const registry = makeRegistry(storage);
+  const fired: string[] = [];
+  registry.registerHandler('palette.open', () => fired.push('palette'));
+
+  // Display path: no throw, default binding shown.
+  expect(registry.bindingFor('palette.open')).toBe('mod+k');
+  expect(registry.formatFor('palette.open')).toBe('⌘K');
+  expect(registry.formatFor('go.workflows')).toBe('G W');
+
+  // Dispatch path agrees with what the display claims.
+  expect(registry.dispatch(keyEvent({ key: 'k', metaKey: true }))).toBe(true);
+  expect(fired).toEqual(['palette']);
+});
+
+test('a valid persisted override still wins on the display path', () => {
+  const storage = memoryStorage();
+  storage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify({ 'palette.open': 'mod+p' }));
+  const registry = makeRegistry(storage);
+
+  expect(registry.bindingFor('palette.open')).toBe('mod+p');
+  expect(registry.formatFor('palette.open')).toBe('⌘P');
+});
+
 // --- platform modifier formatting ---
 
 test('formats mod as ⌘ on macOS and Sup+ on Linux — never Control', () => {

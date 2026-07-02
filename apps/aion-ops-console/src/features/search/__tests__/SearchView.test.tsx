@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router';
 
 import { NamespaceProvider } from '@/features/namespace';
 import type { ApiClient, EventSearchResult, WorkflowPage } from '@/lib/api';
+import { KeybindingsProvider } from '@/lib/keybindings';
 import type { Event, Namespace } from '@/types';
 
 import { SearchView } from '../components/SearchView';
@@ -47,11 +48,14 @@ function render(
 
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <NamespaceProvider apiClient={namespaceClient} initialNamespace={NAMESPACE}>
-        <MemoryRouter>
-          <SearchView client={searchClient as ApiClient | undefined} namespace={namespace} />
-        </MemoryRouter>
-      </NamespaceProvider>
+      {/* The view registers its focus-search handler with the central registry. */}
+      <KeybindingsProvider>
+        <NamespaceProvider apiClient={namespaceClient} initialNamespace={NAMESPACE}>
+          <MemoryRouter>
+            <SearchView client={searchClient as ApiClient | undefined} namespace={namespace} />
+          </MemoryRouter>
+        </NamespaceProvider>
+      </KeybindingsProvider>
     </QueryClientProvider>
   );
 }

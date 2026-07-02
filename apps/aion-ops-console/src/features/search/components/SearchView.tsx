@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react';
-import { Link } from 'react-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation } from 'react-router';
 
 import { workflowDetailHref } from '@/app/routePaths';
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import type { ApiClient, EventSearchResult } from '@/lib/api';
+import { ACTION_IDS, useAction } from '@/lib/keybindings';
 import type { Namespace } from '@/types';
 
 import {
@@ -22,6 +23,21 @@ export type SearchViewProps = {
 };
 
 /**
+ * Router state chrome sets when navigating here via the focus-search action, so
+ * the view focuses its first field once its (lazy) chunk has actually mounted.
+ * Chrome never queries the view's DOM; the view owns its own focus behavior.
+ */
+export const FOCUS_SEARCH_STATE = { focusFirstField: true } as const;
+
+function wantsFieldFocus(state: unknown): boolean {
+  return (
+    typeof state === 'object' &&
+    state !== null &&
+    (state as { focusFirstField?: unknown }).focusFirstField === true
+  );
+}
+
+/**
  * Event-level search (plan slice S8, §4.5). A field-aware form posts to the AW
  * event-search endpoint; results deep-link into the swimlane at the matching
  * event (`/workflows/:id?seq=N`). No namespace, no query, or a server failure
@@ -30,6 +46,20 @@ export type SearchViewProps = {
 export function SearchView({ namespace, client }: SearchViewProps) {
   const [formState, setFormState] = useState<EventSearchFormState>(EMPTY_EVENT_SEARCH_FORM);
   const [submitted, setSubmitted] = useState<EventSearchFormState | null>(null);
+  const firstFieldRef = useRef<HTMLInputElement | null>(null);
+  const location = useLocation();
+
+  // While this view is mounted, "/" focuses the form directly: this later
+  // registration layers over chrome's navigate handler (registry precedence).
+  useAction(ACTION_IDS.focusSearch, () => firstFieldRef.current?.focus());
+
+  // Arriving from another route via chrome's handler: focus after mount. The
+  // effect runs post-commit, so it works however long the lazy chunk took.
+  useEffect(() => {
+    if (wantsFieldFocus(location.state)) {
+      firstFieldRef.current?.focus();
+    }
+  }, [location]);
 
   const { isEmpty } = useMemo(() => buildEventSearchQuery(formState), [formState]);
   const submittedQuery = useMemo(
@@ -73,6 +103,7 @@ export function SearchView({ namespace, client }: SearchViewProps) {
       ) : (
         <>
           <SearchForm
+            firstFieldRef={firstFieldRef}
             isEmpty={isEmpty}
             isLoading={search.isFetching}
             onChange={setFormState}
