@@ -42,6 +42,16 @@ newest live attempt unless the operator has pinned one. No Refresh button.
 This is the same substrate the Gantt click-through needs — one model, two
 views.
 
+**Post-mortem is a first-class requirement, not a live-only nicety.** Proven
+live 2026-07-03: a run failed (norn hit a context limit) and the console
+instantly showed NOTHING — the attempts list is the intervention router's
+live enumeration, so a failed/finished workflow has zero inspectable
+transcripts, exactly when the operator most needs them. The transcript data
+is durable (O-keyspace tail); only the enumeration is live-only. The
+navigator must enumerate attempts from workflow history/event stream — never
+from liveness — so a dead run's every attempt remains selectable and
+readable. Inspecting a failed run IS the ops-console job.
+
 ## The transcript surface
 
 1. **Rolling windowed feed.** A fixed-height region the events roll through —
@@ -85,6 +95,18 @@ snaps between a handful of coarse steps. Rework:
    detail — for agent steps, the transcript (deep-linkable per the URL rule).
 5. Keep a compact sequence/list mode as the secondary view; time is the
    primary axis.
+6. **Lane identity = activity, not occurrence.** Live-proven 2026-07-03: a
+   dev↔review loop minted a NEW lane for every iteration, so the chart grew
+   a row per cycle. Repeated executions of the same step must return to the
+   same lane — one row per activity identity, with each attempt/iteration a
+   separate bar along that row. The loop then reads as a visible ping-pong
+   between two lanes, which is exactly the story the operator wants.
+7. **Fit-to-width by default; zoom as the escape hatch.** Bars must not run
+   off the edge into an unbounded horizontal scroll. Default behavior: the
+   time axis rescales continuously so the whole run stays within the frame,
+   proportions compacting as the run grows. Explicit zoom in/out (and then
+   pan) is operator-summoned; on zoom-out-to-fit it snaps back to the
+   self-scaling mode.
 
 ## Start-workflow form
 
