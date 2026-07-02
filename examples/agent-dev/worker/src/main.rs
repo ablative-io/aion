@@ -140,6 +140,7 @@ fn build_registry(shell: &Shell, workspace_root: &Path) -> anyhow::Result<Arc<Ac
 }
 
 /// Parsed command-line arguments.
+#[derive(Debug)]
 struct Args {
     /// One or more candidate liminal listen addresses, in dial-preference order.
     candidates: Vec<String>,
@@ -151,32 +152,45 @@ struct Args {
     norn_bin: String,
 }
 
-/// Parse `--address` (repeatable), `--identity`, `--ready-file`, `--norn-bin`.
+/// Parse `--address` (repeatable), `--identity`, `--ready-file`, `--norn-bin` from the process
+/// arguments, defaulting `--norn-bin` from the `NORN_BIN` environment variable.
 fn parse_args() -> anyhow::Result<Args> {
+    let default_norn_bin = std::env::var("NORN_BIN").unwrap_or_else(|_| "norn".to_owned());
+    parse_args_from(std::env::args().skip(1), default_norn_bin)
+}
+
+/// The argument-parsing core, fed an explicit argument iterator and `--norn-bin` default so
+/// tests exercise the exact production logic without touching process globals.
+///
+/// Every value-taking flag bails with a clear message when its value is missing — a silent
+/// fallback to a default would mask an operator typo.
+fn parse_args_from(
+    args: impl IntoIterator<Item = String>,
+    default_norn_bin: String,
+) -> anyhow::Result<Args> {
     let mut candidates: Vec<String> = Vec::new();
     let mut identity = "agent-dev-worker".to_owned();
     let mut ready_file: Option<String> = None;
-    let mut norn_bin = std::env::var("NORN_BIN").unwrap_or_else(|_| "norn".to_owned());
-    let mut args = std::env::args().skip(1);
+    let mut norn_bin = default_norn_bin;
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--address" => match args.next() {
                 Some(value) => candidates.push(value),
                 None => anyhow::bail!("--address requires a value"),
             },
-            "--identity" => {
-                if let Some(value) = args.next() {
-                    identity = value;
-                }
-            }
-            "--ready-file" => {
-                ready_file = args.next();
-            }
-            "--norn-bin" => {
-                if let Some(value) = args.next() {
-                    norn_bin = value;
-                }
-            }
+            "--identity" => match args.next() {
+                Some(value) => identity = value,
+                None => anyhow::bail!("--identity requires a value"),
+            },
+            "--ready-file" => match args.next() {
+                Some(value) => ready_file = Some(value),
+                None => anyhow::bail!("--ready-file requires a value"),
+            },
+            "--norn-bin" => match args.next() {
+                Some(value) => norn_bin = value,
+                None => anyhow::bail!("--norn-bin requires a value"),
+            },
             other => anyhow::bail!("unknown argument `{other}`"),
         }
     }
@@ -251,4 +265,73 @@ fn main() -> anyhow::Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests of the argument-parsing core: defaults, explicit values, and the strict
+    //! missing-value bail for every value-taking flag.
+
+    use super::parse_args_from;
+
+    /// Runs the parsing core on a literal argv with a fixed `--norn-bin` default.
+    fn parse(args: &[&str]) -> anyhow::Result<super::Args> {
+        parse_args_from(
+            args.iter().map(|arg| (*arg).to_owned()),
+            "norn-default".to_owned(),
+        )
+    }
+
+    #[test]
+    fn no_arguments_yields_the_defaults() -> anyhow::Result<()> {
+        let args = parse(&[])?;
+        assert_eq!(args.candidates, vec!["127.0.0.1:50061".to_owned()]);
+        assert_eq!(args.identity, "agent-dev-worker");
+        assert_eq!(args.ready_file, None);
+        assert_eq!(args.norn_bin, "norn-default");
+        Ok(())
+    }
+
+    #[test]
+    fn all_flags_with_values_parse_and_addresses_repeat() -> anyhow::Result<()> {
+        let args = parse(&[
+            "--address",
+            "127.0.0.1:1111",
+            "--address",
+            "127.0.0.1:2222",
+            "--identity",
+            "worker-a",
+            "--ready-file",
+            "/tmp/ready",
+            "--norn-bin",
+            "/opt/norn",
+        ])?;
+        assert_eq!(
+            args.candidates,
+            vec!["127.0.0.1:1111".to_owned(), "127.0.0.1:2222".to_owned()]
+        );
+        assert_eq!(args.identity, "worker-a");
+        assert_eq!(args.ready_file.as_deref(), Some("/tmp/ready"));
+        assert_eq!(args.norn_bin, "/opt/norn");
+        Ok(())
+    }
+
+    #[test]
+    fn every_value_taking_flag_bails_when_its_value_is_missing() {
+        for flag in ["--address", "--identity", "--ready-file", "--norn-bin"] {
+            assert_eq!(
+                parse(&[flag]).err().map(|error| error.to_string()),
+                Some(format!("{flag} requires a value")),
+                "a trailing value-less {flag} must bail"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_argument_bails() {
+        assert_eq!(
+            parse(&["--bogus"]).err().map(|error| error.to_string()),
+            Some("unknown argument `--bogus`".to_owned())
+        );
+    }
 }
