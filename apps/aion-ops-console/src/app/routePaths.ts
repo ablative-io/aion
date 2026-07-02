@@ -11,6 +11,9 @@ export const incidentsPath = '/incidents';
 export const failoverPath = '/failover';
 export const actionsPath = '/actions';
 export const namespacesPath = '/registry';
+// The kit lookbook: the human verification surface for the motion kit. Route
+// only — deliberately absent from the nav.
+export const kitPath = '/kit';
 
 export function workflowListHref() {
   return workflowListPath;
@@ -39,6 +42,10 @@ export function actionsHref() {
 
 export function namespacesHref() {
   return namespacesPath;
+}
+
+export function kitHref() {
+  return kitPath;
 }
 
 export function routerBasenameFromBaseUrl(baseUrl = import.meta.env.BASE_URL ?? '/') {
