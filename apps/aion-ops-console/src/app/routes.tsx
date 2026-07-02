@@ -16,6 +16,7 @@ import {
   actionsPath,
   failoverPath,
   incidentsPath,
+  kitPath,
   namespacesPath,
   routerBasenameFromBaseUrl,
   searchPath,
@@ -32,6 +33,8 @@ export {
   failoverPath,
   incidentsHref,
   incidentsPath,
+  kitHref,
+  kitPath,
   namespacesHref,
   namespacesPath,
   routerBasenameFromBaseUrl,
@@ -58,6 +61,10 @@ const TriageView = lazyNamed(
   () => import('@/features/triage'),
   (mod) => mod.TriageView
 );
+// The kit lookbook takes no namespace, so it adapts its named export directly.
+const KitLookbook = lazy(async () => ({
+  default: (await import('@/features/kit-lookbook')).KitLookbook,
+}));
 
 // All routes nest under the shell layout route so the header + nav persist
 // across navigation and the active route mounts in its <Outlet>.
@@ -76,6 +83,8 @@ export const appRoutes: RouteObject[] = [
       { path: incidentsPath, element: <IncidentsRoute /> },
       { path: namespacesPath, element: <NamespaceRegistryPanel /> },
       { path: failoverPath, element: <FailoverRoute /> },
+      // Design lookbook (Phase 0 motion kit) — route only, never in the nav.
+      { path: kitPath, element: <KitRoute /> },
       // Catch-all: an unknown URL renders the branded 404 inside the shell so
       // the nav persists, instead of falling through to the RR default.
       { path: '*', element: <NotFound /> },
@@ -129,6 +138,14 @@ function IncidentsRoute() {
   return (
     <Suspense fallback={<LoadingSkeleton />}>
       <TriageView namespace={selectedNamespace} />
+    </Suspense>
+  );
+}
+
+function KitRoute() {
+  return (
+    <Suspense fallback={<LoadingSkeleton />}>
+      <KitLookbook />
     </Suspense>
   );
 }
