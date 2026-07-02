@@ -115,10 +115,17 @@ function ActionsRoute() {
   // Deploy affordance is gated on the runtime-discovered capability, never a
   // build-time flag: the panel renders only for a caller the server authorizes.
   const { deployGranted } = useCapabilities();
+  // Palette deep-links (`/actions?workflow_type=X`) preload the start form.
+  const [searchParams] = useSearchParams();
+  const initialWorkflowType = searchParams.get('workflow_type') ?? undefined;
 
   return (
     <Suspense fallback={<LoadingSkeleton />}>
-      <ActionsView namespace={selectedNamespace} deployGranted={deployGranted} />
+      <ActionsView
+        deployGranted={deployGranted}
+        initialWorkflowType={initialWorkflowType}
+        namespace={selectedNamespace}
+      />
     </Suspense>
   );
 }

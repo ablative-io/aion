@@ -5,6 +5,7 @@ import { CapabilitiesProvider } from '@/features/capabilities';
 import { NamespaceProvider } from '@/features/namespace';
 import type { AionEventWebSocketManager, ApiClient } from '@/lib/api';
 import { configuredEventSocket } from '@/lib/config';
+import { KeybindingsProvider } from '@/lib/keybindings';
 import type { Namespace } from '@/types';
 
 const QUERY_STALE_TIME_MS = 30_000;
@@ -29,11 +30,15 @@ export function AppProviders({
 
   return (
     <QueryClientProvider client={client}>
-      <CapabilitiesProvider apiClient={apiClient}>
-        <NamespaceProvider apiClient={apiClient} initialNamespace={initialNamespace}>
-          <WebSocketConnection manager={websocketManager}>{children}</WebSocketConnection>
-        </NamespaceProvider>
-      </CapabilitiesProvider>
+      {/* Keybindings sit above the router: the single global key listener and
+          the registry survive navigation, like the WS manager (M3). */}
+      <KeybindingsProvider>
+        <CapabilitiesProvider apiClient={apiClient}>
+          <NamespaceProvider apiClient={apiClient} initialNamespace={initialNamespace}>
+            <WebSocketConnection manager={websocketManager}>{children}</WebSocketConnection>
+          </NamespaceProvider>
+        </CapabilitiesProvider>
+      </KeybindingsProvider>
     </QueryClientProvider>
   );
 }
