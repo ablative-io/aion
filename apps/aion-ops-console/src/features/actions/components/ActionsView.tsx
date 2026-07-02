@@ -18,6 +18,8 @@ export type ActionsViewProps = {
    * this caller. Defaults to `false`: an ungated render is unprivileged.
    */
   deployGranted?: boolean;
+  /** Preload the start form's workflow type (palette deep-link `?workflow_type=`). */
+  initialWorkflowType?: string | undefined;
 };
 
 /**
@@ -35,6 +37,7 @@ export function ActionsView({
   startClient,
   deployClient,
   deployGranted = false,
+  initialWorkflowType,
 }: ActionsViewProps) {
   return (
     <div className="space-y-8 py-4">
@@ -49,7 +52,11 @@ export function ActionsView({
         <h2 className="font-medium text-secondary-foreground text-sm uppercase tracking-[0.15em]">
           Start workflow
         </h2>
-        <StartWorkflowForm apiClient={startClient} namespace={namespace} />
+        <StartWorkflowForm
+          apiClient={startClient}
+          initialWorkflowType={initialWorkflowType}
+          namespace={namespace}
+        />
       </section>
 
       {deployGranted ? (

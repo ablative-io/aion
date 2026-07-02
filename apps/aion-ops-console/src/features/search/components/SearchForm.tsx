@@ -12,6 +12,8 @@ export type SearchFormProps = {
   /** When true, the submit button is disabled and the empty-query hint shows. */
   isEmpty: boolean;
   isLoading: boolean;
+  /** Ref to the first input, so the view's focus-search action can target it. */
+  firstFieldRef?: React.Ref<HTMLInputElement> | undefined;
 };
 
 const FIELD_CLASS =
@@ -29,6 +31,7 @@ export function SearchForm({
   onClear,
   isEmpty,
   isLoading,
+  firstFieldRef,
 }: SearchFormProps) {
   const ids = useFieldIds();
 
@@ -44,6 +47,7 @@ export function SearchForm({
     >
       <TextField
         id={ids.eventType}
+        inputRef={firstFieldRef}
         label="Event type"
         placeholder="e.g. ActivityFailed"
         value={value.eventType}
@@ -108,9 +112,18 @@ type TextFieldProps = {
   onChange: (next: string) => void;
   placeholder?: string;
   type?: 'text' | 'datetime-local';
+  inputRef?: React.Ref<HTMLInputElement> | undefined;
 };
 
-function TextField({ id, label, value, onChange, placeholder, type = 'text' }: TextFieldProps) {
+function TextField({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = 'text',
+  inputRef,
+}: TextFieldProps) {
   return (
     <label className="flex flex-col gap-2 text-sm font-medium" htmlFor={id}>
       {label}
@@ -118,6 +131,7 @@ function TextField({ id, label, value, onChange, placeholder, type = 'text' }: T
         className={FIELD_CLASS}
         id={id}
         placeholder={placeholder}
+        ref={inputRef}
         type={type}
         value={value}
         onChange={(event) => onChange(event.currentTarget.value)}

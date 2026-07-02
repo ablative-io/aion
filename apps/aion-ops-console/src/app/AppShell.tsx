@@ -4,7 +4,9 @@ import { AppNav, type AppNavItem, type AppNavLinkProps } from '@/components/AppN
 import { RootErrorBoundary } from '@/components/RootErrorBoundary';
 import { ConnectionIndicator } from '@/features/live-feed';
 import { NamespaceSelector } from '@/features/namespace';
+import { PaletteHost } from '@/features/palette';
 
+import { GlobalActions } from './GlobalActions';
 import {
   actionsPath,
   failoverPath,
@@ -41,6 +43,8 @@ export function AppShell() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
+      {/* Global key actions register through the central registry — never ad-hoc. */}
+      <GlobalActions />
       <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-6 py-6">
         <header className="border-border/70 flex flex-col gap-4 border-b pb-6 md:flex-row md:items-center md:justify-between">
           <div className="space-y-3">
@@ -59,6 +63,9 @@ export function AppShell() {
             <Outlet />
           </RootErrorBoundary>
         </section>
+        <footer className="flex justify-end border-border/70 border-t pt-3">
+          <PaletteHost />
+        </footer>
       </div>
     </main>
   );

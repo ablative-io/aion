@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router';
 
 import { workflowDetailHref } from '@/app/routePaths';
@@ -14,6 +14,8 @@ export type StartWorkflowFormProps = {
   namespace: Namespace | null;
   /** Injected client for tests. */
   apiClient?: Pick<ApiClient, 'startWorkflow'> | undefined;
+  /** Preload the workflow-type field (palette deep-link). Editable as usual. */
+  initialWorkflowType?: string | undefined;
 };
 
 const FIELD_CLASS =
@@ -32,10 +34,23 @@ const AREA_CLASS =
  * dead-end — you type a namespace and the run creates it. The effective namespace
  * is the selected prop, or the trimmed free-form entry when none is selected.
  */
-export function StartWorkflowForm({ namespace, apiClient }: StartWorkflowFormProps) {
+export function StartWorkflowForm({
+  namespace,
+  apiClient,
+  initialWorkflowType,
+}: StartWorkflowFormProps) {
   const ids = useFieldIds();
-  const [workflowType, setWorkflowType] = useState('');
+  const [workflowType, setWorkflowType] = useState(initialWorkflowType ?? '');
   const [namespaceEntry, setNamespaceEntry] = useState('');
+
+  // A palette deep-link (`/actions?workflow_type=X`) can land while this route
+  // is already mounted — same-route navigation re-renders without remounting —
+  // so a changed deep-link value must sync into the field, not just seed it.
+  useEffect(() => {
+    if (initialWorkflowType !== undefined) {
+      setWorkflowType(initialWorkflowType);
+    }
+  }, [initialWorkflowType]);
   const [routingKey, setRoutingKey] = useState('');
   const [taskQueue, setTaskQueue] = useState('');
   const [inputText, setInputText] = useState('');
