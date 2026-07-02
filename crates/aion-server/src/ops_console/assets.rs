@@ -150,11 +150,20 @@ fn sanitize_path(path: &str) -> Option<String> {
     Some(path.to_owned())
 }
 
+/// Whether an unmatched GET path belongs to the public API namespace and must
+/// stay a plain 404 rather than serve the SPA (an API client probing a wrong
+/// path should never receive HTML).
+///
+/// One carve-out: `workflows/{uuid}` is the console's OWN deep link
+/// (`workflowDetailPath` in the SPA's route contract), so a browser refresh on
+/// a workflow detail page serves `index.html`. Every workflow API route under
+/// `/workflows/` is a fixed verb segment (`count`, `start`, `attempts`, …),
+/// never a bare UUID, so the shapes cannot collide.
 fn is_reserved_public_path(path: &str) -> bool {
-    path == "workflows"
-        || path.starts_with("workflows/")
-        || path == "events"
-        || path.starts_with("events/")
+    if let Some(rest) = path.strip_prefix("workflows/") {
+        return uuid::Uuid::parse_str(rest).is_err();
+    }
+    path == "workflows" || path == "events" || path.starts_with("events/")
 }
 
 fn content_type(path: &str) -> HeaderValue {
@@ -252,6 +261,47 @@ mod tests {
         assert!(content_type.starts_with("text/html"), "got {content_type}");
         let text = body_text(response).await?;
         assert!(text.contains("<title>Aion Ops Console</title>"));
+        Ok(())
+    }
+
+    /// A browser refresh on the console's own workflow-detail deep link
+    /// (`/workflows/{uuid}`) serves the SPA index — while API-shaped paths
+    /// under `/workflows/` (fixed verb segments, non-UUID tails) stay a plain
+    /// 404 so an API client probing a wrong path never receives HTML.
+    #[tokio::test]
+    async fn workflow_detail_deep_link_serves_index_but_api_paths_stay_reserved() -> TestResult {
+        let config = OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
+        };
+        let router = ops_console_router(&config)?;
+
+        let detail = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/workflows/141852b2-20b9-4e94-8361-7a1ea3d5f910")
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(
+            detail.status(),
+            StatusCode::OK,
+            "a workflow-detail deep link must load the SPA"
+        );
+        let text = body_text(detail).await?;
+        assert!(text.contains("<title>Aion Ops Console</title>"));
+
+        for reserved in ["/workflows", "/workflows/count", "/workflows/not-a-uuid"] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(reserved).body(body::Body::empty())?)
+                .await?;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{reserved} must stay reserved for the API"
+            );
+        }
         Ok(())
     }
 
