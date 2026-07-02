@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use agent_dev_worker::handlers;
 use agent_dev_worker::shell::Shell;
-use agent_dev_worker::types::{GateInput, LandInput, ProvisionInput};
+use agent_dev_worker::types::{GateInput, LandInput, ProvisionInput, Workspace};
 use aion_worker::{ActivityFailure, Classification};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -376,7 +376,10 @@ exit 0"#,
     let landed = handlers::land(
         &shims.shell(),
         LandInput {
-            path: shims.root_string(),
+            workspace: Workspace {
+                path: shims.root_string(),
+                branch: "agent-dev-brief-7".to_owned(),
+            },
             brief_id: "brief-7".to_owned(),
         },
     )
@@ -407,7 +410,10 @@ fn land_with_nothing_to_commit_is_terminal() -> TestResult {
     let failure = handlers::land(
         &shims.shell(),
         LandInput {
-            path: shims.root_string(),
+            workspace: Workspace {
+                path: shims.root_string(),
+                branch: "agent-dev-brief-7".to_owned(),
+            },
             brief_id: "brief-7".to_owned(),
         },
     )
@@ -430,7 +436,10 @@ fn land_with_an_empty_rev_parse_is_terminal() -> TestResult {
     let failure = handlers::land(
         &shims.shell(),
         LandInput {
-            path: shims.root_string(),
+            workspace: Workspace {
+                path: shims.root_string(),
+                branch: "agent-dev-brief-7".to_owned(),
+            },
             brief_id: "brief-7".to_owned(),
         },
     )

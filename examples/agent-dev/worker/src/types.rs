@@ -1,9 +1,10 @@
 //! Wire types for the `agent_dev` workflow contract.
 //!
-//! Defined field-for-field from the shared contract (the `agent_dev` GLEAM
-//! package is authored separately; wire-compat pinning against its real
-//! codecs happens at integration). Deserialization is tolerant of extra
-//! fields, matching the Gleam field-decoder convention.
+//! THE RULE: the `agent_dev` Gleam package is the contract source, and its
+//! emitted schemas (`examples/agent-dev/schemas/`) are the wire contract —
+//! this module conforms to them, never the other way round. A `wire_compat`
+//! pinning test against those schema files lands post-merge. Deserialization
+//! is tolerant of extra fields, matching the Gleam field-decoder convention.
 //!
 //! The three AGENT activity types (`scout`, `dev`, `review`) do not appear
 //! here: their input is a plain JSON `String` (the prompt) and their output a
@@ -54,10 +55,12 @@ pub struct GateResult {
 }
 
 /// Input of the `land` activity: commit the run's work in the workspace.
+/// Per the contract, the workspace arrives NESTED — the workflow passes the
+/// `provision` output record through whole.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct LandInput {
-    /// Absolute path of the workspace clone to commit in.
-    pub path: String,
+    /// The provisioned workspace clone to commit in.
+    pub workspace: Workspace,
     /// The brief this run implements; names the commit.
     pub brief_id: String,
 }

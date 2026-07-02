@@ -160,7 +160,7 @@ fn workspace_survives_reboot_purge_and_later_activity_succeeds() -> TestResult {
     let landed = handlers::land(
         &shell,
         LandInput {
-            path: workspace.path.clone(),
+            workspace: workspace.clone(),
             brief_id: "loss-repro".to_owned(),
         },
     )

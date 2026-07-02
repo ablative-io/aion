@@ -315,7 +315,11 @@ pub fn gate(shell: &Shell, input: GateInput) -> Result<GateResult, ActivityFailu
 /// nothing to commit is a terminal failure — the workflow must not record a
 /// phantom landing).
 pub fn land(shell: &Shell, input: LandInput) -> Result<LandResult, ActivityFailure> {
-    let LandInput { path, brief_id } = input;
+    let LandInput {
+        workspace,
+        brief_id,
+    } = input;
+    let path = workspace.path;
     require_workspace_dir(&path)?;
     require_run(shell, "git", &["add", "-A"], &path, "git add")?;
     let message = format!("agent-dev: {brief_id}");
