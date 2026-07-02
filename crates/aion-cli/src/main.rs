@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use aion_client::{Client, ClientBuilder, ClientError, ListPage, StartOptions};
-use aion_core::{WorkflowFilter, WorkflowStatus};
+use aion_core::{Payload, WorkflowFilter, WorkflowStatus};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
@@ -443,7 +443,7 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
             input_file,
         } => {
             let input = resolve_start_input(input, input_file.as_deref())?;
-            start_workflow(client, workflow_type, &input).await
+            start_workflow(client, workflow_type, input).await
         }
         RemoteCommand::Signal {
             workflow_id,
@@ -489,20 +489,24 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
     }
 }
 
-/// Resolve the start input payload: the contents of `--input-file` when given
-/// (read as UTF-8), otherwise the inline `--input` string unchanged. The two
+/// Resolve the start input into a JSON payload: the contents of `--input-file`
+/// when given (read as UTF-8), otherwise the inline `--input` string. The two
 /// flags are mutually exclusive at parse time (`conflicts_with`), so a file is
-/// only ever read when `--input` was not passed.
-fn resolve_start_input(input: &str, input_file: Option<&Path>) -> Result<String> {
+/// only ever read when `--input` was not passed. Validating here lets a
+/// malformed-JSON error name the flag the payload actually came from.
+fn resolve_start_input(input: &str, input_file: Option<&Path>) -> Result<Payload> {
     match input_file {
-        Some(path) => std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read --input-file {}", path.display())),
-        None => Ok(input.to_owned()),
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read --input-file {}", path.display()))?;
+            json_payload(&raw)
+                .with_context(|| format!("invalid --input-file {} JSON", path.display()))
+        }
+        None => json_payload(input).context("invalid --input JSON"),
     }
 }
 
-async fn start_workflow(client: &Client, workflow_type: &str, input: &str) -> Result<Value> {
-    let input = json_payload(input).context("invalid --input JSON")?;
+async fn start_workflow(client: &Client, workflow_type: &str, input: Payload) -> Result<Value> {
     let handle = client
         .start(workflow_type.to_owned(), input, StartOptions::default())
         .await
@@ -647,9 +651,11 @@ mod tests {
 
     use aion_server::config::CliOverrides;
     use clap::{CommandFactory, Parser};
+    use serde_json::{Value, json};
 
     use super::{
-        Cli, ClientCommand, Command, RemoteCommand, normalize_endpoint, resolve_start_input,
+        Cli, ClientCommand, Command, RemoteCommand, normalize_endpoint, payload_to_json,
+        resolve_start_input,
     };
 
     const WORKFLOW_ID: &str = "00000000-0000-0000-0000-000000000001";
@@ -674,13 +680,11 @@ mod tests {
         else {
             anyhow::bail!("expected start command");
         };
-        // The inline default is untouched; the file contents win verbatim.
+        // The inline default is untouched; the file contents win.
         assert_eq!(input, "null");
         assert_eq!(input_file.as_deref(), Some(path.as_path()));
-        assert_eq!(
-            resolve_start_input(&input, input_file.as_deref())?,
-            r#"{"order_id":42}"#
-        );
+        let payload = resolve_start_input(&input, input_file.as_deref())?;
+        assert_eq!(payload_to_json(&payload)?, json!({ "order_id": 42 }));
         Ok(())
     }
 
@@ -694,7 +698,8 @@ mod tests {
             anyhow::bail!("expected start command");
         };
         assert!(input_file.is_none());
-        assert_eq!(resolve_start_input(&input, input_file.as_deref())?, "null");
+        let payload = resolve_start_input(&input, input_file.as_deref())?;
+        assert_eq!(payload_to_json(&payload)?, Value::Null);
         Ok(())
     }
 
@@ -723,6 +728,40 @@ mod tests {
         assert!(
             format!("{error:#}").contains("/definitely/not/there/payload.json"),
             "error should name the path: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn start_malformed_input_file_json_error_names_the_flag_and_path() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("payload.json");
+        std::fs::write(&path, "{not json")?;
+
+        let Err(error) = resolve_start_input("null", Some(&path)) else {
+            anyhow::bail!("malformed file JSON must error");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!("invalid --input-file {} JSON", path.display())),
+            "error should name --input-file and the path: {message}"
+        );
+        assert!(
+            !message.contains("invalid --input JSON"),
+            "error must not blame the inline flag: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn start_malformed_inline_input_json_error_names_the_flag() -> anyhow::Result<()> {
+        let Err(error) = resolve_start_input("{not json", None) else {
+            anyhow::bail!("malformed inline JSON must error");
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("invalid --input JSON"),
+            "error should name --input: {message}"
         );
         Ok(())
     }
