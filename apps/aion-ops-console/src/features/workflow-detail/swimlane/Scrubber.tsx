@@ -73,7 +73,7 @@ function Scrubber({ entries, scrubSeq, onScrub }: ScrubberProps) {
         className="w-28 shrink-0 text-right text-foreground text-xs tabular-nums"
       >
         {isLive ? (
-          <span className="text-primary">live · seq {stops[lastIndex]}</span>
+          <span className="text-live">live · seq {stops[lastIndex]}</span>
         ) : (
           <span>
             seq {stops[activeIndex]}{' '}

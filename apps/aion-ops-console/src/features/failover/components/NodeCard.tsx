@@ -23,7 +23,7 @@ export type NodeCardProps = {
 };
 
 const DOT_STYLE: Record<NodeLivenessState, string> = {
-  live: 'bg-primary',
+  live: 'bg-live',
   dark: 'bg-danger',
   unknown: 'border border-muted-foreground bg-transparent',
 };

@@ -120,7 +120,7 @@ export function MorphingPopoverContent({
           className={cn(
             // Glass is sanctioned for summoned surfaces (design language §tokens).
             'absolute left-0 top-0 z-50 min-w-56 rounded-xl border border-[var(--border-default)]',
-            'bg-[var(--surface-glass,oklch(0.16_0.01_280/0.85))] p-3 shadow-xl backdrop-blur-xl',
+            'bg-[var(--glass-bg,oklch(0.16_0.01_280/0.85))] p-3 shadow-xl backdrop-blur-xl',
             'outline-none',
             className
           )}

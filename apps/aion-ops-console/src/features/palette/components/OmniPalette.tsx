@@ -21,9 +21,9 @@ export type OmniPaletteProps = {
 };
 
 // Terracotta selection accent with a local fallback until the Phase-0 token
-// pass defines --accent-terracotta globally; the token wins once it exists.
+// pass defines --accent-primary globally; the token wins once it exists.
 const PALETTE_STYLE = {
-  '--palette-accent': 'var(--accent-terracotta, #d4845a)',
+  '--palette-accent': 'var(--accent-primary, #d4845a)',
 } as CSSProperties;
 
 const ITEM_CLASS = cn(

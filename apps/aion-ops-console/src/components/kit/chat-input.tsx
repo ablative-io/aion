@@ -61,8 +61,8 @@ const ESCALATION_LABEL: Record<EscalationLevel, string> = {
 // Distinct visual states per escalation level; red family reserved for kill.
 const ESCALATION_CLASS: Record<EscalationLevel, string> = {
   interrupt: 'text-[var(--surface-base,#0f0f14)]',
-  shutdown: 'bg-[var(--status-running,#fbbf24)] text-[var(--surface-base,#0f0f14)]',
-  kill: 'bg-[var(--status-failed,#f87171)] text-[var(--surface-base,#0f0f14)] ring-2 ring-[var(--status-failed-glow,rgba(248,113,113,0.12))]',
+  shutdown: 'bg-[var(--status-warning,#fbbf24)] text-[var(--surface-base,#0f0f14)]',
+  kill: 'bg-[var(--status-danger,#f87171)] text-[var(--surface-base,#0f0f14)] ring-2 ring-[var(--status-danger-glow,rgba(248,113,113,0.12))]',
 };
 
 export function ChatInputMorph({

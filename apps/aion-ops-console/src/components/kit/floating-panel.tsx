@@ -129,7 +129,7 @@ export function FloatingPanelContent({
           className={cn(
             'absolute left-0 top-0 z-50 flex w-80 flex-col overflow-hidden rounded-xl',
             'border border-[var(--border-default)] shadow-xl backdrop-blur-xl',
-            'bg-[var(--surface-glass,oklch(0.16_0.01_280/0.85))] outline-none',
+            'bg-[var(--glass-bg,oklch(0.16_0.01_280/0.85))] outline-none',
             className
           )}
           data-slot="floating-panel-content"
