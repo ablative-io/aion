@@ -1,3 +1,8 @@
+// Self-hosted woff2 (design language: air-gappable embed, no external font
+// requests, ever) — Vite bundles these; nothing is fetched at runtime.
+import '@fontsource-variable/dm-sans';
+import '@fontsource-variable/jetbrains-mono';
+
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 

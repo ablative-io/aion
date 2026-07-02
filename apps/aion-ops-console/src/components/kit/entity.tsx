@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 
 import { cn } from '@/lib/utils';
 
-import { degradeToFade, SPRING_SIGNATURE } from './springs';
+import { degradeToFade, MICRO_TRANSITION_SLOW, SPRING_SIGNATURE } from './springs';
 import type { KitStatus } from './status-dot';
 import { StatusDot } from './status-dot';
 
@@ -238,7 +238,7 @@ function EntityFormShell({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, filter: 'blur(10px)' }}
-      transition={{ duration: 0.2, ease: 'easeOut' }}
+      transition={MICRO_TRANSITION_SLOW}
       className="flex min-h-0 flex-1 flex-col"
     >
       {children}
@@ -309,7 +309,7 @@ export function EntityPillStream({
           initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -10 }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
+          transition={MICRO_TRANSITION_SLOW}
         >
           {headline}
         </motion.span>

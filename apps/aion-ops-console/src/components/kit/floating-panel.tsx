@@ -6,7 +6,7 @@ import { createContext, useContext } from 'react';
 import { cn } from '@/lib/utils';
 import type { AnchoredMorph } from './anchored-morph';
 import { useAnchoredMorph } from './anchored-morph';
-import { degradeToFade, SPRING_SIGNATURE } from './springs';
+import { degradeToFade, MICRO_TRANSITION, SPRING_SIGNATURE } from './springs';
 
 // FloatingPanel (cult-ui pattern, MIT, reimplemented in our idiom): a richer
 // anchored morph than MorphingPopover — a structured mini-surface (header /
@@ -82,7 +82,7 @@ export function FloatingPanelTrigger({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.15, ease: 'easeOut' }}
+          transition={MICRO_TRANSITION}
           onClick={() => panel.setOpen(true)}
           aria-haspopup="dialog"
           className={cn(

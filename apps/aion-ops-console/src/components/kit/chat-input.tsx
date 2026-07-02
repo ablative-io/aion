@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 import { readChatDraft, writeChatDraft } from './chat-drafts';
 import type { EscalationLevel, EscalationMachine } from './chat-escalation';
 import { createEscalationMachine, ESCALATION_DECAY_MS } from './chat-escalation';
-import { degradeToFade, SPRING_SIGNATURE } from './springs';
+import { degradeToFade, MICRO_TRANSITION_SLOW, SPRING_SIGNATURE } from './springs';
 import type { KitStatus } from './status-dot';
 import { KIT_ACCENT, StatusDot } from './status-dot';
 
@@ -16,6 +16,13 @@ import { KIT_ACCENT, StatusDot } from './status-dot';
 // No profile/model/settings pills — intervention is almost the fallback here.
 
 export type ChatPriority = 'queued' | 'interrupt';
+
+export type ChatInputKeyboardActions = {
+  /** Send the current draft (or fire the escalation press while streaming). */
+  send: () => void;
+  /** Collapse the editor back to the docked pill. */
+  collapse: () => void;
+};
 
 export type ChatInputMorphProps = {
   /** Keys the module-level draft store so each conversation keeps its own draft. */
@@ -34,6 +41,14 @@ export type ChatInputMorphProps = {
   onEscalate?: (action: EscalationLevel) => void;
   /** Test/demo hook for the 3s escalation decay window. */
   escalationDecayMs?: number;
+  /**
+   * Callback wiring surface for the central keybinding registry (track C):
+   * receives the send/collapse verbs, may return a cleanup. The textarea's
+   * element-scoped ⌘↵/Escape defaults route through the same verbs and
+   * migrate to the registry when it lands.
+   */
+  // biome-ignore lint/suspicious/noConfusingVoidType: mirrors React's EffectCallback — registrars without cleanup return nothing
+  registerKeyboardActions?: (actions: ChatInputKeyboardActions) => void | (() => void);
   className?: string;
 };
 
@@ -62,6 +77,7 @@ export function ChatInputMorph({
   onSubmit,
   onEscalate,
   escalationDecayMs = ESCALATION_DECAY_MS,
+  registerKeyboardActions,
   className,
 }: ChatInputMorphProps) {
   const reducedMotion = useReducedMotion() ?? false;
@@ -127,6 +143,22 @@ export function ChatInputMorph({
     submitMessage(message, priority);
   };
 
+  // Latest verbs behind a stable ref so a registered binding never goes stale
+  // and registration doesn't churn on every keystroke.
+  const keyboardVerbs = useRef<ChatInputKeyboardActions>({ send: () => {}, collapse: () => {} });
+  useEffect(() => {
+    keyboardVerbs.current = { send: handleSend, collapse: () => setExpanded(false) };
+  });
+
+  useEffect(() => {
+    if (!registerKeyboardActions) return;
+    const cleanup = registerKeyboardActions({
+      send: () => keyboardVerbs.current.send(),
+      collapse: () => keyboardVerbs.current.collapse(),
+    });
+    return typeof cleanup === 'function' ? cleanup : undefined;
+  }, [registerKeyboardActions]);
+
   const sendLabel = streaming ? ESCALATION_LABEL[escalation] : 'Send';
 
   return (
@@ -150,7 +182,7 @@ export function ChatInputMorph({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, filter: 'blur(10px)' }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
+            transition={MICRO_TRANSITION_SLOW}
             className="flex flex-col gap-2 p-3"
           >
             <textarea
@@ -158,15 +190,16 @@ export function ChatInputMorph({
               value={value}
               onChange={(event) => updateValue(event.target.value)}
               onKeyDown={(event) => {
-                // Element-scoped editor keys, not global hotkeys (those go
-                // through the central registry). ⌘/Super is the primary
+                // Element-scoped editor defaults, not global hotkeys; they fire
+                // the same verbs exposed to the central registry, so remapping
+                // happens there once track C lands. ⌘/Super is the primary
                 // modifier — never Control.
                 if (event.key === 'Enter' && event.metaKey) {
                   event.preventDefault();
-                  handleSend();
+                  keyboardVerbs.current.send();
                 } else if (event.key === 'Escape') {
                   event.preventDefault();
-                  setExpanded(false);
+                  keyboardVerbs.current.collapse();
                 }
               }}
               placeholder={placeholder}
@@ -208,7 +241,7 @@ export function ChatInputMorph({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, filter: 'blur(10px)' }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
+            transition={MICRO_TRANSITION_SLOW}
             onClick={() => setExpanded(true)}
             className="flex h-9 w-full items-center gap-2 px-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)]"
             data-slot="chat-pill"

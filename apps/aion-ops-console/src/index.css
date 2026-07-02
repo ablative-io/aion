@@ -41,7 +41,8 @@
   --surface-base: #0f0f14;
   --surface-hover: #252530;
   --border-default: rgba(255, 255, 255, 0.08);
-  --border-focus: rgba(34, 211, 238, 0.5);
+  /* Focus ring = accent terracotta @ 50% (design language: meridian cyan dropped). */
+  --border-focus: rgba(212, 132, 90, 0.5);
   --text-primary: #f4f4f5;
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
@@ -75,7 +76,8 @@
   --surface-base: #f4f4f5;
   --surface-hover: #f4f4f5;
   --border-default: rgba(0, 0, 0, 0.08);
-  --border-focus: rgba(8, 145, 178, 0.5);
+  /* Terracotta darkened for light surfaces, same ratio as the dark ring. */
+  --border-focus: rgba(179, 95, 51, 0.5);
   --text-primary: #18181b;
   --text-secondary: #52525b;
   --text-muted: #71717a;
@@ -123,7 +125,7 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'DM Sans Variable', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     line-height: 1.6;
     min-height: 100vh;
   }
@@ -134,7 +136,7 @@
 
   code,
   .mono {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'JetBrains Mono Variable', 'JetBrains Mono', monospace;
     font-size: 0.875em;
   }
 }

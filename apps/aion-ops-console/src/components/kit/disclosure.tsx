@@ -6,7 +6,7 @@ import useMeasure from 'react-use-measure';
 
 import { cn } from '@/lib/utils';
 
-import { degradeToFade, SPRING_SIGNATURE } from './springs';
+import { degradeToFade, MICRO_TRANSITION, SPRING_SIGNATURE } from './springs';
 
 // Disclosure (motion-primitives pattern): an animated collapsible for detail
 // panels — measured-height expansion on the signature spring, chevron folded
@@ -86,7 +86,7 @@ export function DisclosureTrigger({
       {children}
       <motion.span
         animate={{ rotate: disclosure.open ? 180 : 0 }}
-        transition={{ duration: 0.15, ease: 'easeOut' }}
+        transition={MICRO_TRANSITION}
         className="shrink-0 text-[var(--text-muted)]"
       >
         <ChevronDown aria-hidden="true" className="size-3.5" />

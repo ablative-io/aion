@@ -14,7 +14,7 @@ export {
   ESCALATION_ORDER,
   escalate,
 } from './chat-escalation';
-export type { ChatInputMorphProps, ChatPriority } from './chat-input';
+export type { ChatInputKeyboardActions, ChatInputMorphProps, ChatPriority } from './chat-input';
 export { ChatInputMorph } from './chat-input';
 export type { DisclosureProps } from './disclosure';
 export { Disclosure, DisclosureContent, DisclosureTrigger } from './disclosure';

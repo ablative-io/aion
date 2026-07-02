@@ -5,7 +5,7 @@ import { createContext, useContext } from 'react';
 import { cn } from '@/lib/utils';
 import type { AnchoredMorph } from './anchored-morph';
 import { useAnchoredMorph } from './anchored-morph';
-import { degradeToFade, SPRING_SIGNATURE } from './springs';
+import { degradeToFade, MICRO_TRANSITION, SPRING_SIGNATURE } from './springs';
 
 // Trigger→surface shared-layoutId morph (motion-primitives pattern, MIT,
 // reimplemented in our idiom): the trigger IS the surface, expanded in place.
@@ -75,7 +75,7 @@ export function MorphingPopoverTrigger({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.15, ease: 'easeOut' }}
+          transition={MICRO_TRANSITION}
           onClick={() => morph.setOpen(true)}
           className={cn(
             'inline-flex items-center gap-2 rounded-lg border border-[var(--border-default)]',

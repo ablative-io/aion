@@ -6,7 +6,7 @@ import useMeasure from 'react-use-measure';
 
 import { cn } from '@/lib/utils';
 
-import { degradeToFade, SPRING_SIGNATURE } from './springs';
+import { degradeToFade, MICRO_TRANSITION, SPRING_SIGNATURE } from './springs';
 import type { KitStatus } from './status-dot';
 import { StatusDot } from './status-dot';
 
@@ -76,7 +76,7 @@ export function ExpandableRow({
       >
         <motion.span
           animate={{ rotate: isExpanded ? 90 : 0 }}
-          transition={{ duration: 0.15, ease: 'easeOut' }}
+          transition={MICRO_TRANSITION}
           className="shrink-0 text-[var(--text-muted)]"
         >
           <ChevronRight aria-hidden="true" className="size-3.5" />
