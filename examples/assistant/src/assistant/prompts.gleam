@@ -104,11 +104,29 @@ fn ground_truth_note(input: io.Input) -> String {
   case string.trim(input.repo_path) {
     "" ->
       head
-      <> " — and this session has NO aion repository, so be explicit about "
-      <> "what you cannot check."
+      <> " — this session started with NO aion repository. Before anything "
+      <> "else, try to get one: `git clone --depth 1 "
+      <> "https://github.com/ablative-io/aion.git` in your workspace. The "
+      <> "repository is PRIVATE — the clone succeeds only if this host has "
+      <> "git credentials. If it fails, tell the operator plainly: restart "
+      <> "the session with the repository path filled in (the field on the "
+      <> "new-session form) for full authoring capability. If it succeeds, "
+      <> "read `examples/assistant/resources/ENVIRONMENT.md` first and "
+      <> "proceed as if the repository had been provided."
     _ ->
       head
-      <> ". In your workspace clone, read (via file tools or shell):\n"
+      <> ". START by reading your skill documents — they are the distilled "
+      <> "operating manual for this exact job, in your workspace clone at "
+      <> "`examples/assistant/resources/`:\n"
+      <> "- `ENVIRONMENT.md` — preflight checks and workspace semantics "
+      <> "(read FIRST, run its preflight before authoring anything)\n"
+      <> "- `SCAFFOLD.md` — the complete new-package walkthrough with "
+      <> "verbatim file contents\n"
+      <> "- `COMMANDS.md` — every lifecycle command, expected output, "
+      <> "failure modes\n"
+      <> "- `SDK.md` — the aion_flow surface with real signatures\n"
+      <> "- `TROUBLESHOOTING.md` — symptom → cause → fix\n"
+      <> "Then go deeper as needed:\n"
       <> "- `docs/GETTING-STARTED.md`, `docs/API.md`, `docs/packaging.md`\n"
       <> "- `docs/guides/` — especially `codegen.md` (types-first) and the "
       <> "workflow guides\n"
