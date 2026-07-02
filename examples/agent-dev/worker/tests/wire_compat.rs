@@ -17,7 +17,8 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use agent_dev_worker::types::{
-    GateInput, GateResult, LandInput, LandResult, ProvisionInput, Workspace,
+    AssistantProvisionInput, AssistantWorkspace, GateInput, GateResult, LandInput, LandResult,
+    ProvisionInput, Workspace,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -110,8 +111,35 @@ fn land_result_matches_the_gleam_codec() -> TestResult {
     )
 }
 
-/// The emitted schema files this module conforms to exist beside the package
-/// — a rename or move of the contract directory should fail loudly here.
+/// Shape from the `assistant` package's `provision_input_to_json`:
+/// `repo_path`, `run_id` (codec source:
+/// `examples/assistant/src/assistant_codecs.gleam`).
+#[test]
+fn assistant_provision_input_matches_the_gleam_codec() -> TestResult {
+    assert_wire(
+        r#"{"repo_path":"/Users/tom/Developer/ablative/aion","run_id":"0b81e178-56ff-4b2c-9f3f-2c1f42fd3a11"}"#,
+        &AssistantProvisionInput {
+            repo_path: "/Users/tom/Developer/ablative/aion".to_owned(),
+            run_id: "0b81e178-56ff-4b2c-9f3f-2c1f42fd3a11".to_owned(),
+        },
+    )
+}
+
+/// Shape from the `assistant` package's `workspace_to_json`: `path` only —
+/// the assistant workspace carries no branch.
+#[test]
+fn assistant_workspace_matches_the_gleam_codec() -> TestResult {
+    assert_wire(
+        r#"{"path":"/Users/tom/.aion/clones/0b81e178-56ff-4b2c-9f3f-2c1f42fd3a11/repo"}"#,
+        &AssistantWorkspace {
+            path: "/Users/tom/.aion/clones/0b81e178-56ff-4b2c-9f3f-2c1f42fd3a11/repo".to_owned(),
+        },
+    )
+}
+
+/// The emitted schema files this module conforms to exist beside the
+/// packages — a rename or move of a contract directory should fail loudly
+/// here.
 #[test]
 fn contract_schemas_exist_beside_the_package() {
     for schema in [
@@ -125,6 +153,20 @@ fn contract_schemas_exist_beside_the_package() {
         assert!(
             std::path::Path::new(&path).is_file(),
             "contract schema missing: {path}"
+        );
+    }
+    for schema in [
+        "provision_input.json",
+        "workspace.json",
+        "continuation.json",
+    ] {
+        let path = format!(
+            "{}/../../assistant/schemas/{schema}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert!(
+            std::path::Path::new(&path).is_file(),
+            "assistant contract schema missing: {path}"
         );
     }
 }

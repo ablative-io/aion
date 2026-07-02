@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 
 use agent_dev_worker::handlers;
 use agent_dev_worker::shell::Shell;
-use agent_dev_worker::types::{GateInput, LandInput, ProvisionInput, Workspace};
+use agent_dev_worker::types::{
+    AssistantProvisionInput, GateInput, LandInput, ProvisionInput, Workspace,
+};
 use aion_worker::{ActivityFailure, Classification};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -212,6 +214,159 @@ fn provision_failing_clone_is_terminal_with_diagnostics() -> TestResult {
         &shims.shell(),
         &root,
         provision_input("https://example.test/missing.git".to_owned(), "wf-404"),
+    )
+    .err()
+    .ok_or("a failing clone must fail the activity")?;
+    assert_terminal(&failure, "git clone failed — exit status 128");
+    assert_terminal(&failure, "repository not found");
+    Ok(())
+}
+
+// --- assistant_provision ---------------------------------------------------------
+
+fn assistant_provision_input(repo_path: &str, run_id: &str) -> AssistantProvisionInput {
+    AssistantProvisionInput {
+        repo_path: repo_path.to_owned(),
+        run_id: run_id.to_owned(),
+    }
+}
+
+#[test]
+fn assistant_provision_clones_into_the_run_keyed_layout() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("git", GIT_PROVISION_SHIM)?;
+    let root = shims.workspace_root();
+
+    let workspace = handlers::assistant_provision(
+        &shims.shell(),
+        &root,
+        assistant_provision_input("/repos/aion", "wf-assist-1"),
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    let expected_repo = root.join("wf-assist-1").join("repo");
+    assert_eq!(PathBuf::from(&workspace.path), expected_repo);
+    assert!(
+        expected_repo.is_dir(),
+        "the clone target directory must exist"
+    );
+    let log = shims.log("git");
+    assert!(
+        log.contains(&format!("clone /repos/aion {}", expected_repo.display())),
+        "git clone must target <root>/<run_id>/repo; got log: {log}"
+    );
+    assert!(
+        !log.contains("init"),
+        "a clone session must not also git init; got log: {log}"
+    );
+    Ok(())
+}
+
+#[test]
+fn assistant_provision_empty_repo_path_inits_a_scratch_workspace() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("git", "exit 0")?;
+    let root = shims.workspace_root();
+
+    let workspace = handlers::assistant_provision(
+        &shims.shell(),
+        &root,
+        assistant_provision_input("", "wf-scratch-1"),
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    let expected_repo = root.join("wf-scratch-1").join("repo");
+    assert_eq!(PathBuf::from(&workspace.path), expected_repo);
+    assert!(
+        expected_repo.is_dir(),
+        "the scratch workspace directory must exist"
+    );
+    let log = shims.log("git");
+    assert!(
+        log.contains("init"),
+        "an empty repo_path must git init the scratch workspace; got log: {log}"
+    );
+    assert!(
+        !log.contains("clone"),
+        "an empty repo_path must not clone; got log: {log}"
+    );
+    Ok(())
+}
+
+#[test]
+fn assistant_provision_collision_renames_the_stale_attempt_aside() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("git", GIT_PROVISION_SHIM)?;
+    let root = shims.workspace_root();
+
+    // An earlier partial attempt of the SAME run id, with salvageable content.
+    let stale = root.join("wf-assist-1");
+    std::fs::create_dir_all(&stale)?;
+    std::fs::write(stale.join("partial.txt"), "half a workspace\n")?;
+
+    let workspace = handlers::assistant_provision(
+        &shims.shell(),
+        &root,
+        assistant_provision_input("/repos/aion", "wf-assist-1"),
+    )
+    .map_err(|failure| failure.message().to_owned())?;
+
+    assert_eq!(
+        PathBuf::from(&workspace.path),
+        root.join("wf-assist-1").join("repo")
+    );
+    let renamed: Vec<PathBuf> = std::fs::read_dir(&root)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("wf-assist-1.superseded-")
+            })
+        })
+        .collect();
+    assert_eq!(
+        renamed.len(),
+        1,
+        "exactly one renamed stale attempt; got {renamed:?}"
+    );
+    assert!(
+        renamed[0].join("partial.txt").exists(),
+        "the stale attempt's contents must survive the rename intact"
+    );
+    Ok(())
+}
+
+#[test]
+fn assistant_provision_rejects_a_run_id_that_escapes_the_root() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("git", GIT_PROVISION_SHIM)?;
+    let root = shims.workspace_root();
+
+    for bad_run_id in ["../escape", "a/b", "/abs", "..", ".", ""] {
+        let failure = handlers::assistant_provision(
+            &shims.shell(),
+            &root,
+            assistant_provision_input("/repos/aion", bad_run_id),
+        )
+        .err()
+        .ok_or_else(|| format!("run_id {bad_run_id:?} must be refused"))?;
+        assert_terminal(&failure, "not a single path component");
+    }
+    assert!(shims.log("git").is_empty(), "no git call may run");
+    Ok(())
+}
+
+#[test]
+fn assistant_provision_failing_clone_is_terminal_with_diagnostics() -> TestResult {
+    let shims = Shims::new()?;
+    shims.write("git", "echo 'fatal: repository not found' >&2\nexit 128")?;
+    let root = shims.workspace_root();
+
+    let failure = handlers::assistant_provision(
+        &shims.shell(),
+        &root,
+        assistant_provision_input("/repos/missing", "wf-assist-404"),
     )
     .err()
     .ok_or("a failing clone must fail the activity")?;

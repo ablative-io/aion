@@ -28,7 +28,10 @@ use std::path::{Path, PathBuf};
 use aion_worker::ActivityFailure;
 
 use crate::shell::{CliRun, Shell};
-use crate::types::{GateInput, GateResult, LandInput, LandResult, ProvisionInput, Workspace};
+use crate::types::{
+    AssistantProvisionInput, AssistantWorkspace, GateInput, GateResult, LandInput, LandResult,
+    ProvisionInput, Workspace,
+};
 
 /// Environment variable overriding the stable workspace root for clones.
 pub const WORKSPACE_ROOT_ENV: &str = "AION_WORKSPACE_ROOT";
@@ -221,6 +224,58 @@ pub fn provision(
         path: repo_dir,
         branch,
     })
+}
+
+/// `assistant_provision` (the `assistant` workflow package): materialise the
+/// session workspace at `<root>/<run_id>/repo` — `git clone` of `repo_path`
+/// when given (a local path or URL), a fresh `git init` scratch workspace
+/// when empty, so the assistant always has a real, versionable working
+/// directory for the norn harness's `--workspace-root`/`-C` template.
+///
+/// Same #175 discipline as [`provision`]: the path is recorded in durable
+/// workflow history, so it lives under the stable resolved `root`, keyed by
+/// the engine-minted run id, and a colliding run directory (this execution's
+/// own earlier partial attempt) is renamed aside — never deleted.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when the run id is not a single path
+/// component, when the workspace directory cannot be claimed, or when the
+/// `git clone` / `git init` cannot run or exits non-zero.
+pub fn assistant_provision(
+    shell: &Shell,
+    root: &Path,
+    input: AssistantProvisionInput,
+) -> Result<AssistantWorkspace, ActivityFailure> {
+    let AssistantProvisionInput { repo_path, run_id } = input;
+    std::fs::create_dir_all(root).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "cannot create workspace root {}: {source}",
+            root.display()
+        ))
+    })?;
+    let run_dir = claim_run_directory(root, &run_id)?;
+    let run_dir_str = run_dir.to_string_lossy().into_owned();
+    let repo_dir = run_dir.join("repo").to_string_lossy().into_owned();
+
+    if repo_path.is_empty() {
+        std::fs::create_dir(&repo_dir).map_err(|source| {
+            ActivityFailure::terminal(format!(
+                "cannot create scratch workspace directory {repo_dir}: {source}"
+            ))
+        })?;
+        require_run(shell, "git", &["init"], &repo_dir, "git init")?;
+    } else {
+        require_run(
+            shell,
+            "git",
+            &["clone", &repo_path, &repo_dir],
+            &run_dir_str,
+            "git clone",
+        )?;
+    }
+
+    Ok(AssistantWorkspace { path: repo_dir })
 }
 
 /// Claim `<root>/<run_id>` for this provision attempt. A collision is this
