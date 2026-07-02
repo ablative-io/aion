@@ -1,0 +1,22 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# One entry — the flat agent-dev pipeline. Scout, dev, and review are agent
+# activities (one prompt string in, one terminal-text string out) served by
+# the agent-dev worker, which drives each role through the norn harness so
+# every agent step is observable and intervenable. provision, gate, and land
+# are plain worker activities. Both loops are bounded by required input caps
+# (`dev_review_cap`, `gate_cap`); exhausting a cap is a terminal disposition,
+# not an error.
+#
+# The timeout sizes the longest legitimate run: bounded agent rounds over one
+# brief — a day is ample headroom.
+
+[[workflow]]
+entry_module = "agent_dev"
+entry_function = "run"
+timeout_seconds = 86400
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["provision", "scout", "dev", "review", "gate", "land"]
+output = "agent-dev.aion"
