@@ -554,9 +554,12 @@ impl LiminalActivityWorker {
         let outcome = self.registry.dispatch(task, context).await;
         drain.finish().await;
         let outcome = match outcome {
-            Ok(DispatchOutcome::Completed { output }) => Ok(result_string(&output)),
-            Ok(DispatchOutcome::Failed { failure }) => Err(failure.message),
-            Err(error) => Err(error.to_string()),
+            Ok(outcome) => wire_outcome(outcome),
+            // A worker-level dispatch fault (e.g. a missing handler) is a
+            // retryable fault: another worker in the pool may serve the type,
+            // matching the gRPC contract where such a session error ends in a
+            // retryable lost-worker sweep, never a terminal.
+            Err(error) => Err(format!("retryable:{error}")),
         };
         Ok(DispatchResponse {
             workflow_id: request.workflow_id.clone(),
@@ -617,10 +620,7 @@ async fn run_agent_dispatch(
         workflow_id: request.workflow_id.clone(),
         ordinal: request.ordinal,
         run_id: request.run_id.clone(),
-        outcome: match outcome {
-            DispatchOutcome::Completed { output } => Ok(result_string(&output)),
-            DispatchOutcome::Failed { failure } => Err(failure.message),
-        },
+        outcome: wire_outcome(outcome),
     };
     // Reply the terminal result to the server on the shared connection. A failed
     // reply (connection gone) is logged; the outbox re-drives the row on timeout.
@@ -698,6 +698,27 @@ async fn drain_events(writer: PushWriter, mut receiver: mpsc::UnboundedReceiver<
 /// rendered lossily rather than dropping the completion.
 fn result_string(output: &Payload) -> String {
     String::from_utf8_lossy(output.bytes()).into_owned()
+}
+
+/// Maps one executed dispatch outcome onto the wire `outcome`, encoding a
+/// failure with the SAME kind-prefixed reason vocabulary the engine seam parses
+/// (`retryable:` / `terminal:`) — the liminal mirror of the classification the
+/// gRPC transport carries as the typed `ActivityError.kind`, and byte-identical
+/// to what the server's gRPC completion path hands the shared delivery callback.
+/// Without the prefix, retryability is silently dropped at this wire boundary
+/// and every remote failure re-enters aion unclassified.
+fn wire_outcome(outcome: DispatchOutcome) -> Result<String, String> {
+    match outcome {
+        DispatchOutcome::Completed { output } => Ok(result_string(&output)),
+        DispatchOutcome::Failed { failure } => {
+            let prefix = if failure.is_retryable() {
+                "retryable"
+            } else {
+                "terminal"
+            };
+            Err(format!("{prefix}:{}", failure.message))
+        }
+    }
 }
 
 /// Whether an SDK receive error is a benign poll timeout (no push arrived) rather

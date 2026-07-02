@@ -72,7 +72,9 @@ use async_trait::async_trait;
 use liminal::protocol::WorkerRegistration as WireWorkerRegistration;
 use liminal_sdk::{SchemaMetadata, SchemaValidate};
 use liminal_server::ServerError as LiminalServerError;
-use liminal_server::server::connection::{ConnectionNotifier, ConnectionSupervisor};
+use liminal_server::server::connection::{
+    ConnectionNotifier, ConnectionSupervisor, PushReplyAwaiter,
+};
 use serde::{Deserialize, Serialize};
 
 use super::bridge::OutboxDeliveryCallback;
@@ -85,6 +87,15 @@ use crate::error::ServerError;
 /// outbox retries. Generous because an activity may legitimately run a while; the
 /// outbox's own retry/reconcile loop is the real liveness backstop.
 const PUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Re-arm cadence for the engine-seam bridge's UNBOUNDED reply wait
+/// ([`receive_bridge_reply`]). Each elapsed poll is a benign re-arm, never a
+/// failure: the bridge dispatch contract imposes no activity timeout of its own
+/// (agent-style activities legitimately run for over an hour), exactly like the
+/// gRPC bridge's unbounded `recv`. Worker loss still terminates the wait
+/// promptly — the awaiter wakes with the typed Disconnected error the moment the
+/// connection closes.
+const BRIDGE_REPLY_POLL: Duration = Duration::from_secs(1);
 
 /// Wire request carrying one scheduled activity to a liminal worker.
 ///
@@ -468,21 +479,7 @@ impl LiminalWorkerDelivery {
     /// reply does not arrive within [`PUSH_REPLY_TIMEOUT`] (slow worker), or the
     /// reply cannot be decoded.
     pub fn dispatch(&self, request: &DispatchRequest) -> Result<DispatchResponse, ServerError> {
-        let payload = serde_json::to_vec(request).map_err(|error| {
-            dispatch_error("liminal-push", format!("request serialize failed: {error}"))
-        })?;
-        // A push-enqueue failure has exactly one cause in liminal — the connection
-        // process is not live (the worker is already gone) — so the whole arm is a
-        // lost connection, re-armed for immediate failover by the outbox.
-        let awaiter = self
-            .supervisor
-            .push_to_connection(self.pid, payload)
-            .map_err(|error| {
-                ServerError::worker_connection_lost(
-                    "liminal-push",
-                    format!("push to worker failed: {error}"),
-                )
-            })?;
+        let awaiter = self.push_dispatch(request)?;
         let reply = awaiter.receive(PUSH_REPLY_TIMEOUT).map_err(|error| {
             // Disconnected (worker died mid-flight) => connection-lost => immediate
             // failover. Timeout (worker alive but slow) and anything unrecognized
@@ -496,12 +493,38 @@ impl LiminalWorkerDelivery {
                 dispatch_error("liminal-push", format!("worker reply failed: {error}"))
             }
         })?;
-        serde_json::from_slice(&reply).map_err(|error| {
-            dispatch_error(
-                "liminal-push",
-                format!("worker reply decode failed: {error}"),
-            )
-        })
+        decode_dispatch_response(&reply)
+    }
+
+    /// Serialize and push one dispatch out on the worker's connection, returning
+    /// the awaiter for its correlated reply — the shared push half of both
+    /// dispatch waits: [`Self::dispatch`] (the outbox path, bounded by
+    /// [`PUSH_REPLY_TIMEOUT`] because the outbox's retry loop re-drives an
+    /// undelivered row) and the engine-seam bridge dispatcher (which owns the
+    /// UNBOUNDED wait of [`receive_bridge_reply`], matching the gRPC bridge
+    /// contract). One frame format, one push primitive, two wait policies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::WorkerConnectionLost`] when the connection process
+    /// is no longer live at push time (a push-enqueue failure has exactly one
+    /// cause in liminal — the worker is already gone), and
+    /// [`ServerError::WorkerDispatch`] when the request cannot be serialized.
+    pub(crate) fn push_dispatch(
+        &self,
+        request: &DispatchRequest,
+    ) -> Result<PushReplyAwaiter, ServerError> {
+        let payload = serde_json::to_vec(request).map_err(|error| {
+            dispatch_error("liminal-push", format!("request serialize failed: {error}"))
+        })?;
+        self.supervisor
+            .push_to_connection(self.pid, payload)
+            .map_err(|error| {
+                ServerError::worker_connection_lost(
+                    "liminal-push",
+                    format!("push to worker failed: {error}"),
+                )
+            })
     }
 
     /// Push one neutral intervention command out on the worker's connection and
@@ -553,6 +576,65 @@ impl LiminalWorkerDelivery {
                 format!("intervention ack decode failed: {error}"),
             )
         })
+    }
+}
+
+/// Decodes one correlated reply payload as a [`DispatchResponse`].
+///
+/// Shared by the outbox wait ([`LiminalWorkerDelivery::dispatch`]) and the
+/// bridge wait ([`receive_bridge_reply`]) so the two paths can never diverge on
+/// the wire's reply shape.
+fn decode_dispatch_response(reply: &[u8]) -> Result<DispatchResponse, ServerError> {
+    serde_json::from_slice(reply).map_err(|error| {
+        dispatch_error(
+            "liminal-push",
+            format!("worker reply decode failed: {error}"),
+        )
+    })
+}
+
+/// Blocks for the correlated reply to an engine-seam BRIDGE dispatch push, with
+/// the bridge's UNBOUNDED wait contract: the engine imposes no activity timeout
+/// of its own, so an elapsed [`BRIDGE_REPLY_POLL`] merely re-arms the wait — the
+/// exact liminal mirror of the gRPC bridge's unbounded `recv`, which is released
+/// only by a completion or by stream teardown. The wait terminates on exactly:
+///
+/// - **the reply** — decoded as the worker's [`DispatchResponse`];
+/// - **worker loss** — the connection closed before replying: the awaiter wakes
+///   PROMPTLY with liminal's typed Disconnected error, surfaced as
+///   [`ServerError::WorkerConnectionLost`] so the bridge reports the same
+///   retryable lost-worker failure the gRPC teardown sweep does;
+/// - **an unrecognized receive fault or a decode failure** — surfaced as
+///   [`ServerError::WorkerDispatch`].
+///
+/// Runs on a dedicated bridge reply thread, never on an async runtime worker.
+///
+/// # Errors
+///
+/// Returns [`ServerError::WorkerConnectionLost`] on worker loss and
+/// [`ServerError::WorkerDispatch`] on a receive fault or reply decode failure.
+pub(crate) fn receive_bridge_reply(
+    awaiter: &PushReplyAwaiter,
+) -> Result<DispatchResponse, ServerError> {
+    loop {
+        match awaiter.receive(BRIDGE_REPLY_POLL) {
+            Ok(reply) => return decode_dispatch_response(&reply),
+            // A bare poll timeout is a re-arm, never a failure: the dispatch
+            // wait is unbounded by contract (see the bridge module docs).
+            Err(LiminalServerError::PushReplyTimeout { .. }) => {}
+            Err(error) if is_connection_closed_reply_error(&error) => {
+                return Err(ServerError::worker_connection_lost(
+                    "liminal-push",
+                    format!("worker connection closed before reply: {error}"),
+                ));
+            }
+            Err(error) => {
+                return Err(dispatch_error(
+                    "liminal-push",
+                    format!("worker reply failed: {error}"),
+                ));
+            }
+        }
     }
 }
 
