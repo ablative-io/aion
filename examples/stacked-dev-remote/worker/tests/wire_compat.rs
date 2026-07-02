@@ -324,6 +324,28 @@ fn provision_input_wire_shape() -> TestResult {
             base_ref: "main".to_owned(),
             placement: Placement::Local,
             isolation: Isolation::Worktree,
+            clone_url: None,
+            run_id: None,
+        },
+    )
+}
+
+// Mirrors `codecs_core.provision_input_codec` with the optional remote
+// fields present: `clone_url`, then `run_id` (the workflow execution's id
+// keying the remote clone's stable per-run directory, #175). The Gleam
+// codec appends them in this order; absent options are omitted entirely.
+#[test]
+fn provision_input_wire_shape_with_remote_fields() -> TestResult {
+    assert_wire(
+        r#"{"repo_root":"/abs/repo","brief_id":"brief-7","base_ref":"main","placement":"remote","isolation":"copy","clone_url":"git@example.com:repo.git","run_id":"8b9e6a2d-run"}"#,
+        &ProvisionInput {
+            repo_root: "/abs/repo".to_owned(),
+            brief_id: "brief-7".to_owned(),
+            base_ref: "main".to_owned(),
+            placement: Placement::Remote,
+            isolation: Isolation::Copy,
+            clone_url: Some("git@example.com:repo.git".to_owned()),
+            run_id: Some("8b9e6a2d-run".to_owned()),
         },
     )
 }
@@ -602,6 +624,7 @@ fn land_input_wire_shape() -> TestResult {
             repo_root: "/sample/repo".to_owned(),
             base_ref: "main".to_owned(),
             dev_result,
+            clone_url: None,
         },
     )
 }
@@ -829,7 +852,7 @@ fn stacked_dev_input_wire_shape() -> TestResult {
 #[test]
 fn stacked_dev_result_wire_shape() -> TestResult {
     assert_wire(
-        r#"{"branch":"stacked-dev-brief-7","merged_into":"main","session_id":"stacked-dev-brief-7","build_warm":{"ok":true,"duration_ms":42},"verify_rounds":2,"review_rounds":1}"#,
+        r#"{"branch":"stacked-dev-brief-7","merged_into":"main","session_id":"stacked-dev-brief-7","build_warm":{"ok":true,"duration_ms":42},"verify_rounds":2,"review_rounds":1,"workspace_cleaned":true}"#,
         &StackedDevResult {
             branch: "stacked-dev-brief-7".to_owned(),
             merged_into: "main".to_owned(),
@@ -840,6 +863,7 @@ fn stacked_dev_result_wire_shape() -> TestResult {
             },
             verify_rounds: 2,
             review_rounds: 1,
+            workspace_cleaned: true,
         },
     )
 }
