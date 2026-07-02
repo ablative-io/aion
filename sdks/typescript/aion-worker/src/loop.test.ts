@@ -1528,3 +1528,157 @@ describe("runWorkerLoop worker-protocol acks and drain", () => {
 		expect(factoryCalls).toBe(1);
 	});
 });
+
+describe("runWorkerLoop automatic liveness pump (#176)", () => {
+	/**
+	 * Session that yields one task, then holds its stream open until released
+	 * — while advertising a server-assigned heartbeat window and recording
+	 * every heartbeat frame, so the tests can watch the automatic pump.
+	 */
+	class WindowSession implements WorkerSession {
+		public readonly reports: string[] = [];
+		public readonly heartbeats: {
+			workflowId: string;
+			activityId: string;
+			progress?: Payload;
+		}[] = [];
+		private releaseStream: () => void = () => undefined;
+		private readonly streamReleased = new Promise<void>((resolve) => {
+			this.releaseStream = resolve;
+		});
+
+		public constructor(private readonly windowMs: number | undefined) {}
+
+		public handshake(): Promise<void> {
+			return Promise.resolve();
+		}
+
+		public register(): Promise<void> {
+			return Promise.resolve();
+		}
+
+		public async *receiveTasks(): AsyncIterable<WorkerSessionEvent> {
+			yield { kind: "task", task: task("7") };
+			await this.streamReleased;
+			yield { kind: "closed" };
+		}
+
+		public async reportResult(
+			_workflowId: string,
+			activityId: string,
+		): Promise<void> {
+			this.reports.push(activityId);
+		}
+
+		public async reportFailure(
+			_workflowId: string,
+			activityId: string,
+		): Promise<void> {
+			this.reports.push(activityId);
+		}
+
+		public sendHeartbeat(
+			workflowId: string,
+			activityId: string,
+			progress?: Payload,
+		): Promise<void> {
+			this.heartbeats.push({ workflowId, activityId, progress });
+			return Promise.resolve();
+		}
+
+		public heartbeatWindowMs(): number | undefined {
+			return this.windowMs;
+		}
+
+		public close(): Promise<void> {
+			return Promise.resolve();
+		}
+
+		public endStream(): void {
+			this.releaseStream();
+		}
+	}
+
+	/** Dispatcher whose handler runs until released and never heartbeats. */
+	class HeldDispatcher implements ActivityDispatcher {
+		private releaseHandler: () => void = () => undefined;
+		private readonly handlerReleased = new Promise<void>((resolve) => {
+			this.releaseHandler = resolve;
+		});
+
+		public activityTypes(): readonly string[] {
+			return ["slow"];
+		}
+
+		public async dispatch(): Promise<DispatchOutcome> {
+			await this.handlerReleased;
+			return { kind: "completed", output: payload };
+		}
+
+		public release(): void {
+			this.releaseHandler();
+		}
+	}
+
+	function sleep(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			setTimeout(resolve, ms);
+		});
+	}
+
+	it("auto-heartbeats a long activity within the window, then stops when idle", async () => {
+		const windowMs = 100;
+		const session = new WindowSession(windowMs);
+		const dispatcher = new HeldDispatcher();
+		const run = runWorkerLoop({
+			config: config(1),
+			session,
+			dispatcher,
+		});
+
+		// Three beats prove at least one full window elapsed with sub-window
+		// beats (the pump cadence is a quarter window) — while the handler,
+		// which never heartbeats, is still running.
+		const deadline = Date.now() + 10_000;
+		while (session.heartbeats.length < 3) {
+			expect(Date.now()).toBeLessThan(deadline);
+			await sleep(5);
+		}
+		for (const beat of session.heartbeats) {
+			expect(beat.workflowId).toBe("workflow");
+			expect(beat.activityId).toBe("7");
+			expect(beat.progress).toBeUndefined();
+		}
+
+		// Once the handler completes, the pump must stop beating.
+		dispatcher.release();
+		await sleep(windowMs);
+		const settled = session.heartbeats.length;
+		await sleep(windowMs * 2);
+		expect(session.heartbeats.length).toBe(settled);
+
+		session.endStream();
+		await run;
+		expect(session.reports).toEqual(["7"]);
+	});
+
+	it("never pumps for a session without a server-assigned window", async () => {
+		const session = new WindowSession(undefined);
+		const dispatcher = new HeldDispatcher();
+		const run = runWorkerLoop({
+			config: config(1),
+			session,
+			dispatcher,
+		});
+
+		// Long enough that a (wrongly) armed pump at any plausible cadence
+		// would have beaten several times.
+		await sleep(100);
+		expect(session.heartbeats).toEqual([]);
+
+		dispatcher.release();
+		session.endStream();
+		await run;
+		expect(session.reports).toEqual(["7"]);
+	});
+});

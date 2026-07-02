@@ -40,7 +40,8 @@ pub use dispatch::{
     ScheduledActivity, handle_activity_result,
 };
 pub use heartbeat::{
-    HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport, TaskLiveness,
+    HeartbeatSweeper, HeartbeatTracker, HeartbeatUpdate, InFlightActivity, LostWorkerReport,
+    TaskLiveness, sweep_interval,
 };
 pub use intervention::{AttemptKey, AttemptOwnerIndex, InterventionRouter, InterventionTransport};
 #[cfg(feature = "liminal-transport")]

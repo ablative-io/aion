@@ -151,6 +151,16 @@ export interface WorkerSession {
 		activityId: ActivityIdKey,
 		progress?: Payload,
 	): Promise<void>;
+	/**
+	 * Server-assigned liveness window from the `RegisterAck`, in
+	 * milliseconds, once registered. The serve loop derives its AUTOMATIC
+	 * liveness-heartbeat cadence from this window: the server's heartbeat
+	 * sweeper expires any worker whose in-flight task goes longer than the
+	 * window without a heartbeat, so the runtime — not each handler — keeps
+	 * every in-flight activity beating. Optional so fakes stay minimal;
+	 * `undefined` (or an absent method) disables the automatic pump.
+	 */
+	heartbeatWindowMs?(): number | undefined;
 	close(): Promise<void>;
 }
 
@@ -187,6 +197,19 @@ export class GrpcWorkerSession implements WorkerSession {
 	/** Server-assigned registration facts, available once registered. */
 	public get registeredInfo(): RegisteredSessionInfo | undefined {
 		return this.registeredInfoValue;
+	}
+
+	/**
+	 * Server-assigned liveness window from the `RegisterAck`, in
+	 * milliseconds. `undefined` before registration (and for a degenerate
+	 * zero window) disables the serve loop's automatic liveness pump.
+	 */
+	public heartbeatWindowMs(): number | undefined {
+		const windowMs = this.registeredInfoValue?.heartbeatWindowMs;
+		if (windowMs === undefined || windowMs <= 0) {
+			return undefined;
+		}
+		return windowMs;
 	}
 
 	public async handshake(config: WorkerConfig): Promise<void> {

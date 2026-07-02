@@ -247,6 +247,22 @@ class GrpcWorkerSession:
 
         return self._registered_info
 
+    def heartbeat_window_seconds(self) -> float | None:
+        """Server-assigned liveness window from the ``RegisterAck``, in seconds.
+
+        The serve loop derives its AUTOMATIC liveness-heartbeat cadence from
+        this window: the server's heartbeat sweeper expires any worker whose
+        in-flight task goes longer than the window without a heartbeat, so the
+        runtime — not each handler — keeps every in-flight activity beating.
+        ``None`` before registration (and for a degenerate zero window)
+        disables the automatic pump.
+        """
+
+        info = self._registered_info
+        if info is None or info.heartbeat_window_ms <= 0:
+            return None
+        return info.heartbeat_window_ms / 1000.0
+
     @classmethod
     async def connect(cls, config: WorkerConfig) -> GrpcWorkerSession:
         logger.info("Connecting to %s", config.endpoint)

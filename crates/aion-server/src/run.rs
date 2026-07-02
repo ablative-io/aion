@@ -218,6 +218,17 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // unchanged.
     #[cfg(feature = "haematite-backend")]
     maybe_spawn_cluster_supervisor(&state, cluster_config.as_ref(), &shutdown_rx)?;
+    // #176: the worker heartbeat expiry sweeper is ALWAYS commissioned —
+    // dead-worker detection is a liveness correctness property, not an opt-in
+    // feature. It is the production caller of `fail_expired_workers`: a worker
+    // whose stream stays open while its process wedges (stops heartbeating
+    // without disconnecting) is expired, deregistered with the provable Timeout
+    // reason, and its in-flight tasks surface as retryable lost-worker failures.
+    // Cadence derives from `worker.heartbeat_window` (quarter-window, clamped to
+    // [1s, window]; the default 30s window sweeps every 7.5s) — deliberately no
+    // separate config knob. It drains on the same shutdown watch as the
+    // transports; dropping the JoinHandle only detaches the task.
+    drop(state.spawn_heartbeat_sweeper(shutdown_rx.clone()));
     let mut grpc = tokio::spawn(serve_grpc(state.clone(), grpc_address, shutdown_rx.clone()));
     let mut http = tokio::spawn(serve_http(state.clone(), http_address, shutdown_rx));
 

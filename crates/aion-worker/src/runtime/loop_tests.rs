@@ -580,3 +580,285 @@ async fn drain_frame_ends_serve_as_drained_and_latches_health() -> Result<(), Wo
     assert!(health.drain_received, "the drain latch must be set");
     Ok(())
 }
+
+/// One recorded heartbeat frame: task identity plus the optional progress.
+type HeartbeatRecord = (WorkflowId, ActivityId, Option<Payload>);
+/// Shared heartbeat log a test observes while the serve loop owns the session.
+type HeartbeatLog = Arc<std::sync::Mutex<Vec<HeartbeatRecord>>>;
+
+/// Snapshot the shared heartbeat log (lint-clean: a poisoned log is a test error).
+fn heartbeat_snapshot(log: &HeartbeatLog) -> Result<Vec<HeartbeatRecord>, WorkerError> {
+    log.lock()
+        .map(|entries| entries.clone())
+        .map_err(|_| WorkerError::Transport {
+            source: tonic::Status::internal("heartbeat log mutex poisoned"),
+        })
+}
+
+/// Channel-driven session that carries a server-assigned heartbeat window and
+/// records every heartbeat frame through a shared handle, so a test can watch
+/// the automatic liveness pump while the serve loop runs.
+struct WindowSession {
+    receiver: Option<mpsc::Receiver<Result<WorkerSessionEvent, WorkerError>>>,
+    reports: Vec<RecordedReport>,
+    heartbeat_window: Option<Duration>,
+    heartbeats: HeartbeatLog,
+}
+
+#[async_trait]
+impl WorkerSession for WindowSession {
+    async fn handshake(&mut self, config: &WorkerConfig) -> Result<(), WorkerError> {
+        drop(config.clone());
+        Ok(())
+    }
+
+    async fn register(
+        &mut self,
+        activity_types: Vec<String>,
+        available_handlers: &BTreeSet<String>,
+    ) -> Result<(), WorkerError> {
+        validate_activity_handlers(&activity_types, available_handlers)
+    }
+
+    fn receive_tasks(&mut self) -> WorkerTaskStream {
+        match self.receiver.take() {
+            Some(receiver) => Box::pin(tokio_stream::wrappers::ReceiverStream::new(receiver)),
+            None => Box::pin(stream::empty()),
+        }
+    }
+
+    async fn report_result(
+        &mut self,
+        workflow_id: WorkflowId,
+        activity_id: ActivityId,
+        run_id: Option<RunId>,
+        result: Payload,
+    ) -> Result<(), WorkerError> {
+        let _ = (workflow_id, run_id);
+        self.reports
+            .push(RecordedReport::Completed(activity_id, result));
+        Ok(())
+    }
+
+    async fn report_failure(
+        &mut self,
+        workflow_id: WorkflowId,
+        activity_id: ActivityId,
+        run_id: Option<RunId>,
+        failure: ActivityError,
+    ) -> Result<(), WorkerError> {
+        let _ = (workflow_id, run_id);
+        self.reports
+            .push(RecordedReport::Failed(activity_id, failure));
+        Ok(())
+    }
+
+    async fn send_heartbeat(
+        &mut self,
+        workflow_id: WorkflowId,
+        activity_id: ActivityId,
+        progress: Option<Payload>,
+    ) -> Result<(), WorkerError> {
+        let mut log = self.heartbeats.lock().map_err(|_| WorkerError::Transport {
+            source: tonic::Status::internal("heartbeat log mutex poisoned"),
+        })?;
+        log.push((workflow_id, activity_id, progress));
+        Ok(())
+    }
+
+    fn heartbeat_window(&self) -> Option<Duration> {
+        self.heartbeat_window
+    }
+}
+
+/// Dispatcher whose handler runs until released and NEVER calls
+/// `ActivityContext::heartbeat` — the worst case for server-side liveness.
+struct HeldDispatcher {
+    release: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl ActivityDispatcher for HeldDispatcher {
+    async fn dispatch(
+        &self,
+        task: ActivityTask,
+        context: ActivityContext,
+    ) -> Result<DispatchOutcome, WorkerError> {
+        drop((task, context));
+        while !self.release.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        Ok(DispatchOutcome::Completed {
+            output: Payload::new(ContentType::Json, b"{}".to_vec()),
+        })
+    }
+
+    fn activity_types(&self) -> BTreeSet<String> {
+        [String::from("charge-card")].into_iter().collect()
+    }
+}
+
+/// #176 critical-finding regression proof (worker side): the RUNTIME
+/// automatically heartbeats an in-flight activity whose handler never
+/// heartbeats, at a cadence well inside the server-assigned window — so a
+/// legitimately long activity can no longer be expired by the server's
+/// heartbeat sweeper. The pump also stops once nothing is in flight.
+#[tokio::test]
+async fn runtime_auto_heartbeats_long_activity_within_the_window() -> Result<(), WorkerError> {
+    const WINDOW: Duration = Duration::from_millis(100);
+    let workflow_id = WorkflowId::new_v4();
+    let activity_id = ActivityId::from_sequence_position(9);
+    let heartbeats = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(AtomicBool::new(false));
+    let (event_tx, event_rx) = mpsc::channel(4);
+    let session = WindowSession {
+        receiver: Some(event_rx),
+        reports: Vec::new(),
+        heartbeat_window: Some(WINDOW),
+        heartbeats: Arc::clone(&heartbeats),
+    };
+    let dispatcher = Arc::new(HeldDispatcher {
+        release: Arc::clone(&release),
+    });
+
+    let serve = tokio::spawn({
+        let dispatcher = Arc::clone(&dispatcher);
+        async move {
+            let mut session = session;
+            let mut tracker = UnackedResultTracker::new();
+            let end =
+                serve_activity_tasks(&test_config(1), &mut session, dispatcher, &mut tracker).await;
+            (session, end)
+        }
+    });
+    event_tx
+        .send(Ok(WorkerSessionEvent::Task(proto_task(
+            workflow_id.clone(),
+            activity_id.clone(),
+            "charge-card",
+        ))))
+        .await
+        .map_err(|_| WorkerError::Transport {
+            source: tonic::Status::internal("serve loop hung up prematurely"),
+        })?;
+
+    // A handler that outlives several windows must be beaten automatically.
+    // Waiting for three beats proves at least one full window elapsed with
+    // sub-window beats (pump cadence is a quarter window).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let beats = heartbeats.lock().map(|log| log.len()).unwrap_or_default();
+        if beats >= 3 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "runtime never auto-heartbeated the in-flight activity"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let log = heartbeat_snapshot(&heartbeats)?;
+    assert!(
+        log.iter().all(|(wf, act, progress)| {
+            *wf == workflow_id && *act == activity_id && progress.is_none()
+        }),
+        "automatic liveness beats must target the in-flight task and carry no progress: {log:?}"
+    );
+
+    // Release the handler; once its outcome is reported the pump must stop.
+    // Give the reporter a moment to consume the outcome, then require beat
+    // stability across several would-be pump intervals.
+    release.store(true, Ordering::SeqCst);
+    tokio::time::sleep(WINDOW).await;
+    let settled = heartbeat_snapshot(&heartbeats)?.len();
+    tokio::time::sleep(WINDOW * 2).await;
+    let after = heartbeat_snapshot(&heartbeats)?.len();
+    assert_eq!(
+        settled, after,
+        "the liveness pump must stop once nothing is in flight"
+    );
+
+    drop(event_tx);
+    let (session, end) = serve.await.map_err(|_| WorkerError::Transport {
+        source: tonic::Status::internal("serve task panicked"),
+    })?;
+    assert_eq!(end?, ServeEnd::StreamClosed);
+    assert_eq!(
+        session.reports,
+        vec![RecordedReport::Completed(
+            activity_id,
+            Payload::new(ContentType::Json, b"{}".to_vec())
+        )],
+        "the held activity must still complete and report normally"
+    );
+    Ok(())
+}
+
+/// A session without a server-assigned window (every fake, and an
+/// unregistered session) never auto-pumps: behaviour is byte-identical to the
+/// pre-pump loop.
+#[tokio::test]
+async fn no_window_means_no_automatic_heartbeats() -> Result<(), WorkerError> {
+    let heartbeats = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(AtomicBool::new(false));
+    let (event_tx, event_rx) = mpsc::channel(4);
+    let session = WindowSession {
+        receiver: Some(event_rx),
+        reports: Vec::new(),
+        heartbeat_window: None,
+        heartbeats: Arc::clone(&heartbeats),
+    };
+    let dispatcher = Arc::new(HeldDispatcher {
+        release: Arc::clone(&release),
+    });
+
+    let serve = tokio::spawn(async move {
+        let mut session = session;
+        let mut tracker = UnackedResultTracker::new();
+        serve_activity_tasks(&test_config(1), &mut session, dispatcher, &mut tracker).await
+    });
+    event_tx
+        .send(Ok(WorkerSessionEvent::Task(proto_task(
+            WorkflowId::new_v4(),
+            ActivityId::from_sequence_position(10),
+            "charge-card",
+        ))))
+        .await
+        .map_err(|_| WorkerError::Transport {
+            source: tonic::Status::internal("serve loop hung up prematurely"),
+        })?;
+
+    // Long enough that a (wrongly) armed pump at any plausible cadence would
+    // have beaten several times.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        heartbeat_snapshot(&heartbeats)?.is_empty(),
+        "a windowless session must never receive automatic heartbeats"
+    );
+
+    release.store(true, Ordering::SeqCst);
+    drop(event_tx);
+    let end = serve.await.map_err(|_| WorkerError::Transport {
+        source: tonic::Status::internal("serve task panicked"),
+    })??;
+    assert_eq!(end, ServeEnd::StreamClosed);
+    Ok(())
+}
+
+/// The pump cadence is a quarter of the server-assigned window, floored at
+/// one millisecond so a degenerate zero window cannot panic the interval.
+#[test]
+fn liveness_pump_interval_is_quarter_window_floored_at_one_millisecond() {
+    assert_eq!(
+        super::liveness_pump_interval(Duration::from_secs(30)),
+        Duration::from_millis(7_500)
+    );
+    assert_eq!(
+        super::liveness_pump_interval(Duration::from_millis(100)),
+        Duration::from_millis(25)
+    );
+    assert_eq!(
+        super::liveness_pump_interval(Duration::ZERO),
+        Duration::from_millis(1)
+    );
+}

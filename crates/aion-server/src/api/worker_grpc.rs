@@ -66,7 +66,7 @@ impl WorkerProtocol for WorkerGrpcService {
         };
 
         let (task_tx, task_rx) = mpsc::channel::<Result<generated::ServerToWorker, Status>>(32);
-        let (worker_tx, mut worker_rx) = mpsc::channel(32);
+        let (worker_tx, worker_rx) = mpsc::channel(32);
 
         let registration = self
             .state
@@ -107,17 +107,7 @@ impl WorkerProtocol for WorkerGrpcService {
             .map_err(|_| Status::internal("worker response channel closed before RegisterAck"))?;
 
         tokio::spawn(async move {
-            let write_handle = tokio::spawn({
-                let task_tx = task_tx.clone();
-                async move {
-                    while let Some(message) = worker_rx.recv().await {
-                        let msg = encode_server_to_worker(message);
-                        if task_tx.send(Ok(msg)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            });
+            let write_handle = spawn_write_forwarder(worker_rx, task_tx.clone());
 
             // Armed BEFORE the inbound loop runs: the sweep in its `Drop`
             // fires on every exit from this task — clean stream end, stream
@@ -164,6 +154,42 @@ impl WorkerProtocol for WorkerGrpcService {
 
         Ok(Response::new(ReceiverStream::new(task_rx)))
     }
+}
+
+/// Spawn the write forwarder: it copies registry-delivered [`WorkerMessage`]s
+/// onto the worker's response stream, and — the #176 zombie fix — TERMINATES
+/// the RPC when the registry drops this worker's delivery sender.
+///
+/// `recv` returning `None` means every delivery sender is gone: the worker
+/// was DEREGISTERED while its stream stayed open (the heartbeat expiry sweep,
+/// or any future administrative removal). Silently deregistering would leave
+/// the worker a zombie — connected but unroutable, believing it is
+/// registered, its heartbeats rejected as "not in flight", never
+/// re-registering until its own stream happens to end. Ending the RPC with a
+/// retryable `Unavailable` status makes the worker OBSERVE the
+/// deregistration and re-register through its reconnect machinery. (On the
+/// normal teardown path this task is aborted before the registration is
+/// consumed, so the status is never sent to a worker that hung up; a send
+/// failure means the response stream's consumer is already gone, so there is
+/// no one left to signal.)
+fn spawn_write_forwarder(
+    mut worker_rx: mpsc::Receiver<WorkerMessage>,
+    task_tx: mpsc::Sender<Result<generated::ServerToWorker, Status>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(message) = worker_rx.recv().await {
+            let msg = encode_server_to_worker(message);
+            if task_tx.send(Ok(msg)).await.is_err() {
+                return;
+            }
+        }
+        let _ = task_tx
+            .send(Err(Status::unavailable(
+                "worker was deregistered by the server (heartbeat window expired); \
+                 reconnect and re-register",
+            )))
+            .await;
+    })
 }
 
 /// Drop guard that fails a torn-down worker stream's in-flight activities

@@ -120,6 +120,18 @@ pub trait WorkerSession: Send {
         activity_id: ActivityId,
         progress: Option<Payload>,
     ) -> Result<(), WorkerError>;
+
+    /// Server-assigned liveness window from the `RegisterAck`, once registered.
+    ///
+    /// The serve loop derives its AUTOMATIC liveness-heartbeat cadence from
+    /// this window (see `serve_activity_tasks_until`): the server's heartbeat
+    /// sweeper expires any worker whose in-flight task goes longer than the
+    /// window without a heartbeat, so the runtime — not each handler — must
+    /// keep every in-flight activity beating. `None` (the default, and the
+    /// value for fake/unregistered sessions) disables the automatic pump.
+    fn heartbeat_window(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 /// Validates that every requested activity type has a registered handler.
@@ -476,6 +488,12 @@ impl WorkerSession for GrpcWorkerSession {
             generated_heartbeat(heartbeat),
         ))
         .await
+    }
+
+    fn heartbeat_window(&self) -> Option<std::time::Duration> {
+        self.registered_info
+            .as_ref()
+            .map(|info| info.heartbeat_window)
     }
 }
 

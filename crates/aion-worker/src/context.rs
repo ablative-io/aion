@@ -70,8 +70,13 @@ impl ActivityContext {
 
     /// Emits a cooperative heartbeat request for this activity.
     ///
-    /// Only explicit handler calls enqueue heartbeats. Contexts created without a
-    /// live heartbeat sender remain no-op contexts for isolated unit tests.
+    /// This is the PROGRESS channel: handlers call it to attach a progress
+    /// payload to the activity's liveness record. LIVENESS itself is owned by
+    /// the worker runtime, which automatically heartbeats every in-flight
+    /// activity within the server-assigned heartbeat window — a handler that
+    /// never calls this still stays live for as long as it genuinely runs.
+    /// Contexts created without a live heartbeat sender remain no-op contexts
+    /// for isolated unit tests.
     ///
     /// # Errors
     ///
