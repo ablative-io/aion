@@ -21,12 +21,19 @@ pass in the start input.
 - `src/{{name}}.gleam` — the workflow. Edit the typed `handle` function and
   its helpers; the raw engine plumbing below the generated-code marker
   decodes/encodes JSON for you.
+- `src/{{name}}_io.gleam` — the authored boundary types (the source of
+  truth, types-first). Edit a type, then run `aion generate .`.
+- `src/{{name}}_codecs.gleam` — JSON codecs generated from the types by
+  `aion generate`. Do not edit; regenerate.
 - `workflow.toml` — packaging descriptor read by `aion package`.
-- `schemas/` — JSON Schemas for the workflow input and output.
+- `schemas/` — JSON Schema artifacts emitted from the types by
+  `aion generate`. Do not edit; regenerate.
 - `aion.toml` — development server configuration.
 - `worker/` — the Rust agent-step worker (present when scaffolded with
-  `--worker rust`). It serves `scout`, `act`, and `verify`. Replace its
-  handler bodies with your own agent driver.
+  `--worker rust`). It serves `scout`, `act`, and `verify`; its
+  `StepInput`/`StepOutput` structs mirror the types in
+  `src/{{name}}_io.gleam`. Replace its handler bodies with your own agent
+  driver.
 
 ## Run it
 
@@ -85,6 +92,18 @@ aion describe <workflow-id> --pretty
 to hold the artifact: the run completes with `"disposition": "held"`. A held
 artifact is a successful, fully recorded run, ready for a human follow-up.
 
+## Change the contract
+
+The boundary types in `src/{{name}}_io.gleam` are the single source of truth
+for everything wire-shaped. To evolve the loop — extra prompt fields, richer
+step outputs, more review metadata:
+
+1. edit the type in `src/{{name}}_io.gleam`,
+2. run `aion generate .` (regenerates `src/{{name}}_codecs.gleam` and
+   `schemas/*.json`; `aion generate . --check` verifies a clean tree),
+3. update the worker's mirrored structs in `worker/src/main.rs`,
+4. commit the type with its regenerated artifacts together.
+
 ## Next steps
 
 - Replace the `scout`/`act`/`verify` handler bodies in `worker/src/main.rs`
@@ -92,4 +111,3 @@ artifact is a successful, fully recorded run, ready for a human follow-up.
   keeping the `StepInput` -> `StepOutput` contract.
 - [Workflow authoring guide](https://github.com/ablative-io/aion/blob/main/docs/guides/workflows.md)
   — child workflows, timers, determinism rules.
-```

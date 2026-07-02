@@ -11,6 +11,11 @@
 //! `StepInput` -> `StepOutput` contract. The runtime stays here, worker-side;
 //! the workflow only records each step's outcome for durable replay.
 //!
+//! The `StepInput`/`StepOutput` structs mirror the boundary types authored in
+//! `src/{{name}}_io.gleam` (the types-first source of truth `aion generate`
+//! derives the workflow's codecs and schemas from). If you change a step
+//! type, update both sides and rerun `aion generate`.
+//!
 //! Input types require `Serialize + DeserializeOwned`; output types require
 //! `Serialize`. A handler fails with `ActivityFailure::retryable(..)` for a
 //! transient fault the workflow may retry, or `ActivityFailure::terminal(..)`
