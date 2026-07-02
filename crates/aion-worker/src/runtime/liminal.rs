@@ -133,6 +133,21 @@ pub struct WorkerLivenessBeat {
     pub ordinal: u64,
 }
 
+/// Reserved liminal channel this worker announces its intervention capabilities
+/// on, immediately after each (re)registration. Byte-for-byte mirror of the
+/// server crate's constant of the same name. The in-band registration frame is
+/// a published liminal protocol type and cannot carry aion-level capability
+/// metadata, so the announcement rides this channel instead (NOI-6).
+pub const WORKER_CAPABILITIES_CHANNEL: &str = "aion.worker.capabilities";
+
+/// Wire announcement of this worker's advertised intervention capabilities.
+/// Field-for-field mirror of the server crate's `WorkerCapabilitiesAnnouncement`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerCapabilitiesAnnouncement {
+    /// The neutral intervention primitives this worker's harness supports.
+    pub capabilities: InterventionCapabilities,
+}
+
 /// Wire response carrying this worker's result back to the server.
 ///
 /// Field-for-field mirror of `aion-server`'s
@@ -429,6 +444,37 @@ impl LiminalActivityWorker {
         }
     }
 
+    /// Publish this worker's advertised intervention capabilities on the
+    /// reserved [`WORKER_CAPABILITIES_CHANNEL`] (NOI-6), once per connection.
+    ///
+    /// A worker with no harness capabilities announces nothing: the empty set
+    /// is already the server-side registration default (observability-only).
+    /// A publish or encode fault is logged, never fatal — the worker still
+    /// serves; the operator just sees no intervention controls until a
+    /// reconnect re-announces.
+    fn announce_capabilities(&self) {
+        if self.agent_capabilities.supported.is_empty() {
+            return;
+        }
+        let announcement = WorkerCapabilitiesAnnouncement {
+            capabilities: self.agent_capabilities.clone(),
+        };
+        match serde_json::to_vec(&announcement) {
+            Ok(payload) => {
+                if let Err(error) = self
+                    .client
+                    .writer_handle()
+                    .publish(WORKER_CAPABILITIES_CHANNEL, payload)
+                {
+                    tracing::warn!(%error, "failed to announce intervention capabilities");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to encode WorkerCapabilitiesAnnouncement");
+            }
+        }
+    }
+
     /// Serves pushed dispatches until `stop` returns `true`.
     ///
     /// Re-checks `stop` every [`RECV_POLL`], so a caller can stop the worker
@@ -442,6 +488,7 @@ impl LiminalActivityWorker {
     where
         Stop: FnMut() -> bool + Send,
     {
+        self.announce_capabilities();
         while !stop() {
             self.serve_one().await?;
         }
@@ -460,6 +507,10 @@ impl LiminalActivityWorker {
     where
         Stop: FnMut() -> bool + Send,
     {
+        // Once per connection: a redialed worker re-announces on the new
+        // connection because the survivor's registry entry starts at the
+        // registration default (observability-only).
+        self.announce_capabilities();
         let mut served_work = false;
         while !stop() {
             match self.serve_one().await {
@@ -1029,6 +1080,34 @@ mod tests {
         }
         // The channel name is the pinned cross-crate contract.
         assert_eq!(super::WORKER_LIVENESS_CHANNEL, "aion.worker.liveness");
+        Ok(())
+    }
+
+    /// The capabilities announcement round-trips with stable field names — the
+    /// cross-crate contract with the server's mirrored
+    /// `WorkerCapabilitiesAnnouncement` — and the channel name is pinned.
+    #[test]
+    fn worker_capabilities_announcement_round_trips_through_json()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let announcement = super::WorkerCapabilitiesAnnouncement {
+            capabilities: aion_core::InterventionCapabilities {
+                supported: vec![
+                    aion_core::InterventionPrimitive::InjectMessage,
+                    aion_core::InterventionPrimitive::Cancel,
+                ],
+            },
+        };
+        let bytes = serde_json::to_vec(&announcement)?;
+        let decoded: super::WorkerCapabilitiesAnnouncement = serde_json::from_slice(&bytes)?;
+        assert_eq!(decoded, announcement);
+        let json = String::from_utf8(bytes)?;
+        for field in ["capabilities", "supported"] {
+            assert!(json.contains(field), "wire JSON must carry `{field}`");
+        }
+        assert_eq!(
+            super::WORKER_CAPABILITIES_CHANNEL,
+            "aion.worker.capabilities"
+        );
         Ok(())
     }
 

@@ -241,6 +241,31 @@ impl SchemaValidate for InterventionReply {
 /// Mirrored byte-for-byte by the worker crate's constant of the same name.
 pub const WORKER_LIVENESS_CHANNEL: &str = "aion.worker.liveness";
 
+/// Reserved liminal channel a worker announces its intervention capabilities on.
+///
+/// The in-band [`WireWorkerRegistration`] frame is a published liminal protocol
+/// type and cannot carry aion-level capability metadata, so a worker whose
+/// harness supports interventions publishes a [`WorkerCapabilitiesAnnouncement`]
+/// here immediately after registering (once per connection, so a redialed
+/// worker re-announces). The notifier consumes the channel and applies the
+/// announcement to the registered handle — the set the intervention router
+/// gates on and the ops console's live-attempts enumeration reports. Mirrored
+/// byte-for-byte by the worker crate's constant of the same name.
+pub const WORKER_CAPABILITIES_CHANNEL: &str = "aion.worker.capabilities";
+
+/// Wire announcement of a worker's advertised intervention capabilities.
+///
+/// Field-for-field mirror of the worker crate's `WorkerCapabilitiesAnnouncement`
+/// (the same cross-crate contract the dispatch/response pairs pin). The worker
+/// is identified by its CONNECTION (the publish's pid resolves the registered
+/// worker), never by wire-supplied identity, so an announcement can only ever
+/// apply to the worker that sent it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerCapabilitiesAnnouncement {
+    /// The neutral intervention primitives the worker's harness supports.
+    pub capabilities: aion_core::InterventionCapabilities,
+}
+
 /// Wire liveness beat for one in-flight dispatch (the liminal mirror of the
 /// gRPC `Heartbeat` frame, liveness-only — progress payloads are not carried).
 ///
@@ -1224,6 +1249,57 @@ impl LiminalConnectionNotifier {
             );
         }
     }
+
+    /// Apply one worker's [`WorkerCapabilitiesAnnouncement`] published on
+    /// [`WORKER_CAPABILITIES_CHANNEL`] to its registered handle.
+    ///
+    /// The worker is resolved by the publishing CONNECTION (`pid` -> the
+    /// registration guard this notifier owns), never by wire identity, so an
+    /// announcement can only ever update the worker that sent it. A malformed
+    /// payload or unregistered connection is logged and dropped — a bad
+    /// announcement must never tear down the connection callback.
+    fn record_capabilities_announcement(&self, pid: u64, payload: &[u8]) {
+        let announcement: WorkerCapabilitiesAnnouncement = match serde_json::from_slice(payload) {
+            Ok(announcement) => announcement,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "capabilities tap: malformed WorkerCapabilitiesAnnouncement payload"
+                );
+                return;
+            }
+        };
+        let worker_id = match self.guards.lock() {
+            Ok(guards) => guards.get(&pid).and_then(WorkerRegistration::worker_id),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .get(&pid)
+                .and_then(WorkerRegistration::worker_id),
+        };
+        let Some(worker_id) = worker_id else {
+            tracing::warn!(
+                connection_pid = pid,
+                "capabilities tap: announcement from a connection with no registered worker"
+            );
+            return;
+        };
+        match self
+            .registry
+            .set_intervention_capabilities(worker_id, &announcement.capabilities)
+        {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!(
+                connection_pid = pid,
+                worker_id = ?worker_id,
+                "capabilities tap: announcement raced the worker's deregistration"
+            ),
+            Err(error) => tracing::error!(
+                %error,
+                connection_pid = pid,
+                "capabilities tap: registry capability update failed"
+            ),
+        }
+    }
 }
 
 impl ConnectionNotifier for LiminalConnectionNotifier {
@@ -1312,6 +1388,12 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
         // the shared heartbeat tracker (always consumed, never fanned out).
         if channel == WORKER_LIVENESS_CHANNEL {
             self.record_liveness_beat(pid, payload);
+            return true;
+        }
+        // Reserved capabilities channel: apply the worker's advertised
+        // intervention capabilities to its registered handle (always consumed).
+        if channel == WORKER_CAPABILITIES_CHANNEL {
+            self.record_capabilities_announcement(pid, payload);
             return true;
         }
         // Only consume the reserved observability channel; any other channel falls

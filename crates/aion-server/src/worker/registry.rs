@@ -731,6 +731,38 @@ impl ConnectedWorkerRegistry {
         Ok(self.state()?.workers.get(&worker_id).cloned())
     }
 
+    /// Replace the advertised intervention capabilities of a registered worker
+    /// (NOI-6). The liminal registration frame cannot carry capabilities, so a
+    /// liminal agent worker announces them on the reserved capabilities channel
+    /// right after registering, and this applies the announcement to the live
+    /// handle the intervention router gates on. Returns `false` when the worker
+    /// is no longer registered (a disconnect racing the announcement — benign).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if the registry lock is poisoned.
+    pub fn set_intervention_capabilities(
+        &self,
+        worker_id: WorkerId,
+        capabilities: &InterventionCapabilities,
+    ) -> Result<bool, ServerError> {
+        let mut state = self.state()?;
+        if !state.workers.contains_key(&worker_id) {
+            return Ok(false);
+        }
+        if let Some(handle) = state.workers.get_mut(&worker_id) {
+            handle.intervention_capabilities = capabilities.clone();
+        }
+        // The selection index holds handle clones; keep them capability-consistent
+        // even though capabilities are never a routing dimension.
+        for workers in state.by_activity.values_mut() {
+            if let Some(handle) = workers.get_mut(&worker_id) {
+                handle.intervention_capabilities = capabilities.clone();
+            }
+        }
+        Ok(true)
+    }
+
     /// Broadcast a graceful drain request to every connected worker stream.
     ///
     /// # Errors
@@ -1060,6 +1092,45 @@ mod tests {
 
     fn multi_caller(namespaces: &[&str]) -> CallerIdentity {
         CallerIdentity::new("worker", namespaces.iter().map(|value| (*value).to_owned()))
+    }
+
+    /// `set_intervention_capabilities` replaces a live worker's advertised set —
+    /// the announcement path a liminal agent worker takes after its in-band
+    /// registration (the registration frame cannot carry capabilities) — and
+    /// reports an unknown worker as `false` (an announcement racing a
+    /// disconnect is benign, never an error).
+    #[tokio::test]
+    async fn set_intervention_capabilities_updates_live_worker() -> Result<(), ServerError> {
+        let registry = ConnectedWorkerRegistry::default();
+        let (sender, _receiver) = mpsc::channel(1);
+        let types = vec!["scout".to_owned()];
+        let guard = registry.register_delivery_with_capabilities(
+            ["default".to_owned()],
+            "default",
+            None,
+            types.iter(),
+            WorkerDelivery::Grpc(sender),
+            InterventionCapabilities::none(),
+        )?;
+        let worker_id = guard.worker_id().expect("registration carries an id");
+
+        let announced = InterventionCapabilities {
+            supported: vec![aion_core::InterventionPrimitive::InjectMessage],
+        };
+        assert!(
+            registry.set_intervention_capabilities(worker_id, &announced)?,
+            "a live worker's capabilities must be updatable"
+        );
+        let handle = registry
+            .worker_by_id(worker_id)?
+            .expect("worker stays registered");
+        assert_eq!(handle.intervention_capabilities(), &announced);
+
+        assert!(
+            !registry.set_intervention_capabilities(WorkerId(u64::MAX), &announced)?,
+            "an unknown worker reports false, never an error"
+        );
+        Ok(())
     }
 
     #[tokio::test]
