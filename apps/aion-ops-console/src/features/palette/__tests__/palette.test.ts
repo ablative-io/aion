@@ -36,6 +36,15 @@ const WORKFLOW = {
   parent: null,
 };
 
+const ASSISTANT_SESSION = {
+  workflow_id: 'wf-assist-1',
+  workflow_type: 'assistant',
+  status: 'Running' as const,
+  started_at: '2026-07-02T00:00:00Z',
+  ended_at: null,
+  parent: null,
+};
+
 const SNAPSHOT: ClusterSnapshot = {
   node: 'node-a',
   as_of_seq: 1,
@@ -54,7 +63,13 @@ const SNAPSHOT: ClusterSnapshot = {
 
 function mockClient(overrides: Partial<PaletteEntityClient> = {}): PaletteEntityClient {
   return {
-    queryWorkflows: async () => ({ items: [WORKFLOW], nextCursor: null, hasMore: false }),
+    // The workflows and assistant-sessions sources share this endpoint; the
+    // assistant source narrows by workflow_type, so the mock honors the filter.
+    queryWorkflows: async (filter) => ({
+      items: filter.workflow_type === 'assistant' ? [ASSISTANT_SESSION] : [WORKFLOW],
+      nextCursor: null,
+      hasMore: false,
+    }),
     listNamespaces: async () => ['default', 'orders'] as Namespace[],
     listVersions: async () => [
       {
@@ -75,9 +90,13 @@ function mockClient(overrides: Partial<PaletteEntityClient> = {}): PaletteEntity
 test('fetches every entity kind from its real endpoint shape and deep-links each', async () => {
   const namespaces: string[] = [];
   const client = mockClient({
-    queryWorkflows: async (_filter, _page, options) => {
+    queryWorkflows: async (filter, _page, options) => {
       namespaces.push(options.namespace);
-      return { items: [WORKFLOW], nextCursor: null, hasMore: false };
+      return {
+        items: filter.workflow_type === 'assistant' ? [ASSISTANT_SESSION] : [WORKFLOW],
+        nextCursor: null,
+        hasMore: false,
+      };
     },
   });
 
@@ -87,12 +106,15 @@ test('fetches every entity kind from its real endpoint shape and deep-links each
   });
 
   expect(result.errors).toEqual([]);
-  // The workflow query is scoped to the selected namespace.
-  expect(namespaces).toEqual(['default']);
+  // Both workflow queries (all workflows + assistant sessions) are scoped to
+  // the selected namespace.
+  expect(namespaces).toEqual(['default', 'default']);
 
   const byKind = Object.groupBy(result.entities, (entity) => entity.kind);
   expect(byKind.workflow?.[0]?.href).toBe('/workflows/wf-123');
   expect(byKind.workflow?.[0]?.keywords).toEqual(['EmailDigest', 'Running']);
+  // Assistant sessions deep-link to the assistant panel, not the raw workflow.
+  expect(byKind.assistant?.[0]?.href).toBe('/assistant/wf-assist-1');
   expect(byKind.namespace?.map((entity) => entity.title)).toEqual(['default', 'orders']);
   // Packages deep-link to the start surface preloaded with the workflow type.
   expect(byKind.package?.[0]?.href).toBe('/actions?workflow_type=EmailDigest');
@@ -135,7 +157,11 @@ test('a failing source surfaces as an error while the others still return', asyn
     deployGranted: true,
   });
 
-  expect(result.errors).toEqual(['workflows: namespace_denied']);
+  // Both sources on the denied endpoint fail visibly; the rest still return.
+  expect(result.errors).toEqual([
+    'workflows: namespace_denied',
+    'assistant sessions: namespace_denied',
+  ]);
   expect(result.entities.some((entity) => entity.kind === 'namespace')).toBe(true);
 });
 
@@ -170,6 +196,7 @@ test('everything mode groups by kind with headers in stable order', async () => 
     'Recent',
     'Actions',
     'Workflows',
+    'Assistant sessions',
     'Namespaces',
     'Packages',
     'Workers',
@@ -214,6 +241,12 @@ test('workflows mode narrows to workflow entities; actions mode to verbs', async
 test('the deploy verb is offered only with the runtime deploy grant', () => {
   expect(paletteVerbs(true).some((verb) => verb.id === 'verb:deploy-package')).toBe(true);
   expect(paletteVerbs(false).some((verb) => verb.id === 'verb:deploy-package')).toBe(false);
+});
+
+test('the assistant verbs are always offered and land on the assistant panel', () => {
+  const verbs = paletteVerbs(false);
+  expect(verbs.find((verb) => verb.id === 'verb:new-assistant-session')?.href).toBe('/assistant');
+  expect(verbs.find((verb) => verb.id === 'verb:go-assistant')?.href).toBe('/assistant');
 });
 
 // --- recents persistence ---

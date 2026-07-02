@@ -1,5 +1,6 @@
 import {
   actionsPath,
+  assistantPath,
   failoverPath,
   incidentsPath,
   namespacesPath,
@@ -45,6 +46,12 @@ const NAVIGATE_VERBS: readonly PaletteVerb[] = [
     href: actionsPath,
   },
   {
+    id: 'verb:go-assistant',
+    title: 'Go to assistant',
+    keywords: ['sessions', 'agent', 'chat', 'navigate'],
+    href: assistantPath,
+  },
+  {
     id: 'verb:go-incidents',
     title: 'Go to incidents',
     keywords: ['triage', 'failures', 'navigate'],
@@ -72,11 +79,23 @@ const DEPLOY_PACKAGE_VERB: PaletteVerb = {
   href: actionsPath,
 };
 
+const NEW_ASSISTANT_SESSION_VERB: PaletteVerb = {
+  id: 'verb:new-assistant-session',
+  title: 'New assistant session…',
+  keywords: ['assistant', 'agent', 'chat', 'start', 'session'],
+  href: assistantPath,
+};
+
 /**
  * The verb inventory. Operational verbs land on the Actions surface; deploy is
  * offered only when the runtime-discovered capability grants it (the same gate
  * the Actions view renders under).
  */
 export function paletteVerbs(deployGranted: boolean): PaletteVerb[] {
-  return [START_WORKFLOW_VERB, ...(deployGranted ? [DEPLOY_PACKAGE_VERB] : []), ...NAVIGATE_VERBS];
+  return [
+    START_WORKFLOW_VERB,
+    NEW_ASSISTANT_SESSION_VERB,
+    ...(deployGranted ? [DEPLOY_PACKAGE_VERB] : []),
+    ...NAVIGATE_VERBS,
+  ];
 }

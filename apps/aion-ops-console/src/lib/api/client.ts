@@ -545,6 +545,39 @@ export class ApiClient {
   }
 
   /**
+   * Deliver a named signal to a running workflow (`POST /workflows/signal`).
+   * Namespace-scoped exactly like cancel/reopen (ADR-022 per-namespace command
+   * authority). The plain-JSON `payload` is auto-wrapped server-side as an
+   * `application/json` payload (the same start-input path); omit it for a
+   * payload-less signal. `run_id` is omitted to target the latest run (the
+   * server resolves it), matching the CLI's `aion signal <id> <name>`.
+   *
+   * The server ack body is empty (`SignalResponse {}`), so success is the 2xx
+   * itself; a missing workflow (`not_found`), a denied grant, or an invalid id
+   * propagates as a typed {@link ApiError} — never swallowed.
+   */
+  async sendSignal(
+    workflowId: WorkflowId,
+    signalName: string,
+    options: RequestOptions,
+    payload?: JsonRecord,
+    runId?: RunId
+  ): Promise<void> {
+    await this.request<unknown>(
+      AW_REST_CONTRACT.endpoints.workflowSignal,
+      AW_REST_CONTRACT.methods.workflowSignal,
+      options,
+      {
+        [AW_REST_CONTRACT.requestKeys.namespace]: options.namespace,
+        [AW_REST_CONTRACT.requestKeys.workflowId]: workflowId,
+        [AW_REST_CONTRACT.requestKeys.signalName]: signalName,
+        ...(payload === undefined ? {} : { [AW_REST_CONTRACT.requestKeys.payload]: payload }),
+        ...(runId === undefined ? {} : { [AW_REST_CONTRACT.requestKeys.runId]: runId }),
+      }
+    );
+  }
+
+  /**
    * Upload a `.aion` package archive (`POST /deploy/packages`). The whole request
    * body IS the archive bytes (raw `application/octet-stream`), not multipart or
    * JSON. Deployment-scoped: it carries the deploy grant (no namespace header).

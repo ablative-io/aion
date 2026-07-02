@@ -14,6 +14,8 @@ import { NotFound } from './NotFound';
 import { RouteError } from './RouteError';
 import {
   actionsPath,
+  assistantPath,
+  assistantSessionPath,
   failoverPath,
   incidentsPath,
   kitPath,
@@ -29,6 +31,10 @@ import {
 export {
   actionsHref,
   actionsPath,
+  assistantHref,
+  assistantPath,
+  assistantSessionHref,
+  assistantSessionPath,
   failoverHref,
   failoverPath,
   incidentsHref,
@@ -52,6 +58,14 @@ export {
 const ActionsView = lazyNamed(
   () => import('@/features/actions'),
   (mod) => mod.ActionsView
+);
+const AssistantView = lazyNamed(
+  () => import('@/features/assistant'),
+  (mod) => mod.AssistantView
+);
+const AssistantSessionView = lazyNamed(
+  () => import('@/features/assistant'),
+  (mod) => mod.AssistantSessionView
 );
 const SearchView = lazyNamed(
   () => import('@/features/search'),
@@ -80,6 +94,8 @@ export const appRoutes: RouteObject[] = [
       { path: workflowDetailPath, element: <WorkflowDetailRoute /> },
       { path: searchPath, element: <SearchRoute /> },
       { path: actionsPath, element: <ActionsRoute /> },
+      { path: assistantPath, element: <AssistantRoute /> },
+      { path: assistantSessionPath, element: <AssistantSessionRoute /> },
       { path: incidentsPath, element: <IncidentsRoute /> },
       { path: namespacesPath, element: <NamespaceRegistryPanel /> },
       { path: failoverPath, element: <FailoverRoute /> },
@@ -135,6 +151,27 @@ function ActionsRoute() {
         initialWorkflowType={initialWorkflowType}
         namespace={selectedNamespace}
       />
+    </Suspense>
+  );
+}
+
+function AssistantRoute() {
+  const { selectedNamespace } = useNamespace();
+
+  return (
+    <Suspense fallback={<LoadingSkeleton />}>
+      <AssistantView namespace={selectedNamespace} />
+    </Suspense>
+  );
+}
+
+function AssistantSessionRoute() {
+  const { selectedNamespace } = useNamespace();
+  const { id } = useParams<'id'>();
+
+  return (
+    <Suspense fallback={<LoadingSkeleton />}>
+      <AssistantSessionView namespace={selectedNamespace} workflowId={id ?? ''} />
     </Suspense>
   );
 }

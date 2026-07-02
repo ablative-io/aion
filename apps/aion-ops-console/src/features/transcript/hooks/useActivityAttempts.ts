@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ApiClient, AttemptCapabilities } from '@/lib/api';
 import { createConfiguredApiClient } from '@/lib/config';
@@ -20,7 +20,12 @@ import type { Namespace, WorkflowId } from '@/types';
  * honest answer for a workflow with no live agent attempt.
  */
 
-export type AttemptsLoadState = 'idle' | 'loading' | 'ready' | 'error';
+/**
+ * `refreshing` is a re-enumeration of the SAME (namespace, workflow) after a
+ * successful load: the previous attempts stay valid state (consumers keep
+ * rendering them) rather than flapping back through `loading`.
+ */
+export type AttemptsLoadState = 'idle' | 'loading' | 'refreshing' | 'ready' | 'error';
 
 export type UseActivityAttemptsOptions = {
   /** The workflow to enumerate; `null` leaves the hook idle. */
@@ -56,6 +61,9 @@ export function useActivityAttempts(
   const [loadError, setLoadError] = useState<Error | null>(null);
   // A nonce the refresh callback bumps to re-run the load effect on demand.
   const [nonce, setNonce] = useState(0);
+  // The identity the current attempts belong to; a change means the previous
+  // rows are another workflow's and must NOT survive as `refreshing` state.
+  const identityRef = useRef<string | null>(null);
 
   const refresh = useCallback(() => {
     setNonce((current) => current + 1);
@@ -66,6 +74,7 @@ export function useActivityAttempts(
   // biome-ignore lint/correctness/useExhaustiveDependencies: `nonce` is a deliberate refetch trigger, not read in the body.
   useEffect(() => {
     if (workflowId === null || namespace === null) {
+      identityRef.current = null;
       setAttempts([]);
       setLoadState('idle');
       setLoadError(null);
@@ -74,7 +83,18 @@ export function useActivityAttempts(
 
     let active = true;
     const apiClient = options.apiClient ?? createConfiguredApiClient({ namespace });
-    setLoadState('loading');
+    const identity = `${namespace}:${workflowId}`;
+    if (identityRef.current === identity) {
+      // Same target re-enumerating: keep the previous rows on screen and only
+      // step to `refreshing` when they were actually loaded.
+      setLoadState((current) =>
+        current === 'ready' || current === 'refreshing' ? 'refreshing' : 'loading'
+      );
+    } else {
+      identityRef.current = identity;
+      setAttempts([]);
+      setLoadState('loading');
+    }
 
     apiClient
       .listAttempts(workflowId, { namespace })

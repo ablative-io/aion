@@ -34,6 +34,7 @@ const ITEM_CLASS = cn(
 
 const KIND_LABELS: Record<PaletteItem['kind'], string> = {
   workflow: 'workflow',
+  assistant: 'session',
   namespace: 'namespace',
   package: 'package',
   worker: 'worker',
