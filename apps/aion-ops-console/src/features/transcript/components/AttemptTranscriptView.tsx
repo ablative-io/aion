@@ -29,8 +29,28 @@ export type AttemptTranscriptViewProps = {
 };
 
 /** A stable identity string for an attempt row (activity + attempt). */
-function attemptId(attempt: AttemptCapabilities): string {
+export function attemptId(attempt: AttemptCapabilities): string {
   return `${attempt.activityId}:${attempt.attempt}`;
+}
+
+/**
+ * Resolve the effective attempt selection. A manual pick wins while it still
+ * exists; otherwise, when the enumeration returned exactly ONE live attempt it is
+ * auto-selected (there is nothing else to choose, so "No attempt selected" would
+ * just be friction). With several attempts and no pick, nothing is selected.
+ */
+export function resolveSelectedAttempt(
+  attempts: AttemptCapabilities[],
+  selectedId: string | null
+): AttemptCapabilities | null {
+  const manual =
+    selectedId === null
+      ? null
+      : (attempts.find((attempt) => attemptId(attempt) === selectedId) ?? null);
+  if (manual !== null) {
+    return manual;
+  }
+  return attempts.length === 1 ? (attempts[0] ?? null) : null;
 }
 
 export function AttemptTranscriptView({ workflowId, namespace }: AttemptTranscriptViewProps) {
@@ -41,7 +61,7 @@ export function AttemptTranscriptView({ workflowId, namespace }: AttemptTranscri
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const selected = useMemo(
-    () => attempts.find((attempt) => attemptId(attempt) === selectedId) ?? null,
+    () => resolveSelectedAttempt(attempts, selectedId),
     [attempts, selectedId]
   );
 
@@ -80,7 +100,7 @@ export function AttemptTranscriptView({ workflowId, namespace }: AttemptTranscri
         loadState={loadState}
         onRetry={refresh}
         onSelect={setSelectedId}
-        selectedId={selectedId}
+        selectedId={selected === null ? null : attemptId(selected)}
       />
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
