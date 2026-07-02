@@ -80,8 +80,17 @@ pub type Output {
 
 /// Input of the `provision` activity: check out `repo_url` at `base_ref`
 /// into a fresh working branch for the brief.
+///
+/// `run_id` is the workflow's run id (from `workflow.id()`): it keys the
+/// worker-side workspace directory (`<root>/<run_id>/repo`) AND must equal
+/// the id the agent-harness workspace-root template expands — the same value.
 pub type ProvisionInput {
-  ProvisionInput(repo_url: String, base_ref: String, brief_id: String)
+  ProvisionInput(
+    repo_url: String,
+    base_ref: String,
+    brief_id: String,
+    run_id: String,
+  )
 }
 
 /// The review verdict decoded (defensively) from the review agent's terminal

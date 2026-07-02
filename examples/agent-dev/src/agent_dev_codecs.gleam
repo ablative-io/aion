@@ -240,6 +240,7 @@ pub fn provision_input_to_json(value: io.ProvisionInput) -> json.Json {
     #("repo_url", json.string(value.repo_url)),
     #("base_ref", json.string(value.base_ref)),
     #("brief_id", json.string(value.brief_id)),
+    #("run_id", json.string(value.run_id)),
   ])
 }
 
@@ -248,10 +249,12 @@ pub fn provision_input_decoder() -> decode.Decoder(io.ProvisionInput) {
   use field_repo_url <- decode.field("repo_url", decode.string)
   use field_base_ref <- decode.field("base_ref", decode.string)
   use field_brief_id <- decode.field("brief_id", decode.string)
+  use field_run_id <- decode.field("run_id", decode.string)
   decode.success(io.ProvisionInput(
     repo_url: field_repo_url,
     base_ref: field_base_ref,
     brief_id: field_brief_id,
+    run_id: field_run_id,
   ))
 }
 

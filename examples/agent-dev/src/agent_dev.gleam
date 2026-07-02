@@ -351,12 +351,28 @@ fn land_and_finish(
 // --- activity dispatches -----------------------------------------------------
 
 fn run_provision(input: io.Input) -> Result(io.Workspace, io.AgentDevError) {
+  // The workflow execution's unique id (recorded in WorkflowStarted, stable
+  // across replay) keys the worker-side workspace clone at
+  // `<root>/<run_id>/repo` — brief ids alone can collide across
+  // re-dispatches. It is the SAME id the agent-harness workspace-root
+  // template `{workflow_id}` expands, so the provision clone and the agent
+  // sessions land in the same per-run directory (the #175 pattern).
+  use run_id <- result_try(case workflow.id() {
+    Ok(run_id) -> Ok(run_id)
+    Error(error.EngineFailure(message: message)) ->
+      Error(io.AgentDevError(
+        stage: "provision",
+        message: "workflow id unavailable — cannot key the worker-side workspace directory: "
+          <> message,
+      ))
+  })
   case
     workflow.run(
       activities.provision(io.ProvisionInput(
         repo_url: input.repo_url,
         base_ref: input.base_ref,
         brief_id: input.brief_id,
+        run_id: run_id,
       )),
     )
   {
