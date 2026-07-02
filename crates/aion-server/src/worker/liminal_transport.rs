@@ -117,6 +117,35 @@ pub struct DispatchRequest {
     pub run_id: Option<RunId>,
     /// Opaque activity input bytes (JSON-tagged on the aion side).
     pub input: Vec<u8>,
+    /// One-based delivery attempt, mirroring the gRPC `ActivityTask.attempt`.
+    /// The engine-seam bridge threads the real attempt so a retry executes with
+    /// attempt-aware handler semantics identical to the gRPC transport; the
+    /// outbox path stamps the row's stored zero-based attempt as one-based.
+    /// Serde-defaulted to `1` so a frame from a pre-attempt server (or an old
+    /// recorded frame) still decodes as a first delivery.
+    #[serde(default = "first_attempt")]
+    pub attempt: u32,
+    /// Engine-provided routing/metadata labels, mirroring the gRPC
+    /// `ActivityTask.labels`. Empty (the serde default) on the outbox path,
+    /// which has no label source.
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// The server's heartbeat window in milliseconds when this dispatch is
+    /// tracked by the server's per-task liveness tracker (the engine-seam
+    /// bridge path), or `0` when it is not (the outbox path, whose liveness
+    /// backstop is its own retry loop). A non-zero window tells the worker to
+    /// pump automatic liveness beats at a quarter-window cadence so the
+    /// server's heartbeat sweeper never expires a healthy long-running
+    /// activity — the exact liminal mirror of the gRPC worker's automatic
+    /// liveness pump.
+    #[serde(default)]
+    pub heartbeat_window_ms: u64,
+}
+
+/// Serde default for [`DispatchRequest::attempt`]: a frame that predates the
+/// attempt field is a first delivery.
+const fn first_attempt() -> u32 {
+    1
 }
 
 impl SchemaValidate for DispatchRequest {
@@ -199,6 +228,35 @@ impl SchemaValidate for InterventionReply {
     }
 }
 
+/// Reserved liminal channel a worker publishes automatic liveness beats on.
+///
+/// The liminal wire has no gRPC-style heartbeat frame, so per-task liveness
+/// rides a reserved publish channel exactly as the observability transcript
+/// does: the worker's runtime pumps a [`WorkerLivenessBeat`] per in-flight
+/// tracked dispatch at a quarter-window cadence, and the server's
+/// [`LiminalConnectionNotifier`] consumes the channel and refreshes the shared
+/// [`HeartbeatTracker`] — so the #176 expiry sweeper is genuinely
+/// transport-agnostic: a healthy liminal worker running a long activity is
+/// never falsely expired, and a wedged one (which stops pumping) still is.
+/// Mirrored byte-for-byte by the worker crate's constant of the same name.
+pub const WORKER_LIVENESS_CHANNEL: &str = "aion.worker.liveness";
+
+/// Wire liveness beat for one in-flight dispatch (the liminal mirror of the
+/// gRPC `Heartbeat` frame, liveness-only — progress payloads are not carried).
+///
+/// Field-for-field mirror of the worker crate's `WorkerLivenessBeat` (same
+/// serde field names + `aion-core` id types), the same cross-crate contract the
+/// dispatch/response pairs pin. The worker is identified by its CONNECTION (the
+/// publish's pid resolves the registered worker), never by wire-supplied
+/// identity, so a beat can only ever refresh tasks of the worker that sent it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerLivenessBeat {
+    /// Workflow owning the in-flight activity being kept alive.
+    pub workflow_id: WorkflowId,
+    /// Pinned ordinal of the in-flight activity being kept alive.
+    pub ordinal: u64,
+}
+
 /// Builds the wire request for one claimed outbox row.
 ///
 /// Kept free-standing (not a method) so both the dispatch path and tests build
@@ -211,6 +269,15 @@ pub fn request_for_row(row: &OutboxRow) -> DispatchRequest {
         ordinal: row.ordinal,
         run_id: row.run_id.clone(),
         input: row.input.bytes().to_vec(),
+        // The stored zero-based attempt is stamped one-based on the wire (zero
+        // is malformed), exactly as the gRPC outbox arm's `to_scheduled` does.
+        attempt: row.attempt.saturating_add(1),
+        // Outbox rows carry no engine labels (the gRPC arm sends empty too).
+        labels: std::collections::BTreeMap::new(),
+        // Outbox dispatches are not tracked by the server's per-task liveness
+        // tracker — the outbox retry loop is their liveness backstop — so no
+        // window is assigned and the worker does not pump beats for them.
+        heartbeat_window_ms: 0,
     }
 }
 
@@ -599,7 +666,14 @@ fn decode_dispatch_response(reply: &[u8]) -> Result<DispatchResponse, ServerErro
 /// exact liminal mirror of the gRPC bridge's unbounded `recv`, which is released
 /// only by a completion or by stream teardown. The wait terminates on exactly:
 ///
-/// - **the reply** — decoded as the worker's [`DispatchResponse`];
+/// - **the reply** — decoded as the worker's [`DispatchResponse`] and returned
+///   as `Ok(Some(response))`. A reply already buffered when a poll fires always
+///   wins over abandonment: the awaiter is drained before `keep_waiting` runs;
+/// - **abandonment** — `keep_waiting()` returned `false` at a poll boundary
+///   (the bridge passes "is this dispatch still tracked in-flight?"): the
+///   dispatch was resolved by another path (expiry sweep, shutdown drain, or a
+///   cleanup), so the wait returns `Ok(None)` and the router thread exits
+///   instead of parking on the connection indefinitely;
 /// - **worker loss** — the connection closed before replying: the awaiter wakes
 ///   PROMPTLY with liminal's typed Disconnected error, surfaced as
 ///   [`ServerError::WorkerConnectionLost`] so the bridge reports the same
@@ -615,13 +689,21 @@ fn decode_dispatch_response(reply: &[u8]) -> Result<DispatchResponse, ServerErro
 /// [`ServerError::WorkerDispatch`] on a receive fault or reply decode failure.
 pub(crate) fn receive_bridge_reply(
     awaiter: &PushReplyAwaiter,
-) -> Result<DispatchResponse, ServerError> {
+    keep_waiting: impl Fn() -> bool,
+) -> Result<Option<DispatchResponse>, ServerError> {
     loop {
         match awaiter.receive(BRIDGE_REPLY_POLL) {
-            Ok(reply) => return decode_dispatch_response(&reply),
-            // A bare poll timeout is a re-arm, never a failure: the dispatch
-            // wait is unbounded by contract (see the bridge module docs).
-            Err(LiminalServerError::PushReplyTimeout { .. }) => {}
+            Ok(reply) => return decode_dispatch_response(&reply).map(Some),
+            // A bare poll timeout re-arms the wait while the dispatch is still
+            // outstanding (the wait is unbounded by contract; see the bridge
+            // module docs), and ends it cleanly once the dispatch was resolved
+            // elsewhere — the poll cadence bounds the router thread's lifetime
+            // to one poll past that resolution.
+            Err(LiminalServerError::PushReplyTimeout { .. }) => {
+                if !keep_waiting() {
+                    return Ok(None);
+                }
+            }
             Err(error) if is_connection_closed_reply_error(&error) => {
                 return Err(ServerError::worker_connection_lost(
                     "liminal-push",
@@ -843,13 +925,14 @@ impl OutboxRowDispatch for RegistryLiminalDispatch {
         // races the dispatch resolves the worker. The guard releases on every exit
         // path (reply, error, panic) so the index never keeps a finished attempt.
         // The key mirrors the worker's execute-path stamp exactly: activity_id from
-        // the ordinal, attempt = 1 (the push wire carries no attempt; the worker
-        // stamps a first delivery). See `LiminalActivityWorker::execute`.
+        // the ordinal, attempt = the wire's one-based delivery attempt (the same
+        // `request_for_row` stamp the worker echoes into its session key). See
+        // `LiminalActivityWorker::execute` / `run_agent_dispatch`.
         let _owner_guard = self.attempt_owners.as_ref().map(|owners| {
             let key = super::intervention::AttemptKey::new(
                 row.workflow_id.clone(),
                 ActivityId::from_sequence_position(row.ordinal),
-                1,
+                row.attempt.saturating_add(1),
             );
             owners.bind(key.clone(), worker.id());
             AttemptOwnerGuard {
@@ -962,6 +1045,13 @@ pub struct LiminalConnectionNotifier {
     /// default, and every non-agent boot) makes the observability tap a no-op, so a
     /// worker publish to the reserved channel is simply ignored by the notifier.
     transcript: Option<TranscriptTap>,
+    /// The SAME per-task liveness tracker the bridge dispatcher tracks into and
+    /// the #176 expiry sweeper expires from. A worker's automatic
+    /// [`WorkerLivenessBeat`] publishes on [`WORKER_LIVENESS_CHANNEL`] refresh
+    /// their task stamps here, keeping the sweeper honest for liminal-delivered
+    /// dispatches. `None` (a wiring that never bridges dispatches, e.g. isolated
+    /// tests) consumes and drops the beats.
+    heartbeat_tracker: Option<super::heartbeat::HeartbeatTracker>,
 }
 
 /// The observability-drain leg of the notifier: the transcript sequencer to publish
@@ -995,7 +1085,23 @@ impl LiminalConnectionNotifier {
             guards: Mutex::new(HashMap::new()),
             intervention_capabilities: aion_core::InterventionCapabilities::none(),
             transcript: None,
+            heartbeat_tracker: None,
         }
+    }
+
+    /// Install the shared per-task liveness tracker so a worker's automatic
+    /// [`WorkerLivenessBeat`] publishes refresh the SAME in-flight entries the
+    /// bridge dispatcher tracks and the #176 sweeper expires.
+    ///
+    /// MUST be wired on every boot that hosts the engine-seam bridge (the
+    /// production composition does), or the sweeper would expire healthy
+    /// liminal workers running activities longer than the heartbeat window.
+    /// Without it (isolated tests that never bridge-dispatch) beats are
+    /// consumed and dropped.
+    #[must_use]
+    pub fn with_heartbeat_tracker(mut self, tracker: super::heartbeat::HeartbeatTracker) -> Self {
+        self.heartbeat_tracker = Some(tracker);
+        self
     }
 
     /// Install the transcript sequencer a worker's observability publishes drain into
@@ -1051,6 +1157,56 @@ impl LiminalConnectionNotifier {
     /// [`ConnectionSupervisor::with_services_and_notifier`].
     pub fn bind_supervisor(&self, supervisor: ConnectionSupervisor) -> bool {
         self.supervisor.set(supervisor).is_ok()
+    }
+
+    /// Refresh one worker's in-flight task stamp from a [`WorkerLivenessBeat`]
+    /// published on [`WORKER_LIVENESS_CHANNEL`].
+    ///
+    /// The worker is resolved by the publishing CONNECTION (`pid` -> the
+    /// registration guard this notifier owns), never by wire identity, so a
+    /// beat can only refresh tasks assigned to the worker that sent it. An
+    /// untracked task is benign (an outbox dispatch the tracker never held, or
+    /// a beat racing its completion) and is dropped silently; a malformed
+    /// payload or unregistered connection is logged and dropped — a bad beat
+    /// must never tear down the connection callback.
+    fn record_liveness_beat(&self, pid: u64, payload: &[u8]) {
+        let Some(tracker) = &self.heartbeat_tracker else {
+            return;
+        };
+        let beat: WorkerLivenessBeat = match serde_json::from_slice(payload) {
+            Ok(beat) => beat,
+            Err(error) => {
+                tracing::warn!(%error, "liveness tap: malformed WorkerLivenessBeat payload");
+                return;
+            }
+        };
+        let worker_id = match self.guards.lock() {
+            Ok(guards) => guards.get(&pid).and_then(WorkerRegistration::worker_id),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .get(&pid)
+                .and_then(WorkerRegistration::worker_id),
+        };
+        let Some(worker_id) = worker_id else {
+            tracing::warn!(
+                connection_pid = pid,
+                "liveness tap: beat from a connection with no registered worker"
+            );
+            return;
+        };
+        let activity_id = ActivityId::from_sequence_position(beat.ordinal);
+        if let Err(error) = tracker.record_liveness(
+            worker_id,
+            &beat.workflow_id,
+            &activity_id,
+            std::time::Instant::now(),
+        ) {
+            tracing::error!(
+                %error,
+                connection_pid = pid,
+                "liveness tap: heartbeat tracker refresh failed"
+            );
+        }
     }
 }
 
@@ -1135,7 +1291,13 @@ impl ConnectionNotifier for LiminalConnectionNotifier {
         }
     }
 
-    fn on_channel_publish(&self, _pid: u64, channel: &str, payload: &[u8]) -> bool {
+    fn on_channel_publish(&self, pid: u64, channel: &str, payload: &[u8]) -> bool {
+        // Reserved liveness channel: refresh the beat's in-flight task stamp in
+        // the shared heartbeat tracker (always consumed, never fanned out).
+        if channel == WORKER_LIVENESS_CHANNEL {
+            self.record_liveness_beat(pid, payload);
+            return true;
+        }
         // Only consume the reserved observability channel; any other channel falls
         // through to liminal's normal fan-out (this returns false).
         if channel != liminal_sdk::OBSERVABILITY_CHANNEL {
@@ -1486,6 +1648,27 @@ mod tests {
         let unpinned = row("remote", "gpu");
         assert_eq!(channel_for_row(&unpinned), "aion.dispatch.remote.gpu");
         assert_ne!(channel_for_row(&pinned), channel_for_row(&unpinned));
+    }
+
+    /// The outbox wire request stamps the row's stored ZERO-based attempt as a
+    /// ONE-based delivery attempt (zero is malformed on the wire) — the exact
+    /// stamp the gRPC outbox arm's `to_scheduled` applies — carries no labels,
+    /// and assigns no liveness window (outbox rows are not tracker-tracked; the
+    /// outbox retry loop is their liveness backstop).
+    #[test]
+    fn request_for_row_stamps_one_based_attempt_and_no_window() {
+        let mut retried = row("remote", "gpu");
+        retried.attempt = 2;
+        let request = super::request_for_row(&retried);
+        assert_eq!(
+            request.attempt, 3,
+            "zero-based row attempt goes one-based on the wire"
+        );
+        assert!(request.labels.is_empty());
+        assert_eq!(request.heartbeat_window_ms, 0);
+
+        let fresh = row("remote", "gpu");
+        assert_eq!(super::request_for_row(&fresh).attempt, 1);
     }
 
     /// The wire `node` is normalized onto the registry's optional affinity with

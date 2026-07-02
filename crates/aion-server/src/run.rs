@@ -633,7 +633,12 @@ fn build_liminal_row_dispatch(
     // runtime handle to bridge the sync connection callback onto the async append.)
     let notifier = Arc::new(
         LiminalConnectionNotifier::new(registry.clone())
-            .with_transcript_publisher(state.transcript_publisher().clone()),
+            .with_transcript_publisher(state.transcript_publisher().clone())
+            // The SAME per-task liveness tracker the engine-seam bridge tracks
+            // into: a liminal worker's automatic liveness beats refresh it, so
+            // the #176 expiry sweeper never falsely expires a healthy liminal
+            // worker running an activity longer than the heartbeat window.
+            .with_heartbeat_tracker(state.heartbeat_tracker().clone()),
     );
     // (3) Connection services from the liminal listen config.
     let services = Arc::new(

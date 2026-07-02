@@ -92,6 +92,45 @@ pub struct DispatchRequest {
     pub run_id: Option<RunId>,
     /// Opaque activity input bytes (JSON-tagged on the aion side).
     pub input: Vec<u8>,
+    /// One-based delivery attempt (the gRPC `ActivityTask.attempt` mirror).
+    /// Serde-defaulted to `1` so a frame from a pre-attempt server decodes as
+    /// a first delivery — the exact prior behaviour.
+    #[serde(default = "first_attempt")]
+    pub attempt: u32,
+    /// Engine-provided labels (the gRPC `ActivityTask.labels` mirror); empty
+    /// on the outbox path, which has no label source.
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+    /// The server's heartbeat window in milliseconds when this dispatch is
+    /// liveness-TRACKED on the server (the engine-seam bridge path), or `0`
+    /// when it is not (the outbox path). Non-zero arms this worker's automatic
+    /// liveness pump: beats every quarter-window on
+    /// [`WORKER_LIVENESS_CHANNEL`] so the server's expiry sweeper never
+    /// falsely expires a healthy long-running activity.
+    #[serde(default)]
+    pub heartbeat_window_ms: u64,
+}
+
+/// Serde default for [`DispatchRequest::attempt`]: a frame that predates the
+/// attempt field is a first delivery.
+const fn first_attempt() -> u32 {
+    1
+}
+
+/// Reserved liminal channel this worker publishes automatic liveness beats on.
+/// Byte-for-byte mirror of the server crate's constant of the same name (the
+/// same cross-crate contract the dispatch/response mirrors pin).
+pub const WORKER_LIVENESS_CHANNEL: &str = "aion.worker.liveness";
+
+/// Wire liveness beat for one in-flight dispatch — the liminal mirror of the
+/// gRPC liveness heartbeat (no progress payload). Field-for-field mirror of the
+/// server crate's `WorkerLivenessBeat`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerLivenessBeat {
+    /// Workflow owning the in-flight activity being kept alive.
+    pub workflow_id: WorkflowId,
+    /// Pinned ordinal of the in-flight activity being kept alive.
+    pub ordinal: u64,
 }
 
 /// Wire response carrying this worker's result back to the server.
@@ -529,7 +568,10 @@ impl LiminalActivityWorker {
         // Agent activities are spawned in `handle_pushed_frame` and never reach here;
         // this path is the plain typed-registry execution, now carrying the LIVE
         // transcript event drain so a handler that emits events streams them mid-run.
-        let attempt = 1;
+        // The wire's one-based delivery attempt and labels are threaded through
+        // verbatim (the gRPC parity contract): a retry executes with the real
+        // attempt, never a re-stamped first delivery.
+        let attempt = request.attempt;
         let activity_id = ActivityId::from_sequence_position(request.ordinal);
         let task = ActivityTask {
             workflow_id: request.workflow_id.clone(),
@@ -538,8 +580,12 @@ impl LiminalActivityWorker {
             activity_type: request.activity_type.clone(),
             attempt,
             input: Payload::new(ContentType::Json, request.input.clone()),
-            labels: std::collections::BTreeMap::new(),
+            labels: request.labels.clone(),
         };
+        // Keep this liveness-TRACKED dispatch beating for as long as the handler
+        // genuinely runs (a no-op for the window-less outbox path). The guard
+        // aborts the pump on every exit path.
+        let _liveness = spawn_liveness_pump(self.client.writer_handle(), request);
         let (event_sender, drain) = spawn_event_drain(self.client.writer_handle());
         let (context, cancellation) = ActivityContext::for_workflow_with_events(
             Some(request.workflow_id.clone()),
@@ -593,13 +639,18 @@ async fn run_agent_dispatch(
     correlation_id: u64,
     request: DispatchRequest,
 ) {
-    let attempt = 1;
+    // The wire's one-based delivery attempt keys the session exactly as the
+    // server binds the attempt's owner (`request_for_row` / the bridge stamp).
+    let attempt = request.attempt;
     let activity_id = ActivityId::from_sequence_position(request.ordinal);
     let session_key = SessionKey::new(request.workflow_id.clone(), activity_id.clone(), attempt);
     // Register the live session's control leg BEFORE the run starts; the guard
     // deregisters on drop (any exit path), so a finished attempt is never routed to.
     let (control_tx, control_rx) = mpsc::unbounded_channel();
     let _session_guard = control.register(session_key, control_tx, capabilities);
+    // Keep a liveness-TRACKED agent dispatch beating for the whole run (a no-op
+    // for the window-less outbox path); the guard aborts the pump on every exit.
+    let _liveness = spawn_liveness_pump(writer.clone(), &request);
     let spec = AgentRunSpec::new(
         request.workflow_id.clone(),
         activity_id,
@@ -631,6 +682,63 @@ async fn run_agent_dispatch(
             }
         }
         Err(error) => tracing::warn!(%error, "agent dispatch: failed to encode DispatchResponse"),
+    }
+}
+
+/// Starts the automatic liveness pump for one liveness-TRACKED dispatch, or
+/// `None` when the request carries no heartbeat window (the outbox path, or a
+/// pre-window server) — a no-op, byte-identical to the pre-pump behaviour.
+///
+/// The RUNTIME owns liveness on this transport exactly as it does on gRPC
+/// (#176): the pump publishes a [`WorkerLivenessBeat`] for the dispatch on
+/// [`WORKER_LIVENESS_CHANNEL`] every quarter of the server-assigned window
+/// ([`liveness_pump_interval`], the same cadence the gRPC loop pumps), so a
+/// healthy worker running a legitimately long activity is never expired by the
+/// server's heartbeat sweeper, while a wedged process stops pumping and
+/// correctly is. Dropping the returned guard aborts the pump, so it lives
+/// exactly as long as the dispatch on every exit path.
+fn spawn_liveness_pump(writer: PushWriter, request: &DispatchRequest) -> Option<LivenessPump> {
+    if request.heartbeat_window_ms == 0 {
+        return None;
+    }
+    let period = crate::runtime::loop_::liveness_pump_interval(Duration::from_millis(
+        request.heartbeat_window_ms,
+    ));
+    let beat = WorkerLivenessBeat {
+        workflow_id: request.workflow_id.clone(),
+        ordinal: request.ordinal,
+    };
+    let payload = match serde_json::to_vec(&beat) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(%error, "liveness pump: failed to encode WorkerLivenessBeat");
+            return None;
+        }
+    };
+    let handle = tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(period);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            // A publish fault means the connection is gone; the server's
+            // disconnect path owns the dispatch from here, so stop pumping.
+            if let Err(error) = writer.publish(WORKER_LIVENESS_CHANNEL, payload.clone()) {
+                tracing::warn!(%error, "liveness pump: failed to publish beat; stopping");
+                return;
+            }
+        }
+    });
+    Some(LivenessPump { handle })
+}
+
+/// A running liveness pump tied to one dispatch; dropping it aborts the pump.
+struct LivenessPump {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LivenessPump {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 
@@ -839,7 +947,9 @@ mod tests {
     }
 
     /// The wire request round-trips through serde JSON with stable field names —
-    /// the contract that keeps it byte-compatible with the server's struct.
+    /// the contract that keeps it byte-compatible with the server's struct —
+    /// INCLUDING the engine-parity `attempt`/`labels` and the liveness
+    /// `heartbeat_window_ms` the bridge stamps.
     #[test]
     fn dispatch_request_round_trips_through_json() -> Result<(), Box<dyn std::error::Error>> {
         let request = DispatchRequest {
@@ -848,15 +958,77 @@ mod tests {
             ordinal: 7,
             run_id: Some(RunId::new(Uuid::new_v4())),
             input: br#"{"amount":42}"#.to_vec(),
+            attempt: 3,
+            labels: std::collections::BTreeMap::from([("region".to_owned(), "apac".to_owned())]),
+            heartbeat_window_ms: 30_000,
         };
         let bytes = serde_json::to_vec(&request)?;
         let decoded: DispatchRequest = serde_json::from_slice(&bytes)?;
         assert_eq!(decoded, request);
         // The field names the server depends on are present in the JSON.
         let json = String::from_utf8(bytes)?;
-        for field in ["activity_type", "workflow_id", "ordinal", "run_id", "input"] {
+        for field in [
+            "activity_type",
+            "workflow_id",
+            "ordinal",
+            "run_id",
+            "input",
+            "attempt",
+            "labels",
+            "heartbeat_window_ms",
+        ] {
             assert!(json.contains(field), "wire JSON must carry `{field}`");
         }
+        Ok(())
+    }
+
+    /// A frame from a server that predates `attempt`/`labels`/
+    /// `heartbeat_window_ms` still decodes — as a first delivery with no labels
+    /// and no liveness window (no pump) — so the wire change is
+    /// backward-compatible in both directions.
+    #[test]
+    fn dispatch_request_without_new_fields_decodes_as_first_delivery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let old_frame = serde_json::json!({
+            "activity_type": "charge-card",
+            "workflow_id": WorkflowId::new(Uuid::new_v4()),
+            "ordinal": 7,
+            "run_id": null,
+            "input": [123, 125],
+        });
+        let decoded: DispatchRequest = serde_json::from_value(old_frame)?;
+        assert_eq!(
+            decoded.attempt, 1,
+            "a pre-attempt frame is a first delivery"
+        );
+        assert!(
+            decoded.labels.is_empty(),
+            "a pre-labels frame has no labels"
+        );
+        assert_eq!(
+            decoded.heartbeat_window_ms, 0,
+            "a pre-window frame arms no liveness pump"
+        );
+        Ok(())
+    }
+
+    /// The liveness beat round-trips with stable field names — the cross-crate
+    /// contract with the server's mirrored `WorkerLivenessBeat`.
+    #[test]
+    fn worker_liveness_beat_round_trips_through_json() -> Result<(), Box<dyn std::error::Error>> {
+        let beat = super::WorkerLivenessBeat {
+            workflow_id: WorkflowId::new(Uuid::new_v4()),
+            ordinal: 9,
+        };
+        let bytes = serde_json::to_vec(&beat)?;
+        let decoded: super::WorkerLivenessBeat = serde_json::from_slice(&bytes)?;
+        assert_eq!(decoded, beat);
+        let json = String::from_utf8(bytes)?;
+        for field in ["workflow_id", "ordinal"] {
+            assert!(json.contains(field), "beat JSON must carry `{field}`");
+        }
+        // The channel name is the pinned cross-crate contract.
+        assert_eq!(super::WORKER_LIVENESS_CHANNEL, "aion.worker.liveness");
         Ok(())
     }
 
@@ -898,6 +1070,9 @@ mod tests {
             ordinal: 7,
             run_id: None,
             input: b"{}".to_vec(),
+            attempt: 1,
+            labels: std::collections::BTreeMap::new(),
+            heartbeat_window_ms: 0,
         };
         let dispatch_bytes = serde_json::to_vec(&dispatch)?;
         assert!(

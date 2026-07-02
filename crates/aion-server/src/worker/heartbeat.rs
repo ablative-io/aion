@@ -115,6 +115,13 @@ impl HeartbeatTracker {
 
     /// Stop tracking a completed activity and wake drain waiters if this was the last task.
     ///
+    /// Returns whether the task was still tracked when this ran: `true` means
+    /// THIS call retired the in-flight entry, `false` means another path (the
+    /// expiry sweep, a disconnect teardown, shutdown, or a completed dispatch)
+    /// already did. The liminal reply router uses that bool as its structural
+    /// gate for synthesizing a lost-worker failure — the exact mirror of the
+    /// gRPC sweep failing only still-tracked tasks.
+    ///
     /// # Errors
     ///
     /// Returns [`ServerError::LockPoisoned`] if tracker state cannot be trusted.
@@ -123,17 +130,68 @@ impl HeartbeatTracker {
         worker_id: WorkerId,
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
-    ) -> Result<(), ServerError> {
+    ) -> Result<bool, ServerError> {
         let key = TaskKey::new(worker_id, workflow_id.clone(), activity_id.clone());
-        let became_empty = {
+        let (was_tracked, became_empty) = {
             let mut state = self.state()?;
-            state.tasks.remove(&key);
-            state.tasks.is_empty()
+            let was_tracked = state.tasks.remove(&key).is_some();
+            (was_tracked, state.tasks.is_empty())
         };
         if became_empty {
             self.empty.notify_waiters();
         }
-        Ok(())
+        Ok(was_tracked)
+    }
+
+    /// Whether the given in-flight task is still tracked (not yet completed,
+    /// swept, or drained). The liminal reply router polls this to bound its
+    /// wait: once the entry is gone the dispatch was resolved by another path,
+    /// so the router exits instead of parking on the connection forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if tracker state cannot be trusted.
+    pub fn is_tracked(
+        &self,
+        worker_id: WorkerId,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<bool, ServerError> {
+        let key = TaskKey::new(worker_id, workflow_id.clone(), activity_id.clone());
+        Ok(self.state()?.tasks.contains_key(&key))
+    }
+
+    /// Refresh the liveness stamp of an in-flight task from a transport-level
+    /// liveness beat that carries no progress payload (the liminal worker's
+    /// automatic pump). Returns `true` when the task was tracked and refreshed,
+    /// `false` when it is not in flight — a benign outcome for a beat racing a
+    /// completion or covering an outbox dispatch the tracker never held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::LockPoisoned`] if tracker state cannot be trusted.
+    pub fn record_liveness(
+        &self,
+        worker_id: WorkerId,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+        now: Instant,
+    ) -> Result<bool, ServerError> {
+        let key = TaskKey::new(worker_id, workflow_id.clone(), activity_id.clone());
+        let mut state = self.state()?;
+        let Some(liveness) = state.tasks.get_mut(&key) else {
+            return Ok(false);
+        };
+        liveness.last_heartbeat_at = now;
+        Ok(true)
+    }
+
+    /// The operator-configured heartbeat window this tracker expires against.
+    /// The bridge stamps it onto each liminal dispatch so the worker's
+    /// automatic liveness pump beats at the matching quarter-window cadence.
+    #[must_use]
+    pub const fn heartbeat_window(&self) -> Duration {
+        self.heartbeat_window
     }
 
     /// Number of currently tracked in-flight activities.
@@ -863,6 +921,75 @@ mod tests {
             let (_registry, _registration, worker_id) = registry_with_worker()?;
             Ok(worker_id)
         }
+    }
+
+    /// `complete_task` reports whether THIS call retired the entry — the
+    /// structural gate the liminal reply router uses to synthesize a
+    /// lost-worker failure only for a dispatch nobody else resolved.
+    #[test]
+    fn complete_task_reports_whether_the_entry_was_tracked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tracker = HeartbeatTracker::new(Duration::from_secs(5));
+        let worker_id = WorkerIdForTest::registered()?;
+        let workflow_id = workflow_id();
+        let id = activity_id(50);
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: id.clone(),
+            },
+            Instant::now(),
+        )?;
+
+        assert!(tracker.is_tracked(worker_id, &workflow_id, &id)?);
+        assert!(
+            tracker.complete_task(worker_id, &workflow_id, &id)?,
+            "the first completion retires the tracked entry"
+        );
+        assert!(!tracker.is_tracked(worker_id, &workflow_id, &id)?);
+        assert!(
+            !tracker.complete_task(worker_id, &workflow_id, &id)?,
+            "a second completion finds nothing to retire"
+        );
+        Ok(())
+    }
+
+    /// A liveness beat (the liminal worker's automatic pump) refreshes the
+    /// task's expiry stamp — keeping a genuinely-running over-window activity
+    /// out of the sweep — and reports an untracked task benignly.
+    #[test]
+    fn record_liveness_refreshes_stamp_and_ignores_untracked_tasks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let window = Duration::from_secs(5);
+        let tracker = HeartbeatTracker::new(window);
+        let worker_id = WorkerIdForTest::registered()?;
+        let workflow_id = workflow_id();
+        let id = activity_id(51);
+        let start = Instant::now();
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: id.clone(),
+            },
+            start,
+        )?;
+
+        // Beaten at the window edge, the task survives past the original expiry.
+        assert!(tracker.record_liveness(worker_id, &workflow_id, &id, start + window)?);
+        assert!(tracker.is_live(worker_id, &workflow_id, &id, start + window + window)?);
+        assert!(tracker.expired_workers(start + window + window)?.is_empty());
+
+        // An untracked beat (an outbox dispatch, or a beat racing completion)
+        // is a benign false, never an error.
+        assert!(!tracker.record_liveness(
+            worker_id,
+            &workflow_id,
+            &activity_id(52),
+            start + window
+        )?);
+        Ok(())
     }
 
     #[test]

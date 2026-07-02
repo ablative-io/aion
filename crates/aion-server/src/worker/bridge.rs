@@ -556,9 +556,13 @@ impl WorkerActivityDispatcher {
     /// hand the correlated-reply awaiter to a dedicated router thread that
     /// resolves this dispatch's pending entry exactly like a gRPC completion.
     ///
-    /// The wire carries no `attempt`/`labels` (the worker stamps a first
-    /// delivery) and no run context (`run_id: None`), byte-identical to the
-    /// outbox push and to the gRPC bridge task's `run_id: None` (OBX-011).
+    /// The wire carries the SAME engine-provided `attempt` and `labels` the gRPC
+    /// arm's `ActivityTask` carries (a retry over liminal executes with the real
+    /// attempt, not a re-stamped first delivery), plus the server's heartbeat
+    /// window so the worker's automatic liveness pump keeps this TRACKED
+    /// dispatch alive under the #176 expiry sweeper. It carries no run context
+    /// (`run_id: None`), byte-identical to the gRPC bridge task's `run_id: None`
+    /// (OBX-011).
     #[cfg(feature = "liminal-transport")]
     fn send_liminal_activity_task(
         &self,
@@ -569,11 +573,17 @@ impl WorkerActivityDispatcher {
         workflow_id: &WorkflowId,
         activity_id: &ActivityId,
     ) -> Result<(), String> {
+        let heartbeat_window_ms =
+            u64::try_from(self.heartbeat_tracker.heartbeat_window().as_millis())
+                .unwrap_or(u64::MAX);
         let request = super::liminal_transport::DispatchRequest {
             activity_type: activity_type.to_owned(),
             workflow_id: workflow_id.clone(),
             ordinal: activity_id.sequence_position(),
             run_id: None,
+            attempt: task.attempt,
+            labels: task.labels.into_iter().collect(),
+            heartbeat_window_ms,
             input: task.input.map(|payload| payload.bytes).unwrap_or_default(),
         };
         // A push-enqueue failure means the worker's connection was already gone
@@ -600,23 +610,45 @@ impl WorkerActivityDispatcher {
         Ok(())
     }
 
-    /// Waits (unbounded, on a dedicated thread) for the worker's correlated
+    /// Waits (on a dedicated router thread, bounded by the dispatch's own
+    /// lifetime) for the worker's correlated
     /// [`DispatchResponse`](super::liminal_transport::DispatchResponse) and
     /// re-enters it through the SAME completion bookkeeping the gRPC inbound
     /// stream applies (`process_inbound` in `worker_grpc.rs`): clear the
     /// in-flight liveness entry, wake any drain waiter, then resolve the
     /// bridge's pending map — result, failure, and retryable classification
     /// identical (the worker encodes the `retryable:`/`terminal:` reason
-    /// vocabulary on the wire). A worker whose connection closes before
-    /// replying resolves as the SAME retryable lost-worker failure the gRPC
-    /// stream-teardown sweep reports. An unmatched (already-resolved) entry
+    /// vocabulary on the wire). An unmatched (already-resolved) REAL reply
     /// routes through the outbox delivery callback exactly like a late gRPC
     /// result.
     ///
-    /// The #176 heartbeat sweeper remains gRPC-scoped (it sweeps via the stream
-    /// session teardown); a liminal dispatch's liveness is carried by the
-    /// connection itself — the awaiter wakes promptly on disconnect — so the
-    /// bridge's bookkeeping stays consistent without widening the sweeper.
+    /// The #176 heartbeat sweeper covers this dispatch exactly as it covers a
+    /// gRPC one: the dispatch is tracked in the shared [`HeartbeatTracker`] and
+    /// the worker's runtime pumps automatic liveness beats over the reserved
+    /// liminal channel (`WORKER_LIVENESS_CHANNEL`), so a healthy worker running
+    /// an over-window activity is never falsely expired while a wedged one
+    /// still is. Prompt worker-DEATH detection additionally rides the
+    /// connection itself — the awaiter wakes with the typed Disconnected error
+    /// the moment the connection closes, resolving the SAME retryable
+    /// lost-worker failure the gRPC stream-teardown sweep reports.
+    ///
+    /// Two structural guards mirror the gRPC arm's tracker gating:
+    ///
+    /// - A SYNTHESIZED failure (disconnect / receive fault) is delivered only
+    ///   when this router's own `complete_task` actually retired the tracked
+    ///   entry — the same "fail only still-tracked tasks" gate
+    ///   `remove_worker_tasks` gives the gRPC sweeps — so a dispatch already
+    ///   resolved elsewhere (expiry sweep, shutdown drain, deregistered
+    ///   fast path) never has a spurious failure injected for an ordinal whose
+    ///   retry may be live on another worker.
+    /// - The wait itself ends one reply-poll after the tracked entry
+    ///   disappears, so an abandoned dispatch never parks this thread for the
+    ///   remaining life of the worker's connection. A real reply arriving
+    ///   AFTER that exit is dropped (the resolving path owns the ordinal — its
+    ///   retry re-executes); this is the one deliberate divergence from the
+    ///   gRPC arm, whose shared stream task routes any late result to the
+    ///   outbox callback, and it is the safer half of the trade because a
+    ///   stale attempt's result can never resolve a newer attempt's entry.
     #[cfg(feature = "liminal-transport")]
     fn spawn_liminal_reply_router(
         &self,
@@ -631,36 +663,15 @@ impl WorkerActivityDispatcher {
         let workflow_id = workflow_id.clone();
         let activity_id = activity_id.clone();
         std::thread::spawn(move || {
-            // Resolve by the key THIS push dispatched (the awaiter is already
-            // correlation-scoped to it), never by the reply's echoed ids: a
-            // buggy echo must not cross executions.
-            let (run_id, outcome) = match super::liminal_transport::receive_bridge_reply(&awaiter) {
-                Ok(response) => (response.run_id, response.outcome),
-                Err(error) if error.is_worker_connection_lost() => (
-                    None,
-                    Err(format!(
-                        "retryable:{}",
-                        super::dispatch::lost_worker_error(worker_id).message
-                    )),
-                ),
-                Err(error) => (
-                    None,
-                    Err(format!("retryable:worker liminal reply failed: {error}")),
-                ),
-            };
-            if let Err(error) =
-                heartbeat_tracker.complete_task(worker_id, &workflow_id, &activity_id)
-            {
-                tracing::error!(
-                    worker_id = ?worker_id,
-                    workflow_id = %workflow_id,
-                    activity_id = %activity_id,
-                    %error,
-                    "failed to clear in-flight tracking for completed liminal activity"
-                );
-            }
-            drain_state.notify_activity_drained();
-            pending.complete(&workflow_id, &activity_id, run_id.as_ref(), outcome);
+            route_liminal_reply(
+                &pending,
+                &heartbeat_tracker,
+                &drain_state,
+                worker_id,
+                &awaiter,
+                &workflow_id,
+                &activity_id,
+            );
         });
     }
 
@@ -869,6 +880,92 @@ impl WorkerActivityDispatcher {
         };
         self.await_activity_result(&context, &rx)
     }
+}
+
+/// Body of one liminal reply-router thread (see
+/// [`WorkerActivityDispatcher::spawn_liminal_reply_router`] for the contract).
+///
+/// Resolves by the key THIS push dispatched (the awaiter is already
+/// correlation-scoped to it), never by the reply's echoed ids: a buggy echo
+/// must not cross executions.
+#[cfg(feature = "liminal-transport")]
+fn route_liminal_reply(
+    pending: &PendingActivities,
+    heartbeat_tracker: &HeartbeatTracker,
+    drain_state: &DrainState,
+    worker_id: WorkerId,
+    awaiter: &liminal_server::server::connection::PushReplyAwaiter,
+    workflow_id: &WorkflowId,
+    activity_id: &ActivityId,
+) {
+    // The wait re-arms only while this dispatch is still tracked in-flight, so
+    // a dispatch resolved elsewhere (expiry sweep, shutdown drain, cleanup)
+    // releases this thread within one reply poll instead of parking it for the
+    // remaining life of the worker's connection.
+    let waited = super::liminal_transport::receive_bridge_reply(awaiter, || {
+        heartbeat_tracker
+            .is_tracked(worker_id, workflow_id, activity_id)
+            .unwrap_or(false)
+    });
+    // `synthesized` marks a failure this router FABRICATED (disconnect or
+    // receive fault) as opposed to a real worker reply: only fabricated
+    // failures are gated on the tracker below.
+    let (run_id, outcome, synthesized) = match waited {
+        Ok(Some(response)) => (response.run_id, response.outcome, false),
+        Ok(None) => {
+            tracing::debug!(
+                worker_id = ?worker_id,
+                workflow_id = %workflow_id,
+                activity_id = %activity_id,
+                "liminal dispatch resolved by another path; abandoning reply wait"
+            );
+            return;
+        }
+        Err(error) if error.is_worker_connection_lost() => (
+            None,
+            Err(format!(
+                "retryable:{}",
+                super::dispatch::lost_worker_error(worker_id).message
+            )),
+            true,
+        ),
+        Err(error) => (
+            None,
+            Err(format!("retryable:worker liminal reply failed: {error}")),
+            true,
+        ),
+    };
+    // The gRPC sweeps fail only still-tracked tasks (`remove_worker_tasks`);
+    // this is the same structural gate: `complete_task` reports whether THIS
+    // call retired the tracked entry. A poisoned tracker fails open (deliver)
+    // so the blocked dispatch thread is never left hanging on a broken lock.
+    let was_tracked = heartbeat_tracker
+        .complete_task(worker_id, workflow_id, activity_id)
+        .unwrap_or_else(|error| {
+            tracing::error!(
+                worker_id = ?worker_id,
+                workflow_id = %workflow_id,
+                activity_id = %activity_id,
+                %error,
+                "failed to clear in-flight tracking for completed liminal activity"
+            );
+            true
+        });
+    if synthesized && !was_tracked {
+        // Another path already resolved this dispatch (and notified drain):
+        // injecting the fabricated lost-worker failure now could reach a retry
+        // attempt's entry or the outbox callback for an ordinal that is no
+        // longer this router's to fail.
+        tracing::debug!(
+            worker_id = ?worker_id,
+            workflow_id = %workflow_id,
+            activity_id = %activity_id,
+            "liminal dispatch already resolved; dropping synthesized lost-worker failure"
+        );
+        return;
+    }
+    drain_state.notify_activity_drained();
+    pending.complete(workflow_id, activity_id, run_id.as_ref(), outcome);
 }
 
 struct ActivityDispatchContext<'a> {

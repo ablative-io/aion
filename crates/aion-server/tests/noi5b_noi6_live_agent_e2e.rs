@@ -596,6 +596,9 @@ fn push_dispatch(state: &ServerState, worker_id: aion_server::worker::WorkerId) 
         ordinal: ORDINAL,
         run_id: None,
         input: b"\"in\"".to_vec(),
+        attempt: 1,
+        labels: std::collections::BTreeMap::new(),
+        heartbeat_window_ms: 0,
     };
     // The push blocks for the reply (which arrives only when the run is released), so
     // this runs on a spawned blocking task and its result is not awaited here.
