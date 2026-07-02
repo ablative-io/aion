@@ -118,6 +118,7 @@ async fn norn_harness_drives_a_real_run_end_to_end() {
         WorkflowId::new_v4(),
         ActivityId::from_sequence_position(1),
         1,
+        "norn-e2e",
         Payload::new(ContentType::Json, b"say hello".to_vec()),
     );
 

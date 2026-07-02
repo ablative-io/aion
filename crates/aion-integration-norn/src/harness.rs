@@ -71,6 +71,11 @@ impl NornHarness {
     ///
     /// Used to configure the harness (e.g. a provider or model flag) without leaking Norn config
     /// into the neutral [`AgentRunSpec`].
+    ///
+    /// The argument may carry run-identity placeholders, expanded from the [`AgentRunSpec`] at
+    /// spawn time (see [`expand_arg`]): `{workflow_id}` becomes the spec's workflow id and
+    /// `{activity_type}` becomes the dispatched activity-type name. Exactly those two are
+    /// recognised; any other `{...}` text passes through literally.
     #[must_use]
     pub fn with_arg(mut self, arg: impl Into<String>) -> Self {
         self.extra_args.push(arg.into());
@@ -88,25 +93,44 @@ impl NornHarness {
         self
     }
 
-    /// Spawns the `norn --protocol jsonrpc` child with piped stdin/stdout and inherited stderr.
-    fn spawn(&self) -> Result<tokio::process::Child, HarnessError> {
-        Command::new(&self.binary)
+    /// Builds the `norn --protocol jsonrpc` command for one run: the fixed protocol arguments
+    /// followed by the configured extra arguments with their run-identity placeholders expanded
+    /// from `spec` (see [`expand_arg`]), with piped stdin/stdout and inherited stderr.
+    fn command(&self, spec: &AgentRunSpec) -> Command {
+        let mut command = Command::new(&self.binary);
+        command
             .arg("--protocol")
             .arg("jsonrpc")
-            .args(&self.extra_args)
+            .args(self.extra_args.iter().map(|arg| expand_arg(arg, spec)))
             .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| {
-                HarnessError::transport(format!(
-                    "failed to spawn `{}`: {source}",
-                    self.binary.display()
-                ))
-            })
+            .kill_on_drop(true);
+        command
     }
+
+    /// Spawns the `norn` child for one run, its arguments expanded from `spec`.
+    fn spawn(&self, spec: &AgentRunSpec) -> Result<tokio::process::Child, HarnessError> {
+        self.command(spec).spawn().map_err(|source| {
+            HarnessError::transport(format!(
+                "failed to spawn `{}`: {source}",
+                self.binary.display()
+            ))
+        })
+    }
+}
+
+/// Expands the run-identity placeholders in one configured extra argument.
+///
+/// Exactly two placeholders are recognised: `{workflow_id}` (the spec's workflow id, rendered as
+/// its canonical string form) and `{activity_type}` (the activity-type name the engine
+/// dispatched). Any other `{...}` text is **not** a placeholder and passes through literally, so
+/// arguments containing unrelated braces (e.g. a JSON snippet) survive unchanged.
+fn expand_arg(template: &str, spec: &AgentRunSpec) -> String {
+    template
+        .replace("{workflow_id}", &spec.workflow_id.to_string())
+        .replace("{activity_type}", &spec.activity_type)
 }
 
 /// Reads the prompt string an `AgentRunSpec` carries: the input payload decoded as UTF-8 text.
@@ -205,7 +229,7 @@ impl AgentHarness for NornHarness {
 
     async fn start(&self, spec: AgentRunSpec) -> Result<Self::Session, HarnessError> {
         let prompt = prompt_from_spec(&spec)?;
-        let mut child = self.spawn()?;
+        let mut child = self.spawn(&spec)?;
         let (stdout, stdin) = take_child_io(&mut child)?;
         let connection = Arc::new(JsonRpcConnection::new(stdout, stdin));
 
@@ -234,5 +258,82 @@ impl AgentHarness for NornHarness {
             identity,
             Some(child),
         ))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    //! Fast unit tests of the spec-aware argument construction — no process is spawned; the built
+    //! [`Command`]'s argv is inspected directly, and that argv is exactly what a spawn would exec.
+
+    use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
+
+    use super::{AgentRunSpec, NornHarness, expand_arg};
+
+    fn spec() -> AgentRunSpec {
+        AgentRunSpec::new(
+            WorkflowId::new_v4(),
+            ActivityId::from_sequence_position(1),
+            1,
+            "dev",
+            Payload::new(ContentType::Json, b"run".to_vec()),
+        )
+    }
+
+    /// The argv the built command would exec, decoded as UTF-8 strings.
+    fn argv(harness: &NornHarness, spec: &AgentRunSpec) -> Vec<String> {
+        harness
+            .command(spec)
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().expect("argv is UTF-8").to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn expands_both_placeholders_amid_literal_text() {
+        let spec = spec();
+        let expanded = expand_arg("run={workflow_id}:{activity_type}!", &spec);
+        assert_eq!(expanded, format!("run={}:dev!", spec.workflow_id));
+    }
+
+    #[test]
+    fn argument_without_placeholders_passes_through_unchanged() {
+        let spec = spec();
+        assert_eq!(expand_arg("--verbose", &spec), "--verbose");
+    }
+
+    #[test]
+    fn unrecognised_braced_text_is_literal() {
+        // Only `{workflow_id}` / `{activity_type}` are placeholders; every other `{...}` (an
+        // unknown name, a JSON snippet) is plain text and must survive verbatim.
+        let spec = spec();
+        assert_eq!(
+            expand_arg("{attempt} {\"json\":true} {workflow-id}", &spec),
+            "{attempt} {\"json\":true} {workflow-id}"
+        );
+    }
+
+    #[test]
+    fn spec_values_land_in_the_spawned_command_args() {
+        let spec = spec();
+        let harness = NornHarness::with_binary("/bin/norn")
+            .with_arg("--label")
+            .with_arg("{activity_type}/{workflow_id}")
+            .with_arg("--model")
+            .with_arg("mock-model");
+
+        assert_eq!(
+            argv(&harness, &spec),
+            vec![
+                "--protocol".to_owned(),
+                "jsonrpc".to_owned(),
+                "--label".to_owned(),
+                format!("dev/{}", spec.workflow_id),
+                "--model".to_owned(),
+                "mock-model".to_owned(),
+            ]
+        );
     }
 }

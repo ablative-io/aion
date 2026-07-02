@@ -170,6 +170,7 @@ fn spec() -> AgentRunSpec {
         WorkflowId::new(Uuid::nil()),
         ActivityId::from_sequence_position(3),
         1,
+        "agent-activity",
         Payload::new(ContentType::Json, b"\"in\"".to_vec()),
     )
 }

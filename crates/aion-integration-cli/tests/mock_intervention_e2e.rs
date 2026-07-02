@@ -37,6 +37,7 @@ fn spec() -> AgentRunSpec {
         WorkflowId::new(uuid::Uuid::nil()),
         ActivityId::from_sequence_position(3),
         1,
+        "mock-activity",
         Payload::new(ContentType::Json, b"\"run\"".to_vec()),
     )
 }
