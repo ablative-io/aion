@@ -48,25 +48,27 @@ replaces the console's current two competing sets, and defines the missing
 - **Semantic status set, each with a 12%-alpha glow companion:** green
   `#4ade80` (healthy/complete), amber `#fbbf24` (running/working), red
   `#f87171` (failed/destructive), purple `#a78bfa` (sub-agent/special),
-  cyan `#22d3ee` (live/streaming). Status is always communicated the same
-  way: small colored dot + glow-tinted chip. Tokenized — never hardcoded
-  per-component again.
+  teal (live/streaming — see accent decision). Status is always communicated
+  the same way: small colored dot + glow-tinted chip. Tokenized — never
+  hardcoded per-component again.
 - **Glass (summoned surfaces only):** `oklch(0.16 0.01 280 / 0.85)` bg,
   12px blur, oklch border — for palettes, floating panels, islands; not for
   in-flow cards.
 - **Radius/spacing/shadows:** meridian's scales (`--radius 0.625rem` default,
   sm→2xl ladder; `--space-1..16`; layered shadows + glow shadows).
 
-### The accent decision
+### The accent decision (Tom-ratified 2026-07-03)
 
-Meridian is cyan `#22d3ee`; the Ablative brand is warm terracotta `#d4845a`.
-**Decision: terracotta is the console's primary accent** — interactive
-elements, selection, focus, the wordmark warmth; **cyan is demoted to a
-semantic status color meaning "live/streaming"** (pulsing connection dot,
-live-attempt indicator, growing Gantt bar edge). This makes the console
-unmistakably Ablative, keeps warm-on-dark distinctiveness (everyone else's
-console is blue), and gives "live" a dedicated color instead of overloading
-the brand accent. It's one token to revert if it doesn't sing.
+**Terracotta/burnt-orange `#d4845a` is the primary accent** — interactive
+elements, selection, focus. **Meridian's cyan `#22d3ee` is dropped
+entirely** — Tom doesn't love it and it's become common everywhere. The
+"live/streaming" semantic color (pulsing connection dot, live-attempt
+indicator, growing Gantt bar edge) is instead a **teal derived from the
+ablative.com.au dimension palette** (site technical-dimension `#3d8b8b`,
+brightened for dark surfaces — target ≈ `#4fb3ae`, tune by eye). The site's
+blues/greens are the sanctioned supporting family if more hues are ever
+needed. Net palette: warm terracotta = act, brand teal = live,
+green/amber/red/purple = state.
 
 ## Typography
 
@@ -106,12 +108,16 @@ meridian's own components) adapted to our tokens — no new runtime deps beyond
 `motion`, `cmdk`, `react-use-measure`, and the Radix primitives we already
 carry. Vendored into `src/components/kit/`, restyled once, reused everywhere.
 
-1. **MorphSurface / chat input** — port meridian's `AgentMorphSurface`
-   pattern: the intervention chat is a 36-44px docked pill beneath the
-   transcript (status dot, capability badges) that spring-morphs into the
-   full input on focus/⌘I. The send button carries the **escalation state
-   machine** (interrupt → shutdown → kill with 3s auto-decay) — the UI face
-   of #200 cancel-escalation. Draft text persists across collapse.
+1. **Chat input — a deliberately LIGHT morph, not meridian's smart-comms
+   surface.** Tom's ruling: `AgentMorphSurface` is heavy-handed here — it's
+   built for a product where conversation is the forefront and carries a
+   full agent control surface. In the console, intervention is almost the
+   fallback. So: a slim docked pill beneath the transcript (status dot,
+   capability badges) that spring-morphs into a well-proportioned textarea
+   and nothing more — no profile/model/settings pills. Keep only: the
+   **escalation send button** (interrupt → shutdown → kill with 3s
+   auto-decay — the UI face of #200), the priority toggle, and draft
+   persistence across collapse.
 2. **MorphingPopover / FloatingPanel** (motion-primitives + cult-ui) —
    non-blocking expand-in-place for: attempt actions, payload inspectors,
    priority toggle, deploy forms. Nothing modal unless it must be.
@@ -119,20 +125,33 @@ carry. Vendored into `src/components/kit/`, restyled once, reused everywhere.
    registry) — transcript tool calls/results collapsed to one-line summaries
    with status dots and pips, spring-expanding to rich per-kind detail
    (diffs, code with highlighting, stdout/stderr).
-4. **Status island** — a Dynamic-Island-descendant surface in the workflow
-   header: morphs between compact (workflow status dot + name) and expanded
-   states as the run moves idle → running → intervening → terminal; borrow
-   cult-ui's queued size-state reducer for choreographed transitions.
-5. **Omni-palette** (`cmdk`, meridian's 4-mode pattern) — ⌘K: navigate
-   workflows/namespaces, run actions (start, reopen, cancel, deploy), search
-   events. The keyboard-first front door.
-6. **Keybinding registry** — port meridian's scoped, remappable action
-   registry (`localStorage`-persisted). Every operator action registered;
-   list traversal (j/k), palette (⌘K), chat (⌘I), views (g then w/e/n).
+4. **Status island / entity pill** — a Dynamic-Island-descendant surface:
+   morphs between compact (status dot + name) and expanded states as the
+   run moves idle → running → intervening → terminal; borrow cult-ui's
+   queued size-state reducer for choreographed transitions. This is the
+   first cut of the **morphing-entity model** — see
+   [MORPHING-ENTITY-WORKSPACE.md](./MORPHING-ENTITY-WORKSPACE.md) — so
+   build its API as entity(form-factor), not as a one-off header widget.
+5. **Omni-palette** (`cmdk`, meridian's 4-mode pattern) — ⌘K. **Do this
+   properly, no fucking around (Tom's words):** every entity and every verb
+   findable — workflows, sessions/attempts, steps, namespaces, workers,
+   packages, AND actions/operations (start, reopen, cancel, deploy,
+   intervene). Typed prefixes/modes like meridian's, fuzzy matching,
+   results grouped by kind, each result deep-links. The palette is a
+   first-class surface with its own build investment, not a bolt-on.
+6. **Keybinding registry — ONE central registry, nothing ad-hoc.** Every
+   binding lives in a single scoped, remappable action registry
+   (`localStorage`-persisted, meridian's pattern) — no component ever
+   listens for keys on its own. Configurable from day one; Tom will tune
+   it. **Modifier rule: the primary modifier is Command (macOS) / Super
+   (Linux) — NEVER Control-as-primary.** List traversal (j/k), palette
+   (⌘K), chat (⌘I), view jumps (g then w/e/n).
 7. **AnimatedBackground** (motion-primitives) — the shared-layout sliding
    highlight for nav tabs, attempt navigator selection, segmented controls.
-8. **SlidingNumber / AnimatedNumber** — live counters (event counts,
-   durations, token usage) tick like instruments, not re-renders.
+8. **SlidingNumber / AnimatedNumber** — available in the kit for live
+   counters, **used sparingly**. Bling guard (Tom): instruments tick where
+   the number IS the information (durations, live counts); everything else
+   just renders. No gratuitous gauges.
 9. **Disclosure / TransitionPanel** — animated collapsibles and directional
    view switches for detail panels.
 
@@ -143,6 +162,23 @@ reordering need appears.
 **Delivery:** the kit lives in the console first; once stable, publish to the
 `@ablative` shadcn-style registry so meridian, the console, and future beamr
 frontends share one material.
+
+## Standing appetites (design toward, don't build yet)
+
+- **The morphing-entity workspace** — pill ⇄ card ⇄ window entities, dock
+  manager, sliding sheet, workspaces, pills-as-flow-nodes. The console's kit
+  components are the seeds; full vision in
+  [MORPHING-ENTITY-WORKSPACE.md](./MORPHING-ENTITY-WORKSPACE.md).
+- **Graphs/network visualization** — very much Tom's thing; no strong call
+  in the console yet. Natural first customers when one appears: workflow
+  definition graph (steps + dependencies), cluster topology. Don't force it.
+- **AI assistant panel (norn-powered, specialist hats)** — an in-console
+  assistant with switchable roles: a workflow-authoring hat (loaded with the
+  authoring docs/SDK context — converges with the workflow-authoring-agent
+  idea and the aion-doctor concept), a system-operations hat (cluster state,
+  diagnostics), etc. A summonable surface (sheet/panel), conversation via
+  the same transcript machinery the console already renders. Design the
+  sheet + entity model so this drops in later.
 
 ## What this changes in the build order
 
