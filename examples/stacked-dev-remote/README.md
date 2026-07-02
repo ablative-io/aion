@@ -171,6 +171,69 @@ archives from source, real server, this worker with shims on PATH, the
 review signal, landed completion — is proven end-to-end by
 `crates/aion-cli/tests/stacked_dev_live_e2e.rs`.
 
+## Remote clone workspaces: the stable workspace root (#175)
+
+When the provision input carries a `clone_url`, the worker clones into a
+**stable, per-run** directory instead of using `yg` worktrees:
+
+```
+<workspace root>/<run id>/repo
+```
+
+- The **workspace root** is `$AION_WORKSPACE_ROOT` when set, else
+  `~/.aion/clones`. It is NEVER the OS temp directory: the workspace path
+  is recorded in durable workflow history and every later activity —
+  including after a server, worker, or host restart — re-dispatches against
+  it, so a reboot or temp-reaper purge of `/tmp`/`/var/folders` would lose
+  every unpushed dev-round commit. If `HOME` is unset and no override is
+  given, provisioning fails loudly instead of guessing.
+- The **run id** is the workflow execution's unique id, threaded by the
+  workflow from `workflow.id()` (stable across replay). Older payloads
+  without one mint a unique `brief-<brief id>-<suffix>` directory per
+  provision attempt instead.
+- **Collisions never reuse or delete an existing directory.** A colliding
+  `<run id>` directory is this execution's own earlier partial provision
+  attempt (e.g. a worker killed mid-clone, run reopened): it is renamed
+  aside to `<run id>.superseded-<unique>` and provisioning proceeds fresh,
+  so crash recovery re-provisions with the same id instead of wedging.
+- **Teardown** (success path only) deletes the per-run parent only when it
+  sits under the resolved workspace root, then sweeps this run's own
+  `<run id>.superseded-*` siblings; anything else is refused, never
+  deleted. The outcome rides on the workflow result as
+  `workspace_cleaned` — `false` means the workspace was refused or the
+  teardown failed, and the directory was retained on the worker host.
+- Every activity that takes `workspace.path` first verifies the directory
+  exists and otherwise fails terminally with `workspace missing at <path> —
+  the worker host no longer has it (lost clone or removed worktree); run
+  cannot resume`, so a genuinely lost clone reads as exactly that instead
+  of a confusing downstream CLI error.
+
+The lifecycle is pinned by `worker/tests/workspace_persistence.rs`,
+including the #175 loss repro: provision, commit a dev round, simulate the
+reboot purge of volatile temp roots, and require a later activity step to
+succeed with the commit intact.
+
+### Retention and pruning
+
+The workspace root deliberately trades disk for data safety and is **not
+garbage-collected**:
+
+- A **failed run keeps its per-run directory** so its unpushed dev-round
+  commits stay salvageable and the run can be reopened and resumed — that
+  retention is the point of #175, not a leak to be fixed with a reaper.
+- A **successful run cleans up after itself**: teardown removes the
+  per-run directory and its `.superseded-*` siblings, and reports
+  `workspace_cleaned` on the result.
+- Nothing else prunes the root, so on a long-lived worker host abandoned
+  failed runs accumulate — a full clone each.
+
+Prune manually: any entry under the workspace root (default
+`~/.aion/clones`) that does not belong to an in-flight run or to a failed
+run you still intend to salvage is safe to `rm -rf`. Check a run's state
+before pruning its directory (`aion runs` / the ops console); a completed
+run whose result carried `workspace_cleaned: false` is flagging that its
+per-run directory was retained and is a pruning candidate.
+
 ## How the section-7 open questions were resolved
 
 | Q | Resolution | Where |

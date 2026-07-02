@@ -26,7 +26,6 @@
 //// Every loop cap, backoff, and deadline is a REQUIRED input field — no
 //// arbitrary defaults baked in (open question Q5).
 
-import aion/codec
 import aion/duration
 import aion/error
 import aion/query
@@ -34,7 +33,6 @@ import aion/signal
 import aion/workflow
 import {{name}}_gate
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 import {{name}}_dev
 import {{name}}/activities
 import {{name}}/codecs_flow
@@ -82,31 +80,14 @@ pub fn review_signal() -> workflow.SignalRef(ReviewVerdict) {
 
 /// Engine entry point.
 ///
-/// The runtime delivers the start input as a raw JSON string: decode it with
-/// the input codec, run the typed workflow, and encode the success value
-/// back to its JSON string for the recorded result payload.
-pub fn run(raw_input: Dynamic) -> Result(String, PipelineError) {
-  case decode.run(raw_input, decode.string) {
-    Ok(raw_json) ->
-      case codecs_workflows.pipeline_input_codec().decode(raw_json) {
-        Ok(input) ->
-          case execute(input) {
-            Ok(output) ->
-              Ok(codecs_workflows.pipeline_result_codec().encode(output))
-            Error(workflow_error) -> Error(workflow_error)
-          }
-        Error(codec.DecodeError(reason: reason, path: _)) ->
-          Error(StageFailed(
-            stage: "decode_input",
-            message: "failed to decode workflow input: " <> reason,
-          ))
-      }
-    Error(_) ->
-      Error(StageFailed(
-        stage: "decode_input",
-        message: "workflow input payload was not a string",
-      ))
-  }
+/// The runtime delivers the start input as a raw JSON string;
+/// `workflow.entrypoint` decodes it with the definition's input codec, drives
+/// `execute`, and encodes the outcome back to JSON text: success with the
+/// result codec, a typed `PipelineError` with the error codec. An undecodable
+/// input records the SDK's documented `{"aion_error":"input_decode",...}`
+/// envelope as the failure payload.
+pub fn run(raw_input: Dynamic) -> Result(String, String) {
+  workflow.entrypoint(definition(), raw_input)
 }
 
 /// Typed workflow body: provision, dev child, gate child, review loop, land.

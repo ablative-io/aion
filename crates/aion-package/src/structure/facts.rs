@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::reader::{end_of_call, find_open_brace, match_brace};
+use super::reader::{end_of_call, find_open_brace, last_identifier_argument, match_brace};
 use super::scan::{Token, tokenise};
 
 /// The facts the test-scaffold generator derives from a workflow's source.
@@ -156,30 +156,6 @@ fn define_entry_function(tokens: &[Token], alias: &str) -> Result<String, FactsE
         index += 1;
     }
     Err(FactsError::NoDefineCall)
-}
-
-/// Returns the last top-level bare-identifier argument in the call's argument
-/// range `[start, end)` — the entry function passed to `workflow.define`. Only
-/// identifiers at the call's own paren depth are considered, so a nested call's
-/// arguments are never mistaken for the entry function.
-fn last_identifier_argument(tokens: &[Token], start: usize, end: usize) -> Option<String> {
-    let upper = end.min(tokens.len());
-    let mut depth = 0_i32;
-    let mut last: Option<String> = None;
-    for token in tokens.iter().take(upper).skip(start) {
-        match token {
-            Token::OpenParen => depth += 1,
-            Token::CloseParen => depth -= 1,
-            // A bare identifier directly inside the define call's own parens
-            // (depth 1) is a candidate entry function; the last one wins.
-            Token::Ident(word) if depth == 1 => last = Some(word.clone()),
-            // A qualified/other argument at depth 1 clears the candidate: the
-            // entry function is a bare reference, not a qualified expression.
-            Token::Qualified { .. } if depth == 1 => last = None,
-            _ => {}
-        }
-    }
-    last
 }
 
 /// Counts the durable timers (`<alias>.sleep` / `<alias>.start_timer`) reachable

@@ -44,6 +44,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aion-integrations"
+version = "0.8.0"
+dependencies = [
+ "aion-core",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "aion-proto"
 version = "0.8.0"
 dependencies = [
@@ -77,6 +90,7 @@ name = "aion-worker"
 version = "0.8.0"
 dependencies = [
  "aion-core",
+ "aion-integrations",
  "aion-proto",
  "async-trait",
  "futures",
@@ -899,9 +913,9 @@ dependencies = [
 
 [[package]]
 name = "haematite"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6f1cfc3c46cb57bd4f3b945a8714ce0c74341ad0ee63a968bb160ba895df5de"
+checksum = "b4036b108a66180e1fcfbf8802eb570b49def7e96c41f3406d900c37314a001c"
 dependencies = [
  "beamr",
  "blake3",
@@ -1316,9 +1330,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-rs"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62ba8baf73b1fae00e4611fa08edd9ef60a9a95b17ff469b241941dde28f0e4a"
+checksum = "cb368857f287987e3c8629eaccceac5b88f0390287d545f0bea94fcead2b5110"
 dependencies = [
  "async-trait",
  "beamr",
@@ -1334,9 +1348,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31a8cf55fe768169bed19e53fb2278c68f2d737d08823b0d6c7f5f81c790aec4"
+checksum = "b18055c03e8c36f5b266e978f5b32d0d1f81bd2f0b4e306ee2fa5631323be198"
 dependencies = [
  "futures-core",
  "liminal-rs",

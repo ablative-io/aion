@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **`workflow.entrypoint(definition, raw_input)`** — the engine-facing run
+  adapter assembled from a `WorkflowDefinition`'s codecs and typed entry
+  function, so a workflow module's engine entry collapses to the one-line shim
+  `pub fn run(raw_input: Dynamic) { workflow.entrypoint(definition(), raw_input) }`.
+  Success encodes with the output codec and typed failure with the error codec
+  (byte-identical to the hand-written adapter); an undecodable input yields the
+  documented `{"aion_error":"input_decode","reason":...,"path":[...]}` JSON
+  envelope as the failure payload.
+
 ## 0.3.0
 
 ### Fixed

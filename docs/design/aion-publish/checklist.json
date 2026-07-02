@@ -32,7 +32,8 @@
             "items": [
                 {"id": "C12", "text": "Publish order documented and validated against dependency graph"},
                 {"id": "C13", "text": "cargo publish --dry-run succeeds for every crate in order"},
-                {"id": "C14", "text": "Publish script or CI job automates the ordered publish"}
+                {"id": "C14", "text": "Publish script or CI job automates the ordered publish"},
+                {"id": "C15", "text": "Every aion-worker publish bumps the standalone example crates' crates.io pins (examples/stacked-dev/*, examples/stacked-dev-remote/worker, .meridian/workflows/stacked-dev/worker) and refreshes their lockfiles — the CI standalone-crates lane goes red on the release PR otherwise"}
             ]
         }
     ]

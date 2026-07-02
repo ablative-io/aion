@@ -386,3 +386,127 @@ async fn subscription_bills_after_deadline_with_signaled_plan_and_rotates()
     engine.shutdown()?;
     Ok(())
 }
+
+/// Answers the gate's one activity with a passing verdict in the
+/// `gate_result_codec` wire shape.
+struct GateDispatcher;
+
+impl ActivityDispatcher for GateDispatcher {
+    fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+        match request.name.as_str() {
+            "full_checks" => Ok(json!({ "verdict": { "outcome": "pass" } }).to_string()),
+            other => Err(format!("terminal:unknown activity {other}")),
+        }
+    }
+}
+
+/// A valid gate start input in the `gate_input_codec` wire shape.
+fn gate_input() -> serde_json::Value {
+    json!({
+        "workspace": {
+            "path": "/tmp/ws",
+            "branch": "main",
+            "placement": "local",
+            "isolation": "worktree"
+        },
+        "files_touched": ["src/lib.rs"],
+        "scope": { "kind": "workspace_wide" }
+    })
+}
+
+fn gate_engine_builder(dispatcher: Arc<dyn ActivityDispatcher>) -> EngineBuilder {
+    EngineBuilder::new()
+        .store(InMemoryStore::default())
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .activity_dispatcher(dispatcher)
+}
+
+/// Live proof for the `workflow.entrypoint` migration: the stacked-dev gate's
+/// engine entry is now the one-line `workflow.entrypoint(definition(), raw)`
+/// shim, and the recorded completion payload must be exactly what the
+/// hand-written adapter produced — the `gate_result_codec` encoding of the
+/// activity's verdict, byte for byte.
+#[tokio::test]
+async fn stacked_dev_gate_completes_through_the_entrypoint_shim()
+-> Result<(), Box<dyn std::error::Error>> {
+    let package = example_build::built_package("examples/stacked-dev", "gate")?;
+    let engine = gate_engine_builder(Arc::new(GateDispatcher))
+        .load_workflows(package)
+        .build()
+        .await?;
+
+    let input = Payload::from_json(&gate_input())?;
+    let handle = engine
+        .start_workflow(
+            "gate",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
+        .await?;
+    let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
+    let payload = result.map_err(|error| format!("gate failed: {error:?}"))?;
+
+    // Byte-for-byte: `gate_result_codec().encode(GateResult(GatePass))` —
+    // the exact payload the pre-migration hand-written adapter recorded.
+    assert_eq!(
+        std::str::from_utf8(payload.bytes())?,
+        r#"{"verdict":{"outcome":"pass"}}"#,
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+/// The migrated garbage-input edge: an input the gate's codec rejects fails
+/// the run with the SDK's documented `aion_error: input_decode` envelope as
+/// the failure details (previously a hand-rolled `GateStageFailed`).
+#[tokio::test]
+async fn stacked_dev_gate_records_the_input_decode_envelope_on_garbage_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let package = example_build::built_package("examples/stacked-dev", "gate")?;
+    let engine = gate_engine_builder(Arc::new(GateDispatcher))
+        .load_workflows(package)
+        .build()
+        .await?;
+
+    let input = Payload::from_json(&json!({ "unexpected": true }))?;
+    let handle = engine
+        .start_workflow(
+            "gate",
+            input,
+            std::collections::HashMap::new(),
+            String::from("default"),
+        )
+        .await?;
+    let result = engine.result(handle.workflow_id(), handle.run_id()).await?;
+    let error = match result {
+        Ok(payload) => {
+            return Err(format!(
+                "garbage input must fail the gate, got completion: {:?}",
+                std::str::from_utf8(payload.bytes())
+            )
+            .into());
+        }
+        Err(error) => error,
+    };
+
+    let details = error
+        .details
+        .clone()
+        .ok_or_else(|| format!("failure must carry details: {error:?}"))?;
+    let envelope: serde_json::Value = serde_json::from_slice(details.bytes())?;
+    assert_eq!(envelope["aion_error"], json!("input_decode"));
+    assert!(
+        envelope["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "envelope carries a decode reason: {envelope}"
+    );
+    assert!(
+        envelope["path"].is_array(),
+        "envelope carries the decode path: {envelope}"
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}

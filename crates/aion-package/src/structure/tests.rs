@@ -849,6 +849,184 @@ fn primitive_free_helper_is_pruned() -> TestResult {
     Ok(())
 }
 
+// --- The workflow.entrypoint shim: define-follow extraction -------------------
+
+/// The migrated entry shape (`examples/stacked-dev/src/gate.gleam`): `run` is
+/// the one-line `workflow.entrypoint(definition(), raw_input)` shim, and the
+/// orchestration is reachable only through the `define(...)` call's typed
+/// entry argument.
+const SHIM_STYLE: &str = "import aion/workflow\n\
+     import demo_activity_wrappers as wrappers\n\
+     pub fn definition() {\n\
+     \u{20}\u{20}workflow.define(\"demo\", codecs.a(), codecs.b(), codecs.c(), execute)\n\
+     }\n\
+     pub fn run(raw_input) {\n\
+     \u{20}\u{20}workflow.entrypoint(definition(), raw_input)\n\
+     }\n\
+     pub fn execute(input) {\n\
+     \u{20}\u{20}case workflow.run(wrappers.full_checks_activity(input)) {\n\
+     \u{20}\u{20}\u{20}\u{20}Ok(result) -> Ok(result)\n\
+     \u{20}\u{20}\u{20}\u{20}Error(e) -> Error(describe(e))\n\
+     \u{20}\u{20}}\n\
+     }\n\
+     fn describe(e) {\n\
+     \u{20}\u{20}\"failed\"\n\
+     }\n";
+
+/// The same orchestration with `run` calling the typed entry directly — the
+/// pre-shim adapter's reachable structure.
+const DIRECT_STYLE: &str = "import aion/workflow\n\
+     import demo_activity_wrappers as wrappers\n\
+     pub fn run(input) {\n\
+     \u{20}\u{20}execute(input)\n\
+     }\n\
+     pub fn execute(input) {\n\
+     \u{20}\u{20}case workflow.run(wrappers.full_checks_activity(input)) {\n\
+     \u{20}\u{20}\u{20}\u{20}Ok(result) -> Ok(result)\n\
+     \u{20}\u{20}\u{20}\u{20}Error(e) -> Error(describe(e))\n\
+     \u{20}\u{20}}\n\
+     }\n\
+     fn describe(e) {\n\
+     \u{20}\u{20}\"failed\"\n\
+     }\n";
+
+/// The equivalence proof for the extractor's define-follow arm: a shim-style
+/// entry (`workflow.entrypoint(definition(), raw_input)`) yields the identical
+/// graph the direct-call style yields — never an empty graph.
+#[test]
+fn shim_style_entry_yields_the_same_graph_as_direct_style() -> TestResult {
+    let shim = package_with("demo", "run", SHIM_STYLE, &["full_checks"])?;
+    let direct = package_with("demo", "run", DIRECT_STYLE, &["full_checks"])?;
+
+    let shim_graph = extract_structure(&shim)?;
+    let direct_graph = extract_structure(&direct)?;
+
+    assert!(
+        !shim_graph.nodes().is_empty(),
+        "the shim-style entry must not extract an empty graph"
+    );
+    assert!(
+        shim_graph.structurally_equals(&direct_graph),
+        "shim-style extraction must match direct-style;\n\
+         shim nodes={} edges={}, direct nodes={} edges={}",
+        shim_graph.nodes().len(),
+        shim_graph.edges().len(),
+        direct_graph.nodes().len(),
+        direct_graph.edges().len(),
+    );
+
+    // The concrete shape: the one Run node plus the Branch its `case` mints.
+    assert!(
+        shim_graph
+            .nodes()
+            .iter()
+            .any(|node| is_run_of(node, "full_checks")),
+        "the shim graph carries the full_checks Run node"
+    );
+    assert_eq!(
+        branch_after_run(&shim_graph, "full_checks"),
+        branch_after_run(&direct_graph, "full_checks"),
+    );
+    Ok(())
+}
+
+/// A `define` whose last argument is not a bare identifier (a qualified
+/// reference) is a no-op walk: no error, no false node.
+#[test]
+fn define_with_non_bare_last_argument_is_a_no_op_walk() -> TestResult {
+    let source = "import aion/workflow\n\
+         pub fn definition() {\n\
+         \u{20}\u{20}workflow.define(\"demo\", codecs.a(), codecs.b(), codecs.c(), helpers.execute)\n\
+         }\n\
+         pub fn run(raw_input) {\n\
+         \u{20}\u{20}workflow.entrypoint(definition(), raw_input)\n\
+         }\n";
+    let package = package_with("demo", "run", source, &[])?;
+    let graph = extract_structure(&package)?;
+    assert!(
+        graph.nodes().is_empty() && graph.edges().is_empty(),
+        "an unresolvable define entry extracts an empty region without error"
+    );
+    Ok(())
+}
+
+/// The documented double-walk semantics: an entry that BOTH calls its typed
+/// entry directly AND reaches `define(...)` walks the entry twice, so the
+/// subgraph appears twice. No real module has this shape; this test pins the
+/// chosen semantics so a future change is deliberate.
+#[test]
+fn entry_reaching_execute_directly_and_through_define_walks_it_twice() -> TestResult {
+    let source = "import aion/workflow\n\
+         import demo_activity_wrappers as wrappers\n\
+         pub fn definition() {\n\
+         \u{20}\u{20}workflow.define(\"demo\", codecs.a(), codecs.b(), codecs.c(), execute)\n\
+         }\n\
+         pub fn run(raw_input) {\n\
+         \u{20}\u{20}let _ = execute(raw_input)\n\
+         \u{20}\u{20}workflow.entrypoint(definition(), raw_input)\n\
+         }\n\
+         pub fn execute(input) {\n\
+         \u{20}\u{20}workflow.run(wrappers.full_checks_activity(input))\n\
+         }\n";
+    let package = package_with("demo", "run", source, &["full_checks"])?;
+    let graph = extract_structure(&package)?;
+    let runs = graph
+        .nodes()
+        .iter()
+        .filter(|node| is_run_of(node, "full_checks"))
+        .count();
+    assert_eq!(
+        runs, 2,
+        "the direct call and the define-follow each contribute the run subgraph"
+    );
+    Ok(())
+}
+
+/// The recursion guard holds when `define(...)` names the entry function
+/// itself: the follow yields an empty region instead of recursing forever.
+#[test]
+fn define_naming_the_entry_function_is_recursion_guarded() -> TestResult {
+    let source = "import aion/workflow\n\
+         import demo_activity_wrappers as wrappers\n\
+         pub fn run(raw_input) {\n\
+         \u{20}\u{20}let _ = workflow.run(wrappers.full_checks_activity(raw_input))\n\
+         \u{20}\u{20}workflow.entrypoint(workflow.define(\"demo\", codecs.a(), codecs.b(), codecs.c(), run), raw_input)\n\
+         }\n";
+    let package = package_with("demo", "run", source, &["full_checks"])?;
+    let graph = extract_structure(&package)?;
+    // The direct run is extracted once; the self-referential define follow is
+    // cut by the stack and contributes nothing.
+    let runs = graph
+        .nodes()
+        .iter()
+        .filter(|node| is_run_of(node, "full_checks"))
+        .count();
+    assert_eq!(runs, 1);
+    Ok(())
+}
+
+/// The migrated gate.gleam's `aion/workflow as workflow`-default import plus
+/// aliased import both reach the entry through `define`.
+#[test]
+fn aliased_import_shim_style_is_followed() -> TestResult {
+    let source = "import aion/workflow as wf\n\
+         import demo_activity_wrappers as wrappers\n\
+         pub fn definition() {\n\
+         \u{20}\u{20}wf.define(\"demo\", codecs.a(), codecs.b(), codecs.c(), execute)\n\
+         }\n\
+         pub fn run(raw_input) {\n\
+         \u{20}\u{20}wf.entrypoint(definition(), raw_input)\n\
+         }\n\
+         pub fn execute(input) {\n\
+         \u{20}\u{20}wf.run(wrappers.full_checks_activity(input))\n\
+         }\n";
+    let package = package_with("demo", "run", source, &["full_checks"])?;
+    let graph = extract_structure(&package)?;
+    assert_eq!(graph.nodes().len(), 1);
+    assert!(is_run_of(&graph.nodes()[0], "full_checks"));
+    Ok(())
+}
+
 // --- R2 / C24: bounded regeneration -----------------------------------------
 
 /// A Run-only sub-shape over the saga's declared activities — the bounded

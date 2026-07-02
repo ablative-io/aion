@@ -50,18 +50,24 @@ pub fn scaffold_project(
 
 /// Re-points the emitted hex `aion_flow` requirement at the workspace SDK
 /// checkout, so the gate builds against the source that matches this engine.
-/// Fails when the emitted requirement is not the published range — the
-/// scaffold must reference hex, not a local path.
+/// Fails when the emitted requirement is not a published hex range — the
+/// scaffold must reference hex, not a local path. Two ranges are accepted:
+/// the shared templates pin the already-published SDK, while the
+/// dev-pipeline template (whose entries use `workflow.entrypoint`) pins the
+/// 0.5.x release this workspace is cutting.
 pub fn patch_aion_flow_to_workspace(project: &Path) -> Result<(), TestError> {
     let manifest_path = project.join("gleam.toml");
     let manifest = std::fs::read_to_string(&manifest_path)?;
-    let published = "aion_flow = \">= 0.4.0 and < 0.5.0\"";
-    if !manifest.contains(published) {
+    let ranges = [
+        "aion_flow = \">= 0.5.0 and < 0.6.0\"",
+        "aion_flow = \">= 0.4.0 and < 0.5.0\"",
+    ];
+    let Some(published) = ranges.iter().find(|range| manifest.contains(**range)) else {
         return Err(format!(
-            "emitted gleam.toml must require the published aion_flow range; got:\n{manifest}"
+            "emitted gleam.toml must require a published aion_flow range; got:\n{manifest}"
         )
         .into());
-    }
+    };
     let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../gleam/aion_flow")
         .canonicalize()?;

@@ -75,21 +75,26 @@ pub struct StoreConfig {
     /// `backend = haematite`; ignored by every other backend. The directory is
     /// opened if it already holds a haematite database, otherwise created.
     pub data_dir: Option<String>,
-    /// Number of haematite shards to create on a fresh database. Defaults to 4096.
+    /// Number of haematite shards to create on a fresh database. Defaults to 64.
     ///
-    /// This is a generous, IMMUTABLE virtual-shard count: nodes own shard
-    /// *ranges* and routing is `BLAKE3(key) % shard_count` with no reshard path,
-    /// so a single-node deployment can later grow into a cluster WITHOUT a data
-    /// migration — but only up to `shard_count` nodes, and the value is fixed at
-    /// create. 4096 is a deliberately high ceiling: haematite (>= 0.4.0)
-    /// materializes shard actors LAZILY (spawned on first touch), so a fresh
-    /// 4096-shard database boots in ~tens of milliseconds rather than the ~24s an
-    /// eager engine would cost — the count no longer taxes zero-config
-    /// single-node first-boot, while giving effectively-unreachable cluster and
-    /// per-tenant-isolation headroom (unlike Temporal's low `numHistoryShards`
-    /// default). Set it explicitly (config or `AION_STORE_SHARD_COUNT`) to
-    /// override. Ignored by every other backend, and ignored when opening an
-    /// existing haematite database (the on-disk shard count wins).
+    /// This is an IMMUTABLE virtual-shard count: nodes own shard *ranges* and
+    /// routing is `BLAKE3(key) % shard_count` with no reshard path, so a
+    /// single-node deployment can later grow into a cluster WITHOUT a data
+    /// migration — but only up to `shard_count` nodes, and the value is fixed
+    /// at create.
+    ///
+    /// The default was briefly 4096 on the premise that lazy shard-actor
+    /// materialization (haematite >= 0.4.0) made a high count ~free. That
+    /// premise fails in practice (#187): aion-server's boot restores
+    /// packages/routes/namespaces via full-prefix scans, which materialize
+    /// EVERY shard, and haematite 0.4.0 then fans each commit out to every
+    /// materialized shard with an unconditional fsync — ~2 fsyncs x 4096 per
+    /// logical commit — blowing the 5s shard-actor timeout and bricking
+    /// deploy/start/timers/outbox on a fresh server. Re-raise only after
+    /// haematite makes commit O(dirty shards) and the scaffold e2es pass at
+    /// the new default. Set explicitly (config or `AION_STORE_SHARD_COUNT`)
+    /// to override. Ignored by every other backend, and ignored when opening
+    /// an existing haematite database (the on-disk shard count wins).
     pub shard_count: usize,
     /// Optional distributed-cluster membership for the haematite backend (SS-2).
     ///
@@ -582,7 +587,14 @@ impl Default for StoreConfig {
             url: None,
             owned_shards: Vec::new(),
             data_dir: Some(DEFAULT_HAEMATITE_DATA_DIR.to_owned()),
-            shard_count: 4096,
+            // 64, NOT 4096 (#187): raising the default to 4096 bricked every
+            // fresh server — engine boot's scan_prefix materializes every
+            // shard, then each haematite 0.4.0 commit fans out one thread +
+            // fsync PER MATERIALIZED SHARD (~8k fsyncs/commit), blowing the
+            // 5s shard-actor timeout on deploy/start/timers/outbox. Re-raise
+            // only after haematite makes commit O(dirty shards) and the
+            // scaffold e2es pass at the new default (see #187 fix plan).
+            shard_count: 64,
             cluster: None,
         }
     }

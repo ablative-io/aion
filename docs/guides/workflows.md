@@ -27,35 +27,30 @@ the contract is precise:
 - **An `Error` return fails the run.** The run records `WorkflowFailed` and
   projects status `Failed`.
 
-The canonical shape (this exact pattern ships in
-[`examples/hello-world/src/hello_world.gleam`](../../examples/hello-world/src/hello_world.gleam)
-and
-[`examples/order-fulfillment/src/order_fulfillment.gleam`](../../examples/order-fulfillment/src/order_fulfillment.gleam)):
+`workflow.entrypoint` is that adapter, assembled from your
+`WorkflowDefinition`'s codecs and typed entry function, so the canonical
+engine entry is a one-line shim (this exact pattern ships in
+[`examples/stacked-dev/src/gate.gleam`](../../examples/stacked-dev/src/gate.gleam)):
 
 ```gleam
 import gleam/dynamic.{type Dynamic}
-import gleam/dynamic/decode
 
-pub fn run(raw_input: Dynamic) -> Result(String, MyError) {
-  case decode.run(raw_input, decode.string) {
-    Ok(raw_json) ->
-      case input_codec().decode(raw_json) {
-        Ok(input) ->
-          case execute(input) {
-            // Re-encode the typed success value to its JSON string.
-            Ok(output) -> Ok(output_codec().encode(output))
-            Error(workflow_error) -> Error(workflow_error)
-          }
-        Error(codec.DecodeError(reason: reason, path: _)) ->
-          Error(MyError("failed to decode workflow input: " <> reason))
-      }
-    Error(_) -> Error(MyError("workflow input payload was not a string"))
-  }
+pub fn run(raw_input: Dynamic) -> Result(String, String) {
+  workflow.entrypoint(definition(), raw_input)
 }
 ```
 
+`Ok` encodes with the definition's output codec and a typed failure with its
+error codec — byte-identical to the hand-written decode/dispatch/encode
+adapter it replaces (the shape
+[`examples/hello-world/src/hello_world.gleam`](../../examples/hello-world/src/hello_world.gleam)
+still spells out), so an awaiting parent decodes both sides with the same
+codecs it already holds. An input the codec rejects fails the run with the
+fixed JSON envelope `{"aion_error":"input_decode","reason":...,"path":[...]}`
+as the failure payload.
+
 Keep `execute(input) -> Result(MyOutput, MyError)` as the typed body; `run`
-is a thin codec shell around it. Codecs are built with
+is a thin shell around it. Codecs are built with
 `codec.json_codec(to_json, decoder)` from a `gleam/json` encoder and a
 `gleam/dynamic/decode` decoder.
 

@@ -27,6 +27,11 @@ pub type Isolation {
 }
 
 /// Input to the `provision_workspace` activity.
+///
+/// `run_id` is the workflow execution's unique id: it keys the remote
+/// clone's per-run directory under the worker's stable workspace root
+/// (#175). Optional on the wire so older payloads still decode; without it
+/// the worker keys by brief id plus a per-attempt unique suffix.
 pub type ProvisionInput {
   ProvisionInput(
     repo_root: String,
@@ -35,6 +40,7 @@ pub type ProvisionInput {
     placement: Placement,
     isolation: Isolation,
     clone_url: option.Option(String),
+    run_id: option.Option(String),
   )
 }
 
@@ -327,6 +333,12 @@ pub type StackedDevInput {
 }
 
 /// Output of a landed `stacked_dev` run.
+///
+/// `workspace_cleaned` surfaces the success-path teardown outcome instead
+/// of swallowing it: `False` means teardown refused (a workspace outside
+/// the resolved root is never guessed at or deleted) or failed, so the
+/// per-run directory was RETAINED on the worker host and must be pruned
+/// manually (see the README's retention-and-pruning section).
 pub type StackedDevResult {
   StackedDevResult(
     branch: String,
@@ -335,6 +347,7 @@ pub type StackedDevResult {
     build_warm: BuildWarm,
     verify_rounds: Int,
     review_rounds: Int,
+    workspace_cleaned: Bool,
   )
 }
 

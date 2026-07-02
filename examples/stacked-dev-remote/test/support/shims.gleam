@@ -291,6 +291,7 @@ pub fn register_pipeline(env: testing.TestEnv) -> Nil {
       placement: Local,
       isolation: Worktree,
       clone_url: option.None,
+      run_id: option.None,
     )),
   )
   register_activity(
