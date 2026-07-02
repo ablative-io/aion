@@ -1061,6 +1061,12 @@ mod tests {
         CallerIdentity::new("worker", [namespace.to_owned()])
     }
 
+    /// A test-expectation failure as a `ServerError`, so `Result`-returning
+    /// tests can fail on an unexpected `None` without `panic!`/`expect`.
+    fn test_failure(message: &str) -> ServerError {
+        ServerError::worker_dispatch("default".to_owned(), "test".to_owned(), message.to_owned())
+    }
+
     fn registration(namespace: &str, activity_types: &[&str]) -> ProtoRegisterWorker {
         registration_with_queue(namespace, "", activity_types)
     }
@@ -1103,7 +1109,7 @@ mod tests {
     async fn set_intervention_capabilities_updates_live_worker() -> Result<(), ServerError> {
         let registry = ConnectedWorkerRegistry::default();
         let (sender, _receiver) = mpsc::channel(1);
-        let types = vec!["scout".to_owned()];
+        let types = ["scout".to_owned()];
         let guard = registry.register_delivery_with_capabilities(
             ["default".to_owned()],
             "default",
@@ -1112,7 +1118,9 @@ mod tests {
             WorkerDelivery::Grpc(sender),
             InterventionCapabilities::none(),
         )?;
-        let worker_id = guard.worker_id().expect("registration carries an id");
+        let Some(worker_id) = guard.worker_id() else {
+            return Err(test_failure("registration carries an id"));
+        };
 
         let announced = InterventionCapabilities {
             supported: vec![aion_core::InterventionPrimitive::InjectMessage],
@@ -1121,9 +1129,9 @@ mod tests {
             registry.set_intervention_capabilities(worker_id, &announced)?,
             "a live worker's capabilities must be updatable"
         );
-        let handle = registry
-            .worker_by_id(worker_id)?
-            .expect("worker stays registered");
+        let Some(handle) = registry.worker_by_id(worker_id)? else {
+            return Err(test_failure("worker stays registered"));
+        };
         assert_eq!(handle.intervention_capabilities(), &announced);
 
         assert!(
