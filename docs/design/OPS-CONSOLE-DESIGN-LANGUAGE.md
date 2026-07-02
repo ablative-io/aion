@@ -57,18 +57,31 @@ replaces the console's current two competing sets, and defines the missing
 - **Radius/spacing/shadows:** meridian's scales (`--radius 0.625rem` default,
   sm→2xl ladder; `--space-1..16`; layered shadows + glow shadows).
 
-### The accent decision (Tom-ratified 2026-07-03)
+### The accent decision (REVISED after Tom's live review 2026-07-03)
 
-**Terracotta/burnt-orange `#d4845a` is the primary accent** — interactive
-elements, selection, focus. **Meridian's cyan `#22d3ee` is dropped
-entirely** — Tom doesn't love it and it's become common everywhere. The
-"live/streaming" semantic color (pulsing connection dot, live-attempt
-indicator, growing Gantt bar edge) is instead a **teal derived from the
-ablative.com.au dimension palette** (site technical-dimension `#3d8b8b`,
-brightened for dark surfaces — target ≈ `#4fb3ae`, tune by eye). The site's
-blues/greens are the sanctioned supporting family if more hues are ever
-needed. Net palette: warm terracotta = act, brand teal = live,
-green/amber/red/purple = state.
+Cyan stays dead. But terracotta-as-primary failed the live test: **orange
+reads as warning and blends back** — its power is ATTENTION, not action
+(Tom's model: "a big red button — you look twice at it"; his Smartcomms
+cut-out chip). Revised palette, all anchored in the brand source of truth
+(`web/src/tokens/palette.ts` + the nebula node family):
+
+- **Action/interactive (`--accent-primary`)**: the brand strategy-blue
+  `#4a6fa5` brightened for dark surfaces — target ≈ `#6b96d1` (light theme
+  ≈ `#3d5f95`). Calm, professional, recedes until needed; low-saturation
+  slate-blue, deliberately NOT an iridescent cyan. Focus ring follows it
+  at 50%.
+- **Attention (`--accent-attention`)**: terracotta `#d4845a` (+glow) —
+  reserved for the standout chip, pinned markers, brand moments. Spent
+  sparingly or it devalues.
+- **Success green retuned**: the current `#4ade80` (generic tailwind green)
+  is NOT a brand color — no vivid green exists in the brand. Re-derive
+  toward the nebula sage family (`#7a8a6d` neighborhood) while keeping
+  instant status legibility — target ≈ `#74b584`, tune by eye.
+- Live-teal `#4fb8b2`, amber, red, purple unchanged.
+- **All values are TUNE-BY-EYE candidates** — a `/kit` palette page renders
+  every token as named swatches; the full dial-in (with the site style
+  guide / nebula bright+dim variants) is a later pass. Tokens make it a
+  one-line change forever.
 
 ## Typography
 
