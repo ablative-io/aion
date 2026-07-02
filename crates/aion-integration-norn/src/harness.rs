@@ -38,6 +38,7 @@ pub struct NornHarness {
     binary: PathBuf,
     extra_args: Vec<String>,
     env: Vec<(String, String)>,
+    env_removed: Vec<String>,
 }
 
 impl Default for NornHarness {
@@ -54,6 +55,7 @@ impl NornHarness {
             binary: PathBuf::from(DEFAULT_NORN_BINARY),
             extra_args: Vec::new(),
             env: Vec::new(),
+            env_removed: Vec::new(),
         }
     }
 
@@ -64,6 +66,7 @@ impl NornHarness {
             binary: binary.into(),
             extra_args: Vec::new(),
             env: Vec::new(),
+            env_removed: Vec::new(),
         }
     }
 
@@ -93,9 +96,23 @@ impl NornHarness {
         self
     }
 
+    /// Removes an environment variable from every spawned `norn` process.
+    ///
+    /// Applied to the CHILD only (never the parent process), so a harness can strip ambient
+    /// configuration a spawned Norn must not inherit — e.g. removing `OPENAI_API_KEY` forces
+    /// Norn onto the operator's `ChatGPT` OAuth login when a stray ambient key would otherwise
+    /// take precedence and fail. Removals are applied AFTER the explicit [`Self::with_env`]
+    /// sets, so removing a key wins over setting the same key.
+    #[must_use]
+    pub fn without_env(mut self, key: impl Into<String>) -> Self {
+        self.env_removed.push(key.into());
+        self
+    }
+
     /// Builds the `norn --protocol jsonrpc` command for one run: the fixed protocol arguments
     /// followed by the configured extra arguments with their run-identity placeholders expanded
-    /// from `spec` (see [`expand_arg`]), with piped stdin/stdout and inherited stderr.
+    /// from `spec` (see [`expand_arg`]), the configured child-environment sets and removals,
+    /// with piped stdin/stdout and inherited stderr.
     fn command(&self, spec: &AgentRunSpec) -> Command {
         let mut command = Command::new(&self.binary);
         command
@@ -107,6 +124,10 @@ impl NornHarness {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        // Removals AFTER the sets, so `without_env` wins over `with_env` for the same key.
+        for key in &self.env_removed {
+            command.env_remove(key);
+        }
         command
     }
 
@@ -312,6 +333,27 @@ mod tests {
         assert_eq!(
             expand_arg("{attempt} {\"json\":true} {workflow-id}", &spec),
             "{attempt} {\"json\":true} {workflow-id}"
+        );
+    }
+
+    #[test]
+    fn removed_env_vars_are_expressed_as_child_removals() {
+        let spec = spec();
+        let harness = NornHarness::with_binary("/bin/norn")
+            .with_env("OPENAI_API_KEY", "stray-ambient-key")
+            .without_env("OPENAI_API_KEY");
+        let command = harness.command(&spec);
+
+        // On std's Command, an env REMOVAL is expressed as a `(key, None)` entry — the child
+        // will not inherit the variable even when the parent environment carries it, and the
+        // removal wins over an explicit set of the same key.
+        let removal_expressed = command
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "OPENAI_API_KEY" && value.is_none());
+        assert!(
+            removal_expressed,
+            "without_env must express a child-side env removal on the spawned command"
         );
     }
 
