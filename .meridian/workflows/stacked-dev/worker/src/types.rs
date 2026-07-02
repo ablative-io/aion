@@ -73,6 +73,14 @@ pub struct ProvisionInput {
     /// `placement == Remote`; absent for local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone_url: Option<String>,
+    /// Stable per-run identifier (the workflow execution's unique id) keying
+    /// the remote clone's directory under the workspace root (#175).
+    /// Optional on the wire; when absent the directory is keyed by the
+    /// brief id plus a per-attempt unique suffix — an existing directory is
+    /// never reused or deleted (a colliding `run_id` directory is renamed
+    /// aside).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 /// A provisioned, isolated workspace (`codecs_core.workspace_codec`).

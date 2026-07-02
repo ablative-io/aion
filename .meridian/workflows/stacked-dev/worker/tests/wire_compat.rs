@@ -324,6 +324,28 @@ fn provision_input_wire_shape() -> TestResult {
             base_ref: "main".to_owned(),
             placement: Placement::Local,
             isolation: Isolation::Worktree,
+            clone_url: None,
+            run_id: None,
+        },
+    )
+}
+
+// The worker's accepted remote-provision extension: optional `clone_url`,
+// then optional `run_id` (the workflow execution's id keying the remote
+// clone's stable per-run directory, #175). Absent options are omitted from
+// the wire entirely.
+#[test]
+fn provision_input_wire_shape_with_remote_fields() -> TestResult {
+    assert_wire(
+        r#"{"repo_root":"/abs/repo","brief_id":"brief-7","base_ref":"main","placement":"remote","isolation":"copy","clone_url":"git@example.com:repo.git","run_id":"8b9e6a2d-run"}"#,
+        &ProvisionInput {
+            repo_root: "/abs/repo".to_owned(),
+            brief_id: "brief-7".to_owned(),
+            base_ref: "main".to_owned(),
+            placement: Placement::Remote,
+            isolation: Isolation::Copy,
+            clone_url: Some("git@example.com:repo.git".to_owned()),
+            run_id: Some("8b9e6a2d-run".to_owned()),
         },
     )
 }
@@ -602,6 +624,7 @@ fn land_input_wire_shape() -> TestResult {
             repo_root: "/sample/repo".to_owned(),
             base_ref: "main".to_owned(),
             dev_result,
+            clone_url: None,
         },
     )
 }

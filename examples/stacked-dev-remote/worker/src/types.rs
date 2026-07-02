@@ -68,10 +68,19 @@ pub struct ProvisionInput {
     pub placement: Placement,
     /// How the workspace is isolated.
     pub isolation: Isolation,
-    /// Remote clone URL. When present, provisioning clones from this URL into
-    /// a temp directory instead of using `yg` worktree provisioning.
+    /// Remote clone URL. When present, provisioning clones from this URL
+    /// into a per-run directory under the stable workspace root instead of
+    /// using `yg` worktree provisioning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone_url: Option<String>,
+    /// Stable per-run identifier (the workflow execution's unique id) keying
+    /// the remote clone's directory under the workspace root (#175).
+    /// Optional on the wire for older workflow bundles; when absent the
+    /// directory is keyed by the brief id plus a per-attempt unique suffix
+    /// — an existing directory is never reused or deleted (a colliding
+    /// `run_id` directory is renamed aside).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 /// A provisioned, isolated workspace (`codecs_core.workspace_codec`).
@@ -952,6 +961,11 @@ pub struct StackedDevResult {
     pub verify_rounds: i64,
     /// How many review rounds it took.
     pub review_rounds: i64,
+    /// Whether the success-path teardown actually removed the workspace.
+    /// `false` = teardown refused (never guesses, never deletes outside the
+    /// resolved root) or failed, so the per-run directory was RETAINED on
+    /// the worker host and needs manual pruning.
+    pub workspace_cleaned: bool,
 }
 
 // --- assemble_wave payloads (BD-006) -----------------------------------------

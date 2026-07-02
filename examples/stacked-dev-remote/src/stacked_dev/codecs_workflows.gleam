@@ -289,6 +289,7 @@ pub fn stacked_dev_result_codec() -> codec.Codec(StackedDevResult) {
         #("build_warm", codecs_core.build_warm_to_json(result.build_warm)),
         #("verify_rounds", json.int(result.verify_rounds)),
         #("review_rounds", json.int(result.review_rounds)),
+        #("workspace_cleaned", json.bool(result.workspace_cleaned)),
       ])
     },
     {
@@ -301,6 +302,7 @@ pub fn stacked_dev_result_codec() -> codec.Codec(StackedDevResult) {
       )
       use verify_rounds <- decode.field("verify_rounds", decode.int)
       use review_rounds <- decode.field("review_rounds", decode.int)
+      use workspace_cleaned <- decode.field("workspace_cleaned", decode.bool)
       decode.success(StackedDevResult(
         branch: branch,
         merged_into: merged_into,
@@ -308,6 +310,7 @@ pub fn stacked_dev_result_codec() -> codec.Codec(StackedDevResult) {
         build_warm: build_warm,
         verify_rounds: verify_rounds,
         review_rounds: review_rounds,
+        workspace_cleaned: workspace_cleaned,
       ))
     },
   )

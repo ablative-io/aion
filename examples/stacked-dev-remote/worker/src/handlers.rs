@@ -39,11 +39,123 @@ use crate::types::{
 /// payload.
 const UNPARSEABLE_OUTPUT_HEAD: usize = 1000;
 
+/// Environment variable overriding the stable workspace root for remote
+/// clones.
+pub const WORKSPACE_ROOT_ENV: &str = "AION_WORKSPACE_ROOT";
+
+/// Default workspace root, relative to `$HOME`.
+const DEFAULT_WORKSPACE_ROOT: &str = ".aion/clones";
+
+/// Resolve the stable workspace root for remote clones:
+/// `AION_WORKSPACE_ROOT` when set, else `~/.aion/clones`. NEVER the OS temp
+/// directory — the clone path is recorded in durable workflow history and
+/// must survive a host reboot; temp reapers and reboots purge `/tmp` and
+/// `/var/folders`, which loses every unpushed dev-round commit when a run
+/// resumes (#175).
+fn resolve_workspace_root() -> Result<PathBuf, ActivityFailure> {
+    workspace_root_from(
+        std::env::var_os(WORKSPACE_ROOT_ENV),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Pure resolution seam behind [`resolve_workspace_root`]: the override
+/// wins when non-empty, else `$HOME/.aion/clones`; neither is a hard, clear
+/// terminal error — never a silent temp-dir fallback. The resolved root
+/// must be ABSOLUTE: a relative root resolves against the worker process
+/// CWD at every call site, so the same recorded history would name a
+/// different directory after a worker restarted from elsewhere — and the
+/// missing-workspace diagnostic would then lie about an intact clone.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when both the override and `HOME` are unset
+/// or empty, or when the resolved root is not an absolute path.
+pub fn workspace_root_from(
+    override_root: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, ActivityFailure> {
+    if let Some(root) = override_root
+        && !root.is_empty()
+    {
+        return require_absolute(PathBuf::from(root), WORKSPACE_ROOT_ENV);
+    }
+    match home {
+        Some(home) if !home.is_empty() => {
+            require_absolute(PathBuf::from(home).join(DEFAULT_WORKSPACE_ROOT), "HOME")
+        }
+        _ => Err(ActivityFailure::terminal(format!(
+            "cannot resolve a stable workspace root: HOME is unset and \
+             {WORKSPACE_ROOT_ENV} is not set — set {WORKSPACE_ROOT_ENV} to a \
+             durable directory (never a temp dir: the workspace path is \
+             recorded in durable workflow history and must survive a reboot)"
+        ))),
+    }
+}
+
+/// Require the resolved workspace root to be an absolute path — relative
+/// roots are CWD-dependent and change meaning across worker restarts (see
+/// [`workspace_root_from`]).
+fn require_absolute(root: PathBuf, source_name: &str) -> Result<PathBuf, ActivityFailure> {
+    if root.is_absolute() {
+        Ok(root)
+    } else {
+        Err(ActivityFailure::terminal(format!(
+            "workspace root {} (from {source_name}) is not an absolute path — \
+             a relative root resolves against the worker's current directory \
+             and names a different location after a restart from elsewhere; \
+             set {WORKSPACE_ROOT_ENV} to an absolute, durable directory",
+            root.display()
+        )))
+    }
+}
+
+/// Require the workspace directory to exist before dispatching work into
+/// it. A missing directory means the worker host no longer has the
+/// workspace (for a remote clone: a reboot, temp-reaper, or manual cleanup;
+/// for a local worktree: a removed or pruned worktree) while the durable
+/// history still names it: the run cannot make progress and must fail
+/// loudly — retrying a dead path cannot help (#175).
+fn require_workspace_dir(path: &str) -> Result<(), ActivityFailure> {
+    if std::path::Path::new(path).is_dir() {
+        Ok(())
+    } else {
+        Err(ActivityFailure::terminal(format!(
+            "workspace missing at {path} — the worker host no longer has it \
+             (lost clone or removed worktree); run cannot resume"
+        )))
+    }
+}
+
+/// Require `key` to be exactly one normal path component before it is
+/// joined under the workspace root. Run ids are engine UUIDs in practice,
+/// but the key arrives over the wire from durable history (and the brief-id
+/// fallback is operator input), and both `Path::join` and the teardown
+/// containment check are lexical — a key carrying `/`, `\`, or `..` would
+/// address (and later delete) paths outside the root.
+fn require_single_component(key: &str, what: &str) -> Result<(), ActivityFailure> {
+    let mut components = std::path::Path::new(key).components();
+    let single_normal = matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    if single_normal && !key.contains('\\') {
+        Ok(())
+    } else {
+        Err(ActivityFailure::terminal(format!(
+            "{what} {key:?} is not a single path component — refusing to key \
+             a workspace directory under the workspace root with it"
+        )))
+    }
+}
+
 /// `provision_workspace`: provision an isolated workspace.
 ///
-/// When `clone_url` is present, clones the repo into a temp directory and
-/// creates the branch there — no `yg` needed (the remote machine has no
-/// yggdrasil tree). When absent, falls back to `yg` worktree provisioning.
+/// When `clone_url` is present, clones the repo into a per-run directory
+/// under the stable workspace root (`AION_WORKSPACE_ROOT`, default
+/// `~/.aion/clones` — never the OS temp dir, #175) and creates the branch
+/// there — no `yg` needed (the remote machine has no yggdrasil tree). When
+/// absent, falls back to `yg` worktree provisioning.
 ///
 /// # Errors
 ///
@@ -68,7 +180,40 @@ pub fn provision_workspace(
     }
 }
 
-/// Clone from a URL into a temp directory, create the working branch.
+/// Clone from a URL into a per-run directory under the stable workspace
+/// root, create the working branch.
+///
+/// The workspace path is recorded in durable workflow history and every
+/// later activity — including after a server, worker, or HOST restart —
+/// re-dispatches against it, so it must live somewhere a reboot cannot
+/// purge (#175): `<root>/<run_id>/repo`, keyed by the workflow execution's
+/// unique run id.
+///
+/// Collision policy — provisioning never DELETES anything:
+///
+/// - A colliding **run_id-keyed** directory is treated as an earlier
+///   partial provision attempt of this same execution: engine-minted run
+///   ids are unique per execution and a recorded provision success is never
+///   re-executed (a reopen re-dispatches only activities whose last attempt
+///   failed). It is renamed aside to `<run_id>.superseded-<unique>` and
+///   provisioning proceeds fresh — a worker killed mid-clone stays
+///   recoverable through reopen (which re-executes provision with the SAME
+///   id) instead of wedging terminally, and a lost-but-still-writing worker
+///   keeps writing into the moved directory instead of racing the new
+///   clone. CAVEAT: the engine does NOT enforce uniqueness for
+///   caller-supplied workflow ids (`Engine::start_workflow_with_id` leaves
+///   choosing an unused id to the caller), so a dispatcher that reuses an
+///   id makes the new run displace the earlier run's live-or-salvage
+///   workspace — the rename keeps the data and the displaced run fails
+///   loudly at its next activity (`workspace missing`), but id uniqueness
+///   is the dispatcher's responsibility, not a guarantee this code can
+///   assume.
+/// - When no run id rides on the input (an older workflow bundle), the
+///   brief id PLUS a per-attempt unique suffix keys the directory: brief
+///   ids recur across dispatches (a failed run deliberately keeps its
+///   workspace for salvage), so a bare brief-keyed directory would collide
+///   on every re-dispatch. The unique key never reuses, renames, or touches
+///   a surviving run's directory.
 fn provision_clone(shell: &Shell, input: &ProvisionInput) -> Result<Workspace, ActivityFailure> {
     let clone_url = input.clone_url.as_deref().ok_or_else(|| {
         ActivityFailure::terminal("provision_clone called without clone_url".to_owned())
@@ -76,22 +221,26 @@ fn provision_clone(shell: &Shell, input: &ProvisionInput) -> Result<Workspace, A
 
     let branch = format!("stacked-dev-{}", input.brief_id);
 
-    // mktemp -d gives us a unique directory on any unix system.
-    let mktemp_run = require_run(shell, "mktemp", &["-d"], "/tmp", "mktemp -d")?;
-    let temp_dir = mktemp_run.stdout.trim().to_owned();
-    if temp_dir.is_empty() {
-        return Err(ActivityFailure::terminal(
-            "mktemp -d returned an empty path".to_owned(),
-        ));
-    }
+    let root = resolve_workspace_root()?;
+    std::fs::create_dir_all(&root).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "cannot create workspace root {}: {source}",
+            root.display()
+        ))
+    })?;
+    let run_dir = match input.run_id.as_deref() {
+        Some(run_id) if !run_id.is_empty() => claim_run_directory(&root, run_id)?,
+        _ => claim_fallback_directory(&root, &input.brief_id)?,
+    };
 
-    let repo_dir = format!("{temp_dir}/repo");
+    let run_dir_str = run_dir.to_string_lossy().into_owned();
+    let repo_dir = run_dir.join("repo").to_string_lossy().into_owned();
 
     require_run(
         shell,
         "git",
         &["clone", clone_url, &repo_dir],
-        &temp_dir,
+        &run_dir_str,
         "git clone",
     )?;
 
@@ -110,6 +259,70 @@ fn provision_clone(shell: &Shell, input: &ProvisionInput) -> Result<Workspace, A
         placement: Placement::Remote,
         isolation: Isolation::Copy,
     })
+}
+
+/// Claim `<root>/<run_id>` for this provision attempt. A collision is this
+/// execution's own earlier partial attempt (see [`provision_clone`]): the
+/// stale directory is renamed aside — never deleted — and the claim
+/// proceeds fresh.
+fn claim_run_directory(root: &std::path::Path, run_id: &str) -> Result<PathBuf, ActivityFailure> {
+    require_single_component(run_id, "run_id")?;
+    let run_dir = root.join(run_id);
+    match std::fs::create_dir(&run_dir) {
+        Ok(()) => Ok(run_dir),
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+            let stale = root.join(format!("{run_id}.superseded-{}", unique_suffix()));
+            std::fs::rename(&run_dir, &stale).map_err(|source| {
+                ActivityFailure::terminal(format!(
+                    "cannot move the stale provision attempt {} aside to {}: {source}",
+                    run_dir.display(),
+                    stale.display()
+                ))
+            })?;
+            std::fs::create_dir(&run_dir).map_err(|source| {
+                ActivityFailure::terminal(format!(
+                    "cannot create workspace directory {}: {source}",
+                    run_dir.display()
+                ))
+            })?;
+            Ok(run_dir)
+        }
+        Err(source) => Err(ActivityFailure::terminal(format!(
+            "cannot create workspace directory {}: {source}",
+            run_dir.display()
+        ))),
+    }
+}
+
+/// Claim `<root>/brief-<brief_id>-<unique>` for a payload that carries no
+/// run id (an older workflow bundle). The per-attempt unique suffix means a
+/// re-dispatch of the same brief never collides with — and never reuses,
+/// renames, or deletes — a surviving run's directory kept for salvage.
+fn claim_fallback_directory(
+    root: &std::path::Path,
+    brief_id: &str,
+) -> Result<PathBuf, ActivityFailure> {
+    let key = format!("brief-{brief_id}-{}", unique_suffix());
+    require_single_component(&key, "brief_id-derived workspace key")?;
+    let dir = root.join(&key);
+    std::fs::create_dir(&dir).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "cannot create workspace directory {}: {source}",
+            dir.display()
+        ))
+    })?;
+    Ok(dir)
+}
+
+/// A per-attempt unique suffix for workspace directory names: wall-clock
+/// nanoseconds plus the worker pid. Not a security token — just enough that
+/// two provision attempts never mint the same directory name.
+fn unique_suffix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos}-p{}", std::process::id())
 }
 
 /// Local worktree provisioning via `yg` — fallback when no `clone_url`.
@@ -141,39 +354,80 @@ fn provision_worktree(shell: &Shell, input: ProvisionInput) -> Result<Workspace,
     })
 }
 
+/// How many branch names `resolve_branch_name` tries before giving up. The
+/// bound keeps exhaustion terminal and loud instead of looping forever
+/// against a persistently failing `yg`.
+const BRANCH_NAME_ATTEMPT_CAP: u32 = 10;
+
 /// Try `yg branch add` with the base name, then `-attempt-2`, `-attempt-3`,
-/// etc. until one succeeds. Returns the branch name that was added.
+/// etc. until one succeeds. Returns the branch name that was added. A name
+/// already taken retries with the next suffix; any other `yg` failure is
+/// terminal immediately, and exhausting the bounded attempts is terminal
+/// carrying the last run's diagnostics — never a silent guess.
 fn resolve_branch_name(
     shell: &Shell,
     base: &str,
     base_ref: &str,
     repo_root: &str,
 ) -> Result<String, ActivityFailure> {
-    if try_branch_add(shell, base, base_ref, repo_root) {
-        return Ok(base.to_owned());
-    }
-    let mut attempt = 2;
-    loop {
-        let candidate = format!("{base}-attempt-{attempt}");
-        if try_branch_add(shell, &candidate, base_ref, repo_root) {
-            return Ok(candidate);
-        }
-        attempt += 1;
-        if attempt > 1000 {
-            return Err(ActivityFailure::terminal(format!(
-                "could not find an unused branch name after 1000 attempts (base: {base})"
-            )));
+    let mut last_diagnostics = String::new();
+    for attempt in 1..=BRANCH_NAME_ATTEMPT_CAP {
+        let candidate = if attempt == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-attempt-{attempt}")
+        };
+        match try_branch_add(shell, &candidate, base_ref, repo_root)? {
+            BranchAdd::Created => return Ok(candidate),
+            BranchAdd::AlreadyExists { diagnostics } => last_diagnostics = diagnostics,
         }
     }
+    Err(ActivityFailure::terminal(format!(
+        "could not find an unused branch name after {BRANCH_NAME_ATTEMPT_CAP} \
+         attempts (base: {base}); last {last_diagnostics}"
+    )))
 }
 
-/// Attempt `yg branch add`; returns true on success, false if the branch
-/// already exists.
-fn try_branch_add(shell: &Shell, branch: &str, base_ref: &str, repo_root: &str) -> bool {
-    matches!(
-        shell.run("yg", &["branch", "add", branch, base_ref], repo_root),
-        Ok(run) if run.succeeded()
-    )
+/// Outcome of one `yg branch add` attempt.
+enum BranchAdd {
+    /// The branch was created.
+    Created,
+    /// The name is already taken; the diagnostics ride along so exhaustion
+    /// can surface them.
+    AlreadyExists {
+        /// The failing run's rendered diagnostics.
+        diagnostics: String,
+    },
+}
+
+/// Attempt `yg branch add`. Success creates the branch; a non-zero exit
+/// whose output names an existing branch is the retryable collision; any
+/// other failure is terminal with the run's diagnostics.
+fn try_branch_add(
+    shell: &Shell,
+    branch: &str,
+    base_ref: &str,
+    repo_root: &str,
+) -> Result<BranchAdd, ActivityFailure> {
+    match shell.run("yg", &["branch", "add", branch, base_ref], repo_root) {
+        Ok(run) if run.succeeded() => Ok(BranchAdd::Created),
+        Ok(run) if run.output.contains("already exists") => Ok(BranchAdd::AlreadyExists {
+            diagnostics: format!(
+                "yg branch add failed — exit status {}: {}",
+                run.exit_status,
+                run.output.trim()
+            ),
+        }),
+        Ok(run) => Err(ActivityFailure::terminal(format!(
+            "yg branch add failed — exit status {}: {}",
+            run.exit_status,
+            run.output.trim()
+        ))),
+        Err(failure) => Err(ActivityFailure::terminal(format!(
+            "yg branch add: {}",
+            failure.message()
+        ))),
+    }
 }
 
 /// Serve one startup fan-out task: the advisory warm build or the dev round.
@@ -201,6 +455,7 @@ pub fn startup_task(shell: &Shell, task: StartupTask) -> Result<StartupResult, A
 /// executable is still a loud terminal failure: that is a broken
 /// environment, not a forfeited cache.
 fn warm_build(shell: &Shell, workspace: &Workspace) -> Result<StartupResult, ActivityFailure> {
+    require_workspace_dir(&workspace.path)?;
     match shell.run("cargo", &["build"], &workspace.path) {
         Ok(command_run) => Ok(StartupResult::Warmed {
             build_warm: crate::types::BuildWarm {
@@ -217,6 +472,7 @@ fn warm_build(shell: &Shell, workspace: &Workspace) -> Result<StartupResult, Act
 
 /// Run the dev agent against the projected dev prompt via the `norn` CLI.
 fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure> {
+    require_workspace_dir(&input.workspace.path)?;
     let session_id = input.workspace.branch.clone();
 
     // norn takes the projected prompt positionally; --print is headless,
@@ -259,6 +515,7 @@ fn dev(shell: &Shell, input: &DevInput) -> Result<StartupResult, ActivityFailure
 /// …}` envelope.
 pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFailure> {
     let ScoutInput { workspace, prompt } = input;
+    require_workspace_dir(&workspace.path)?;
     let session_id = format!("{}-scout", workspace.branch);
     let command_run = require_run(
         shell,
@@ -294,6 +551,7 @@ pub fn scout(shell: &Shell, input: ScoutInput) -> Result<ScoutReport, ActivityFa
 /// …}` envelope.
 pub fn dev_review(shell: &Shell, input: ReviewInput) -> Result<ReviewReport, ActivityFailure> {
     let ReviewInput { workspace, prompt } = input;
+    require_workspace_dir(&workspace.path)?;
     let session_id = format!("{}-review", workspace.branch);
     let command_run = require_run(
         shell,
@@ -371,6 +629,7 @@ pub fn scoped_checks(shell: &Shell, input: ScopedInput) -> Result<CheckResult, A
         workspace,
         files_touched,
     } = input;
+    require_workspace_dir(&workspace.path)?;
     // Affected packages come from the dependency graph: one bare crate name
     // per line (direct-only = the crates that actually contain the changed
     // files; the gate runs broad).
@@ -460,6 +719,7 @@ pub fn full_checks(shell: &Shell, input: GateInput) -> Result<GateResult, Activi
     let GateInput {
         workspace, scope, ..
     } = input;
+    require_workspace_dir(&workspace.path)?;
     match scope {
         GateScope::WorkspaceWide => {
             match shell.run(
@@ -513,6 +773,7 @@ pub fn request_review(shell: &Shell, input: ReviewRequest) -> Result<ReviewAck, 
         reviewers,
         ..
     } = input;
+    require_workspace_dir(&workspace.path)?;
     let mut args: Vec<String> = vec![
         "review".to_owned(),
         "request".to_owned(),
@@ -569,6 +830,7 @@ pub fn land(shell: &Shell, input: LandInput) -> Result<Landed, ActivityFailure> 
         dev_result,
         clone_url,
     } = input;
+    require_workspace_dir(&workspace.path)?;
 
     require_run(shell, "git", &["add", "-A"], &workspace.path, "git add")?;
     let message = format!("{}: {}", workspace.branch, dev_result.summary);
@@ -668,6 +930,7 @@ pub fn enrich_brief(_shell: &Shell, input: EnrichInput) -> Result<BriefDocument,
         document,
         enrichment,
     } = input;
+    require_workspace_dir(&workspace.path)?;
     // The design-system layout is a format constraint (briefs/ is what
     // validate.py keys its brief-schema detection on), so the path derives
     // from the handed document — never from a workflow-supplied guess.
@@ -738,10 +1001,25 @@ pub fn assemble_wave(
 /// worktree, branch, and committed dev rounds must survive intact so the run
 /// can be reopened and resumed from the failed step.
 ///
+/// Remote clone workspaces live at `<workspace root>/<run id>/repo`;
+/// teardown deletes the per-run parent (and with it the repo) ONLY when
+/// that parent sits strictly under the resolved workspace root, and then
+/// sweeps this run's own `<run id>.superseded-<unique>` siblings (the
+/// renamed-aside partial provision attempts — on the success path the
+/// landed work is pushed, so they hold nothing salvageable). The
+/// containment check runs on CANONICALIZED paths — `Path::starts_with` is
+/// lexical and would pass `<root>/x/../victim`, while `remove_dir_all`
+/// resolves the `..` at the filesystem level. A path outside the root (or
+/// one that no longer exists, or a root that cannot be canonicalized) is
+/// not ours to delete and is left untouched with `cleaned: false` — no
+/// temp-dir parent heuristics: guessing at parents is how #175 deleted
+/// survivors.
+///
 /// # Errors
 ///
-/// Terminal [`ActivityFailure`] only if the workspace path cannot be removed
-/// and it still exists. Missing paths are already clean — not an error.
+/// Terminal [`ActivityFailure`] if a directory this teardown owns cannot be
+/// removed and still exists, or (for a remote workspace) when the workspace
+/// root cannot be resolved. Missing paths are already clean — not an error.
 pub fn teardown_workspace(
     _shell: &Shell,
     input: TeardownInput,
@@ -751,21 +1029,50 @@ pub fn teardown_workspace(
     let workspace_path = std::path::Path::new(&workspace_path_owned);
 
     let mut cleaned = false;
-    if workspace_path.exists() {
-        std::fs::remove_dir_all(workspace_path).map_err(|source| {
-            ActivityFailure::terminal(format!(
-                "teardown: cannot remove workspace {workspace_path_owned}: {source}",
-            ))
-        })?;
-        cleaned = true;
-    }
-
-    // Also remove the temp parent if the workspace was a clone (the clone
-    // path is {temp_dir}/repo, so the parent is the mktemp dir).
-    if let Some(parent) = workspace_path.parent()
-        && (parent.starts_with("/tmp") || parent.starts_with("/var/folders"))
-    {
-        let _ = std::fs::remove_dir_all(parent);
+    match input.workspace.placement {
+        Placement::Remote => {
+            let root = resolve_workspace_root()?;
+            // Canonicalize BOTH sides before the containment check: the
+            // recorded path arrives over the wire from durable history, and
+            // a lexical `starts_with` would pass a `..`-escaping parent. A
+            // parent (or root) that cannot be canonicalized does not exist
+            // — already clean, refuse to touch anything.
+            let owned_parent = workspace_path
+                .parent()
+                .and_then(|parent| std::fs::canonicalize(parent).ok())
+                .filter(|parent| {
+                    std::fs::canonicalize(&root)
+                        .is_ok_and(|root| parent.starts_with(&root) && *parent != root)
+                });
+            if let Some(parent) = owned_parent {
+                // Sweep the superseded siblings BEFORE the run directory
+                // itself: if the sweep fails terminally, a retried teardown
+                // still finds the parent and owns the whole cleanup; the
+                // other order would strand the siblings behind a refusal.
+                remove_superseded_siblings(&parent)?;
+                std::fs::remove_dir_all(&parent).map_err(|source| {
+                    ActivityFailure::terminal(format!(
+                        "teardown: cannot remove workspace run directory {}: {source}",
+                        parent.display()
+                    ))
+                })?;
+                cleaned = true;
+            }
+            // A remote workspace whose parent is NOT under the resolved
+            // root is refused, never deleted: `cleaned` stays false and the
+            // directory survives.
+        }
+        Placement::Local => {
+            // A local worktree is owned by the run; remove it as before.
+            if workspace_path.exists() {
+                std::fs::remove_dir_all(workspace_path).map_err(|source| {
+                    ActivityFailure::terminal(format!(
+                        "teardown: cannot remove workspace {workspace_path_owned}: {source}",
+                    ))
+                })?;
+                cleaned = true;
+            }
+        }
     }
 
     // Clean up norn sessions for this branch.
@@ -780,6 +1087,37 @@ pub fn teardown_workspace(
     }
 
     Ok(TornDown { branch, cleaned })
+}
+
+/// Remove the `<run key>.superseded-<unique>` siblings that this run's own
+/// earlier partial provision attempts left behind (a crash-recovered
+/// provision renames its predecessor aside rather than deleting it — see
+/// [`claim_run_directory`]). The sweep touches ONLY direct children of the
+/// run directory's parent whose names carry the run key plus the exact
+/// `.superseded-` marker: no other run's directory can match, because run
+/// keys are single path components and the marker is minted solely by this
+/// worker's rename-aside.
+fn remove_superseded_siblings(run_dir: &std::path::Path) -> Result<(), ActivityFailure> {
+    let (Some(root), Some(run_key)) = (run_dir.parent(), run_dir.file_name()) else {
+        return Ok(());
+    };
+    let prefix = format!("{}.superseded-", run_key.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(root) else {
+        // The root vanished mid-teardown: nothing left to sweep.
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let stale = root.join(entry.file_name());
+            std::fs::remove_dir_all(&stale).map_err(|source| {
+                ActivityFailure::terminal(format!(
+                    "teardown: cannot remove superseded provision attempt {}: {source}",
+                    stale.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -894,5 +1232,83 @@ fn head(text: &str, limit: usize) -> &str {
     match text.char_indices().nth(limit) {
         Some((boundary, _)) => &text[..boundary],
         None => text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::workspace_root_from;
+
+    #[test]
+    fn workspace_root_override_wins_over_home() {
+        let resolved = workspace_root_from(
+            Some(OsString::from("/durable/clones")),
+            Some(OsString::from("/home/user")),
+        );
+        assert_eq!(resolved.ok(), Some(PathBuf::from("/durable/clones")));
+    }
+
+    #[test]
+    fn workspace_root_defaults_under_home() {
+        let resolved = workspace_root_from(None, Some(OsString::from("/home/user")));
+        assert_eq!(
+            resolved.ok(),
+            Some(PathBuf::from("/home/user/.aion/clones"))
+        );
+    }
+
+    #[test]
+    fn workspace_root_empty_override_falls_back_to_home() {
+        let resolved =
+            workspace_root_from(Some(OsString::new()), Some(OsString::from("/home/user")));
+        assert_eq!(
+            resolved.ok(),
+            Some(PathBuf::from("/home/user/.aion/clones"))
+        );
+    }
+
+    #[test]
+    fn workspace_root_without_home_or_override_is_a_hard_error() {
+        let message = workspace_root_from(None, None)
+            .err()
+            .map(|failure| failure.message().to_owned())
+            .unwrap_or_default();
+        assert!(
+            message.contains("AION_WORKSPACE_ROOT") && message.contains("HOME"),
+            "the error must name both the override and HOME; got: {message}"
+        );
+    }
+
+    #[test]
+    fn workspace_root_relative_override_is_a_hard_error() {
+        // A relative root resolves against the worker CWD at each call
+        // site, so the recorded history's path silently changes meaning
+        // after a restart from a different directory — refuse it loudly.
+        let message = workspace_root_from(
+            Some(OsString::from("relative/clones")),
+            Some(OsString::from("/home/user")),
+        )
+        .err()
+        .map(|failure| failure.message().to_owned())
+        .unwrap_or_default();
+        assert!(
+            message.contains("absolute") && message.contains("relative/clones"),
+            "the error must name the offending path and demand an absolute one; got: {message}"
+        );
+    }
+
+    #[test]
+    fn workspace_root_relative_home_is_a_hard_error() {
+        let message = workspace_root_from(None, Some(OsString::from("relative-home")))
+            .err()
+            .map(|failure| failure.message().to_owned())
+            .unwrap_or_default();
+        assert!(
+            message.contains("absolute"),
+            "a relative HOME-derived root must be refused; got: {message}"
+        );
     }
 }
