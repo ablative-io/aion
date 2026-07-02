@@ -1405,10 +1405,10 @@ mod tests {
         // haematite).
         assert_eq!(config.store.backend, StoreBackend::Haematite);
         assert_eq!(config.store.data_dir.as_deref(), Some("aion-data"));
-        // Generous immutable virtual-shard default: cluster-capable without
-        // taxing single-node first-boot (lazy shard materialization, haematite
-        // >= 0.4.0; see StoreConfig::shard_count docs).
-        assert_eq!(config.store.shard_count, 4096);
+        // 64 pending #187: 4096 defeated its own lazy-materialization premise
+        // (boot scan_prefix materializes all shards; commit then fsyncs per
+        // shard and blows the actor timeout). See StoreConfig::default().
+        assert_eq!(config.store.shard_count, 64);
         assert_eq!(config.store.url, None);
         assert_eq!(config.server.grpc_address.to_string(), "127.0.0.1:50051");
         assert_eq!(config.server.listen_address.to_string(), "127.0.0.1:8080");

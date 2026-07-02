@@ -203,9 +203,13 @@ The "stop regressions silently rotting" track. **The keystone gap.**
 
 - **#150** AD-012 reopen operation: keep / finish / drop. — ✅ RESOLVED: folded into
   the reopen/resume work (see WORKFLOW-REOPEN-DESIGN.md).
-- **Shard-count default** value (Track B) — ✅ RESOLVED: default raised 64 → **4096**
-  on haematite 0.4.0 lazy materialization (commit `af4bad09`); no longer a pending
-  decision. (accept "generous power-of-two, validated vs #47".)
+- **Shard-count default** value (Track B) — ⚠️ REVERTED to **64** (#187): the 4096
+  raise (`af4bad09`) bricked fresh servers — boot-time prefix scans materialize every
+  shard, and haematite 0.4.0 commits then fsync per materialized shard (~8k
+  fsyncs/commit), blowing the 5s shard-actor timeout on deploy/start/timers/outbox.
+  Re-raise is gated on haematite commit becoming O(dirty shards) (empty-commit
+  short-circuit + dirty-only fan-out + lazy read path) with the scaffold e2es green
+  at the new default.
 - **Determinism authoring stance** (Track B) — RESOLVED: the engine is
   replay-deterministic; the agent guarantee is the activity boundary
   (recorded-once, never-re-run), not determinism-freedom. No
