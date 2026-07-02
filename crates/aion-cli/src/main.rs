@@ -1,7 +1,7 @@
 //! The `aion` command line: workflow operations over gRPC and the embedded
 //! Aion workflow server (`aion server`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -228,6 +228,9 @@ enum RemoteCommand {
         /// JSON input payload for the workflow.
         #[arg(long, default_value = "null")]
         input: String,
+        /// Read the JSON input payload from a UTF-8 file instead of `--input`.
+        #[arg(long, conflicts_with = "input")]
+        input_file: Option<PathBuf>,
     },
     /// Send a signal to the latest run of a workflow.
     Signal {
@@ -437,7 +440,11 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
         RemoteCommand::Start {
             workflow_type,
             input,
-        } => start_workflow(client, workflow_type, input).await,
+            input_file,
+        } => {
+            let input = resolve_start_input(input, input_file.as_deref())?;
+            start_workflow(client, workflow_type, &input).await
+        }
         RemoteCommand::Signal {
             workflow_id,
             signal_name,
@@ -479,6 +486,18 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
             )
             .await
         }
+    }
+}
+
+/// Resolve the start input payload: the contents of `--input-file` when given
+/// (read as UTF-8), otherwise the inline `--input` string unchanged. The two
+/// flags are mutually exclusive at parse time (`conflicts_with`), so a file is
+/// only ever read when `--input` was not passed.
+fn resolve_start_input(input: &str, input_file: Option<&Path>) -> Result<String> {
+    match input_file {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read --input-file {}", path.display())),
+        None => Ok(input.to_owned()),
     }
 }
 
@@ -629,10 +648,84 @@ mod tests {
     use aion_server::config::CliOverrides;
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, ClientCommand, Command, RemoteCommand, normalize_endpoint};
+    use super::{
+        Cli, ClientCommand, Command, RemoteCommand, normalize_endpoint, resolve_start_input,
+    };
 
     const WORKFLOW_ID: &str = "00000000-0000-0000-0000-000000000001";
     const RUN_ID: &str = "00000000-0000-0000-0000-000000000002";
+
+    #[test]
+    fn start_reads_input_payload_from_file() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("payload.json");
+        std::fs::write(&path, r#"{"order_id":42}"#)?;
+
+        let cli = Cli::try_parse_from([
+            std::ffi::OsStr::new("aion"),
+            std::ffi::OsStr::new("start"),
+            std::ffi::OsStr::new("order_saga"),
+            std::ffi::OsStr::new("--input-file"),
+            path.as_os_str(),
+        ])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Start {
+            input, input_file, ..
+        })) = cli.command
+        else {
+            anyhow::bail!("expected start command");
+        };
+        // The inline default is untouched; the file contents win verbatim.
+        assert_eq!(input, "null");
+        assert_eq!(input_file.as_deref(), Some(path.as_path()));
+        assert_eq!(
+            resolve_start_input(&input, input_file.as_deref())?,
+            r#"{"order_id":42}"#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn start_without_input_file_keeps_inline_input() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "start", "order_saga"])?;
+        let Command::Client(ClientCommand::Remote(RemoteCommand::Start {
+            input, input_file, ..
+        })) = cli.command
+        else {
+            anyhow::bail!("expected start command");
+        };
+        assert!(input_file.is_none());
+        assert_eq!(resolve_start_input(&input, input_file.as_deref())?, "null");
+        Ok(())
+    }
+
+    #[test]
+    fn start_rejects_input_and_input_file_together() {
+        assert!(
+            Cli::try_parse_from([
+                "aion",
+                "start",
+                "order_saga",
+                "--input",
+                "{}",
+                "--input-file",
+                "payload.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn start_missing_input_file_error_names_the_path() -> anyhow::Result<()> {
+        let path = Path::new("/definitely/not/there/payload.json");
+        let Err(error) = resolve_start_input("null", Some(path)) else {
+            anyhow::bail!("missing file must error");
+        };
+        assert!(
+            format!("{error:#}").contains("/definitely/not/there/payload.json"),
+            "error should name the path: {error:#}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn describe_accepts_optional_run_id() -> anyhow::Result<()> {
