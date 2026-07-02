@@ -108,14 +108,8 @@ jobs:
           - examples/norn-fan-worker
           - examples/stacked-dev/mixed-worker
           - examples/stacked-dev/norn-worker
-          # TODO(#175): the two crates below are owned by the in-flight
-          # stacked-dev-remote branch and do NOT pass on current main
-          # (examples/stacked-dev-remote/worker fails to build against its
-          # aion-worker pin; .meridian/workflows/stacked-dev/worker builds but
-          # its tests do not compile). Uncomment both when that branch lands so
-          # this lane guards them too.
-          # - examples/stacked-dev-remote/worker
-          # - .meridian/workflows/stacked-dev/worker
+          - examples/stacked-dev-remote/worker
+          - .meridian/workflows/stacked-dev/worker
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
