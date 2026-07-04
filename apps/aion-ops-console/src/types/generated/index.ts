@@ -33,6 +33,16 @@ period: { secs: number, nanos: number }, } };
 
 export type OverlapPolicy = "Skip" | "BufferOne" | "CancelPrevious" | "AllowAll";
 
+/**
+ * Who retired a timer, distinguishing a real workflow decision from engine
+ * bookkeeping. A `WorkflowIntent` cancel is permanent; a `CancelTeardown` cancel
+ * is engine bookkeeping issued when a run is cancelled, and is re-armed when the
+ * run is reopened. Additive + serde-defaulted: histories recorded before the
+ * field existed carry no `cause`, which decodes to `WorkflowIntent` — hence the
+ * field is OPTIONAL on the wire. See `Event::TimerCancelled`.
+ */
+export type TimerCancelCause = "WorkflowIntent" | "CancelTeardown";
+
 export type CatchUpPolicy = "All" | "One" | "Skip";
 
 export type ScheduleConfig = { 
@@ -438,7 +448,20 @@ envelope: EventEnvelope,
 /**
  * Timer that was cancelled.
  */
-timer_id: TimerId, } } | { "type": "WithTimeoutCompleted", "data": { 
+timer_id: TimerId, 
+/**
+ * Who retired the timer. Decides reopen behavior: a
+ * [`TimerCancelCause::CancelTeardown`] cancellation is re-armed when the
+ * run is reopened; a [`TimerCancelCause::WorkflowIntent`] cancellation is
+ * permanent.
+ *
+ * Replay-safety: histories recorded before this field existed have no
+ * `cause` key. Decode defaults the missing value to
+ * [`TimerCancelCause::WorkflowIntent`] via `#[serde(default)]` — the
+ * pre-field behavior (never resurrected), never panics, never differs
+ * run-to-run. The encoding of the existing fields is untouched.
+ */
+cause?: TimerCancelCause, } } | { "type": "WithTimeoutCompleted", "data": {
 /**
  * Recording metadata for this event.
  */
