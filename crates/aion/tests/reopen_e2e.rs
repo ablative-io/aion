@@ -193,12 +193,25 @@ async fn reopen_rejects_non_reopenable_states() -> Result<(), Box<dyn std::error
         status_from_events(&store.read_history(handle.workflow_id()).await?),
         WorkflowStatus::Completed
     );
-    assert!(matches!(
-        engine
-            .reopen_workflow(handle.workflow_id(), handle.run_id())
-            .await,
-        Err(EngineError::InvalidState { .. })
-    ));
+    // #223: the rejection must name the run's TRUE state. A completed run can
+    // still hold a lingering registry handle, and the handle-first guard used
+    // to misreport this exact rejection as "is already Running".
+    let rejection = engine
+        .reopen_workflow(handle.workflow_id(), handle.run_id())
+        .await;
+    match rejection {
+        Err(EngineError::InvalidState { reason }) => {
+            assert!(
+                reason.contains("Completed"),
+                "the rejection must name the Completed state, got: {reason}"
+            );
+            assert!(
+                !reason.contains("already Running"),
+                "a Completed run must not be misreported as Running: {reason}"
+            );
+        }
+        other => return Err(format!("expected InvalidState, got {other:?}").into()),
+    }
 
     engine.shutdown()?;
     Ok(())

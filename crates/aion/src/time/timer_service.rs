@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
+use aion_core::{Event, EventEnvelope, TimerCancelCause, TimerId, WorkflowId};
 use aion_store::{ReadableEventStore, StoreError};
 use chrono::{DateTime, Utc};
 use dashmap::DashSet;
@@ -119,11 +119,12 @@ impl TimerService {
         &self,
         workflow_id: WorkflowId,
         timer_id: TimerId,
+        cause: TimerCancelCause,
     ) -> Result<(), TimerServiceError> {
         let key = (workflow_id.clone(), timer_id.clone());
         let terminal_update_slot = self.wait_for_terminal_update_slot(key).await;
 
-        let result = self.cancel_guarded(workflow_id, timer_id).await;
+        let result = self.cancel_guarded(workflow_id, timer_id, cause).await;
         drop(terminal_update_slot);
         result
     }
@@ -132,6 +133,7 @@ impl TimerService {
         &self,
         workflow_id: WorkflowId,
         timer_id: TimerId,
+        cause: TimerCancelCause,
     ) -> Result<(), TimerServiceError> {
         if !self.timer_is_live(&workflow_id, &timer_id).await? {
             return Ok(());
@@ -144,6 +146,7 @@ impl TimerService {
         let event = Event::TimerCancelled {
             envelope: self.next_envelope(&workflow_id).await?,
             timer_id,
+            cause,
         };
         self.engine.record_workflow_event(&workflow_id, event)?;
 
@@ -290,7 +293,7 @@ pub(crate) fn live_timers_in_active_segment(history: &[Event]) -> Vec<TimerId> {
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::{Event, EventEnvelope, TimerId, WorkflowId};
+    use aion_core::{Event, EventEnvelope, TimerCancelCause, TimerId, WorkflowId};
     use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
@@ -383,6 +386,7 @@ mod tests {
 
     fn timer_cancelled_event(workflow_id: &WorkflowId, timer_id: &TimerId, seq: u64) -> Event {
         Event::TimerCancelled {
+            cause: TimerCancelCause::WorkflowIntent,
             envelope: EventEnvelope {
                 seq,
                 recorded_at: instant(0),
@@ -710,6 +714,7 @@ mod tests {
             timer_started_event(&workflow_id, &timer_id, 1),
         )?;
         let cancelled = Event::TimerCancelled {
+            cause: TimerCancelCause::WorkflowIntent,
             envelope: EventEnvelope {
                 seq: 2,
                 recorded_at: instant(69),

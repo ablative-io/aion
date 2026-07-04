@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use aion_core::{Event, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
+use aion_core::{Event, TimerCancelCause, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary};
 use aion_store::{EventStore, ReadableEventStore, RunSummary, StoreError, TimerEntry};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -152,7 +152,7 @@ impl TimerNifBridge {
 
 enum TimerOutcome {
     Fired(TimerId),
-    Cancelled(TimerId),
+    Cancelled(TimerId, TimerCancelCause),
 }
 
 impl EngineHandle for TimerNifBridge {
@@ -313,7 +313,9 @@ impl EngineHandle for TimerNifBridge {
         let recorded_at = *event.recorded_at();
         let outcome = match event {
             Event::TimerFired { timer_id, .. } => TimerOutcome::Fired(timer_id),
-            Event::TimerCancelled { timer_id, .. } => TimerOutcome::Cancelled(timer_id),
+            Event::TimerCancelled {
+                timer_id, cause, ..
+            } => TimerOutcome::Cancelled(timer_id, cause),
             other => {
                 return Err(EngineSeamError::Recorder {
                     reason: format!("timer NIF bridge cannot record {}", event_kind(&other)),
@@ -338,8 +340,10 @@ impl EngineHandle for TimerNifBridge {
                 TimerOutcome::Fired(timer_id) => {
                     recorder.record_timer_fired(recorded_at, timer_id).await
                 }
-                TimerOutcome::Cancelled(timer_id) => {
-                    recorder.record_timer_cancelled(recorded_at, timer_id).await
+                TimerOutcome::Cancelled(timer_id, cause) => {
+                    recorder
+                        .record_timer_cancelled(recorded_at, timer_id, cause)
+                        .await
                 }
             }
         })

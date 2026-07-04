@@ -391,6 +391,7 @@ mod tests {
         engine.record_workflow_event(
             &workflow_id,
             Event::TimerCancelled {
+                cause: aion_core::TimerCancelCause::WorkflowIntent,
                 envelope: EventEnvelope {
                     seq: 1,
                     recorded_at: instant(9),

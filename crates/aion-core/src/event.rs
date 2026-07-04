@@ -336,6 +336,18 @@ pub enum Event {
         envelope: EventEnvelope,
         /// Timer that was cancelled.
         timer_id: TimerId,
+        /// Who retired the timer. Decides reopen behavior: a
+        /// [`TimerCancelCause::CancelTeardown`] cancellation is re-armed when the
+        /// run is reopened; a [`TimerCancelCause::WorkflowIntent`] cancellation is
+        /// permanent.
+        ///
+        /// Replay-safety: histories recorded before this field existed have no
+        /// `cause` key. Decode defaults the missing value to
+        /// [`TimerCancelCause::WorkflowIntent`] via `#[serde(default)]` — the
+        /// pre-field behavior (never resurrected), never panics, never differs
+        /// run-to-run. The encoding of the existing fields is untouched.
+        #[serde(default)]
+        cause: TimerCancelCause,
     },
     /// A `with_timeout` operation reached a durable terminal outcome.
     WithTimeoutCompleted {
@@ -471,6 +483,28 @@ pub enum WithTimeoutOutcome {
     TimedOut,
 }
 
+/// Who retired a durable timer, recorded on [`Event::TimerCancelled`].
+///
+/// The distinction decides reopen semantics. A timer the WORKFLOW retired —
+/// an SDK `cancel_timer` call or a `with_timeout` scope settling because the
+/// racing operation won — is a business fact: reopen must never resurrect it.
+/// A timer the ENGINE retired while tearing down a cancelled run
+/// (`Engine::cancel`'s in-flight timer cleanup) is bookkeeping: the deadline
+/// itself was never reached or waived, so reopening the run re-arms it at its
+/// original `fire_at`.
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TimerCancelCause {
+    /// Workflow code retired the timer (SDK cancel or a settled timeout scope).
+    ///
+    /// The serde default: histories recorded before this field existed decode
+    /// as workflow intent, preserving their pre-field never-resurrected
+    /// behavior.
+    #[default]
+    WorkflowIntent,
+    /// The engine retired the timer while cancelling its workflow run.
+    CancelTeardown,
+}
+
 impl Event {
     /// Returns the envelope recorded with this event.
     #[must_use]
@@ -534,7 +568,9 @@ mod tests {
     use chrono::{DateTime, Utc};
     use serde_json::json;
 
-    use super::{DEFAULT_TASK_QUEUE, Event, EventEnvelope, LEGACY_ACTIVITY_ATTEMPT};
+    use super::{
+        DEFAULT_TASK_QUEUE, Event, EventEnvelope, LEGACY_ACTIVITY_ATTEMPT, TimerCancelCause,
+    };
     use crate::{
         ActivityError, ActivityErrorKind, ActivityId, CatchUpPolicy, OverlapPolicy, PackageVersion,
         Payload, RunId, ScheduleConfig, ScheduleId, SearchAttributeValue, TimerId, TriggerSpec,
@@ -861,6 +897,48 @@ mod tests {
         Ok(())
     }
 
+    /// Replay-safety proof for the `cause` field on `TimerCancelled` (#222):
+    /// a history recorded BEFORE the field existed has no `cause` key and MUST
+    /// decode without panic, defaulting to `WorkflowIntent` — the pre-field
+    /// behavior (a reopen never resurrects it) — deterministically. The old
+    /// wire form is the exact pre-field bytes: the current serialization with
+    /// the `cause` key removed.
+    #[test]
+    fn timer_cancelled_decodes_old_history_without_cause_as_workflow_intent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A NON-default cause proves the strip (not the value) drives the default.
+        let cancelled = Event::TimerCancelled {
+            envelope: envelope(7),
+            timer_id: TimerId::named("deadline")?,
+            cause: TimerCancelCause::CancelTeardown,
+        };
+
+        let mut value = serde_json::to_value(&cancelled)?;
+        let data = value
+            .get_mut("data")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("TimerCancelled must serialize to a tagged object with `data`")?;
+        assert!(
+            data.remove("cause").is_some(),
+            "the current wire form must contain cause before we strip it"
+        );
+        let old_wire = serde_json::to_string(&value)?;
+        for _ in 0..4 {
+            let decoded = serde_json::from_str::<Event>(&old_wire)?;
+            match &decoded {
+                Event::TimerCancelled { cause, .. } => assert_eq!(
+                    *cause,
+                    TimerCancelCause::WorkflowIntent,
+                    "a missing cause must default to WorkflowIntent (never resurrected)"
+                ),
+                other => {
+                    return Err(format!("expected TimerCancelled, got {other:?}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// #144: the start-time task queue projects from the `aion.task_queue`
     /// search attribute recorded by `SearchAttributesUpdated`, mirroring the
     /// `aion.namespace` projection. A later update overrides an earlier value.
@@ -1007,6 +1085,7 @@ mod tests {
             Event::TimerCancelled {
                 envelope: envelope(13),
                 timer_id: TimerId::named("reminder")?,
+                cause: TimerCancelCause::WorkflowIntent,
             },
             Event::SignalReceived {
                 envelope: envelope(14),

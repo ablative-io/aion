@@ -51,8 +51,8 @@ pub use cluster_event::{
 pub use describe::DescribeWorkflowResponse;
 pub use error::{ActivityError, ActivityErrorKind, WorkflowError};
 pub use event::{
-    DEFAULT_TASK_QUEUE, Event, EventEnvelope, START_TIME_TASK_QUEUE_ATTRIBUTE, WithTimeoutOutcome,
-    start_time_task_queue,
+    DEFAULT_TASK_QUEUE, Event, EventEnvelope, START_TIME_TASK_QUEUE_ATTRIBUTE, TimerCancelCause,
+    WithTimeoutOutcome, start_time_task_queue,
 };
 pub use filter::{WorkflowFilter, WorkflowSummary, failure_projection};
 pub use ids::{ActivityId, IdError, PackageVersion, RunId, TimerId, TimerIdKind, WorkflowId};

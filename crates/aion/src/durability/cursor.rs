@@ -480,11 +480,22 @@ impl HistoryCursor {
     fn is_outcome_for_start_key(&self, event: &Event, expected_key: &CorrelationKey) -> bool {
         match (event, expected_key) {
             (
-                Event::TimerFired { timer_id, .. }
-                | Event::TimerCancelled { timer_id, .. }
-                | Event::WithTimeoutCompleted { timer_id, .. },
+                Event::TimerFired { timer_id, .. } | Event::WithTimeoutCompleted { timer_id, .. },
                 CorrelationKey::Timer(expected_timer_id),
             ) => timer_id == expected_timer_id,
+            // A cancel-teardown TimerCancelled is engine bookkeeping (the run
+            // was cancelled and its timers retired); it is NEVER an outcome a
+            // workflow await observes — reopen re-arms the timer instead
+            // (#222). Only a workflow-intent cancellation resolves the await.
+            (
+                Event::TimerCancelled {
+                    timer_id, cause, ..
+                },
+                CorrelationKey::Timer(expected_timer_id),
+            ) => {
+                *cause == aion_core::TimerCancelCause::WorkflowIntent
+                    && timer_id == expected_timer_id
+            }
             (
                 Event::ChildWorkflowCompleted {
                     child_workflow_id, ..
