@@ -327,14 +327,29 @@ pub(super) fn timer_terminal_recorded(context: &NifContext, timer_id: &TimerId) 
         .iter()
         .rev()
         .find_map(|event| match event {
+            // A TimerStarted seen FIRST in reverse means the timer was
+            // (re)armed after any earlier terminal — reopen's re-arm marker
+            // (#222) — so the timer is pending again.
+            Event::TimerStarted {
+                timer_id: recorded, ..
+            } if recorded == timer_id => Some(None),
             Event::TimerFired {
                 timer_id: recorded, ..
-            } if recorded == timer_id => Some(true),
+            } if recorded == timer_id => Some(Some(true)),
             Event::TimerCancelled {
-                timer_id: recorded, ..
-            } if recorded == timer_id => Some(false),
+                timer_id: recorded,
+                cause,
+                ..
+            } if recorded == timer_id => Some(match cause {
+                // Workflow-visible cancellation: the await observes it.
+                aion_core::TimerCancelCause::WorkflowIntent => Some(false),
+                // Cancel-teardown bookkeeping is never workflow-visible: the
+                // await stays pending (reopen re-arms or the run stays dead).
+                aion_core::TimerCancelCause::CancelTeardown => None,
+            }),
             _ => None,
         })
+        .flatten()
 }
 
 pub(super) fn add_duration(

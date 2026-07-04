@@ -13,18 +13,28 @@
 //! the very recorder handed to resident registration; no second writer is ever
 //! constructed for the reopened run.
 //!
+//! Durable timers (#222): a reopened run's clock must come back with it. The
+//! run segment is scanned last-event-wins per timer id — a timer whose last
+//! event is `TimerCancelled { cause: CancelTeardown }` was retired by the
+//! cancel teardown (engine bookkeeping, not workflow intent) and is re-armed at
+//! its ORIGINAL `fire_at`; a timer still outstanding (`TimerStarted` with no
+//! terminal — the failed-run case) is re-armed without touching history. A
+//! deadline already in the past fires immediately after respawn, so a run
+//! reopened after its deadline takes the timeout branch instead of parking
+//! forever. Workflow-intent cancellations are never resurrected.
+//!
 //! [`WorkflowFailed`]: aion_core::Event::WorkflowFailed
 //! [`WorkflowCancelled`]: aion_core::Event::WorkflowCancelled
 
 use std::sync::Arc;
 
 use aion_core::{
-    ActivityId, Event, RunId, SearchAttributeSchema, WorkflowId, current_lease_terminal,
-    run_segment, status_from_events,
+    ActivityId, Event, RunId, SearchAttributeSchema, TimerCancelCause, TimerId, WorkflowId,
+    current_lease_terminal, run_segment, status_from_events,
 };
 use aion_store::EventStore;
 use aion_store::visibility::VisibilityStore;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::EngineError;
 use crate::durability::{
@@ -79,17 +89,25 @@ pub async fn reopen(
     if history.is_empty() {
         return Err(crate::engine::api::workflow_not_found(id, run));
     }
-    // Reject an already-live run before touching history: a terminal workflow has
-    // no live handle, so a present handle means it is already Running (e.g. a
-    // concurrent reopen already won).
+
+    // Validate against HISTORY first so the rejection names the run's true
+    // state: a terminal run can still hold a lingering registry handle (a
+    // Completed run's handle lives until reconciliation), and the handle check
+    // alone used to misreport every such rejection as "already Running".
+    let segment = run_segment(&history, run);
+    let reopened = validate_and_compute_reopened(id, run, segment)?;
+
+    // History says reopenable-terminal, so a live handle now means exactly one
+    // thing: a concurrent reopen already won the race.
     if context.registry.get(id, run)?.is_some() {
         return Err(EngineError::InvalidState {
-            reason: format!("workflow {id} run {run} is already Running"),
+            reason: format!(
+                "workflow {id} run {run} was already reopened and is Running (concurrent reopen)"
+            ),
         });
     }
 
-    let segment = run_segment(&history, run);
-    let reopened = validate_and_compute_reopened(id, run, segment)?;
+    let rearm = rearmable_timers(segment);
 
     // ONE continuous recorder from the WorkflowReopened append through the
     // respawn (invariant #3): built at the history head, it appends the marker
@@ -100,12 +118,166 @@ pub async fn reopen(
     recorder
         .record_workflow_reopened(Utc::now(), run.clone(), reopened)
         .await?;
+    // A teardown-cancelled timer's last event is TimerCancelled, so liveness
+    // (last-event-wins) reads it as dead: record a fresh TimerStarted — same
+    // id, ORIGINAL fire_at — through the same recorder so the fire/replay
+    // machinery sees it live again. Still-outstanding timers (failed-run case)
+    // stay untouched: re-recording one would put a second unconsumed
+    // TimerStarted resolution in front of replay.
+    for timer in rearm.iter().filter(|timer| timer.needs_restart_marker) {
+        recorder
+            .record_timer_started(Utc::now(), timer.timer_id.clone(), timer.fire_at)
+            .await?;
+    }
 
     // Re-read so registration reconciles against the history that now INCLUDES
     // the WorkflowReopened marker: the projection (and the recovered resident's
     // reconciled cached status) is Running, not the superseded terminal.
     let history = context.store.read_history(id).await?;
-    respawn_and_register(&context, id, run, &history, recorder).await
+    let handle = respawn_and_register(&context, id, run, &history, recorder).await?;
+    rearm_reopened_timers(&context, id, &rearm).await?;
+    Ok(handle)
+}
+
+/// A durable timer the reopened run must get back.
+struct RearmTimer {
+    timer_id: TimerId,
+    /// The ORIGINAL deadline. Reopen never extends a business deadline; one
+    /// already in the past fires immediately after respawn.
+    fire_at: DateTime<Utc>,
+    /// True when the cancel teardown recorded `TimerCancelled` for this timer,
+    /// so a fresh `TimerStarted` must be appended to make it live again. False
+    /// for a timer still outstanding in history (failed-run case) — only the
+    /// wheel/durable row needs re-arming.
+    needs_restart_marker: bool,
+}
+
+/// The run segment's timers that reopen must re-arm, decided last-event-wins
+/// per timer id:
+///
+/// * last event `TimerStarted` — outstanding at the terminal (a failure tears
+///   nothing down): re-arm the wheel/row only.
+/// * last event `TimerCancelled { cause: CancelTeardown }` — retired by the
+///   cancel teardown: append a fresh `TimerStarted` and re-arm.
+/// * last event `TimerFired` or `TimerCancelled { cause: WorkflowIntent }` —
+///   a settled business fact: never resurrected.
+fn rearmable_timers(segment: &[Event]) -> Vec<RearmTimer> {
+    use std::collections::HashMap;
+
+    struct TimerTrace {
+        fire_at: DateTime<Utc>,
+        last_was_teardown_cancel: Option<bool>,
+    }
+
+    let mut traces: HashMap<TimerId, TimerTrace> = HashMap::new();
+    let mut order: Vec<TimerId> = Vec::new();
+    for event in segment {
+        match event {
+            Event::TimerStarted {
+                timer_id, fire_at, ..
+            } => {
+                if !traces.contains_key(timer_id) {
+                    order.push(timer_id.clone());
+                }
+                traces.insert(
+                    timer_id.clone(),
+                    TimerTrace {
+                        fire_at: *fire_at,
+                        last_was_teardown_cancel: None,
+                    },
+                );
+            }
+            Event::TimerFired { timer_id, .. } => {
+                traces.remove(timer_id);
+            }
+            Event::TimerCancelled {
+                timer_id, cause, ..
+            } => {
+                if let Some(trace) = traces.get_mut(timer_id) {
+                    match cause {
+                        TimerCancelCause::CancelTeardown => {
+                            trace.last_was_teardown_cancel = Some(true);
+                        }
+                        TimerCancelCause::WorkflowIntent => {
+                            traces.remove(timer_id);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|timer_id| {
+            traces.remove(&timer_id).map(|trace| RearmTimer {
+                timer_id,
+                fire_at: trace.fire_at,
+                needs_restart_marker: trace.last_was_teardown_cancel == Some(true),
+            })
+        })
+        .collect()
+}
+
+/// Arms (or immediately fires) the reopened run's re-armed timers through the
+/// production [`crate::time::TimerService`], AFTER resident registration so
+/// residency resolution and mailbox delivery hit the live process.
+///
+/// A future deadline gets its durable row and wheel entry back via
+/// `TimerService::schedule`. A past deadline writes its durable row FIRST and
+/// then fires through `TimerService::fire_timer` — if the fire fails, the row
+/// survives so the next startup's `recover_due` sweep completes it instead of
+/// losing the deadline silently.
+///
+/// # Errors
+///
+/// Surfaces timer-service and store failures as [`EngineError::Runtime`]: the
+/// reopen itself is already durable, and the recorded `TimerStarted` plus
+/// durable row make the failure recoverable at the next startup sweep, but the
+/// operator must know the re-arm did not complete live.
+async fn rearm_reopened_timers(
+    context: &ReopenWorkflowContext<'_>,
+    id: &WorkflowId,
+    rearm: &[RearmTimer],
+) -> Result<(), EngineError> {
+    if rearm.is_empty() {
+        return Ok(());
+    }
+    let timer_service =
+        crate::runtime::nif_timer_bridge::installed_timer_service(context.runtime.nif_state())
+            .map_err(|error| EngineError::Runtime {
+                reason: format!("timer service unavailable while reopening {id}: {error}"),
+            })?;
+    let now = Utc::now();
+    for timer in rearm {
+        if timer.fire_at > now {
+            timer_service
+                .schedule(id.clone(), timer.timer_id.clone(), timer.fire_at)
+                .await
+                .map_err(|error| EngineError::Runtime {
+                    reason: format!(
+                        "failed to re-arm timer {} for reopened workflow {id}: {error}",
+                        timer.timer_id
+                    ),
+                })?;
+        } else {
+            context
+                .store
+                .schedule_timer(id, &timer.timer_id, timer.fire_at)
+                .await?;
+            timer_service
+                .fire_timer(id.clone(), timer.timer_id.clone(), timer.fire_at)
+                .await
+                .map_err(|error| EngineError::Runtime {
+                    reason: format!(
+                        "failed to fire past-due timer {} for reopened workflow {id}: {error}",
+                        timer.timer_id
+                    ),
+                })?;
+        }
+    }
+    Ok(())
 }
 
 /// Validates the reopen precondition and computes the reopened activity set.
@@ -482,6 +654,134 @@ mod tests {
             validate_and_compute_reopened(&wf(), &run(), &segment),
             Err(EngineError::InvalidState { .. })
         ));
+    }
+
+    fn timer_started(seq: u64, timer_id: &aion_core::TimerId, fire_at_offset: i64) -> Event {
+        Event::TimerStarted {
+            envelope: envelope(seq),
+            timer_id: timer_id.clone(),
+            fire_at: Utc::now() + chrono::Duration::seconds(fire_at_offset),
+        }
+    }
+
+    fn timer_cancelled(
+        seq: u64,
+        timer_id: &aion_core::TimerId,
+        cause: aion_core::TimerCancelCause,
+    ) -> Event {
+        Event::TimerCancelled {
+            envelope: envelope(seq),
+            timer_id: timer_id.clone(),
+            cause,
+        }
+    }
+
+    fn workflow_cancelled(seq: u64) -> Event {
+        Event::WorkflowCancelled {
+            envelope: envelope(seq),
+            reason: String::from("operator stop"),
+        }
+    }
+
+    #[test]
+    fn teardown_cancelled_timer_is_rearmed_with_a_restart_marker() {
+        use aion_core::{TimerCancelCause, TimerId};
+        let named = TimerId::anonymous(1);
+        let segment = vec![
+            started(),
+            timer_started(2, &named, 3600),
+            timer_cancelled(3, &named, TimerCancelCause::CancelTeardown),
+            workflow_cancelled(4),
+        ];
+        let rearm = super::rearmable_timers(&segment);
+        assert_eq!(rearm.len(), 1);
+        assert_eq!(rearm[0].timer_id, named);
+        assert!(
+            rearm[0].needs_restart_marker,
+            "a teardown-cancelled timer needs a fresh TimerStarted to be live again"
+        );
+    }
+
+    #[test]
+    fn workflow_intent_cancellation_is_never_resurrected() {
+        use aion_core::{TimerCancelCause, TimerId};
+        let named = TimerId::anonymous(1);
+        let segment = vec![
+            started(),
+            timer_started(2, &named, 3600),
+            timer_cancelled(3, &named, TimerCancelCause::WorkflowIntent),
+            workflow_cancelled(4),
+        ];
+        assert!(
+            super::rearmable_timers(&segment).is_empty(),
+            "a timer the workflow retired is a settled business fact"
+        );
+    }
+
+    #[test]
+    fn fired_timer_is_not_rearmed() {
+        use aion_core::TimerId;
+        let named = TimerId::anonymous(1);
+        let segment = vec![
+            started(),
+            timer_started(2, &named, -5),
+            Event::TimerFired {
+                envelope: envelope(3),
+                timer_id: named.clone(),
+            },
+            workflow_cancelled(4),
+        ];
+        assert!(super::rearmable_timers(&segment).is_empty());
+    }
+
+    #[test]
+    fn outstanding_timer_rearms_without_touching_history() {
+        // The failed-run case: a failure tears no timers down, so the timer is
+        // still outstanding by last-event-wins — only the wheel/row re-arms.
+        use aion_core::TimerId;
+        let named = TimerId::anonymous(1);
+        let segment = vec![
+            started(),
+            timer_started(2, &named, 3600),
+            workflow_failed(3),
+        ];
+        let rearm = super::rearmable_timers(&segment);
+        assert_eq!(rearm.len(), 1);
+        assert!(
+            !rearm[0].needs_restart_marker,
+            "an outstanding timer must not gain a duplicate TimerStarted"
+        );
+    }
+
+    #[test]
+    fn rearm_keeps_the_original_fire_at_and_covers_multiple_timers() {
+        use aion_core::{TimerCancelCause, TimerId};
+        let deadline = TimerId::anonymous(1);
+        let scope = TimerId::anonymous(2);
+        let expected_deadline = Utc::now() + chrono::Duration::seconds(120);
+        let segment = vec![
+            started(),
+            Event::TimerStarted {
+                envelope: envelope(2),
+                timer_id: deadline.clone(),
+                fire_at: expected_deadline,
+            },
+            timer_started(3, &scope, 120),
+            timer_cancelled(4, &deadline, TimerCancelCause::CancelTeardown),
+            timer_cancelled(5, &scope, TimerCancelCause::CancelTeardown),
+            workflow_cancelled(6),
+        ];
+        let rearm = super::rearmable_timers(&segment);
+        assert_eq!(rearm.len(), 2, "both teardown-cancelled timers re-arm");
+        let recovered = rearm
+            .iter()
+            .find(|timer| timer.timer_id == deadline)
+            .map(|timer| timer.fire_at);
+        assert_eq!(
+            recovered,
+            Some(expected_deadline),
+            "reopen never moves a business deadline"
+        );
     }
 
     #[test]

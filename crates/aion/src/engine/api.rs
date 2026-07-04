@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use aion_core::{
-    Event, Payload, RunId, SearchAttributeSchema, SearchAttributeValue, WorkflowError,
-    WorkflowFilter, WorkflowId, WorkflowSummary,
+    Event, Payload, RunId, SearchAttributeSchema, SearchAttributeValue, TimerCancelCause,
+    WorkflowError, WorkflowFilter, WorkflowId, WorkflowSummary,
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -514,7 +514,14 @@ impl Engine {
             }
         };
         for timer_id in live_timers_in_active_segment(&history) {
-            if let Err(error) = timer_service.cancel(id.clone(), timer_id.clone()).await {
+            if let Err(error) = timer_service
+                .cancel(
+                    id.clone(),
+                    timer_id.clone(),
+                    TimerCancelCause::CancelTeardown,
+                )
+                .await
+            {
                 tracing::warn!(
                     %error,
                     workflow_id = %id,
@@ -779,8 +786,8 @@ mod tests {
     use std::time::Duration;
 
     use aion_core::{
-        Event, EventEnvelope, PackageVersion, Payload, RunId, SearchAttributeSchema, TimerId,
-        WorkflowFilter, WorkflowId, WorkflowStatus,
+        Event, EventEnvelope, PackageVersion, Payload, RunId, SearchAttributeSchema,
+        TimerCancelCause, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus,
     };
     use aion_package::ContentHash;
     use aion_store::visibility::VisibilityStore;
@@ -964,6 +971,7 @@ mod tests {
         Event::TimerCancelled {
             envelope: test_envelope(workflow_id, seq),
             timer_id: timer_id.clone(),
+            cause: TimerCancelCause::WorkflowIntent,
         }
     }
 

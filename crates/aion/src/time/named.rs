@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use aion_core::{TimerId, WorkflowId};
+use aion_core::{TimerCancelCause, TimerId, WorkflowId};
 use chrono::{DateTime, Utc};
 
 use crate::time::{TimerService, TimerServiceError};
@@ -66,7 +66,9 @@ pub async fn cancel_timer(
     workflow_id: WorkflowId,
     timer_id: TimerId,
 ) -> Result<(), TimerServiceError> {
-    service.cancel(workflow_id, timer_id).await
+    service
+        .cancel(workflow_id, timer_id, TimerCancelCause::WorkflowIntent)
+        .await
 }
 
 /// Schedules an anonymous durable sleep timer using deterministic workflow inputs.
@@ -107,7 +109,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use aion_core::{Event, EventEnvelope, IdError, TimerId, WorkflowId};
+    use aion_core::{Event, EventEnvelope, IdError, TimerCancelCause, TimerId, WorkflowId};
     use aion_store::{InMemoryStore, ReadableEventStore, StoreError, WritableEventStore};
     use chrono::{DateTime, Utc};
 
@@ -239,6 +241,7 @@ mod tests {
                 Event::TimerCancelled {
                     envelope,
                     timer_id: recorded,
+                    cause: TimerCancelCause::WorkflowIntent,
                 }
             ] if envelope.seq == 2 && recorded == &timer_id
         ));

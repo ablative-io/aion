@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use aion_core::{
     ActivityError, ActivityId, Event, EventEnvelope, PackageVersion, Payload, RunId,
-    ScheduleConfig, ScheduleId, SearchAttributeSchema, SearchAttributeValue, TimerId,
-    WithTimeoutOutcome, WorkflowError, WorkflowId,
+    ScheduleConfig, ScheduleId, SearchAttributeSchema, SearchAttributeValue, TimerCancelCause,
+    TimerId, WithTimeoutOutcome, WorkflowError, WorkflowId,
 };
 use aion_store::visibility::{VisibilityRecord, VisibilityStore};
 use aion_store::{EventStore, OutboxRow, WriteToken};
@@ -657,10 +657,12 @@ impl Recorder {
         &mut self,
         recorded_at: DateTime<Utc>,
         timer_id: TimerId,
+        cause: TimerCancelCause,
     ) -> Result<(), DurabilityError> {
         self.append_with(recorded_at, |envelope| Event::TimerCancelled {
             envelope,
             timer_id,
+            cause,
         })
         .await
     }
