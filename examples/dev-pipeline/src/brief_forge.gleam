@@ -29,7 +29,7 @@ import dev_pipeline/errors
 import dev_pipeline/prompts
 import dev_pipeline/types.{
   type Brief, type BriefForgeError, type BriefForgeInput, type BriefForgeResult,
-  type Refutation, type ScoutReport, AgentRound, Brief, BriefForgeResult,
+  type Refutation, type ScoutReport, Brief, BriefForgeResult,
   BriefForgeStageFailed, Contested, Converged,
 }
 import gleam/dynamic.{type Dynamic}
@@ -97,18 +97,11 @@ pub fn execute(
   }
 }
 
-/// The grounding recon round in its own deterministic session
-/// (`<task_ref>-scout`).
+/// The grounding recon round. The activity input is the projected prompt
+/// itself; the worker's driven-mode harness derives the norn session id
+/// (`{workflow_id}-scout`) at spawn.
 fn run_scout(input: BriefForgeInput) -> Result(ScoutReport, BriefForgeError) {
-  case
-    workflow.run(
-      activities.scout(AgentRound(
-        repo_root: input.repo_root,
-        session_id: input.task_ref <> "-scout",
-        prompt: prompts.scout_prompt(input),
-      )),
-    )
-  {
+  case workflow.run(activities.scout(prompts.scout_prompt(input))) {
     Ok(scout_report) -> Ok(scout_report)
     Error(activity_error) ->
       Error(BriefForgeStageFailed(
@@ -178,9 +171,10 @@ fn settle_round(
   }
 }
 
-/// One design round in the resumed `<task_ref>-design` session. Any
-/// designer-set `refutation_survived` is cleared on receipt: the stamp is
-/// the workflow's alone.
+/// One design round. The harness session (`{workflow_id}-design`, resumed
+/// via `--resume-if-exists`) keeps the designer's own context across loop
+/// rounds. Any designer-set `refutation_survived` is cleared on receipt:
+/// the stamp is the workflow's alone.
 fn run_design(
   input: BriefForgeInput,
   scout_report: ScoutReport,
@@ -190,11 +184,7 @@ fn run_design(
   let scout_json = codecs.scout_report_codec().encode(scout_report)
   case
     workflow.run(
-      activities.design(AgentRound(
-        repo_root: input.repo_root,
-        session_id: input.task_ref <> "-design",
-        prompt: prompts.design_prompt(input, scout_json, prior),
-      )),
+      activities.design(prompts.design_prompt(input, scout_json, prior)),
     )
   {
     Ok(draft) -> Ok(clear_stamp(draft))
@@ -206,8 +196,11 @@ fn run_design(
   }
 }
 
-/// One refute round in a FRESH `<task_ref>-refute-r<N>` session: the
-/// refuter is handed the brief artifact and the scout report only.
+/// One refute round: the refuter is handed the brief artifact and the scout
+/// report only — never the designer's reasoning. Driven-mode deviation: the
+/// harness session id is `{workflow_id}-refute`, so loop rounds within one
+/// run resume ONE refuter session rather than each getting a fresh one (no
+/// per-round spawn template exists yet).
 fn run_refute(
   input: BriefForgeInput,
   scout_report: ScoutReport,
@@ -218,11 +211,7 @@ fn run_refute(
   let scout_json = codecs.scout_report_codec().encode(scout_report)
   case
     workflow.run(
-      activities.refute(AgentRound(
-        repo_root: input.repo_root,
-        session_id: input.task_ref <> "-refute-r" <> int.to_string(round),
-        prompt: prompts.refute_prompt(input, brief_json, scout_json),
-      )),
+      activities.refute(prompts.refute_prompt(input, brief_json, scout_json)),
     )
   {
     Ok(refutation) -> Ok(refutation)

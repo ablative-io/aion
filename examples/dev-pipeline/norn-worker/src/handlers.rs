@@ -1,17 +1,21 @@
-//! Activity handler bodies for the dev-pipeline activities: the three
-//! brief-forge agent rounds plus implement-and-gate's workspace, implementer,
-//! and gate steps — generalized from stacked-dev's norn-backed handlers
-//! (`scout`, `dev`, `dev_resume`, `provision_workspace`, `full_checks` in
+//! Activity handler bodies for the dev-pipeline SHELL-path activities:
+//! implement-and-gate's workspace, implementer, and gate steps — generalized
+//! from stacked-dev's norn-backed handlers (`dev`, `dev_resume`,
+//! `provision_workspace`, `full_checks` in
 //! `examples/stacked-dev/norn-worker/src/handlers.rs`).
 //!
-//! Each handler shells the `norn` CLI headlessly through
-//! [`crate::shell::Shell`]: `--print`, the deterministic `--session-id` from
-//! the activity input (`--resume-if-exists`, so the design session keeps its
-//! own context across refute-loop rounds), `--workspace-root` confining file
-//! tools to the target repo, `--output-schema` carrying the stage contract
-//! inline, `--output-format json` for the envelope, and — the light-mode
-//! pilot policy — `--model gpt-5.5` for all three stages. Reasoning efforts
-//! follow the doctrine profiles (scout medium; designer and refuter high).
+//! The three brief-forge agent rounds (`scout`/`design`/`refute`) no longer
+//! live here: they route through the composed [`aion_integration_norn`]
+//! DRIVEN-mode harness in `main.rs` (`norn --protocol jsonrpc` — live
+//! transcripts + interventions in the ops console) instead of a `norn
+//! --print` shell-out. Only the implementer rounds still shell `norn
+//! --print` headlessly through [`crate::shell::Shell`]: the harness's spawn
+//! arguments are fixed per worker process, and `implement`/
+//! `implement_resume` need a PER-RUN `--workspace-root` (the workspace path
+//! provisioned at runtime) plus a session id SHARED ACROSS the two activity
+//! types — neither is expressible through the per-process harness argument
+//! templates yet, so they stay on the shell path deliberately (see
+//! `main.rs`'s module doc).
 //!
 //! Failure classification follows stacked-dev: a CLI that cannot run and a
 //! command the contract requires to exit zero are **terminal** activity
@@ -24,14 +28,11 @@ use aion_worker::ActivityFailure;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::schemas::{
-    BRIEF_OUTPUT_SCHEMA, IMPLEMENTATION_REPORT_OUTPUT_SCHEMA, REFUTATION_OUTPUT_SCHEMA,
-    SCOUT_OUTPUT_SCHEMA,
-};
+use crate::schemas::IMPLEMENTATION_REPORT_OUTPUT_SCHEMA;
 use crate::shell::{CliRun, Shell};
 use crate::types::{
-    AgentRound, Brief, GateCliRun, GateRun, ImplementRound, ImplementationReport, Isolation,
-    ProvisionInput, Refutation, ScoutReport, TeardownInput, TornDown, Workspace,
+    GateCliRun, GateRun, ImplementRound, ImplementationReport, Isolation, ProvisionInput,
+    TeardownInput, TornDown, Workspace,
 };
 
 /// How much of an unparseable norn stdout rides in the terminal failure
@@ -40,106 +41,20 @@ use crate::types::{
 /// payload.
 const UNPARSEABLE_OUTPUT_HEAD: usize = 1000;
 
-/// The model every stage runs on — the light-mode pilot policy pins all
-/// three agent rounds to one cheap frontier model.
-const PILOT_MODEL: &str = "gpt-5.5";
+/// The model every agent stage runs on — the light-mode pilot policy pins
+/// every agent round (driven and shell alike) to one cheap frontier model.
+/// `main.rs` reuses this for the driven-mode harness arguments.
+pub const PILOT_MODEL: &str = "gpt-5.5";
 
 /// Arms norn's token-warning + auto-compaction for [`PILOT_MODEL`]. Norn's
-/// context protections ship DISARMED on CLI runs (context_window_limit
+/// context protections ship DISARMED on CLI runs (`context_window_limit`
 /// defaults to None and the model catalog is never consulted), so every
 /// invocation must carry its model's real window explicitly or long
 /// grounding runs die on "provider error: context window exceeded".
-/// 272_000 is gpt-5.5's window; change alongside [`PILOT_MODEL`]
-/// (gpt-5.3-codex-spark: 128000, gpt-5.4-mini: per catalog).
-const PILOT_MODEL_CONTEXT_WINDOW: &str = "context_window=272000";
-
-/// `scout`: the grounding recon round — replace descriptions of the code
-/// with observations of it. Output is a scout report
-/// (`schemas/scout-report.schema.json`).
-///
-/// # Errors
-///
-/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
-/// answers with output matching neither the bare report nor the
-/// `{"output": …}` envelope.
-pub fn scout(shell: &Shell, round: AgentRound) -> Result<ScoutReport, ActivityFailure> {
-    let command_run = run_norn(shell, round, "medium", SCOUT_OUTPUT_SCHEMA, "norn scout")?;
-    parse_report::<ScoutReport>(&command_run, "norn scout")
-}
-
-/// `design`: the brief-drafting round — root cause, fix design, and
-/// outcome-asserting gates. Output is a brief (`schemas/brief.schema.json`).
-///
-/// # Errors
-///
-/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
-/// answers with output matching neither documented shape.
-pub fn design(shell: &Shell, round: AgentRound) -> Result<Brief, ActivityFailure> {
-    let command_run = run_norn(shell, round, "high", BRIEF_OUTPUT_SCHEMA, "norn design")?;
-    parse_report::<Brief>(&command_run, "norn design")
-}
-
-/// `refute`: the attack round — the refuter sees the brief artifact and the
-/// scout report, never the designer's reasoning (the workflow's prompt
-/// projection enforces that; this handler only relays). Output is a
-/// refutation (`schemas/refutation.schema.json`).
-///
-/// # Errors
-///
-/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
-/// answers with output matching neither documented shape.
-pub fn refute(shell: &Shell, round: AgentRound) -> Result<Refutation, ActivityFailure> {
-    let command_run = run_norn(
-        shell,
-        round,
-        "high",
-        REFUTATION_OUTPUT_SCHEMA,
-        "norn refute",
-    )?;
-    parse_report::<Refutation>(&command_run, "norn refute")
-}
-
-/// One headless norn invocation in the round's repo root: the shared flag
-/// set of stacked-dev's norn handlers plus the pilot `--model` pin.
-fn run_norn(
-    shell: &Shell,
-    round: AgentRound,
-    reasoning_effort: &str,
-    output_schema: &str,
-    context: &str,
-) -> Result<CliRun, ActivityFailure> {
-    let AgentRound {
-        repo_root,
-        session_id,
-        prompt,
-    } = round;
-    require_run(
-        shell,
-        "norn",
-        &[
-            "--print",
-            "--fast",
-            "--model",
-            PILOT_MODEL,
-            "-c",
-            PILOT_MODEL_CONTEXT_WINDOW,
-            "--reasoning-effort",
-            reasoning_effort,
-            "--session-id",
-            &session_id,
-            "--resume-if-exists",
-            "--workspace-root",
-            &repo_root,
-            "--output-schema",
-            output_schema,
-            "--output-format",
-            "json",
-            &prompt,
-        ],
-        &repo_root,
-        context,
-    )
-}
+/// `272_000` is gpt-5.5's window; change alongside [`PILOT_MODEL`]
+/// (gpt-5.3-codex-spark: 128000, gpt-5.4-mini: per catalog). `main.rs`
+/// reuses this for the driven-mode harness arguments.
+pub const PILOT_MODEL_CONTEXT_WINDOW: &str = "context_window=272000";
 
 // --- implement-and-gate --------------------------------------------------------
 
@@ -304,8 +219,8 @@ pub fn implement_resume(
     run_implementer(shell, round, "norn implement resume")
 }
 
-/// One headless implementer invocation INSIDE the workspace: the brief-forge
-/// flag set with the workspace as both cwd and `--workspace-root`, the
+/// One headless implementer invocation INSIDE the workspace: the stacked-dev
+/// norn flag set with the workspace as both cwd and `--workspace-root`, the
 /// profile's `medium` reasoning effort, and the input's model override when
 /// the workflow's frontier escape hatch set one (else the pilot model).
 fn run_implementer(

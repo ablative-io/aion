@@ -16,9 +16,8 @@ import aion/activity
 import dev_pipeline/codecs
 import dev_pipeline/locals
 import dev_pipeline/types.{
-  type AgentRound, type GateCliRun, type GateRun, type ImplementRound,
-  type ImplementationReport, type ProvisionInput, type TeardownInput,
-  type TornDown, type Workspace,
+  type GateCliRun, type GateRun, type ImplementRound, type ImplementationReport,
+  type ProvisionInput, type TeardownInput, type TornDown, type Workspace,
 }
 import gleam/option.{type Option, None, Some}
 
@@ -38,55 +37,52 @@ pub const design_name = "design"
 /// Activity name served by the refuter (norn run) worker handler.
 pub const refute_name = "refute"
 
-/// `scout`: the grounding recon round in its own deterministic norn session
-/// (`<task_ref>-scout`). Output validates against
+/// `scout`: the grounding recon round, driven through the worker's norn
+/// harness. The input IS the projected prompt; the harness derives the norn
+/// session id (`{workflow_id}-scout`) at spawn. Output validates against
 /// `schemas/scout-report.schema.json`.
-pub fn scout(
-  round: AgentRound,
-) -> activity.Activity(AgentRound, types.ScoutReport) {
+pub fn scout(prompt: String) -> activity.Activity(String, types.ScoutReport) {
   activity.new(
     scout_name,
-    round,
-    codecs.agent_round_codec(),
+    prompt,
+    codecs.prompt_codec(),
     codecs.scout_report_codec(),
     locals.scout,
   )
   |> activity.task_queue(agents_task_queue)
-  |> activity.label("session", round.session_id)
 }
 
-/// `design`: the brief-drafting round in its own deterministic norn session
-/// (`<task_ref>-design`, resumed across refute-loop rounds so the designer
-/// keeps its own context). Output validates against
-/// `schemas/brief.schema.json`.
-pub fn design(round: AgentRound) -> activity.Activity(AgentRound, types.Brief) {
+/// `design`: the brief-drafting round, driven through the worker's norn
+/// harness. The harness session id (`{workflow_id}-design`, resumed via
+/// `--resume-if-exists`) keeps the designer's own context across refute-loop
+/// rounds. Output validates against `schemas/brief.schema.json`.
+pub fn design(prompt: String) -> activity.Activity(String, types.Brief) {
   activity.new(
     design_name,
-    round,
-    codecs.agent_round_codec(),
+    prompt,
+    codecs.prompt_codec(),
     codecs.brief_codec(),
     locals.design,
   )
   |> activity.task_queue(agents_task_queue)
-  |> activity.label("session", round.session_id)
 }
 
-/// `refute`: the attack round in a FRESH session per loop round
-/// (`<task_ref>-refute-r<N>`) — the refuter sees artifacts, not the
-/// designer's reasoning. Output validates against
-/// `schemas/refutation.schema.json`.
-pub fn refute(
-  round: AgentRound,
-) -> activity.Activity(AgentRound, types.Refutation) {
+/// `refute`: the attack round, driven through the worker's norn harness —
+/// the refuter sees artifacts, not the designer's reasoning (the prompt
+/// projection owns that hygiene). Harness session id is
+/// `{workflow_id}-refute`, so loop rounds within one run RESUME one refuter
+/// session (the per-round-fresh-session shell behaviour is not expressible
+/// as a spawn template yet — a documented driven-mode deviation). Output
+/// validates against `schemas/refutation.schema.json`.
+pub fn refute(prompt: String) -> activity.Activity(String, types.Refutation) {
   activity.new(
     refute_name,
-    round,
-    codecs.agent_round_codec(),
+    prompt,
+    codecs.prompt_codec(),
     codecs.refutation_codec(),
     locals.refute,
   )
   |> activity.task_queue(agents_task_queue)
-  |> activity.label("session", round.session_id)
 }
 
 // --- implement-and-gate ---------------------------------------------------------

@@ -15,23 +15,35 @@ The dev-pipeline Aion workflow package, two slices so far:
 Generalized from [`examples/stacked-dev/`](../stacked-dev/): same package
 shape (Gleam workflow + `workflow.toml` + standalone Rust norn worker),
 same prompt discipline (pure projections built in Gleam, relayed by a dumb
-worker), same norn invocation and envelope decoding, same `CliRun`
-exit-status-is-data gate pattern.
+worker), same `CliRun` exit-status-is-data gate pattern.
+
+**Driven mode:** the brief-forge agent rounds (`scout`/`design`/`refute`)
+run through the neutral agent-harness seam
+([`aion-integration-norn`](../../crates/aion-integration-norn)) in norn
+DRIVEN MODE (`norn --protocol jsonrpc`) rather than a `norn --print`
+shell-out — every agent event lands as a durable `ActivityEvent` (live
+transcript in the ops console) and running sessions accept
+InjectMessage/Cancel interventions. The activity input IS the projected
+prompt text; per-stage output schemas, the session template, and the model
+pin are harness spawn arguments owned by the worker. The implementer
+rounds still shell `norn --print` (see "Current boundaries").
 
 ## Composition: brief_forge
 
 ```
 brief_forge                          (workflow.define)
 │
-├── scout      (activity: norn --print, scout profile,
+├── scout      (agent activity, DRIVEN norn session, scout profile,
 │               → schemas/scout-report.schema.json)
 │
 └── forge loop (bounded by refute_cap — a REQUIRED input, no baked defaults):
-      ├── design   (activity: norn --print, designer profile,
-      │             session <task_ref>-design resumed across rounds,
+      ├── design   (agent activity, DRIVEN norn session, designer profile,
+      │             session {workflow_id}-design resumed across rounds,
       │             → schemas/brief.schema.json)
-      ├── refute   (activity: norn --print, refuter profile,
-      │             FRESH session <task_ref>-refute-r<N> per round,
+      ├── refute   (agent activity, DRIVEN norn session, refuter profile,
+      │             session {workflow_id}-refute — resumed across loop
+      │             rounds, a driven-mode deviation from the fresh-per-round
+      │             shell behaviour,
       │             → schemas/refutation.schema.json)
       ├── design_survives            → the WORKFLOW stamps
       │                                `refutation_survived` (accept step —
@@ -49,8 +61,11 @@ Rules this workflow owns (from the doctrine page):
 - **Gates assert outcomes** — `asserts` has no legal "shape" value, and the
   refuter's `gate_audit` independently hunts pass-and-still-wrong holes.
 - **The refuter sees artifacts, not vibes** — its prompt carries the draft
-  brief and the scout report, never the designer's reasoning; each refute
-  round runs in a fresh norn session.
+  brief and the scout report, never the designer's reasoning. (Driven-mode
+  deviation: refute-loop rounds within one run resume ONE refuter session
+  rather than each getting a fresh one — the harness session template has
+  no per-round placeholder yet; the information-hygiene rule itself is
+  owned by the prompt projection and is unaffected.)
 - **The workflow stamps** — any designer-set `refutation_survived` is
   cleared on receipt; the accept step is plain workflow code.
 - **Diagnosis is a landable terminus** — `diagnose_only` rides the input
@@ -64,8 +79,11 @@ refuter}.md`, frontmatter stripped), inlined verbatim as constants in
 `src/dev_pipeline/prompts.gleam` — the stacked-dev mechanism (instructions
 prepended to the projected prompt; norn's `--profile` flag deliberately
 unused so the package is self-contained). The worker pins `--model gpt-5.5`
-for all three stages (light-mode pilot policy); reasoning efforts follow
-the profiles (scout `medium`, designer/refuter `high`).
+for all three stages (light-mode pilot policy). Harness spawn arguments
+are fixed per worker process, so the shell path's per-stage reasoning
+efforts (scout `medium`, designer/refuter `high`) collapse to ONE
+`--reasoning-effort` knob on the worker (default `high`, preserving the
+two quality-bearing rounds).
 
 ## Required input — no baked defaults
 
@@ -75,6 +93,18 @@ like the three stage schemas beside it). Every cap is required;
 
 ## Running it live
 
+The worker serves over the liminal server-push transport (driven mode
+needs it — the gRPC worker path has no agent-harness seam), so the server
+must have the outbox commissioned with a liminal listener. The repo's
+`dev-config.toml` does not carry that block; add (or use a config that
+has, e.g. `examples/agent-dev/demo-config.toml`):
+
+```toml
+[outbox]
+enabled = true
+liminal_listen_address = "127.0.0.1:50061"
+```
+
 ```bash
 # Build the archives (one per [[workflow]] entry: brief-forge.aion and
 # implement-and-gate.aion; --out is a single-workflow flag and no longer
@@ -82,20 +112,34 @@ like the three stage schemas beside it). Every cap is required;
 aion package examples/dev-pipeline --build
 
 # Start a server and deploy.
-aion server --config dev-config.toml
+aion server --config <config-with-the-outbox-block>.toml
 aion deploy examples/dev-pipeline/brief-forge.aion
 aion deploy examples/dev-pipeline/implement-and-gate.aion
 
-# Build and run the standalone activity worker (norn-worker/ — its own
-# crate against the published aion-worker SDK, NOT a workspace member,
-# stacked-dev convention). It serves scout/design/refute by shelling the
-# real `norn` CLI, so norn must be on its PATH and authenticated. The
-# activities dispatch on the `agents` task queue, so that is the worker's
-# default --task-queue.
+# Build and run the standalone MIXED activity worker (norn-worker/ — its
+# own crate against the in-repo aion-worker SDK, NOT a workspace member,
+# stacked-dev convention). scout/design/refute run through the composed
+# driven-mode harness (`norn --protocol jsonrpc`); the rest are typed
+# registry handlers. norn must be on PATH (or --norn-bin) and
+# authenticated. --address is the server's [outbox]
+# liminal_listen_address; agent activities dispatch on the `agents` task
+# queue, the worker's default. Point --workspace-root at the TARGET
+# REPOSITORY: it becomes each driven run's file-tool confinement
+# (--workspace-root) and tool cwd (-C); omit it and runs are unconfined,
+# steered only by the prompt's "Repository root:" line.
 cd examples/dev-pipeline/norn-worker && cargo build
 ./target/debug/dev-pipeline-worker-norn \
-  --endpoint http://127.0.0.1:50051 \
-  --namespace dev-pipeline
+  --address 127.0.0.1:50061 \
+  --namespace dev-pipeline \
+  --workspace-root /abs/path/to/target-repo
+
+# Optional worker flags: --schemas-dir <dir> (where the embedded stage
+# schemas are materialized as scout.json/design.json/refute.json for
+# `--output-schema <dir>/{activity_type}.json`; default: a per-process
+# directory under the system temp dir), --reasoning-effort <level>
+# (default high, one knob for all driven stages), --norn-timeout
+# <duration> (default 30m per driven step — a wedged run ends in norn's
+# typed timed_out envelope), --norn-bin, --identity, --concurrency.
 
 # Start the pilot run: the content-hash diagnosis task, diagnose-only.
 aion start brief_forge --input '{
@@ -231,16 +275,19 @@ holding the worktree — set it on multi-node clusters), `implementer_model`
 
 ### Worker queues
 
-One worker process serves ONE task queue. `implement`/`implement_resume`
-dispatch on `agents` (the binary's default); `provision_workspace`/
-`run_gate`/`teardown_workspace` dispatch on `workspaces` — so a full
+One worker process serves ONE task queue. `scout`/`design`/`refute`
+(driven) and `implement`/`implement_resume` (shell) dispatch on `agents`
+(the binary's default); `provision_workspace`/`run_gate`/
+`teardown_workspace` dispatch on `workspaces` — so a full
 implement_and_gate deployment runs TWO instances of the same binary on the
-node holding the workspaces:
+node holding the workspaces (the harness config and every handler are
+wired in both; only the queue subscription differs):
 
 ```bash
-./target/debug/dev-pipeline-worker-norn --endpoint http://127.0.0.1:50051 \
-  --namespace dev-pipeline                      # serves the agents queue
-./target/debug/dev-pipeline-worker-norn --endpoint http://127.0.0.1:50051 \
+./target/debug/dev-pipeline-worker-norn --address 127.0.0.1:50061 \
+  --namespace dev-pipeline \
+  --workspace-root /abs/path/to/target-repo     # serves the agents queue
+./target/debug/dev-pipeline-worker-norn --address 127.0.0.1:50061 \
   --namespace dev-pipeline --task-queue workspaces
 ```
 
@@ -266,25 +313,39 @@ src/dev_pipeline/activities.gleam   typed activity constructors (queues
                                     "agents" + "workspaces", optional node
                                     pinning)
 src/dev_pipeline/locals.gleam       loud typed no-local-impl seam
-norn-worker/                        standalone Rust worker: all eight
-                                    handlers — norn stages with
-                                    --output-schema per stage (include_str!
-                                    of schemas/), git provisioning, sh -c
-                                    gate commands. Path-dep on the in-repo
-                                    aion-worker (the published 0.6.0
-                                    predates the namespace/task_queue wire
-                                    split and registers into the wrong
-                                    namespace against a current server)
+norn-worker/                        standalone MIXED Rust worker over the
+                                    liminal push transport:
+                                    scout/design/refute through the
+                                    driven-mode NornHarness
+                                    (--output-schema materialized per
+                                    activity type from include_str! of
+                                    schemas/), plus typed handlers for git
+                                    provisioning, the shell-path
+                                    implementer rounds, and sh -c gate
+                                    commands. Path-dep on the in-repo
+                                    aion-worker/-integrations/-integration-
+                                    norn (the harness seam is unpublished)
 ```
 
 ## Current boundaries
 
+- `implement`/`implement_resume` still shell `norn --print` instead of
+  riding the driven harness: harness spawn arguments are fixed per worker
+  process (only `{workflow_id}`/`{activity_type}` interpolate), and the
+  implementer rounds need a PER-RUN `--workspace-root` (the workspace path
+  is minted at runtime by `provision_workspace`, collision suffixes and
+  all) plus ONE session shared across the two activity types
+  (`implement_resume` must resume `implement`'s session). Until the seam
+  grows per-run spawn parameters, they stay shell — observable only by
+  their terminal result, not live.
+- Driven-stage norn session ids are `{workflow_id}-{activity_type}`:
+  distinct runs never share sessions (an improvement over the old
+  `task_ref`-derived ids), `design` keeps its context across loop rounds,
+  retries resume — but refute-loop rounds within one run resume ONE
+  refuter session instead of each getting a fresh one.
 - No hermetic test suite yet (stacked-dev's fake-CLI shim pattern is the
   template when it lands); the `locals` seam fails loudly instead of
   shelling.
-- Session ids derive from `task_ref` (`<task_ref>-scout`, `-design`,
-  `-refute-r<N>`, `-implement`): re-running the same `task_ref` resumes
-  the previous run's norn sessions rather than starting clean.
 - No live status query yet (stacked-dev's `set_status` pattern applies
   directly when wanted).
 - The doctrine's implementer-model-equals-review-lens rejection rule has

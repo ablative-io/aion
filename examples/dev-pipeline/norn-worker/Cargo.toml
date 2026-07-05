@@ -3,7 +3,7 @@ name = "dev-pipeline-worker-norn"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Standalone activity worker serving the dev-pipeline activities (brief-forge: scout/design/refute; implement-and-gate: provision_workspace/implement/run_gate/implement_resume/teardown_workspace) by shelling to norn, git, and the gate commands."
+description = "Standalone mixed activity worker serving the dev-pipeline activities: the brief-forge agent rounds (scout/design/refute) through the norn DRIVEN-mode harness (live transcripts + interventions), and implement-and-gate's provision_workspace/implement/run_gate/implement_resume/teardown_workspace by shelling to norn, git, and the gate commands."
 
 # Deliberately NOT a workspace member (stacked-dev convention): this is the
 # worker a deployment would write against the SDK.
@@ -31,7 +31,12 @@ todo = "warn"
 # current-main server that silently registers the worker into the WRONG
 # namespace (invisible when both axes are "default", an instant wedge with
 # distinct values). Switch back to the registry once a post-split SDK ships.
-aion-worker = { path = "../../../crates/aion-worker" }
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+# The composition root's concrete driven-mode adapter + the neutral
+# integration contract it is erased through — the same pair norn-fan-worker
+# and agent-dev compose.
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

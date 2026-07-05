@@ -197,13 +197,14 @@ pub type Refutation {
 }
 
 // --- activity inputs ----------------------------------------------------
-
-/// One norn agent round: the worker shells `norn --print` in `repo_root`
-/// with this session id and prompt. All three agent activities share the
-/// shape; the prompt (built by `dev_pipeline/prompts`) is what differs.
-pub type AgentRound {
-  AgentRound(repo_root: String, session_id: String, prompt: String)
-}
+//
+// The three brief-forge agent activities take the projected PROMPT TEXT
+// itself as their input (a plain String): the worker routes them through
+// the norn driven-mode harness, which spawns each run with per-process
+// arguments (model, session template, output schema) and hands the input
+// payload to the agent as the prompt verbatim. There is deliberately no
+// input record type for them — the prompt projection in
+// `dev_pipeline/prompts` IS the whole activity input.
 
 // --- workflow output ------------------------------------------------------
 

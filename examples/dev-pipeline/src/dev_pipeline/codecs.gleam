@@ -21,11 +21,11 @@ import dev_pipeline/types.{
   type ProvisionInput, type Refutation, type RejectedAlternative,
   type RelevantFile, type ReportDeviation, type RootCause,
   type RootCauseHypothesis, type ScoutReport, type TeardownInput, type TornDown,
-  type Workspace, Absence, AcceptanceGate, AgentRound, Attack, Brief,
-  BriefForgeInput, BriefForgeResult, BriefForgeStageFailed, Bug, Clone, Command,
-  Compatibility, Contested, Converged, Deflected, Design, Docs, Fatal, Feature,
-  FileChange, FixDesign, GateAddressed, GateAudit, GateCliRun, GateRecordEntry,
-  GateRun, GateSpec, GatesExhausted, GatesGreen, ImplementAndGateInput,
+  type Workspace, Absence, AcceptanceGate, Attack, Brief, BriefForgeInput,
+  BriefForgeResult, BriefForgeStageFailed, Bug, Clone, Command, Compatibility,
+  Contested, Converged, Deflected, Design, Docs, Fatal, Feature, FileChange,
+  FixDesign, GateAddressed, GateAudit, GateCliRun, GateRecordEntry, GateRun,
+  GateSpec, GatesExhausted, GatesGreen, ImplementAndGateInput,
   ImplementAndGateResult, ImplementAndGateStageFailed, ImplementRound,
   ImplementationReport, Lands, LiveOperator, MustAddress, Note, ObservedBehavior,
   Outcome, OutcomeTest, Problem, ProvisionInput, Refactor, Refutation,
@@ -110,30 +110,15 @@ fn input_decoder() -> decode.Decoder(BriefForgeInput) {
   ))
 }
 
-// --- agent round (shared activity input) -------------------------------------
+// --- agent prompt (shared activity input) -------------------------------------
 
-/// Codec for the shared `AgentRound` activity input: repo root, deterministic
-/// session id, and the projected prompt.
-pub fn agent_round_codec() -> codec.Codec(types.AgentRound) {
-  codec.json_codec(
-    fn(round: types.AgentRound) {
-      json.object([
-        #("repo_root", json.string(round.repo_root)),
-        #("session_id", json.string(round.session_id)),
-        #("prompt", json.string(round.prompt)),
-      ])
-    },
-    {
-      use repo_root <- decode.field("repo_root", decode.string)
-      use session_id <- decode.field("session_id", decode.string)
-      use prompt <- decode.field("prompt", decode.string)
-      decode.success(AgentRound(
-        repo_root: repo_root,
-        session_id: session_id,
-        prompt: prompt,
-      ))
-    },
-  )
+/// Codec for the shared agent-activity input: the projected prompt TEXT
+/// itself, encoded as a bare JSON string. The worker's driven-mode harness
+/// unwraps the JSON-string payload and hands the inner text to the agent
+/// verbatim — session identity, model, and output schema are harness spawn
+/// arguments, never activity input.
+pub fn prompt_codec() -> codec.Codec(String) {
+  codec.json_codec(json.string, decode.string)
 }
 
 // --- scout report -------------------------------------------------------------

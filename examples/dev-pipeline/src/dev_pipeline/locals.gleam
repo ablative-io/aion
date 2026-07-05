@@ -9,24 +9,23 @@
 
 import aion/error
 import dev_pipeline/types.{
-  type AgentRound, type Brief, type GateCliRun, type GateRun,
-  type ImplementRound, type ImplementationReport, type ProvisionInput,
-  type Refutation, type ScoutReport, type TeardownInput, type TornDown,
-  type Workspace,
+  type Brief, type GateCliRun, type GateRun, type ImplementRound,
+  type ImplementationReport, type ProvisionInput, type Refutation,
+  type ScoutReport, type TeardownInput, type TornDown, type Workspace,
 }
 
 /// Local `scout`: no local implementation in this slice.
-pub fn scout(_round: AgentRound) -> Result(ScoutReport, error.ActivityError) {
+pub fn scout(_prompt: String) -> Result(ScoutReport, error.ActivityError) {
   Error(no_local("scout"))
 }
 
 /// Local `design`: no local implementation in this slice.
-pub fn design(_round: AgentRound) -> Result(Brief, error.ActivityError) {
+pub fn design(_prompt: String) -> Result(Brief, error.ActivityError) {
   Error(no_local("design"))
 }
 
 /// Local `refute`: no local implementation in this slice.
-pub fn refute(_round: AgentRound) -> Result(Refutation, error.ActivityError) {
+pub fn refute(_prompt: String) -> Result(Refutation, error.ActivityError) {
   Error(no_local("refute"))
 }
 
