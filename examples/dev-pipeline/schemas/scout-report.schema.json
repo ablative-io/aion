@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prospekt://doctrine/scout-report",
+  "title": "ScoutReport",
+  "description": "Grounding pass over the actual tree. Everything downstream builds on this; paraphrase without evidence is worthless here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["subject", "relevant_files", "observed_behavior", "constraints", "not_covered"],
+  "properties": {
+    "subject": {
+      "type": "string",
+      "description": "One sentence: what was scouted and why."
+    },
+    "relevant_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role"],
+        "properties": {
+          "path": { "type": "string", "description": "Repo-relative path, optionally path:line." },
+          "role": { "type": "string", "description": "Why this file matters to the task (one sentence)." },
+          "key_symbols": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Functions/types downstream steps will need by name."
+          }
+        }
+      }
+    },
+    "observed_behavior": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "evidence"],
+        "properties": {
+          "claim": { "type": "string", "description": "What the code currently does (present tense, falsifiable)." },
+          "evidence": { "type": "string", "description": "path:line, command output, or test name that demonstrates it. Not 'the docs say'." }
+        }
+      }
+    },
+    "root_cause_hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hypothesis", "supporting", "would_falsify"],
+        "properties": {
+          "hypothesis": { "type": "string" },
+          "supporting": { "type": "string", "description": "Evidence for." },
+          "would_falsify": { "type": "string", "description": "The observation that would kill this hypothesis — a hypothesis without one is a hunch." }
+        }
+      },
+      "description": "Only for bug-shaped work; ranked, strongest first."
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Invariants the fix must not break (single-recorder seams, replay determinism, wire compat...), each with a path reference."
+    },
+    "prior_art": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Existing patterns in-tree the design should match (path + one line)."
+    },
+    "not_covered": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Directories not read, behaviors not exercised, claims taken on faith."
+    }
+  }
+}

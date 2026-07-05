@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prospekt://doctrine/brief",
+  "title": "Brief",
+  "description": "The dispatchable unit of work. The brief is the compression boundary: frontier judgment goes in, so cheaper tiers can execute what comes out. A brief with outcome-free acceptance gates is invalid by doctrine, not just by taste.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "task_ref", "problem", "fix_design", "acceptance_gates", "out_of_scope", "not_covered"],
+  "properties": {
+    "title": { "type": "string" },
+    "task_ref": { "type": "string", "description": "Ledger/task ID this brief discharges." },
+    "problem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "kind"],
+      "if": {
+        "properties": { "kind": { "const": "bug" } },
+        "required": ["kind"]
+      },
+      "then": { "required": ["root_cause"] },
+      "properties": {
+        "statement": { "type": "string", "description": "What is wrong or missing, as observed — not as remembered." },
+        "kind": { "enum": ["bug", "feature", "refactor", "docs", "design"] },
+        "root_cause": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["statement", "causal_chain", "evidence"],
+          "properties": {
+            "statement": { "type": "string" },
+            "causal_chain": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" },
+              "description": "Step-by-step: from trigger to symptom. Each step falsifiable."
+            },
+            "evidence": { "type": "string", "description": "The demonstration that pinned it: repro, bisect, byte-level diff..." }
+          },
+          "description": "MANDATORY when kind=bug (rigid step 2), enforced by the if/then clause on `problem` — not just this description. A fix without this does not enter implement-and-gate."
+        }
+      }
+    },
+    "fix_design": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approach", "touch_points", "rejected_alternatives"],
+      "properties": {
+        "approach": { "type": "string", "description": "The design, in enough detail that a mid-tier implementer needs no further judgment calls." },
+        "touch_points": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files/modules to change, path per entry, with a phrase on what changes there."
+        },
+        "invariants_to_preserve": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rejected_alternatives": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["alternative", "why_rejected"],
+            "properties": {
+              "alternative": { "type": "string" },
+              "why_rejected": { "type": "string" }
+            }
+          },
+          "description": "A decision names the rejected alternative — or it was not a decision (prospekt invariant)."
+        },
+        "risks": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "acceptance_gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "statement", "kind", "asserts"],
+        "properties": {
+          "id": { "type": "string", "description": "Stable within the brief (G1, G2...). Never renumbered." },
+          "statement": { "type": "string", "description": "What must be TRUE, phrased as an outcome: 'the timer FIRES and the run completes with slept' — never 'a TimerStarted event exists'." },
+          "kind": { "enum": ["command", "outcome_test", "live_operator"], "description": "command = exit-status activity; outcome_test = test asserting forward progress; live_operator = truth-pass row." },
+          "asserts": { "enum": ["outcome", "absence", "compatibility"], "description": "Shape-assertions are not a legal value on purpose." },
+          "command": { "type": "string", "description": "For kind=command: the exact command whose OWN exit status judges the gate." }
+        }
+      }
+    },
+    "out_of_scope": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Explicit non-goals. The implementer treats crossing these as a stop-and-surface event."
+    },
+    "refutation_survived": {
+      "type": "string",
+      "description": "Reference to the refutation report this design survived (set by the brief-forge workflow, not the designer)."
+    },
+    "not_covered": { "type": "array", "items": { "type": "string" } }
+  }
+}

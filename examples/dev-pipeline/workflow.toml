@@ -1,0 +1,20 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# One entry — the first slice of the dev-pipeline family: `brief_forge`
+# (prospekt doctrine: workflows/brief-forge.md). Later slices add the sibling
+# entries (implement-and-gate, truth-pass) to this same package.
+#
+# The timeout sizes the longest legitimate run: three agent stages with a
+# capped design⇄refute loop, each round a frontier-model norn session that
+# can read a large tree — one day, the same sizing as stacked-dev's
+# brief-dev child (an author's sizing, not an engine default — ADR-001/003).
+
+[[workflow]]
+entry_module = "brief_forge"
+entry_function = "run"
+timeout_seconds = 86400
+input_schema = "schemas/brief-forge.input.schema.json"
+output_schema = "schemas/brief-forge.output.schema.json"
+activities = ["scout", "design", "refute"]
+output = "brief-forge.aion"

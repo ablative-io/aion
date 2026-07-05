@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prospekt://doctrine/brief-forge-output",
+  "title": "BriefForgeOutput",
+  "description": "Workflow output for brief-forge. `converged` carries a brief the workflow stamped `refutation_survived` on (never the designer); `contested` carries the LAST brief and LAST refutation after refute_cap rounds — cap exhaustion is a finding, not a failure. The embedded objects are shaped by the sibling brief.schema.json and refutation.schema.json (kept loose here so this file stays self-contained for the packager).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "brief", "refutation", "rounds", "diagnose_only"],
+  "properties": {
+    "outcome": {
+      "enum": ["converged", "contested"],
+      "description": "converged = the design survived refutation; contested = refute_cap exhausted, the operator gets both sides."
+    },
+    "brief": {
+      "type": "object",
+      "description": "The brief object verbatim, shaped by schemas/brief.schema.json. On `converged` it carries `refutation_survived`; on `contested` it is the last draft, unstamped."
+    },
+    "refutation": {
+      "type": "object",
+      "description": "The surviving (or last) refutation, shaped by schemas/refutation.schema.json."
+    },
+    "rounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Design→refute rounds actually used."
+    },
+    "diagnose_only": {
+      "type": "boolean",
+      "description": "Passed through from the input: dispatch of the brief is deliberately deferred."
+    }
+  }
+}
