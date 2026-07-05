@@ -205,6 +205,18 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // Hold the liminal worker listener (if any) for the server's lifetime: it is
     // dropped at the end of `run_server`, after the serve `select!` completes, so
     // its accept worker stops cleanly on shutdown via the listener's own `Drop`.
+    // #204: rebuild the durable pause dispatch-hold from `list_paused` BEFORE the
+    // dispatcher's first claim, so a run paused before a restart keeps its outbox
+    // rows held (never claimed) after recovery. A run projecting `Paused` is
+    // excluded from `list_active` respawn for free; this repopulates the hold that
+    // would otherwise be empty in memory after a crash.
+    if outbox_config.enabled {
+        if let Ok(engine) = state.engine() {
+            if let Err(error) = engine.rebuild_paused_runs().await {
+                tracing::warn!(%error, "failed to rebuild paused-runs dispatch hold at startup");
+            }
+        }
+    }
     let _outbox_worker_listener = maybe_spawn_outbox_dispatcher(
         &state,
         &outbox_config,
@@ -415,10 +427,17 @@ fn maybe_spawn_outbox_dispatcher(
     );
     let backpressure =
         crate::worker::Backpressure::new(quota_cache.clone(), backpressure_settings.fraction);
-    let dispatcher =
+    let mut dispatcher =
         OutboxDispatcher::new(Arc::clone(&outbox_store), row_dispatch, dispatcher_config)
             .with_wake(state.outbox_wake())
             .with_backpressure(backpressure);
+    // #204: attach the engine's durable pause dispatch-hold so a held (paused)
+    // run's rows are never claimed. The hold set is rebuilt from `list_paused`
+    // BEFORE this spawn (see `run_server`), so the dispatcher's first claim
+    // already excludes pre-pause rows after a restart.
+    if let Ok(engine) = state.engine() {
+        dispatcher = dispatcher.with_paused_runs(engine.paused_runs());
+    }
     tokio::spawn(dispatcher.run(shutdown_rx.clone()));
     // Control-Plane Phase 2 (P2-Q3): commission the ops-console quota-state
     // broadcaster on the SAME durable stores + quota cache the dispatcher enforces

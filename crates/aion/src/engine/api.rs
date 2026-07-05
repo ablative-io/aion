@@ -56,6 +56,11 @@ pub struct Engine {
     /// never takes this lock.
     pub(super) deploy_mutations: AsyncMutex<()>,
     visibility_reconciliation_task: Option<JoinHandle<()>>,
+    /// Shared dispatch-hold set for durable pause (#204): the workflow ids whose
+    /// outbox rows are held `Pending` while paused. Mutated by pause/resume/cancel
+    /// and rebuilt from [`EventStore::list_paused`] at startup/adoption; read by
+    /// the outbox dispatcher at claim time.
+    paused_runs: crate::lifecycle::PausedRuns,
 }
 
 /// Components required to construct an [`Engine`].
@@ -125,6 +130,7 @@ impl Engine {
             shutdown_gate: ShutdownGate::default(),
             deploy_mutations: AsyncMutex::new(()),
             visibility_reconciliation_task,
+            paused_runs: crate::lifecycle::PausedRuns::default(),
         }
     }
 
@@ -459,6 +465,12 @@ impl Engine {
             reason,
         )
         .await;
+        // Cancel of a Paused run must release the dispatch hold so its held rows
+        // are not leaked forever (#204, GATE-4). Removal is unconditional and
+        // idempotent: a non-paused run is simply absent from the set.
+        if result.is_ok() {
+            self.paused_runs.remove(id);
+        }
         drop(operation);
         result
     }
@@ -604,6 +616,97 @@ impl Engine {
             run,
         )
         .await;
+        drop(operation);
+        result
+    }
+
+    /// The shared dispatch-hold set for durable pause (#204).
+    ///
+    /// Handed to the outbox dispatcher at wiring time so a held (paused) run's
+    /// rows are never claimed, and rebuilt from [`EventStore::list_paused`] at
+    /// startup/adoption.
+    #[must_use]
+    pub fn paused_runs(&self) -> crate::lifecycle::PausedRuns {
+        self.paused_runs.clone()
+    }
+
+    /// Rebuild the dispatch-hold set from durable state (startup / shard
+    /// adoption). A run projecting `Paused` is excluded from `list_active`
+    /// respawn for free; this repopulates the hold so its pre-pause outbox rows
+    /// stay unclaimed after a restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns store errors from the `list_paused` scan.
+    pub async fn rebuild_paused_runs(&self) -> Result<(), EngineError> {
+        let paused = self.store.list_paused().await?;
+        self.paused_runs.replace_all(paused);
+        Ok(())
+    }
+
+    fn pause_context(&self) -> crate::lifecycle::PauseWorkflowContext<'_> {
+        crate::lifecycle::PauseWorkflowContext {
+            store: self.store(),
+            visibility_store: Arc::clone(&self.visibility_store),
+            catalog: Arc::clone(&self.catalog),
+            runtime: &self.runtime,
+            supervision: Arc::clone(&self.supervision),
+            registry: &self.registry,
+            search_attribute_schema: Arc::clone(&self.search_attribute_schema),
+            paused_runs: self.paused_runs.clone(),
+        }
+    }
+
+    /// Pause a live `Running` run, durably holding NEW activity dispatch (#204).
+    ///
+    /// Appends `WorkflowPaused` through the resident handle's own recorder and
+    /// inserts the run into the dispatch-hold set; the resident process stays
+    /// alive and keeps recording (timer fires, signals, drained completions).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::WorkflowNotFound`] when the pair has no history / no
+    /// resident handle, and [`EngineError::InvalidState`] — naming the actual
+    /// status — when the run is not `Running`.
+    pub async fn pause_workflow(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+        reason: Option<String>,
+        operator: Option<String>,
+    ) -> Result<WorkflowHandle, EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result =
+            crate::lifecycle::pause::pause(&self.pause_context(), id, run, reason, operator).await;
+        drop(operation);
+        result
+    }
+
+    /// Resume a `Paused` run, releasing the dispatch hold (#204).
+    ///
+    /// Named `resume_paused_workflow` to avoid colliding with the existing
+    /// residency-flip [`Engine::resume_workflow`]. Appends `WorkflowResumed`,
+    /// removes the run from the dispatch-hold set, and — when the run crashed
+    /// while paused and is no longer resident — respawns it via the reopen
+    /// recovery path, re-arming unfired timers. The ordinary sweep then claims
+    /// the released rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ShuttingDown`] after shutdown begins,
+    /// [`EngineError::WorkflowNotFound`] when the pair has no history, and
+    /// [`EngineError::InvalidState`] — naming the actual status — when the run is
+    /// not `Paused`.
+    pub async fn resume_paused_workflow(
+        &self,
+        id: &WorkflowId,
+        run: &RunId,
+        operator: Option<String>,
+    ) -> Result<WorkflowHandle, EngineError> {
+        let operation = self.shutdown_gate.begin_operation()?;
+        let result =
+            crate::lifecycle::pause::resume(&self.pause_context(), id, run, operator).await;
         drop(operation);
         result
     }

@@ -280,6 +280,12 @@ pub struct OutboxDispatcher {
     /// never engages, so an attached-but-default backpressure is also behaviourally
     /// identical to no backpressure for normal load.
     backpressure: Option<crate::worker::Backpressure>,
+    /// Optional durable pause dispatch-hold (#204). When present, each claim
+    /// excludes rows whose workflow is in the paused set, so a held run's rows
+    /// stay `Pending` — never `Claimed` — for the whole paused window; release is
+    /// purely resume plus the next sweep. When absent (the default, every
+    /// pre-#204 construction and test) the claim is byte-identical to before.
+    paused_runs: Option<aion::lifecycle::PausedRuns>,
 }
 
 impl std::fmt::Debug for OutboxDispatcher {
@@ -310,7 +316,21 @@ impl OutboxDispatcher {
             // byte-identical to the pre-Phase-2 dispatcher. `with_backpressure`
             // attaches the keyed per-tenant claim shaping.
             backpressure: None,
+            // Default to no dispatch-hold: byte-identical claim. `with_paused_runs`
+            // attaches the pause exclusion.
+            paused_runs: None,
         }
+    }
+
+    /// Attach the durable pause dispatch-hold set (#204).
+    ///
+    /// With it, each sweep excludes rows whose owning workflow is currently
+    /// held (paused), so those rows are never claimed while paused. Pure builder
+    /// addition: without it the claim is byte-identical to before.
+    #[must_use]
+    pub fn with_paused_runs(mut self, paused_runs: aion::lifecycle::PausedRuns) -> Self {
+        self.paused_runs = Some(paused_runs);
+        self
     }
 
     /// Install the shared advisory wake (LSUB-2).
@@ -430,7 +450,18 @@ impl OutboxDispatcher {
                     .claim_round_robin(&self.store, self.config.batch_size)
                     .await
             }
-            None => self.store.claim_outbox_rows(self.config.batch_size).await,
+            // The pause dispatch-hold (#204) excludes held workflows at claim
+            // time so their rows stay Pending. With no held set (or an empty
+            // one) this is byte-identical to the plain unscoped claim.
+            None => match &self.paused_runs {
+                Some(paused_runs) => {
+                    let held = paused_runs.snapshot();
+                    self.store
+                        .claim_outbox_rows_excluding(self.config.batch_size, &held)
+                        .await
+                }
+                None => self.store.claim_outbox_rows(self.config.batch_size).await,
+            },
         }
     }
 
@@ -629,6 +660,63 @@ mod tests {
                 ))
             }
         }
+    }
+
+    /// #204 GATE-1 (dispatch-hold mechanism): while a workflow is in the paused
+    /// set, its pending outbox row is NEVER claimed — it stays `Pending` across
+    /// sweeps and no dispatch reaches the worker. After the workflow is removed
+    /// from the paused set (resume), the ordinary sweep claims the held row with
+    /// no bespoke re-arm and it dispatches to completion.
+    #[tokio::test]
+    async fn paused_run_row_is_held_pending_then_dispatches_after_release()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = open_store("pause-hold").await?;
+        let workflow_id = WorkflowId::new_v4();
+        let row = pending_row(&workflow_id, 0);
+        store
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+
+        let paused_runs = aion::lifecycle::PausedRuns::default();
+        paused_runs.insert(workflow_id.clone());
+
+        let dispatch = Arc::new(RecordingDispatch::new(true));
+        let dispatcher = OutboxDispatcher::new(store.clone(), dispatch.clone(), config())
+            .with_paused_runs(paused_runs.clone());
+
+        // Sweep repeatedly while paused: the row is never claimed, never
+        // dispatched, and remains Pending the whole window.
+        for _ in 0..3 {
+            dispatcher.sweep_once().await;
+        }
+        assert_eq!(
+            dispatch.count()?,
+            0,
+            "no dispatch reaches any worker while the run is paused"
+        );
+        assert_eq!(
+            store
+                .outbox_row_state(&row.dispatch_key)
+                .await?
+                .map(|s| s.status),
+            Some(OutboxStatus::Pending),
+            "the held row stays Pending (never Claimed) for the whole paused window"
+        );
+
+        // Release (resume): remove from the hold. The next ordinary sweep claims
+        // the held row with no bespoke re-arm and dispatches it to Done.
+        paused_runs.remove(&workflow_id);
+        dispatcher.sweep_once().await;
+        assert_eq!(dispatch.count()?, 1, "the released row dispatches");
+        assert_eq!(
+            store
+                .outbox_row_state(&row.dispatch_key)
+                .await?
+                .map(|s| s.status),
+            Some(OutboxStatus::Done),
+            "the released row completes after resume"
+        );
+        Ok(())
     }
 
     #[tokio::test]

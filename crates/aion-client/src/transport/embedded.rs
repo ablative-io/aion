@@ -164,6 +164,45 @@ impl WorkflowTransport for EmbeddedWorkflowTransport {
         })
     }
 
+    async fn pause(
+        &self,
+        request: aion_proto::ProtoPauseRequest,
+    ) -> Result<aion_proto::ProtoPauseResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let run_id = self.resolve_run_id(&workflow_id, request.run_id).await?;
+        let reason = if request.reason.is_empty() {
+            None
+        } else {
+            Some(request.reason)
+        };
+        let handle = self
+            .engine
+            .pause_workflow(&workflow_id, &run_id, reason, None)
+            .await
+            .map_err(|error| map_engine_error(&error))?;
+        Ok(aion_proto::ProtoPauseResponse {
+            run_id: Some(handle.run_id().clone().into()),
+            status: aion_proto::ProtoWorkflowStatus::Paused as i32,
+        })
+    }
+
+    async fn resume(
+        &self,
+        request: aion_proto::ProtoResumeRequest,
+    ) -> Result<aion_proto::ProtoResumeResponse, ClientError> {
+        let workflow_id = decode_required_workflow_id(request.workflow_id)?;
+        let run_id = self.resolve_run_id(&workflow_id, request.run_id).await?;
+        let handle = self
+            .engine
+            .resume_paused_workflow(&workflow_id, &run_id, None)
+            .await
+            .map_err(|error| map_engine_error(&error))?;
+        Ok(aion_proto::ProtoResumeResponse {
+            run_id: Some(handle.run_id().clone().into()),
+            status: aion_proto::ProtoWorkflowStatus::Running as i32,
+        })
+    }
+
     async fn list_workflows(
         &self,
         request: aion_proto::ProtoListWorkflowsRequest,

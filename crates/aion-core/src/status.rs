@@ -23,6 +23,10 @@ pub enum WorkflowStatus {
     TimedOut,
     /// The workflow recorded a [`Event::WorkflowContinuedAsNew`] terminal event.
     ContinuedAsNew,
+    /// The workflow recorded a [`Event::WorkflowPaused`] marker with no later
+    /// [`Event::WorkflowResumed`]. NON-terminal: the run has recorded no terminal
+    /// event and can still complete/fail/cancel or be resumed.
+    Paused,
 }
 
 impl WorkflowStatus {
@@ -30,7 +34,9 @@ impl WorkflowStatus {
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         match self {
-            Self::Running => false,
+            // Paused is non-terminal: complete/fail/cancel stay reachable, and a
+            // paused run is excluded from the active set without being terminal.
+            Self::Running | Self::Paused => false,
             Self::Completed
             | Self::Failed
             | Self::Cancelled
@@ -56,14 +62,20 @@ pub fn status_from_events(events: &[Event]) -> WorkflowStatus {
             // A run start and a reopen both put the run in Running. A reopen
             // supersedes the run's prior terminal event under this same
             // last-lifecycle-event-wins scan.
-            Event::WorkflowStarted { .. } | Event::WorkflowReopened { .. } => {
-                Some(WorkflowStatus::Running)
-            }
+            // A run start, a reopen, and a resume all put the run in Running. A
+            // resume supersedes the run's prior WorkflowPaused under this same
+            // last-lifecycle-event-wins scan.
+            Event::WorkflowStarted { .. }
+            | Event::WorkflowReopened { .. }
+            | Event::WorkflowResumed { .. } => Some(WorkflowStatus::Running),
             Event::WorkflowCompleted { .. } => Some(WorkflowStatus::Completed),
             Event::WorkflowFailed { .. } => Some(WorkflowStatus::Failed),
             Event::WorkflowCancelled { .. } => Some(WorkflowStatus::Cancelled),
             Event::WorkflowTimedOut { .. } => Some(WorkflowStatus::TimedOut),
             Event::WorkflowContinuedAsNew { .. } => Some(WorkflowStatus::ContinuedAsNew),
+            // Paused is the one non-terminal lifecycle event that projects a
+            // distinct status; a later WorkflowResumed supersedes it above.
+            Event::WorkflowPaused { .. } => Some(WorkflowStatus::Paused),
             Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
@@ -113,7 +125,13 @@ pub fn current_lease_terminal(events: &[Event]) -> Option<&Event> {
             | Event::WorkflowContinuedAsNew { .. } => Some(Some(event)),
             // Reset points: the current lease has no terminal before them.
             Event::WorkflowStarted { .. } | Event::WorkflowReopened { .. } => Some(None),
-            Event::SearchAttributesUpdated { .. }
+            // Pause/resume are neither a terminal nor a run-start reset — they
+            // fall through like SearchAttributesUpdated, so a paused (or resumed)
+            // run keeps whatever current-lease terminal state it otherwise has
+            // (None while live), leaving complete/fail/cancel reachable.
+            Event::WorkflowPaused { .. }
+            | Event::WorkflowResumed { .. }
+            | Event::SearchAttributesUpdated { .. }
             | Event::ActivityScheduled { .. }
             | Event::ActivityStarted { .. }
             | Event::ActivityCompleted { .. }
@@ -507,6 +525,81 @@ mod tests {
             current_lease_terminal(&events),
             Some(Event::WorkflowCompleted { .. })
         ));
+        Ok(())
+    }
+
+    fn workflow_paused(seq: u64) -> Event {
+        Event::WorkflowPaused {
+            envelope: envelope(seq),
+            run_id: run_id(),
+            reason: None,
+            operator: None,
+        }
+    }
+
+    fn workflow_resumed(seq: u64) -> Event {
+        Event::WorkflowResumed {
+            envelope: envelope(seq),
+            run_id: run_id(),
+            operator: None,
+        }
+    }
+
+    #[test]
+    fn pause_projects_paused_and_is_non_terminal() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![workflow_started(1)?, workflow_paused(2)];
+        assert_eq!(status_from_events(&events), WorkflowStatus::Paused);
+        assert!(!WorkflowStatus::Paused.is_terminal());
+        // Paused is non-terminal, so the run has no current-lease terminal and can
+        // still complete/fail/cancel.
+        assert!(current_lease_terminal(&events).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_after_pause_projects_running() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            workflow_paused(2),
+            workflow_resumed(3),
+        ];
+        assert_eq!(status_from_events(&events), WorkflowStatus::Running);
+        assert!(current_lease_terminal(&events).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_after_resume_projects_completed() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            workflow_started(1)?,
+            workflow_paused(2),
+            workflow_resumed(3),
+            Event::WorkflowCompleted {
+                envelope: envelope(4),
+                result: payload("result")?,
+            },
+        ];
+        assert_eq!(status_from_events(&events), WorkflowStatus::Completed);
+        assert!(matches!(
+            current_lease_terminal(&events),
+            Some(Event::WorkflowCompleted { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn complete_while_paused_still_projects_completed() -> Result<(), Box<dyn std::error::Error>> {
+        // The drain case: a paused run reaches a terminal via drained work.
+        // Last-lifecycle-event-wins projects the terminal, not Paused.
+        let events = vec![
+            workflow_started(1)?,
+            workflow_paused(2),
+            Event::WorkflowCompleted {
+                envelope: envelope(3),
+                result: payload("result")?,
+            },
+        ];
+        assert_eq!(status_from_events(&events), WorkflowStatus::Completed);
         Ok(())
     }
 

@@ -137,6 +137,26 @@ pub(crate) async fn list_active(conn: &libsql::Connection) -> Result<Vec<Workflo
     Ok(active)
 }
 
+/// Return workflow ids whose projected status is exactly `Paused` (#204).
+///
+/// Mirrors [`list_active`] with a `== Paused` exact-equality filter — the durable
+/// source the dispatch-hold set is rebuilt from at startup/adoption.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL failures and `StoreError::Serialization` for malformed
+/// stored event blobs.
+pub(crate) async fn list_paused(conn: &libsql::Connection) -> Result<Vec<WorkflowId>, StoreError> {
+    let mut paused = load_summaries(conn, &WorkflowFilter::default(), false)
+        .await?
+        .into_iter()
+        .filter(|summary| matches!(summary.status, WorkflowStatus::Paused))
+        .map(|summary| summary.workflow_id)
+        .collect::<Vec<_>>();
+    paused.sort_by_key(ToString::to_string);
+    Ok(paused)
+}
+
 /// Query workflow summaries using SQL-bound filter parameters plus authoritative projection.
 ///
 /// # Errors

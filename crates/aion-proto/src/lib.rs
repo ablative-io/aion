@@ -70,7 +70,8 @@ pub use worker::{
 pub use workflow::{
     ProtoCancelRequest, ProtoCancelResponse, ProtoCountWorkflowsRequest,
     ProtoCountWorkflowsResponse, ProtoDescribeWorkflowRequest, ProtoDescribeWorkflowResponse,
-    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoQueryRequest, ProtoQueryResponse,
-    ProtoReopenRequest, ProtoReopenResponse, ProtoSignalRequest, ProtoSignalResponse,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoPauseRequest, ProtoPauseResponse,
+    ProtoQueryRequest, ProtoQueryResponse, ProtoReopenRequest, ProtoReopenResponse,
+    ProtoResumeRequest, ProtoResumeResponse, ProtoSignalRequest, ProtoSignalResponse,
     ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, proto_query_response,
 };

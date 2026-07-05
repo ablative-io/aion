@@ -1,9 +1,58 @@
-# Pause / Resume — design (scope pass, NOT for implementation)
+# Pause / Resume — design
 
-> Status: **design scope only**, pending owner review. Captured 2026-07-02.
-> Produced alongside the reopen build (`docs/WORKFLOW-REOPEN-DESIGN.md`) as a
-> sibling front-end on the recovery machinery. **Do NOT implement until the owner
-> reviews the scope and rules on the one load-bearing decision (§4).**
+> Status: **RATIFIED & IMPLEMENTED** (#204 v1, 2026-07-05). The one load-bearing
+> §4 decision is ruled below. Captured 2026-07-02; produced alongside the reopen
+> build (`docs/WORKFLOW-REOPEN-DESIGN.md`) as a sibling front-end on the recovery
+> machinery.
+
+## 0. §4 ruling (the discharged gate)
+
+**Ruled: Option B — dispatch-hold, NOT Option A (quiesce).** Task #204's explicit
+semantics ("durably hold NEW activity dispatch while preserving all durable
+state; resume releases the hold and the run completes; the paused state survives
+kill -9") require a hold-and-release, not a kill-and-respawn. The resident
+process stays alive and keeps recording (timer fires, signal receipts, drained
+completions); the hold lives at **outbox claim time** — a paused run's rows sit
+`Pending` and are NEVER claimed while paused, so release is exactly resume plus
+the existing interval/wake sweep (a never-claimed Pending row needs no re-arm).
+The doc's earlier Option-A recommendation (§4 below) is **superseded** by this
+ruling.
+
+Consequences of the ruling, as built:
+
+- **Single-writer for a live run:** pause/resume of a RESIDENT run append
+  `WorkflowPaused` / `WorkflowResumed` through the live handle's OWN recorder (the
+  `terminate.rs` cancel precedent), never a side-constructed `Recorder::resume_at`
+  — a second writer at the same head would desync the live recorder. Only the
+  crashed-while-paused resume path (run not resident) builds one continuous
+  `Recorder::resume_at` and hands it to the reopen respawn machinery.
+- **`Paused` is a new NON-terminal `WorkflowStatus`.** `is_terminal(Paused) =
+  false`; `current_lease_terminal` returns `None`, so complete/fail/cancel stay
+  reachable. `WorkflowPaused → Paused`, `WorkflowResumed → Running` under the
+  last-lifecycle-event-wins scan.
+- **Replay-invisible markers.** `WorkflowPaused`/`WorkflowResumed` fall into the
+  existing `_ => None` catch-alls in `cursor.rs` `family_for_event` and
+  `resolver.rs`; a paused-then-resumed history replays byte-identically.
+- **Recovery exclusion for free.** `list_active`'s `== Running` filter excludes a
+  paused run, so it is not respawned at startup/adoption. The dispatch hold is
+  made durable by rebuilding the dispatcher's `PausedRuns` set from a new
+  `EventStore::list_paused()` (`== Paused`) at startup — BEFORE the dispatcher's
+  first claim — and at shard adoption.
+- **Signals to a paused-not-resident run** are durably recorded via a one-shot
+  recorder (record-before-deliver preserved) and take effect on resume replay.
+- **Cancel of a Paused run** removes it from the hold set so its rows are not
+  leaked; a subsequent reopen of the cancelled run works, the pause/resume markers
+  being replay-invisible.
+- **Mixed-version note:** an OLD binary reading a NEW history containing
+  `WorkflowPaused` fails serde decode entirely — the same accepted precedent set
+  by `WorkflowReopened` and every prior variant addition, not new debt. The proto
+  side is handled by the `WORKFLOW_STATUS_UNSPECIFIED = 0` sentinel with an
+  explicit decode error on the new `WORKFLOW_STATUS_PAUSED` value.
+
+---
+
+> The remainder of this document is the original scope pass, retained for
+> context. Where §4 below recommends Option A, the §0 ruling above governs.
 
 ## 1. Goal & scope
 

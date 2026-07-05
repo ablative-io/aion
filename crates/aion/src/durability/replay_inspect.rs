@@ -690,6 +690,8 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
         Event::WorkflowReopened { .. } => "WorkflowReopened",
+        Event::WorkflowPaused { .. } => "WorkflowPaused",
+        Event::WorkflowResumed { .. } => "WorkflowResumed",
         Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",

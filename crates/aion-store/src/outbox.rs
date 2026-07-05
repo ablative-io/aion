@@ -298,6 +298,36 @@ pub trait OutboxStore: Send + Sync + 'static {
     /// [`StoreError::Serialization`] when a stored row cannot be decoded.
     async fn claim_outbox_rows(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError>;
 
+    /// Atomically claims up to `limit` due pending rows whose owning workflow is
+    /// NOT in `held` (the pause dispatch-hold, #204).
+    ///
+    /// This is the pause-aware counterpart to [`OutboxStore::claim_outbox_rows`]:
+    /// a row whose `workflow_id` is in `held` is never selected, so it stays
+    /// [`OutboxStatus::Pending`] for the entire paused window — it is NEVER
+    /// transitioned to [`OutboxStatus::Claimed`] and released, so no un-claim
+    /// primitive is needed. Release is purely resume (the workflow leaves `held`)
+    /// plus the ordinary interval/wake sweep. With an empty `held` set this is
+    /// byte-identical to [`OutboxStore::claim_outbox_rows`].
+    ///
+    /// The default implementation ignores `held` and delegates to
+    /// [`OutboxStore::claim_outbox_rows`]: a test-double store that never pauses
+    /// is unaffected. The bundled durable backends (libSQL, haematite) override
+    /// it to apply the exclusion inside the same atomic, single-writer claim so a
+    /// held row is never claimed even under concurrent sweeps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn claim_outbox_rows_excluding(
+        &self,
+        limit: u32,
+        held: &std::collections::HashSet<WorkflowId>,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _ = held;
+        self.claim_outbox_rows(limit).await
+    }
+
     /// Atomically claims up to `limit` pending rows that are due AND in `scope` (LSUB-1a).
     ///
     /// This is the node-affinity-aware counterpart to [`OutboxStore::claim_outbox_rows`]: it adds a

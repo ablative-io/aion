@@ -101,6 +101,16 @@ pub trait ReadableEventStore: Send + Sync + 'static {
     /// Lists workflow identifiers whose projected status is non-terminal.
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError>;
 
+    /// Lists workflow identifiers whose projected status is exactly
+    /// [`WorkflowStatus::Paused`](aion_core::WorkflowStatus::Paused).
+    ///
+    /// Mirrors [`Self::list_active`] with a `== Paused` exact-equality filter: it
+    /// is the durable source the dispatch-hold set is rebuilt from at startup and
+    /// at shard adoption, so a run paused before a `kill -9` keeps its outbox rows
+    /// held after restart. A paused run is excluded from [`Self::list_active`]
+    /// (which filters `== Running`), so nothing else would repopulate the hold.
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError>;
+
     /// Returns workflow summaries matching `filter`.
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError>;
 

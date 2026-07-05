@@ -90,6 +90,10 @@ impl ReadableEventStore for StoreCreateResult {
         self.store()?.list_active().await
     }
 
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.store()?.list_paused().await
+    }
+
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         self.store()?.query(filter).await
     }

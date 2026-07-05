@@ -7,10 +7,11 @@ use aion_core::{
     Event, Payload, RunId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 use aion_proto::{
-    ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoPayload,
-    ProtoQueryRequest, ProtoReopenRequest, ProtoRunId, ProtoSignalRequest,
-    ProtoStartWorkflowRequest, ProtoWorkflowId, ProtoWorkflowStatus, WireError, decode_core_value,
-    decode_event, decode_workflow_summary, encode_core_value, proto_query_response,
+    ProtoCancelRequest, ProtoDescribeWorkflowRequest, ProtoListWorkflowsRequest, ProtoPauseRequest,
+    ProtoPayload, ProtoQueryRequest, ProtoReopenRequest, ProtoResumeRequest, ProtoRunId,
+    ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoWorkflowId, ProtoWorkflowStatus, WireError,
+    decode_core_value, decode_event, decode_workflow_summary, encode_core_value,
+    proto_query_response,
 };
 use aion_store::visibility::ListWorkflowsFilter;
 
@@ -75,6 +76,24 @@ pub struct ReopenOutcome {
     /// The reopened concrete run identifier (now live again).
     pub run_id: RunId,
     /// The projected status after the reopen (Running).
+    pub status: WorkflowStatus,
+}
+
+/// Outcome of [`Client::pause`]: the paused run and its projected status (#204).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PauseOutcome {
+    /// The paused concrete run identifier.
+    pub run_id: RunId,
+    /// The projected status after the pause (Paused).
+    pub status: WorkflowStatus,
+}
+
+/// Outcome of [`Client::resume`]: the resumed run and its projected status (#204).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeOutcome {
+    /// The resumed concrete run identifier (now live again).
+    pub run_id: RunId,
+    /// The projected status after the resume (Running).
     pub status: WorkflowStatus,
 }
 
@@ -323,6 +342,78 @@ impl Client {
                 WorkflowStatus::try_from(status).map_err(ClientError::from_wire_error)
             })?;
         Ok(ReopenOutcome { run_id, status })
+    }
+
+    /// Pauses a live `Running` run, durably holding new activity dispatch (#204).
+    /// Targets the latest run, or `run_id` when supplied. Returns the run and its
+    /// projected status (Paused). A run that is not `Running` returns
+    /// [`ClientError::InvalidState`]; an absent workflow returns
+    /// [`ClientError::NotFound`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when transport, server, or response conversion fails.
+    pub async fn pause(
+        &self,
+        workflow_id: &WorkflowId,
+        run_id: Option<&RunId>,
+        reason: impl Into<String>,
+    ) -> Result<PauseOutcome, ClientError> {
+        let response = self
+            .transport
+            .pause(ProtoPauseRequest {
+                namespace: self.namespace().to_owned(),
+                workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
+                run_id: run_id.cloned().map(ProtoRunId::from),
+                reason: reason.into(),
+            })
+            .await?;
+        let run_id = response
+            .run_id
+            .ok_or_else(|| ClientError::server("pause response run id is missing"))?
+            .try_into()
+            .map_err(ClientError::from_wire_error)?;
+        let status = ProtoWorkflowStatus::try_from(response.status)
+            .map_err(|_error| ClientError::server("pause response status is unknown"))
+            .and_then(|status| {
+                WorkflowStatus::try_from(status).map_err(ClientError::from_wire_error)
+            })?;
+        Ok(PauseOutcome { run_id, status })
+    }
+
+    /// Resumes a `Paused` run, releasing the dispatch hold (#204). Targets the
+    /// latest run, or `run_id` when supplied. Returns the run and its projected
+    /// status (Running). A run that is not `Paused` returns
+    /// [`ClientError::InvalidState`]; an absent workflow returns
+    /// [`ClientError::NotFound`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when transport, server, or response conversion fails.
+    pub async fn resume(
+        &self,
+        workflow_id: &WorkflowId,
+        run_id: Option<&RunId>,
+    ) -> Result<ResumeOutcome, ClientError> {
+        let response = self
+            .transport
+            .resume(ProtoResumeRequest {
+                namespace: self.namespace().to_owned(),
+                workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
+                run_id: run_id.cloned().map(ProtoRunId::from),
+            })
+            .await?;
+        let run_id = response
+            .run_id
+            .ok_or_else(|| ClientError::server("resume response run id is missing"))?
+            .try_into()
+            .map_err(ClientError::from_wire_error)?;
+        let status = ProtoWorkflowStatus::try_from(response.status)
+            .map_err(|_error| ClientError::server("resume response status is unknown"))
+            .and_then(|status| {
+                WorkflowStatus::try_from(status).map_err(ClientError::from_wire_error)
+            })?;
+        Ok(ResumeOutcome { run_id, status })
     }
 
     /// Lists workflows matching a filter.
@@ -680,6 +771,26 @@ mod tests {
                 return response;
             }
             Ok(ProtoReopenResponse {
+                run_id: Some(ProtoRunId::from(run_id())),
+                status: ProtoWorkflowStatus::Running as i32,
+            })
+        }
+
+        async fn pause(
+            &self,
+            _request: aion_proto::ProtoPauseRequest,
+        ) -> Result<aion_proto::ProtoPauseResponse, ClientError> {
+            Ok(aion_proto::ProtoPauseResponse {
+                run_id: Some(ProtoRunId::from(run_id())),
+                status: ProtoWorkflowStatus::Paused as i32,
+            })
+        }
+
+        async fn resume(
+            &self,
+            _request: aion_proto::ProtoResumeRequest,
+        ) -> Result<aion_proto::ProtoResumeResponse, ClientError> {
+            Ok(aion_proto::ProtoResumeResponse {
                 run_id: Some(ProtoRunId::from(run_id())),
                 status: ProtoWorkflowStatus::Running as i32,
             })

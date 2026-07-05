@@ -418,6 +418,13 @@ impl ReadableEventStore for InstrumentedEventStore {
         result
     }
 
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        let started = Instant::now();
+        let result = self.inner.list_paused().await;
+        self.observe_since("list_paused", started);
+        result
+    }
+
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         self.inner.query(filter).await
     }

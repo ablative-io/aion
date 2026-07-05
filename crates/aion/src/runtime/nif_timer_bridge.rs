@@ -70,6 +70,10 @@ impl ReadableEventStore for ReadableEventStoreAdapter {
         self.store.list_active().await
     }
 
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.store.list_paused().await
+    }
+
     async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
         self.store.list_workflow_ids().await
     }

@@ -374,6 +374,23 @@ impl ReadableEventStore for InMemoryStore {
         Ok(active)
     }
 
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        let state = self.lock_state()?;
+        let mut paused = state
+            .histories
+            .iter()
+            .filter(|(_, history)| {
+                matches!(
+                    status_from_events(&history_in_sequence_order(history)),
+                    WorkflowStatus::Paused
+                )
+            })
+            .map(|(workflow_id, _)| workflow_id.clone())
+            .collect::<Vec<_>>();
+        paused.sort_by_key(ToString::to_string);
+        Ok(paused)
+    }
+
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         let state = self.lock_state()?;
         let mut summaries = state
@@ -569,6 +586,58 @@ mod tests {
             .await?;
 
         assert_eq!(store.list_active().await?, vec![running]);
+        Ok(())
+    }
+
+    fn workflow_paused(seq: u64, workflow_id: &WorkflowId) -> Event {
+        Event::WorkflowPaused {
+            envelope: envelope(seq, workflow_id),
+            run_id: run_id(1),
+            reason: None,
+            operator: None,
+        }
+    }
+
+    /// #204 GATE-2 recovery mechanism: a paused run is EXCLUDED from `list_active`
+    /// (== Running) — so it is not respawned on restart — and is the sole content
+    /// of `list_paused` (== Paused), the durable source the dispatch-hold is
+    /// rebuilt from.
+    #[tokio::test]
+    async fn list_paused_and_list_active_partition_by_projected_status() -> Result<(), StoreError> {
+        let store = InMemoryStore::default();
+        let running = workflow_id(1);
+        let paused = workflow_id(2);
+
+        store
+            .append(
+                write_token(),
+                &running,
+                &[workflow_started(1, &running, "checkout")],
+                0,
+            )
+            .await?;
+        store
+            .append(
+                write_token(),
+                &paused,
+                &[
+                    workflow_started(1, &paused, "checkout"),
+                    workflow_paused(2, &paused),
+                ],
+                0,
+            )
+            .await?;
+
+        assert_eq!(
+            store.list_active().await?,
+            vec![running],
+            "a paused run is excluded from list_active (not respawned)"
+        );
+        assert_eq!(
+            store.list_paused().await?,
+            vec![paused],
+            "list_paused returns exactly the paused run (the hold rebuild source)"
+        );
         Ok(())
     }
 

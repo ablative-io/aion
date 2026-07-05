@@ -23,4 +23,4 @@ mod test_support;
 
 pub use describe::describe;
 pub use visibility::{count, list};
-pub use workflows::{cancel, query, reopen, signal, start, start_with_placement};
+pub use workflows::{cancel, pause, query, reopen, resume, signal, start, start_with_placement};

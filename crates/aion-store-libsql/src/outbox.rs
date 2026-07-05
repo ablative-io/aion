@@ -259,6 +259,89 @@ pub(crate) async fn claim_outbox_rows(
     Ok(claimed)
 }
 
+/// Claim up to `limit` due pending rows whose owning workflow is NOT in `held`
+/// (the pause dispatch-hold, #204).
+///
+/// A held row is skipped in-place: it is never flipped to `claimed`, so it stays
+/// `pending` for the whole paused window. With an empty `held` set this delegates
+/// to [`claim_outbox_rows`] unchanged.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn claim_outbox_rows_excluding(
+    conn: &Connection,
+    limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    if held.is_empty() {
+        return claim_outbox_rows(conn, limit).await;
+    }
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let claimed = match select_and_claim_excluding(&tx, limit, held).await {
+        Ok(claimed) => claimed,
+        Err(error) => {
+            rollback(tx).await?;
+            return Err(error);
+        }
+    };
+
+    tx.commit()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    Ok(claimed)
+}
+
+async fn select_and_claim_excluding(
+    tx: &Transaction,
+    limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    let claimed_at = Utc::now();
+    let now = encode_instant(claimed_at);
+    let mut rows = tx
+        .query(SELECT_CLAIMABLE_SQL, params![now.clone(), i64::from(limit)])
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let mut claimed = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let decoded = decode_row(&row)?;
+        // A held (paused) workflow's row is left Pending: never claimed, never
+        // released — release is purely resume + the next sweep.
+        if held.contains(&decoded.workflow_id) {
+            continue;
+        }
+        tx.execute(
+            CLAIM_ROW_SQL,
+            params![decoded.dispatch_key.clone(), now.clone()],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+        claimed.push(OutboxRow {
+            status: OutboxStatus::Claimed,
+            claimed_at: Some(claimed_at),
+            ..decoded
+        });
+    }
+
+    Ok(claimed)
+}
+
 async fn select_and_claim(tx: &Transaction, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
     let claimed_at = Utc::now();
     let now = encode_instant(claimed_at);

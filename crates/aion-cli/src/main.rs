@@ -12,8 +12,8 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use crate::output::{
-    AcknowledgementOutput, QueryOutput, describe_output, print_json, reopen_output, start_output,
-    to_value,
+    AcknowledgementOutput, QueryOutput, describe_output, pause_output, print_json, reopen_output,
+    resume_output, start_output, to_value,
 };
 use crate::payload::{
     empty_query_payload, json_payload, parse_run_id, parse_status, parse_workflow_id,
@@ -274,6 +274,25 @@ enum RemoteCommand {
         #[arg(long)]
         run_id: Option<String>,
     },
+    /// Pause a running workflow, durably holding new activity dispatch.
+    Pause {
+        /// Workflow identifier.
+        workflow_id: String,
+        /// Optional pause reason.
+        #[arg(long, default_value = "")]
+        reason: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+    },
+    /// Resume a paused workflow, releasing the dispatch hold.
+    Resume {
+        /// Workflow identifier.
+        workflow_id: String,
+        /// Specific run identifier. Defaults to the latest run when omitted.
+        #[arg(long)]
+        run_id: Option<String>,
+    },
     /// List workflow executions.
     List {
         /// Optional workflow status filter. Accepted values: running, completed, failed, cancelled, timed-out, continued-as-new.
@@ -465,6 +484,15 @@ async fn execute(client: &Client, command: &RemoteCommand) -> Result<Value> {
             workflow_id,
             run_id,
         } => reopen_workflow(client, workflow_id, run_id.as_deref()).await,
+        RemoteCommand::Pause {
+            workflow_id,
+            reason,
+            run_id,
+        } => pause_workflow(client, workflow_id, reason, run_id.as_deref()).await,
+        RemoteCommand::Resume {
+            workflow_id,
+            run_id,
+        } => resume_workflow(client, workflow_id, run_id.as_deref()).await,
         RemoteCommand::List { status } => list_workflows(client, *status).await,
         RemoteCommand::Describe {
             workflow_id,
@@ -607,6 +635,65 @@ fn reopen_error(workflow_id: &str, error: ClientError) -> anyhow::Error {
         }
         ClientError::NotFound { .. } => anyhow::anyhow!("workflow {workflow_id} not found"),
         other => anyhow::anyhow!("failed to reopen workflow {workflow_id}: {other}"),
+    }
+}
+
+async fn pause_workflow(
+    client: &Client,
+    workflow_id: &str,
+    reason: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
+    let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
+    let outcome = client
+        .pause(&workflow_id, run_id.as_ref(), reason.to_owned())
+        .await
+        .map_err(|error| pause_error(&workflow_id.to_string(), error))?;
+    to_value(pause_output(&workflow_id.to_string(), &outcome))
+}
+
+async fn resume_workflow(
+    client: &Client,
+    workflow_id: &str,
+    run_id: Option<&str>,
+) -> Result<Value> {
+    let workflow_id = parse_workflow_id(workflow_id)?;
+    let run_id = run_id.map(parse_run_id).transpose()?;
+    let outcome = client
+        .resume(&workflow_id, run_id.as_ref())
+        .await
+        .map_err(|error| resume_error(&workflow_id.to_string(), error))?;
+    to_value(resume_output(&workflow_id.to_string(), &outcome))
+}
+
+/// Render a pause failure as a typed, operator-facing message (#204).
+/// `InvalidState` names the precondition (the run's actual status); `NotFound`
+/// is a plain "not found"; everything else keeps the client detail.
+fn pause_error(workflow_id: &str, error: ClientError) -> anyhow::Error {
+    match error {
+        ClientError::InvalidState { detail } => {
+            anyhow::anyhow!(
+                "workflow {workflow_id} cannot be paused: {}",
+                detail.message
+            )
+        }
+        ClientError::NotFound { .. } => anyhow::anyhow!("workflow {workflow_id} not found"),
+        other => anyhow::anyhow!("failed to pause workflow {workflow_id}: {other}"),
+    }
+}
+
+/// Render a resume failure as a typed, operator-facing message (#204).
+fn resume_error(workflow_id: &str, error: ClientError) -> anyhow::Error {
+    match error {
+        ClientError::InvalidState { detail } => {
+            anyhow::anyhow!(
+                "workflow {workflow_id} cannot be resumed: {}",
+                detail.message
+            )
+        }
+        ClientError::NotFound { .. } => anyhow::anyhow!("workflow {workflow_id} not found"),
+        other => anyhow::anyhow!("failed to resume workflow {workflow_id}: {other}"),
     }
 }
 
@@ -1077,6 +1164,8 @@ mod tests {
                     | RemoteCommand::Signal { run_id, .. }
                     | RemoteCommand::Cancel { run_id, .. }
                     | RemoteCommand::Reopen { run_id, .. }
+                    | RemoteCommand::Pause { run_id, .. }
+                    | RemoteCommand::Resume { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert!(run_id.is_none()),
                 Command::Server(_)
@@ -1129,6 +1218,8 @@ mod tests {
                     RemoteCommand::Signal { run_id, .. }
                     | RemoteCommand::Cancel { run_id, .. }
                     | RemoteCommand::Reopen { run_id, .. }
+                    | RemoteCommand::Pause { run_id, .. }
+                    | RemoteCommand::Resume { run_id, .. }
                     | RemoteCommand::Query { run_id, .. },
                 )) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
                 Command::Server(_)

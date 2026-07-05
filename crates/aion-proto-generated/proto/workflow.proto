@@ -11,6 +11,8 @@ service WorkflowService {
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc Cancel(CancelRequest) returns (CancelResponse);
   rpc Reopen(ReopenRequest) returns (ReopenResponse);
+  rpc Pause(PauseRequest) returns (PauseResponse);
+  rpc Resume(ResumeRequest) returns (ResumeResponse);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   rpc CountWorkflows(CountWorkflowsRequest) returns (CountWorkflowsResponse);
   rpc DescribeWorkflow(DescribeWorkflowRequest) returns (DescribeWorkflowResponse);
@@ -87,6 +89,36 @@ message ReopenRequest {
 // caller learns the run is live again — distinct from CancelResponse which is
 // an empty ack.
 message ReopenResponse {
+  RunId run_id = 1;
+  WorkflowStatus status = 2;
+}
+
+// Pause holds new activity dispatch for a live Running run (#204).
+message PauseRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  // Optional run id; absent means the latest run.
+  RunId run_id = 3;
+  // Optional operator-supplied reason.
+  string reason = 4;
+}
+
+// Pause returns the run id and its projected status (Paused).
+message PauseResponse {
+  RunId run_id = 1;
+  WorkflowStatus status = 2;
+}
+
+// Resume releases the dispatch hold on a Paused run (#204).
+message ResumeRequest {
+  string namespace = 1;
+  WorkflowId workflow_id = 2;
+  // Optional run id; absent means the latest run.
+  RunId run_id = 3;
+}
+
+// Resume returns the run id and its projected status (Running).
+message ResumeResponse {
   RunId run_id = 1;
   WorkflowStatus status = 2;
 }

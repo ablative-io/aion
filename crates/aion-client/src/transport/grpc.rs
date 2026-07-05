@@ -9,9 +9,10 @@ use crate::client::ClientConfig;
 use crate::error::ClientError;
 use crate::transport::contract::{SubscriptionAttempt, WorkflowTransport};
 use crate::transport::convert::{
-    decode_cancel_response, decode_describe_response, decode_list_response, decode_query_response,
-    decode_reopen_response, decode_signal_response, decode_start_response, encode_cancel_request,
-    encode_describe_request, encode_list_request, encode_query_request, encode_reopen_request,
+    decode_cancel_response, decode_describe_response, decode_list_response, decode_pause_response,
+    decode_query_response, decode_reopen_response, decode_resume_response, decode_signal_response,
+    decode_start_response, encode_cancel_request, encode_describe_request, encode_list_request,
+    encode_pause_request, encode_query_request, encode_reopen_request, encode_resume_request,
     encode_signal_request, encode_start_request,
 };
 use crate::transport::ws;
@@ -124,6 +125,30 @@ impl WorkflowTransport for GrpcWorkflowTransport {
             .await
             .map_err(|status| ClientError::from_status(&status))?;
         Ok(decode_reopen_response(response.into_inner()))
+    }
+
+    async fn pause(
+        &self,
+        request: aion_proto::ProtoPauseRequest,
+    ) -> Result<aion_proto::ProtoPauseResponse, ClientError> {
+        let response = self
+            .client()
+            .pause(self.request(encode_pause_request(request))?)
+            .await
+            .map_err(|status| ClientError::from_status(&status))?;
+        Ok(decode_pause_response(response.into_inner()))
+    }
+
+    async fn resume(
+        &self,
+        request: aion_proto::ProtoResumeRequest,
+    ) -> Result<aion_proto::ProtoResumeResponse, ClientError> {
+        let response = self
+            .client()
+            .resume(self.request(encode_resume_request(request))?)
+            .await
+            .map_err(|status| ClientError::from_status(&status))?;
+        Ok(decode_resume_response(response.into_inner()))
     }
 
     async fn list_workflows(

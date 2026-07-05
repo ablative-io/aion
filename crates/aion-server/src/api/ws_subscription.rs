@@ -322,6 +322,7 @@ fn decode_status_name(status: &str) -> Result<i32, ServerError> {
         "continued_as_new" | "ContinuedAsNew" => {
             Ok(aion_proto::ProtoWorkflowStatus::ContinuedAsNew as i32)
         }
+        "paused" | "Paused" => Ok(aion_proto::ProtoWorkflowStatus::Paused as i32),
         other => Err(WireError::invalid_input(format!(
             "invalid workflow status in websocket subscription: {other}"
         ))

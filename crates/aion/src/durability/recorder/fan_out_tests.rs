@@ -132,6 +132,10 @@ impl ReadableEventStore for OutboxTestStore {
         self.inner.list_active().await
     }
 
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.inner.list_paused().await
+    }
+
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
         self.inner.query(filter).await
     }

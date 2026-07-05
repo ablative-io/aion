@@ -11,11 +11,12 @@ use aion_proto::{
     ProtoCountWorkflowsResponse, ProtoCreateScheduleRequest, ProtoCreateScheduleResponse,
     ProtoDeleteScheduleResponse, ProtoDescribeScheduleResponse, ProtoDescribeWorkflowRequest,
     ProtoDescribeWorkflowResponse, ProtoListSchedulesRequest, ProtoListSchedulesResponse,
-    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoPauseScheduleResponse,
-    ProtoQueryRequest, ProtoQueryResponse, ProtoReopenRequest, ProtoReopenResponse,
-    ProtoResumeScheduleResponse, ProtoScheduleIdRequest, ProtoSignalRequest, ProtoSignalResponse,
-    ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, ProtoUpdateScheduleRequest,
-    ProtoUpdateScheduleResponse, ProtoWireError, generated,
+    ProtoListWorkflowsRequest, ProtoListWorkflowsResponse, ProtoPauseRequest, ProtoPauseResponse,
+    ProtoPauseScheduleResponse, ProtoQueryRequest, ProtoQueryResponse, ProtoReopenRequest,
+    ProtoReopenResponse, ProtoResumeRequest, ProtoResumeResponse, ProtoResumeScheduleResponse,
+    ProtoScheduleIdRequest, ProtoSignalRequest, ProtoSignalResponse, ProtoStartWorkflowRequest,
+    ProtoStartWorkflowResponse, ProtoUpdateScheduleRequest, ProtoUpdateScheduleResponse,
+    ProtoWireError, generated,
 };
 
 pub(super) fn decode_workflow_id(value: generated::WorkflowId) -> aion_proto::ProtoWorkflowId {
@@ -166,6 +167,37 @@ pub(super) fn decode_reopen_request(value: generated::ReopenRequest) -> ProtoReo
 
 pub(super) fn encode_reopen_response(value: ProtoReopenResponse) -> generated::ReopenResponse {
     generated::ReopenResponse {
+        run_id: value.run_id.map(encode_run_id),
+        status: value.status,
+    }
+}
+
+pub(super) fn decode_pause_request(value: generated::PauseRequest) -> ProtoPauseRequest {
+    ProtoPauseRequest {
+        namespace: value.namespace,
+        workflow_id: value.workflow_id.map(decode_workflow_id),
+        run_id: value.run_id.map(decode_run_id),
+        reason: value.reason,
+    }
+}
+
+pub(super) fn encode_pause_response(value: ProtoPauseResponse) -> generated::PauseResponse {
+    generated::PauseResponse {
+        run_id: value.run_id.map(encode_run_id),
+        status: value.status,
+    }
+}
+
+pub(super) fn decode_resume_request(value: generated::ResumeRequest) -> ProtoResumeRequest {
+    ProtoResumeRequest {
+        namespace: value.namespace,
+        workflow_id: value.workflow_id.map(decode_workflow_id),
+        run_id: value.run_id.map(decode_run_id),
+    }
+}
+
+pub(super) fn encode_resume_response(value: ProtoResumeResponse) -> generated::ResumeResponse {
+    generated::ResumeResponse {
         run_id: value.run_id.map(encode_run_id),
         status: value.status,
     }

@@ -44,6 +44,10 @@ pub enum ForwardRequest {
     Cancel(generated::CancelRequest),
     /// A `reopen` to relay verbatim to the owner.
     Reopen(generated::ReopenRequest),
+    /// A `pause` to relay verbatim to the owner (#204).
+    Pause(generated::PauseRequest),
+    /// A `resume` to relay verbatim to the owner (#204).
+    Resume(generated::ResumeRequest),
 }
 
 /// The owner's reply, relayed back to the original caller unchanged.
@@ -59,6 +63,10 @@ pub enum ForwardReply {
     Cancel(generated::CancelResponse),
     /// The owner's `reopen` reply.
     Reopen(generated::ReopenResponse),
+    /// The owner's `pause` reply (#204).
+    Pause(generated::PauseResponse),
+    /// The owner's `resume` reply (#204).
+    Resume(generated::ResumeResponse),
 }
 
 /// Relays a client request to a remote shard owner and returns its reply.
@@ -174,6 +182,22 @@ impl RequestForwarder for GrpcRequestForwarder {
                     .reopen(outbound)
                     .await
                     .map(|response| ForwardReply::Reopen(response.into_inner()))
+            }
+            ForwardRequest::Pause(message) => {
+                let mut outbound = Request::new(message);
+                *outbound.metadata_mut() = metadata;
+                client
+                    .pause(outbound)
+                    .await
+                    .map(|response| ForwardReply::Pause(response.into_inner()))
+            }
+            ForwardRequest::Resume(message) => {
+                let mut outbound = Request::new(message);
+                *outbound.metadata_mut() = metadata;
+                client
+                    .resume(outbound)
+                    .await
+                    .map(|response| ForwardReply::Resume(response.into_inner()))
             }
         }
     }
