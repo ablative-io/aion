@@ -44,6 +44,15 @@ const UNPARSEABLE_OUTPUT_HEAD: usize = 1000;
 /// three agent rounds to one cheap frontier model.
 const PILOT_MODEL: &str = "gpt-5.5";
 
+/// Arms norn's token-warning + auto-compaction for [`PILOT_MODEL`]. Norn's
+/// context protections ship DISARMED on CLI runs (context_window_limit
+/// defaults to None and the model catalog is never consulted), so every
+/// invocation must carry its model's real window explicitly or long
+/// grounding runs die on "provider error: context window exceeded".
+/// 272_000 is gpt-5.5's window; change alongside [`PILOT_MODEL`]
+/// (gpt-5.3-codex-spark: 128000, gpt-5.4-mini: per catalog).
+const PILOT_MODEL_CONTEXT_WINDOW: &str = "context_window=272000";
+
 /// `scout`: the grounding recon round — replace descriptions of the code
 /// with observations of it. Output is a scout report
 /// (`schemas/scout-report.schema.json`).
@@ -112,6 +121,8 @@ fn run_norn(
             "--fast",
             "--model",
             PILOT_MODEL,
+            "-c",
+            PILOT_MODEL_CONTEXT_WINDOW,
             "--reasoning-effort",
             reasoning_effort,
             "--session-id",
