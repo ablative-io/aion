@@ -387,6 +387,27 @@ pub(crate) async fn claim_outbox_rows_scoped(
     scope: &ClaimScope,
     limit: u32,
 ) -> Result<Vec<OutboxRow>, StoreError> {
+    claim_outbox_rows_scoped_excluding(conn, scope, limit, &std::collections::HashSet::new()).await
+}
+
+/// Claim up to `limit` due pending rows in `scope` whose owning workflow is NOT in
+/// `held` (the pause dispatch-hold, #204), atomically.
+///
+/// The scoped (backpressure / node-affinity) counterpart to
+/// [`claim_outbox_rows_excluding`]: a held row is skipped in-place and left
+/// `pending` for the whole paused window. With an empty `held` set this is
+/// byte-identical to the plain scoped claim.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn claim_outbox_rows_scoped_excluding(
+    conn: &Connection,
+    scope: &ClaimScope,
+    limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
+) -> Result<Vec<OutboxRow>, StoreError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -396,7 +417,7 @@ pub(crate) async fn claim_outbox_rows_scoped(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
-    let claimed = match select_and_claim_scoped(&tx, scope, limit).await {
+    let claimed = match select_and_claim_scoped(&tx, scope, limit, held).await {
         Ok(claimed) => claimed,
         Err(error) => {
             rollback(tx).await?;
@@ -415,6 +436,7 @@ async fn select_and_claim_scoped(
     tx: &Transaction,
     scope: &ClaimScope,
     limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
 ) -> Result<Vec<OutboxRow>, StoreError> {
     let claimed_at = Utc::now();
     let now = encode_instant(claimed_at);
@@ -464,6 +486,13 @@ async fn select_and_claim_scoped(
         .map_err(|error| crate::error::libsql_error(&error))?
     {
         let decoded = decode_row(&row)?;
+        // A held (paused) workflow's row is left Pending: never claimed, never
+        // released — release is purely resume + the next sweep (#204). The
+        // backpressure sweep claims through this scoped path, so the hold MUST be
+        // honoured here too, not only on the unscoped claim.
+        if held.contains(&decoded.workflow_id) {
+            continue;
+        }
         tx.execute(
             CLAIM_ROW_SQL,
             params![decoded.dispatch_key.clone(), now.clone()],

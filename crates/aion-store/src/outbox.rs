@@ -350,6 +350,37 @@ pub trait OutboxStore: Send + Sync + 'static {
         limit: u32,
     ) -> Result<Vec<OutboxRow>, StoreError>;
 
+    /// Atomically claims up to `limit` due pending rows that are in `scope` AND whose
+    /// owning workflow is NOT in `held` (the pause dispatch-hold, #204).
+    ///
+    /// This is the pause-aware counterpart to [`OutboxStore::claim_outbox_rows_scoped`]:
+    /// it is the scoped (backpressure / node-affinity) claim path with the same
+    /// held-exclusion as [`OutboxStore::claim_outbox_rows_excluding`]. The production
+    /// outbox dispatcher runs under keyed backpressure and therefore claims through the
+    /// SCOPED path, so the pause hold MUST be applied here too — otherwise a held row
+    /// would still be claimed and dispatched under backpressure. A held row is never
+    /// flipped to [`OutboxStatus::Claimed`]; it stays [`OutboxStatus::Pending`] for the
+    /// whole paused window and release is purely resume plus the ordinary sweep.
+    ///
+    /// The default implementation ignores `held` and delegates to
+    /// [`OutboxStore::claim_outbox_rows_scoped`]: a test-double store that never pauses
+    /// is unaffected. The bundled durable backends (libSQL, haematite) override it to
+    /// apply the exclusion inside the same atomic, single-writer claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn claim_outbox_rows_scoped_excluding(
+        &self,
+        scope: &ClaimScope,
+        limit: u32,
+        held: &std::collections::HashSet<WorkflowId>,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _ = held;
+        self.claim_outbox_rows_scoped(scope, limit).await
+    }
+
     /// Re-arms stale claimed rows so a live dispatcher can claim them again without restart.
     ///
     /// Implementations atomically select up to `limit` rows whose `status` is

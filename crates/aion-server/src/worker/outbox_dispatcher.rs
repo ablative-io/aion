@@ -444,24 +444,26 @@ impl OutboxDispatcher {
     /// durable-outbox guarantees are untouched: only the `limit` and `scope` are
     /// quota-derived (a smaller claim is already first-class).
     async fn claim_rows(&self) -> Result<Vec<OutboxRow>, aion_store::StoreError> {
+        // The pause dispatch-hold (#204) excludes held workflows at claim time so
+        // their rows stay Pending. With no held set (or an empty one) both paths are
+        // byte-identical to the plain claim. The exclusion is applied on BOTH the
+        // backpressure (scoped) and the plain (unscoped) claim, because production
+        // wires backpressure unconditionally and would otherwise bypass the hold.
+        let held = match &self.paused_runs {
+            Some(paused_runs) => paused_runs.snapshot(),
+            None => std::collections::HashSet::new(),
+        };
         match &self.backpressure {
             Some(backpressure) => {
                 backpressure
-                    .claim_round_robin(&self.store, self.config.batch_size)
+                    .claim_round_robin(&self.store, self.config.batch_size, &held)
                     .await
             }
-            // The pause dispatch-hold (#204) excludes held workflows at claim
-            // time so their rows stay Pending. With no held set (or an empty
-            // one) this is byte-identical to the plain unscoped claim.
-            None => match &self.paused_runs {
-                Some(paused_runs) => {
-                    let held = paused_runs.snapshot();
-                    self.store
-                        .claim_outbox_rows_excluding(self.config.batch_size, &held)
-                        .await
-                }
-                None => self.store.claim_outbox_rows(self.config.batch_size).await,
-            },
+            None => {
+                self.store
+                    .claim_outbox_rows_excluding(self.config.batch_size, &held)
+                    .await
+            }
         }
     }
 
@@ -1650,7 +1652,9 @@ mod tests {
         let backlog = seed_pending(&store, "t", 4).await?;
 
         // headroom = ceiling(3) − claimed(3) = 0: NOTHING new is claimed this sweep.
-        let claimed = backpressure.claim_round_robin(&store, 16).await?;
+        let claimed = backpressure
+            .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+            .await?;
         assert!(claimed.is_empty(), "at the ceiling, no new row is claimed");
         // Every backlog row is STILL Pending — held, not Failed, not dropped.
         assert_eq!(count_pending(&raw, "t").await?, 4);
@@ -1671,12 +1675,59 @@ mod tests {
         assert_eq!(raw.count_claimed_outbox_rows("t").await?, 1);
 
         // Next sweep: headroom 2 → exactly 2 backlog rows are claimed, 2 stay Pending.
-        let resumed = backpressure.claim_round_robin(&store, 16).await?;
+        let resumed = backpressure
+            .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+            .await?;
         assert_eq!(resumed.len(), 2, "headroom returned, 2 held rows dispatch");
         assert_eq!(
             count_pending(&raw, "t").await?,
             2,
             "2 backlog rows still held"
+        );
+        Ok(())
+    }
+
+    /// #204 GATE-1 (production path): the pause dispatch-hold is honoured on the
+    /// BACKPRESSURE (scoped) claim, which is what the production dispatcher runs. A
+    /// held workflow's pending row is never claimed under `claim_round_robin` — it
+    /// stays Pending the whole paused window — and once the hold is released the very
+    /// next backpressure sweep claims it. Without the scoped exclusion the hold would
+    /// silently evaporate under backpressure.
+    #[tokio::test]
+    async fn backpressure_claim_honours_the_pause_hold() -> Result<(), Box<dyn std::error::Error>> {
+        let raw = open_store("bp-pause-hold").await?;
+        let store: Arc<dyn OutboxStore> = raw.clone();
+        // Ample ceiling so nothing is held for quota reasons — only the pause hold
+        // can keep the row Pending here.
+        let ns_store = namespace_store_with_quotas(&[("t", 100)]).await?;
+        let backpressure = own_all_backpressure(ns_store, 1024);
+        let seeded = seed_pending(&store, "t", 1).await?;
+        let workflow_id = seeded[0].workflow_id.clone();
+
+        // Held: the backpressure sweep must NOT claim the row.
+        let mut held = std::collections::HashSet::new();
+        held.insert(workflow_id.clone());
+        let claimed = backpressure.claim_round_robin(&store, 16, &held).await?;
+        assert!(
+            claimed.is_empty(),
+            "a paused run's row is never claimed under backpressure"
+        );
+        assert_eq!(
+            raw.outbox_row_state(&seeded[0].dispatch_key)
+                .await?
+                .map(|state| state.status),
+            Some(OutboxStatus::Pending),
+            "the held row stays Pending (never Claimed) under the backpressure sweep"
+        );
+
+        // Released (resume): the next backpressure sweep claims it with no re-arm.
+        let released = backpressure
+            .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+            .await?;
+        assert_eq!(
+            released.len(),
+            1,
+            "the released row dispatches after resume"
         );
         Ok(())
     }
@@ -1699,7 +1750,9 @@ mod tests {
 
         // headroom = ceiling(5) − claimed(0) = 5: it claims exactly 5, NOT zero.
         // (A Pending+Claimed headroom would be 5 − 20 = 0 and wedge the tenant.)
-        let claimed = backpressure.claim_round_robin(&store, 100).await?;
+        let claimed = backpressure
+            .claim_round_robin(&store, 100, &std::collections::HashSet::new())
+            .await?;
         assert_eq!(
             claimed.len(),
             5,
@@ -1729,7 +1782,9 @@ mod tests {
 
         // A single small-batch sweep: with FIFO the batch would be all-bursty and
         // never reach the one quiet row. Round-robin must give quiet a slot.
-        let claimed = backpressure.claim_round_robin(&store, 8).await?;
+        let claimed = backpressure
+            .claim_round_robin(&store, 8, &std::collections::HashSet::new())
+            .await?;
         assert!(
             claimed.iter().any(|row| row.namespace == "quiet"),
             "the quiet tenant's single row is claimed this very sweep (no FIFO starvation)"
@@ -1771,7 +1826,9 @@ mod tests {
 
         // A single small-batch (8) sweep. With a per-route budget, the bursty
         // tenant's 8 routes consume all 8 before the quiet route is reached.
-        let claimed = backpressure.claim_round_robin(&store, 8).await?;
+        let claimed = backpressure
+            .claim_round_robin(&store, 8, &std::collections::HashSet::new())
+            .await?;
         let bursty = claimed.iter().filter(|r| r.namespace == "bursty").count();
         let quiet = claimed.iter().filter(|r| r.namespace == "quiet").count();
         assert_eq!(
@@ -1821,7 +1878,9 @@ mod tests {
         // backlog drains. Collect every claimed dispatch key across all sweeps.
         let mut all_claimed: Vec<String> = Vec::new();
         for _ in 0..10 {
-            let claimed = backpressure.claim_round_robin(&store, 16).await?;
+            let claimed = backpressure
+                .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+                .await?;
             assert!(
                 claimed.len() <= 3,
                 "the ceiling caps concurrent claims at 3 per sweep"
@@ -1843,7 +1902,12 @@ mod tests {
             "all 6 rows dispatched, each exactly once"
         );
         // Nothing remains claimable: the backlog is fully drained (nothing dropped).
-        assert!(backpressure.claim_round_robin(&store, 16).await?.is_empty());
+        assert!(
+            backpressure
+                .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -1880,7 +1944,9 @@ mod tests {
 
         let mut throttled = Vec::new();
         for _ in 0..10 {
-            let claimed = backpressure.claim_round_robin(&store, 16).await?;
+            let claimed = backpressure
+                .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+                .await?;
             for row in &claimed {
                 store.complete_outbox_row(&row.dispatch_key).await?;
             }
@@ -1941,7 +2007,9 @@ mod tests {
         let plain: Arc<dyn OutboxStore> = plain_raw.clone();
         plain.append_outbox_batch(&shared).await?;
 
-        let via_bp = backpressure.claim_round_robin(&bp_store, 16).await?;
+        let via_bp = backpressure
+            .claim_round_robin(&bp_store, 16, &std::collections::HashSet::new())
+            .await?;
         let via_plain = plain.claim_outbox_rows(16).await?;
 
         // Compare the actual claimed dispatch-key SETS, not just the lengths: this
@@ -1983,7 +2051,9 @@ mod tests {
         let backpressure = Backpressure::new(quota, OwnedShardFraction::new(2, 8));
         seed_pending(&store, "t", 10).await?;
 
-        let claimed = backpressure.claim_round_robin(&store, 16).await?;
+        let claimed = backpressure
+            .claim_round_robin(&store, 16, &std::collections::HashSet::new())
+            .await?;
         assert_eq!(
             claimed.len(),
             2,

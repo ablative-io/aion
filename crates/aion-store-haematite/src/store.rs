@@ -1883,6 +1883,70 @@ impl OutboxStore for HaematiteStore {
         .await
     }
 
+    async fn claim_outbox_rows_scoped_excluding(
+        &self,
+        claim_scope: &ClaimScope,
+        limit: u32,
+        held: &std::collections::HashSet<aion_core::WorkflowId>,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let shard_scope = self.owned_shard_scope();
+        let claim_scope = claim_scope.clone();
+        let held = held.clone();
+        self.blocking(move |store| {
+            let now = Utc::now();
+            let mut claimable: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                shard_scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?
+            .into_iter()
+            .filter(|row| {
+                row.status == OutboxStatus::Pending
+                    && row.visible_after <= now
+                    && claim_scope.admits(row)
+            })
+            // A held (paused) workflow's row is left Pending: never claimed, so
+            // release is purely resume + the next sweep (#204). The backpressure
+            // sweep claims through this scoped path, so the hold MUST be honoured
+            // here too, not only on the unscoped claim.
+            .filter(|row| !held.contains(&row.workflow_id))
+            .collect();
+            claimable.sort_by(|left, right| {
+                left.visible_after
+                    .cmp(&right.visible_after)
+                    .then_with(|| left.dispatch_key.cmp(&right.dispatch_key))
+            });
+            let take = usize::try_from(limit).unwrap_or(usize::MAX);
+            claimable.truncate(take);
+
+            let database = store.database();
+            let mut claimed = Vec::with_capacity(claimable.len());
+            for row in claimable {
+                let updated = OutboxRow {
+                    status: OutboxStatus::Claimed,
+                    claimed_at: Some(now),
+                    ..row
+                };
+                let route_key = keyspace::event_stream_key(&updated.workflow_id);
+                database
+                    .put_routed(
+                        &route_key,
+                        keyspace::outbox_key(&updated.dispatch_key),
+                        encode_outbox(&updated)?,
+                    )
+                    .map_err(|error| database_error(&error))?;
+                claimed.push(updated);
+            }
+            database.commit().map_err(|error| database_error(&error))?;
+            Ok(claimed)
+        })
+        .await
+    }
+
     async fn rearm_stale_claimed_outbox_rows(
         &self,
         older_than: DateTime<Utc>,

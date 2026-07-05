@@ -376,6 +376,20 @@ impl Engine {
             },
             shards,
         )?;
+        // 3b. Rebuild the pause dispatch-hold for the newly-adopted shards (#204).
+        //     The fence above widened the owned-shard scope, so `list_paused` now
+        //     sees the adopted shards' durably-`Paused` runs. `extend` (not replace)
+        //     preserves the holds for shards this node already owned. A run paused on
+        //     an adopted shard keeps its outbox rows held after failover; without this
+        //     the adopting node's dispatcher would claim and dispatch them. A store
+        //     error is logged, not fatal: the adoption itself is durable and the next
+        //     startup/rebuild repopulates the hold.
+        match self.store.list_paused().await {
+            Ok(paused) => self.paused_runs.extend(paused),
+            Err(error) => {
+                tracing::warn!(%error, "failed to rebuild paused-runs dispatch hold at shard adoption");
+            }
+        }
         // 4. Re-resident the adopted workflows through the production recovery
         //    seam (idempotent: this node's own workflows are skipped). Recovery
         //    enumerates over the owned scope, which now contains only shards that

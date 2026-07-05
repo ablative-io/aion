@@ -856,7 +856,6 @@ mod tests {
                     events.last(),
                     Some(Event::ActivityCompleted { .. })
                 ));
-                assert_eq!(cursor.current_sequence(), None);
             }
             other => {
                 return Err(
@@ -864,6 +863,15 @@ mod tests {
                 );
             }
         }
+
+        // The markers are never matched: a further resolve for any activity
+        // exhausts (the leftover WorkflowResumed marker is invisible, never a
+        // spurious match or mismatch).
+        assert_eq!(
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(1)),
+            CursorResolveResult::Exhausted,
+            "the leftover pause/resume markers are invisible, never matched"
+        );
         Ok(())
     }
 

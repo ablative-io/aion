@@ -38,11 +38,23 @@ Consequences of the ruling, as built:
   made durable by rebuilding the dispatcher's `PausedRuns` set from a new
   `EventStore::list_paused()` (`== Paused`) at startup — BEFORE the dispatcher's
   first claim — and at shard adoption.
+- **Claim-time hold on BOTH claim paths.** The hold is an exclusion filter applied
+  inside the atomic claim: `claim_outbox_rows_excluding` (unscoped) AND
+  `claim_outbox_rows_scoped_excluding` (the scoped/node-affinity path the keyed
+  backpressure sweep uses). Production wires backpressure unconditionally, so the
+  scoped variant is load-bearing — a held row is never claimed on either path.
+  Both are overridden on libSQL and haematite; the trait defaults delegate to the
+  non-excluding claim so a never-pausing test double is unaffected.
 - **Signals to a paused-not-resident run** are durably recorded via a one-shot
   recorder (record-before-deliver preserved) and take effect on resume replay.
 - **Cancel of a Paused run** removes it from the hold set so its rows are not
   leaked; a subsequent reopen of the cancelled run works, the pause/resume markers
-  being replay-invisible.
+  being replay-invisible. Known limitation (v1): cancel of a run that was paused
+  and then crashed (durably `Paused`, deliberately not resident) still returns
+  `WorkflowNotFound` because `terminate.rs` requires a registry handle — the
+  operator path is resume-then-cancel. Reaching a durable, non-terminal,
+  never-respawned run with cancel is deferred (it is the general
+  `cancel-without-a-live-handle` gap, not specific to pause).
 - **Mixed-version note:** an OLD binary reading a NEW history containing
   `WorkflowPaused` fails serde decode entirely — the same accepted precedent set
   by `WorkflowReopened` and every prior variant addition, not new debt. The proto

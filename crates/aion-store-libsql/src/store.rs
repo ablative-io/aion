@@ -280,6 +280,17 @@ impl OutboxStore for LibSqlStore {
         crate::outbox::claim_outbox_rows_scoped(self.connection(), scope, limit).await
     }
 
+    async fn claim_outbox_rows_scoped_excluding(
+        &self,
+        scope: &ClaimScope,
+        limit: u32,
+        held: &std::collections::HashSet<WorkflowId>,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::claim_outbox_rows_scoped_excluding(self.connection(), scope, limit, held)
+            .await
+    }
+
     async fn rearm_stale_claimed_outbox_rows(
         &self,
         older_than: DateTime<Utc>,
