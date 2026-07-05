@@ -1,6 +1,7 @@
-//// Domain types for the brief-forge workflow, mirroring the doctrine
-//// schemas copied into `schemas/` (scout-report, brief, refutation, and the
-//// brief-forge input/output pair).
+//// Domain types for the dev-pipeline workflows, mirroring the doctrine
+//// schemas copied into `schemas/` (scout-report, brief, refutation,
+//// implementation-report, and the brief-forge / implement-and-gate
+//// input/output pairs).
 ////
 //// Optional SCALAR schema fields are `Option` values encoded by omission
 //// (never `null` — the schemas are `additionalProperties: false` with typed
@@ -234,4 +235,184 @@ pub type BriefForgeResult {
 /// input-decode failures and agent activities that failed terminally.
 pub type BriefForgeError {
   BriefForgeStageFailed(stage: String, message: String)
+}
+
+// --- implement-and-gate: workflow input --------------------------------------
+
+/// Isolated-workspace mode (`isolation`). A shared-checkout run is not a
+/// legal value, on purpose — concurrent runs on one checkout collide.
+pub type Isolation {
+  Worktree
+  Clone
+}
+
+/// One gate of the battery (`gates[]`): the exact command whose OWN exit
+/// status judges it. Language-specific batteries are a parameter here, not a
+/// fork of the workflow.
+pub type GateSpec {
+  GateSpec(id: String, command: String)
+}
+
+/// The implement-and-gate workflow input
+/// (`schemas/implement-and-gate.input.schema.json`). The brief is EMBEDDED
+/// (an object conforming to `schemas/brief.schema.json`), never referenced
+/// by id. `fix_cap` is REQUIRED — no baked defaults, per package convention.
+/// `implementer_model` is the frontier escape hatch: it overrides the
+/// worker's pilot model at harness invocation and, being input, the tier a
+/// diff was written on is always in history.
+pub type ImplementAndGateInput {
+  ImplementAndGateInput(
+    brief: Brief,
+    repo_root: String,
+    base_ref: String,
+    isolation: Isolation,
+    node: Option(String),
+    fix_cap: Int,
+    gates: List(GateSpec),
+    implementer_model: Option(String),
+  )
+}
+
+// --- implement-and-gate: activity inputs/outputs ------------------------------
+
+/// Input to `provision_workspace`: create an isolated worktree/clone of
+/// `repo_root` at `base_ref` under a scratch path. `task_ref` names the
+/// workspace deterministically (`dev-pipeline-<task_ref>`).
+pub type ProvisionInput {
+  ProvisionInput(
+    repo_root: String,
+    base_ref: String,
+    isolation: Isolation,
+    task_ref: String,
+  )
+}
+
+/// The provisioned isolated workspace every downstream step runs inside.
+pub type Workspace {
+  Workspace(path: String)
+}
+
+/// One implementer round (initial or resume): the worker shells `norn
+/// --print` INSIDE `workspace_path` with this session id and prompt. `model`
+/// is the invocation-level override from the workflow input; when absent the
+/// worker pins its pilot model.
+pub type ImplementRound {
+  ImplementRound(
+    workspace_path: String,
+    session_id: String,
+    prompt: String,
+    model: Option(String),
+  )
+}
+
+/// Input to `run_gate`: shell exactly `command` in `workspace_path`.
+pub type GateRun {
+  GateRun(workspace_path: String, gate_id: String, command: String)
+}
+
+/// One completed gate command, the stacked-dev `CliRun` pattern: a non-zero
+/// `exit_status` is DATA routed to the fix loop, never an activity error
+/// (only a missing binary/workspace is terminal). `output` is the captured
+/// combined stdout+stderr, tail-bounded by the worker at capture — the
+/// durable record a fix round is handed, never a paraphrase.
+pub type GateCliRun {
+  GateCliRun(exit_status: Int, output: String, duration_ms: Int)
+}
+
+/// Input to `teardown_workspace` (declared but deliberately never dispatched
+/// — see `implement_and_gate`'s module doc).
+pub type TeardownInput {
+  TeardownInput(repo_root: String, workspace_path: String)
+}
+
+/// `teardown_workspace`'s best-effort receipt.
+pub type TornDown {
+  TornDown(cleaned: Bool)
+}
+
+// --- implementation report ----------------------------------------------------
+
+/// One changed file (`files_changed[]`).
+pub type FileChange {
+  FileChange(path: String, change: String)
+}
+
+/// Mapping from one brief acceptance gate to the work discharging it
+/// (`gates_addressed[]`).
+pub type GateAddressed {
+  GateAddressed(gate_id: String, how: String)
+}
+
+/// One declared departure from the brief (`deviations[]`) — an undeclared
+/// deviation found in review is a defect regardless of whether the code is
+/// right.
+pub type ReportDeviation {
+  ReportDeviation(from: String, to: String, why: String)
+}
+
+/// The implementer's structured return
+/// (`schemas/implementation-report.schema.json`). Note what is NOT here:
+/// gate results — gates are command activities with their own recorded exit
+/// statuses; the implementer never certifies them.
+pub type ImplementationReport {
+  ImplementationReport(
+    brief_ref: String,
+    summary: String,
+    files_changed: List(FileChange),
+    gates_addressed: List(GateAddressed),
+    deviations: List(ReportDeviation),
+    new_tests: List(String),
+    concerns: List(String),
+    not_covered: List(String),
+  )
+}
+
+// --- implement-and-gate: workflow output ---------------------------------------
+
+/// One row of the battery record (`gate_record[]`): the gate, its exact
+/// command, and the command's OWN exit status as recorded fact.
+/// `output_tail` rides only on the failing entry of a `GatesExhausted`
+/// record (encoded by omission otherwise).
+pub type GateRecordEntry {
+  GateRecordEntry(
+    id: String,
+    command: String,
+    exit_status: Int,
+    duration_ms: Int,
+    output_tail: Option(String),
+  )
+}
+
+/// How the run ended (`outcome`): `GatesGreen` means every gate exited 0 on
+/// the final round — the workflow cannot reach this state with a red gate,
+/// which is topology, not policy; `GatesExhausted` means `fix_cap` fix
+/// rounds were spent and a gate is still red — surfaced to the operator with
+/// the full gate record, never an error crash.
+pub type GateOutcome {
+  GatesGreen
+  GatesExhausted
+}
+
+/// The implement-and-gate result
+/// (`schemas/implement-and-gate.output.schema.json`): the implementer's last
+/// report, the final round's gate record, rounds spent, and the workspace —
+/// which is intentionally NOT torn down on either terminus (review inspects
+/// success; the operator inspects failure).
+pub type ImplementAndGateResult {
+  ImplementAndGateResult(
+    outcome: GateOutcome,
+    implementation_report: ImplementationReport,
+    gate_record: List(GateRecordEntry),
+    rounds: Int,
+    workspace_path: String,
+  )
+}
+
+/// The single typed failure surface: which stage failed and why. An
+/// exhausted fix cap is NOT an error (it is a `GatesExhausted` result); this
+/// covers input-decode failures, a provision that could not produce a
+/// workspace, gate commands whose binary/workspace is missing, and
+/// implementer rounds that failed terminally.
+pub type ImplementAndGateError {
+  ImplementAndGateStageFailed(stage: String, message: String)
 }

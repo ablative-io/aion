@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prospekt://doctrine/implement-and-gate-output",
+  "title": "ImplementAndGateOutput",
+  "description": "Workflow output for implement-and-gate. `gates_green` carries the final all-green battery record; `gates_exhausted` carries the LAST round's record — the failing gate's tail-bounded captured output included — after fix_cap fix rounds: cap exhaustion is a finding surfaced to the operator, never an error crash. The workspace is intentionally NOT torn down on either terminus (review inspects success; the operator inspects failure). The embedded report is shaped by the sibling implementation-report.schema.json (kept loose here so this file stays self-contained for the packager).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "implementation_report", "gate_record", "rounds", "workspace_path"],
+  "properties": {
+    "outcome": {
+      "enum": ["gates_green", "gates_exhausted"],
+      "description": "gates_green = every gate exited 0 on the final round; gates_exhausted = fix_cap fix rounds were spent and a gate is still red."
+    },
+    "implementation_report": {
+      "type": "object",
+      "description": "The implementer's LAST full replacement report, shaped by schemas/implementation-report.schema.json. It never certifies gates — the gate_record beside it is the verdict."
+    },
+    "gate_record": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "command", "exit_status", "duration_ms"],
+        "properties": {
+          "id": { "type": "string" },
+          "command": { "type": "string", "description": "The exact command whose OWN exit status judged the gate." },
+          "exit_status": { "type": "integer", "description": "The command's own exit status — the durable verdict (128+signal when signal-killed)." },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "output_tail": { "type": "string", "description": "Tail-bounded captured output. Present only on the failing entry of a gates_exhausted record — the durable record the operator (and any future fix round) reads, never a paraphrase." }
+        }
+      },
+      "description": "The final round's battery record in gate order. On gates_green: every declared gate, all exit 0. On gates_exhausted: the gates run that round, the red one last."
+    },
+    "rounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Gate-battery rounds executed = implementer rounds spent (1 initial + one per fix round)."
+    },
+    "workspace_path": {
+      "type": "string",
+      "description": "The isolated workspace holding the diff. Deliberately left in place on both termini."
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prospekt://doctrine/implementation-report",
+  "title": "ImplementationReport",
+  "description": "The implementer's structured return. Note what is NOT here: gate results. Gates are command activities with their own recorded exit statuses; the implementer never certifies them (rigid step 4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_ref", "summary", "files_changed", "gates_addressed", "deviations", "concerns", "not_covered"],
+  "properties": {
+    "brief_ref": { "type": "string" },
+    "summary": { "type": "string", "description": "What was built, in complete sentences a reviewer can orient from." },
+    "files_changed": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "change"],
+        "properties": {
+          "path": { "type": "string" },
+          "change": { "type": "string", "description": "One line: what changed here and why." }
+        }
+      }
+    },
+    "gates_addressed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate_id", "how"],
+        "properties": {
+          "gate_id": { "type": "string", "description": "Acceptance-gate id from the brief (G1, G2...)." },
+          "how": { "type": "string", "description": "The test/change that discharges it — by name, so the reviewer can go read it." }
+        }
+      },
+      "description": "Mapping from every brief acceptance gate to the work that discharges it. A gate with no entry means the implementer believes it is out of reach — say so in concerns, do not omit silently."
+    },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "why"],
+        "properties": {
+          "from": { "type": "string", "description": "What the brief specified." },
+          "to": { "type": "string", "description": "What was done instead." },
+          "why": { "type": "string" }
+        }
+      },
+      "description": "Every departure from the brief, however small. An undeclared deviation found in review is treated as a defect regardless of whether the code is right."
+    },
+    "new_tests": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Test names added, each asserting an outcome (see brief gate audit)."
+    },
+    "concerns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Anything the implementer is unsure about — the reviewer reads this FIRST. Empty concerns on a nontrivial diff is itself a signal."
+    },
+    "not_covered": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -1,14 +1,18 @@
 # Workflow packaging descriptor consumed by `aion package`.
 # Reference: docs/packaging.md.
 #
-# One entry — the first slice of the dev-pipeline family: `brief_forge`
-# (prospekt doctrine: workflows/brief-forge.md). Later slices add the sibling
-# entries (implement-and-gate, truth-pass) to this same package.
+# Two entries — the dev-pipeline family so far: `brief_forge` (prospekt
+# doctrine: workflows/brief-forge.md) and `implement_and_gate` (doctrine:
+# workflows/implement-and-gate.md). A later slice adds the remaining sibling
+# (truth-pass) to this same package.
 #
-# The timeout sizes the longest legitimate run: three agent stages with a
+# Timeouts size the longest legitimate run (an author's sizing, not an
+# engine default — ADR-001/003): brief_forge is three agent stages with a
 # capped design⇄refute loop, each round a frontier-model norn session that
 # can read a large tree — one day, the same sizing as stacked-dev's
-# brief-dev child (an author's sizing, not an engine default — ADR-001/003).
+# brief-dev child. implement_and_gate can park across a capped
+# implement⇄gate fix loop whose gate battery may be a full test suite per
+# round — seven days, stacked-dev's parent sizing.
 
 [[workflow]]
 entry_module = "brief_forge"
@@ -18,3 +22,12 @@ input_schema = "schemas/brief-forge.input.schema.json"
 output_schema = "schemas/brief-forge.output.schema.json"
 activities = ["scout", "design", "refute"]
 output = "brief-forge.aion"
+
+[[workflow]]
+entry_module = "implement_and_gate"
+entry_function = "run"
+timeout_seconds = 604800
+input_schema = "schemas/implement-and-gate.input.schema.json"
+output_schema = "schemas/implement-and-gate.output.schema.json"
+activities = ["provision_workspace", "implement", "run_gate", "implement_resume", "teardown_workspace"]
+output = "implement-and-gate.aion"

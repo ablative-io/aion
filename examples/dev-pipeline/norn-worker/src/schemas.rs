@@ -1,4 +1,4 @@
-//! The `--output-schema` text for the three norn-backed stages.
+//! The `--output-schema` text for the norn-backed stages.
 //!
 //! Unlike stacked-dev (which pins byte-inlined string constants plus a
 //! drift-check script), these are `include_str!` reads of the package's own
@@ -15,3 +15,9 @@ pub const BRIEF_OUTPUT_SCHEMA: &str = include_str!("../../schemas/brief.schema.j
 
 /// The refutation stage contract (`schemas/refutation.schema.json`).
 pub const REFUTATION_OUTPUT_SCHEMA: &str = include_str!("../../schemas/refutation.schema.json");
+
+/// The implementer stage contract
+/// (`schemas/implementation-report.schema.json`), shared by `implement` and
+/// `implement_resume`.
+pub const IMPLEMENTATION_REPORT_OUTPUT_SCHEMA: &str =
+    include_str!("../../schemas/implementation-report.schema.json");

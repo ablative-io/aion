@@ -13,9 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aion-core"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "520890016e3f10e969f7cc6eb6e8cec29bfdc9d9e19fc40ee77f3a646ae3487f"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",
@@ -26,35 +24,57 @@ dependencies = [
 ]
 
 [[package]]
-name = "aion-proto"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a6b6e9b3165886dafd888d84f9c5ae1043704afa3c9880a87a3146a6ab66e45"
+name = "aion-integrations"
+version = "0.8.0"
 dependencies = [
  "aion-core",
+ "async-trait",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "aion-proto"
+version = "0.8.0"
+dependencies = [
+ "aion-core",
+ "aion-proto-generated",
  "chrono",
  "prost",
- "protoc-bin-vendored",
  "serde",
  "serde_json",
  "thiserror",
  "tonic",
- "tonic-build",
  "tonic-prost",
- "tonic-prost-build",
  "uuid",
 ]
 
 [[package]]
+name = "aion-proto-generated"
+version = "0.8.0"
+dependencies = [
+ "prost",
+ "protoc-bin-vendored",
+ "serde",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "aion-worker"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54efa5df76651a839e08fb816493071283fb14df068653473c65ab3f775e4bf5"
+version = "0.8.0"
 dependencies = [
  "aion-core",
+ "aion-integrations",
  "aion-proto",
  "async-trait",
  "futures",
+ "hostname",
  "prost",
  "serde",
  "serde_json",
@@ -410,6 +430,17 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
+]
 
 [[package]]
 name = "http"

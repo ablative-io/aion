@@ -1,26 +1,33 @@
-//// Stage prompt projections for brief-forge: pure functions of the workflow
-//// input and the stage artifacts each round is handed — no filesystem
-//// access, no ambient state, no engine imports (the stacked-dev prompt
-//// discipline).
+//// Stage prompt projections for the dev-pipeline workflows: pure functions
+//// of the workflow input and the stage artifacts each round is handed — no
+//// filesystem access, no ambient state, no engine imports (the stacked-dev
+//// prompt discipline).
 ////
 //// Each prompt opens with the system-instruction BODY of its prospekt
-//// doctrine profile (`prospekt/doctrine/profiles/{scout,designer,refuter}.md`,
-//// frontmatter stripped), inlined verbatim as the preamble — the same
-//// mechanism stacked-dev uses for its stage instructions; norn's `--profile`
-//// flag is deliberately not used so the package stays self-contained.
+//// doctrine profile (`prospekt/doctrine/profiles/{scout,designer,refuter,
+//// implementer}.md`, frontmatter stripped), inlined verbatim as the
+//// preamble — the same mechanism stacked-dev uses for its stage
+//// instructions; norn's `--profile` flag is deliberately not used so the
+//// package stays self-contained.
 ////
 //// Information hygiene rules the projections own:
 //// - the designer receives the task and the scout report (+ the prior
 ////   refutation on loop rounds);
 //// - the refuter receives the draft brief ARTIFACT and the scout report —
-////   never the designer's reasoning, so it cannot be anchored by it.
+////   never the designer's reasoning, so it cannot be anchored by it;
+//// - the implementer receives the brief embedded VERBATIM with
+////   `out_of_scope` called out, and on fix rounds a failing gate's CAPTURED
+////   output — the durable record, never a paraphrase of it.
 
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
-import dev_pipeline/types.{type BriefForgeInput}
+import dev_pipeline/types.{
+  type BriefForgeInput, type GateCliRun, type GateSpec,
+  type ImplementAndGateInput,
+}
 
 /// System-instruction body of `prospekt/doctrine/profiles/scout.md`
 /// (frontmatter stripped), verbatim.
@@ -262,6 +269,130 @@ fn prior_refutation_section(prior: Option(#(Int, String))) -> String {
       <> "CHANGING THE DESIGN, not by arguing back; every gate_audit hole "
       <> "becomes a gate revision.\n"
       <> refutation_json
+  }
+}
+
+/// System-instruction body of `prospekt/doctrine/profiles/implementer.md`
+/// (frontmatter stripped), verbatim.
+pub const implementer_profile = "You are the implementer. The judgment has already been spent: the brief you
+receive was grounded by a scout, designed at implementation altitude, and
+survived a refuter. Your craft is making the code say it well — in this
+codebase's own voice.
+
+## Method
+
+1. Read the brief completely before touching anything: the design, the
+   invariants to preserve, the acceptance gates, and `out_of_scope`.
+2. Verify the touch points still match the tree (the brief was written
+   against a commit; the tree may have moved). Mismatch is a
+   stop-and-surface event, not something to silently adapt around.
+3. Implement to the brief's design, matching the prior art it names: the
+   surrounding code's naming, error taxonomy, comment density, test idiom.
+   Write comments only for constraints the code cannot show — never
+   narration of the change.
+4. For every acceptance gate, build the thing that discharges it and map
+   gate → test/change by name in your report. A gate you cannot discharge
+   goes in `concerns`, loudly — never silently dropped.
+5. New tests assert OUTCOMES — the timer fires, the run completes with the
+   expected value — never that an event merely exists in history. You are
+   working in a pipeline that once watched a green suite certify a dead
+   clock; do not add to that suite's tradition.
+6. On fix rounds you receive a failing gate's captured output or a
+   reviewer's `must_fix` instruction: fix the cause it names. If you
+   believe the finding is wrong, say so in `concerns` with your argument —
+   do not quietly ignore it, and do not quietly \"fix\" what you think they
+   meant instead.
+
+## Hard rules
+
+- **You never certify gates.** fmt, clippy, tests run as pipeline
+  activities after you; their exit codes are the verdict. Run whatever you
+  like while developing, but your report claims only what you *changed*,
+  never that gates pass.
+- **Every departure from the brief goes in `deviations`** — from/to/why,
+  however small. An undeclared deviation found in review is a defect even
+  when the code is right.
+- **Crossing `out_of_scope` is forbidden.** If the right fix seems to live
+  out there, stop and surface it: that is a brief revision, which is
+  cheap — an initiative excursion, which is not.
+- No `#[ignore]`, no disabled tests, no commented-out assertions. If a
+  test cannot pass yet, that is a `concerns` entry and probably a brief
+  problem.
+
+Report what you did not cover. Blocked, confused, or convinced the brief
+is wrong? Stop and surface — with what you found, so the next round starts
+ahead of where you did."
+
+/// The implementer projection: profile preamble, the brief embedded
+/// VERBATIM (its acceptance gates and touch points included),
+/// `out_of_scope` called out explicitly, workspace coordinates, and the
+/// schema instruction.
+pub fn implement_prompt(
+  input: ImplementAndGateInput,
+  brief_json: String,
+  workspace_path: String,
+) -> String {
+  join_blocks([
+    implementer_profile,
+    "Brief (embedded verbatim — the unit of work; its acceptance gates and "
+      <> "touch points are in here):\n"
+      <> brief_json,
+    out_of_scope_section(input.brief.out_of_scope),
+    "Workspace: you are working INSIDE the isolated workspace at "
+      <> workspace_path
+      <> " (provisioned from "
+      <> input.repo_root
+      <> " at "
+      <> input.base_ref
+      <> "). Every change stays in this workspace.",
+    "Return ONLY an implementation report against the implementation-report "
+      <> "schema. Your report claims only what you changed — the gate "
+      <> "battery runs after you as command activities, and their exit "
+      <> "statuses are the verdict.",
+  ])
+}
+
+/// The fix-round projection: the failing gate's CAPTURED output (the
+/// durable record, tail-bounded at capture by the worker — never a
+/// paraphrase), the brief ref, and the full-replacement-report instruction.
+pub fn implement_resume_prompt(
+  brief_ref: String,
+  gate: GateSpec,
+  cli_run: GateCliRun,
+  fix_round: Int,
+) -> String {
+  join_blocks([
+    "Fix round "
+      <> int.to_string(fix_round)
+      <> ": gate `"
+      <> gate.id
+      <> "` (command: `"
+      <> gate.command
+      <> "`) failed with exit status "
+      <> int.to_string(cli_run.exit_status)
+      <> ". Its captured output — the durable record, tail-bounded — is "
+      <> "below. Fix the cause it names; if you believe the finding is "
+      <> "wrong, say so in concerns with your argument.\n\n"
+      <> cli_run.output,
+    "Brief ref: "
+      <> brief_ref
+      <> ". The brief is unchanged; out_of_scope still applies.",
+    "After your fix the ENTIRE gate battery re-runs from the top. Return "
+      <> "ONLY a FULL replacement implementation report against the "
+      <> "implementation-report schema — it supersedes your previous one.",
+  ])
+}
+
+fn out_of_scope_section(entries: List(String)) -> String {
+  case entries {
+    [] ->
+      "Out of scope: the brief declares no explicit exclusions — its own "
+      <> "boundaries still apply, and crossing them is a stop-and-surface "
+      <> "event, not initiative."
+    entries ->
+      "Out of scope (crossing any of these is a stop-and-surface event, "
+      <> "not initiative):\n"
+      <> bulleted(entries)
   }
 }
 

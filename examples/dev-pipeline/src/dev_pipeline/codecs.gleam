@@ -1,7 +1,8 @@
-//// JSON codecs for every value crossing the brief-forge workflow boundary:
-//// the workflow input/result/error trio, the shared agent-round activity
-//// input, and the three stage reports (scout report, brief, refutation),
-//// each mirroring its file in `schemas/`.
+//// JSON codecs for every value crossing the dev-pipeline workflow
+//// boundaries: the brief-forge and implement-and-gate input/result/error
+//// trios, the activity inputs/outputs, and the stage reports (scout report,
+//// brief, refutation, implementation report), each mirroring its file in
+//// `schemas/`.
 ////
 //// Optional scalar fields encode by omission (never `null`); optional array
 //// fields decode with an empty-list default and always encode — see the
@@ -11,16 +12,26 @@ import aion/codec
 import dev_pipeline/types.{
   type AcceptanceGate, type Attack, type AttackOutcome, type AttackSeverity,
   type Brief, type BriefForgeError, type BriefForgeInput, type BriefForgeResult,
-  type FixDesign, type ForgeOutcome, type GateAsserts, type GateAudit,
-  type GateKind, type ObservedBehavior, type Problem, type ProblemKind,
-  type Refutation, type RejectedAlternative, type RelevantFile, type RootCause,
-  type RootCauseHypothesis, type ScoutReport, Absence, AcceptanceGate,
-  AgentRound, Attack, Brief, BriefForgeInput, BriefForgeResult,
-  BriefForgeStageFailed, Bug, Command, Compatibility, Contested, Converged,
-  Deflected, Design, Docs, Fatal, Feature, FixDesign, GateAudit, Lands,
-  LiveOperator, MustAddress, Note, ObservedBehavior, Outcome, OutcomeTest,
-  Problem, Refactor, Refutation, RejectedAlternative, RelevantFile, RootCause,
-  RootCauseHypothesis, ScoutReport, Withdrawn,
+  type FileChange, type FixDesign, type ForgeOutcome, type GateAddressed,
+  type GateAsserts, type GateAudit, type GateCliRun, type GateKind,
+  type GateOutcome, type GateRecordEntry, type GateRun, type GateSpec,
+  type ImplementAndGateError, type ImplementAndGateInput,
+  type ImplementAndGateResult, type ImplementRound, type ImplementationReport,
+  type Isolation, type ObservedBehavior, type Problem, type ProblemKind,
+  type ProvisionInput, type Refutation, type RejectedAlternative,
+  type RelevantFile, type ReportDeviation, type RootCause,
+  type RootCauseHypothesis, type ScoutReport, type TeardownInput, type TornDown,
+  type Workspace, Absence, AcceptanceGate, AgentRound, Attack, Brief,
+  BriefForgeInput, BriefForgeResult, BriefForgeStageFailed, Bug, Clone, Command,
+  Compatibility, Contested, Converged, Deflected, Design, Docs, Fatal, Feature,
+  FileChange, FixDesign, GateAddressed, GateAudit, GateCliRun, GateRecordEntry,
+  GateRun, GateSpec, GatesExhausted, GatesGreen, ImplementAndGateInput,
+  ImplementAndGateResult, ImplementAndGateStageFailed, ImplementRound,
+  ImplementationReport, Lands, LiveOperator, MustAddress, Note, ObservedBehavior,
+  Outcome, OutcomeTest, Problem, ProvisionInput, Refactor, Refutation,
+  RejectedAlternative, RelevantFile, ReportDeviation, RootCause,
+  RootCauseHypothesis, ScoutReport, TeardownInput, TornDown, Withdrawn,
+  Workspace, Worktree,
 }
 import gleam/dynamic/decode
 import gleam/json
@@ -686,6 +697,458 @@ pub fn error_codec() -> codec.Codec(BriefForgeError) {
       use stage <- decode.field("stage", decode.string)
       use message <- decode.field("message", decode.string)
       decode.success(BriefForgeStageFailed(stage: stage, message: message))
+    },
+  )
+}
+
+// --- implement-and-gate: isolation and gate specs ------------------------------
+
+/// Wire name for an `Isolation` mode.
+pub fn isolation_to_string(isolation: Isolation) -> String {
+  case isolation {
+    Worktree -> "worktree"
+    Clone -> "clone"
+  }
+}
+
+fn isolation_decoder() -> decode.Decoder(Isolation) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "worktree" -> decode.success(Worktree)
+      "clone" -> decode.success(Clone)
+      _ -> decode.failure(Worktree, "worktree or clone")
+    }
+  })
+}
+
+fn gate_spec_to_json(gate: GateSpec) -> json.Json {
+  json.object([
+    #("id", json.string(gate.id)),
+    #("command", json.string(gate.command)),
+  ])
+}
+
+fn gate_spec_decoder() -> decode.Decoder(GateSpec) {
+  use id <- decode.field("id", decode.string)
+  use command <- decode.field("command", decode.string)
+  decode.success(GateSpec(id: id, command: command))
+}
+
+// --- implement-and-gate: workflow input -----------------------------------------
+
+/// Codec for `schemas/implement-and-gate.input.schema.json`. The embedded
+/// brief rides through the typed `Brief` codec (schema-faithful field for
+/// field); `node` and `implementer_model` are the two optional scalars.
+pub fn implement_and_gate_input_codec() -> codec.Codec(ImplementAndGateInput) {
+  codec.json_codec(
+    implement_and_gate_input_to_json,
+    implement_and_gate_input_decoder(),
+  )
+}
+
+fn implement_and_gate_input_to_json(input: ImplementAndGateInput) -> json.Json {
+  let fields = [
+    #("brief", brief_to_json(input.brief)),
+    #("repo_root", json.string(input.repo_root)),
+    #("base_ref", json.string(input.base_ref)),
+    #("isolation", json.string(isolation_to_string(input.isolation))),
+  ]
+  let fields = with_optional_string(fields, "node", input.node)
+  let fields =
+    list.append(fields, [
+      #("fix_cap", json.int(input.fix_cap)),
+      #("gates", json.array(input.gates, gate_spec_to_json)),
+    ])
+  json.object(with_optional_string(
+    fields,
+    "implementer_model",
+    input.implementer_model,
+  ))
+}
+
+fn implement_and_gate_input_decoder() -> decode.Decoder(ImplementAndGateInput) {
+  use brief <- decode.field("brief", brief_decoder())
+  use repo_root <- decode.field("repo_root", decode.string)
+  use base_ref <- decode.field("base_ref", decode.string)
+  use isolation <- decode.field("isolation", isolation_decoder())
+  use node <- decode.optional_field("node", None, optional_string())
+  use fix_cap <- decode.field("fix_cap", decode.int)
+  use gates <- decode.field("gates", decode.list(gate_spec_decoder()))
+  use implementer_model <- decode.optional_field(
+    "implementer_model",
+    None,
+    optional_string(),
+  )
+  decode.success(ImplementAndGateInput(
+    brief: brief,
+    repo_root: repo_root,
+    base_ref: base_ref,
+    isolation: isolation,
+    node: node,
+    fix_cap: fix_cap,
+    gates: gates,
+    implementer_model: implementer_model,
+  ))
+}
+
+// --- implement-and-gate: activity inputs/outputs --------------------------------
+
+/// Codec for the `provision_workspace` activity input.
+pub fn provision_input_codec() -> codec.Codec(ProvisionInput) {
+  codec.json_codec(
+    fn(input: ProvisionInput) {
+      json.object([
+        #("repo_root", json.string(input.repo_root)),
+        #("base_ref", json.string(input.base_ref)),
+        #("isolation", json.string(isolation_to_string(input.isolation))),
+        #("task_ref", json.string(input.task_ref)),
+      ])
+    },
+    {
+      use repo_root <- decode.field("repo_root", decode.string)
+      use base_ref <- decode.field("base_ref", decode.string)
+      use isolation <- decode.field("isolation", isolation_decoder())
+      use task_ref <- decode.field("task_ref", decode.string)
+      decode.success(ProvisionInput(
+        repo_root: repo_root,
+        base_ref: base_ref,
+        isolation: isolation,
+        task_ref: task_ref,
+      ))
+    },
+  )
+}
+
+/// Codec for the provisioned `Workspace`.
+pub fn workspace_codec() -> codec.Codec(Workspace) {
+  codec.json_codec(
+    fn(workspace: Workspace) {
+      json.object([#("path", json.string(workspace.path))])
+    },
+    {
+      use path <- decode.field("path", decode.string)
+      decode.success(Workspace(path: path))
+    },
+  )
+}
+
+/// Codec for the shared `ImplementRound` activity input (`implement` and
+/// `implement_resume`): workspace, deterministic session id, projected
+/// prompt, and the optional invocation-level model override (encoded by
+/// omission — absence means the worker's pilot model).
+pub fn implement_round_codec() -> codec.Codec(ImplementRound) {
+  codec.json_codec(
+    fn(round: ImplementRound) {
+      let fields = [
+        #("workspace_path", json.string(round.workspace_path)),
+        #("session_id", json.string(round.session_id)),
+        #("prompt", json.string(round.prompt)),
+      ]
+      json.object(with_optional_string(fields, "model", round.model))
+    },
+    {
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      use session_id <- decode.field("session_id", decode.string)
+      use prompt <- decode.field("prompt", decode.string)
+      use model <- decode.optional_field("model", None, optional_string())
+      decode.success(ImplementRound(
+        workspace_path: workspace_path,
+        session_id: session_id,
+        prompt: prompt,
+        model: model,
+      ))
+    },
+  )
+}
+
+/// Codec for the `run_gate` activity input.
+pub fn gate_run_codec() -> codec.Codec(GateRun) {
+  codec.json_codec(
+    fn(gate_run: GateRun) {
+      json.object([
+        #("workspace_path", json.string(gate_run.workspace_path)),
+        #("gate_id", json.string(gate_run.gate_id)),
+        #("command", json.string(gate_run.command)),
+      ])
+    },
+    {
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      use gate_id <- decode.field("gate_id", decode.string)
+      use command <- decode.field("command", decode.string)
+      decode.success(GateRun(
+        workspace_path: workspace_path,
+        gate_id: gate_id,
+        command: command,
+      ))
+    },
+  )
+}
+
+/// Codec for a completed gate command (`run_gate`'s output): the exit status
+/// as DATA, the tail-bounded captured output, and the wall-clock duration.
+pub fn gate_cli_run_codec() -> codec.Codec(GateCliRun) {
+  codec.json_codec(
+    fn(cli_run: GateCliRun) {
+      json.object([
+        #("exit_status", json.int(cli_run.exit_status)),
+        #("output", json.string(cli_run.output)),
+        #("duration_ms", json.int(cli_run.duration_ms)),
+      ])
+    },
+    {
+      use exit_status <- decode.field("exit_status", decode.int)
+      use output <- decode.field("output", decode.string)
+      use duration_ms <- decode.field("duration_ms", decode.int)
+      decode.success(GateCliRun(
+        exit_status: exit_status,
+        output: output,
+        duration_ms: duration_ms,
+      ))
+    },
+  )
+}
+
+/// Codec for the `teardown_workspace` activity input.
+pub fn teardown_input_codec() -> codec.Codec(TeardownInput) {
+  codec.json_codec(
+    fn(input: TeardownInput) {
+      json.object([
+        #("repo_root", json.string(input.repo_root)),
+        #("workspace_path", json.string(input.workspace_path)),
+      ])
+    },
+    {
+      use repo_root <- decode.field("repo_root", decode.string)
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      decode.success(TeardownInput(
+        repo_root: repo_root,
+        workspace_path: workspace_path,
+      ))
+    },
+  )
+}
+
+/// Codec for `teardown_workspace`'s best-effort receipt.
+pub fn torn_down_codec() -> codec.Codec(TornDown) {
+  codec.json_codec(
+    fn(torn_down: TornDown) {
+      json.object([#("cleaned", json.bool(torn_down.cleaned))])
+    },
+    {
+      use cleaned <- decode.field("cleaned", decode.bool)
+      decode.success(TornDown(cleaned: cleaned))
+    },
+  )
+}
+
+// --- implementation report -------------------------------------------------------
+
+/// Codec for `schemas/implementation-report.schema.json`. `new_tests` is the
+/// schema's one optional array (default empty, always encoded).
+pub fn implementation_report_codec() -> codec.Codec(ImplementationReport) {
+  codec.json_codec(
+    implementation_report_to_json,
+    implementation_report_decoder(),
+  )
+}
+
+fn implementation_report_to_json(report: ImplementationReport) -> json.Json {
+  json.object([
+    #("brief_ref", json.string(report.brief_ref)),
+    #("summary", json.string(report.summary)),
+    #("files_changed", json.array(report.files_changed, file_change_to_json)),
+    #(
+      "gates_addressed",
+      json.array(report.gates_addressed, gate_addressed_to_json),
+    ),
+    #("deviations", json.array(report.deviations, report_deviation_to_json)),
+    #("new_tests", string_list(report.new_tests)),
+    #("concerns", string_list(report.concerns)),
+    #("not_covered", string_list(report.not_covered)),
+  ])
+}
+
+fn file_change_to_json(change: FileChange) -> json.Json {
+  json.object([
+    #("path", json.string(change.path)),
+    #("change", json.string(change.change)),
+  ])
+}
+
+fn gate_addressed_to_json(addressed: GateAddressed) -> json.Json {
+  json.object([
+    #("gate_id", json.string(addressed.gate_id)),
+    #("how", json.string(addressed.how)),
+  ])
+}
+
+fn report_deviation_to_json(deviation: ReportDeviation) -> json.Json {
+  json.object([
+    #("from", json.string(deviation.from)),
+    #("to", json.string(deviation.to)),
+    #("why", json.string(deviation.why)),
+  ])
+}
+
+fn implementation_report_decoder() -> decode.Decoder(ImplementationReport) {
+  use brief_ref <- decode.field("brief_ref", decode.string)
+  use summary <- decode.field("summary", decode.string)
+  use files_changed <- decode.field(
+    "files_changed",
+    decode.list(file_change_decoder()),
+  )
+  use gates_addressed <- decode.field(
+    "gates_addressed",
+    decode.list(gate_addressed_decoder()),
+  )
+  use deviations <- decode.field(
+    "deviations",
+    decode.list(report_deviation_decoder()),
+  )
+  use new_tests <- decode.optional_field(
+    "new_tests",
+    [],
+    decode.list(decode.string),
+  )
+  use concerns <- decode.field("concerns", decode.list(decode.string))
+  use not_covered <- decode.field("not_covered", decode.list(decode.string))
+  decode.success(ImplementationReport(
+    brief_ref: brief_ref,
+    summary: summary,
+    files_changed: files_changed,
+    gates_addressed: gates_addressed,
+    deviations: deviations,
+    new_tests: new_tests,
+    concerns: concerns,
+    not_covered: not_covered,
+  ))
+}
+
+fn file_change_decoder() -> decode.Decoder(FileChange) {
+  use path <- decode.field("path", decode.string)
+  use change <- decode.field("change", decode.string)
+  decode.success(FileChange(path: path, change: change))
+}
+
+fn gate_addressed_decoder() -> decode.Decoder(GateAddressed) {
+  use gate_id <- decode.field("gate_id", decode.string)
+  use how <- decode.field("how", decode.string)
+  decode.success(GateAddressed(gate_id: gate_id, how: how))
+}
+
+fn report_deviation_decoder() -> decode.Decoder(ReportDeviation) {
+  use from <- decode.field("from", decode.string)
+  use to <- decode.field("to", decode.string)
+  use why <- decode.field("why", decode.string)
+  decode.success(ReportDeviation(from: from, to: to, why: why))
+}
+
+// --- implement-and-gate: workflow result and error --------------------------------
+
+fn gate_outcome_to_string(outcome: GateOutcome) -> String {
+  case outcome {
+    GatesGreen -> "gates_green"
+    GatesExhausted -> "gates_exhausted"
+  }
+}
+
+fn gate_outcome_decoder() -> decode.Decoder(GateOutcome) {
+  decode.then(decode.string, fn(raw) {
+    case raw {
+      "gates_green" -> decode.success(GatesGreen)
+      "gates_exhausted" -> decode.success(GatesExhausted)
+      _ -> decode.failure(GatesGreen, "gates_green or gates_exhausted")
+    }
+  })
+}
+
+fn gate_record_entry_to_json(entry: GateRecordEntry) -> json.Json {
+  let fields = [
+    #("id", json.string(entry.id)),
+    #("command", json.string(entry.command)),
+    #("exit_status", json.int(entry.exit_status)),
+    #("duration_ms", json.int(entry.duration_ms)),
+  ]
+  json.object(with_optional_string(fields, "output_tail", entry.output_tail))
+}
+
+fn gate_record_entry_decoder() -> decode.Decoder(GateRecordEntry) {
+  use id <- decode.field("id", decode.string)
+  use command <- decode.field("command", decode.string)
+  use exit_status <- decode.field("exit_status", decode.int)
+  use duration_ms <- decode.field("duration_ms", decode.int)
+  use output_tail <- decode.optional_field(
+    "output_tail",
+    None,
+    optional_string(),
+  )
+  decode.success(GateRecordEntry(
+    id: id,
+    command: command,
+    exit_status: exit_status,
+    duration_ms: duration_ms,
+    output_tail: output_tail,
+  ))
+}
+
+/// Codec for `schemas/implement-and-gate.output.schema.json`: the outcome,
+/// the implementer's last report, the final round's gate record, rounds
+/// spent, and the (deliberately preserved) workspace path.
+pub fn implement_and_gate_result_codec() -> codec.Codec(ImplementAndGateResult) {
+  codec.json_codec(
+    fn(result: ImplementAndGateResult) {
+      json.object([
+        #("outcome", json.string(gate_outcome_to_string(result.outcome))),
+        #(
+          "implementation_report",
+          implementation_report_to_json(result.implementation_report),
+        ),
+        #(
+          "gate_record",
+          json.array(result.gate_record, gate_record_entry_to_json),
+        ),
+        #("rounds", json.int(result.rounds)),
+        #("workspace_path", json.string(result.workspace_path)),
+      ])
+    },
+    {
+      use outcome <- decode.field("outcome", gate_outcome_decoder())
+      use implementation_report <- decode.field(
+        "implementation_report",
+        implementation_report_decoder(),
+      )
+      use gate_record <- decode.field(
+        "gate_record",
+        decode.list(gate_record_entry_decoder()),
+      )
+      use rounds <- decode.field("rounds", decode.int)
+      use workspace_path <- decode.field("workspace_path", decode.string)
+      decode.success(ImplementAndGateResult(
+        outcome: outcome,
+        implementation_report: implementation_report,
+        gate_record: gate_record,
+        rounds: rounds,
+        workspace_path: workspace_path,
+      ))
+    },
+  )
+}
+
+/// Codec for the typed stage-failure error of implement-and-gate.
+pub fn implement_and_gate_error_codec() -> codec.Codec(ImplementAndGateError) {
+  codec.json_codec(
+    fn(stage_error: ImplementAndGateError) {
+      let ImplementAndGateStageFailed(stage: stage, message: message) =
+        stage_error
+      json.object([
+        #("stage", json.string(stage)),
+        #("message", json.string(message)),
+      ])
+    },
+    {
+      use stage <- decode.field("stage", decode.string)
+      use message <- decode.field("message", decode.string)
+      decode.success(ImplementAndGateStageFailed(stage: stage, message: message))
     },
   )
 }

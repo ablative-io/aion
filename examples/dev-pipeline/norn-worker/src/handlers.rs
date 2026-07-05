@@ -1,6 +1,8 @@
-//! Activity handler bodies for the three brief-forge agent rounds,
-//! generalized from stacked-dev's norn-backed handlers (`scout`, `dev`,
-//! `dev_review` in `examples/stacked-dev/norn-worker/src/handlers.rs`).
+//! Activity handler bodies for the dev-pipeline activities: the three
+//! brief-forge agent rounds plus implement-and-gate's workspace, implementer,
+//! and gate steps — generalized from stacked-dev's norn-backed handlers
+//! (`scout`, `dev`, `dev_resume`, `provision_workspace`, `full_checks` in
+//! `examples/stacked-dev/norn-worker/src/handlers.rs`).
 //!
 //! Each handler shells the `norn` CLI headlessly through
 //! [`crate::shell::Shell`]: `--print`, the deterministic `--session-id` from
@@ -22,9 +24,15 @@ use aion_worker::ActivityFailure;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::schemas::{BRIEF_OUTPUT_SCHEMA, REFUTATION_OUTPUT_SCHEMA, SCOUT_OUTPUT_SCHEMA};
+use crate::schemas::{
+    BRIEF_OUTPUT_SCHEMA, IMPLEMENTATION_REPORT_OUTPUT_SCHEMA, REFUTATION_OUTPUT_SCHEMA,
+    SCOUT_OUTPUT_SCHEMA,
+};
 use crate::shell::{CliRun, Shell};
-use crate::types::{AgentRound, Brief, Refutation, ScoutReport};
+use crate::types::{
+    AgentRound, Brief, GateCliRun, GateRun, ImplementRound, ImplementationReport, Isolation,
+    ProvisionInput, Refutation, ScoutReport, TeardownInput, TornDown, Workspace,
+};
 
 /// How much of an unparseable norn stdout rides in the terminal failure
 /// message. Presentational truncation only: enough to diagnose the envelope
@@ -122,6 +130,273 @@ fn run_norn(
     )
 }
 
+// --- implement-and-gate --------------------------------------------------------
+
+/// How much of a gate command's combined output rides in the recorded
+/// [`GateCliRun`]. Tail-bounded (the END of the output — where compilers and
+/// test runners put the verdict) so the durable record and the fix-round
+/// prompt stay a sane size; the bound is the capture, so the workflow never
+/// re-paraphrases.
+const GATE_OUTPUT_TAIL: usize = 16_000;
+
+/// Scratch directory (under the source repo root) holding provisioned
+/// workspaces.
+const WORKSPACES_DIR: &str = ".dev-pipeline-workspaces";
+
+/// `provision_workspace`: create an isolated git worktree or clone of the
+/// source repository at `base_ref`, named `dev-pipeline-<task_ref>` (with an
+/// `-attempt-<N>` suffix when a previous run already holds the name).
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `git` cannot run, when the scratch
+/// directory cannot be created, or when provisioning fails for any reason
+/// other than a name collision — nothing downstream can run without the
+/// workspace.
+pub fn provision_workspace(
+    shell: &Shell,
+    input: ProvisionInput,
+) -> Result<Workspace, ActivityFailure> {
+    let ProvisionInput {
+        repo_root,
+        base_ref,
+        isolation,
+        task_ref,
+    } = input;
+    let scratch_root = format!("{repo_root}/{WORKSPACES_DIR}");
+    std::fs::create_dir_all(&scratch_root).map_err(|source| {
+        ActivityFailure::terminal(format!(
+            "provision_workspace: cannot create scratch directory {scratch_root}: {source}"
+        ))
+    })?;
+
+    let base_name = format!("dev-pipeline-{task_ref}");
+    match isolation {
+        Isolation::Worktree => provision_worktree(shell, &repo_root, &base_ref, &base_name),
+        Isolation::Clone => provision_clone(shell, &repo_root, &base_ref, &base_name),
+    }
+}
+
+/// Provision via `git worktree add -b <name> <path> <base_ref>`, retrying
+/// with `-attempt-<N>` suffixes only when git reports the branch/path
+/// `already exists`; any other failure is terminal carrying git's output.
+fn provision_worktree(
+    shell: &Shell,
+    repo_root: &str,
+    base_ref: &str,
+    base_name: &str,
+) -> Result<Workspace, ActivityFailure> {
+    for name in candidate_names(base_name) {
+        let path = format!("{repo_root}/{WORKSPACES_DIR}/{name}");
+        let run = match shell.run(
+            "git",
+            &["worktree", "add", "-b", &name, &path, base_ref],
+            repo_root,
+        ) {
+            Ok(run) => run,
+            Err(failure) => {
+                return Err(ActivityFailure::terminal(format!(
+                    "git worktree add: {}",
+                    failure.message()
+                )));
+            }
+        };
+        if run.succeeded() {
+            return Ok(Workspace { path });
+        }
+        if !run.output.contains("already exists") {
+            return Err(ActivityFailure::terminal(format!(
+                "git worktree add failed — exit status {}: {}",
+                run.exit_status,
+                run.output.trim()
+            )));
+        }
+    }
+    Err(name_space_exhausted(base_name))
+}
+
+/// Provision via `git clone <repo_root> <path>` followed by a checkout of
+/// `base_ref` inside the clone. Name collisions are resolved by path
+/// existence (a clone into an existing directory is the collision).
+fn provision_clone(
+    shell: &Shell,
+    repo_root: &str,
+    base_ref: &str,
+    base_name: &str,
+) -> Result<Workspace, ActivityFailure> {
+    for name in candidate_names(base_name) {
+        let path = format!("{repo_root}/{WORKSPACES_DIR}/{name}");
+        if std::path::Path::new(&path).exists() {
+            continue;
+        }
+        require_run(
+            shell,
+            "git",
+            &["clone", repo_root, &path],
+            repo_root,
+            "git clone",
+        )?;
+        require_run(
+            shell,
+            "git",
+            &["checkout", base_ref],
+            &path,
+            "git checkout (clone base_ref)",
+        )?;
+        return Ok(Workspace { path });
+    }
+    Err(name_space_exhausted(base_name))
+}
+
+/// The deterministic candidate sequence: the base name, then
+/// `-attempt-2`..`-attempt-1000` (the stacked-dev provisioning convention).
+fn candidate_names(base_name: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(base_name.to_owned())
+        .chain((2..=1000).map(move |attempt| format!("{base_name}-attempt-{attempt}")))
+}
+
+fn name_space_exhausted(base_name: &str) -> ActivityFailure {
+    ActivityFailure::terminal(format!(
+        "could not find an unused workspace name after 1000 attempts (base: {base_name})"
+    ))
+}
+
+/// `implement`: the implementer round — norn run INSIDE the workspace (the
+/// stacked-dev dev-handler pattern), in the deterministic
+/// `<task_ref>-implement` session. Output is an implementation report
+/// (`schemas/implementation-report.schema.json`).
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
+/// answers with output matching neither documented shape.
+pub fn implement(
+    shell: &Shell,
+    round: ImplementRound,
+) -> Result<ImplementationReport, ActivityFailure> {
+    run_implementer(shell, round, "norn implement")
+}
+
+/// `implement_resume`: resume the SAME implementer session with a failing
+/// gate's captured output as the feedback prompt (same invocation shape as
+/// `implement` — `--resume-if-exists` on the deterministic session id is the
+/// resume). Returns a FULL replacement implementation report.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] when `norn` cannot run, exits non-zero, or
+/// answers with output matching neither documented shape.
+pub fn implement_resume(
+    shell: &Shell,
+    round: ImplementRound,
+) -> Result<ImplementationReport, ActivityFailure> {
+    run_implementer(shell, round, "norn implement resume")
+}
+
+/// One headless implementer invocation INSIDE the workspace: the brief-forge
+/// flag set with the workspace as both cwd and `--workspace-root`, the
+/// profile's `medium` reasoning effort, and the input's model override when
+/// the workflow's frontier escape hatch set one (else the pilot model).
+fn run_implementer(
+    shell: &Shell,
+    round: ImplementRound,
+    context: &str,
+) -> Result<ImplementationReport, ActivityFailure> {
+    let ImplementRound {
+        workspace_path,
+        session_id,
+        prompt,
+        model,
+    } = round;
+    let model = model.as_deref().unwrap_or(PILOT_MODEL);
+    let command_run = require_run(
+        shell,
+        "norn",
+        &[
+            "--print",
+            "--fast",
+            "--model",
+            model,
+            "--reasoning-effort",
+            "medium",
+            "--session-id",
+            &session_id,
+            "--resume-if-exists",
+            "--workspace-root",
+            &workspace_path,
+            "--output-schema",
+            IMPLEMENTATION_REPORT_OUTPUT_SCHEMA,
+            "--output-format",
+            "json",
+            &prompt,
+        ],
+        &workspace_path,
+        context,
+    )?;
+    parse_report::<ImplementationReport>(&command_run, context)
+}
+
+/// `run_gate`: shell the exact gate command in the workspace via `sh -c` and
+/// record `{exit_status, output, duration_ms}`. `sh`'s exit status IS the
+/// command's own exit status — nothing sits between the command and the
+/// verdict. A NON-ZERO EXIT IS DATA the workflow routes to the fix loop,
+/// never an error here.
+///
+/// # Errors
+///
+/// Terminal [`ActivityFailure`] only when the command cannot run at all — a
+/// missing `sh` or a dead workspace directory is a broken environment, not a
+/// red gate.
+pub fn run_gate(shell: &Shell, gate: GateRun) -> Result<GateCliRun, ActivityFailure> {
+    let GateRun {
+        workspace_path,
+        gate_id,
+        command,
+    } = gate;
+    match shell.run("sh", &["-c", &command], &workspace_path) {
+        Ok(command_run) => Ok(GateCliRun {
+            exit_status: command_run.exit_status,
+            output: tail(&command_run.output, GATE_OUTPUT_TAIL).to_owned(),
+            duration_ms: command_run.duration_ms,
+        }),
+        Err(failure) => Err(ActivityFailure::terminal(format!(
+            "gate {gate_id}: {}",
+            failure.message()
+        ))),
+    }
+}
+
+/// `teardown_workspace`: best-effort workspace reclamation (a declared seam;
+/// the `implement_and_gate` workflow deliberately never dispatches it — both
+/// termini preserve the workspace for inspection). Tries `git worktree
+/// remove --force` from the source repo, then plain directory removal for
+/// clones.
+///
+/// # Errors
+///
+/// Never fails terminally — teardown is best-effort cleanup; the receipt
+/// records whether the directory is actually gone.
+pub fn teardown_workspace(
+    shell: &Shell,
+    input: TeardownInput,
+) -> Result<TornDown, ActivityFailure> {
+    let TeardownInput {
+        repo_root,
+        workspace_path,
+    } = input;
+    let _ = shell.run(
+        "git",
+        &["worktree", "remove", "--force", &workspace_path],
+        &repo_root,
+    );
+    if std::path::Path::new(&workspace_path).exists() {
+        let _ = std::fs::remove_dir_all(&workspace_path);
+    }
+    Ok(TornDown {
+        cleaned: !std::path::Path::new(&workspace_path).exists(),
+    })
+}
+
 // --- helpers (stacked-dev norn-worker, verbatim) ------------------------------
 
 /// Require a command to run AND exit zero; anything else is a terminal
@@ -204,6 +479,19 @@ fn first_json_line(text: &str) -> Option<&str> {
 fn head(text: &str, limit: usize) -> &str {
     match text.char_indices().nth(limit) {
         Some((boundary, _)) => &text[..boundary],
+        None => text,
+    }
+}
+
+/// Last `limit` characters of `text`, truncated on a char boundary — gate
+/// output keeps its END, where compilers and test runners put the verdict.
+fn tail(text: &str, limit: usize) -> &str {
+    let char_count = text.chars().count();
+    if char_count <= limit {
+        return text;
+    }
+    match text.char_indices().nth(char_count - limit) {
+        Some((boundary, _)) => &text[boundary..],
         None => text,
     }
 }

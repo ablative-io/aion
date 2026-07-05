@@ -1,19 +1,23 @@
-//! Standalone activity worker for the brief-forge workflow (dev-pipeline
-//! slice 1).
+//! Standalone activity worker for the dev-pipeline workflows.
 //!
-//! Serves the three activity names the `brief_forge` entry of
-//! `workflow.toml` declares (`scout`, `design`, `refute`) by shelling to the
-//! `norn` CLI; the handler bodies live in [`handlers`]. All three activities
-//! dispatch on the `agents` task queue (the Gleam side pins
-//! `activity.task_queue("agents")`), so this worker's `--task-queue` default
-//! is `agents` — NOT `default` — to match; the namespace stays an explicit
-//! choice.
+//! Serves every activity name the two `workflow.toml` entries declare —
+//! `brief_forge`'s `scout`/`design`/`refute` and `implement_and_gate`'s
+//! `provision_workspace`/`implement`/`run_gate`/`implement_resume`/
+//! `teardown_workspace` — by shelling to `norn`, `git`, and the gate
+//! commands; the handler bodies live in [`handlers`].
+//!
+//! One worker process serves ONE task queue. The Gleam side pins agent
+//! rounds to `agents` (this binary's `--task-queue` default) and the
+//! workspace-bound command steps to `workspaces`, so a full
+//! `implement_and_gate` deployment runs TWO instances of this binary — one
+//! per queue — on the node that holds the workspaces (every handler is
+//! registered in both; only the queue subscription differs).
 //!
 //! Usage: `dev-pipeline-worker-norn --endpoint http://127.0.0.1:50051 \
-//!         --namespace dev-pipeline`
+//!         --namespace dev-pipeline [--task-queue workspaces]`
 //! The endpoint is the aion server's `[server] grpc_address`; everything
-//! else the activities need (repo root, session ids, prompts) arrives in the
-//! activity inputs.
+//! else the activities need (repo root, workspace paths, session ids,
+//! prompts, gate commands) arrives in the activity inputs.
 
 use std::time::Duration;
 
@@ -116,7 +120,16 @@ where
 }
 
 /// Every activity name this worker serves, in registration order.
-const SERVED_ACTIVITIES: [&str; 3] = ["scout", "design", "refute"];
+const SERVED_ACTIVITIES: [&str; 8] = [
+    "scout",
+    "design",
+    "refute",
+    "provision_workspace",
+    "implement",
+    "run_gate",
+    "implement_resume",
+    "teardown_workspace",
+];
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -162,7 +175,21 @@ async fn main() -> anyhow::Result<()> {
     Worker::builder(config)
         .register_activity("scout", blocking(shell.clone(), handlers::scout))?
         .register_activity("design", blocking(shell.clone(), handlers::design))?
-        .register_activity("refute", blocking(shell, handlers::refute))?
+        .register_activity("refute", blocking(shell.clone(), handlers::refute))?
+        .register_activity(
+            "provision_workspace",
+            blocking(shell.clone(), handlers::provision_workspace),
+        )?
+        .register_activity("implement", blocking(shell.clone(), handlers::implement))?
+        .register_activity("run_gate", blocking(shell.clone(), handlers::run_gate))?
+        .register_activity(
+            "implement_resume",
+            blocking(shell.clone(), handlers::implement_resume),
+        )?
+        .register_activity(
+            "teardown_workspace",
+            blocking(shell, handlers::teardown_workspace),
+        )?
         .build()?
         .run()
         .await?;
