@@ -9,6 +9,7 @@
 //! the `aion-worker` SDK. The hermetic tests drive the same handler functions
 //! directly with fake-CLI shims on a private `PATH`.
 
+pub mod commit;
 pub mod handlers;
 pub mod harness;
 pub mod profiles;

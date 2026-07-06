@@ -35,8 +35,13 @@
 ////           on the result — the machine loops back with the verdict attached
 ////      cycle-capped; exhaustion is a TERMINAL DISPOSITION recorded in the
 ////      ledger, never a silent success
-////   -> ledger_update (SHELL, once per artifact: test_manifest, fix_report,
-////      verdict, disposition)
+////   -> ledger_update (SHELL, once per produced AGENT artifact:
+////      test_manifest, fix_report, verdict — NEVER a `disposition`: the
+////      applier's disposition kind is an OPERATOR-SIGNED ruling
+////      (refuted|deferred, DECISIONS.md D9), a different concept from this
+////      workflow's terminal [`Disposition`], which is recorded on the
+////      [`BriefResult`] only; the finding rests at whatever ledger state the
+////      last valid artifact left it in, and the operator rules out-of-band)
 ////   -> cleanup (SHELL: remove the worktree; the branch and its commits
 ////      remain; a dirty worktree is left in place).
 ////
@@ -119,7 +124,7 @@ pub fn execute(input: BriefInput) -> Result(BriefResult, RemediationError) {
     )
 
   use workspace <- try(provision(input))
-  use manifest <- try(run_test_author(input))
+  use manifest <- try(run_test_author(input, workspace))
 
   // Gate 1, workflow half (pure): every correction finding needs a test or an
   // explicit could_not_reproduce flag; every manifest entry needs SOME
@@ -376,17 +381,23 @@ fn provision(input: BriefInput) -> Result(WorkspaceInfo, RemediationError) {
 
 fn run_test_author(
   input: BriefInput,
+  workspace: WorkspaceInfo,
 ) -> Result(TestManifest, RemediationError) {
   // THE INDEPENDENCE BOUNDARY: entries are projected through
   // strip_recommendation into a type with no recommendation field before they
   // touch the activity input codec, so the recommendation never reaches the
   // wire (test/codec_test pins this).
+  //
+  // The workspace path rides along so the WORKER can commit the authored
+  // tests after a successful turn (agents do not run git; DESIGN.md step 4
+  // requires the tests committed before gate 1).
   let stripped = list.map(input.entries, types.strip_recommendation)
   case
     workflow.run(
       activities.test_author(TestAuthorInput(
         brief: input.brief,
         entries: stripped,
+        workspace_path: workspace.workspace_path,
       )),
     )
   {
@@ -423,6 +434,10 @@ fn run_developer(
   input: BriefInput,
   state: LoopState,
 ) -> Result(FixReport, RemediationError) {
+  // The workspace path rides along so the WORKER can commit the fix work
+  // after a successful round (agents do not run git) — and the returned
+  // report's `commits` carries the REAL branch head the worker made, not an
+  // agent-asserted hash.
   case
     workflow.run(
       activities.developer(DeveloperInput(
@@ -432,6 +447,7 @@ fn run_developer(
         gate1_results: state.gate1.results,
         verdict: state.verdict,
         gate2: state.last_gate2,
+        workspace_path: state.workspace.workspace_path,
       )),
     )
   {
@@ -491,6 +507,39 @@ fn run_verifier(
 
 // --- the mechanical tail: ledger + cleanup + result ------------------------------
 
+/// The artifacts the terminal ledger pass applies, in stage order: always the
+/// test manifest, then the fix report / verdict when their stages ran.
+///
+/// DELIBERATELY NO DISPOSITION ARTIFACT: the applier's `disposition` kind is
+/// an OPERATOR-SIGNED ruling (refuted|deferred; `signed_by` must be an
+/// operator — DECISIONS.md D9, enforced by apply_transitions.py), a different
+/// concept from this workflow's terminal [`Disposition`]. The workflow's
+/// terminal outcome is recorded on the [`BriefResult`] (disposition + detail);
+/// the ledger legitimately rests at whatever state the last valid artifact
+/// left it in (e.g. `test_authored` after a gate-1 failure), and the operator
+/// rules on it out-of-band. Pure and public so the tests can pin that a
+/// gate-1-failed finish (no fix report, no verdict) schedules exactly ONE
+/// ledger update — the test manifest.
+pub fn terminal_artifacts(
+  manifest: TestManifest,
+  fix_report fix_report: Option(FixReport),
+  verdict verdict: Option(Verdict),
+) -> List(#(types.ArtifactKind, String)) {
+  [
+    Some(#(
+      types.TestManifestArtifact,
+      codecs.test_manifest_artifact_json(manifest),
+    )),
+    option.map(fix_report, fn(report) {
+      #(types.FixReportArtifact, codecs.fix_report_artifact_json(report))
+    }),
+    option.map(verdict, fn(the_verdict) {
+      #(types.VerdictArtifact, codecs.verdict_artifact_json(the_verdict))
+    }),
+  ]
+  |> option.values
+}
+
 /// Apply every produced artifact to the ledger (a status cannot change
 /// without its artifact — DESIGN.md Stage 5), remove the worktree, and build
 /// the terminal result. Applier refusals are RECORDED on the result, never
@@ -510,30 +559,7 @@ fn finalize(
   let could_not_reproduce = checks.could_not_reproduce_ids(manifest)
 
   let artifacts =
-    [
-      Some(#(
-        types.TestManifestArtifact,
-        codecs.test_manifest_artifact_json(manifest),
-      )),
-      option.map(fix_report, fn(report) {
-        #(types.FixReportArtifact, codecs.fix_report_artifact_json(report))
-      }),
-      option.map(verdict, fn(the_verdict) {
-        #(types.VerdictArtifact, codecs.verdict_artifact_json(the_verdict))
-      }),
-      Some(#(
-        types.DispositionArtifact,
-        codecs.disposition_artifact_json(
-          brief_id: input.brief.id,
-          disposition: disposition,
-          fix_cycles: fix_cycles,
-          test_edit_attempts: test_edit_attempts,
-          could_not_reproduce: could_not_reproduce,
-          detail: detail,
-        ),
-      )),
-    ]
-    |> option.values
+    terminal_artifacts(manifest, fix_report: fix_report, verdict: verdict)
 
   use ledger <- try(apply_artifacts(input, artifacts, []))
   use cleanup <- try(run_cleanup(input, workspace))

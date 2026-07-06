@@ -145,14 +145,30 @@ pub type BriefInput {
 /// RECOMMENDATION-FREE entry projections. The recommendation is stripped at
 /// the codec layer — this type cannot carry it, so it can never reach the
 /// wire.
+///
+/// `workspace_path` is the brief's provisioned worktree: agents do not run
+/// git (doctrine), so after a successful authoring turn the WORKER commits
+/// the manifest's test files there, on the brief branch (DESIGN.md flow
+/// step 4 — tests committed as the branch's first commit(s)). Gate 1 then
+/// finds them committed instead of failing on a dirty worktree.
 pub type TestAuthorInput {
-  TestAuthorInput(brief: Brief, entries: List(TestAuthorEntry))
+  TestAuthorInput(
+    brief: Brief,
+    entries: List(TestAuthorEntry),
+    workspace_path: String,
+  )
 }
 
 /// Input to the `developer` agent activity: the brief, the FULL ledger entries
 /// (recommendation included — the developer may use it as a starting point),
 /// the authored-test manifest, the gate-1 re-run evidence, and — on loop-back
 /// rounds — the adverse verdict and/or failing gate-2 outcome being addressed.
+///
+/// `workspace_path` is the brief's provisioned worktree: agents do not run
+/// git (doctrine), so after a successful fix round the WORKER commits the
+/// tracked delta (plus report-named new test files) there on the brief
+/// branch, and rewrites the returned fix report's `commits` to the real
+/// branch head.
 pub type DeveloperInput {
   DeveloperInput(
     brief: Brief,
@@ -161,6 +177,7 @@ pub type DeveloperInput {
     gate1_results: List(TestRun),
     verdict: Option(Verdict),
     gate2: Option(Gate2Outcome),
+    workspace_path: String,
   )
 }
 
@@ -417,6 +434,12 @@ pub type ArtifactKind {
   TestManifestArtifact
   FixReportArtifact
   VerdictArtifact
+  /// The applier's operator-signed disposition ruling (refuted|deferred;
+  /// `signed_by` must be an operator — DECISIONS.md D9). Part of the `--kind`
+  /// vocabulary this type mirrors, but the WORKFLOW never constructs it: its
+  /// own terminal [`Disposition`] is a different concept, recorded on the
+  /// [`BriefResult`], never sent to the applier
+  /// (`remediation_brief.terminal_artifacts` pins this).
   DispositionArtifact
 }
 

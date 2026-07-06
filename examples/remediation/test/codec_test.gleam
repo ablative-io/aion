@@ -51,9 +51,11 @@ fn brief() -> types.Brief {
 
 pub fn test_author_input_codec_cannot_emit_a_recommendation_test() {
   let input =
-    TestAuthorInput(brief: brief(), entries: [
-      types.strip_recommendation(entry_with_secret_recommendation()),
-    ])
+    TestAuthorInput(
+      brief: brief(),
+      entries: [types.strip_recommendation(entry_with_secret_recommendation())],
+      workspace_path: "/tmp/aion-remediation/ws/child-1",
+    )
   let encoded = codecs.test_author_input_codec().encode(input)
 
   // Neither the field name nor the value can reach the wire: the encoder has
@@ -66,6 +68,13 @@ pub fn test_author_input_codec_cannot_emit_a_recommendation_test() {
   string.contains(encoded, "YG-268")
   |> should.equal(True)
   string.contains(encoded, "failure_scenario")
+  |> should.equal(True)
+  // The workspace path rides the wire: the worker commits the authored tests
+  // there after the turn (agents do not run git).
+  string.contains(
+    encoded,
+    "\"workspace_path\":\"/tmp/aion-remediation/ws/child-1\"",
+  )
   |> should.equal(True)
 }
 
@@ -93,9 +102,17 @@ pub fn developer_input_carries_the_full_recommendation_test() {
       gate1_results: [],
       verdict: None,
       gate2: None,
+      workspace_path: "/tmp/aion-remediation/ws/child-1",
     )
   let encoded = codecs.developer_input_codec().encode(input)
   string.contains(encoded, "SECRET-RECOMMENDATION-SENTINEL")
+  |> should.equal(True)
+  // The workspace path rides the wire: the worker commits the fix work there
+  // after the round (agents do not run git).
+  string.contains(
+    encoded,
+    "\"workspace_path\":\"/tmp/aion-remediation/ws/child-1\"",
+  )
   |> should.equal(True)
 }
 
@@ -354,24 +371,6 @@ pub fn ledger_entry_decoder_tolerates_full_schema_entries_test() {
       }
     Error(_) -> should.fail()
   }
-}
-
-pub fn disposition_artifact_names_the_contracted_fields_test() {
-  let artifact =
-    codecs.disposition_artifact_json(
-      brief_id: "B-1",
-      disposition: types.CycleCapExhausted,
-      fix_cycles: 3,
-      test_edit_attempts: 1,
-      could_not_reproduce: ["YG-367"],
-      detail: "budget exhausted",
-    )
-  string.contains(artifact, "\"disposition\":\"cycle_cap_exhausted\"")
-  |> should.equal(True)
-  string.contains(artifact, "\"brief_id\":\"B-1\"")
-  |> should.equal(True)
-  string.contains(artifact, "\"could_not_reproduce\":[\"YG-367\"]")
-  |> should.equal(True)
 }
 
 pub fn brief_result_codec_round_trips_with_optional_artifacts_test() {

@@ -54,6 +54,9 @@ aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
 aion-integrations = { path = "../../../crates/aion-integrations" }
 anyhow = "1"
 async-trait = "0.1"
+# The harness wrapper implements `AgentSession` itself (to run the
+# test-author's post-turn commit), whose event stream is a futures BoxStream.
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `ledger_update` materializes the artifact JSON as a temp file for the

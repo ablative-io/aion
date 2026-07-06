@@ -298,6 +298,7 @@ fn test_author_input_to_json(input: TestAuthorInput) -> json.Json {
   json.object([
     #("brief", brief_to_json(input.brief)),
     #("entries", json.array(input.entries, test_author_entry_to_json)),
+    #("workspace_path", json.string(input.workspace_path)),
   ])
 }
 
@@ -307,7 +308,12 @@ fn test_author_input_decoder() -> decode.Decoder(TestAuthorInput) {
     "entries",
     decode.list(test_author_entry_decoder()),
   )
-  decode.success(TestAuthorInput(brief: brief, entries: entries))
+  use workspace_path <- decode.field("workspace_path", decode.string)
+  decode.success(TestAuthorInput(
+    brief: brief,
+    entries: entries,
+    workspace_path: workspace_path,
+  ))
 }
 
 // --- agent input: developer ---------------------------------------------------------------
@@ -326,6 +332,7 @@ fn developer_input_to_json(input: DeveloperInput) -> json.Json {
     #("gate1_results", json.array(input.gate1_results, test_run_to_json)),
     #("verdict", json.nullable(input.verdict, verdict_to_json)),
     #("gate2", json.nullable(input.gate2, gate2_outcome_to_json)),
+    #("workspace_path", json.string(input.workspace_path)),
   ])
 }
 
@@ -339,6 +346,7 @@ fn developer_input_decoder() -> decode.Decoder(DeveloperInput) {
   )
   use verdict <- decode.field("verdict", decode.optional(verdict_decoder()))
   use gate2 <- decode.field("gate2", decode.optional(gate2_outcome_decoder()))
+  use workspace_path <- decode.field("workspace_path", decode.string)
   decode.success(DeveloperInput(
     brief: brief,
     entries: entries,
@@ -346,6 +354,7 @@ fn developer_input_decoder() -> decode.Decoder(DeveloperInput) {
     gate1_results: gate1_results,
     verdict: verdict,
     gate2: gate2,
+    workspace_path: workspace_path,
   ))
 }
 
@@ -1030,29 +1039,13 @@ fn cleanup_outcome_decoder() -> decode.Decoder(CleanupOutcome) {
   decode.success(CleanupOutcome(removed: removed, detail: detail))
 }
 
-// --- the disposition artifact ---------------------------------------------------------------------------------
-
-/// Render the terminal-disposition artifact the `ledger_update` activity
-/// applies with `--kind disposition`. The shape is part of the applier CLI
-/// contract recorded in this example's README.
-pub fn disposition_artifact_json(
-  brief_id brief_id: String,
-  disposition disposition: Disposition,
-  fix_cycles fix_cycles: Int,
-  test_edit_attempts test_edit_attempts: Int,
-  could_not_reproduce could_not_reproduce: List(String),
-  detail detail: String,
-) -> String {
-  json.object([
-    #("brief_id", json.string(brief_id)),
-    #("disposition", disposition_to_json(disposition)),
-    #("fix_cycles", json.int(fix_cycles)),
-    #("test_edit_attempts", json.int(test_edit_attempts)),
-    #("could_not_reproduce", strings(could_not_reproduce)),
-    #("detail", json.string(detail)),
-  ])
-  |> json.to_string
-}
+// --- the applier artifacts --------------------------------------------------------------------------------------
+//
+// EXACTLY THREE artifact renderers, one per AGENT stage output. There is
+// deliberately NO disposition renderer: the applier's `disposition` kind is an
+// operator-signed ruling (refuted|deferred, signed by an operator —
+// DECISIONS.md D9), not the workflow's terminal outcome; the workflow records
+// its own Disposition on the BriefResult and never sends one to the applier.
 
 /// Render a test manifest as the artifact JSON for `--kind test_manifest`.
 pub fn test_manifest_artifact_json(manifest: TestManifest) -> String {

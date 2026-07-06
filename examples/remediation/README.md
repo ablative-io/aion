@@ -99,7 +99,7 @@ repo in parallel — as:
 python3 scripts/remediation/apply_transitions.py \
     --ledger <ledger_path>        # the in-repo ledger JSON (DECISIONS.md D1)
     --artifact <artifact.json>    # a temp file holding one stage artifact
-    --kind test_manifest|fix_report|verdict|disposition
+    --kind test_manifest|fix_report|verdict
 ```
 
 run with CWD = `config.repo_root`. Exit 0 = transitions applied; any non-zero
@@ -109,22 +109,18 @@ applier's output (never swallowed). The artifact payloads:
 - `test_manifest` — `test-manifest.schema.json`.
 - `fix_report` — `fix-report.schema.json`.
 - `verdict` — `verdict.schema.json`.
-- `disposition` — the brief's terminal record, shaped:
-
-```json
-{
-  "brief_id": "B-1",
-  "disposition": "accepted | gate1_failed | cycle_cap_exhausted",
-  "fix_cycles": 2,
-  "test_edit_attempts": 0,
-  "could_not_reproduce": ["YG-367"],
-  "detail": "human-readable account"
-}
-```
 
 The child applies, in order: `test_manifest`, then `fix_report` (when a
-developer round ran), then `verdict` (when the verifier ran), then always
-`disposition`.
+developer round ran), then `verdict` (when the verifier ran) — and NOTHING
+else. The applier's fourth kind, `disposition`
+(`disposition.schema.json`), is an OPERATOR-SIGNED ruling (refuted|deferred;
+`signed_by` must be an operator — DECISIONS.md D9, enforced by
+`apply_transitions.py`), a different concept from this workflow's terminal
+`Disposition` (accepted | gate1_failed | cycle_cap_exhausted). The workflow's
+terminal outcome is recorded on the `BriefResult` (disposition + detail) and
+is never sent to the applier; the finding rests at whatever ledger state the
+last valid artifact left it in (e.g. `test_authored` after a gate-1 failure)
+until the operator rules out-of-band.
 
 ## Prompts
 
