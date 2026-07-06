@@ -7,9 +7,9 @@ import {
   type KnownEventType,
 } from '../lib/timelineVariants';
 
-test('KNOWN_EVENT_TYPES enumerates exactly the 29 generated variants', () => {
-  expect(KNOWN_EVENT_TYPES).toHaveLength(29);
-  expect(new Set(KNOWN_EVENT_TYPES).size).toBe(29);
+test('KNOWN_EVENT_TYPES enumerates exactly the 31 generated variants', () => {
+  expect(KNOWN_EVENT_TYPES).toHaveLength(31);
+  expect(new Set(KNOWN_EVENT_TYPES).size).toBe(31);
 });
 
 test('classifyKnownEvent maps every known variant to a family + sub-kind', () => {
@@ -29,6 +29,8 @@ test('classifyKnownEvent assigns the expected families', () => {
     WorkflowTimedOut: 'lifecycle',
     WorkflowContinuedAsNew: 'marker',
     WorkflowReopened: 'marker',
+    WorkflowPaused: 'marker',
+    WorkflowResumed: 'marker',
     SearchAttributesUpdated: 'marker',
     ActivityScheduled: 'activity',
     ActivityStarted: 'activity',

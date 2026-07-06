@@ -177,9 +177,9 @@ function childCompleted(seq: number): Event {
   };
 }
 
-// --- 29-variant exhaustiveness coverage -----------------------------------
+// --- 31-variant exhaustiveness coverage -----------------------------------
 
-/** One concrete event for each of the 29 generated variants, keyed by type. */
+/** One concrete event for each of the 31 generated variants, keyed by type. */
 const VARIANT_FIXTURES: Record<string, Event> = {
   WorkflowStarted: workflowStarted(1),
   WorkflowCompleted: workflowCompleted(1),
@@ -208,6 +208,23 @@ const VARIANT_FIXTURES: Record<string, Event> = {
     type: 'WorkflowReopened',
     data: { envelope: envelope(1), run_id: '00000000-0000-0000-0000-0000000000a1', reopened: [7] },
   },
+  WorkflowPaused: {
+    type: 'WorkflowPaused',
+    data: {
+      envelope: envelope(1),
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      reason: 'operator hold',
+      operator: 'ops-console-user',
+    },
+  },
+  WorkflowResumed: {
+    type: 'WorkflowResumed',
+    data: {
+      envelope: envelope(1),
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      operator: 'ops-console-user',
+    },
+  },
   SearchAttributesUpdated: {
     type: 'SearchAttributesUpdated',
     data: {
@@ -234,7 +251,7 @@ const VARIANT_FIXTURES: Record<string, Event> = {
   },
   TimerCancelled: {
     type: 'TimerCancelled',
-    data: { envelope: envelope(1), timer_id: { Named: 'retry' } },
+    data: { envelope: envelope(1), timer_id: { Named: 'retry' }, cause: 'WorkflowIntent' },
   },
   WithTimeoutCompleted: {
     type: 'WithTimeoutCompleted',
@@ -323,13 +340,13 @@ const LANE_VARIANTS: Record<string, string> = {
   ChildWorkflowCancelled: 'child',
 };
 
-test('every one of the 29 variants is covered by a fixture', () => {
+test('every one of the 31 variants is covered by a fixture', () => {
   for (const eventType of KNOWN_EVENT_TYPES) {
     expect(VARIANT_FIXTURES[eventType]).toBeDefined();
   }
 });
 
-test('each of the 29 variants projects to a real typed row (no silent drop)', () => {
+test('each of the 31 variants projects to a real typed row (no silent drop)', () => {
   for (const eventType of KNOWN_EVENT_TYPES) {
     const event = VARIANT_FIXTURES[eventType];
 
@@ -443,7 +460,10 @@ test('a missing timer cancel cause defaults to WorkflowIntent (serde-default par
         fire_at: '2026-07-04T01:00:00Z',
       },
     },
-    { type: 'TimerCancelled', data: { envelope: envelope(2), timer_id: { Named: 'retry' } } },
+    {
+      type: 'TimerCancelled',
+      data: { envelope: envelope(2), timer_id: { Named: 'retry' }, cause: 'WorkflowIntent' },
+    },
   ])[0];
 
   if (entry?.kind !== 'timer') {

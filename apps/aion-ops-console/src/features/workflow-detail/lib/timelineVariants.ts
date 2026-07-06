@@ -73,6 +73,8 @@ export function classifyKnownEvent(eventType: string): KnownVariantDescriptor | 
       return { family: 'lifecycle', subKind };
     case 'WorkflowContinuedAsNew':
     case 'WorkflowReopened':
+    case 'WorkflowPaused':
+    case 'WorkflowResumed':
     case 'SearchAttributesUpdated':
       return { family: 'marker', subKind };
     case 'ActivityScheduled':
@@ -155,6 +157,8 @@ export const KNOWN_EVENT_TYPES: readonly KnownEventType[] = [
   'WorkflowTimedOut',
   'WorkflowContinuedAsNew',
   'WorkflowReopened',
+  'WorkflowPaused',
+  'WorkflowResumed',
   'SearchAttributesUpdated',
   'ActivityScheduled',
   'ActivityStarted',

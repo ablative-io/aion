@@ -35,6 +35,10 @@ export const STATUS_BADGE_METADATA: Record<WorkflowStatus, StatusBadgeMetadata> 
     label: 'Continued as new',
     className: 'border-special/30 bg-special-glow text-special',
   },
+  Paused: {
+    label: 'Paused',
+    className: 'border-warning/30 bg-warning-glow text-warning',
+  },
 };
 
 export function StatusBadge({ status }: StatusBadgeProps) {

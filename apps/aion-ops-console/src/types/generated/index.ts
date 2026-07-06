@@ -15,6 +15,8 @@ export type TimerIdKind = { "Named": string } | { "Anonymous": number };
 
 export type TimerId = TimerIdKind;
 
+export type TimerCancelCause = "WorkflowIntent" | "CancelTeardown";
+
 export type Namespace = string;
 
 export type ContentType = "Json";

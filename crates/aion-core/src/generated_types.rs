@@ -12,8 +12,9 @@ use crate::{
     DescribeWorkflowResponse, Event, EventEnvelope, InjectPriority, InterventionCapabilities,
     InterventionCommand, InterventionKind, InterventionOutcome, InterventionPrimitive, MessageRole,
     NamespacePlacementWire, OverlapPolicy, PackageVersion, Payload, ProgressDetail, RunId,
-    ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, StopKind, TimerId,
-    TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason, WorkerTransport,
+    ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, StopKind,
+    TimerCancelCause, TimerId, TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason,
+    WorkerTransport,
     WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
@@ -49,6 +50,7 @@ fn ops_console_wire_types() -> Result<String, ts_rs::ExportError> {
     push_type::<ActivityId>(&config, &mut output)?;
     push_type::<TimerIdKind>(&config, &mut output)?;
     push_type::<TimerId>(&config, &mut output)?;
+    push_type::<TimerCancelCause>(&config, &mut output)?;
     output.push_str("export type Namespace = string;\n\n");
     push_type::<ContentType>(&config, &mut output)?;
     push_type::<Payload>(&config, &mut output)?;
