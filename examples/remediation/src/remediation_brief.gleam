@@ -434,6 +434,10 @@ fn run_developer(
   input: BriefInput,
   state: LoopState,
 ) -> Result(FixReport, RemediationError) {
+  // The workspace path rides along so the WORKER can commit the fix work
+  // after a successful round (agents do not run git) — and the returned
+  // report's `commits` carries the REAL branch head the worker made, not an
+  // agent-asserted hash.
   case
     workflow.run(
       activities.developer(DeveloperInput(
@@ -443,6 +447,7 @@ fn run_developer(
         gate1_results: state.gate1.results,
         verdict: state.verdict,
         gate2: state.last_gate2,
+        workspace_path: state.workspace.workspace_path,
       )),
     )
   {

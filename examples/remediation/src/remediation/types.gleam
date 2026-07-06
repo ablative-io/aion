@@ -163,6 +163,12 @@ pub type TestAuthorInput {
 /// (recommendation included — the developer may use it as a starting point),
 /// the authored-test manifest, the gate-1 re-run evidence, and — on loop-back
 /// rounds — the adverse verdict and/or failing gate-2 outcome being addressed.
+///
+/// `workspace_path` is the brief's provisioned worktree: agents do not run
+/// git (doctrine), so after a successful fix round the WORKER commits the
+/// tracked delta (plus report-named new test files) there on the brief
+/// branch, and rewrites the returned fix report's `commits` to the real
+/// branch head.
 pub type DeveloperInput {
   DeveloperInput(
     brief: Brief,
@@ -171,6 +177,7 @@ pub type DeveloperInput {
     gate1_results: List(TestRun),
     verdict: Option(Verdict),
     gate2: Option(Gate2Outcome),
+    workspace_path: String,
   )
 }
 

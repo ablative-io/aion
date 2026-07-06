@@ -15,7 +15,7 @@
 //!   on an empty commit.
 
 use remediation_worker::commit::{
-    AuthoredManifest, COMMIT_AUTHOR_EMAIL, COMMIT_AUTHOR_NAME, CommitOutcome,
+    AuthoredManifest, CommitOutcome, TEST_AUTHOR_COMMIT_EMAIL, TEST_AUTHOR_COMMIT_NAME,
     commit_authored_tests, manifest_from_output,
 };
 use remediation_worker::shell::Shell;
@@ -138,7 +138,7 @@ fn commits_exactly_the_explicit_manifest_paths_under_the_scoped_identity() {
     let author = repo.git(&["log", "-1", "--format=%an <%ae>"]);
     assert_eq!(
         author.trim(),
-        format!("{COMMIT_AUTHOR_NAME} <{COMMIT_AUTHOR_EMAIL}>")
+        format!("{TEST_AUTHOR_COMMIT_NAME} <{TEST_AUTHOR_COMMIT_EMAIL}>")
     );
     let message = repo.git(&["log", "-1", "--format=%s"]);
     assert!(

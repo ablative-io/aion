@@ -73,6 +73,7 @@ pub fn developer_pins_its_role_node_test() {
     gate1_results: [],
     verdict: None,
     gate2: None,
+    workspace_path: "/tmp/ws",
   ))
   |> assert_route(activities.developer_node)
 }

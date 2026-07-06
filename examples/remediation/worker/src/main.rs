@@ -47,7 +47,7 @@ use aion_worker::{
 };
 
 use remediation_worker::handlers::{self, WORKSPACE_BASE};
-use remediation_worker::harness::ProfiledNornHarness;
+use remediation_worker::harness::{PostRunCommit, ProfiledNornHarness};
 use remediation_worker::profiles::{self, Profiles};
 use remediation_worker::prompts;
 use remediation_worker::schemas;
@@ -81,12 +81,14 @@ struct Role {
     workspace_root: String,
     profile: String,
     assemble: prompts::AssembleFn,
-    /// Whether this role's harness commits the manifest's test files in the
-    /// brief workspace after a successful turn (the mechanical-git doctrine:
-    /// agents never run git — the machinery does). True ONLY for the
-    /// test-author, whose committed tests gate 1 requires; the
-    /// verifier/re-auditor write nothing.
-    commit_authored_tests: bool,
+    /// The mechanical commit this role's harness performs in the brief
+    /// workspace after a successful turn (the doctrine: agents never run git
+    /// — the machinery does). `AuthoredTests` for the test-author (gate 1
+    /// requires its work committed), `FixWork` for the developer (the fix
+    /// report's `commits` / the ledger's `fix_commit` ride on it, and its
+    /// result's `commits` is rewritten to the real head); `None` for the
+    /// verifier/re-auditor, which write nothing.
+    post_run_commit: Option<PostRunCommit>,
 }
 
 impl Role {
@@ -178,7 +180,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: brief_workspace.clone(),
             profile: profiles.test_author,
             assemble: prompts::test_author,
-            commit_authored_tests: true,
+            post_run_commit: Some(PostRunCommit::AuthoredTests),
         },
         Role {
             activity_type: "developer",
@@ -187,7 +189,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: brief_workspace.clone(),
             profile: profiles.developer,
             assemble: prompts::developer,
-            commit_authored_tests: false,
+            post_run_commit: Some(PostRunCommit::FixWork),
         },
         Role {
             activity_type: "verifier",
@@ -196,7 +198,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: brief_workspace,
             profile: profiles.verifier,
             assemble: prompts::verifier,
-            commit_authored_tests: false,
+            post_run_commit: None,
         },
         Role {
             activity_type: "re_auditor",
@@ -205,7 +207,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: repo_root.to_owned(),
             profile: profiles.re_auditor,
             assemble: prompts::re_auditor,
-            commit_authored_tests: false,
+            post_run_commit: None,
         },
     ]
 }
@@ -257,10 +259,10 @@ fn composed_agent_harness(norn_bin: &str, role: &Role) -> AgentHarnessConfig {
         // precedence and fail. No secret is ever set here.
         .without_env("OPENAI_API_KEY");
     let harness = ProfiledNornHarness::new(inner, role.profile.clone(), role.assemble);
-    let harness = if role.commit_authored_tests {
-        harness.committing_authored_tests()
-    } else {
-        harness
+    let harness = match role.post_run_commit {
+        Some(PostRunCommit::AuthoredTests) => harness.committing_authored_tests(),
+        Some(PostRunCommit::FixWork) => harness.committing_fix_work(),
+        None => harness,
     };
 
     let erased: Arc<dyn DynAgentHarness> = Arc::new(harness);
@@ -431,7 +433,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        DEFAULT_ADDRESS, Profiles, Role, SHELL_NODE, Shell, parse_args_from, roles, shell_registry,
+        DEFAULT_ADDRESS, PostRunCommit, Profiles, Role, SHELL_NODE, Shell, parse_args_from, roles,
+        shell_registry,
     };
 
     fn parse(args: &[&str]) -> anyhow::Result<super::Args> {
@@ -571,18 +574,26 @@ mod tests {
         }
     }
 
-    /// The mechanical-git doctrine's wiring: exactly the test-author role
-    /// gets the post-turn authored-test commit — gate 1 requires ITS work
-    /// committed, and no other role's harness may grow a silent git side
-    /// effect.
+    /// The mechanical-git doctrine's wiring, the FULL table: the test-author
+    /// commits its authored tests (gate 1 requires them committed), the
+    /// developer commits its fix work (the report's `commits` / the ledger's
+    /// `fix_commit` ride on it), and no other role's harness may grow a
+    /// silent git side effect.
     #[test]
-    fn only_the_test_author_commits_authored_tests() {
-        let committing: Vec<&str> = roles("/repo", profiles())
+    fn post_run_commits_are_wired_per_role_exactly() {
+        let table: Vec<(&str, Option<PostRunCommit>)> = roles("/repo", profiles())
             .iter()
-            .filter(|role| role.commit_authored_tests)
-            .map(|role| role.activity_type)
+            .map(|role| (role.activity_type, role.post_run_commit))
             .collect();
-        assert_eq!(committing, vec!["test_author"]);
+        assert_eq!(
+            table,
+            vec![
+                ("test_author", Some(PostRunCommit::AuthoredTests)),
+                ("developer", Some(PostRunCommit::FixWork)),
+                ("verifier", None),
+                ("re_auditor", None),
+            ]
+        );
     }
 
     /// The routing contract this worker's five connections uphold: the server

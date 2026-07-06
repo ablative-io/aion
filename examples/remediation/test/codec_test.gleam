@@ -102,9 +102,17 @@ pub fn developer_input_carries_the_full_recommendation_test() {
       gate1_results: [],
       verdict: None,
       gate2: None,
+      workspace_path: "/tmp/aion-remediation/ws/child-1",
     )
   let encoded = codecs.developer_input_codec().encode(input)
   string.contains(encoded, "SECRET-RECOMMENDATION-SENTINEL")
+  |> should.equal(True)
+  // The workspace path rides the wire: the worker commits the fix work there
+  // after the round (agents do not run git).
+  string.contains(
+    encoded,
+    "\"workspace_path\":\"/tmp/aion-remediation/ws/child-1\"",
+  )
   |> should.equal(True)
 }
 

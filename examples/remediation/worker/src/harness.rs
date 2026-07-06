@@ -13,27 +13,45 @@
 //! (driven mode, jsonrpc, `--output-schema`, `{workflow_id}` session
 //! identity, env hygiene) stays the inner harness's, untouched.
 //!
-//! THE TEST-AUTHOR'S SECOND SEAM (the mechanical-git doctrine): agents do not
-//! run git, so for the role built with [`ProfiledNornHarness::committing_authored_tests`]
-//! the wrapper's session intercepts the terminal result too — after a
-//! successful turn it parses the manifest and commits the claimed test files
-//! in the brief workspace under the scoped machinery identity
-//! (`crate::commit`). A manifest that claims a file the agent never wrote
-//! fails the ACTIVITY loudly, naming the path.
+//! THE MECHANICAL-GIT SEAM (doctrine: agents do not run git — the machinery
+//! does): a role built with a [`PostRunCommit`] mode gets a session that
+//! intercepts the terminal result too:
+//!
+//! - [`PostRunCommit::AuthoredTests`] (the test-author): parse the manifest,
+//!   commit the claimed test files in the brief workspace under the scoped
+//!   machinery identity (`crate::commit::commit_authored_tests`).
+//! - [`PostRunCommit::FixWork`] (the developer): commit the tracked delta
+//!   plus report-named new test files (`crate::commit::commit_fix_work`),
+//!   then REWRITE the activity result's `commits` to the real branch head —
+//!   the agent never ran git, so its asserted hashes are fabricated;
+//!   reality wins, and the ledger/verdict downstream see a hash that exists.
+//!
+//! A report claiming a file the agent never wrote fails the ACTIVITY loudly,
+//! naming the path.
 
 use aion_integration_norn::NornHarness;
 use aion_integrations::contract::{AgentHarness, AgentSession};
 use aion_integrations::{
-    ActivityEvent, AgentRunSpec, HarnessError, InterventionCapabilities, InterventionCommand,
-    Payload,
+    ActivityEvent, AgentRunSpec, ContentType, HarnessError, InterventionCapabilities,
+    InterventionCommand, Payload,
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde_json::Value;
 
-use crate::commit::{self, TestAuthorContext};
+use crate::commit::{self, CommitContext};
 use crate::prompts::AssembleFn;
 use crate::shell::Shell;
+
+/// Which mechanical commit a role's session performs after a successful turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostRunCommit {
+    /// Commit the manifest's authored test files (the test-author role).
+    AuthoredTests,
+    /// Commit the tracked fix delta + report-named new test files, and
+    /// rewrite the result's `commits` to the real head (the developer role).
+    FixWork,
+}
 
 /// A per-role harness: the composed inner [`NornHarness`], the role's profile
 /// markdown (loaded once at startup), and the role's prompt assembly
@@ -43,7 +61,7 @@ pub struct ProfiledNornHarness {
     inner: NornHarness,
     profile: String,
     assemble: AssembleFn,
-    commit_authored_tests: bool,
+    post_run_commit: Option<PostRunCommit>,
 }
 
 impl ProfiledNornHarness {
@@ -55,17 +73,28 @@ impl ProfiledNornHarness {
             inner,
             profile,
             assemble,
-            commit_authored_tests: false,
+            post_run_commit: None,
         }
     }
 
     /// Enable the test-author's post-turn commit: after a successful run this
     /// harness's session commits the manifest's test files in the brief
-    /// workspace (agents do not run git — the machinery does). Requires the
-    /// activity input to carry `brief.id` and `workspace_path`.
+    /// workspace. Requires the activity input to carry `brief.id` and
+    /// `workspace_path`.
     #[must_use]
     pub fn committing_authored_tests(mut self) -> Self {
-        self.commit_authored_tests = true;
+        self.post_run_commit = Some(PostRunCommit::AuthoredTests);
+        self
+    }
+
+    /// Enable the developer's post-turn commit: after a successful run this
+    /// harness's session commits the fix work (tracked delta + report-named
+    /// new test files) and rewrites the result's `commits` to the real branch
+    /// head. Requires the activity input to carry `brief.id` and
+    /// `workspace_path`.
+    #[must_use]
+    pub fn committing_fix_work(mut self) -> Self {
+        self.post_run_commit = Some(PostRunCommit::FixWork);
         self
     }
 
@@ -91,10 +120,12 @@ impl AgentHarness for ProfiledNornHarness {
             .to_owned();
         // Resolve the commit plan BEFORE the run: an input that cannot name
         // the workspace must fail here, not after an expensive agent turn.
-        let commit = if self.commit_authored_tests {
-            Some(commit::context_from_input(&context_json).map_err(HarnessError::protocol)?)
-        } else {
-            None
+        let commit = match self.post_run_commit {
+            Some(kind) => Some((
+                kind,
+                commit::context_from_input(&context_json).map_err(HarnessError::protocol)?,
+            )),
+            None => None,
         };
         let prompt = self.assembled_prompt(&context_json);
         // Re-encode as a JSON string so the inner harness's prompt derivation
@@ -108,11 +139,12 @@ impl AgentHarness for ProfiledNornHarness {
 }
 
 /// The wrapper session: everything delegates to the inner Norn session; for
-/// the test-author role, [`AgentSession::wait_result`] additionally commits
-/// the authored tests after a successful turn (see [`crate::commit`]).
+/// the committing roles, [`AgentSession::wait_result`] additionally performs
+/// the role's mechanical commit after a successful turn (see
+/// [`crate::commit`]).
 pub struct ProfiledSession {
     inner: <NornHarness as AgentHarness>::Session,
-    commit: Option<TestAuthorContext>,
+    commit: Option<(PostRunCommit, CommitContext)>,
 }
 
 #[async_trait]
@@ -132,21 +164,22 @@ impl AgentSession for ProfiledSession {
     async fn wait_result(self) -> Result<Payload, HarnessError> {
         let Self { inner, commit } = self;
         let payload = inner.wait_result().await?;
-        if let Some(context) = commit {
-            commit_authored_tests(&context, payload.bytes()).await?;
+        match commit {
+            None => Ok(payload),
+            Some((PostRunCommit::AuthoredTests, context)) => {
+                commit_authored_tests(&context, payload.bytes()).await?;
+                Ok(payload)
+            }
+            Some((PostRunCommit::FixWork, context)) => commit_fix_work(&context, payload).await,
         }
-        Ok(payload)
     }
 }
 
-/// The post-turn commit step: parse the manifest slice out of the terminal
-/// output and commit the claimed test files. Any refusal is an activity
-/// failure — a manifest the workspace cannot honor must surface, never be
-/// swallowed into a green turn.
-async fn commit_authored_tests(
-    context: &TestAuthorContext,
-    output: &[u8],
-) -> Result<(), HarnessError> {
+/// The test-author's post-turn commit step: parse the manifest slice out of
+/// the terminal output and commit the claimed test files. Any refusal is an
+/// activity failure — a manifest the workspace cannot honor must surface,
+/// never be swallowed into a green turn.
+async fn commit_authored_tests(context: &CommitContext, output: &[u8]) -> Result<(), HarnessError> {
     let manifest = commit::manifest_from_output(output).map_err(HarnessError::harness)?;
     let workspace_path = context.workspace_path.clone();
     let brief_id = context.brief.id.clone();
@@ -171,6 +204,40 @@ async fn commit_authored_tests(
         }
     }
     Ok(())
+}
+
+/// The developer's post-turn commit step: commit the fix work, then rewrite
+/// the result's `commits` to the real branch head (reality wins — the agent
+/// never ran git, so downstream must see a hash that exists). Any refusal is
+/// an activity failure.
+async fn commit_fix_work(
+    context: &CommitContext,
+    payload: Payload,
+) -> Result<Payload, HarnessError> {
+    let report = commit::fix_report_from_output(payload.bytes()).map_err(HarnessError::harness)?;
+    let workspace_path = context.workspace_path.clone();
+    let brief_id = context.brief.id.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        commit::commit_fix_work(&Shell::inherited(), &workspace_path, &brief_id, &report)
+    })
+    .await
+    .map_err(|join_error| {
+        HarnessError::harness(format!(
+            "fix-work commit task did not complete: {join_error}"
+        ))
+    })?
+    .map_err(|error| HarnessError::harness(format!("fix-work commit failed: {error}")))?;
+    match &outcome {
+        commit::FixCommitOutcome::Committed { commit, paths } => {
+            tracing::info!(%commit, ?paths, "fix work committed on the brief branch");
+        }
+        commit::FixCommitOutcome::Skipped { head, reason } => {
+            tracing::info!(%head, %reason, "fix-work commit skipped");
+        }
+    }
+    let rewritten = commit::rewrite_report_commits(payload.bytes(), outcome.head())
+        .map_err(HarnessError::harness)?;
+    Ok(Payload::new(ContentType::Json, rewritten))
 }
 
 #[cfg(test)]
