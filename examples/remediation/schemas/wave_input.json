@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The parent remediation_wave workflow input: the operator-approved wave plan (DECISIONS.md D6) — briefs paired with their member ledger entries, the serial strata of parallel brief ids, and the run configuration shared by every child.",
+  "additionalProperties": true,
+  "required": ["briefs", "strata", "config"],
+  "properties": {
+    "briefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["brief", "entries"],
+        "properties": {
+          "brief": { "type": "object", "description": "brief.schema.json shape (nested scope)." },
+          "entries": { "type": "array", "items": { "type": "object" }, "description": "The brief's member ledger entries (agent-facing fields)." }
+        }
+      }
+    },
+    "strata": {
+      "type": "array",
+      "items": { "type": "array", "items": { "type": "string" } },
+      "description": "Serial strata of brief ids; briefs within a stratum run in parallel. Every brief must appear in exactly one stratum."
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["repo_root", "ledger_path"],
+      "properties": {
+        "repo_root": { "type": "string" },
+        "ledger_path": { "type": "string" },
+        "base_branch": { "type": "string" },
+        "max_fix_cycles": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

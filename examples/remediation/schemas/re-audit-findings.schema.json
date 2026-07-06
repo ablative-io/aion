@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/re-audit-findings.schema.json",
+  "title": "ReAuditFindings",
+  "description": "Stage 4 (class re-audit) output: a fresh finding set over the touched components, in the shape of the original audit finders, diffed against the ledger downstream (DESIGN.md Stage 4). Authored HERE because yggdrasil's remediation-flow schema set does not yet ship a findings schema; the shape mirrors the re-auditor profile's output contract and will move to yggdrasil when one lands there.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "area_summary"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "file", "line", "category", "severity", "detail", "failure_scenario", "recommendation"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "file": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 0 },
+          "category": { "type": "string", "enum": ["correction", "completion", "improvement"] },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "detail": { "type": "string", "minLength": 1 },
+          "failure_scenario": { "type": "string" },
+          "recommendation": { "type": "string" }
+        }
+      }
+    },
+    "area_summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Two-sentence overall assessment of the audited component."
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The child remediation_brief result: the brief's terminal disposition (a cap exhaustion or gate-1 failure is a recorded disposition, never a silent success), the cycle accounting, the could_not_reproduce findings surfaced for the operator (D4), the stage artifacts, and the ledger-application record.",
+  "additionalProperties": true,
+  "required": ["brief_id", "disposition", "fix_cycles", "first_pass_accepted", "could_not_reproduce", "test_edit_attempts", "branch", "test_manifest", "fix_report", "verdict", "ledger", "workspace_removed", "summary"],
+  "properties": {
+    "brief_id": { "type": "string" },
+    "disposition": { "type": "string", "enum": ["accepted", "gate1_failed", "cycle_cap_exhausted"] },
+    "fix_cycles": { "type": "integer", "minimum": 0 },
+    "first_pass_accepted": { "type": "boolean" },
+    "could_not_reproduce": { "type": "array", "items": { "type": "string" } },
+    "test_edit_attempts": { "type": "integer", "minimum": 0 },
+    "branch": { "type": "string" },
+    "test_manifest": { "type": "object" },
+    "fix_report": { "type": ["object", "null"] },
+    "verdict": { "type": ["object", "null"] },
+    "ledger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "applied", "detail"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["test_manifest", "fix_report", "verdict", "disposition"] },
+          "applied": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "workspace_removed": { "type": "boolean" },
+    "summary": { "type": "string" }
+  }
+}

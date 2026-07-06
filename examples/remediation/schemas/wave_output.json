@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The parent remediation_wave result: every brief's terminal result plus the wave-report SKELETON (wave-report.schema.json shape with the metrics this run cannot compute emitted as null and the ledger-derived queues empty — the ledger-keeper completes it; see the example README).",
+  "additionalProperties": true,
+  "required": ["wave", "briefs", "report", "summary"],
+  "properties": {
+    "wave": { "type": "integer", "minimum": 0 },
+    "briefs": { "type": "array", "items": { "type": "object" } },
+    "report": { "type": "object", "description": "wave-report.schema.json skeleton; scalar metrics are number-or-null here until the ledger-keeper fills them." },
+    "summary": { "type": "string" }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/test-manifest.schema.json",
+  "title": "TestManifest",
+  "description": "Stage 1 (test authoring) output: fail-first tests per correction finding, with captured evidence that each test fails for the right reason (DESIGN.md Stage 1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_id", "entries"],
+  "properties": {
+    "brief_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "test_names", "fail_evidence", "could_not_reproduce"],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^YG-[0-9]+$"
+          },
+          "test_names": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "fail_evidence": {
+            "type": "string",
+            "description": "Captured output showing the test failing for the asserted defect — not a compile error, missing fixture, or unrelated panic. For completion/improvement findings this records the observable acceptance criterion instead."
+          },
+          "could_not_reproduce": {
+            "type": "boolean",
+            "description": "True routes the finding back to verification (Wave 0: surfaces to Scott/Tom per DECISIONS.md D4)."
+          }
+        }
+      }
+    }
+  }
+}

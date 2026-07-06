@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/fix-report.schema.json",
+  "title": "FixReport",
+  "description": "Stage 2 (fix) output: what the developer changed and the per-finding semantic story (DESIGN.md Stage 2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_id", "commits", "findings_addressed", "deviations", "new_tests"],
+  "properties": {
+    "brief_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commits": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "findings_addressed": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "how"],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^YG-[0-9]+$"
+          },
+          "how": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One paragraph — the semantic story of the fix, or the explicit bounce reason (every finding_id in the brief must appear here per Gate 2)."
+          }
+        }
+      }
+    },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "why", "approved_by"],
+        "properties": {
+          "what": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 },
+          "approved_by": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Planner (or Tom/lead) who approved the declared deviation — silent scope creep is a verifier reject."
+          }
+        }
+      }
+    },
+    "new_tests": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tests the developer added (additions welcome; editing authored tests is mechanically forbidden)."
+    }
+  }
+}
