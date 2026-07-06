@@ -1,0 +1,26 @@
+# Rust activity worker for the incident-triage bridge demo.
+#
+# Standalone (NOT a workspace member) so it builds from a plain `cargo build`
+# in this directory without pulling the whole aion workspace, mirroring the
+# `norn-fan-worker` example. It consumes the worktree's local `aion-worker` by
+# path on the DEFAULT (gRPC poll) transport — no `liminal-transport` feature —
+# which is the smallest worker shape: `Worker::builder(...).run()`.
+[package]
+name = "incident-triage-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust activity worker serving the `triage` activity for the incident-triage demo."
+
+[[bin]]
+name = "incident-triage-worker"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+aion-worker = { path = "../../../crates/aion-worker" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
