@@ -1,0 +1,63 @@
+# Rust activity worker for the pipeline-run stacked-diffs development workflow.
+#
+# Standalone (NOT a workspace member) so it builds from a plain `cargo build`
+# in this directory, mirroring the `incident-triage`, `norn-fan-worker`, and
+# `agent-dev` example workers.
+#
+# It serves EIGHT activity types on ONE task queue (`pipeline_run`):
+#
+# - FOUR DRIVEN AGENT activities (`scout`, `plan`, `dev`, `review`) — each
+#   routed through its OWN composed `NornHarness` (a distinct `--output-schema`,
+#   `--append-system-prompt`, and `{workflow_id}`-derived `--session-id`) over
+#   the liminal server-push transport (`serve_with_redial`). Because one harness
+#   config carries one fixed schema/system-prompt, each role runs on its own
+#   liminal connection; the server routes each agent activity type to the
+#   connection advertising it.
+# - FOUR SHELL activities (`provision_workspace`, `gate`, `land`, `notify`) —
+#   typed registry handlers running real git/cargo commands, on a fifth
+#   connection with no harness.
+[package]
+name = "pipeline-run-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust activity worker serving the pipeline-run workflow's four driven Norn agents and four git/cargo shell activities."
+
+[[bin]]
+name = "pipeline-run-worker"
+path = "src/main.rs"
+
+[lib]
+name = "pipeline_run_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+# The `liminal-transport` feature enables the server-push serve path
+# (`serve_with_redial`) the driven agent-harness wiring runs on. The composed
+# agent-harness seam is unpublished, so the aion crates are consumed by PATH.
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

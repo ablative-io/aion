@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The child pipeline_unit workflow input: everything one unit needs to run its dev/review/gate cycle in isolation.",
+  "additionalProperties": true,
+  "required": ["repo_root", "base_branch", "unit_branch", "unit_id", "goal", "files_hint", "brief_title", "brief_intent", "acceptance_criteria", "constraints", "scout_summary", "dev_review_cap", "gate_cap"],
+  "properties": {
+    "repo_root": { "type": "string" },
+    "base_branch": { "type": "string" },
+    "unit_branch": { "type": "string" },
+    "unit_id": { "type": "string" },
+    "goal": { "type": "string" },
+    "files_hint": { "type": "array", "items": { "type": "string" } },
+    "brief_title": { "type": "string" },
+    "brief_intent": { "type": "string" },
+    "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+    "constraints": { "type": "array", "items": { "type": "string" } },
+    "scout_summary": { "type": "string" },
+    "dev_review_cap": { "type": "integer", "minimum": 1 },
+    "gate_cap": { "type": "integer", "minimum": 1 }
+  }
+}

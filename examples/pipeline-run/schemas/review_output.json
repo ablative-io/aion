@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The reviewer's adversarial verdict. pass is true ONLY when blockers is empty and the work is production-ready. Every blocker carries file:line evidence.",
+  "additionalProperties": false,
+  "required": ["pass", "blockers", "should_fix", "summary", "not_covered"],
+  "properties": {
+    "pass": { "type": "boolean", "description": "true ONLY with zero blockers and production-ready work." },
+    "blockers": {
+      "type": "array",
+      "description": "CRITICAL/HIGH findings. MUST be empty for pass=true.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence", "problem", "scenario"],
+        "properties": {
+          "evidence": { "type": "string", "description": "file:line the blocker is grounded in" },
+          "problem": { "type": "string", "description": "what is wrong" },
+          "scenario": { "type": "string", "description": "the concrete failure scenario" }
+        }
+      }
+    },
+    "should_fix": { "type": "array", "items": { "type": "string" }, "description": "MEDIUM/LOW findings." },
+    "summary": { "type": "string", "description": "The verdict rationale." },
+    "not_covered": { "type": "array", "items": { "type": "string" }, "description": "Paths/claims NOT reviewed; empty is fine, omitted is a defect." }
+  }
+}

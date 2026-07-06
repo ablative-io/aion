@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "A prospekt effective dev-cycle `brief` document plus the operational fields the run needs (repo_root, base_branch) and optional cap overrides. Prospekt-injected fields the workflow ignores (model, model_version, slots) are permitted.",
+  "additionalProperties": true,
+  "required": ["title", "intent", "scope", "acceptance_criteria", "repo_root", "base_branch"],
+  "properties": {
+    "id": { "type": "string" },
+    "title": { "type": "string", "minLength": 1 },
+    "intent": { "type": "string" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["in", "out"],
+      "properties": {
+        "in": { "type": "array", "items": { "type": "string" } },
+        "out": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "acceptance_criteria": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "constraints": { "type": "array", "items": { "type": "string" } },
+    "state": { "type": "string" },
+    "repo_root": { "type": "string", "description": "The repository the run works in." },
+    "base_branch": { "type": "string", "description": "The branch the stack is built on and landed onto." },
+    "dev_review_cap": { "type": "integer", "minimum": 1 },
+    "gate_cap": { "type": "integer", "minimum": 1 }
+  }
+}

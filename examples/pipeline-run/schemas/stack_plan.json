@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The plan agent's decomposition of the brief into a dependency-ordered STACK of units. depends_on forms an acyclic graph; independent units are developed in parallel.",
+  "additionalProperties": false,
+  "required": ["units", "summary", "not_covered"],
+  "properties": {
+    "units": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The stack, smallest coherent slices first.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unit_id", "goal", "files_hint", "depends_on"],
+        "properties": {
+          "unit_id": { "type": "string", "description": "Stable, unique id for this unit (e.g. u1, u2)." },
+          "goal": { "type": "string", "description": "The concrete outcome this unit must produce." },
+          "files_hint": { "type": "array", "items": { "type": "string" }, "description": "Files the unit is expected to touch." },
+          "depends_on": { "type": "array", "items": { "type": "string" }, "description": "unit_ids whose LANDED work this unit must branch on; empty for a root unit." }
+        }
+      }
+    },
+    "summary": { "type": "string", "description": "How the stack decomposes the brief and why." },
+    "not_covered": { "type": "array", "items": { "type": "string" }, "description": "Parts of the brief NOT covered by any unit." }
+  }
+}

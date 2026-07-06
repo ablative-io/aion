@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "One dev round's report: what the round changed. The session (files on disk) is the real artifact; this is the structured record.",
+  "additionalProperties": false,
+  "required": ["files_touched", "summary", "not_covered"],
+  "properties": {
+    "files_touched": { "type": "array", "items": { "type": "string" }, "description": "Paths created or modified this round." },
+    "summary": { "type": "string", "description": "What was implemented / changed this round." },
+    "not_covered": { "type": "array", "items": { "type": "string" }, "description": "Anything the round did NOT do that the unit needs; empty when complete." }
+  }
+}

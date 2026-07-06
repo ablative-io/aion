@@ -1,0 +1,31 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# TWO entries — the pipeline-run family: the `pipeline_run` PARENT (brief ->
+# landed stack) and the `pipeline_unit` CHILD (one unit's dev/review/gate
+# cycle) it spawns per unit. A spawned child's workflow type is resolved by
+# entry-module name against the engine's loaded packages, so BOTH archives must
+# be deployed together for a parent-child run. Both share the same beam set and
+# content hash; only the entry module differs.
+#
+# Timeouts size the longest legitimate run: the parent waits on a whole stack of
+# child units (each iterating agent rounds), so it gets a day; a single unit's
+# cycle gets six hours.
+
+[[workflow]]
+entry_module = "pipeline_run"
+entry_function = "run"
+timeout_seconds = 86400
+input_schema = "schemas/pipeline_input.json"
+output_schema = "schemas/pipeline_output.json"
+activities = ["scout", "plan", "land", "notify"]
+output = "pipeline-run.aion"
+
+[[workflow]]
+entry_module = "pipeline_unit"
+entry_function = "run"
+timeout_seconds = 21600
+input_schema = "schemas/unit_input.json"
+output_schema = "schemas/unit_output.json"
+activities = ["provision_workspace", "dev", "review", "gate"]
+output = "pipeline-unit.aion"
