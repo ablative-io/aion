@@ -1,53 +1,23 @@
-import { X } from 'lucide-react';
-
-import { Badge, Button } from '@/components/ui';
-
 import type { TimelineEntry as TimelineEntryModel } from '../types';
 import { PayloadView } from './PayloadView';
 
-type DetailPanelProps = {
-  entry: TimelineEntryModel | null;
-  onClose: () => void;
+type DetailPanelBodyProps = {
+  entry: TimelineEntryModel;
 };
 
 /**
- * Slide-out inspector for a selected timeline entry. Shows the decoded event
- * envelope (seq / recorded_at / workflow_id / type) plus a best-effort payload
- * view with a raw-bytes fallback (invariant 1). Renders nothing when no entry is
- * selected so the panel does not occupy layout space.
+ * The decoded inspector CONTENT for a selected timeline entry: the event envelope
+ * (type / seq / recorded_at / workflow_id) plus a best-effort payload view with a
+ * raw-bytes fallback (invariant 1). Extracted from the old slide-out aside so the
+ * bottom-docked {@link DetailSheet} can reuse the exact same rendering — the
+ * identity/close chrome lives on the sheet's entity-pill header, not here.
  */
-function DetailPanel({ entry, onClose }: DetailPanelProps) {
-  if (entry === null) {
-    return null;
-  }
-
+function DetailPanelBody({ entry }: DetailPanelBodyProps) {
   const lastEvent = entry.events.at(-1) ?? entry.events[0];
   const eventType = lastEvent?.type ?? entry.kind;
 
   return (
-    <aside
-      aria-label={`Event detail for seq ${entry.sequence}`}
-      className="flex w-full max-w-md shrink-0 flex-col gap-4 rounded-xl border border-border bg-surface-elevated p-4"
-    >
-      <header className="flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline">seq {entry.envelope.seq}</Badge>
-            <Badge variant="secondary">{entry.kind}</Badge>
-          </div>
-          <h2 className="break-words font-medium text-foreground text-sm">{entry.summary}</h2>
-        </div>
-        <Button
-          aria-label="Close detail panel"
-          className="size-8 shrink-0 p-0"
-          onClick={onClose}
-          type="button"
-          variant="ghost"
-        >
-          <X aria-hidden="true" className="size-4" />
-        </Button>
-      </header>
-
+    <div className="flex flex-col gap-4">
       <dl className="space-y-2 text-sm">
         <Field label="Event type" value={eventType} />
         <Field label="Sequence" value={String(entry.envelope.seq)} />
@@ -64,7 +34,7 @@ function DetailPanel({ entry, onClose }: DetailPanelProps) {
         </h3>
         <PayloadView label="Decoded payload" payload={entry.payload ?? lastEvent?.data ?? null} />
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -79,4 +49,4 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-export { DetailPanel };
+export { DetailPanelBody };

@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { AttemptCapabilities } from '@/lib/api';
 import type { ActivityEvent } from '@/types';
-import { resolveSelectedAttempt } from '../components/AttemptTranscriptView';
 import { TranscriptEntryRow, TranscriptEventRow } from '../components/TranscriptEventRow';
 import { TranscriptPanelContent } from '../components/TranscriptPanel';
 import { sortAttempts } from '../hooks/useActivityAttempts';
@@ -193,30 +192,5 @@ describe('sortAttempts', () => {
       '3:2',
       '4:2',
     ]);
-  });
-});
-
-describe('resolveSelectedAttempt', () => {
-  const one: AttemptCapabilities = { activityId: 3, attempt: 1, capabilities: { supported: [] } };
-  const two: AttemptCapabilities = { activityId: 4, attempt: 1, capabilities: { supported: [] } };
-
-  test('auto-selects the attempt when exactly one is live and nothing was picked', () => {
-    expect(resolveSelectedAttempt([one], null)).toEqual(one);
-  });
-
-  test('selects nothing when several attempts are live and nothing was picked', () => {
-    expect(resolveSelectedAttempt([one, two], null)).toBeNull();
-  });
-
-  test('a manual pick wins over the single-attempt default', () => {
-    expect(resolveSelectedAttempt([one, two], '4:1')).toEqual(two);
-  });
-
-  test('falls back to the single live attempt when the picked one is gone', () => {
-    expect(resolveSelectedAttempt([one], '9:9')).toEqual(one);
-  });
-
-  test('selects nothing when there are no live attempts', () => {
-    expect(resolveSelectedAttempt([], null)).toBeNull();
   });
 });

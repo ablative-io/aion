@@ -1,4 +1,4 @@
-import type { Event, EventEnvelope, WorkflowId } from '@/types';
+import type { Event, EventEnvelope, TimerCancelCause, WorkflowId } from '@/types';
 
 import type { EventVariantFamily, KnownEventType } from './lib/timelineVariants';
 
@@ -50,7 +50,25 @@ export type TimerTimelineEntry = TimelineBase & {
   timerId: string;
   started: Extract<Event, { type: 'TimerStarted' }> | null;
   fired: Extract<Event, { type: 'TimerFired' }> | null;
+  /**
+   * The last cancel that STANDS as a real workflow decision — a
+   * `TimerCancelled(WorkflowIntent)`. A `CancelTeardown` cancel is engine
+   * bookkeeping (muted): it never populates this field, so a torn-down timer
+   * never reads as cancelled in the lane. See {@link cancelCause}/{@link rearmed}.
+   */
   cancelled: Extract<Event, { type: 'TimerCancelled' }> | null;
+  /**
+   * Cause of the most recent `TimerCancelled` seen for this timer (`WorkflowIntent`
+   * or `CancelTeardown`), or `null` if the timer was never cancelled. Retained even
+   * for the muted teardown case so the projection is inspectable/testable.
+   */
+  cancelCause: TimerCancelCause | null;
+  /**
+   * True when a fresh `TimerStarted` re-armed this timer AFTER a `CancelTeardown`
+   * cancel (the reopen path: teardown → `WorkflowReopened` → re-armed start for the
+   * SAME timer id at the original `fire_at`). One timer id stays one lane.
+   */
+  rearmed: boolean;
   /**
    * Close event for a `with_timeout` operation that this timer bounded. When
    * present the timer represents a bounded operation (completed-before-deadline

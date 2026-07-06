@@ -408,6 +408,108 @@ test('a genuinely-unknown future variant renders a generic row, never throwing',
   }
 });
 
+test('a WorkflowIntent timer cancel stands as a real cancel', () => {
+  const entry = projectTimeline([
+    {
+      type: 'TimerStarted',
+      data: {
+        envelope: envelope(1),
+        timer_id: { Named: 'retry' },
+        fire_at: '2026-07-04T01:00:00Z',
+      },
+    },
+    {
+      type: 'TimerCancelled',
+      data: { envelope: envelope(2), timer_id: { Named: 'retry' }, cause: 'WorkflowIntent' },
+    },
+  ])[0];
+
+  if (entry?.kind !== 'timer') {
+    throw new Error('expected a timer entry');
+  }
+  expect(entry.status).toBe('cancelled');
+  expect(entry.cancelCause).toBe('WorkflowIntent');
+  expect(entry.cancelled).not.toBeNull();
+  expect(entry.rearmed).toBe(false);
+});
+
+test('a missing timer cancel cause defaults to WorkflowIntent (serde-default parity)', () => {
+  const entry = projectTimeline([
+    {
+      type: 'TimerStarted',
+      data: {
+        envelope: envelope(1),
+        timer_id: { Named: 'retry' },
+        fire_at: '2026-07-04T01:00:00Z',
+      },
+    },
+    { type: 'TimerCancelled', data: { envelope: envelope(2), timer_id: { Named: 'retry' } } },
+  ])[0];
+
+  if (entry?.kind !== 'timer') {
+    throw new Error('expected a timer entry');
+  }
+  expect(entry.status).toBe('cancelled');
+  expect(entry.cancelCause).toBe('WorkflowIntent');
+});
+
+test('a CancelTeardown cancel is muted, and a reopen re-arms the SAME timer lane', () => {
+  // Teardown → WorkflowReopened → fresh TimerStarted (same id, original fire_at)
+  // → TimerFired. One timer id must remain ONE lane, and the folded teardown must
+  // not leave the lane reading as cancelled.
+  const timeline = projectTimeline([
+    {
+      type: 'TimerStarted',
+      data: { envelope: envelope(1), timer_id: { Named: 'sla' }, fire_at: '2026-07-04T02:00:00Z' },
+    },
+    {
+      type: 'TimerCancelled',
+      data: { envelope: envelope(2), timer_id: { Named: 'sla' }, cause: 'CancelTeardown' },
+    },
+    {
+      type: 'WorkflowReopened',
+      data: { envelope: envelope(3), run_id: '00000000-0000-0000-0000-0000000000a1', reopened: [] },
+    },
+    {
+      type: 'TimerStarted',
+      data: { envelope: envelope(4), timer_id: { Named: 'sla' }, fire_at: '2026-07-04T02:00:00Z' },
+    },
+    { type: 'TimerFired', data: { envelope: envelope(5), timer_id: { Named: 'sla' } } },
+  ]);
+
+  const timerLanes = timeline.filter((entry) => entry.kind === 'timer');
+  expect(timerLanes).toHaveLength(1);
+
+  const timer = timerLanes[0];
+  if (timer?.kind !== 'timer') {
+    throw new Error('expected a timer entry');
+  }
+  expect(timer.status).toBe('fired');
+  expect(timer.cancelled).toBeNull();
+  expect(timer.cancelCause).toBeNull();
+  expect(timer.rearmed).toBe(true);
+});
+
+test('a standalone CancelTeardown (never re-armed) folds to the pre-cancel state, not cancelled', () => {
+  const entry = projectTimeline([
+    {
+      type: 'TimerStarted',
+      data: { envelope: envelope(1), timer_id: { Named: 'sla' }, fire_at: '2026-07-04T02:00:00Z' },
+    },
+    {
+      type: 'TimerCancelled',
+      data: { envelope: envelope(2), timer_id: { Named: 'sla' }, cause: 'CancelTeardown' },
+    },
+  ])[0];
+
+  if (entry?.kind !== 'timer') {
+    throw new Error('expected a timer entry');
+  }
+  expect(entry.status).toBe('started');
+  expect(entry.cancelled).toBeNull();
+  expect(entry.cancelCause).toBe('CancelTeardown');
+});
+
 test('payload decode failure falls back to the raw envelope, no throw', () => {
   // Bytes that are not valid JSON despite a Json content-type.
   const badJson: Payload = { content_type: 'Json', bytes: [123, 34] };

@@ -7,7 +7,11 @@ type LaneBarProps = {
   /** Column width in px (one dense rank). */
   columnWidth: number;
   selected: boolean;
-  onSelect: (bar: SwimlaneBar) => void;
+  /**
+   * Select this bar. `originX` is the bar's horizontal centre in viewport px, so
+   * the bottom-docked detail sheet can morph out of the clicked bar's rect.
+   */
+  onSelect: (bar: SwimlaneBar, originX: number) => void;
 };
 
 /**
@@ -34,7 +38,10 @@ function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
       )}
       data-bar-status={bar.status}
       data-marker={bar.isMarker ? 'true' : undefined}
-      onClick={() => onSelect(bar)}
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        onSelect(bar, rect.left + rect.width / 2);
+      }}
       style={{ left, width }}
       title={bar.label}
       type="button"

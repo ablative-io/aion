@@ -1,4 +1,4 @@
-import type { Event, EventEnvelope, TimerId } from '@/types';
+import type { Event, EventEnvelope, TimerCancelCause, TimerId } from '@/types';
 
 import type {
   ActivityAttempt,
@@ -236,10 +236,24 @@ function patchTimer(
 
   if (event.type === 'TimerStarted') {
     entry.started = event;
+    // A start after a `CancelTeardown` cancel is the reopen re-arm (same timer
+    // id, original fire_at): the teardown was bookkeeping, so drop the muted
+    // cause and mark the lane re-armed rather than minting a second lane.
+    if (entry.cancelCause === 'CancelTeardown') {
+      entry.cancelCause = null;
+      entry.rearmed = true;
+    }
   } else if (event.type === 'TimerFired') {
     entry.fired = event;
   } else if (event.type === 'TimerCancelled') {
-    entry.cancelled = event;
+    // `cause` is serde-defaulted: a missing value (legacy history) decodes to
+    // `WorkflowIntent`. A `WorkflowIntent` cancel is a real decision and STANDS;
+    // a `CancelTeardown` cancel is engine bookkeeping and is MUTED (folded) — it
+    // records its cause for inspection but never sets `cancelled`, so the lane
+    // does not read as cancelled for a teardown that is (or will be) re-armed.
+    const cause: TimerCancelCause = event.data.cause ?? 'WorkflowIntent';
+    entry.cancelCause = cause;
+    entry.cancelled = cause === 'WorkflowIntent' ? event : null;
   } else {
     entry.withTimeout = event;
   }
@@ -267,6 +281,8 @@ function newTimerEntry(
     started: null,
     fired: null,
     cancelled: null,
+    cancelCause: null,
+    rearmed: false,
     withTimeout: null,
     status: 'started',
   };

@@ -1,4 +1,4 @@
-export { DetailPanel } from './components/DetailPanel';
+export { DetailPanelBody } from './components/DetailPanel';
 export { EventTimeline } from './components/EventTimeline';
 export type { LiveWorkflowEvents, LiveWorkflowEventsOptions } from './hooks/useLiveWorkflowEvents';
 export { useLiveWorkflowEvents } from './hooks/useLiveWorkflowEvents';
