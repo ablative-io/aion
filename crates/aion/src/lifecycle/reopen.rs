@@ -97,14 +97,25 @@ pub async fn reopen(
     let segment = run_segment(&history, run);
     let reopened = validate_and_compute_reopened(id, run, segment)?;
 
-    // History says reopenable-terminal, so a live handle now means exactly one
-    // thing: a concurrent reopen already won the race.
-    if context.registry.get(id, run)?.is_some() {
-        return Err(EngineError::InvalidState {
-            reason: format!(
-                "workflow {id} run {run} was already reopened and is Running (concurrent reopen)"
-            ),
-        });
+    // History says reopenable-terminal, but a live handle can mean two things.
+    // A run that fails while resident keeps its suspended handle registered —
+    // `reconcile_terminal_registry` reconciles the cached status to the
+    // terminal and suspends residency without removing the entry — so a
+    // terminal-cached handle is that leftover, not a live run: clear it and
+    // proceed. Only a non-terminal cached status means a concurrent reopen
+    // already won the race and is driving the run. Two reopens racing past
+    // this check are still serialized by the recorder's expected-sequence
+    // discipline (the loser's `WorkflowReopened` append fails).
+    if let Some(existing) = context.registry.get(id, run)? {
+        if existing.cached_status().is_terminal() {
+            context.registry.remove(id, run)?;
+        } else {
+            return Err(EngineError::InvalidState {
+                reason: format!(
+                    "workflow {id} run {run} was already reopened and is Running (concurrent reopen)"
+                ),
+            });
+        }
     }
 
     let rearm = rearmable_timers(segment);

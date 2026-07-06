@@ -12,6 +12,8 @@ mod common;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use aion::durability::Recorder;
+use aion::registry::{CompletionNotifier, Residency, WorkflowHandle, WorkflowHandleParts};
 use aion::{EngineBuilder, EngineError};
 use aion_core::{
     ActivityError, ActivityErrorKind, ActivityId, Event, EventEnvelope, RunId,
@@ -338,6 +340,121 @@ async fn reopen_cancelled_workflow_resumes_from_where_it_was_cancelled()
         }
         other => return Err(format!("expected trailing WorkflowReopened, found {other:?}").into()),
     }
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+/// Builds the lingering suspended handle a run leaves behind when it fails
+/// WHILE resident: `reconcile_terminal_registry` reconciles the cached status
+/// to the terminal and suspends residency, but never removes the entry.
+async fn lingering_terminal_handle(
+    store: &Arc<dyn EventStore>,
+    workflow_id: &WorkflowId,
+    run_id: &RunId,
+    loaded_version: &str,
+    cached_status: WorkflowStatus,
+) -> Result<WorkflowHandle, Box<dyn std::error::Error>> {
+    let head = store
+        .read_history(workflow_id)
+        .await?
+        .last()
+        .map(Event::seq)
+        .unwrap_or_default();
+    Ok(WorkflowHandle::new(WorkflowHandleParts {
+        workflow_id: workflow_id.clone(),
+        run_id: run_id.clone(),
+        pid: 0,
+        workflow_type: FIXTURE_MODULE.to_owned(),
+        namespace: String::from("default"),
+        loaded_version: loaded_version.parse()?,
+        cached_status,
+        residency: Residency::Suspended,
+        recorder: Recorder::resume_at(workflow_id.clone(), Arc::clone(store), head),
+        completion: CompletionNotifier::new(),
+    }))
+}
+
+#[tokio::test]
+async fn reopen_clears_the_lingering_handle_of_a_run_that_failed_while_resident()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A run that fails WHILE resident (worker lost, activity terminal error)
+    // keeps its suspended handle in the registry — nothing on the natural
+    // failure path removes it. Reopen must recognize that terminal-cached
+    // leftover and proceed, not misreport it as a concurrent reopen.
+    let package = fixture_package("wait")?;
+    let hash = package.content_hash().to_string();
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let (workflow_id, run_id) = seed_failed_run(&store, &hash, "default").await?;
+
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .load_workflows(package)
+        .build()
+        .await?;
+
+    let leftover =
+        lingering_terminal_handle(&store, &workflow_id, &run_id, &hash, WorkflowStatus::Failed)
+            .await?;
+    engine
+        .registry()
+        .insert((workflow_id.clone(), run_id.clone()), leftover)?;
+
+    let handle = engine.reopen_workflow(&workflow_id, &run_id).await?;
+    assert_eq!(handle.cached_status(), WorkflowStatus::Running);
+    assert_eq!(
+        status_from_events(&store.read_history(&workflow_id).await?),
+        WorkflowStatus::Running
+    );
+
+    engine.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopen_still_rejects_a_genuinely_running_concurrent_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The counterpart guard: a live handle whose cached status is NON-terminal
+    // is a concurrent reopen driving the run — reject, and never append a
+    // second WorkflowReopened.
+    let package = fixture_package("wait")?;
+    let hash = package.content_hash().to_string();
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let (workflow_id, run_id) = seed_failed_run(&store, &hash, "default").await?;
+
+    let engine = EngineBuilder::new()
+        .store_arc(Arc::clone(&store))
+        .in_memory_visibility()
+        .scheduler_threads(1)
+        .load_workflows(package)
+        .build()
+        .await?;
+
+    let winner = lingering_terminal_handle(
+        &store,
+        &workflow_id,
+        &run_id,
+        &hash,
+        WorkflowStatus::Running,
+    )
+    .await?;
+    engine
+        .registry()
+        .insert((workflow_id.clone(), run_id.clone()), winner)?;
+
+    assert!(matches!(
+        engine.reopen_workflow(&workflow_id, &run_id).await,
+        Err(EngineError::InvalidState { .. })
+    ));
+    let reopened_count = store
+        .read_history(&workflow_id)
+        .await?
+        .iter()
+        .filter(|event| matches!(event, Event::WorkflowReopened { .. }))
+        .count();
+    assert_eq!(reopened_count, 0, "the rejected reopen must not append");
 
     engine.shutdown()?;
     Ok(())
