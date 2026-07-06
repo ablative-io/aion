@@ -35,6 +35,18 @@ WHERE status = 'pending' AND visible_after <= ?1
 ORDER BY visible_after ASC, dispatch_key ASC
 LIMIT ?2";
 
+// Unbounded variant for the pause dispatch-hold (#204): the held-workflow filter runs
+// in Rust AFTER the SELECT, so a SQL LIMIT would let a paused workflow's due rows
+// (which sort earliest) permanently occupy the whole window and starve every other
+// workflow on the route. The excluding claims therefore stream WITHOUT a LIMIT and
+// stop once `limit` claimable rows are taken — held rows cost one decode each, never
+// a claim slot.
+const SELECT_CLAIMABLE_UNBOUNDED_SQL: &str = "
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id, namespace, task_queue, node
+FROM outbox
+WHERE status = 'pending' AND visible_after <= ?1
+ORDER BY visible_after ASC, dispatch_key ASC";
+
 // Scoped claim (LSUB-1a): additionally constrain by the pool's `(namespace, task_queue)` and the
 // node predicate. The node clause is appended per-scope: a node-bearing scope claims rows pinned to
 // that node OR unpinned rows (`node IS NULL`); a node-less scope claims only unpinned rows. This is
@@ -47,6 +59,12 @@ WHERE status = 'pending' AND visible_after <= ?1 AND namespace = ?3 AND task_que
 const SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL: &str = "
 ORDER BY visible_after ASC, dispatch_key ASC
 LIMIT ?2";
+
+// Scoped unbounded suffix: same starvation rationale as
+// [`SELECT_CLAIMABLE_UNBOUNDED_SQL`] — used only when a non-empty held set makes the
+// Rust-side filter load-bearing. `?2` is unused here; the scoped bindings renumber.
+const SELECT_CLAIMABLE_SCOPED_SUFFIX_UNBOUNDED_SQL: &str = "
+ORDER BY visible_after ASC, dispatch_key ASC";
 
 // Node predicate fragments spliced between the prefix and suffix above. `?5` binds the scope node.
 const NODE_CLAUSE_PINNED_OR_UNPINNED: &str = " AND (node IS NULL OR node = ?5)";
@@ -309,8 +327,11 @@ async fn select_and_claim_excluding(
 ) -> Result<Vec<OutboxRow>, StoreError> {
     let claimed_at = Utc::now();
     let now = encode_instant(claimed_at);
+    // Unbounded SELECT + stop-at-limit below: with the held filter applied in Rust,
+    // a SQL LIMIT would let a paused workflow's earliest-due rows fill the whole
+    // window and starve the route (held rows sort first and are never claimed).
     let mut rows = tx
-        .query(SELECT_CLAIMABLE_SQL, params![now.clone(), i64::from(limit)])
+        .query(SELECT_CLAIMABLE_UNBOUNDED_SQL, params![now.clone()])
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
@@ -320,6 +341,9 @@ async fn select_and_claim_excluding(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?
     {
+        if claimed.len() >= limit as usize {
+            break;
+        }
         let decoded = decode_row(&row)?;
         // A held (paused) workflow's row is left Pending: never claimed, never
         // released — release is purely resume + the next sweep.
@@ -448,9 +472,15 @@ async fn select_and_claim_scoped(
     } else {
         NODE_CLAUSE_UNPINNED_ONLY
     };
-    let sql = format!(
-        "{SELECT_CLAIMABLE_SCOPED_PREFIX_SQL}{node_clause}{SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL}"
-    );
+    // With held workflows to skip, the LIMIT moves out of SQL into the claim loop
+    // (stop-at-limit): held rows sort earliest and must not consume the window
+    // (route starvation, #204). The empty-held claim keeps the bounded SQL.
+    let suffix = if held.is_empty() {
+        SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL
+    } else {
+        SELECT_CLAIMABLE_SCOPED_SUFFIX_UNBOUNDED_SQL
+    };
+    let sql = format!("{SELECT_CLAIMABLE_SCOPED_PREFIX_SQL}{node_clause}{suffix}");
 
     // `?5` is bound only when the scope carries a node; the node-less clause references no `?5`.
     let mut rows = if let Some(node) = scope.node.as_deref() {
@@ -485,6 +515,9 @@ async fn select_and_claim_scoped(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?
     {
+        if claimed.len() >= limit as usize {
+            break;
+        }
         let decoded = decode_row(&row)?;
         // A held (paused) workflow's row is left Pending: never claimed, never
         // released — release is purely resume + the next sweep (#204). The
