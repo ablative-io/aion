@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The pipeline-run result: overall disposition, the plan's execution strata, each unit's terminal result, and the unit ids landed in order.",
+  "additionalProperties": true,
+  "required": ["disposition", "strata", "units", "landed", "summary"],
+  "properties": {
+    "disposition": { "type": "string", "enum": ["passed", "review_cap_exhausted", "gate_cap_exhausted"] },
+    "strata": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+    "units": { "type": "array", "items": { "type": "object" } },
+    "landed": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string" }
+  }
+}

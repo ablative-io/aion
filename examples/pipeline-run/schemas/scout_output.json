@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The scout agent's grounding pass over the real tree. Observations carry evidence (a path, ideally with a line), never paraphrase.",
+  "additionalProperties": false,
+  "required": ["summary", "observations", "integration_points", "risks", "not_covered"],
+  "properties": {
+    "summary": { "type": "string", "description": "What the tree actually looks like relative to the brief." },
+    "observations": {
+      "type": "array",
+      "description": "Grounded observations, each pinned to a location.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["location", "note"],
+        "properties": {
+          "location": { "type": "string", "description": "path or path:line the observation is grounded in" },
+          "note": { "type": "string", "description": "the observed fact or behavior" }
+        }
+      }
+    },
+    "integration_points": { "type": "array", "items": { "type": "string" }, "description": "Interfaces/contracts the work must respect." },
+    "risks": { "type": "array", "items": { "type": "string" }, "description": "Risks the implementation must guard against." },
+    "not_covered": { "type": "array", "items": { "type": "string" }, "description": "Areas NOT examined; empty list is fine, an omitted list is a defect." }
+  }
+}

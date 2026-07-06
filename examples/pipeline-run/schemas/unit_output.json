@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The child pipeline_unit result: the unit's terminal disposition, the branch it produced, the round counts, and the last review/gate evidence.",
+  "additionalProperties": true,
+  "required": ["unit_id", "branch", "disposition", "dev_review_rounds", "gate_rounds", "last_review_summary", "last_gate_diagnostics", "files_touched", "summary"],
+  "properties": {
+    "unit_id": { "type": "string" },
+    "branch": { "type": "string" },
+    "disposition": { "type": "string", "enum": ["passed", "review_cap_exhausted", "gate_cap_exhausted"] },
+    "dev_review_rounds": { "type": "integer" },
+    "gate_rounds": { "type": "integer" },
+    "last_review_summary": { "type": "string" },
+    "last_gate_diagnostics": { "type": "string" },
+    "files_touched": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string" }
+  }
+}
