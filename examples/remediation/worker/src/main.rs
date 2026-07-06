@@ -1,21 +1,27 @@
 //! Composition root for the remediation worker.
 //!
 //! It serves nine activity types on ONE task queue (`remediation`) across
-//! FIVE liminal connections in this single process:
+//! FIVE liminal connections in this single process, each connection
+//! registered on its OWN node (the third routing dimension: namespace ×
+//! `task_queue` × node) so the server — which routes by those three dimensions
+//! only, never by activity type — can land every dispatched activity on the
+//! one connection that holds its handler:
 //!
 //! - four DRIVEN AGENT connections (`test_author`, `developer`, `verifier`,
-//!   `re_auditor`), each with its OWN composed [`ProfiledNornHarness`]: a
+//!   `re_auditor`), each registered on the node named after its role, each
+//!   with its OWN composed [`ProfiledNornHarness`]: a
 //!   distinct `--output-schema`, a `{workflow_id}`-templated `--session-id` /
 //!   `--workspace-root`, and the role's profile markdown (loaded once at
 //!   startup from `--profiles-dir`, pointing at the yggdrasil checkout's
 //!   `docs/design/remediation-flow/profiles/`) assembled with the per-run
 //!   context by the role's ONE prompt function. One `AgentHarnessConfig`
 //!   carries one fixed schema/profile, so the roles cannot share a
-//!   connection; each advertises its one agent type and the server routes to
-//!   it.
-//! - one SHELL connection serving `provision_workspace`, `gate1`, `gate2`,
-//!   `ledger_update`, and `cleanup_workspace` from a typed registry, with no
-//!   harness.
+//!   connection; the per-role NODE registration is what lets the server route
+//!   each activity to the right one (the advertised agent type is not a
+//!   routing key).
+//! - one SHELL connection, registered on node `shell`, serving
+//!   `provision_workspace`, `gate1`, `gate2`, `ledger_update`, and
+//!   `cleanup_workspace` from a typed registry, with no harness.
 //!
 //! Per-brief session isolation falls out of the topology: the agent
 //! activities run inside CHILD `remediation_brief` workflows, so
@@ -52,6 +58,15 @@ use remediation_worker::shell::Shell;
 const DEFAULT_ADDRESS: &str = "127.0.0.1:50061";
 /// The one task queue every remediation activity is dispatched on.
 const TASK_QUEUE: &str = "remediation";
+/// The node id the SHELL connection registers. The server routes a pushed
+/// activity by (namespace, `task_queue`, node) ONLY — never by activity type —
+/// so each of this worker's five connections on the one task queue MUST
+/// register a distinct node, and every activity the workflow builds pins the
+/// node of the one connection that serves it. This string MUST equal
+/// `shell_node` in `../src/remediation/activities.gleam` (the authoritative
+/// node table); the agent connections' node ids are their activity types
+/// (see [`Role::node`]), mirroring that table's role constants.
+const SHELL_NODE: &str = "shell";
 const REDIAL_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const REDIAL_MAX_BACKOFF: Duration = Duration::from_secs(5);
 
@@ -66,6 +81,18 @@ struct Role {
     workspace_root: String,
     profile: String,
     assemble: prompts::AssembleFn,
+}
+
+impl Role {
+    /// The node id this role's connection registers: by construction its
+    /// activity type, so the (namespace, `task_queue`, node) route the workflow
+    /// pins with `activity.node(<role>_node)` lands on exactly the connection
+    /// whose harness serves that activity. Mirrors the `<role>_node`
+    /// constants in `../src/remediation/activities.gleam` — the strings MUST
+    /// match exactly or dispatch strands on a handlerless connection.
+    fn node(&self) -> &'static str {
+        self.activity_type
+    }
 }
 
 /// Parsed command-line arguments.
@@ -173,9 +200,10 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
     ]
 }
 
-/// Compose one role's harness and serve it on its own liminal connection.
+/// Compose one role's harness and serve it on its own liminal connection,
+/// registered on the role's node so only this role's activity is routed here.
 fn serve_agent_role(candidates: &[String], identity: &str, norn_bin: &str, role: &Role) {
-    let config = match worker_config(identity) {
+    let config = match worker_config(identity, role.node()) {
         Ok(config) => config,
         Err(error) => {
             tracing::error!(%identity, %error, "could not build agent worker config");
@@ -231,25 +259,30 @@ fn composed_agent_harness(norn_bin: &str, role: &Role) -> AgentHarnessConfig {
     )
 }
 
-/// Serve the five shell activities from a typed registry on one connection.
+/// The five shell activities as a typed registry — the ONE definition of what
+/// the shell connection (node [`SHELL_NODE`]) serves; the routing tests read
+/// the served set from here so it can never drift from production.
+fn shell_registry(shell: Shell) -> Result<ActivityRegistry, aion_worker::WorkerError> {
+    ActivityRegistry::new()
+        .register_activity(
+            "provision_workspace",
+            blocking(shell.clone(), handlers::provision),
+        )?
+        .register_activity("gate1", blocking(shell.clone(), handlers::gate1))?
+        .register_activity("gate2", blocking(shell.clone(), handlers::gate2))?
+        .register_activity(
+            "ledger_update",
+            blocking(shell.clone(), handlers::ledger_update),
+        )?
+        .register_activity("cleanup_workspace", blocking(shell, handlers::cleanup))
+}
+
+/// Serve the five shell activities from a typed registry on one connection,
+/// registered on the `shell` node so only shell activities are routed here.
 fn serve_shell(args: &Args) -> anyhow::Result<()> {
     let identity = format!("{}-shell", args.identity_prefix);
-    let config = worker_config(&identity)?;
-    let shell = Shell::inherited();
-    let registry = Arc::new(
-        ActivityRegistry::new()
-            .register_activity(
-                "provision_workspace",
-                blocking(shell.clone(), handlers::provision),
-            )?
-            .register_activity("gate1", blocking(shell.clone(), handlers::gate1))?
-            .register_activity("gate2", blocking(shell.clone(), handlers::gate2))?
-            .register_activity(
-                "ledger_update",
-                blocking(shell.clone(), handlers::ledger_update),
-            )?
-            .register_activity("cleanup_workspace", blocking(shell, handlers::cleanup))?,
-    );
+    let config = worker_config(&identity, SHELL_NODE)?;
+    let registry = Arc::new(shell_registry(Shell::inherited())?);
     let stop = AtomicBool::new(false);
     let ready_file = args.ready_file.clone();
     aion_worker::serve_with_redial(
@@ -274,13 +307,16 @@ fn serve_shell(args: &Args) -> anyhow::Result<()> {
 }
 
 /// The shared worker config for one connection: one identity, the remediation
-/// task queue, and an effectively unbounded reconnect budget (a long-lived
-/// worker must outwait server restarts).
-fn worker_config(identity: &str) -> Result<WorkerConfig, WorkerConfigBuildError> {
+/// task queue, the connection's DISTINCT node (the routing key that separates
+/// this process's five same-queue connections — see [`SHELL_NODE`]), and an
+/// effectively unbounded reconnect budget (a long-lived worker must outwait
+/// server restarts).
+fn worker_config(identity: &str, node: &str) -> Result<WorkerConfig, WorkerConfigBuildError> {
     WorkerConfig::builder()
         .endpoint("unused-direct-address")
         .namespace("default")
         .task_queue(TASK_QUEUE)
+        .node(node)
         .identity(identity)
         .max_concurrency(4)
         .reconnect_initial_backoff(REDIAL_INITIAL_BACKOFF)
@@ -377,7 +413,11 @@ fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Re
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{DEFAULT_ADDRESS, Profiles, parse_args_from, roles};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::{
+        DEFAULT_ADDRESS, Profiles, Role, SHELL_NODE, Shell, parse_args_from, roles, shell_registry,
+    };
 
     fn parse(args: &[&str]) -> anyhow::Result<super::Args> {
         parse_args_from(
@@ -514,5 +554,80 @@ mod tests {
             assert!(role.output_schema.trim_start().starts_with('{'));
             assert!(!role.profile.is_empty());
         }
+    }
+
+    /// The routing contract this worker's five connections uphold: the server
+    /// routes by (namespace, `task_queue`, node) only, so the node table must be
+    /// INJECTIVE (no two connections share a node — a shared node would let an
+    /// activity land on a connection with no handler for it) and EXHAUSTIVE
+    /// (every served activity type maps to exactly one node). Reads the served
+    /// sets from the production `roles`/`shell_registry` definitions so the
+    /// guard cannot drift from what actually registers.
+    #[test]
+    fn node_mapping_is_exhaustive_and_injective() {
+        let roles = roles("/repo", profiles());
+
+        // Injective across all five connections.
+        let mut nodes: BTreeSet<&str> = roles.iter().map(Role::node).collect();
+        assert_eq!(nodes.len(), roles.len(), "two agent roles share a node");
+        assert!(
+            nodes.insert(SHELL_NODE),
+            "an agent role reuses the shell connection's node"
+        );
+
+        // Exhaustive: every served activity type maps to exactly one node.
+        let registry = shell_registry(Shell::inherited()).expect("the shell registry builds");
+        let mut activity_to_node: BTreeMap<String, &str> = BTreeMap::new();
+        for activity_type in registry.activity_types() {
+            assert!(
+                activity_to_node
+                    .insert(activity_type.clone(), SHELL_NODE)
+                    .is_none(),
+                "shell activity `{activity_type}` registered twice"
+            );
+        }
+        for role in &roles {
+            assert!(
+                activity_to_node
+                    .insert(role.activity_type.to_owned(), role.node())
+                    .is_none(),
+                "activity `{}` is served on two nodes",
+                role.activity_type
+            );
+        }
+        assert_eq!(
+            activity_to_node
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "cleanup_workspace",
+                "developer",
+                "gate1",
+                "gate2",
+                "ledger_update",
+                "provision_workspace",
+                "re_auditor",
+                "test_author",
+                "verifier",
+            ],
+            "the served activity-type set changed; update the node table \
+             (worker AND src/remediation/activities.gleam) together"
+        );
+    }
+
+    /// Pin the exact node-id strings to the workflow-side source of truth
+    /// (`shell_node`/`test_author_node`/`developer_node`/`verifier_node`/
+    /// `re_auditor_node` in src/remediation/activities.gleam). The server
+    /// matches these strings blindly; a drift on either side strands
+    /// activities on handlerless connections.
+    #[test]
+    fn node_ids_mirror_the_workflow_constants() {
+        assert_eq!(SHELL_NODE, "shell");
+        let nodes: Vec<&str> = roles("/repo", profiles()).iter().map(Role::node).collect();
+        assert_eq!(
+            nodes,
+            vec!["test_author", "developer", "verifier", "re_auditor"]
+        );
     }
 }

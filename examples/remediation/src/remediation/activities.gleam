@@ -2,18 +2,27 @@
 ////
 //// Eight activity types, all served by the remediation worker on ONE distinct
 //// task queue (`remediation`) so the run never collides with other workers on
-//// `default`:
+//// `default`, each PINNED to the one worker connection that serves it via the
+//// node routing dimension (namespace × task_queue × node):
 ////
 //// - THREE agent activities (`test_author`, `developer`, `verifier`) — driven
-////   Norn agents. Their INPUT is the STRUCTURED context (the codec is where
-////   the test-author's recommendation strip happens); the worker assembles
-////   the final prompt as {role profile markdown} + {this context JSON} and
-////   the driven harness returns the schema-constrained structured result.
-////   (A fourth role connection, `re_auditor`, is served by the worker for the
+////   Norn agents, each pinned to its role's node. Their INPUT is the
+////   STRUCTURED context (the codec is where the test-author's recommendation
+////   strip happens); the worker assembles the final prompt as {role profile
+////   markdown} + {this context JSON} and the driven harness returns the
+////   schema-constrained structured result. (A fourth role connection,
+////   `re_auditor` on node `re_auditor_node`, is served by the worker for the
 ////   wave-level Stage 4 to come; no workflow here dispatches it yet.)
 //// - FIVE shell activities (`provision_workspace`, `gate1`, `gate2`,
 ////   `ledger_update`, `cleanup_workspace`) — typed registry handlers running
-////   real git/cargo/python commands.
+////   real git/cargo/python commands, all pinned to the `shell` node.
+////
+//// The node pin is LOAD-BEARING: the server routes a pushed activity to a
+//// worker connection by (namespace, task_queue, node) ONLY — never by
+//// activity type. The worker opens FIVE connections on this one task queue,
+//// so without the pin an activity round-robins across all five and 4-in-5
+//// times lands on a connection with no handler for it, never reports, and
+//// dies at the heartbeat window as a lost-worker failure.
 ////
 //// Every activity dispatches on the remote wire; the local runner is a guard
 //// that never runs in production and fails loudly if a misconfiguration ever
@@ -33,6 +42,36 @@ import remediation/types.{
 /// The one task queue every remediation activity is dispatched on.
 pub const task_queue = "remediation"
 
+// --- node ids (the routing SOURCE OF TRUTH) -----------------------------------
+//
+// These five constants are THE authoritative node-id table for the remediation
+// flow. The worker (worker/src/main.rs) registers each of its five liminal
+// connections with exactly one of these ids: the shell connection registers
+// `shell_node`, and each agent connection's node id IS its role's activity
+// type (`Role::node()` there returns `activity_type`, which mirrors
+// `test_author_node`/`developer_node`/`verifier_node`/`re_auditor_node` here).
+// The strings MUST match exactly — the server routes on them blindly, so a
+// mismatch strands the activity on a connection that cannot serve it.
+
+/// The node the worker's SHELL connection registers; every shell activity
+/// (`provision_workspace`, `gate1`, `gate2`, `ledger_update`,
+/// `cleanup_workspace`) pins to it.
+pub const shell_node = "shell"
+
+/// The node of the `test_author` driven-agent connection.
+pub const test_author_node = "test_author"
+
+/// The node of the `developer` driven-agent connection.
+pub const developer_node = "developer"
+
+/// The node of the `verifier` driven-agent connection.
+pub const verifier_node = "verifier"
+
+/// The node of the `re_auditor` driven-agent connection. The worker serves it
+/// today; the wave-level Stage 4 activity that will dispatch on it is not
+/// built yet. It lives here so the node table stays single-sourced.
+pub const re_auditor_node = "re_auditor"
+
 /// A local runner for a remote-only activity: it must never execute in-VM, so
 /// it fails loudly rather than returning a plausible-looking empty result.
 fn remote_only(
@@ -47,8 +86,13 @@ fn remote_only(
   }
 }
 
-fn on_queue(activity: Activity(i, o)) -> Activity(i, o) {
-  activity.task_queue(activity, task_queue)
+/// Pin an activity to the remediation queue AND to the one worker connection
+/// that serves it. Both dimensions are required: the queue keeps the run off
+/// `default`, and the node selects the single connection (of the worker's
+/// five on this queue) holding the handler — the server never routes by
+/// activity type.
+fn route(activity: Activity(i, o), node: String) -> Activity(i, o) {
+  activity.node(activity.task_queue(activity, task_queue), node)
 }
 
 // --- agent activities ---------------------------------------------------------
@@ -65,7 +109,7 @@ pub fn test_author(
     codecs.test_manifest_codec(),
     remote_only("test_author"),
   )
-  |> on_queue
+  |> route(test_author_node)
 }
 
 /// `developer`: a driven fix round returning the [`FixReport`]. The harness
@@ -79,7 +123,7 @@ pub fn developer(input: DeveloperInput) -> Activity(DeveloperInput, FixReport) {
     codecs.fix_report_codec(),
     remote_only("developer"),
   )
-  |> on_queue
+  |> route(developer_node)
 }
 
 /// `verifier`: a driven adversarial verification returning the [`Verdict`].
@@ -91,7 +135,7 @@ pub fn verifier(input: VerifierInput) -> Activity(VerifierInput, Verdict) {
     codecs.verdict_codec(),
     remote_only("verifier"),
   )
-  |> on_queue
+  |> route(verifier_node)
 }
 
 // --- shell activities ------------------------------------------------------------
@@ -108,7 +152,7 @@ pub fn provision(
     codecs.workspace_info_codec(),
     remote_only("provision_workspace"),
   )
-  |> on_queue
+  |> route(shell_node)
 }
 
 /// `gate1`: re-run each authored test; every one must FAIL on the unfixed
@@ -122,7 +166,7 @@ pub fn gate1(input: Gate1Input) -> Activity(Gate1Input, Gate1Outcome) {
     codecs.gate1_outcome_codec(),
     remote_only("gate1"),
   )
-  |> on_queue
+  |> route(shell_node)
 }
 
 /// `gate2`: the mechanical fix gate — authored-test-path diff empty, clippy
@@ -135,7 +179,7 @@ pub fn gate2(input: Gate2Input) -> Activity(Gate2Input, Gate2Outcome) {
     codecs.gate2_outcome_codec(),
     remote_only("gate2"),
   )
-  |> on_queue
+  |> route(shell_node)
 }
 
 /// `ledger_update`: apply one stage artifact to the in-repo ledger via the
@@ -150,7 +194,7 @@ pub fn ledger_update(
     codecs.ledger_update_outcome_codec(),
     remote_only("ledger_update"),
   )
-  |> on_queue
+  |> route(shell_node)
 }
 
 /// `cleanup_workspace`: remove the brief's worktree, refusing (honestly, as
@@ -163,5 +207,5 @@ pub fn cleanup(input: CleanupInput) -> Activity(CleanupInput, CleanupOutcome) {
     codecs.cleanup_outcome_codec(),
     remote_only("cleanup_workspace"),
   )
-  |> on_queue
+  |> route(shell_node)
 }
