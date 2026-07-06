@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prospekt://doctrine/refutation",
+  "title": "Refutation",
+  "description": "The refuter attacks a design BEFORE code exists. Its job is to be wrong loudly: a surviving design is stronger for it, a dying design just saved an implementation cycle. The schema forces argument either way — assent without argument does not typecheck.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["design_survives", "attacks", "gate_audit", "not_covered"],
+  "properties": {
+    "design_survives": { "type": "boolean" },
+    "attacks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "argument", "outcome"],
+        "properties": {
+          "target": { "type": "string", "description": "The specific claim/decision attacked (quote it)." },
+          "argument": { "type": "string", "description": "The concrete failure: inputs/state → wrong result. Not vibes." },
+          "evidence": { "type": "string", "description": "path:line or observed behavior backing the attack." },
+          "outcome": { "enum": ["lands", "deflected", "withdrawn"], "description": "lands = design must change; deflected = design already handles it (say how); withdrawn = attack was wrong (say why)." },
+          "severity_if_lands": { "enum": ["fatal", "must_address", "note"] }
+        }
+      },
+      "description": "Every attack attempted, INCLUDING the ones that failed — deflected attacks are the evidence the design was actually tested."
+    },
+    "gate_audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gates_assert_outcomes", "holes"],
+      "properties": {
+        "gates_assert_outcomes": { "type": "boolean", "description": "Do ALL acceptance gates assert forward progress/outcomes rather than history shape? (rigid step 3)" },
+        "holes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ways the implementation could pass every gate and still be wrong. Each hole becomes a gate revision."
+        }
+      }
+    },
+    "not_covered": { "type": "array", "items": { "type": "string" } }
+  }
+}
