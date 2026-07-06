@@ -1,0 +1,13 @@
+name = "aion_remediation"
+version = "0.1.0"
+target = "erlang"
+description = "The yggdrasil remediation flow as an Aion workflow family: a signed wave plan drives serial strata of parallel per-brief child workflows — fail-first test authoring, a mechanical gate, a cycle-capped developer/verifier loop, and artifact-driven ledger updates — every agent step a driven Norn agent constrained by an output schema."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = { path = "../../gleam/aion_flow" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
