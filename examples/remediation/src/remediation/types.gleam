@@ -417,6 +417,12 @@ pub type ArtifactKind {
   TestManifestArtifact
   FixReportArtifact
   VerdictArtifact
+  /// The applier's operator-signed disposition ruling (refuted|deferred;
+  /// `signed_by` must be an operator — DECISIONS.md D9). Part of the `--kind`
+  /// vocabulary this type mirrors, but the WORKFLOW never constructs it: its
+  /// own terminal [`Disposition`] is a different concept, recorded on the
+  /// [`BriefResult`], never sent to the applier
+  /// (`remediation_brief.terminal_artifacts` pins this).
   DispositionArtifact
 }
 

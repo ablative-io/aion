@@ -1030,29 +1030,13 @@ fn cleanup_outcome_decoder() -> decode.Decoder(CleanupOutcome) {
   decode.success(CleanupOutcome(removed: removed, detail: detail))
 }
 
-// --- the disposition artifact ---------------------------------------------------------------------------------
-
-/// Render the terminal-disposition artifact the `ledger_update` activity
-/// applies with `--kind disposition`. The shape is part of the applier CLI
-/// contract recorded in this example's README.
-pub fn disposition_artifact_json(
-  brief_id brief_id: String,
-  disposition disposition: Disposition,
-  fix_cycles fix_cycles: Int,
-  test_edit_attempts test_edit_attempts: Int,
-  could_not_reproduce could_not_reproduce: List(String),
-  detail detail: String,
-) -> String {
-  json.object([
-    #("brief_id", json.string(brief_id)),
-    #("disposition", disposition_to_json(disposition)),
-    #("fix_cycles", json.int(fix_cycles)),
-    #("test_edit_attempts", json.int(test_edit_attempts)),
-    #("could_not_reproduce", strings(could_not_reproduce)),
-    #("detail", json.string(detail)),
-  ])
-  |> json.to_string
-}
+// --- the applier artifacts --------------------------------------------------------------------------------------
+//
+// EXACTLY THREE artifact renderers, one per AGENT stage output. There is
+// deliberately NO disposition renderer: the applier's `disposition` kind is an
+// operator-signed ruling (refuted|deferred, signed by an operator —
+// DECISIONS.md D9), not the workflow's terminal outcome; the workflow records
+// its own Disposition on the BriefResult and never sends one to the applier.
 
 /// Render a test manifest as the artifact JSON for `--kind test_manifest`.
 pub fn test_manifest_artifact_json(manifest: TestManifest) -> String {

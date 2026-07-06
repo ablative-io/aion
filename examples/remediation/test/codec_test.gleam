@@ -356,24 +356,6 @@ pub fn ledger_entry_decoder_tolerates_full_schema_entries_test() {
   }
 }
 
-pub fn disposition_artifact_names_the_contracted_fields_test() {
-  let artifact =
-    codecs.disposition_artifact_json(
-      brief_id: "B-1",
-      disposition: types.CycleCapExhausted,
-      fix_cycles: 3,
-      test_edit_attempts: 1,
-      could_not_reproduce: ["YG-367"],
-      detail: "budget exhausted",
-    )
-  string.contains(artifact, "\"disposition\":\"cycle_cap_exhausted\"")
-  |> should.equal(True)
-  string.contains(artifact, "\"brief_id\":\"B-1\"")
-  |> should.equal(True)
-  string.contains(artifact, "\"could_not_reproduce\":[\"YG-367\"]")
-  |> should.equal(True)
-}
-
 pub fn brief_result_codec_round_trips_with_optional_artifacts_test() {
   let result =
     types.BriefResult(
