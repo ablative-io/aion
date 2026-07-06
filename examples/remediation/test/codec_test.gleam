@@ -8,8 +8,9 @@ import gleam/string
 import gleeunit/should
 import remediation/codecs
 import remediation/types.{
-  Brief, ClassSibling, Correction, Deviation, FindingFix, FindingRuling,
-  FixReport, Fixed, LedgerEntry, ManifestEntry, Partial, TestAuthorInput,
+  Accept, Brief, ClassInstance, ClassSibling, Correction, Deviation,
+  FindingBounce, FindingFix, FindingRuling, FixReport, Fixed, LedgerEntry,
+  ManifestEntry, Partial, PartialAccept, RegressionRisk, TestAuthorInput,
   TestManifest, Verdict,
 }
 
@@ -105,14 +106,24 @@ fn manifest() -> types.TestManifest {
     ManifestEntry(
       finding_id: "YG-268",
       test_names: ["teardown::refuses_dirty_worktree"],
+      test_file: "crates/yg-core/tests/yg268_teardown.rs",
+      expected_failure_signature: "teardown deleted uncommitted work",
       fail_evidence: "assertion failed: teardown deleted uncommitted work",
       could_not_reproduce: False,
+      could_not_reproduce_reason: None,
+      manual_acceptance: None,
     ),
     ManifestEntry(
       finding_id: "YG-367",
       test_names: [],
+      test_file: "",
+      expected_failure_signature: "",
       fail_evidence: "",
       could_not_reproduce: True,
+      could_not_reproduce_reason: Some(
+        "the guarded path was refactored away in commit 9c2f11",
+      ),
+      manual_acceptance: None,
     ),
   ])
 }
@@ -125,10 +136,14 @@ pub fn test_manifest_codec_round_trips_test() {
 }
 
 pub fn test_manifest_decodes_the_schema_wire_shape_test() {
+  // The exact 2026-07-07 wire shape, nullable fields as JSON null.
   let raw =
     "{\"brief_id\":\"B-1\",\"entries\":[{\"finding_id\":\"YG-268\","
-    <> "\"test_names\":[\"t1\"],\"fail_evidence\":\"boom\","
-    <> "\"could_not_reproduce\":false}]}"
+    <> "\"test_names\":[\"t1\"],\"test_file\":\"tests/t.rs\","
+    <> "\"expected_failure_signature\":\"boom sig\","
+    <> "\"fail_evidence\":\"boom sig seen\",\"could_not_reproduce\":false,"
+    <> "\"could_not_reproduce_reason\":null,"
+    <> "\"manual_acceptance\":\"error names the path\"}]}"
   codecs.test_manifest_codec().decode(raw)
   |> should.equal(
     Ok(
@@ -136,68 +151,129 @@ pub fn test_manifest_decodes_the_schema_wire_shape_test() {
         ManifestEntry(
           finding_id: "YG-268",
           test_names: ["t1"],
-          fail_evidence: "boom",
+          test_file: "tests/t.rs",
+          expected_failure_signature: "boom sig",
+          fail_evidence: "boom sig seen",
           could_not_reproduce: False,
+          could_not_reproduce_reason: None,
+          manual_acceptance: Some("error names the path"),
         ),
       ]),
     ),
   )
 }
 
-pub fn fix_report_codec_round_trips_test() {
-  let report =
-    FixReport(
-      brief_id: "B-1",
-      commits: ["abc123"],
-      findings_addressed: [
-        FindingFix(finding_id: "YG-268", how: "added the dirty check"),
-      ],
-      deviations: [
-        Deviation(
-          what: "touched cli",
-          why: "shared helper",
-          approved_by: "planner",
-        ),
-      ],
-      new_tests: ["teardown::extra_case"],
-    )
-  let codec = codecs.fix_report_codec()
-  codec.encode(report)
-  |> codec.decode
-  |> should.equal(Ok(report))
+fn fix_report() -> types.FixReport {
+  FixReport(
+    brief_id: "B-1",
+    commits: ["abc123"],
+    findings_addressed: [
+      FindingFix(finding_id: "YG-268", how: "added the dirty check"),
+    ],
+    findings_bounced: [
+      FindingBounce(
+        finding_id: "YG-367",
+        reason: "the cited path is unreachable since 9c2f11",
+      ),
+    ],
+    deviations: [
+      Deviation(
+        what: "touched cli",
+        why: "shared helper",
+        approved_by: "planner",
+      ),
+    ],
+    new_tests: ["teardown::extra_case"],
+    class_instances_found: [
+      ClassInstance(
+        file: "crates/yg-core/src/sync.rs",
+        line: 189,
+        fixed: True,
+        note: "same unguarded removal; fixed in this brief",
+      ),
+    ],
+  )
 }
 
-pub fn verdict_codec_round_trips_and_reads_ruling_tags_test() {
-  let verdict =
+pub fn fix_report_codec_round_trips_test() {
+  let codec = codecs.fix_report_codec()
+  codec.encode(fix_report())
+  |> codec.decode
+  |> should.equal(Ok(fix_report()))
+}
+
+pub fn fix_report_wire_carries_bounced_and_class_instances_test() {
+  let encoded = codecs.fix_report_codec().encode(fix_report())
+  string.contains(encoded, "\"findings_bounced\":[{\"finding_id\":\"YG-367\"")
+  |> should.equal(True)
+  string.contains(encoded, "\"class_instances_found\":[{\"file\"")
+  |> should.equal(True)
+  string.contains(encoded, "\"fixed\":true")
+  |> should.equal(True)
+}
+
+fn verdict() -> types.Verdict {
+  Verdict(
+    brief_id: "B-1",
+    per_finding: [
+      FindingRuling(
+        finding_id: "YG-268",
+        ruling: Fixed,
+        evidence: "read teardown.rs:42",
+      ),
+      FindingRuling(
+        finding_id: "YG-367",
+        ruling: Partial,
+        evidence: "sibling at :189 survives",
+      ),
+    ],
+    class_siblings_found: [
+      ClassSibling(
+        file: "sync.rs",
+        line: 7,
+        description: "same unguarded removal",
+      ),
+    ],
+    regression_risks: [
+      RegressionRisk(file: "callers.rs", concern: "new error variant unmatched"),
+    ],
+    standards_violations: [],
+    overall: PartialAccept,
+    reject_reason: Some("YG-367 only partially addressed"),
+  )
+}
+
+pub fn verdict_codec_round_trips_and_reads_the_tags_test() {
+  let codec = codecs.verdict_codec()
+  codec.encode(verdict())
+  |> codec.decode
+  |> should.equal(Ok(verdict()))
+
+  let encoded = codec.encode(verdict())
+  string.contains(encoded, "\"ruling\":\"partial\"")
+  |> should.equal(True)
+  string.contains(encoded, "\"overall\":\"partial_accept\"")
+  |> should.equal(True)
+  string.contains(encoded, "\"standards_violations\":[]")
+  |> should.equal(True)
+}
+
+pub fn verdict_codec_round_trips_a_null_reject_reason_test() {
+  let accepting =
     Verdict(
-      brief_id: "B-1",
+      ..verdict(),
       per_finding: [
-        FindingRuling(
-          finding_id: "YG-268",
-          ruling: Fixed,
-          evidence: "read teardown.rs:42",
-        ),
-        FindingRuling(
-          finding_id: "YG-367",
-          ruling: Partial,
-          evidence: "sibling at :189 survives",
-        ),
+        FindingRuling(finding_id: "YG-268", ruling: Fixed, evidence: "e"),
       ],
-      class_siblings_found: [
-        ClassSibling(
-          file: "sync.rs",
-          line: 7,
-          description: "same unguarded removal",
-        ),
-      ],
+      overall: Accept,
+      reject_reason: None,
     )
   let codec = codecs.verdict_codec()
-  codec.encode(verdict)
-  |> codec.decode
-  |> should.equal(Ok(verdict))
-
-  string.contains(codec.encode(verdict), "\"ruling\":\"partial\"")
+  string.contains(codec.encode(accepting), "\"reject_reason\":null")
   |> should.equal(True)
+  codec.encode(accepting)
+  |> codec.decode
+  |> should.equal(Ok(accepting))
 }
 
 pub fn brief_codec_preserves_the_schema_scope_nesting_test() {
@@ -307,17 +383,13 @@ pub fn brief_result_codec_round_trips_with_optional_artifacts_test() {
       first_pass_accepted: True,
       could_not_reproduce: ["YG-367"],
       test_edit_attempts: 0,
+      verdict_mismatches: [
+        "cycle 1: verifier asserted overall=accept but the rulings derive "
+        <> "partial_accept",
+      ],
       branch: "remediation/B-1",
       manifest: manifest(),
-      fix_report: Some(
-        FixReport(
-          brief_id: "B-1",
-          commits: ["abc"],
-          findings_addressed: [FindingFix(finding_id: "YG-268", how: "fixed")],
-          deviations: [],
-          new_tests: [],
-        ),
-      ),
+      fix_report: Some(fix_report()),
       verdict: None,
       ledger: [
         types.LedgerApplication(

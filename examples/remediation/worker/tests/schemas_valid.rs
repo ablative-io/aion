@@ -38,16 +38,27 @@ fn test_manifest_schema_matches_the_codec_fields() {
         remediation_worker::schemas::TEST_MANIFEST,
     );
     assert_eq!(required(&schema), vec!["brief_id", "entries"]);
-    let entry_required = required(&schema["properties"]["entries"]["items"]);
+    // 2026-07-07 contract: test_file + expected_failure_signature are
+    // REQUIRED (gate 1 is fully mechanical); the two nullable operator
+    // channels are properties but not required.
+    let entry_item = &schema["properties"]["entries"]["items"];
     assert_eq!(
-        entry_required,
+        required(entry_item),
         vec![
             "finding_id",
             "test_names",
+            "test_file",
+            "expected_failure_signature",
             "fail_evidence",
             "could_not_reproduce"
         ]
     );
+    for nullable in ["could_not_reproduce_reason", "manual_acceptance"] {
+        assert!(
+            entry_item["properties"][nullable].is_object(),
+            "{nullable} must be declared"
+        );
+    }
 }
 
 #[test]
@@ -56,14 +67,18 @@ fn fix_report_schema_matches_the_codec_fields() {
         "fix-report.schema.json",
         remediation_worker::schemas::FIX_REPORT,
     );
+    // 2026-07-07 contract: findings_bounced and class_instances_found are
+    // REQUIRED — gate 2's accounting rule needs both lists present.
     assert_eq!(
         required(&schema),
         vec![
             "brief_id",
             "commits",
             "findings_addressed",
+            "findings_bounced",
             "deviations",
-            "new_tests"
+            "new_tests",
+            "class_instances_found"
         ]
     );
     assert_eq!(
@@ -71,31 +86,56 @@ fn fix_report_schema_matches_the_codec_fields() {
         vec!["finding_id", "how"]
     );
     assert_eq!(
+        required(&schema["properties"]["findings_bounced"]["items"]),
+        vec!["finding_id", "reason"]
+    );
+    assert_eq!(
         required(&schema["properties"]["deviations"]["items"]),
         vec!["what", "why", "approved_by"]
+    );
+    assert_eq!(
+        required(&schema["properties"]["class_instances_found"]["items"]),
+        vec!["file", "line", "fixed", "note"]
     );
 }
 
 #[test]
-fn verdict_schema_matches_the_codec_fields_and_ruling_vocabulary() {
+fn verdict_schema_matches_the_codec_fields_and_vocabularies() {
     let schema = parse("verdict.schema.json", remediation_worker::schemas::VERDICT);
+    // 2026-07-07 contract: cross-finding fields + derive-and-check overall.
     assert_eq!(
         required(&schema),
-        vec!["brief_id", "per_finding", "class_siblings_found"]
+        vec![
+            "brief_id",
+            "per_finding",
+            "class_siblings_found",
+            "regression_risks",
+            "standards_violations",
+            "overall",
+            "reject_reason"
+        ]
     );
     let ruling_item = &schema["properties"]["per_finding"]["items"];
     assert_eq!(
         required(ruling_item),
         vec!["finding_id", "ruling", "evidence"]
     );
-    // The exact ruling vocabulary the Gleam Ruling type decodes.
+    // The exact vocabularies the Gleam Ruling/Overall types decode.
     assert_eq!(
         enum_values(&ruling_item["properties"]["ruling"]),
         vec!["fixed", "partial", "not_fixed", "regression_introduced"]
     );
     assert_eq!(
+        enum_values(&schema["properties"]["overall"]),
+        vec!["accept", "reject", "partial_accept"]
+    );
+    assert_eq!(
         required(&schema["properties"]["class_siblings_found"]["items"]),
         vec!["file", "line", "description"]
+    );
+    assert_eq!(
+        required(&schema["properties"]["regression_risks"]["items"]),
+        vec!["file", "concern"]
     );
 }
 

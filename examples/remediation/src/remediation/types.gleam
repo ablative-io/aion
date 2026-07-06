@@ -179,16 +179,25 @@ pub type VerifierInput {
 
 // --- agent activity outputs (schema mirrors) ---------------------------------
 
-/// One test-manifest entry per `test-manifest.schema.json`.
+/// One test-manifest entry per `test-manifest.schema.json` (2026-07-07
+/// contract). `test_file` and `expected_failure_signature` make gate 1 fully
+/// mechanical: re-run, assert failure, assert the output contains the
+/// signature, assert the authored diff stays on test paths.
 /// `could_not_reproduce: True` routes the finding to the operator (Wave 0,
 /// DECISIONS.md D4 — no automated reroute), carried through to the brief
-/// result.
+/// result. `manual_acceptance` is the channel for improvement/completion
+/// findings with no expressible failing test: gate 1 records the criterion
+/// for the verifier instead of running anything.
 pub type ManifestEntry {
   ManifestEntry(
     finding_id: String,
     test_names: List(String),
+    test_file: String,
+    expected_failure_signature: String,
     fail_evidence: String,
     could_not_reproduce: Bool,
+    could_not_reproduce_reason: Option(String),
+    manual_acceptance: Option(String),
   )
 }
 
@@ -202,19 +211,37 @@ pub type FindingFix {
   FindingFix(finding_id: String, how: String)
 }
 
+/// One explicitly bounced finding in a fix report (`fix-report.schema.json`
+/// `findings_bounced`): the developer's concrete evidence the finding is
+/// invalid. Distinct from addressed — gate 2's accounting requires every
+/// brief finding in exactly ONE of the two lists.
+pub type FindingBounce {
+  FindingBounce(finding_id: String, reason: String)
+}
+
 /// One declared deviation in a fix report (`fix-report.schema.json`).
 pub type Deviation {
   Deviation(what: String, why: String, approved_by: String)
 }
 
-/// The developer's structured result per `fix-report.schema.json`.
+/// One same-pattern occurrence the developer found beyond the cited lines
+/// (`fix-report.schema.json` `class_instances_found`): fixed in this brief,
+/// or recorded for the verifier/re-audit.
+pub type ClassInstance {
+  ClassInstance(file: String, line: Int, fixed: Bool, note: String)
+}
+
+/// The developer's structured result per `fix-report.schema.json`
+/// (2026-07-07 contract).
 pub type FixReport {
   FixReport(
     brief_id: String,
     commits: List(String),
     findings_addressed: List(FindingFix),
+    findings_bounced: List(FindingBounce),
     deviations: List(Deviation),
     new_tests: List(String),
+    class_instances_found: List(ClassInstance),
   )
 }
 
@@ -237,12 +264,34 @@ pub type ClassSibling {
   ClassSibling(file: String, line: Int, description: String)
 }
 
-/// The verifier's structured result per `verdict.schema.json`.
+/// A cross-finding regression concern not tied to a single ruling
+/// (`verdict.schema.json` `regression_risks`).
+pub type RegressionRisk {
+  RegressionRisk(file: String, concern: String)
+}
+
+/// The verdict's overall disposition (`verdict.schema.json` `overall`).
+/// DERIVE-AND-CHECK: the workflow derives this mechanically from
+/// `per_finding` (`remediation/checks.derive_overall`) and REJECTS a verdict
+/// whose asserted value disagrees — consistency is checked, never trusted.
+pub type Overall {
+  Accept
+  Reject
+  PartialAccept
+}
+
+/// The verifier's structured result per `verdict.schema.json` (2026-07-07
+/// contract). `standards_violations` empty is a deliberate statement (the
+/// diff-wide scan ran and found nothing), not an omission.
 pub type Verdict {
   Verdict(
     brief_id: String,
     per_finding: List(FindingRuling),
     class_siblings_found: List(ClassSibling),
+    regression_risks: List(RegressionRisk),
+    standards_violations: List(String),
+    overall: Overall,
+    reject_reason: Option(String),
   )
 }
 
@@ -269,27 +318,67 @@ pub type WorkspaceInfo {
   WorkspaceInfo(workspace_path: String, branch: String, base_commit: String)
 }
 
-/// Input to the `gate1` shell activity: re-run each authored test named by the
-/// manifest; every one must FAIL on the unfixed code.
-pub type Gate1Input {
-  Gate1Input(workspace_path: String, base_commit: String, tests: List(String))
+/// One runnable gate-1 check, routed from a manifest entry by the workflow
+/// (pure): the finding's tests plus the substring their failing output MUST
+/// contain (the fully mechanical fails-for-the-right-reason check).
+pub type Gate1Check {
+  Gate1Check(
+    finding_id: String,
+    test_names: List(String),
+    expected_failure_signature: String,
+  )
 }
 
-/// One authored test's re-run: whether it failed (the REQUIRED outcome at
-/// gate 1) and the captured output as evidence.
+/// One manual-acceptance entry (improvement/completion findings with no
+/// expressible failing test): nothing to run at gate 1; the criterion is
+/// recorded for the verifier.
+pub type AcceptanceCheck {
+  AcceptanceCheck(finding_id: String, criterion: String)
+}
+
+/// Input to the `gate1` shell activity (2026-07-07 contract — fully
+/// mechanical): per runnable manifest entry, re-run its tests, assert each
+/// FAILS, assert the output contains the entry's signature; assert the
+/// test-author's diff since `base_commit` touches ONLY test paths (the
+/// manifest's `test_file` set plus the shared test-path rule); echo the
+/// manual-acceptance entries into the result.
+pub type Gate1Input {
+  Gate1Input(
+    workspace_path: String,
+    base_commit: String,
+    checks: List(Gate1Check),
+    acceptance: List(AcceptanceCheck),
+    test_files: List(String),
+  )
+}
+
+/// One authored test's re-run: which finding it guards, whether it failed
+/// (REQUIRED at gate 1), whether the captured output contained the entry's
+/// `expected_failure_signature` (failing for the RIGHT reason), and the
+/// captured output as evidence.
 pub type TestRun {
-  TestRun(test_name: String, failed: Bool, evidence: String)
+  TestRun(
+    finding_id: String,
+    test_name: String,
+    failed: Bool,
+    signature_matched: Bool,
+    evidence: String,
+  )
 }
 
 /// Result of `gate1`. `pass` is true only when the authored tests are
-/// committed and every named test failed on re-run. `authored_test_paths` and
-/// `tests_commit` pin the immutable authored-test set for gate 2's tamper
-/// check. A failing authored test run is recorded DATA, never an activity
-/// error.
+/// committed, the authored diff stayed on test paths (`scope_violations`
+/// empty), and every named test failed WITH its expected signature in the
+/// output. `acceptance_checks` echoes the manual-acceptance entries (nothing
+/// was run for them — recorded for the verifier). `authored_test_paths` and
+/// `tests_commit` pin the immutable authored set for gate 2's tamper check.
+/// A red check is recorded DATA, never an activity error.
 pub type Gate1Outcome {
   Gate1Outcome(
     pass: Bool,
     results: List(TestRun),
+    acceptance_checks: List(AcceptanceCheck),
+    scope_violations: List(String),
     authored_test_paths: List(String),
     tests_commit: String,
     detail: String,
@@ -391,7 +480,10 @@ pub type LedgerApplication {
 /// The child `remediation_brief` workflow's result: the terminal disposition
 /// plus everything the operator and the wave report need — cycle accounting,
 /// the `could_not_reproduce` finding ids (D4: surfaced, not rerouted), the
-/// artifacts, and the ledger-application record.
+/// artifacts, the ledger-application record, and every verdict-consistency
+/// violation caught by the derive-and-check rule (`verdict_mismatches` —
+/// asserted-vs-derived disagreements and missing reject reasons, cycle-
+/// stamped; evidence for the operator, never silently accepted).
 pub type BriefResult {
   BriefResult(
     brief_id: String,
@@ -400,6 +492,7 @@ pub type BriefResult {
     first_pass_accepted: Bool,
     could_not_reproduce: List(String),
     test_edit_attempts: Int,
+    verdict_mismatches: List(String),
     branch: String,
     manifest: TestManifest,
     fix_report: Option(FixReport),
@@ -567,6 +660,25 @@ pub fn ruling_from_string(tag: String) -> Option(Ruling) {
     "partial" -> option.Some(Partial)
     "not_fixed" -> option.Some(NotFixed)
     "regression_introduced" -> option.Some(RegressionIntroduced)
+    _ -> option.None
+  }
+}
+
+/// The wire tag for a verdict overall.
+pub fn overall_to_string(overall: Overall) -> String {
+  case overall {
+    Accept -> "accept"
+    Reject -> "reject"
+    PartialAccept -> "partial_accept"
+  }
+}
+
+/// Resolve an overall tag; unknown tags are a decode failure upstream.
+pub fn overall_from_string(tag: String) -> Option(Overall) {
+  case tag {
+    "accept" -> option.Some(Accept)
+    "reject" -> option.Some(Reject)
+    "partial_accept" -> option.Some(PartialAccept)
     _ -> option.None
   }
 }

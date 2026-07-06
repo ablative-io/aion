@@ -38,41 +38,80 @@ pub struct WorkspaceInfo {
     pub base_commit: String,
 }
 
-/// Input to `gate1` (`codecs.gate1_input_codec`).
+/// One runnable gate-1 check (`codecs` `Gate1Check`), routed from a manifest
+/// entry by the workflow: the finding's tests plus the substring their
+/// failing output MUST contain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gate1Check {
+    /// The finding this check guards.
+    pub finding_id: String,
+    /// The authored test names (cargo test filters).
+    pub test_names: Vec<String>,
+    /// The substring the failing output must contain — the fully mechanical
+    /// fails-for-the-RIGHT-reason check.
+    pub expected_failure_signature: String,
+}
+
+/// One manual-acceptance entry (`codecs` `AcceptanceCheck`): an improvement/
+/// completion finding with no expressible failing test. Nothing runs; the
+/// criterion is echoed through the gate result for the verifier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptanceCheck {
+    /// The finding the criterion belongs to.
+    pub finding_id: String,
+    /// The observable acceptance criterion the verifier will check.
+    pub criterion: String,
+}
+
+/// Input to `gate1` (`codecs.gate1_input_codec`, 2026-07-07 contract).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gate1Input {
     /// The workspace the authored tests are re-run in.
     pub workspace_path: String,
     /// The provisioned base commit; files changed since it are the authored
-    /// test set.
+    /// set (and must ALL be test paths).
     pub base_commit: String,
-    /// The authored test names from the manifest (entries not flagged
-    /// `could_not_reproduce`).
-    pub tests: Vec<String>,
+    /// The runnable checks (entries with tests, not `could_not_reproduce`).
+    pub checks: Vec<Gate1Check>,
+    /// The manual-acceptance entries — recorded, nothing run.
+    pub acceptance: Vec<AcceptanceCheck>,
+    /// The manifest's `test_file` paths — the explicitly-allowed set for the
+    /// diff-scope check, alongside the shared test-path rule.
+    pub test_files: Vec<String>,
 }
 
 /// One authored test's re-run (`codecs` `TestRun`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestRun {
+    /// The finding this run guards.
+    pub finding_id: String,
     /// The test name (the cargo test filter it was run with).
     pub test_name: String,
     /// Whether the run FAILED — the required outcome at gate 1 (the test
     /// encodes a live defect).
     pub failed: bool,
+    /// Whether the captured output contained the check's
+    /// `expected_failure_signature` — failing for the RIGHT reason.
+    pub signature_matched: bool,
     /// The captured (clipped) cargo output, whatever the outcome.
     pub evidence: String,
 }
 
 /// Result of `gate1` (`codecs.gate1_outcome_codec`). `pass` is true only when
-/// the authored tests are committed AND every named test failed on re-run. A
-/// passing authored test — or a dirty worktree — is a recorded FAIL verdict
-/// with evidence, never an activity error.
+/// the authored tests are committed, the authored diff stayed on test paths,
+/// and every named test failed WITH its signature in the output. Anything
+/// else is a recorded FAIL verdict with evidence, never an activity error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gate1Outcome {
     /// Whether the gate passed.
     pub pass: bool,
     /// Per-test re-run results.
     pub results: Vec<TestRun>,
+    /// The manual-acceptance entries, echoed for the verifier (nothing ran).
+    pub acceptance_checks: Vec<AcceptanceCheck>,
+    /// Authored-diff paths that are NOT test paths — production code touched
+    /// by the test author (each is a gate failure).
+    pub scope_violations: Vec<String>,
     /// The files changed since the base commit — the immutable authored-test
     /// set gate 2 diffs against.
     pub authored_test_paths: Vec<String>,

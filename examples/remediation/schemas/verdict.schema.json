@@ -2,10 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ablative.io/yggdrasil/remediation-flow/verdict.schema.json",
   "title": "Verdict",
-  "description": "Stage 3 (adversarial verification) output: per-finding rulings with concrete evidence, plus surviving class siblings which become new ledger entries (DESIGN.md Stage 3).",
+  "description": "Stage 3 (adversarial verification) output: per-finding rulings with concrete evidence, plus surviving class siblings which become new ledger entries (DESIGN.md Stage 3, 2026-07-07 contract). `overall` is derive-and-check: the workflow derives it mechanically from per_finding (accept iff all fixed; reject if any not_fixed/regression_introduced; else partial_accept) and REJECTS a verdict whose asserted overall disagrees — consistency checked, not trusted.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["brief_id", "per_finding", "class_siblings_found"],
+  "required": [
+    "brief_id",
+    "per_finding",
+    "class_siblings_found",
+    "regression_risks",
+    "standards_violations",
+    "overall",
+    "reject_reason"
+  ],
   "properties": {
     "brief_id": {
       "type": "string",
@@ -48,6 +56,33 @@
         }
       },
       "description": "Surviving instances of the same defect class found during class-check — each becomes a NEW ledger entry."
+    },
+    "regression_risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "concern"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "concern": { "type": "string", "minLength": 1 }
+        }
+      },
+      "description": "Cross-finding regression concerns not tied to a single ruling."
+    },
+    "standards_violations": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Diff-wide standards scan results. An empty list is a statement, not an omission."
+    },
+    "overall": {
+      "type": "string",
+      "enum": ["accept", "reject", "partial_accept"],
+      "description": "Derivable from per_finding; the workflow re-derives and rejects on disagreement."
+    },
+    "reject_reason": {
+      "type": ["string", "null"],
+      "description": "Required in substance unless overall=accept (enforced by the workflow, not the schema)."
     }
   }
 }

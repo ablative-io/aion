@@ -12,19 +12,27 @@
 //// `remediation/<brief-id>`). It also makes briefs in a stratum genuinely
 //// parallel: the parent spawns them concurrently.
 ////
-//// The body:
+//// The body (2026-07-07 contract):
 ////   provision an isolated worktree (branch `remediation/<brief-id>` on the
 ////   configured base)
 ////   -> test_author (AGENT; input codec-stripped of every recommendation)
-////   -> coverage check (pure: every correction has a test or an explicit
-////      could_not_reproduce)
-////   -> gate1 (SHELL: re-run the authored tests — each must FAIL; committed)
+////   -> coverage/routing checks (pure: corrections have a test or an explicit
+////      could_not_reproduce; every entry has an evidence channel; runnable
+////      entries carry a failure signature)
+////   -> gate1 (SHELL, fully mechanical: authored tests committed; each test
+////      FAILS with its expected_failure_signature in the output; the authored
+////      diff touches ONLY test paths; manual_acceptance entries echoed)
 ////   -> the bounded fix cycle (`remediation/cycle`) as a trampoline:
 ////        developer (AGENT; full entries incl. recommendation)
 ////        -> gate2 (SHELL: authored-test diff empty, clippy green, suite
-////           green) — a red gate loops back to the developer
-////        -> verifier (AGENT; per-finding rulings) — any adverse ruling loops
-////           back to the developer with the verdict attached
+////           green) + the pure accounting rule (every brief finding in
+////           EXACTLY ONE of findings_addressed | findings_bounced) — a red
+////           combined gate loops back to the developer
+////        -> verifier (AGENT; per-finding rulings) with DERIVE-AND-CHECK: the
+////           loop decision flows through the overall DERIVED from the
+////           rulings; an asserted overall that disagrees (or a non-accept
+////           overall without a reject_reason) is itself a rejection, recorded
+////           on the result — the machine loops back with the verdict attached
 ////      cycle-capped; exhaustion is a TERMINAL DISPOSITION recorded in the
 ////      ledger, never a silent success
 ////   -> ledger_update (SHELL, once per artifact: test_manifest, fix_report,
@@ -113,12 +121,16 @@ pub fn execute(input: BriefInput) -> Result(BriefResult, RemediationError) {
   use workspace <- try(provision(input))
   use manifest <- try(run_test_author(input))
 
-  // Gate 1, workflow half (pure): every correction finding must have a test
-  // or an explicit could_not_reproduce flag — a missing one is a silently
-  // dropped finding, which terminates the brief as a recorded gate-1 failure.
-  case checks.uncovered_corrections(input.entries, manifest) {
+  // Gate 1, workflow half (pure): every correction finding needs a test or an
+  // explicit could_not_reproduce flag; every manifest entry needs SOME
+  // evidence channel (tests | could_not_reproduce | manual_acceptance); every
+  // runnable entry needs a failure signature (an empty one would make the
+  // right-reason check vacuous). Any violation terminates the brief as a
+  // recorded gate-1 failure — a silently dropped finding is the one
+  // forbidden outcome.
+  case manifest_faults(input, manifest) {
     [] -> after_coverage(input, cap, workspace, manifest)
-    uncovered ->
+    faults ->
       finalize(
         input,
         workspace,
@@ -128,11 +140,39 @@ pub fn execute(input: BriefInput) -> Result(BriefResult, RemediationError) {
         disposition: Gate1Failed,
         fix_cycles: 0,
         test_edit_attempts: 0,
-        detail: "correction findings without an authored test or a "
-          <> "could_not_reproduce flag: "
-          <> string.join(uncovered, ", "),
+        verdict_mismatches: [],
+        detail: "manifest fails gate 1's coverage rules: "
+          <> string.join(faults, "; "),
       )
   }
+}
+
+/// The pure gate-1 manifest faults, each line naming its findings.
+fn manifest_faults(input: BriefInput, manifest: TestManifest) -> List(String) {
+  let uncovered = case checks.uncovered_corrections(input.entries, manifest) {
+    [] -> []
+    ids -> [
+      "correction findings without an authored test or a could_not_reproduce "
+      <> "flag: "
+      <> string.join(ids, ", "),
+    ]
+  }
+  let unroutable = case checks.unroutable_entries(manifest) {
+    [] -> []
+    ids -> [
+      "entries with no evidence channel (tests | could_not_reproduce | "
+      <> "manual_acceptance): "
+      <> string.join(ids, ", "),
+    ]
+  }
+  let unsigned = case checks.missing_signatures(manifest) {
+    [] -> []
+    ids -> [
+      "runnable entries without an expected_failure_signature: "
+      <> string.join(ids, ", "),
+    ]
+  }
+  list.flatten([uncovered, unroutable, unsigned])
 }
 
 fn after_coverage(
@@ -141,8 +181,10 @@ fn after_coverage(
   workspace: WorkspaceInfo,
   manifest: TestManifest,
 ) -> Result(BriefResult, RemediationError) {
-  // Gate 1, shell half: re-run every authored test; each must FAIL (evidence
-  // is verified, not trusted — DESIGN.md Gate 1).
+  // Gate 1, shell half (fully mechanical): re-run every authored test; each
+  // must FAIL with its expected signature in the output; the test-author's
+  // diff must touch only test paths (evidence is verified, not trusted —
+  // DESIGN.md Gate 1, 2026-07-07 contract).
   use gate1 <- try(run_gate1(workspace, manifest))
   case gate1.pass {
     False ->
@@ -155,6 +197,7 @@ fn after_coverage(
         disposition: Gate1Failed,
         fix_cycles: 0,
         test_edit_attempts: 0,
+        verdict_mismatches: [],
         detail: "gate 1 failed: " <> gate1.detail,
       )
     True -> {
@@ -167,6 +210,7 @@ fn after_coverage(
           last_gate2: None,
           verdict: None,
           test_edit_attempts: 0,
+          verdict_mismatches: [],
         )
       drive(input, cycle.initial(cap), state)
     }
@@ -176,6 +220,8 @@ fn after_coverage(
 /// The carried artifacts alongside the pure cap machine: the workspace and
 /// the most recent developer/gate/verifier results, used to compose the next
 /// activity input and to build the terminal [`BriefResult`].
+/// `verdict_mismatches` accumulates every derive-and-check violation
+/// (cycle-stamped) — evidence for the operator, surfaced on the result.
 type LoopState {
   LoopState(
     workspace: WorkspaceInfo,
@@ -185,6 +231,7 @@ type LoopState {
     last_gate2: Option(Gate2Outcome),
     verdict: Option(Verdict),
     test_edit_attempts: Int,
+    verdict_mismatches: List(String),
   )
 }
 
@@ -206,6 +253,7 @@ fn drive(
         disposition: disposition,
         fix_cycles: machine.fix_rounds,
         test_edit_attempts: state.test_edit_attempts,
+        verdict_mismatches: state.verdict_mismatches,
         detail: stop_detail(disposition, state),
       )
     cycle.Developer -> {
@@ -217,7 +265,12 @@ fn drive(
       )
     }
     cycle.Gate2 -> {
-      use outcome <- try(run_gate2(state))
+      use report <- try(require_fix_report(state))
+      use shell_outcome <- try(run_gate2(state))
+      // Gate 2's accounting half (pure): every brief finding in exactly ONE
+      // of findings_addressed | findings_bounced. Violations join the shell
+      // verdict as a gate failure, so the developer loop-back carries them.
+      let outcome = with_accounting(input, report, shell_outcome)
       let attempts = case outcome.test_diff_clean {
         True -> state.test_edit_attempts
         // An authored-test edit reached the gate: a guard-failure metric,
@@ -236,12 +289,67 @@ fn drive(
     }
     cycle.Verifier -> {
       use verdict <- try(run_verifier(input, state))
+      // DERIVE-AND-CHECK (2026-07-07 contract): the loop decision flows
+      // through the DERIVED overall (checks.verdict_accepts), never the
+      // verifier's asserted one; any asserted-vs-derived disagreement or
+      // missing reject_reason is recorded, cycle-stamped, for the operator —
+      // and treated as a gate failure (the machine loops back), never a
+      // silent acceptance of either value.
+      let stamped =
+        list.map(checks.verdict_issues(verdict), fn(issue) {
+          "cycle " <> int.to_string(machine.fix_rounds) <> ": " <> issue
+        })
       drive(
         input,
         cycle.on_verdict(machine, checks.verdict_accepts(verdict)),
-        LoopState(..state, verdict: Some(verdict)),
+        LoopState(
+          ..state,
+          verdict: Some(verdict),
+          verdict_mismatches: list.append(state.verdict_mismatches, stamped),
+        ),
       )
     }
+  }
+}
+
+/// The fix report gate 2 accounts against. The developer always precedes
+/// gate 2 in the machine; its absence is an engine-ordering fault surfaced
+/// loudly, never defaulted around.
+fn require_fix_report(state: LoopState) -> Result(FixReport, RemediationError) {
+  case state.fix_report {
+    Some(report) -> Ok(report)
+    None ->
+      Error(StageFailed(
+        stage: "gate2",
+        message: "gate 2 reached without a fix report — cycle-machine "
+          <> "ordering violated",
+      ))
+  }
+}
+
+/// Fold the pure accounting verdict into the shell gate's outcome: a clean
+/// accounting leaves it untouched; violations force `pass: False` and append
+/// the lines to the diagnostics the developer loop-back reads. The shell's
+/// own recorded activity result stays what the shell returned — this derived
+/// value is the workflow's combined gate-2 verdict.
+fn with_accounting(
+  input: BriefInput,
+  report: FixReport,
+  shell_outcome: Gate2Outcome,
+) -> Gate2Outcome {
+  case checks.accounting_violations(input.brief.finding_ids, report) {
+    [] -> shell_outcome
+    violations ->
+      types.Gate2Outcome(
+        ..shell_outcome,
+        pass: False,
+        diagnostics: string.trim(
+          shell_outcome.diagnostics
+          <> "\n\nfix-report accounting violations (every brief finding in "
+          <> "exactly one of findings_addressed | findings_bounced): "
+          <> string.join(violations, "; "),
+        ),
+      )
   }
 }
 
@@ -291,12 +399,18 @@ fn run_gate1(
   workspace: WorkspaceInfo,
   manifest: TestManifest,
 ) -> Result(Gate1Outcome, RemediationError) {
+  // The routing is pure and tested (remediation/checks): runnable entries
+  // carry their tests + failure signature; manual-acceptance entries are
+  // echoed through the gate for the verifier; the manifest's test_file set
+  // is the explicitly-allowed part of the diff-scope check.
   case
     workflow.run(
       activities.gate1(Gate1Input(
         workspace_path: workspace.workspace_path,
         base_commit: workspace.base_commit,
-        tests: checks.runnable_tests(manifest),
+        checks: checks.runnable_checks(manifest),
+        acceptance: checks.acceptance_checks(manifest),
+        test_files: checks.test_files(manifest),
       )),
     )
   {
@@ -390,6 +504,7 @@ fn finalize(
   disposition disposition: Disposition,
   fix_cycles fix_cycles: Int,
   test_edit_attempts test_edit_attempts: Int,
+  verdict_mismatches verdict_mismatches: List(String),
   detail detail: String,
 ) -> Result(BriefResult, RemediationError) {
   let could_not_reproduce = checks.could_not_reproduce_ids(manifest)
@@ -431,6 +546,7 @@ fn finalize(
     first_pass_accepted: first_pass_accepted,
     could_not_reproduce: could_not_reproduce,
     test_edit_attempts: test_edit_attempts,
+    verdict_mismatches: verdict_mismatches,
     branch: workspace.branch,
     manifest: manifest,
     fix_report: fix_report,

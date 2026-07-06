@@ -6,8 +6,9 @@ import gleam/option.{None, Some}
 import gleeunit/should
 import remediation/report
 import remediation/types.{
-  Accepted, BriefResult, ClassSibling, CycleCapExhausted, Deviation, FindingFix,
-  FindingRuling, FixReport, Fixed, ManifestEntry, TestManifest, Verdict,
+  Accept, Accepted, BriefResult, ClassSibling, CycleCapExhausted, Deviation,
+  FindingFix, FindingRuling, FixReport, Fixed, ManifestEntry, TestManifest,
+  Verdict,
 }
 
 fn result(
@@ -28,6 +29,7 @@ fn result(
     first_pass_accepted: first_pass,
     could_not_reproduce: could_not_reproduce,
     test_edit_attempts: test_edit_attempts,
+    verdict_mismatches: [],
     branch: "remediation/" <> id,
     manifest: TestManifest(brief_id: id, entries: manifest_entries),
     fix_report: fix_report,
@@ -48,8 +50,21 @@ fn manifest_entry(
       True -> []
       False -> ["t"]
     },
+    test_file: case could_not_reproduce {
+      True -> ""
+      False -> "tests/" <> id <> ".rs"
+    },
+    expected_failure_signature: case could_not_reproduce {
+      True -> ""
+      False -> "sig"
+    },
     fail_evidence: "",
     could_not_reproduce: could_not_reproduce,
+    could_not_reproduce_reason: case could_not_reproduce {
+      True -> Some("refactored away")
+      False -> None
+    },
+    manual_acceptance: None,
   )
 }
 
@@ -70,25 +85,29 @@ fn sample_results() -> List(types.BriefResult) {
           brief_id: "B-1",
           commits: ["c1"],
           findings_addressed: [FindingFix(finding_id: "YG-1", how: "h")],
+          findings_bounced: [],
           deviations: [
             Deviation(what: "w", why: "y", approved_by: "planner"),
             Deviation(what: "w2", why: "y2", approved_by: "planner"),
           ],
           new_tests: [],
+          class_instances_found: [],
         ),
       ),
-      verdict: Some(
-        Verdict(
-          brief_id: "B-1",
-          per_finding: [
-            FindingRuling(finding_id: "YG-1", ruling: Fixed, evidence: "e"),
-          ],
-          class_siblings_found: [
-            ClassSibling(file: "f", line: 1, description: "d"),
-            ClassSibling(file: "f", line: 2, description: "d"),
-          ],
-        ),
-      ),
+      verdict: Some(Verdict(
+        brief_id: "B-1",
+        per_finding: [
+          FindingRuling(finding_id: "YG-1", ruling: Fixed, evidence: "e"),
+        ],
+        class_siblings_found: [
+          ClassSibling(file: "f", line: 1, description: "d"),
+          ClassSibling(file: "f", line: 2, description: "d"),
+        ],
+        regression_risks: [],
+        standards_violations: [],
+        overall: Accept,
+        reject_reason: None,
+      )),
       test_edit_attempts: 0,
     ),
     result(

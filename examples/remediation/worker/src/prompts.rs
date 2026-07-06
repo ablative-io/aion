@@ -129,4 +129,44 @@ mod tests {
         let prompt = super::developer(PROFILE, tricky);
         assert!(prompt.contains(tricky));
     }
+
+    /// STANDING CONTRACT (design owner, 2026-07-07): the profile markdown
+    /// reaches the prompt byte-identical from the checkout — no trimming,
+    /// reflowing, or normalization beyond removing TRAILING whitespace. Odd
+    /// internal spacing, tabs, hard line breaks, nested fences, and unicode
+    /// must all survive, for every role.
+    #[test]
+    fn profile_markdown_survives_byte_identical_up_to_trailing_trim() {
+        let odd_profile = "# Role   with   odd   spacing\n\
+                           \n\
+                           \t- a tab-indented bullet\n\
+                           line one  \n\
+                           line two\twith\ttabs\n\
+                           \n\
+                           ```rust\n\
+                           fn keep_me() {}   // trailing spaces inside fences  \n\
+                           ```\n\
+                           \n\
+                           em-dash — and «unicode» stay\n\n\n";
+        for assemble in [
+            super::test_author,
+            super::developer,
+            super::verifier,
+            super::re_auditor,
+        ] {
+            let prompt = assemble(odd_profile, "{}");
+            let expected = odd_profile.trim_end();
+            assert!(
+                prompt.starts_with(expected),
+                "the profile must open the prompt byte-identical (up to the \
+                 trailing-whitespace trim); prompt was:\n{prompt}"
+            );
+            // And nothing after the profile re-enters it: the very next bytes
+            // are the section separator, not a reflowed copy.
+            assert!(
+                prompt[expected.len()..].starts_with("\n\n---\n\n"),
+                "the separator must follow the untouched profile"
+            );
+        }
+    }
 }

@@ -23,26 +23,29 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/option.{type Option}
 import remediation/types.{
-  type ArtifactKind, type Brief, type BriefInput, type BriefResult,
-  type Category, type ClassSibling, type CleanupInput, type CleanupOutcome,
-  type DeveloperInput, type Deviation, type Disposition, type FindingFix,
-  type FindingRuling, type FixMetrics, type FixReport, type FlowMetrics,
+  type AcceptanceCheck, type ArtifactKind, type Brief, type BriefInput,
+  type BriefResult, type Category, type ClassInstance, type ClassSibling,
+  type CleanupInput, type CleanupOutcome, type DeveloperInput, type Deviation,
+  type Disposition, type FindingBounce, type FindingFix, type FindingRuling,
+  type FixMetrics, type FixReport, type FlowMetrics, type Gate1Check,
   type Gate1Input, type Gate1Outcome, type Gate2Input, type Gate2Outcome,
   type LedgerApplication, type LedgerEntry, type LedgerUpdateInput,
-  type LedgerUpdateOutcome, type ManifestEntry, type ProvisionInput,
-  type ReAuditMetrics, type RemediationError, type Ruling, type RunConfig,
-  type TestAuthorEntry, type TestAuthorInput, type TestAuthoringMetrics,
-  type TestManifest, type TestRun, type Verdict, type VerifierInput,
-  type VerifyMetrics, type WaveBrief, type WaveInput, type WaveMetrics,
-  type WaveReport, type WaveResult, type WorkspaceInfo, Brief, BriefInput,
-  BriefResult, ChildFailed, ClassSibling, CleanupInput, CleanupOutcome,
-  DecodeInputFailed, DeveloperInput, Deviation, FindingFix, FindingRuling,
-  FixMetrics, FixReport, FlowMetrics, Gate1Input, Gate1Outcome, Gate2Input,
-  Gate2Outcome, LedgerApplication, LedgerEntry, LedgerUpdateInput,
-  LedgerUpdateOutcome, ManifestEntry, ProvisionInput, ReAuditMetrics, RunConfig,
-  StageFailed, StrataInvalid, TestAuthorInput, TestAuthoringMetrics,
-  TestManifest, TestRun, Verdict, VerifierInput, VerifyMetrics, WaveBrief,
-  WaveInput, WaveMetrics, WaveReport, WaveResult, WorkspaceInfo,
+  type LedgerUpdateOutcome, type ManifestEntry, type Overall,
+  type ProvisionInput, type ReAuditMetrics, type RegressionRisk,
+  type RemediationError, type Ruling, type RunConfig, type TestAuthorEntry,
+  type TestAuthorInput, type TestAuthoringMetrics, type TestManifest,
+  type TestRun, type Verdict, type VerifierInput, type VerifyMetrics,
+  type WaveBrief, type WaveInput, type WaveMetrics, type WaveReport,
+  type WaveResult, type WorkspaceInfo, AcceptanceCheck, Brief, BriefInput,
+  BriefResult, ChildFailed, ClassInstance, ClassSibling, CleanupInput,
+  CleanupOutcome, DecodeInputFailed, DeveloperInput, Deviation, FindingBounce,
+  FindingFix, FindingRuling, FixMetrics, FixReport, FlowMetrics, Gate1Check,
+  Gate1Input, Gate1Outcome, Gate2Input, Gate2Outcome, LedgerApplication,
+  LedgerEntry, LedgerUpdateInput, LedgerUpdateOutcome, ManifestEntry,
+  ProvisionInput, ReAuditMetrics, RegressionRisk, RunConfig, StageFailed,
+  StrataInvalid, TestAuthorInput, TestAuthoringMetrics, TestManifest, TestRun,
+  Verdict, VerifierInput, VerifyMetrics, WaveBrief, WaveInput, WaveMetrics,
+  WaveReport, WaveResult, WorkspaceInfo,
 }
 
 // --- small shared helpers ----------------------------------------------------
@@ -390,21 +393,53 @@ fn manifest_entry_to_json(entry: ManifestEntry) -> json.Json {
   json.object([
     #("finding_id", json.string(entry.finding_id)),
     #("test_names", strings(entry.test_names)),
+    #("test_file", json.string(entry.test_file)),
+    #(
+      "expected_failure_signature",
+      json.string(entry.expected_failure_signature),
+    ),
     #("fail_evidence", json.string(entry.fail_evidence)),
     #("could_not_reproduce", json.bool(entry.could_not_reproduce)),
+    #(
+      "could_not_reproduce_reason",
+      json.nullable(entry.could_not_reproduce_reason, json.string),
+    ),
+    #("manual_acceptance", json.nullable(entry.manual_acceptance, json.string)),
   ])
 }
 
 fn manifest_entry_decoder() -> decode.Decoder(ManifestEntry) {
   use finding_id <- decode.field("finding_id", decode.string)
   use test_names <- decode.field("test_names", decode.list(decode.string))
+  use test_file <- decode.field("test_file", decode.string)
+  use expected_failure_signature <- decode.field(
+    "expected_failure_signature",
+    decode.string,
+  )
   use fail_evidence <- decode.field("fail_evidence", decode.string)
   use could_not_reproduce <- decode.field("could_not_reproduce", decode.bool)
+  // The two nullable fields are OPTIONAL on decode (absent == null): the
+  // schema requires them present-or-null on Norn's output, but a tolerant
+  // read here keeps older recorded histories decodable.
+  use could_not_reproduce_reason <- decode.optional_field(
+    "could_not_reproduce_reason",
+    option.None,
+    decode.optional(decode.string),
+  )
+  use manual_acceptance <- decode.optional_field(
+    "manual_acceptance",
+    option.None,
+    decode.optional(decode.string),
+  )
   decode.success(ManifestEntry(
     finding_id: finding_id,
     test_names: test_names,
+    test_file: test_file,
+    expected_failure_signature: expected_failure_signature,
     fail_evidence: fail_evidence,
     could_not_reproduce: could_not_reproduce,
+    could_not_reproduce_reason: could_not_reproduce_reason,
+    manual_acceptance: manual_acceptance,
   ))
 }
 
@@ -456,6 +491,36 @@ fn deviation_decoder() -> decode.Decoder(Deviation) {
   decode.success(Deviation(what: what, why: why, approved_by: approved_by))
 }
 
+fn finding_bounce_to_json(bounce: FindingBounce) -> json.Json {
+  json.object([
+    #("finding_id", json.string(bounce.finding_id)),
+    #("reason", json.string(bounce.reason)),
+  ])
+}
+
+fn finding_bounce_decoder() -> decode.Decoder(FindingBounce) {
+  use finding_id <- decode.field("finding_id", decode.string)
+  use reason <- decode.field("reason", decode.string)
+  decode.success(FindingBounce(finding_id: finding_id, reason: reason))
+}
+
+fn class_instance_to_json(instance: ClassInstance) -> json.Json {
+  json.object([
+    #("file", json.string(instance.file)),
+    #("line", json.int(instance.line)),
+    #("fixed", json.bool(instance.fixed)),
+    #("note", json.string(instance.note)),
+  ])
+}
+
+fn class_instance_decoder() -> decode.Decoder(ClassInstance) {
+  use file <- decode.field("file", decode.string)
+  use line <- decode.field("line", decode.int)
+  use fixed <- decode.field("fixed", decode.bool)
+  use note <- decode.field("note", decode.string)
+  decode.success(ClassInstance(file: file, line: line, fixed: fixed, note: note))
+}
+
 fn fix_report_to_json(report: FixReport) -> json.Json {
   json.object([
     #("brief_id", json.string(report.brief_id)),
@@ -464,8 +529,16 @@ fn fix_report_to_json(report: FixReport) -> json.Json {
       "findings_addressed",
       json.array(report.findings_addressed, finding_fix_to_json),
     ),
+    #(
+      "findings_bounced",
+      json.array(report.findings_bounced, finding_bounce_to_json),
+    ),
     #("deviations", json.array(report.deviations, deviation_to_json)),
     #("new_tests", strings(report.new_tests)),
+    #(
+      "class_instances_found",
+      json.array(report.class_instances_found, class_instance_to_json),
+    ),
   ])
 }
 
@@ -476,14 +549,24 @@ fn fix_report_decoder() -> decode.Decoder(FixReport) {
     "findings_addressed",
     decode.list(finding_fix_decoder()),
   )
+  use findings_bounced <- decode.field(
+    "findings_bounced",
+    decode.list(finding_bounce_decoder()),
+  )
   use deviations <- decode.field("deviations", decode.list(deviation_decoder()))
   use new_tests <- decode.field("new_tests", decode.list(decode.string))
+  use class_instances_found <- decode.field(
+    "class_instances_found",
+    decode.list(class_instance_decoder()),
+  )
   decode.success(FixReport(
     brief_id: brief_id,
     commits: commits,
     findings_addressed: findings_addressed,
+    findings_bounced: findings_bounced,
     deviations: deviations,
     new_tests: new_tests,
+    class_instances_found: class_instances_found,
   ))
 }
 
@@ -528,6 +611,31 @@ fn class_sibling_decoder() -> decode.Decoder(ClassSibling) {
   decode.success(ClassSibling(file: file, line: line, description: description))
 }
 
+fn regression_risk_to_json(risk: RegressionRisk) -> json.Json {
+  json.object([
+    #("file", json.string(risk.file)),
+    #("concern", json.string(risk.concern)),
+  ])
+}
+
+fn regression_risk_decoder() -> decode.Decoder(RegressionRisk) {
+  use file <- decode.field("file", decode.string)
+  use concern <- decode.field("concern", decode.string)
+  decode.success(RegressionRisk(file: file, concern: concern))
+}
+
+fn overall_to_json(overall: Overall) -> json.Json {
+  json.string(types.overall_to_string(overall))
+}
+
+fn overall_decoder() -> decode.Decoder(Overall) {
+  use tag <- decode.then(decode.string)
+  case types.overall_from_string(tag) {
+    option.Some(overall) -> decode.success(overall)
+    option.None -> decode.failure(types.Reject, "Overall")
+  }
+}
+
 fn verdict_to_json(verdict: Verdict) -> json.Json {
   json.object([
     #("brief_id", json.string(verdict.brief_id)),
@@ -536,6 +644,13 @@ fn verdict_to_json(verdict: Verdict) -> json.Json {
       "class_siblings_found",
       json.array(verdict.class_siblings_found, class_sibling_to_json),
     ),
+    #(
+      "regression_risks",
+      json.array(verdict.regression_risks, regression_risk_to_json),
+    ),
+    #("standards_violations", strings(verdict.standards_violations)),
+    #("overall", overall_to_json(verdict.overall)),
+    #("reject_reason", json.nullable(verdict.reject_reason, json.string)),
   ])
 }
 
@@ -549,10 +664,27 @@ fn verdict_decoder() -> decode.Decoder(Verdict) {
     "class_siblings_found",
     decode.list(class_sibling_decoder()),
   )
+  use regression_risks <- decode.field(
+    "regression_risks",
+    decode.list(regression_risk_decoder()),
+  )
+  use standards_violations <- decode.field(
+    "standards_violations",
+    decode.list(decode.string),
+  )
+  use overall <- decode.field("overall", overall_decoder())
+  use reject_reason <- decode.field(
+    "reject_reason",
+    decode.optional(decode.string),
+  )
   decode.success(Verdict(
     brief_id: brief_id,
     per_finding: per_finding,
     class_siblings_found: class_siblings_found,
+    regression_risks: regression_risks,
+    standards_violations: standards_violations,
+    overall: overall,
+    reject_reason: reject_reason,
   ))
 }
 
@@ -613,40 +745,93 @@ pub fn gate1_input_codec() -> Codec(Gate1Input) {
   codec.json_codec(gate1_input_to_json, gate1_input_decoder())
 }
 
+fn gate1_check_to_json(check: Gate1Check) -> json.Json {
+  json.object([
+    #("finding_id", json.string(check.finding_id)),
+    #("test_names", strings(check.test_names)),
+    #(
+      "expected_failure_signature",
+      json.string(check.expected_failure_signature),
+    ),
+  ])
+}
+
+fn gate1_check_decoder() -> decode.Decoder(Gate1Check) {
+  use finding_id <- decode.field("finding_id", decode.string)
+  use test_names <- decode.field("test_names", decode.list(decode.string))
+  use expected_failure_signature <- decode.field(
+    "expected_failure_signature",
+    decode.string,
+  )
+  decode.success(Gate1Check(
+    finding_id: finding_id,
+    test_names: test_names,
+    expected_failure_signature: expected_failure_signature,
+  ))
+}
+
+fn acceptance_check_to_json(check: AcceptanceCheck) -> json.Json {
+  json.object([
+    #("finding_id", json.string(check.finding_id)),
+    #("criterion", json.string(check.criterion)),
+  ])
+}
+
+fn acceptance_check_decoder() -> decode.Decoder(AcceptanceCheck) {
+  use finding_id <- decode.field("finding_id", decode.string)
+  use criterion <- decode.field("criterion", decode.string)
+  decode.success(AcceptanceCheck(finding_id: finding_id, criterion: criterion))
+}
+
 fn gate1_input_to_json(input: Gate1Input) -> json.Json {
   json.object([
     #("workspace_path", json.string(input.workspace_path)),
     #("base_commit", json.string(input.base_commit)),
-    #("tests", strings(input.tests)),
+    #("checks", json.array(input.checks, gate1_check_to_json)),
+    #("acceptance", json.array(input.acceptance, acceptance_check_to_json)),
+    #("test_files", strings(input.test_files)),
   ])
 }
 
 fn gate1_input_decoder() -> decode.Decoder(Gate1Input) {
   use workspace_path <- decode.field("workspace_path", decode.string)
   use base_commit <- decode.field("base_commit", decode.string)
-  use tests <- decode.field("tests", decode.list(decode.string))
+  use checks <- decode.field("checks", decode.list(gate1_check_decoder()))
+  use acceptance <- decode.field(
+    "acceptance",
+    decode.list(acceptance_check_decoder()),
+  )
+  use test_files <- decode.field("test_files", decode.list(decode.string))
   decode.success(Gate1Input(
     workspace_path: workspace_path,
     base_commit: base_commit,
-    tests: tests,
+    checks: checks,
+    acceptance: acceptance,
+    test_files: test_files,
   ))
 }
 
 fn test_run_to_json(run: TestRun) -> json.Json {
   json.object([
+    #("finding_id", json.string(run.finding_id)),
     #("test_name", json.string(run.test_name)),
     #("failed", json.bool(run.failed)),
+    #("signature_matched", json.bool(run.signature_matched)),
     #("evidence", json.string(run.evidence)),
   ])
 }
 
 fn test_run_decoder() -> decode.Decoder(TestRun) {
+  use finding_id <- decode.field("finding_id", decode.string)
   use test_name <- decode.field("test_name", decode.string)
   use failed <- decode.field("failed", decode.bool)
+  use signature_matched <- decode.field("signature_matched", decode.bool)
   use evidence <- decode.field("evidence", decode.string)
   decode.success(TestRun(
+    finding_id: finding_id,
     test_name: test_name,
     failed: failed,
+    signature_matched: signature_matched,
     evidence: evidence,
   ))
 }
@@ -659,6 +844,11 @@ fn gate1_outcome_to_json(outcome: Gate1Outcome) -> json.Json {
   json.object([
     #("pass", json.bool(outcome.pass)),
     #("results", json.array(outcome.results, test_run_to_json)),
+    #(
+      "acceptance_checks",
+      json.array(outcome.acceptance_checks, acceptance_check_to_json),
+    ),
+    #("scope_violations", strings(outcome.scope_violations)),
     #("authored_test_paths", strings(outcome.authored_test_paths)),
     #("tests_commit", json.string(outcome.tests_commit)),
     #("detail", json.string(outcome.detail)),
@@ -668,6 +858,14 @@ fn gate1_outcome_to_json(outcome: Gate1Outcome) -> json.Json {
 fn gate1_outcome_decoder() -> decode.Decoder(Gate1Outcome) {
   use pass <- decode.field("pass", decode.bool)
   use results <- decode.field("results", decode.list(test_run_decoder()))
+  use acceptance_checks <- decode.field(
+    "acceptance_checks",
+    decode.list(acceptance_check_decoder()),
+  )
+  use scope_violations <- decode.field(
+    "scope_violations",
+    decode.list(decode.string),
+  )
   use authored_test_paths <- decode.field(
     "authored_test_paths",
     decode.list(decode.string),
@@ -677,6 +875,8 @@ fn gate1_outcome_decoder() -> decode.Decoder(Gate1Outcome) {
   decode.success(Gate1Outcome(
     pass: pass,
     results: results,
+    acceptance_checks: acceptance_checks,
+    scope_violations: scope_violations,
     authored_test_paths: authored_test_paths,
     tests_commit: tests_commit,
     detail: detail,
@@ -898,6 +1098,7 @@ fn brief_result_to_json(result: BriefResult) -> json.Json {
     #("first_pass_accepted", json.bool(result.first_pass_accepted)),
     #("could_not_reproduce", strings(result.could_not_reproduce)),
     #("test_edit_attempts", json.int(result.test_edit_attempts)),
+    #("verdict_mismatches", strings(result.verdict_mismatches)),
     #("branch", json.string(result.branch)),
     #("test_manifest", test_manifest_to_json(result.manifest)),
     #("fix_report", json.nullable(result.fix_report, fix_report_to_json)),
@@ -918,6 +1119,10 @@ fn brief_result_decoder() -> decode.Decoder(BriefResult) {
     decode.list(decode.string),
   )
   use test_edit_attempts <- decode.field("test_edit_attempts", decode.int)
+  use verdict_mismatches <- decode.field(
+    "verdict_mismatches",
+    decode.list(decode.string),
+  )
   use branch <- decode.field("branch", decode.string)
   use manifest <- decode.field("test_manifest", test_manifest_decoder())
   use fix_report <- decode.field(
@@ -938,6 +1143,7 @@ fn brief_result_decoder() -> decode.Decoder(BriefResult) {
     first_pass_accepted: first_pass_accepted,
     could_not_reproduce: could_not_reproduce,
     test_edit_attempts: test_edit_attempts,
+    verdict_mismatches: verdict_mismatches,
     branch: branch,
     manifest: manifest,
     fix_report: fix_report,

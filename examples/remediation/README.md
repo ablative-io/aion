@@ -13,13 +13,23 @@ activity whose non-zero exits are recorded data, never errors.
 remediation_wave (PARENT)                    remediation_brief (CHILD, one per brief)
   validate strata (pure)                       provision_workspace   (shell)
   for each stratum, serially:                  test_author           (agent)  <- recommendation STRIPPED at the codec layer
-    spawn remediation_brief per brief,         [coverage check]      (pure)      every correction: >=1 test or could_not_reproduce
-      in parallel; await all                   gate1                 (shell)     authored tests committed + each FAILS
-  wave report skeleton (pure metrics)          +--> developer        (agent)  <- FULL entries incl. recommendation
-                                               |    gate2            (shell)     authored-test diff empty, clippy -D warnings, suite
+    spawn remediation_brief per brief,         [coverage/routing]    (pure)      corrections: >=1 test or could_not_reproduce;
+      in parallel; await all                                                     every entry has an evidence channel;
+  wave report skeleton (pure metrics)                                            runnable entries carry a failure signature
+                                               gate1                 (shell)     FULLY MECHANICAL: tests committed; each FAILS
+                                                                                 WITH its expected_failure_signature; authored
+                                                                                 diff touches ONLY test paths; manual_acceptance
+                                                                                 entries echoed (nothing runs)
+                                               +--> developer        (agent)  <- FULL entries incl. recommendation
+                                               |    gate2            (shell)     authored-test diff empty, clippy -D warnings,
+                                               |    [accounting]     (pure)      suite green + every brief finding in EXACTLY
+                                               |                                 ONE of findings_addressed | findings_bounced
                                                |    verifier         (agent)     per-finding rulings (verdict.schema.json)
-                                               +--< loop while any ruling is partial/not_fixed/regression_introduced,
-                                                    cycle-capped (config.max_fix_cycles, default 3);
+                                               |    [derive-check]   (pure)      overall re-derived from rulings; a disagreeing
+                                               |                                 assertion (or missing reject_reason) is itself
+                                               |                                 a rejection, recorded on the result
+                                               +--< loop while the DERIVED overall is not accept (or the verdict is
+                                                    inconsistent), cycle-capped (config.max_fix_cycles, default 3);
                                                     exhaustion = TERMINAL DISPOSITION, never a silent success
                                                ledger_update x N     (shell)     one applier call per artifact
                                                cleanup_workspace     (shell)     dirty worktrees are LEFT IN PLACE
@@ -54,11 +64,31 @@ The agent-facing `--output-schema` documents (`test-manifest`, `fix-report`,
 `include_str!` and drift-guarded by `worker/tests/schemas_valid.rs` against
 the Gleam codecs' field sets.
 
-Note: some profile documents describe OUTPUT fields beyond the schemas
-(e.g. the verifier's `overall`/`regression_risks`, the manifest's
-`test_file`). The schemas are `additionalProperties: false` and win on the
-wire; the extra prose fields are a known profile/schema drift to reconcile
-with the profile author.
+The 2026-07-07 contract pass (yggdrasil 93ef89d8 + dfd05c14) folded the
+manifest's `test_file`/`expected_failure_signature`/`could_not_reproduce_reason`/
+`manual_acceptance`, the fix report's `findings_bounced`/`class_instances_found`,
+and the verdict's `regression_risks`/`standards_violations`/`overall`/
+`reject_reason` into the schemas — that drift is resolved. Remaining drift:
+the verifier profile's prose output block still shows fields the committed
+verdict schema does not carry in that shape (`standards_violations` semantics
+match, but the profile's `reject_reason` prose "required unless accept" is a
+WORKFLOW rule here, and its worked examples predate the schema pass) — minor,
+to reconcile with the profile author.
+
+Derive-and-check (`overall`): the workflow re-derives the verdict's overall
+from `per_finding` (accept iff all `fixed`; reject if any `not_fixed`/
+`regression_introduced`; else partial_accept) and REJECTS a verdict whose
+asserted value disagrees, or whose non-accept overall lacks a substantive
+`reject_reason` — the loop decision flows through the DERIVED value only, and
+every disagreement is recorded, cycle-stamped, in the brief result's
+`verdict_mismatches`.
+
+The shared test-path rule (gate 1's diff-scope check; gate 2 protects the
+full authored set gate 1 admitted under it): a path is a test path iff a
+directory component is `tests`/`test`, or the file stem ends in
+`_test`/`_tests`, or the file name starts with `test_`; manifest `test_file`
+paths are additionally allowed explicitly (`worker/src/handlers.rs
+is_test_path`).
 
 ## The applier CLI contract (`--kind` per stage artifact)
 
@@ -112,6 +142,11 @@ the test-author it is ALREADY recommendation-free, enforced by the Gleam
 codec (`test/codec_test.gleam` proves the codec cannot emit the field). The
 prompt interface (sections and order) is the convergence point with the
 profile author (DECISIONS.md D3); change it only in `prompts.rs`.
+
+STANDING CONTRACT (design owner, 2026-07-07): the profile markdown reaches
+the assembled prompt byte-identical from the checkout — nothing trims,
+reflows, or normalizes it beyond removing TRAILING whitespace. Pinned by
+`prompts.rs::profile_markdown_survives_byte_identical_up_to_trailing_trim`.
 
 ## Wave report skeleton
 

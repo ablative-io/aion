@@ -118,37 +118,64 @@ fn provision_is_terminal_when_git_cannot_run() {
 // --- gate1 -----------------------------------------------------------------------
 
 /// A git shim for gate1: clean status, a fixed HEAD, and an authored-file
-/// diff.
-fn gate1_git(shims: &Shims) {
+/// diff of `diff_paths` (newline-separated printf body).
+fn gate1_git_with_diff(shims: &Shims, diff_paths: &str) {
     shims.install(
         "git",
-        "case \"$*\" in \
-           *status*) : ;; \
-           *rev-parse*) echo feedbeef ;; \
-           *'diff --name-only'*) echo 'crates/yg/tests/yg268_teardown.rs' ;; \
-           *) : ;; \
-         esac\nexit 0",
+        &format!(
+            "case \"$*\" in \
+               *status*) : ;; \
+               *rev-parse*) echo feedbeef ;; \
+               *'diff --name-only'*) printf '{diff_paths}' ;; \
+               *) : ;; \
+             esac\nexit 0"
+        ),
     );
 }
 
+fn gate1_git(shims: &Shims) {
+    gate1_git_with_diff(shims, "crates/yg/tests/yg268_teardown.rs\\n");
+}
+
+/// One runnable check guarding YG-268, expecting the given signature.
+fn check(signature: &str) -> remediation_worker::types::Gate1Check {
+    remediation_worker::types::Gate1Check {
+        finding_id: "YG-268".to_owned(),
+        test_names: vec!["yg268_teardown".to_owned()],
+        expected_failure_signature: signature.to_owned(),
+    }
+}
+
+fn gate1_input(
+    work: &std::path::Path,
+    checks: Vec<remediation_worker::types::Gate1Check>,
+) -> Gate1Input {
+    Gate1Input {
+        workspace_path: work.display().to_string(),
+        base_commit: "abc123".to_owned(),
+        checks,
+        acceptance: vec![],
+        test_files: vec!["crates/yg/tests/yg268_teardown.rs".to_owned()],
+    }
+}
+
 #[test]
-fn gate1_passes_when_every_authored_test_fails() {
+fn gate1_passes_when_every_authored_test_fails_with_its_signature() {
     let shims = Shims::new();
     gate1_git(&shims);
-    // cargo test: the authored test runs and FAILS (the required outcome).
+    // cargo test: the authored test runs and FAILS printing the signature.
     shims.install(
         "cargo",
-        "echo 'running 1 test'\necho 'test yg268 ... FAILED' 1>&2\nexit 101",
+        "echo 'running 1 test'\necho 'test yg268 ... FAILED: teardown deleted uncommitted work' 1>&2\nexit 101",
     );
     let work = workdir();
 
     let outcome = handlers::gate1(
         &shims.shell(),
-        Gate1Input {
-            workspace_path: work.path().display().to_string(),
-            base_commit: "abc123".to_owned(),
-            tests: vec!["yg268_teardown".to_owned()],
-        },
+        gate1_input(
+            work.path(),
+            vec![check("teardown deleted uncommitted work")],
+        ),
     )
     .expect("gate1 ok");
     assert!(outcome.pass, "detail: {}", outcome.detail);
@@ -157,14 +184,90 @@ fn gate1_passes_when_every_authored_test_fails() {
         outcome.authored_test_paths,
         vec!["crates/yg/tests/yg268_teardown.rs".to_owned()]
     );
+    assert!(outcome.scope_violations.is_empty());
     assert_eq!(outcome.results.len(), 1);
+    assert_eq!(outcome.results[0].finding_id, "YG-268");
     assert!(outcome.results[0].failed);
+    assert!(outcome.results[0].signature_matched);
     assert!(outcome.results[0].evidence.contains("FAILED"));
     assert!(
         shims.log().contains("test --workspace yg268_teardown"),
         "log: {}",
         shims.log()
     );
+}
+
+#[test]
+fn gate1_fails_when_a_test_fails_without_its_signature() {
+    let shims = Shims::new();
+    gate1_git(&shims);
+    // The test FAILS, but for the wrong reason: the expected signature never
+    // appears in the output (e.g. a compile error or an unrelated panic).
+    shims.install(
+        "cargo",
+        "echo 'running 1 test'\necho 'error[E0432]: unresolved import' 1>&2\nexit 101",
+    );
+    let work = workdir();
+
+    let outcome = handlers::gate1(
+        &shims.shell(),
+        gate1_input(
+            work.path(),
+            vec![check("teardown deleted uncommitted work")],
+        ),
+    )
+    .expect("gate1 ok (a wrong-reason failure is a recorded gate failure)");
+    assert!(!outcome.pass);
+    assert!(outcome.results[0].failed);
+    assert!(!outcome.results[0].signature_matched);
+    assert!(
+        outcome.detail.contains("wrong reason"),
+        "detail: {}",
+        outcome.detail
+    );
+}
+
+#[test]
+fn gate1_fails_when_the_authored_diff_touches_production_code() {
+    let shims = Shims::new();
+    // The diff includes a production path alongside the declared test file.
+    gate1_git_with_diff(
+        &shims,
+        "crates/yg/tests/yg268_teardown.rs\\ncrates/yg/src/teardown.rs\\n",
+    );
+    shims.install("cargo", "echo 'running 1 test'\necho 'sig' 1>&2\nexit 101");
+    let work = workdir();
+
+    let outcome = handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![check("sig")]))
+        .expect("gate1 ok (a scope violation is a recorded gate failure)");
+    assert!(!outcome.pass);
+    assert_eq!(
+        outcome.scope_violations,
+        vec!["crates/yg/src/teardown.rs".to_owned()]
+    );
+    assert!(
+        outcome.detail.contains("non-test paths"),
+        "detail: {}",
+        outcome.detail
+    );
+}
+
+#[test]
+fn gate1_allows_undeclared_paths_that_match_the_test_path_rule() {
+    let shims = Shims::new();
+    // A helper fixture the manifest did not declare, but living under tests/:
+    // allowed by the shared test-path rule.
+    gate1_git_with_diff(
+        &shims,
+        "crates/yg/tests/yg268_teardown.rs\\ncrates/yg/tests/support/fixtures.rs\\n",
+    );
+    shims.install("cargo", "echo 'running 1 test'\necho 'sig' 1>&2\nexit 101");
+    let work = workdir();
+
+    let outcome = handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![check("sig")]))
+        .expect("gate1 ok");
+    assert!(outcome.pass, "detail: {}", outcome.detail);
+    assert!(outcome.scope_violations.is_empty());
 }
 
 #[test]
@@ -177,15 +280,8 @@ fn gate1_fails_when_an_authored_test_passes_on_unfixed_code() {
     );
     let work = workdir();
 
-    let outcome = handlers::gate1(
-        &shims.shell(),
-        Gate1Input {
-            workspace_path: work.path().display().to_string(),
-            base_commit: "abc123".to_owned(),
-            tests: vec!["yg268_teardown".to_owned()],
-        },
-    )
-    .expect("gate1 ok (a passing test is a recorded gate failure, not an error)");
+    let outcome = handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![check("sig")]))
+        .expect("gate1 ok (a passing test is a recorded gate failure, not an error)");
     assert!(!outcome.pass);
     assert!(
         outcome.detail.contains("did not fail"),
@@ -203,15 +299,10 @@ fn gate1_flags_a_test_name_that_matched_nothing() {
     shims.install("cargo", "echo 'running 0 tests'\nexit 0");
     let work = workdir();
 
-    let outcome = handlers::gate1(
-        &shims.shell(),
-        Gate1Input {
-            workspace_path: work.path().display().to_string(),
-            base_commit: "abc123".to_owned(),
-            tests: vec!["ghost_test".to_owned()],
-        },
-    )
-    .expect("gate1 ok");
+    let mut ghost = check("sig");
+    ghost.test_names = vec!["ghost_test".to_owned()];
+    let outcome =
+        handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![ghost])).expect("gate1 ok");
     assert!(!outcome.pass);
     assert!(
         outcome.detail.contains("no test matched the name"),
@@ -234,15 +325,8 @@ fn gate1_fails_when_the_authored_tests_are_not_committed() {
     shims.install("cargo", "exit 101");
     let work = workdir();
 
-    let outcome = handlers::gate1(
-        &shims.shell(),
-        Gate1Input {
-            workspace_path: work.path().display().to_string(),
-            base_commit: "abc123".to_owned(),
-            tests: vec!["t1".to_owned()],
-        },
-    )
-    .expect("gate1 ok");
+    let outcome = handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![check("sig")]))
+        .expect("gate1 ok");
     assert!(!outcome.pass);
     assert!(
         outcome.detail.contains("not committed"),
@@ -258,9 +342,9 @@ fn gate1_fails_when_the_authored_tests_are_not_committed() {
 }
 
 #[test]
-fn gate1_with_no_runnable_tests_passes_but_says_so() {
+fn gate1_echoes_manual_acceptance_entries_without_running_anything() {
     let shims = Shims::new();
-    gate1_git(&shims);
+    gate1_git_with_diff(&shims, "");
     shims.install("cargo", "exit 0");
     let work = workdir();
 
@@ -269,16 +353,52 @@ fn gate1_with_no_runnable_tests_passes_but_says_so() {
         Gate1Input {
             workspace_path: work.path().display().to_string(),
             base_commit: "abc123".to_owned(),
-            tests: vec![],
+            checks: vec![],
+            acceptance: vec![remediation_worker::types::AcceptanceCheck {
+                finding_id: "YG-401".to_owned(),
+                criterion: "error type carries the offending path".to_owned(),
+            }],
+            test_files: vec![],
         },
     )
     .expect("gate1 ok");
     assert!(outcome.pass);
+    assert_eq!(outcome.acceptance_checks.len(), 1);
+    assert_eq!(outcome.acceptance_checks[0].finding_id, "YG-401");
     assert!(
         outcome.detail.contains("no authored tests to re-run"),
         "detail: {}",
         outcome.detail
     );
+    assert!(
+        !shims.log().contains("cargo"),
+        "nothing runs for manual-acceptance entries: {}",
+        shims.log()
+    );
+}
+
+#[test]
+fn is_test_path_matches_the_shared_rule() {
+    for path in [
+        "crates/yg/tests/yg268.rs",
+        "crates/yg/test/helper.rs",
+        "src/teardown_test.rs",
+        "src/teardown_tests.rs",
+        "tests/test_teardown.py",
+    ] {
+        assert!(handlers::is_test_path(path), "{path} should be a test path");
+    }
+    for path in [
+        "crates/yg/src/teardown.rs",
+        "src/testing.rs",
+        "docs/tests.md.bak/../evil.rs",
+        "src/contest.rs",
+    ] {
+        assert!(
+            !handlers::is_test_path(path),
+            "{path} should NOT be a test path"
+        );
+    }
 }
 
 // --- gate2 ------------------------------------------------------------------------

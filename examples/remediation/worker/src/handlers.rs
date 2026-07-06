@@ -112,17 +112,25 @@ pub fn provision(shell: &Shell, input: ProvisionInput) -> Result<WorkspaceInfo, 
 
 // --- gate1 ----------------------------------------------------------------------
 
-/// `gate1`: the fail-first gate (DESIGN.md Gate 1 — evidence is verified,
-/// not trusted).
+/// `gate1`: the fail-first gate, FULLY MECHANICAL (DESIGN.md Gate 1,
+/// 2026-07-07 contract — evidence is verified, not trusted; no judgment
+/// left):
 ///
 /// 1. The authored tests must be COMMITTED (the test-author's contract, and
 ///    load-bearing: gate 2's tamper diff is taken against this commit). A
 ///    dirty worktree is a recorded gate failure.
-/// 2. The authored test set is pinned mechanically: the files changed since
-///    the provisioned base commit.
-/// 3. Every named test is re-run; each must FAIL (non-zero cargo exit). A
-///    test that passes — or that no test binary matched — is a recorded gate
+/// 2. The authored set is pinned mechanically (files changed since the
+///    provisioned base commit) and SCOPE-CHECKED: every changed path must be
+///    a manifest `test_file` or match the shared test-path rule
+///    ([`is_test_path`]) — a test-author diff touching production code is a
+///    gate failure.
+/// 3. Per runnable check, every named test is re-run; each must (a) FAIL
+///    (non-zero cargo exit) and (b) print the check's
+///    `expected_failure_signature` — failing for the RIGHT reason. A passing
+///    test, an unmatched name, or a missing signature is a recorded gate
 ///    failure with the captured output as evidence.
+/// 4. Manual-acceptance entries run nothing; they are echoed into the result
+///    as acceptance-check records for the verifier.
 ///
 /// # Errors
 ///
@@ -131,7 +139,9 @@ pub fn gate1(shell: &Shell, input: Gate1Input) -> Result<Gate1Outcome, ActivityF
     let Gate1Input {
         workspace_path,
         base_commit,
-        tests,
+        checks,
+        acceptance,
+        test_files,
     } = input;
     let workspace = &workspace_path;
 
@@ -173,6 +183,15 @@ pub fn gate1(shell: &Shell, input: Gate1Input) -> Result<Gate1Outcome, ActivityF
         .map(str::to_owned)
         .collect();
 
+    // (d) Diff scope: every authored path must be an explicitly-declared
+    // test_file or match the shared test-path rule. Production code touched
+    // by the test author is a gate failure, per path.
+    let scope_violations: Vec<String> = authored_test_paths
+        .iter()
+        .filter(|path| !test_files.contains(path) && !is_test_path(path))
+        .cloned()
+        .collect();
+
     if !status.stdout.trim().is_empty() {
         // Uncommitted tests break the whole tamper mechanism downstream, and
         // violate the test-author's commit contract: a recorded gate failure,
@@ -180,6 +199,8 @@ pub fn gate1(shell: &Shell, input: Gate1Input) -> Result<Gate1Outcome, ActivityF
         return Ok(Gate1Outcome {
             pass: false,
             results: Vec::new(),
+            acceptance_checks: acceptance,
+            scope_violations,
             authored_test_paths,
             tests_commit,
             detail: format!(
@@ -190,23 +211,32 @@ pub fn gate1(shell: &Shell, input: Gate1Input) -> Result<Gate1Outcome, ActivityF
         });
     }
 
-    let (results, failures) = rerun_authored_tests(shell, workspace, &tests)?;
+    let (results, mut failures) = rerun_authored_checks(shell, workspace, &checks)?;
+    if !scope_violations.is_empty() {
+        failures.push(format!(
+            "test-author diff touches non-test paths (forbidden): {}",
+            scope_violations.join(", ")
+        ));
+    }
 
     let pass = failures.is_empty();
+    let ran = results.len();
     Ok(Gate1Outcome {
         pass,
         results,
+        acceptance_checks: acceptance,
+        scope_violations,
         authored_test_paths,
         tests_commit,
         detail: if pass {
-            if tests.is_empty() {
+            if ran == 0 {
                 "no authored tests to re-run (all entries could_not_reproduce \
-                 or non-correction); authored set pinned for gate 2"
+                 or manual_acceptance); authored set pinned for gate 2"
                     .to_owned()
             } else {
                 format!(
-                    "all {} authored test(s) failed on the unfixed code, as required",
-                    tests.len()
+                    "all {ran} authored test(s) failed on the unfixed code \
+                     with their expected signatures, as required"
                 )
             }
         } else {
@@ -215,48 +245,83 @@ pub fn gate1(shell: &Shell, input: Gate1Input) -> Result<Gate1Outcome, ActivityF
     })
 }
 
-/// Re-run every authored test; each MUST fail (non-zero cargo exit — the
-/// test encodes a live defect). Returns the per-test records plus a line per
-/// test that violated the fail-first requirement (exit zero: it passed on the
-/// unfixed code, or the name matched nothing — the captured output says
-/// which).
+/// Re-run every authored test of every check; each MUST fail (non-zero cargo
+/// exit — the test encodes a live defect) AND print the check's expected
+/// failure signature (failing for the RIGHT reason — a compile error or an
+/// unrelated panic fails without the signature and is caught here
+/// mechanically). Returns the per-test records plus a line per violation.
 ///
 /// # Errors
 ///
 /// Terminal when `cargo` cannot run at all.
-fn rerun_authored_tests(
+fn rerun_authored_checks(
     shell: &Shell,
     workspace: &str,
-    tests: &[String],
+    checks: &[crate::types::Gate1Check],
 ) -> Result<(Vec<TestRun>, Vec<String>), ActivityFailure> {
-    let mut results = Vec::with_capacity(tests.len());
+    let mut results = Vec::new();
     let mut failures: Vec<String> = Vec::new();
-    for test_name in tests {
-        let run = require_can_run(
-            shell,
-            "cargo",
-            &["test", "--workspace", test_name],
-            workspace,
-            "cargo test (authored fail-first re-run)",
-        )?;
-        let failed = !run.succeeded();
-        if !failed {
-            failures.push(format!(
-                "`{test_name}` did not fail on the unfixed code (exit 0{})",
-                if ran_any_tests(&run.output) {
-                    ""
-                } else {
-                    "; no test matched the name"
-                }
-            ));
+    for check in checks {
+        for test_name in &check.test_names {
+            let run = require_can_run(
+                shell,
+                "cargo",
+                &["test", "--workspace", test_name],
+                workspace,
+                "cargo test (authored fail-first re-run)",
+            )?;
+            let failed = !run.succeeded();
+            let signature_matched = run.output.contains(&check.expected_failure_signature);
+            if !failed {
+                failures.push(format!(
+                    "{}: `{test_name}` did not fail on the unfixed code (exit 0{})",
+                    check.finding_id,
+                    if ran_any_tests(&run.output) {
+                        ""
+                    } else {
+                        "; no test matched the name"
+                    }
+                ));
+            } else if !signature_matched {
+                failures.push(format!(
+                    "{}: `{test_name}` failed WITHOUT the expected failure \
+                     signature `{}` in its output — failing for the wrong reason",
+                    check.finding_id, check.expected_failure_signature
+                ));
+            }
+            results.push(TestRun {
+                finding_id: check.finding_id.clone(),
+                test_name: test_name.clone(),
+                failed,
+                signature_matched,
+                evidence: clip(&run.output),
+            });
         }
-        results.push(TestRun {
-            test_name: test_name.clone(),
-            failed,
-            evidence: clip(&run.output),
-        });
     }
     Ok((results, failures))
+}
+
+/// The shared test-path rule (used by gate 1's diff-scope check; gate 2's
+/// tamper protection covers the full authored set gate 1 admitted under this
+/// rule): a path is a test path iff some directory component is `tests` or
+/// `test`, or its file stem ends in `_test`/`_tests`, or its file name
+/// starts with `test_`. Manifest `test_file` paths are additionally allowed
+/// explicitly by the caller.
+#[must_use]
+pub fn is_test_path(path: &str) -> bool {
+    let component_is_test_dir = path
+        .split('/')
+        .rev()
+        .skip(1)
+        .any(|component| component == "tests" || component == "test");
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    let stem = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+    component_is_test_dir
+        || stem.ends_with("_test")
+        || stem.ends_with("_tests")
+        || file_name.starts_with("test_")
 }
 
 /// Whether the cargo output shows at least one test actually executed
