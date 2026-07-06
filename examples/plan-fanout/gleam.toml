@@ -1,0 +1,10 @@
+name = "aion_plan_fanout"
+version = "0.1.0"
+target = "erlang"
+description = "Dynamic-decomposition dev workflow: a planner agent decides N at runtime, then dev + reviewer agents fan out in parallel with majority-verdict gating."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = { path = "../../gleam/aion_flow" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"

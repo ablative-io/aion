@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "A dev agent's structured work product for one unit. For this workflow the dev produces the work product as TEXT (analysis / patch-text / doc-content), not a direct write to a real repo.",
+  "required": ["unit_id", "summary", "work_product"],
+  "additionalProperties": false,
+  "properties": {
+    "unit_id": { "type": "string", "description": "The unit_id this work product satisfies (echoes the unit)." },
+    "summary": { "type": "string", "description": "One or two sentences: what was produced and how it meets the goal." },
+    "work_product": { "type": "string", "description": "The actual deliverable content for the unit: the analysis, the patch text, or the document body. This is what reviewers assess." },
+    "notes": { "type": "string", "description": "Optional caveats, assumptions, or follow-ups." }
+  }
+}
