@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "A prospekt effective `incident` document (debug-loop model). The workflow reads only these fields; prospekt-injected `model`, `model_version`, and the `forensics` slot are permitted and ignored (additionalProperties: true).",
+  "required": ["id", "title", "severity", "observed", "expected", "environment", "state"],
+  "additionalProperties": true,
+  "properties": {
+    "id": { "type": "string", "description": "Prospekt document id (INC-###)." },
+    "title": { "type": "string", "minLength": 1 },
+    "severity": { "type": "string", "enum": ["sev1", "sev2", "sev3"] },
+    "observed": { "type": "string" },
+    "expected": { "type": "string" },
+    "environment": {
+      "type": "object",
+      "required": ["binary", "invocation"],
+      "additionalProperties": true,
+      "properties": {
+        "binary": { "type": "string" },
+        "model": { "type": "string" },
+        "invocation": { "type": "string" }
+      }
+    },
+    "state": { "type": "string" }
+  }
+}

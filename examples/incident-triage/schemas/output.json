@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The structured triage summary returned by the workflow.",
+  "required": ["incident_id", "severity", "headline", "next_action"],
+  "additionalProperties": false,
+  "properties": {
+    "incident_id": { "type": "string" },
+    "severity": { "type": "string" },
+    "headline": { "type": "string" },
+    "next_action": { "type": "string" }
+  }
+}

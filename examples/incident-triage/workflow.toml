@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+
+[[workflow]]
+entry_module = "incident_triage"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["triage"]
+output = "incident-triage.aion"
