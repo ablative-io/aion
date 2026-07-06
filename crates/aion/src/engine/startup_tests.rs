@@ -78,6 +78,10 @@ impl aion_store::ReadableEventStore for RacingSuccessorStore {
         Ok(Vec::new())
     }
 
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        Ok(Vec::new())
+    }
+
     async fn query(
         &self,
         filter: &aion_core::WorkflowFilter,

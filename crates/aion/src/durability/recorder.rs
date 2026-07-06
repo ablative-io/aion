@@ -436,6 +436,61 @@ impl Recorder {
         Ok(())
     }
 
+    /// Records an operator pause of a running run (#204).
+    ///
+    /// A NON-terminal marker: it projects the run to `Paused` and refreshes the
+    /// visibility projection so `describe`/`list` show Paused. It is the sole
+    /// append path for [`Event::WorkflowPaused`] and, like every recorded event,
+    /// lands through the single-writer sequence discipline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the
+    /// sequence tracker cannot advance after a successful append.
+    pub async fn record_workflow_paused(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        run_id: RunId,
+        reason: Option<String>,
+        operator: Option<String>,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::WorkflowPaused {
+            envelope,
+            run_id,
+            reason,
+            operator,
+        })
+        .await?;
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
+    }
+
+    /// Records an operator resume of a paused run (#204).
+    ///
+    /// Supersedes the run's prior [`Event::WorkflowPaused`] under the status
+    /// projection (returning it to Running) and refreshes visibility. Sole append
+    /// path for [`Event::WorkflowResumed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DurabilityError`] if the event store rejects the append or the
+    /// sequence tracker cannot advance after a successful append.
+    pub async fn record_workflow_resumed(
+        &mut self,
+        recorded_at: DateTime<Utc>,
+        run_id: RunId,
+        operator: Option<String>,
+    ) -> Result<(), DurabilityError> {
+        self.append_with(recorded_at, |envelope| Event::WorkflowResumed {
+            envelope,
+            run_id,
+            operator,
+        })
+        .await?;
+        self.upsert_visibility_projection_nonfatal().await;
+        Ok(())
+    }
+
     /// Records a validated search-attribute update for this workflow.
     ///
     /// # Errors

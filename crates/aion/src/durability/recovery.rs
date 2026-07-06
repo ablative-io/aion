@@ -428,6 +428,10 @@ mod tests {
                 .clone())
         }
 
+        async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+            Ok(Vec::new())
+        }
+
         async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
             let _ = filter;
             Ok(Vec::new())

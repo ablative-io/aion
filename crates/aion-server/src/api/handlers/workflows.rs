@@ -1,8 +1,9 @@
 //! Start/signal/query/cancel workflow operation handlers.
 
 use aion_proto::{
-    ProtoCancelRequest, ProtoCancelResponse, ProtoQueryRequest, ProtoQueryResponse,
-    ProtoReopenRequest, ProtoReopenResponse, ProtoSignalRequest, ProtoSignalResponse,
+    ProtoCancelRequest, ProtoCancelResponse, ProtoPauseRequest, ProtoPauseResponse,
+    ProtoQueryRequest, ProtoQueryResponse, ProtoReopenRequest, ProtoReopenResponse,
+    ProtoResumeRequest, ProtoResumeResponse, ProtoSignalRequest, ProtoSignalResponse,
     ProtoStartWorkflowRequest, ProtoStartWorkflowResponse, WireError, proto_query_response,
 };
 use tracing::{Instrument, info_span};
@@ -343,6 +344,116 @@ pub async fn reopen(
     Ok(ProtoReopenResponse {
         run_id: Some(handle.run_id().clone().into()),
         status: aion_proto::ProtoWorkflowStatus::from(handle.cached_status()) as i32,
+    })
+}
+
+/// Handles a decoded pause request (#204).
+///
+/// Resolves the run (latest when omitted) and calls
+/// [`aion::Engine::pause_workflow`], returning the run id and its projected
+/// `Paused` status. The Running precondition is the engine's; the handler surfaces
+/// its typed [`aion::EngineError::InvalidState`] error verbatim.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs are missing/malformed, namespace
+/// scoping fails, or the engine pause call fails — `invalid_state` when the run is
+/// not Running, `not_found` for an absent workflow.
+pub async fn pause(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoPauseRequest,
+) -> Result<ProtoPauseResponse, WireError> {
+    let workflow_id = required_workflow_id(request.workflow_id.clone())?;
+    let target = WorkflowTarget::workflow(&workflow_id);
+    let scoped = guard
+        .scope(
+            caller,
+            &NamespaceOperation::pause_workflow(&request, target),
+        )
+        .await
+        .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let run_id = resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
+    let reason = if request.reason.is_empty() {
+        None
+    } else {
+        Some(request.reason.clone())
+    };
+
+    let span = info_span!(
+        "engine_operation",
+        operation = "pause",
+        namespace = %namespace,
+        workflow_id = %workflow_id,
+    );
+
+    let handle = async {
+        engine
+            .pause_workflow(&workflow_id, &run_id, reason, None)
+            .await
+            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
+    }
+    .instrument(span)
+    .await?;
+
+    Ok(ProtoPauseResponse {
+        run_id: Some(handle.run_id().clone().into()),
+        // Pause projects Paused regardless of the resident handle's cached status
+        // (which stays Running under the dispatch-hold model).
+        status: aion_proto::ProtoWorkflowStatus::Paused as i32,
+    })
+}
+
+/// Handles a decoded resume request (#204).
+///
+/// Resolves the run (latest when omitted) and calls
+/// [`aion::Engine::resume_paused_workflow`], returning the run id and its
+/// projected `Running` status.
+///
+/// # Errors
+///
+/// Returns a stable [`WireError`] when IDs are missing/malformed, namespace
+/// scoping fails, or the engine resume call fails — `invalid_state` when the run
+/// is not Paused, `not_found` for an absent workflow.
+pub async fn resume(
+    guard: &NamespaceGuard,
+    caller: &CallerIdentity,
+    request: ProtoResumeRequest,
+) -> Result<ProtoResumeResponse, WireError> {
+    let workflow_id = required_workflow_id(request.workflow_id.clone())?;
+    let target = WorkflowTarget::workflow(&workflow_id);
+    let scoped = guard
+        .scope(
+            caller,
+            &NamespaceOperation::resume_workflow(&request, target),
+        )
+        .await
+        .map_err(|error| error.to_wire_error())?;
+    let namespace = scoped.namespace().to_owned();
+    let engine = scoped.engine().map_err(|error| error.to_wire_error())?;
+    let run_id = resolve_run_id(engine.as_ref(), &workflow_id, request.run_id.clone()).await?;
+
+    let span = info_span!(
+        "engine_operation",
+        operation = "resume",
+        namespace = %namespace,
+        workflow_id = %workflow_id,
+    );
+
+    let handle = async {
+        engine
+            .resume_paused_workflow(&workflow_id, &run_id, None)
+            .await
+            .map_err(|error| map_workflow_operation_error(error, &workflow_id))
+    }
+    .instrument(span)
+    .await?;
+
+    Ok(ProtoResumeResponse {
+        run_id: Some(handle.run_id().clone().into()),
+        status: aion_proto::ProtoWorkflowStatus::Running as i32,
     })
 }
 

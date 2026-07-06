@@ -33,16 +33,6 @@ period: { secs: number, nanos: number }, } };
 
 export type OverlapPolicy = "Skip" | "BufferOne" | "CancelPrevious" | "AllowAll";
 
-/**
- * Who retired a timer, distinguishing a real workflow decision from engine
- * bookkeeping. A `WorkflowIntent` cancel is permanent; a `CancelTeardown` cancel
- * is engine bookkeeping issued when a run is cancelled, and is re-armed when the
- * run is reopened. Additive + serde-defaulted: histories recorded before the
- * field existed carry no `cause`, which decodes to `WorkflowIntent` — hence the
- * field is OPTIONAL on the wire. See `Event::TimerCancelled`.
- */
-export type TimerCancelCause = "WorkflowIntent" | "CancelTeardown";
-
 export type CatchUpPolicy = "All" | "One" | "Skip";
 
 export type ScheduleConfig = { 
@@ -97,7 +87,7 @@ message: string,
  */
 details: Payload | null, };
 
-export type WorkflowStatus = "Running" | "Completed" | "Failed" | "Cancelled" | "TimedOut" | "ContinuedAsNew";
+export type WorkflowStatus = "Running" | "Completed" | "Failed" | "Cancelled" | "TimedOut" | "ContinuedAsNew" | "Paused";
 
 export type WorkflowFilter = { 
 /**
@@ -281,7 +271,35 @@ run_id: RunId,
  * cursor treats each as a reset point so the recorded failure is
  * superseded and the activity resolves to live re-dispatch.
  */
-reopened: Array<ActivityId>, } } | { "type": "SearchAttributesUpdated", "data": { 
+reopened: Array<ActivityId>, } } | { "type": "WorkflowPaused", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Run being paused — the live, non-terminal run the operator held.
+ */
+run_id: RunId, 
+/**
+ * Optional operator-supplied pause reason.
+ */
+reason: string | null, 
+/**
+ * Optional identity of the operator who issued the pause.
+ */
+operator: string | null, } } | { "type": "WorkflowResumed", "data": { 
+/**
+ * Recording metadata for this event.
+ */
+envelope: EventEnvelope, 
+/**
+ * Run being resumed.
+ */
+run_id: RunId, 
+/**
+ * Optional identity of the operator who issued the resume.
+ */
+operator: string | null, } } | { "type": "SearchAttributesUpdated", "data": { 
 /**
  * Recording metadata for this event.
  */
@@ -461,7 +479,7 @@ timer_id: TimerId,
  * pre-field behavior (never resurrected), never panics, never differs
  * run-to-run. The encoding of the existing fields is untouched.
  */
-cause?: TimerCancelCause, } } | { "type": "WithTimeoutCompleted", "data": {
+cause: TimerCancelCause, } } | { "type": "WithTimeoutCompleted", "data": { 
 /**
  * Recording metadata for this event.
  */

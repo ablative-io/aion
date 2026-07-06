@@ -928,6 +928,7 @@ fn status_name(status: WorkflowStatus) -> &'static str {
         WorkflowStatus::Cancelled => "CANCELLED",
         WorkflowStatus::TimedOut => "TIMED_OUT",
         WorkflowStatus::ContinuedAsNew => "CONTINUED_AS_NEW",
+        WorkflowStatus::Paused => "PAUSED",
     }
 }
 

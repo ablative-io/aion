@@ -139,17 +139,17 @@ pub async fn reopen(
     Ok(handle)
 }
 
-/// A durable timer the reopened run must get back.
-struct RearmTimer {
-    timer_id: TimerId,
+/// A durable timer a reopened or resumed run must get back.
+pub(crate) struct RearmTimer {
+    pub(crate) timer_id: TimerId,
     /// The ORIGINAL deadline. Reopen never extends a business deadline; one
     /// already in the past fires immediately after respawn.
-    fire_at: DateTime<Utc>,
+    pub(crate) fire_at: DateTime<Utc>,
     /// True when the cancel teardown recorded `TimerCancelled` for this timer,
     /// so a fresh `TimerStarted` must be appended to make it live again. False
     /// for a timer still outstanding in history (failed-run case) — only the
     /// wheel/durable row needs re-arming.
-    needs_restart_marker: bool,
+    pub(crate) needs_restart_marker: bool,
 }
 
 /// The run segment's timers that reopen must re-arm, decided last-event-wins
@@ -161,7 +161,7 @@ struct RearmTimer {
 ///   cancel teardown: append a fresh `TimerStarted` and re-arm.
 /// * last event `TimerFired` or `TimerCancelled { cause: WorkflowIntent }` —
 ///   a settled business fact: never resurrected.
-fn rearmable_timers(segment: &[Event]) -> Vec<RearmTimer> {
+pub(crate) fn rearmable_timers(segment: &[Event]) -> Vec<RearmTimer> {
     use std::collections::HashMap;
 
     struct TimerTrace {
@@ -236,7 +236,7 @@ fn rearmable_timers(segment: &[Event]) -> Vec<RearmTimer> {
 /// reopen itself is already durable, and the recorded `TimerStarted` plus
 /// durable row make the failure recoverable at the next startup sweep, but the
 /// operator must know the re-arm did not complete live.
-async fn rearm_reopened_timers(
+pub(crate) async fn rearm_reopened_timers(
     context: &ReopenWorkflowContext<'_>,
     id: &WorkflowId,
     rearm: &[RearmTimer],
@@ -370,7 +370,7 @@ fn terminal_status_name(event: &Event) -> &'static str {
 /// Respawns the reopened run through the recovery seam and registers it Resident,
 /// reusing `recorder` (the one that appended `WorkflowReopened`) so no second
 /// writer is ever constructed.
-async fn respawn_and_register(
+pub(crate) async fn respawn_and_register(
     context: &ReopenWorkflowContext<'_>,
     id: &WorkflowId,
     run: &RunId,

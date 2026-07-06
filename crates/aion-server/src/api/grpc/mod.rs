@@ -22,13 +22,14 @@ use convert::decode_workflow_id;
 use convert::{
     decode_cancel_request, decode_count_request, decode_create_schedule_request,
     decode_describe_request, decode_list_request, decode_list_schedules_request,
-    decode_query_request, decode_reopen_request, decode_schedule_id_request, decode_signal_request,
-    decode_start_request, decode_update_schedule_request, encode_cancel_response,
-    encode_count_response, encode_create_schedule_response, encode_delete_schedule_response,
-    encode_describe_response, encode_describe_schedule_response, encode_list_response,
-    encode_list_schedules_response, encode_pause_schedule_response, encode_query_response,
-    encode_reopen_response, encode_resume_schedule_response, encode_signal_response,
-    encode_start_response, encode_update_schedule_response,
+    decode_pause_request, decode_query_request, decode_reopen_request, decode_resume_request,
+    decode_schedule_id_request, decode_signal_request, decode_start_request,
+    decode_update_schedule_request, encode_cancel_response, encode_count_response,
+    encode_create_schedule_response, encode_delete_schedule_response, encode_describe_response,
+    encode_describe_schedule_response, encode_list_response, encode_list_schedules_response,
+    encode_pause_response, encode_pause_schedule_response, encode_query_response,
+    encode_reopen_response, encode_resume_response, encode_resume_schedule_response,
+    encode_signal_response, encode_start_response, encode_update_schedule_response,
 };
 #[cfg(feature = "haematite-backend")]
 use routing_resolve::{RouteResolution, StartResolution};
@@ -312,6 +313,102 @@ impl generated::workflow_service_server::WorkflowService for WorkflowGrpcService
             .await
             .map_err(status_from_wire_error)?;
             Ok(Response::new(encode_reopen_response(response)))
+        }
+    }
+
+    async fn pause(
+        &self,
+        request: Request<generated::PauseRequest>,
+    ) -> Result<Response<generated::PauseResponse>, Status> {
+        let caller = self.caller(&request).await?;
+        #[cfg(feature = "haematite-backend")]
+        {
+            use crate::routing::{ForwardReply, ForwardRequest};
+            let (metadata, _ext, inner) = request.into_parts();
+            let workflow_id = inner.workflow_id.clone().map(decode_workflow_id);
+            match self
+                .resolve_route(workflow_id, &metadata, ForwardRequest::Pause(inner.clone()))
+                .await
+            {
+                RouteResolution::Reject(status) => return Err(status),
+                RouteResolution::Reply(ForwardReply::Pause(reply)) => {
+                    return Ok(Response::new(reply));
+                }
+                RouteResolution::Reply(_) => {
+                    return Err(Status::internal("forwarder returned a mismatched reply"));
+                }
+                RouteResolution::Local => {
+                    let response = handlers::pause(
+                        self.state.namespace_guard(),
+                        &caller,
+                        decode_pause_request(inner),
+                    )
+                    .await
+                    .map_err(status_from_wire_error)?;
+                    return Ok(Response::new(encode_pause_response(response)));
+                }
+            }
+        }
+        #[cfg(not(feature = "haematite-backend"))]
+        {
+            let response = handlers::pause(
+                self.state.namespace_guard(),
+                &caller,
+                decode_pause_request(request.into_inner()),
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            Ok(Response::new(encode_pause_response(response)))
+        }
+    }
+
+    async fn resume(
+        &self,
+        request: Request<generated::ResumeRequest>,
+    ) -> Result<Response<generated::ResumeResponse>, Status> {
+        let caller = self.caller(&request).await?;
+        #[cfg(feature = "haematite-backend")]
+        {
+            use crate::routing::{ForwardReply, ForwardRequest};
+            let (metadata, _ext, inner) = request.into_parts();
+            let workflow_id = inner.workflow_id.clone().map(decode_workflow_id);
+            match self
+                .resolve_route(
+                    workflow_id,
+                    &metadata,
+                    ForwardRequest::Resume(inner.clone()),
+                )
+                .await
+            {
+                RouteResolution::Reject(status) => return Err(status),
+                RouteResolution::Reply(ForwardReply::Resume(reply)) => {
+                    return Ok(Response::new(reply));
+                }
+                RouteResolution::Reply(_) => {
+                    return Err(Status::internal("forwarder returned a mismatched reply"));
+                }
+                RouteResolution::Local => {
+                    let response = handlers::resume(
+                        self.state.namespace_guard(),
+                        &caller,
+                        decode_resume_request(inner),
+                    )
+                    .await
+                    .map_err(status_from_wire_error)?;
+                    return Ok(Response::new(encode_resume_response(response)));
+                }
+            }
+        }
+        #[cfg(not(feature = "haematite-backend"))]
+        {
+            let response = handlers::resume(
+                self.state.namespace_guard(),
+                &caller,
+                decode_resume_request(request.into_inner()),
+            )
+            .await
+            .map_err(status_from_wire_error)?;
+            Ok(Response::new(encode_resume_response(response)))
         }
     }
 

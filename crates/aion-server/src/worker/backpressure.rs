@@ -160,13 +160,14 @@ impl Backpressure {
         &self,
         store: &Arc<dyn OutboxStore>,
         batch_size: u32,
+        held: &std::collections::HashSet<aion_core::WorkflowId>,
     ) -> Result<Vec<OutboxRow>, aion_store::StoreError> {
         let routes = store.pending_outbox_routes().await?;
         if routes.is_empty() {
             return Ok(Vec::new());
         }
         let plan = self.plan_sweep(store, &routes, batch_size).await?;
-        self.execute_plan(store, &plan, batch_size).await
+        self.execute_plan(store, &plan, batch_size, held).await
     }
 
     /// Resolve each pending namespace's per-sweep headroom (CLAIMED-only,
@@ -236,6 +237,7 @@ impl Backpressure {
         store: &Arc<dyn OutboxStore>,
         plan: &SweepPlan,
         batch_size: u32,
+        held: &std::collections::HashSet<aion_core::WorkflowId>,
     ) -> Result<Vec<OutboxRow>, aion_store::StoreError> {
         // Remaining headroom per namespace, decremented as its routes are claimed.
         let mut headroom: BTreeMap<&str, u32> = plan
@@ -251,7 +253,8 @@ impl Backpressure {
             let ns_headroom = headroom.entry(name.as_str()).or_default();
             let allocation = plan.per_namespace_slice.min(*ns_headroom).min(budget);
             let got =
-                Self::claim_namespace_slice(store, &ns.routes, allocation, &mut claimed).await?;
+                Self::claim_namespace_slice(store, &ns.routes, allocation, &mut claimed, held)
+                    .await?;
             *ns_headroom = ns_headroom.saturating_sub(got);
             budget = budget.saturating_sub(got);
         }
@@ -264,7 +267,8 @@ impl Backpressure {
             let ns_headroom = headroom.entry(name.as_str()).or_default();
             let allocation = (*ns_headroom).min(budget);
             let got =
-                Self::claim_namespace_slice(store, &ns.routes, allocation, &mut claimed).await?;
+                Self::claim_namespace_slice(store, &ns.routes, allocation, &mut claimed, held)
+                    .await?;
             *ns_headroom = ns_headroom.saturating_sub(got);
             budget = budget.saturating_sub(got);
         }
@@ -288,6 +292,7 @@ impl Backpressure {
         routes: &[ClaimScope],
         allocation: u32,
         claimed: &mut Vec<OutboxRow>,
+        held: &std::collections::HashSet<aion_core::WorkflowId>,
     ) -> Result<u32, aion_store::StoreError> {
         let mut remaining = allocation;
         let mut total: u32 = 0;
@@ -297,9 +302,14 @@ impl Backpressure {
                 break;
             }
             // Even round-robin share of the remaining allocation across the remaining
-            // routes, rounded up so the last route can mop up any residue.
+            // routes, rounded up so the last route can mop up any residue. The pause
+            // dispatch-hold (#204) is applied AT CLAIM TIME here too: a held run's row
+            // is never selected, so it stays Pending under backpressure exactly as it
+            // does on the unscoped claim.
             let share = remaining.div_ceil(left).max(1).min(remaining);
-            let rows = store.claim_outbox_rows_scoped(route, share).await?;
+            let rows = store
+                .claim_outbox_rows_scoped_excluding(route, share, held)
+                .await?;
             let got = u32::try_from(rows.len()).unwrap_or(u32::MAX);
             remaining = remaining.saturating_sub(got);
             total = total.saturating_add(got);

@@ -38,6 +38,7 @@ pub(crate) fn parse_status(raw: &str) -> Result<WorkflowStatus, String> {
         "cancelled" | "canceled" => Ok(WorkflowStatus::Cancelled),
         "timedout" | "timed-out" => Ok(WorkflowStatus::TimedOut),
         "continuedasnew" | "continued-as-new" => Ok(WorkflowStatus::ContinuedAsNew),
+        "paused" => Ok(WorkflowStatus::Paused),
         _ => Err(String::from(
             "expected one of running, completed, failed, cancelled, timed-out, continued-as-new",
         )),

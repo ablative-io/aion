@@ -107,6 +107,7 @@ fn parse_status(value: &str) -> Result<WorkflowStatus, WireError> {
         "continued_as_new" | "continuedasnew" | "continued-as-new" => {
             Ok(WorkflowStatus::ContinuedAsNew)
         }
+        "paused" => Ok(WorkflowStatus::Paused),
         _ => Err(WireError::unknown_query(
             "workflow status query parameter is unknown",
         )),

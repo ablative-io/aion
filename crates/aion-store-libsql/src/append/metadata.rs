@@ -9,6 +9,8 @@ pub(super) fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
         Event::WorkflowReopened { .. } => "WorkflowReopened",
+        Event::WorkflowPaused { .. } => "WorkflowPaused",
+        Event::WorkflowResumed { .. } => "WorkflowResumed",
         Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
@@ -44,6 +46,11 @@ pub(super) fn queryable_flag(event: &Event) -> i64 {
             | Event::WorkflowTimedOut { .. }
             | Event::WorkflowContinuedAsNew { .. }
             | Event::WorkflowReopened { .. }
+            // Pause/resume are queryable lifecycle markers so the projected
+            // summary status column reflects Paused (and back to Running on
+            // resume) for describe/list before any restart (#204).
+            | Event::WorkflowPaused { .. }
+            | Event::WorkflowResumed { .. }
             | Event::ChildWorkflowStarted { .. }
     ))
 }

@@ -75,9 +75,13 @@ const fn event_status(event: &Event) -> WorkflowStatus {
         Event::WorkflowCancelled { .. } => WorkflowStatus::Cancelled,
         Event::WorkflowTimedOut { .. } => WorkflowStatus::TimedOut,
         Event::WorkflowContinuedAsNew { .. } => WorkflowStatus::ContinuedAsNew,
+        // A pause projects Paused at the moment it is recorded (#204).
+        Event::WorkflowPaused { .. } => WorkflowStatus::Paused,
         Event::WorkflowStarted { .. }
         // A reopen returns the workflow to Running at the moment it is recorded.
         | Event::WorkflowReopened { .. }
+        // A resume returns the workflow to Running at the moment it is recorded.
+        | Event::WorkflowResumed { .. }
         | Event::SearchAttributesUpdated { .. }
         | Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }

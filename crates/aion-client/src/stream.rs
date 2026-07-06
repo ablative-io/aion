@@ -352,6 +352,20 @@ mod tests {
             Err(ClientError::unavailable("stub transport"))
         }
 
+        async fn pause(
+            &self,
+            _: aion_proto::ProtoPauseRequest,
+        ) -> Result<aion_proto::ProtoPauseResponse, ClientError> {
+            Err(ClientError::unavailable("stub transport"))
+        }
+
+        async fn resume(
+            &self,
+            _: aion_proto::ProtoResumeRequest,
+        ) -> Result<aion_proto::ProtoResumeResponse, ClientError> {
+            Err(ClientError::unavailable("stub transport"))
+        }
+
         async fn list_workflows(
             &self,
             _: aion_proto::ProtoListWorkflowsRequest,

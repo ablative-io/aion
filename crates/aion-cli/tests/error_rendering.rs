@@ -162,6 +162,20 @@ impl WorkflowService for MockWorkflowService {
         off_scope()
     }
 
+    async fn pause(
+        &self,
+        _: Request<generated::PauseRequest>,
+    ) -> Result<Response<generated::PauseResponse>, Status> {
+        off_scope()
+    }
+
+    async fn resume(
+        &self,
+        _: Request<generated::ResumeRequest>,
+    ) -> Result<Response<generated::ResumeResponse>, Status> {
+        off_scope()
+    }
+
     async fn list_workflows(
         &self,
         _: Request<generated::ListWorkflowsRequest>,

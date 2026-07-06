@@ -41,6 +41,18 @@ pub trait WorkflowTransport: Send + Sync {
         request: aion_proto::ProtoReopenRequest,
     ) -> Result<aion_proto::ProtoReopenResponse, ClientError>;
 
+    /// Sends `Pause` over the transport (#204).
+    async fn pause(
+        &self,
+        request: aion_proto::ProtoPauseRequest,
+    ) -> Result<aion_proto::ProtoPauseResponse, ClientError>;
+
+    /// Sends `Resume` over the transport (#204).
+    async fn resume(
+        &self,
+        request: aion_proto::ProtoResumeRequest,
+    ) -> Result<aion_proto::ProtoResumeResponse, ClientError>;
+
     /// Sends `ListWorkflows` over the transport.
     async fn list_workflows(
         &self,

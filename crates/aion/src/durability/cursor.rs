@@ -559,6 +559,8 @@ fn event_kind(event: &Event) -> &'static str {
         Event::WorkflowTimedOut { .. } => "WorkflowTimedOut",
         Event::WorkflowContinuedAsNew { .. } => "WorkflowContinuedAsNew",
         Event::WorkflowReopened { .. } => "WorkflowReopened",
+        Event::WorkflowPaused { .. } => "WorkflowPaused",
+        Event::WorkflowResumed { .. } => "WorkflowResumed",
         Event::SearchAttributesUpdated { .. } => "SearchAttributesUpdated",
         Event::ActivityScheduled { .. } => "ActivityScheduled",
         Event::ActivityStarted { .. } => "ActivityStarted",
@@ -805,6 +807,70 @@ mod tests {
         assert!(
             matches!(result, CursorResolveResult::Matched(_)),
             "a reopen naming another activity must not reopen this one, got {result:?}"
+        );
+        Ok(())
+    }
+
+    fn paused(seq: u64) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowPaused {
+            envelope: envelope(seq)?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            reason: None,
+            operator: None,
+        })
+    }
+
+    fn resumed(seq: u64) -> Result<Event, Box<dyn std::error::Error>> {
+        Ok(Event::WorkflowResumed {
+            envelope: envelope(seq)?,
+            run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+            operator: None,
+        })
+    }
+
+    /// GATE-6 replay-invisibility (following the TimerCancelled-cause / reopen
+    /// precedent): WorkflowPaused/WorkflowResumed interleaved mid-history are
+    /// never matched, mismatched, or consumed by the cursor — an activity
+    /// recorded around them resolves exactly as if they were absent.
+    #[test]
+    fn pause_resume_markers_are_invisible_to_the_cursor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut cursor = HistoryCursor::new(vec![
+            workflow_started(1)?,
+            paused(2)?,
+            scheduled(3, 0)?,
+            resumed(4)?,
+            completed(5, 0)?,
+        ])?;
+
+        let result =
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(0));
+        match result {
+            CursorResolveResult::Matched(events) => {
+                assert_eq!(
+                    events.len(),
+                    2,
+                    "only the activity's own events are consumed"
+                );
+                assert!(matches!(
+                    events.last(),
+                    Some(Event::ActivityCompleted { .. })
+                ));
+            }
+            other => {
+                return Err(
+                    format!("pause/resume markers must not disturb replay, got {other:?}").into(),
+                );
+            }
+        }
+
+        // The markers are never matched: a further resolve for any activity
+        // exhausts (the leftover WorkflowResumed marker is invisible, never a
+        // spurious match or mismatch).
+        assert_eq!(
+            cursor.resolve_next(RecordedEventFamily::Activity, CorrelationKey::Activity(1)),
+            CursorResolveResult::Exhausted,
+            "the leftover pause/resume markers are invisible, never matched"
         );
         Ok(())
     }

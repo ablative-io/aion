@@ -155,6 +155,65 @@ pub struct ProtoReopenResponse {
     pub status: i32,
 }
 
+/// Proto representation of `PauseRequest` (#204).
+///
+/// Mirrors [`ProtoCancelRequest`]: a target plus an optional reason. An absent
+/// `run_id` means the latest run.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoPauseRequest {
+    /// Namespace that scopes the operation.
+    #[prost(string, tag = "1")]
+    pub namespace: String,
+    /// Target workflow identifier.
+    #[prost(message, optional, tag = "2")]
+    pub workflow_id: Option<ProtoWorkflowId>,
+    /// Target run identifier (absent means the latest run).
+    #[prost(message, optional, tag = "3")]
+    pub run_id: Option<ProtoRunId>,
+    /// Optional operator-supplied pause reason.
+    #[prost(string, tag = "4")]
+    pub reason: String,
+}
+
+/// Proto representation of `PauseResponse` (#204): the paused run and its status.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoPauseResponse {
+    /// The paused concrete run identifier.
+    #[prost(message, optional, tag = "1")]
+    pub run_id: Option<ProtoRunId>,
+    /// The projected workflow status after the pause (Paused).
+    #[prost(enumeration = "crate::convert::ProtoWorkflowStatus", tag = "2")]
+    pub status: i32,
+}
+
+/// Proto representation of `ResumeRequest` (#204).
+///
+/// Mirrors [`ProtoReopenRequest`]: only a target. An absent `run_id` means the
+/// latest run.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoResumeRequest {
+    /// Namespace that scopes the operation.
+    #[prost(string, tag = "1")]
+    pub namespace: String,
+    /// Target workflow identifier.
+    #[prost(message, optional, tag = "2")]
+    pub workflow_id: Option<ProtoWorkflowId>,
+    /// Target run identifier (absent means the latest run).
+    #[prost(message, optional, tag = "3")]
+    pub run_id: Option<ProtoRunId>,
+}
+
+/// Proto representation of `ResumeResponse` (#204): the resumed run and status.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
+pub struct ProtoResumeResponse {
+    /// The resumed concrete run identifier.
+    #[prost(message, optional, tag = "1")]
+    pub run_id: Option<ProtoRunId>,
+    /// The projected workflow status after the resume (Running).
+    #[prost(enumeration = "crate::convert::ProtoWorkflowStatus", tag = "2")]
+    pub status: i32,
+}
+
 /// Proto representation of `ListWorkflowsRequest`.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, prost::Message)]
 pub struct ProtoListWorkflowsRequest {

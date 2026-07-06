@@ -254,6 +254,10 @@ mod tests {
             self.inner.list_active().await
         }
 
+        async fn list_paused(&self) -> Result<Vec<WorkflowId>, aion_store::StoreError> {
+            self.inner.list_paused().await
+        }
+
         async fn query(
             &self,
             filter: &aion_core::WorkflowFilter,

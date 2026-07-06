@@ -5,9 +5,10 @@ use aion_core::{RunId, ScheduleId, WorkflowFilter, WorkflowId};
 use aion_proto::{
     FilteredSubscription, FirehoseSubscription, PerWorkflowSubscription, ProtoCancelRequest,
     ProtoCountWorkflowsRequest, ProtoCreateScheduleRequest, ProtoDescribeWorkflowRequest,
-    ProtoListSchedulesRequest, ProtoListWorkflowsRequest, ProtoQueryRequest, ProtoRegisterWorker,
-    ProtoReopenRequest, ProtoScheduleIdRequest, ProtoSignalRequest, ProtoStartWorkflowRequest,
-    ProtoUpdateScheduleRequest, SubscriptionRequest, subscription_request,
+    ProtoListSchedulesRequest, ProtoListWorkflowsRequest, ProtoPauseRequest, ProtoQueryRequest,
+    ProtoRegisterWorker, ProtoReopenRequest, ProtoResumeRequest, ProtoScheduleIdRequest,
+    ProtoSignalRequest, ProtoStartWorkflowRequest, ProtoUpdateScheduleRequest, SubscriptionRequest,
+    subscription_request,
 };
 
 use crate::error::ServerError;
@@ -129,6 +130,10 @@ pub enum NamespaceOperation<'a> {
     Cancel(&'a ProtoCancelRequest, WorkflowTarget<'a>),
     /// Reopen workflow request.
     Reopen(&'a ProtoReopenRequest, WorkflowTarget<'a>),
+    /// Pause workflow request (#204).
+    PauseWorkflow(&'a ProtoPauseRequest, WorkflowTarget<'a>),
+    /// Resume (paused) workflow request (#204).
+    ResumeWorkflow(&'a ProtoResumeRequest, WorkflowTarget<'a>),
     /// List workflow request.
     ListWorkflows(&'a ProtoListWorkflowsRequest, &'a WorkflowFilter),
     /// Count workflow request.
@@ -193,6 +198,24 @@ impl<'a> NamespaceOperation<'a> {
     #[must_use]
     pub const fn reopen(request: &'a ProtoReopenRequest, target: WorkflowTarget<'a>) -> Self {
         Self::Reopen(request, target)
+    }
+
+    /// Create a pause-workflow operation descriptor (#204).
+    #[must_use]
+    pub const fn pause_workflow(
+        request: &'a ProtoPauseRequest,
+        target: WorkflowTarget<'a>,
+    ) -> Self {
+        Self::PauseWorkflow(request, target)
+    }
+
+    /// Create a resume-workflow operation descriptor (#204).
+    #[must_use]
+    pub const fn resume_workflow(
+        request: &'a ProtoResumeRequest,
+        target: WorkflowTarget<'a>,
+    ) -> Self {
+        Self::ResumeWorkflow(request, target)
     }
 
     /// Create a list-workflows operation descriptor.
@@ -298,6 +321,8 @@ impl<'a> NamespaceOperation<'a> {
             Self::Query(request, _target) => request.namespace.as_str(),
             Self::Cancel(request, _target) => request.namespace.as_str(),
             Self::Reopen(request, _target) => request.namespace.as_str(),
+            Self::PauseWorkflow(request, _target) => request.namespace.as_str(),
+            Self::ResumeWorkflow(request, _target) => request.namespace.as_str(),
             Self::ListWorkflows(request, _filter) => request.namespace.as_str(),
             Self::CountWorkflows(request) => request.namespace.as_str(),
             Self::Describe(request, _target) => request.namespace.as_str(),
@@ -332,6 +357,8 @@ impl<'a> NamespaceOperation<'a> {
             | Self::Query(_, target)
             | Self::Cancel(_, target)
             | Self::Reopen(_, target)
+            | Self::PauseWorkflow(_, target)
+            | Self::ResumeWorkflow(_, target)
             | Self::Describe(_, target)
             | Self::Intervene { target, .. } => target.verify(resolver, authorized_namespace).await,
             Self::UpdateSchedule(_, target)

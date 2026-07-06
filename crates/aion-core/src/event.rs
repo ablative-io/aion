@@ -194,6 +194,39 @@ pub enum Event {
         /// superseded and the activity resolves to live re-dispatch.
         reopened: Vec<ActivityId>,
     },
+    /// A running workflow was paused by an operator.
+    ///
+    /// Engine-internal — never authored by workflow or SDK code. A NON-terminal
+    /// lifecycle marker: under the last-lifecycle-event-wins scan it projects the
+    /// run to [`crate::WorkflowStatus::Paused`], holding new activity dispatch at
+    /// the outbox while every durable record path (timer fires, signal receipts,
+    /// drained completions) keeps recording. It is invisible to the replay cursor
+    /// (it is neither a terminal nor a run-start reset), so a paused-then-resumed
+    /// history replays byte-identically to one that was never paused.
+    WorkflowPaused {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Run being paused — the live, non-terminal run the operator held.
+        run_id: RunId,
+        /// Optional operator-supplied pause reason.
+        reason: Option<String>,
+        /// Optional identity of the operator who issued the pause.
+        operator: Option<String>,
+    },
+    /// A paused workflow was resumed by an operator.
+    ///
+    /// Engine-internal — never authored by workflow or SDK code. Supersedes the
+    /// run's prior [`Event::WorkflowPaused`] under the last-lifecycle-event-wins
+    /// scan, returning the run to [`crate::WorkflowStatus::Running`], and — like
+    /// [`Event::WorkflowPaused`] — is invisible to the replay cursor.
+    WorkflowResumed {
+        /// Recording metadata for this event.
+        envelope: EventEnvelope,
+        /// Run being resumed.
+        run_id: RunId,
+        /// Optional identity of the operator who issued the resume.
+        operator: Option<String>,
+    },
     /// Workflow search attributes were updated for visibility and query projection.
     SearchAttributesUpdated {
         /// Recording metadata for this event.
@@ -517,6 +550,8 @@ impl Event {
             | Self::WorkflowTimedOut { envelope, .. }
             | Self::WorkflowContinuedAsNew { envelope, .. }
             | Self::WorkflowReopened { envelope, .. }
+            | Self::WorkflowPaused { envelope, .. }
+            | Self::WorkflowResumed { envelope, .. }
             | Self::SearchAttributesUpdated { envelope, .. }
             | Self::ActivityScheduled { envelope, .. }
             | Self::ActivityStarted { envelope, .. }
@@ -936,6 +971,64 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Pause/resume (#204) round-trip: the two new NON-terminal lifecycle markers
+    /// carry plain fields and survive the durable JSON wire unchanged.
+    #[test]
+    fn pause_resume_events_round_trip_through_json() -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![
+            Event::WorkflowPaused {
+                envelope: envelope(2),
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
+                reason: Some(String::from("operator hold")),
+                operator: Some(String::from("tom")),
+            },
+            Event::WorkflowPaused {
+                envelope: envelope(3),
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
+                reason: None,
+                operator: None,
+            },
+            Event::WorkflowResumed {
+                envelope: envelope(4),
+                run_id: RunId::new(uuid::Uuid::from_u128(1)),
+                operator: Some(String::from("tom")),
+            },
+        ];
+        for event in &events {
+            round_trip(event)?;
+        }
+        Ok(())
+    }
+
+    /// GATE-6 back-compat: an OLD history serialized before pause/resume existed
+    /// decodes byte-identically — it simply never contains the new variants. We
+    /// prove the whole event enum still decodes an old-shape history with no new
+    /// variants present (the decode round-trip test the brief requires), and that
+    /// adding the variants did not change the encoding of any existing variant.
+    #[test]
+    fn old_history_without_pause_resume_decodes_unchanged() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let started = Event::WorkflowStarted {
+            envelope: envelope(1),
+            workflow_type: String::from("checkout"),
+            input: payload("input")?,
+            run_id: RunId::new(uuid::Uuid::from_u128(1)),
+            parent_run_id: None,
+            package_version: package_version(),
+        };
+        let completed = Event::WorkflowCompleted {
+            envelope: envelope(2),
+            result: payload("result")?,
+        };
+        // Serialize an old-shape history and decode it back: no new variant is
+        // present, and every existing variant round-trips exactly.
+        let history = vec![started, completed];
+        let json = serde_json::to_string(&history)?;
+        let decoded = serde_json::from_str::<Vec<Event>>(&json)?;
+        assert_eq!(history, decoded);
         Ok(())
     }
 

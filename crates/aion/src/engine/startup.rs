@@ -164,6 +164,16 @@ async fn repopulate_active_workflows(
             );
             continue;
         }
+        // #204: a run that was paused between the `list_active` snapshot and this
+        // per-run re-read projects `Paused` — non-terminal, so the `is_terminal`
+        // guard above does not catch it. A durably-`Paused` run must NOT be
+        // respawned (GATE-2): the dispatch hold (rebuilt from `list_paused`) keeps
+        // its outbox rows held and an operator `resume` respawns it. Excluding it on
+        // exact `!= Running` mirrors `list_active`'s own filter and closes the
+        // pause-during-recovery race.
+        if projected_status == WorkflowStatus::Paused {
+            continue;
+        }
         supervision.ensure_type_supervisor(workflow_type.clone())?;
 
         // Per-workflow isolation (#62): a run whose pinned package version

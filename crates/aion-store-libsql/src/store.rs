@@ -262,6 +262,15 @@ impl OutboxStore for LibSqlStore {
         crate::outbox::claim_outbox_rows(self.connection(), limit).await
     }
 
+    async fn claim_outbox_rows_excluding(
+        &self,
+        limit: u32,
+        held: &std::collections::HashSet<WorkflowId>,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::claim_outbox_rows_excluding(self.connection(), limit, held).await
+    }
+
     async fn claim_outbox_rows_scoped(
         &self,
         scope: &ClaimScope,
@@ -269,6 +278,17 @@ impl OutboxStore for LibSqlStore {
     ) -> Result<Vec<OutboxRow>, StoreError> {
         let _guard = self.transaction_lock.lock().await;
         crate::outbox::claim_outbox_rows_scoped(self.connection(), scope, limit).await
+    }
+
+    async fn claim_outbox_rows_scoped_excluding(
+        &self,
+        scope: &ClaimScope,
+        limit: u32,
+        held: &std::collections::HashSet<WorkflowId>,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::claim_outbox_rows_scoped_excluding(self.connection(), scope, limit, held)
+            .await
     }
 
     async fn rearm_stale_claimed_outbox_rows(
@@ -357,6 +377,10 @@ impl ReadableEventStore for LibSqlStore {
 
     async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
         crate::read::list_active(self.connection()).await
+    }
+
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        crate::read::list_paused(self.connection()).await
     }
 
     async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {

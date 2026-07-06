@@ -35,6 +35,18 @@ WHERE status = 'pending' AND visible_after <= ?1
 ORDER BY visible_after ASC, dispatch_key ASC
 LIMIT ?2";
 
+// Unbounded variant for the pause dispatch-hold (#204): the held-workflow filter runs
+// in Rust AFTER the SELECT, so a SQL LIMIT would let a paused workflow's due rows
+// (which sort earliest) permanently occupy the whole window and starve every other
+// workflow on the route. The excluding claims therefore stream WITHOUT a LIMIT and
+// stop once `limit` claimable rows are taken — held rows cost one decode each, never
+// a claim slot.
+const SELECT_CLAIMABLE_UNBOUNDED_SQL: &str = "
+SELECT dispatch_key, workflow_id, ordinal, activity_type, input, status, attempt, visible_after, claimed_at, run_id, namespace, task_queue, node
+FROM outbox
+WHERE status = 'pending' AND visible_after <= ?1
+ORDER BY visible_after ASC, dispatch_key ASC";
+
 // Scoped claim (LSUB-1a): additionally constrain by the pool's `(namespace, task_queue)` and the
 // node predicate. The node clause is appended per-scope: a node-bearing scope claims rows pinned to
 // that node OR unpinned rows (`node IS NULL`); a node-less scope claims only unpinned rows. This is
@@ -47,6 +59,12 @@ WHERE status = 'pending' AND visible_after <= ?1 AND namespace = ?3 AND task_que
 const SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL: &str = "
 ORDER BY visible_after ASC, dispatch_key ASC
 LIMIT ?2";
+
+// Scoped unbounded suffix: same starvation rationale as
+// [`SELECT_CLAIMABLE_UNBOUNDED_SQL`] — used only when a non-empty held set makes the
+// Rust-side filter load-bearing. `?2` is unused here; the scoped bindings renumber.
+const SELECT_CLAIMABLE_SCOPED_SUFFIX_UNBOUNDED_SQL: &str = "
+ORDER BY visible_after ASC, dispatch_key ASC";
 
 // Node predicate fragments spliced between the prefix and suffix above. `?5` binds the scope node.
 const NODE_CLAUSE_PINNED_OR_UNPINNED: &str = " AND (node IS NULL OR node = ?5)";
@@ -259,6 +277,95 @@ pub(crate) async fn claim_outbox_rows(
     Ok(claimed)
 }
 
+/// Claim up to `limit` due pending rows whose owning workflow is NOT in `held`
+/// (the pause dispatch-hold, #204).
+///
+/// A held row is skipped in-place: it is never flipped to `claimed`, so it stays
+/// `pending` for the whole paused window. With an empty `held` set this delegates
+/// to [`claim_outbox_rows`] unchanged.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn claim_outbox_rows_excluding(
+    conn: &Connection,
+    limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    if held.is_empty() {
+        return claim_outbox_rows(conn, limit).await;
+    }
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let claimed = match select_and_claim_excluding(&tx, limit, held).await {
+        Ok(claimed) => claimed,
+        Err(error) => {
+            rollback(tx).await?;
+            return Err(error);
+        }
+    };
+
+    tx.commit()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    Ok(claimed)
+}
+
+async fn select_and_claim_excluding(
+    tx: &Transaction,
+    limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    let claimed_at = Utc::now();
+    let now = encode_instant(claimed_at);
+    // Unbounded SELECT + stop-at-limit below: with the held filter applied in Rust,
+    // a SQL LIMIT would let a paused workflow's earliest-due rows fill the whole
+    // window and starve the route (held rows sort first and are never claimed).
+    let mut rows = tx
+        .query(SELECT_CLAIMABLE_UNBOUNDED_SQL, params![now.clone()])
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+
+    let mut claimed = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        if claimed.len() >= limit as usize {
+            break;
+        }
+        let decoded = decode_row(&row)?;
+        // A held (paused) workflow's row is left Pending: never claimed, never
+        // released — release is purely resume + the next sweep.
+        if held.contains(&decoded.workflow_id) {
+            continue;
+        }
+        tx.execute(
+            CLAIM_ROW_SQL,
+            params![decoded.dispatch_key.clone(), now.clone()],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+        claimed.push(OutboxRow {
+            status: OutboxStatus::Claimed,
+            claimed_at: Some(claimed_at),
+            ..decoded
+        });
+    }
+
+    Ok(claimed)
+}
+
 async fn select_and_claim(tx: &Transaction, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
     let claimed_at = Utc::now();
     let now = encode_instant(claimed_at);
@@ -304,6 +411,27 @@ pub(crate) async fn claim_outbox_rows_scoped(
     scope: &ClaimScope,
     limit: u32,
 ) -> Result<Vec<OutboxRow>, StoreError> {
+    claim_outbox_rows_scoped_excluding(conn, scope, limit, &std::collections::HashSet::new()).await
+}
+
+/// Claim up to `limit` due pending rows in `scope` whose owning workflow is NOT in
+/// `held` (the pause dispatch-hold, #204), atomically.
+///
+/// The scoped (backpressure / node-affinity) counterpart to
+/// [`claim_outbox_rows_excluding`]: a held row is skipped in-place and left
+/// `pending` for the whole paused window. With an empty `held` set this is
+/// byte-identical to the plain scoped claim.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn claim_outbox_rows_scoped_excluding(
+    conn: &Connection,
+    scope: &ClaimScope,
+    limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
+) -> Result<Vec<OutboxRow>, StoreError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -313,7 +441,7 @@ pub(crate) async fn claim_outbox_rows_scoped(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
 
-    let claimed = match select_and_claim_scoped(&tx, scope, limit).await {
+    let claimed = match select_and_claim_scoped(&tx, scope, limit, held).await {
         Ok(claimed) => claimed,
         Err(error) => {
             rollback(tx).await?;
@@ -332,6 +460,7 @@ async fn select_and_claim_scoped(
     tx: &Transaction,
     scope: &ClaimScope,
     limit: u32,
+    held: &std::collections::HashSet<aion_core::WorkflowId>,
 ) -> Result<Vec<OutboxRow>, StoreError> {
     let claimed_at = Utc::now();
     let now = encode_instant(claimed_at);
@@ -343,9 +472,15 @@ async fn select_and_claim_scoped(
     } else {
         NODE_CLAUSE_UNPINNED_ONLY
     };
-    let sql = format!(
-        "{SELECT_CLAIMABLE_SCOPED_PREFIX_SQL}{node_clause}{SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL}"
-    );
+    // With held workflows to skip, the LIMIT moves out of SQL into the claim loop
+    // (stop-at-limit): held rows sort earliest and must not consume the window
+    // (route starvation, #204). The empty-held claim keeps the bounded SQL.
+    let suffix = if held.is_empty() {
+        SELECT_CLAIMABLE_SCOPED_SUFFIX_SQL
+    } else {
+        SELECT_CLAIMABLE_SCOPED_SUFFIX_UNBOUNDED_SQL
+    };
+    let sql = format!("{SELECT_CLAIMABLE_SCOPED_PREFIX_SQL}{node_clause}{suffix}");
 
     // `?5` is bound only when the scope carries a node; the node-less clause references no `?5`.
     let mut rows = if let Some(node) = scope.node.as_deref() {
@@ -380,7 +515,17 @@ async fn select_and_claim_scoped(
         .await
         .map_err(|error| crate::error::libsql_error(&error))?
     {
+        if claimed.len() >= limit as usize {
+            break;
+        }
         let decoded = decode_row(&row)?;
+        // A held (paused) workflow's row is left Pending: never claimed, never
+        // released — release is purely resume + the next sweep (#204). The
+        // backpressure sweep claims through this scoped path, so the hold MUST be
+        // honoured here too, not only on the unscoped claim.
+        if held.contains(&decoded.workflow_id) {
+            continue;
+        }
         tx.execute(
             CLAIM_ROW_SQL,
             params![decoded.dispatch_key.clone(), now.clone()],

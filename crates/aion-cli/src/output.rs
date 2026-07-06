@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use aion_client::{ReopenOutcome, WorkflowHandle};
+use aion_client::{PauseOutcome, ReopenOutcome, ResumeOutcome, WorkflowHandle};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -51,6 +51,42 @@ pub(crate) fn reopen_output(workflow_id: &str, outcome: &ReopenOutcome) -> Reope
         run_id: outcome.run_id.to_string(),
         status: format!("{:?}", outcome.status),
         reopened: true,
+    }
+}
+
+/// Output of a pause request (#204).
+#[derive(Serialize)]
+pub(crate) struct PauseOutput {
+    pub(crate) workflow_id: String,
+    pub(crate) run_id: String,
+    pub(crate) status: String,
+    pub(crate) paused: bool,
+}
+
+pub(crate) fn pause_output(workflow_id: &str, outcome: &PauseOutcome) -> PauseOutput {
+    PauseOutput {
+        workflow_id: workflow_id.to_owned(),
+        run_id: outcome.run_id.to_string(),
+        status: format!("{:?}", outcome.status),
+        paused: true,
+    }
+}
+
+/// Output of a resume request (#204).
+#[derive(Serialize)]
+pub(crate) struct ResumeOutput {
+    pub(crate) workflow_id: String,
+    pub(crate) run_id: String,
+    pub(crate) status: String,
+    pub(crate) resumed: bool,
+}
+
+pub(crate) fn resume_output(workflow_id: &str, outcome: &ResumeOutcome) -> ResumeOutput {
+    ResumeOutput {
+        workflow_id: workflow_id.to_owned(),
+        run_id: outcome.run_id.to_string(),
+        status: format!("{:?}", outcome.status),
+        resumed: true,
     }
 }
 

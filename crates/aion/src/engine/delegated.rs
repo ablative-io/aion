@@ -252,6 +252,26 @@ impl Engine {
                 }
                 .into());
             }
+            // Paused-but-not-resident (crashed while paused, #204): the run is
+            // durably non-terminal but was deliberately excluded from respawn, so
+            // no live handle exists and handle_after_birth_window would time out
+            // with WorkflowNotFound. Durably record SignalReceived through a
+            // one-shot recorder built from the validated read (record-before-
+            // deliver preserved); it takes effect on resume replay.
+            let segment = aion_core::run_segment(&history, run);
+            if matches!(
+                aion_core::status_from_events(segment),
+                aion_core::WorkflowStatus::Paused
+            ) {
+                let head = history.last().map(Event::seq).unwrap_or_default();
+                let mut recorder =
+                    crate::durability::Recorder::resume_at(id.clone(), self.store(), head)
+                        .with_visibility(run.clone(), self.visibility_store());
+                recorder
+                    .record_signal_received(chrono::Utc::now(), name.into(), payload)
+                    .await?;
+                return Ok(());
+            }
             self.handle_after_birth_window(id, run, &history)
                 .await?
                 .ok_or_else(|| workflow_not_found(id, run))?
@@ -389,6 +409,8 @@ const fn event_family(event: &Event) -> EventFamily {
         | Event::WorkflowTimedOut { .. }
         | Event::WorkflowContinuedAsNew { .. }
         | Event::WorkflowReopened { .. }
+        | Event::WorkflowPaused { .. }
+        | Event::WorkflowResumed { .. }
         | Event::SearchAttributesUpdated { .. } => EventFamily::Workflow,
         Event::ActivityScheduled { .. }
         | Event::ActivityStarted { .. }

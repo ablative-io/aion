@@ -172,6 +172,45 @@ pub(crate) fn decode_reopen_response(
     }
 }
 
+pub(crate) fn encode_pause_request(
+    value: aion_proto::ProtoPauseRequest,
+) -> aion_proto::generated::PauseRequest {
+    aion_proto::generated::PauseRequest {
+        namespace: value.namespace,
+        workflow_id: value.workflow_id.map(encode_workflow_id),
+        run_id: value.run_id.map(encode_run_id),
+        reason: value.reason,
+    }
+}
+
+pub(crate) fn decode_pause_response(
+    value: aion_proto::generated::PauseResponse,
+) -> aion_proto::ProtoPauseResponse {
+    aion_proto::ProtoPauseResponse {
+        run_id: value.run_id.map(decode_run_id),
+        status: value.status,
+    }
+}
+
+pub(crate) fn encode_resume_request(
+    value: aion_proto::ProtoResumeRequest,
+) -> aion_proto::generated::ResumeRequest {
+    aion_proto::generated::ResumeRequest {
+        namespace: value.namespace,
+        workflow_id: value.workflow_id.map(encode_workflow_id),
+        run_id: value.run_id.map(encode_run_id),
+    }
+}
+
+pub(crate) fn decode_resume_response(
+    value: aion_proto::generated::ResumeResponse,
+) -> aion_proto::ProtoResumeResponse {
+    aion_proto::ProtoResumeResponse {
+        run_id: value.run_id.map(decode_run_id),
+        status: value.status,
+    }
+}
+
 pub(crate) fn encode_list_request(
     value: aion_proto::ProtoListWorkflowsRequest,
 ) -> aion_proto::generated::ListWorkflowsRequest {
