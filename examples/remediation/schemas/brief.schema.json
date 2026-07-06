@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/brief.schema.json",
+  "title": "Brief",
+  "description": "Fix brief produced at Stage 0 (triage & batching) — findings clustered by shared root cause and file locality, never by severity (DESIGN.md Stage 0).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "finding_ids", "root_cause", "scope", "acceptance", "wave", "deep_cluster"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "finding_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^YG-[0-9]+$"
+      }
+    },
+    "root_cause": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One paragraph: why these findings are one change."
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files_expected", "boundaries"],
+      "properties": {
+        "files_expected": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "boundaries": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "SHALL-NOT list — paths/behaviors the fix must not touch."
+        }
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "Per finding, testable acceptance criteria."
+    },
+    "wave": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deep_cluster": {
+      "type": "boolean",
+      "description": "True when the brief runs as a single durable session owning stages 1-2 internally (DESIGN.md 'Deep clusters')."
+    }
+  }
+}

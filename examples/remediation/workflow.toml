@@ -1,0 +1,39 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# TWO entries — the remediation family: the `remediation_wave` PARENT (signed
+# wave plan -> wave report skeleton) and the `remediation_brief` CHILD (one
+# brief end-to-end) it spawns per brief. A spawned child's workflow type is
+# resolved by entry-module name against the engine's loaded packages, so BOTH
+# archives must be deployed together for a parent-child run.
+#
+# Timeouts size the longest legitimate run: the parent waits on serial strata
+# of child briefs (each iterating agent fix cycles), so it gets a day; a
+# single brief's cycle gets six hours.
+
+[[workflow]]
+entry_module = "remediation_wave"
+entry_function = "run"
+timeout_seconds = 86400
+input_schema = "schemas/wave_input.json"
+output_schema = "schemas/wave_output.json"
+activities = []
+output = "remediation-wave.aion"
+
+[[workflow]]
+entry_module = "remediation_brief"
+entry_function = "run"
+timeout_seconds = 21600
+input_schema = "schemas/brief_input.json"
+output_schema = "schemas/brief_output.json"
+activities = [
+  "provision_workspace",
+  "test_author",
+  "gate1",
+  "developer",
+  "gate2",
+  "verifier",
+  "ledger_update",
+  "cleanup_workspace",
+]
+output = "remediation-brief.aion"

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/test-manifest.schema.json",
+  "title": "TestManifest",
+  "description": "Stage 1 (test authoring) output: fail-first tests per correction finding, with captured evidence that each test fails for the right reason (DESIGN.md Stage 1, 2026-07-07 contract).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_id", "entries"],
+  "properties": {
+    "brief_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "test_names",
+          "test_file",
+          "expected_failure_signature",
+          "fail_evidence",
+          "could_not_reproduce"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^YG-[0-9]+$"
+          },
+          "test_names": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "test_file": {
+            "type": "string",
+            "description": "Repo-relative path of the file holding this finding's authored tests — one of the paths Gate 2's test-path diff protects."
+          },
+          "expected_failure_signature": {
+            "type": "string",
+            "description": "Substring the failing test output MUST contain. Makes Gate 1's fails-for-the-right-reason check fully mechanical: re-run the test, assert failure, assert the output contains this signature. Empty only for manual_acceptance entries."
+          },
+          "fail_evidence": {
+            "type": "string",
+            "description": "Captured cargo test output containing the signature. For completion/improvement findings with manual_acceptance this records the observable acceptance criterion instead."
+          },
+          "could_not_reproduce": {
+            "type": "boolean",
+            "description": "True routes the finding to human review (Wave 0: surfaces to Scott/Tom per DECISIONS.md D4)."
+          },
+          "could_not_reproduce_reason": {
+            "type": ["string", "null"],
+            "description": "Concrete, checkable reason the scenario could not be reproduced. Required in substance when could_not_reproduce is true."
+          },
+          "manual_acceptance": {
+            "type": ["string", "null"],
+            "description": "For improvement/completion findings with no expressible failing test: the observable acceptance criterion the verifier will later check."
+          }
+        }
+      }
+    }
+  }
+}

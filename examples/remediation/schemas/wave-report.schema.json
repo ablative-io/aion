@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/wave-report.schema.json",
+  "title": "WaveReport",
+  "description": "Stage 5 output to Tom at wave end: ledger delta, per-stage metrics (DESIGN.md 'Metrics'), and the deferred/refuted queue for sign-off. Rates are fractions in [0,1]. Metrics are reviewed before planning the next wave — the numbers choose which stage's assets get revised.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wave", "ledger_delta", "metrics", "deferred_queue", "refuted_queue"],
+  "properties": {
+    "wave": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ledger_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["new_entries", "transitions"],
+      "properties": {
+        "new_entries": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^YG-[0-9]+$" },
+          "description": "Finding ids added this wave (class siblings, re-audit inflow)."
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["finding_id", "from", "to", "artifact_ref"],
+            "properties": {
+              "finding_id": { "type": "string", "pattern": "^YG-[0-9]+$" },
+              "from": {
+                "type": "string",
+                "enum": ["open", "briefed", "test_authored", "in_fix", "in_verify", "fixed_verified", "refuted", "deferred"]
+              },
+              "to": {
+                "type": "string",
+                "enum": ["open", "briefed", "test_authored", "in_fix", "in_verify", "fixed_verified", "refuted", "deferred"]
+              },
+              "artifact_ref": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The stage artifact driving the transition — a status cannot change without one."
+              }
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["test_authoring", "fix", "verify", "re_audit", "flow"],
+      "properties": {
+        "test_authoring": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["valid_fail_first_rate", "wrong_reason_fail_rate", "could_not_reproduce_rate"],
+          "properties": {
+            "valid_fail_first_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of failure scenarios yielding a valid fail-first test."
+            },
+            "wrong_reason_fail_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of tests failing for the wrong reason (caught at Gate 1)."
+            },
+            "could_not_reproduce_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Indicts upstream verification quality."
+            }
+          }
+        },
+        "fix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["first_pass_acceptance_rate", "fix_cycles_per_brief", "deviation_count", "test_edit_attempts"],
+          "properties": {
+            "first_pass_acceptance_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "fix_cycles_per_brief": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Mean Stage-2/Stage-3 cycles per brief (a metric, not a punishment)."
+            },
+            "deviation_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "test_edit_attempts": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Should be zero — any occurrence is a prompt/guard failure."
+            }
+          }
+        },
+        "verify": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class_siblings_per_brief", "verdicts_overturned"],
+          "properties": {
+            "class_siblings_per_brief": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Higher early = finder prompts too narrow."
+            },
+            "verdicts_overturned": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Verdicts overturned later — escaped defects."
+            }
+          }
+        },
+        "re_audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class_recurrence_rate", "new_finding_inflow"],
+          "properties": {
+            "class_recurrence_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Indicts fix depth."
+            },
+            "new_finding_inflow": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Codebase health trend over waves."
+            }
+          }
+        },
+        "flow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lead_time_days", "terminal_state_ratio", "refuted_rate_by_finder"],
+          "properties": {
+            "lead_time_days": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Mean lead time finding -> sealed, in days."
+            },
+            "terminal_state_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of the wave's findings in a terminal state (fixed_verified | refuted | deferred)."
+            },
+            "refuted_rate_by_finder": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["finder", "refuted_rate"],
+                "properties": {
+                  "finder": { "type": "string", "minLength": 1 },
+                  "refuted_rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              },
+              "description": "Calibrates finder prompts."
+            }
+          }
+        }
+      }
+    },
+    "deferred_queue": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^YG-[0-9]+$" },
+      "description": "Findings awaiting explicit human deferral sign-off (agents cannot defer)."
+    },
+    "refuted_queue": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^YG-[0-9]+$" },
+      "description": "Findings refuted this wave, with evidence in the ledger, for sign-off."
+    }
+  }
+}

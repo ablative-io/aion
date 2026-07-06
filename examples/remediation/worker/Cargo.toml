@@ -1,0 +1,64 @@
+# Rust activity worker for the remediation workflow family.
+#
+# Standalone (NOT a workspace member) so it builds from a plain `cargo build`
+# in this directory, mirroring the `pipeline-run` example worker.
+#
+# It serves NINE activity types on ONE task queue (`remediation`):
+#
+# - FOUR DRIVEN AGENT activities (`test_author`, `developer`, `verifier`,
+#   `re_auditor`) — each routed through its OWN composed harness: a
+#   `ProfiledNornHarness` that assembles the prompt as {the role's profile
+#   markdown, loaded at startup from `--profiles-dir`} + {the activity's
+#   structured context JSON}, then delegates to a `NornHarness` (driven mode,
+#   jsonrpc) carrying the role's `--output-schema` and a
+#   `{workflow_id}`-derived `--session-id`, over the liminal server-push
+#   transport (`serve_with_redial`). One connection per role.
+# - FIVE SHELL activities (`provision_workspace`, `gate1`, `gate2`,
+#   `ledger_update`, `cleanup_workspace`) — typed registry handlers running
+#   real git/cargo/python commands, on a fifth connection with no harness.
+[package]
+name = "remediation-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust activity worker serving the remediation workflow's four driven Norn agent roles and five git/cargo/ledger shell activities."
+
+[[bin]]
+name = "remediation-worker"
+path = "src/main.rs"
+
+[lib]
+name = "remediation_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+# The `liminal-transport` feature enables the server-push serve path
+# (`serve_with_redial`) the driven agent-harness wiring runs on. The composed
+# agent-harness seam is unpublished, so the aion crates are consumed by PATH.
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `ledger_update` materializes the artifact JSON as a temp file for the
+# applier CLI, so tempfile is a production dependency here (not dev-only).
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/ledger-entry.schema.json",
+  "title": "LedgerEntry",
+  "description": "One entry per verified finding — the spine of the remediation flow (DESIGN.md 'The Ledger'). join_method/join_confidence record how the verified finding was joined to its raw counterpart at ledger build time (DECISIONS.md D5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "file",
+    "line",
+    "category",
+    "severity",
+    "detail",
+    "failure_scenario",
+    "recommendation",
+    "status",
+    "brief_id",
+    "test_names",
+    "fix_commit",
+    "verdict_ref",
+    "evidence",
+    "status_history",
+    "join_method",
+    "join_confidence"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^YG-[0-9]+$",
+      "description": "Stable finding id, e.g. \"YG-17\" (YG-{verified finding id})."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "category": {
+      "type": "string",
+      "enum": ["correction", "completion", "improvement"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low"],
+      "description": "Verifier-adjusted severity."
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Verified description (verifier notes, where present, are appended with a [verifier note] marker)."
+    },
+    "failure_scenario": {
+      "type": "string",
+      "description": "Concrete inputs/state -> wrong outcome. Taken from the raw finding's fuller detail when joined; REQUIRED to be substantive for corrections."
+    },
+    "recommendation": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "briefed",
+        "test_authored",
+        "in_fix",
+        "in_verify",
+        "fixed_verified",
+        "refuted",
+        "deferred"
+      ]
+    },
+    "brief_id": {
+      "type": ["string", "null"],
+      "description": "Set once the finding is batched into a brief."
+    },
+    "test_names": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Set once tests are authored."
+    },
+    "fix_commit": {
+      "type": ["string", "null"],
+      "description": "Set once the fix lands."
+    },
+    "verdict_ref": {
+      "type": ["string", "null"],
+      "description": "Pointer to verifier verdict evidence."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Transcript/log pointers."
+    },
+    "status_history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "timestamp", "actor"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "briefed",
+              "test_authored",
+              "in_fix",
+              "in_verify",
+              "fixed_verified",
+              "refuted",
+              "deferred"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "minLength": 1,
+            "description": "ISO-8601 UTC timestamp."
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "join_method": {
+      "type": "string",
+      "enum": ["title", "line", "line_disambiguated", "none"],
+      "description": "How the verified finding was joined to a raw finding: exact (file,title); unique (file,line); ambiguous (file,line) resolved by category match + title token-overlap; or no join found."
+    },
+    "join_confidence": {
+      "type": ["string", "null"],
+      "enum": ["exact", "high", "low", null],
+      "description": "exact for title joins, high for unique line joins, low for disambiguated line joins; null when join_method is none (there is no join to grade)."
+    }
+  }
+}

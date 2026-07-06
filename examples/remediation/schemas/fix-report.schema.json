@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ablative.io/yggdrasil/remediation-flow/fix-report.schema.json",
+  "title": "FixReport",
+  "description": "Stage 2 (fix) output: what the developer changed and the per-finding semantic story (DESIGN.md Stage 2, 2026-07-07 contract).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "brief_id",
+    "commits",
+    "findings_addressed",
+    "findings_bounced",
+    "deviations",
+    "new_tests",
+    "class_instances_found"
+  ],
+  "properties": {
+    "brief_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commits": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "findings_addressed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "how"],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^YG-[0-9]+$"
+          },
+          "how": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One paragraph — the class-level semantic story of the fix."
+          }
+        }
+      }
+    },
+    "findings_bounced": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "reason"],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^YG-[0-9]+$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Concrete evidence the finding is invalid — distinct from addressed; every brief finding_id must appear in exactly one of the two lists per Gate 2."
+          }
+        }
+      }
+    },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "why", "approved_by"],
+        "properties": {
+          "what": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 },
+          "approved_by": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Planner name, or 'pending' — silent scope creep is a verifier reject."
+          }
+        }
+      }
+    },
+    "new_tests": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tests the developer added (additions welcome; editing authored tests is mechanically forbidden)."
+    },
+    "class_instances_found": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "fixed", "note"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 0 },
+          "fixed": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      },
+      "description": "Same-pattern occurrences beyond the cited lines — fixed in this brief or recorded for the verifier/re-audit."
+    }
+  }
+}
