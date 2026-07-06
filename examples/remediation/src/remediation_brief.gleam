@@ -124,7 +124,7 @@ pub fn execute(input: BriefInput) -> Result(BriefResult, RemediationError) {
     )
 
   use workspace <- try(provision(input))
-  use manifest <- try(run_test_author(input))
+  use manifest <- try(run_test_author(input, workspace))
 
   // Gate 1, workflow half (pure): every correction finding needs a test or an
   // explicit could_not_reproduce flag; every manifest entry needs SOME
@@ -381,17 +381,23 @@ fn provision(input: BriefInput) -> Result(WorkspaceInfo, RemediationError) {
 
 fn run_test_author(
   input: BriefInput,
+  workspace: WorkspaceInfo,
 ) -> Result(TestManifest, RemediationError) {
   // THE INDEPENDENCE BOUNDARY: entries are projected through
   // strip_recommendation into a type with no recommendation field before they
   // touch the activity input codec, so the recommendation never reaches the
   // wire (test/codec_test pins this).
+  //
+  // The workspace path rides along so the WORKER can commit the authored
+  // tests after a successful turn (agents do not run git; DESIGN.md step 4
+  // requires the tests committed before gate 1).
   let stripped = list.map(input.entries, types.strip_recommendation)
   case
     workflow.run(
       activities.test_author(TestAuthorInput(
         brief: input.brief,
         entries: stripped,
+        workspace_path: workspace.workspace_path,
       )),
     )
   {

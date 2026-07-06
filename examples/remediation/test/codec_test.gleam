@@ -51,9 +51,11 @@ fn brief() -> types.Brief {
 
 pub fn test_author_input_codec_cannot_emit_a_recommendation_test() {
   let input =
-    TestAuthorInput(brief: brief(), entries: [
-      types.strip_recommendation(entry_with_secret_recommendation()),
-    ])
+    TestAuthorInput(
+      brief: brief(),
+      entries: [types.strip_recommendation(entry_with_secret_recommendation())],
+      workspace_path: "/tmp/aion-remediation/ws/child-1",
+    )
   let encoded = codecs.test_author_input_codec().encode(input)
 
   // Neither the field name nor the value can reach the wire: the encoder has
@@ -66,6 +68,13 @@ pub fn test_author_input_codec_cannot_emit_a_recommendation_test() {
   string.contains(encoded, "YG-268")
   |> should.equal(True)
   string.contains(encoded, "failure_scenario")
+  |> should.equal(True)
+  // The workspace path rides the wire: the worker commits the authored tests
+  // there after the turn (agents do not run git).
+  string.contains(
+    encoded,
+    "\"workspace_path\":\"/tmp/aion-remediation/ws/child-1\"",
+  )
   |> should.equal(True)
 }
 

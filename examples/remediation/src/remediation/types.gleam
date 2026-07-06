@@ -145,8 +145,18 @@ pub type BriefInput {
 /// RECOMMENDATION-FREE entry projections. The recommendation is stripped at
 /// the codec layer — this type cannot carry it, so it can never reach the
 /// wire.
+///
+/// `workspace_path` is the brief's provisioned worktree: agents do not run
+/// git (doctrine), so after a successful authoring turn the WORKER commits
+/// the manifest's test files there, on the brief branch (DESIGN.md flow
+/// step 4 — tests committed as the branch's first commit(s)). Gate 1 then
+/// finds them committed instead of failing on a dirty worktree.
 pub type TestAuthorInput {
-  TestAuthorInput(brief: Brief, entries: List(TestAuthorEntry))
+  TestAuthorInput(
+    brief: Brief,
+    entries: List(TestAuthorEntry),
+    workspace_path: String,
+  )
 }
 
 /// Input to the `developer` agent activity: the brief, the FULL ledger entries

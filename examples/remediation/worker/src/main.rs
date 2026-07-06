@@ -81,6 +81,12 @@ struct Role {
     workspace_root: String,
     profile: String,
     assemble: prompts::AssembleFn,
+    /// Whether this role's harness commits the manifest's test files in the
+    /// brief workspace after a successful turn (the mechanical-git doctrine:
+    /// agents never run git — the machinery does). True ONLY for the
+    /// test-author, whose committed tests gate 1 requires; the
+    /// verifier/re-auditor write nothing.
+    commit_authored_tests: bool,
 }
 
 impl Role {
@@ -172,6 +178,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: brief_workspace.clone(),
             profile: profiles.test_author,
             assemble: prompts::test_author,
+            commit_authored_tests: true,
         },
         Role {
             activity_type: "developer",
@@ -180,6 +187,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: brief_workspace.clone(),
             profile: profiles.developer,
             assemble: prompts::developer,
+            commit_authored_tests: false,
         },
         Role {
             activity_type: "verifier",
@@ -188,6 +196,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: brief_workspace,
             profile: profiles.verifier,
             assemble: prompts::verifier,
+            commit_authored_tests: false,
         },
         Role {
             activity_type: "re_auditor",
@@ -196,6 +205,7 @@ fn roles(repo_root: &str, profiles: Profiles) -> Vec<Role> {
             workspace_root: repo_root.to_owned(),
             profile: profiles.re_auditor,
             assemble: prompts::re_auditor,
+            commit_authored_tests: false,
         },
     ]
 }
@@ -247,6 +257,11 @@ fn composed_agent_harness(norn_bin: &str, role: &Role) -> AgentHarnessConfig {
         // precedence and fail. No secret is ever set here.
         .without_env("OPENAI_API_KEY");
     let harness = ProfiledNornHarness::new(inner, role.profile.clone(), role.assemble);
+    let harness = if role.commit_authored_tests {
+        harness.committing_authored_tests()
+    } else {
+        harness
+    };
 
     let erased: Arc<dyn DynAgentHarness> = Arc::new(harness);
     AgentHarnessConfig::new(
@@ -554,6 +569,20 @@ mod tests {
             assert!(role.output_schema.trim_start().starts_with('{'));
             assert!(!role.profile.is_empty());
         }
+    }
+
+    /// The mechanical-git doctrine's wiring: exactly the test-author role
+    /// gets the post-turn authored-test commit — gate 1 requires ITS work
+    /// committed, and no other role's harness may grow a silent git side
+    /// effect.
+    #[test]
+    fn only_the_test_author_commits_authored_tests() {
+        let committing: Vec<&str> = roles("/repo", profiles())
+            .iter()
+            .filter(|role| role.commit_authored_tests)
+            .map(|role| role.activity_type)
+            .collect();
+        assert_eq!(committing, vec!["test_author"]);
     }
 
     /// The routing contract this worker's five connections uphold: the server

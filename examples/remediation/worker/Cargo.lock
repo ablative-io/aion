@@ -1978,6 +1978,7 @@ dependencies = [
  "aion-worker",
  "anyhow",
  "async-trait",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",

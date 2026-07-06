@@ -57,7 +57,11 @@ fn assert_route(built: activity.Activity(i, o), node: String) -> Nil {
 // --- agent activities pin their role's node -----------------------------------
 
 pub fn test_author_pins_its_role_node_test() {
-  activities.test_author(types.TestAuthorInput(brief: brief(), entries: []))
+  activities.test_author(types.TestAuthorInput(
+    brief: brief(),
+    entries: [],
+    workspace_path: "/tmp/ws",
+  ))
   |> assert_route(activities.test_author_node)
 }
 

@@ -298,6 +298,7 @@ fn test_author_input_to_json(input: TestAuthorInput) -> json.Json {
   json.object([
     #("brief", brief_to_json(input.brief)),
     #("entries", json.array(input.entries, test_author_entry_to_json)),
+    #("workspace_path", json.string(input.workspace_path)),
   ])
 }
 
@@ -307,7 +308,12 @@ fn test_author_input_decoder() -> decode.Decoder(TestAuthorInput) {
     "entries",
     decode.list(test_author_entry_decoder()),
   )
-  decode.success(TestAuthorInput(brief: brief, entries: entries))
+  use workspace_path <- decode.field("workspace_path", decode.string)
+  decode.success(TestAuthorInput(
+    brief: brief,
+    entries: entries,
+    workspace_path: workspace_path,
+  ))
 }
 
 // --- agent input: developer ---------------------------------------------------------------
