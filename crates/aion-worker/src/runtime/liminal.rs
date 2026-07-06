@@ -549,6 +549,19 @@ impl LiminalActivityWorker {
         }
         let request: DispatchRequest =
             serde_json::from_slice(frame.payload()).map_err(WorkerError::decode)?;
+        // Receipt is logged BEFORE execution so a dispatch that reaches the wrong
+        // connection (or wedges mid-handler) is visible in the worker log — the
+        // server side only sees silence either way (a lost-worker expiry), so this
+        // line is the ground truth for "did the push arrive, and where".
+        tracing::info!(
+            activity_type = %request.activity_type,
+            workflow_id = %request.workflow_id,
+            ordinal = request.ordinal,
+            attempt = request.attempt,
+            serves = ?self.registry.activity_types(),
+            agent_types = ?self.agent_activity_types,
+            "received dispatch push"
+        );
         // An AGENT dispatch may run for a long time. It MUST NOT block the serve loop,
         // or a mid-run intervention push (which rides the SAME channel) could never be
         // received. So it is SPAWNED: the run drives concurrently and replies its own
