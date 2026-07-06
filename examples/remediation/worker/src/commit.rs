@@ -412,16 +412,19 @@ fn authored_paths(manifest: &AuthoredManifest) -> Vec<String> {
     )
 }
 
-/// The fix report's `new_tests` entries that are PATH claims: they contain a
-/// `/`. Entries without one (`module::case`, bare test names) name tests,
-/// not files, and stage nothing.
+/// The fix report's `new_tests` entries that carry PATH claims. Entries come
+/// in three shapes seen live: a bare path (`tests/clamp_edges.rs`), a
+/// path-qualified test (`tests/clamp_edges.rs::case_name` — the path is the
+/// part before the first `::`), and a bare test name (`module::case`, no `/`
+/// in its path part) which names a test, not a file, and stages nothing.
 fn new_file_claims(report: &FixReportSlice) -> Vec<String> {
     dedup_keeping_order(
         report
             .new_tests
             .iter()
             .map(|entry| entry.trim())
-            .filter(|entry| entry.contains('/')),
+            .map(|entry| entry.split("::").next().unwrap_or(entry).trim())
+            .filter(|path_part| path_part.contains('/')),
     )
 }
 
@@ -523,9 +526,24 @@ fn require_git_ok(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        AuthoredManifest, context_from_input, fix_report_from_output, manifest_from_output,
-        rewrite_report_commits,
+        AuthoredManifest, FixReportSlice, context_from_input, fix_report_from_output,
+        manifest_from_output, new_file_claims, rewrite_report_commits,
     };
+
+    #[test]
+    fn new_file_claims_takes_the_path_part_before_a_test_qualifier() {
+        // The live drill shape that broke run b34f078e: a path-qualified test
+        // name must claim only the file, and bare test names claim nothing.
+        let report = FixReportSlice {
+            new_tests: vec![
+                "tests/clamp_edges.rs::clamp_preserves_lower_bound_when_value_is_below_lo"
+                    .to_owned(),
+                "tests/clamp_edges.rs".to_owned(),
+                "module::bare_test_name".to_owned(),
+            ],
+        };
+        assert_eq!(new_file_claims(&report), vec!["tests/clamp_edges.rs"]);
+    }
 
     #[test]
     fn context_parses_the_agent_input_wire_shape() {
