@@ -29,6 +29,7 @@ export type {
   ProgressDetail,
   RunId,
   StopKind,
+  TimerCancelCause,
   TimerId,
   WorkerDeathReason,
   WorkerTransport,

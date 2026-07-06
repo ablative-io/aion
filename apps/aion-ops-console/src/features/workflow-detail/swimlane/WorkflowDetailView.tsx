@@ -1,32 +1,36 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 import { Badge, Button } from '@/components/ui';
-import { AttemptTranscriptView } from '@/features/transcript';
 import { cn } from '@/lib/utils';
 import type { Event } from '@/types';
 
-import { DetailPanel } from '../components/DetailPanel';
 import { EventTimeline } from '../components/EventTimeline';
 import { useLiveWorkflowEvents } from '../hooks/useLiveWorkflowEvents';
 import { useWorkflowHistory } from '../hooks/useWorkflowHistory';
+import { useWorkflowSelectionParams } from '../hooks/useWorkflowSelectionParams';
 import type { projectTimeline } from '../lib/timeline';
 import { deriveFailureContext, ReopenDiff } from '../reopen';
 import type { LifecycleOutcome, WorkflowDetailProps } from '../types';
+import { AttemptNavigator } from './AttemptNavigator';
+import { DetailSheet } from './DetailSheet';
 import { Scrubber } from './Scrubber';
 import { Swimlane } from './Swimlane';
 
 type ViewMode = 'swimlane' | 'list';
 
 /**
- * Detail view wrapper that adds a List ⇄ Swimlane toggle on top of S3's data
- * (VISION §4.1; PLAN S4). Reuses S3's history + live hooks, projection engine,
- * EventTimeline, and DetailPanel verbatim — it does NOT edit any S3 file and adds
- * no new data binding. The swimlane consumes the same projected entries; selection
- * + DetailPanel are shared across both modes so a stranger reads the same workflow
- * two ways. S0's `/workflows/:id` route renders this wrapper.
+ * Detail view wrapper that adds a List ⇄ Swimlane toggle on top of the history +
+ * live projection (VISION §4.1; PLAN S4). Reuses the history + live hooks, the
+ * projection engine, and EventTimeline. The timeline keeps FULL width; selecting a
+ * bar opens the bottom-docked, morphing {@link DetailSheet} BELOW it (not a
+ * right-side panel that compresses the chart). Selection + view mode are URL
+ * navigation state (see {@link useWorkflowSelectionParams}); the router-connected
+ * wrapper owns them and the presentational content falls back to internal state so
+ * it still renders without a router. The {@link AttemptNavigator} beneath enumerates
+ * the durable attempt list. S0's `/workflows/:id` route renders this wrapper.
  */
 function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
   const historyQuery = useWorkflowHistory({ workflowId });
@@ -35,6 +39,10 @@ function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
     history: historyQuery.data ?? [],
     workflowId,
   });
+  // Selection + view mode are URL navigation state (PART 3); the router-connected
+  // wrapper owns them and hands the resolved values + setters to the presentational
+  // content, which stays renderable without a router (SSR tests).
+  const selection = useWorkflowSelectionParams();
 
   return (
     <WorkflowDetailViewContent
@@ -44,8 +52,14 @@ function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
       isLive={!live.isTerminal && namespace !== null}
       isLoading={historyQuery.isLoading || historyQuery.isPending}
       isTerminal={live.isTerminal}
+      mode={selection.mode}
       namespace={namespace}
+      onModeChange={selection.setMode}
       onRetry={() => void historyQuery.refetch()}
+      onScrubChange={selection.setScrub}
+      onSelectSequence={selection.setSelectedSequence}
+      scrubSeq={selection.scrubSeq}
+      selectedSequence={selection.selectedSequence}
       terminalOutcome={live.terminalOutcome}
       timeline={live.timeline}
       workflowId={workflowId}
@@ -64,10 +78,22 @@ type ContentProps = WorkflowDetailProps & {
   terminalOutcome: LifecycleOutcome | null;
   isLive: boolean;
   onRetry?: () => void;
-  /** Initial mode, overridable for tests. */
+  /** Initial mode, overridable for tests (uncontrolled fallback). */
   initialMode?: ViewMode;
   /** Open the reopen-diff panel on first render (tests only). */
   initialReopenOpen?: boolean;
+  /**
+   * Selection + view mode are optionally CONTROLLED by the router-connected
+   * wrapper (URL state, PART 3). When a setter is omitted the field falls back to
+   * internal `useState`, so this presentational component renders without a router
+   * (the SSR unit tests pass none of these).
+   */
+  selectedSequence?: number | null;
+  onSelectSequence?: (sequence: number | null) => void;
+  mode?: ViewMode;
+  onModeChange?: (mode: ViewMode) => void;
+  scrubSeq?: number | null;
+  onScrubChange?: (scrubSeq: number | null) => void;
 };
 
 /**
@@ -78,6 +104,45 @@ type ContentProps = WorkflowDetailProps & {
  */
 function isReopenable(isTerminal: boolean, outcome: LifecycleOutcome | null): boolean {
   return isTerminal && (outcome === 'failed' || outcome === 'cancelled');
+}
+
+type SelectionStateOptions = {
+  initialMode: ViewMode;
+  modeProp: ViewMode | undefined;
+  onModeChange: ((mode: ViewMode) => void) | undefined;
+  selectedSequenceProp: number | null | undefined;
+  onSelectSequence: ((sequence: number | null) => void) | undefined;
+  scrubSeqProp: number | null | undefined;
+  onScrubChange: ((scrubSeq: number | null) => void) | undefined;
+};
+
+/**
+ * Resolve mode / selectedSequence / scrubSeq as CONTROLLED (a setter was supplied
+ * by the URL-backed wrapper) or fall back to internal `useState` (the SSR unit
+ * tests, which render {@link WorkflowDetailViewContent} with no router). Keeping
+ * this out of the component body keeps its branching readable.
+ */
+function useSelectionState({
+  initialMode,
+  modeProp,
+  onModeChange,
+  selectedSequenceProp,
+  onSelectSequence,
+  scrubSeqProp,
+  onScrubChange,
+}: SelectionStateOptions) {
+  const [modeState, setModeState] = useState<ViewMode>(initialMode);
+  const [selectedSequenceState, setSelectedSequenceState] = useState<number | null>(null);
+  const [scrubSeqState, setScrubSeqState] = useState<number | null>(null);
+
+  return {
+    mode: onModeChange ? (modeProp ?? 'swimlane') : modeState,
+    setMode: onModeChange ?? setModeState,
+    selectedSequence: onSelectSequence ? (selectedSequenceProp ?? null) : selectedSequenceState,
+    setSelectedSequence: onSelectSequence ?? setSelectedSequenceState,
+    scrubSeq: onScrubChange ? (scrubSeqProp ?? null) : scrubSeqState,
+    setScrubSeq: onScrubChange ?? setScrubSeqState,
+  };
 }
 
 function WorkflowDetailViewContent({
@@ -94,17 +159,46 @@ function WorkflowDetailViewContent({
   onRetry,
   initialMode = 'swimlane',
   initialReopenOpen = false,
+  selectedSequence: selectedSequenceProp,
+  onSelectSequence,
+  mode: modeProp,
+  onModeChange,
+  scrubSeq: scrubSeqProp,
+  onScrubChange,
 }: ContentProps) {
-  const [mode, setMode] = useState<ViewMode>(initialMode);
-  const [selectedSequence, setSelectedSequence] = useState<number | null>(null);
-  const [scrubSeq, setScrubSeq] = useState<number | null>(null);
+  const { mode, setMode, selectedSequence, setSelectedSequence, scrubSeq, setScrubSeq } =
+    useSelectionState({
+      initialMode,
+      modeProp,
+      onModeChange,
+      onScrubChange,
+      onSelectSequence,
+      scrubSeqProp,
+      selectedSequenceProp,
+    });
+
   const [reopenOpen, setReopenOpen] = useState(initialReopenOpen);
+  // The clicked bar's x-origin (relative to the timeline container's left edge),
+  // so the bottom-docked sheet morphs out of the bar. Ephemeral, never URL state.
+  const [sheetOriginX, setSheetOriginX] = useState<number | null>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
   const reopenable = isReopenable(isTerminal, terminalOutcome);
   const failureContext = useMemo(() => deriveFailureContext(history), [history]);
   const selectedEntry = useMemo(
     () => timeline.find((entry) => entry.sequence === selectedSequence) ?? null,
     [timeline, selectedSequence]
   );
+
+  function selectFromBar(sequence: number, origin?: { x: number }) {
+    const container = timelineRef.current;
+    setSheetOriginX(origin && container ? origin.x - container.getBoundingClientRect().left : null);
+    setSelectedSequence(sequence);
+  }
+
+  function selectFromList(sequence: number) {
+    setSheetOriginX(null);
+    setSelectedSequence(sequence);
+  }
 
   if (namespace === null) {
     return (
@@ -162,14 +256,16 @@ function WorkflowDetailViewContent({
         </div>
         {reopenable ? <FailureContextPanel context={failureContext} /> : null}
       </header>
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        <div className="min-w-0 flex-1 space-y-3">
+      {/* The timeline keeps FULL width; the detail sheet docks BELOW it (PART 2)
+          rather than a right-side panel that compresses the chart. */}
+      <div className="space-y-3">
+        <div className="min-w-0 space-y-3" ref={timelineRef}>
           {mode === 'swimlane' ? (
             <>
               <Scrubber entries={timeline} onScrub={setScrubSeq} scrubSeq={scrubSeq} />
               <Swimlane
                 entries={timeline}
-                onSelect={setSelectedSequence}
+                onSelect={selectFromBar}
                 scrubSeq={scrubSeq}
                 selectedSequence={selectedSequence}
               />
@@ -177,14 +273,18 @@ function WorkflowDetailViewContent({
           ) : (
             <EventTimeline
               entries={timeline}
-              onSelect={(entry) => setSelectedSequence(entry.sequence)}
+              onSelect={(entry) => selectFromList(entry.sequence)}
               selectedSequence={selectedSequence}
             />
           )}
         </div>
-        <DetailPanel entry={selectedEntry} onClose={() => setSelectedSequence(null)} />
+        <DetailSheet
+          entry={selectedEntry}
+          onClose={() => setSelectedSequence(null)}
+          originX={sheetOriginX}
+        />
       </div>
-      <AttemptTranscriptView namespace={namespace} workflowId={workflowId} />
+      <AttemptNavigator namespace={namespace} timeline={timeline} workflowId={workflowId} />
       {reopenOpen ? (
         <ReopenDiff
           history={history}

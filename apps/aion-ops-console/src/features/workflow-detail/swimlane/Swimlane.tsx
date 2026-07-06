@@ -16,7 +16,11 @@ const LANE_HEIGHT = 36;
 type SwimlaneProps = {
   entries: readonly TimelineEntry[];
   selectedSequence: number | null;
-  onSelect: (sequence: number) => void;
+  /**
+   * Select a bar by its seq. `origin.x` is the clicked bar's horizontal centre in
+   * viewport px so the bottom-docked detail sheet can morph out of that bar.
+   */
+  onSelect: (sequence: number, origin?: { x: number }) => void;
   /**
    * When set (S5 scrubber), the swimlane renders only the recorded prefix at/below
    * this seq — later bars disappear and re-derived statuses reflect that point in
@@ -29,8 +33,9 @@ type SwimlaneProps = {
  * Partial-order swimlane (VISION §4.1). Renders the workflow as concurrent
  * horizontal lanes keyed on `seq` (not a linear list): a lifecycle lane, one lane
  * per activity / timer / child, plus signal + other lanes. Bars are positioned by
- * dense-seq-rank so concurrent work overlaps across lanes. Selection opens the S3
- * DetailPanel via the lifted `selectedSequence`. Lanes collapse/expand. This view
+ * dense-seq-rank so concurrent work overlaps across lanes. Selecting a bar lifts its
+ * seq + x-origin so the bottom-docked detail sheet morphs out of it. Lanes
+ * collapse/expand. This view
  * consumes the S3 `projectTimeline` output ONLY (no event re-parsing, no fabricated
  * data) — it grows in place as live events extend the projected entries.
  */
@@ -58,8 +63,8 @@ function Swimlane({ entries, selectedSequence, onSelect, scrubSeq = null }: Swim
     });
   }
 
-  function handleSelect(bar: SwimlaneBar) {
-    onSelect(bar.sequence);
+  function handleSelect(bar: SwimlaneBar, originX: number) {
+    onSelect(bar.sequence, { x: originX });
   }
 
   return (
@@ -136,7 +141,7 @@ function LaneRow({
   trackWidth: number;
   selectedSequence: number | null;
   onToggle: () => void;
-  onSelectBar: (bar: SwimlaneBar) => void;
+  onSelectBar: (bar: SwimlaneBar, originX: number) => void;
 }) {
   return (
     <li className="flex items-stretch">
