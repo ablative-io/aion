@@ -2,15 +2,31 @@
 #
 # Standalone (NOT a workspace member) so it builds from a plain `cargo build`
 # in this directory without pulling the whole aion workspace, mirroring the
-# `norn-fan-worker` example. It consumes the worktree's local `aion-worker` by
-# path on the DEFAULT (gRPC poll) transport — no `liminal-transport` feature —
-# which is the smallest worker shape: `Worker::builder(...).run()`.
+# `norn-fan-worker` and `agent-dev` example workers.
+#
+# It serves the ONE `triage` activity two ways, selected at startup:
+#
+# - DRIVEN (default): `triage` is an AGENT activity routed through the composed
+#   first-party `NornHarness` over the liminal server-push transport
+#   (`serve_with_redial`, same wiring as `agent-dev`). A real Norn agent runs
+#   the triage in `--protocol jsonrpc` DRIVEN mode — observable and intervenable
+#   from the ops console — constrained to the `TriageSummary` shape by the
+#   demo's `schemas/output.json` output schema.
+# - PLAIN (`--plain` or `AION_TRIAGE_PLAIN=1`): `triage` is a typed registry
+#   handler running the old deterministic severity->next-action logic, so the
+#   runbook can demo both and evaluations can A/B. Both paths return the SAME
+#   structured `TriageSummary` wire shape, so the Gleam workflow decodes either
+#   identically.
+#
+# The composed-harness seam (AgentRunSpec + the norn adapter's {placeholder}
+# expansion and child-env removal) is unpublished, so the local crates are
+# consumed by PATH.
 [package]
 name = "incident-triage-worker"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Rust activity worker serving the `triage` activity for the incident-triage demo."
+description = "Rust activity worker serving the `triage` activity (driven-mode Norn or plain logic) for the incident-triage demo."
 
 [[bin]]
 name = "incident-triage-worker"
@@ -19,8 +35,15 @@ path = "src/main.rs"
 [workspace]
 
 [dependencies]
-aion-worker = { path = "../../../crates/aion-worker" }
+# The `liminal-transport` feature enables the server-push serve path
+# (`serve_with_redial`) the driven agent-harness wiring runs on.
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+# The composition root's concrete adapter + the neutral integration contract it
+# is erased through — the same pair `norn-fan-worker` and `agent-dev` compose.
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
+anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

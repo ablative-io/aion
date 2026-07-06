@@ -1,0 +1,32 @@
+# Server configuration for the incident-triage DRIVEN-mode demo (see RUNBOOK.md).
+#
+# Identical to the repo's dev-config.toml plus the outbox/liminal block the
+# driven worker requires: the worker connects IN to the server's liminal
+# listener (server-push dispatch), so the outbox must be commissioned and the
+# listener address set. The plain-mode worker uses the same server unchanged.
+
+workflow_packages = []
+
+[server]
+listen_address = "127.0.0.1:8080"
+grpc_address = "127.0.0.1:50051"
+
+[store]
+backend = "haematite"
+data_dir = "aion-data"
+
+[runtime]
+query_timeout_ms = 10000
+
+[namespaces]
+default = "default"
+
+[websocket]
+event_broadcast_capacity = 1024
+
+[outbox]
+enabled = true
+liminal_listen_address = "127.0.0.1:50061"
+
+[deploy]
+enabled = true
