@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "The structured run report the plan-fanout workflow returns: the planner's decomposition, each unit's disposition and verdict, its work-product artifact, and the overall disposition. A cap exhausted anywhere yields a terminal disposition that STILL completes with this report.",
+  "required": ["disposition", "rationale", "summary", "units"],
+  "additionalProperties": false,
+  "properties": {
+    "disposition": {
+      "type": "string",
+      "enum": ["completed", "cap_exhausted", "rejected_plan"],
+      "description": "`completed` when every unit passed; `cap_exhausted` when a unit stayed blocked after the fix-round cap; `rejected_plan` when the planner's decomposition failed validation."
+    },
+    "rationale": { "type": "string", "description": "The planner's rationale (empty when the plan was rejected before planning succeeded)." },
+    "summary": {
+      "type": "object",
+      "required": ["unit_count", "passed", "blocked", "reviewers_per_unit", "max_fix_rounds"],
+      "additionalProperties": false,
+      "properties": {
+        "unit_count": { "type": "integer" },
+        "passed": { "type": "integer" },
+        "blocked": { "type": "integer" },
+        "reviewers_per_unit": { "type": "integer" },
+        "max_fix_rounds": { "type": "integer" }
+      }
+    },
+    "units": {
+      "type": "array",
+      "description": "Per-unit results, in plan order.",
+      "items": {
+        "type": "object",
+        "required": ["unit_id", "goal", "verdict", "rounds_used", "work_product", "blockers"],
+        "additionalProperties": false,
+        "properties": {
+          "unit_id": { "type": "string" },
+          "goal": { "type": "string" },
+          "verdict": { "type": "string", "enum": ["pass", "blockers"] },
+          "rounds_used": { "type": "integer", "description": "How many dev rounds this unit consumed (1 = no fix round needed)." },
+          "work_product": { "type": "string", "description": "The final dev work product for the unit." },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["file", "line", "issue"],
+              "additionalProperties": false,
+              "properties": {
+                "file": { "type": "string" },
+                "line": { "type": "integer" },
+                "issue": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

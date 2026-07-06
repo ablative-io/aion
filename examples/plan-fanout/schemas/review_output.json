@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "One independent reviewer's verdict on a unit's dev work product. Reviewers run in distinct sessions with no shared context beyond the unit inputs and the dev output.",
+  "required": ["unit_id", "verdict", "blockers"],
+  "additionalProperties": false,
+  "properties": {
+    "unit_id": { "type": "string", "description": "The unit_id under review." },
+    "verdict": { "type": "string", "enum": ["pass", "blockers"], "description": "`pass` if the work product meets the goal; `blockers` if it has blocking defects." },
+    "blockers": {
+      "type": "array",
+      "description": "Blocking defects with location evidence. MUST be empty when verdict is `pass`; MUST be non-empty when verdict is `blockers`.",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "issue"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string", "description": "Where the defect is. Cite the work-product location; use `work_product` when the deliverable is inline text." },
+          "line": { "type": "integer", "description": "1-based line within the cited location the defect points at." },
+          "issue": { "type": "string", "description": "The blocking problem and what must change." }
+        }
+      }
+    },
+    "notes": { "type": "string", "description": "Optional non-blocking observations." }
+  }
+}

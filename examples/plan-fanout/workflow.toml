@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+
+[[workflow]]
+entry_module = "plan_fanout"
+entry_function = "run"
+timeout_seconds = 900
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["plan", "dev", "review", "validate_plan", "tally", "integrate"]
+output = "plan-fanout.aion"
