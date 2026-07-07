@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dev_brief result",
+  "description": "The pipeline's terminal record: the disposition, cycle accounting, the branch the work landed on, the final artifacts (dev report, gate outcome, every lens verdict), and every derive-and-check violation. Exhaustion is a disposition, never a silent success.",
+  "type": "object",
+  "required": [
+    "brief_id",
+    "disposition",
+    "fix_cycles",
+    "first_pass_accepted",
+    "verdict_mismatches",
+    "branch",
+    "report",
+    "gate",
+    "verdicts",
+    "workspace_removed",
+    "summary"
+  ],
+  "properties": {
+    "brief_id": { "type": "string" },
+    "disposition": {
+      "type": "string",
+      "enum": ["accepted", "cycle_cap_exhausted"]
+    },
+    "fix_cycles": { "type": "integer" },
+    "first_pass_accepted": { "type": "boolean" },
+    "verdict_mismatches": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Cycle-stamped derive-and-check violations and lost lenses — operator evidence."
+    },
+    "branch": { "type": "string" },
+    "report": { "type": ["object", "null"] },
+    "gate": { "type": ["object", "null"] },
+    "verdicts": { "type": "array" },
+    "workspace_removed": { "type": "boolean" },
+    "summary": { "type": "string" }
+  }
+}

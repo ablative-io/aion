@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dev report",
+  "description": "The developer agent's structured result for one implementation round. `commits` is rewritten by the WORKER to the real branch head after it commits the round's work — an agent-asserted hash never survives.",
+  "type": "object",
+  "required": ["brief_id", "summary", "acceptance_claims"],
+  "additionalProperties": false,
+  "properties": {
+    "brief_id": { "type": "string", "minLength": 1 },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What was changed and why, concretely — the reviewers read this."
+    },
+    "commits": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Filled by the worker with the real commit hashes; leave empty."
+    },
+    "acceptance_claims": {
+      "type": "array",
+      "description": "One entry per brief acceptance criterion: how the diff meets it. Claims are checked adversarially, never trusted.",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "how"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "how": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "deviations": {
+      "type": "array",
+      "description": "Every departure from the brief's scope or stated approach, declared. Undeclared deviations are what the reviewers hunt.",
+      "items": {
+        "type": "object",
+        "required": ["what", "why"],
+        "additionalProperties": false,
+        "properties": {
+          "what": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

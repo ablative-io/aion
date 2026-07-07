@@ -1,0 +1,13 @@
+name = "aion_dev_brief"
+version = "0.1.0"
+target = "erlang"
+description = "General development briefs as an Aion workflow family: an isolated worktree, a driven Norn developer, the brief's own mechanical gate battery, and a CONCURRENT fan-out of adversarial review-lens child workflows in a bounded fix cycle — every agent step a driven Norn agent constrained by an output schema, every gate exit status recorded fact."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = { path = "../../gleam/aion_flow" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

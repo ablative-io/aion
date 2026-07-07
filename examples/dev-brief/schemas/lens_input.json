@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "review_lens input",
+  "description": "One adversarial review lens's working set: the lens charter, the brief, the developer's diff and report, and the gate evidence. Structurally lens-blind: no sibling verdicts. Normally composed by the dev_brief parent (child spawn), not authored by hand.",
+  "type": "object",
+  "required": ["lens", "brief", "diff", "report", "gate_runs"],
+  "properties": {
+    "lens": {
+      "type": "object",
+      "required": ["name", "charter"],
+      "properties": {
+        "name": { "type": "string" },
+        "charter": { "type": "string" }
+      }
+    },
+    "brief": { "type": "object" },
+    "diff": { "type": "string" },
+    "report": { "type": "object" },
+    "gate_runs": { "type": "array" }
+  }
+}
