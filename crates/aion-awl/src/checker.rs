@@ -120,7 +120,10 @@ impl<'a> Ctx<'a> {
         for decl in types {
             self.check_type_name(&decl.name, decl.span);
             if self.types.insert(decl.name.as_str(), decl).is_some() {
-                self.error(decl.span, format!("duplicate type declaration `{}`", decl.name));
+                self.error(
+                    decl.span,
+                    format!("duplicate type declaration `{}`", decl.name),
+                );
             }
             let mut fields = HashSet::new();
             for field in &decl.fields {
@@ -177,7 +180,10 @@ impl<'a> Ctx<'a> {
             self.check_value_name(&input.name, input.span, "input");
             let ty = Self::resolve_type_ref(&input.ty);
             if self.bindings.insert(input.name.clone(), ty).is_some() {
-                self.error(input.span, format!("duplicate input declaration `{}`", input.name));
+                self.error(
+                    input.span,
+                    format!("duplicate input declaration `{}`", input.name),
+                );
             }
         }
     }
@@ -232,7 +238,10 @@ impl<'a> Ctx<'a> {
                 Ty::Unknown => {}
                 found => self.error(
                     each.in_expr.span(),
-                    format!("each expression expected List(T), found {}", found.display()),
+                    format!(
+                        "each expression expected List(T), found {}",
+                        found.display()
+                    ),
                 ),
             }
         }
@@ -343,7 +352,11 @@ impl<'a> Ctx<'a> {
                 }
                 returns
             }
-            CallTarget::Child { span, workflow, args } => {
+            CallTarget::Child {
+                span,
+                workflow,
+                args,
+            } => {
                 self.check_value_name(workflow, *span, "child workflow");
                 for arg in args {
                     self.expr_ty(arg);
@@ -459,7 +472,10 @@ impl<'a> Ctx<'a> {
             found => {
                 self.error(
                     span,
-                    format!("field access expected record type, found {}", found.display()),
+                    format!(
+                        "field access expected record type, found {}",
+                        found.display()
+                    ),
                 );
                 Ty::Unknown
             }
@@ -513,7 +529,10 @@ impl<'a> Ctx<'a> {
         }
         for (decl_field, _) in &decl_fields {
             if !seen.contains(decl_field.as_str()) {
-                self.error(span, format!("missing field `{decl_field}` for record `{name}`"));
+                self.error(
+                    span,
+                    format!("missing field `{decl_field}` for record `{name}`"),
+                );
             }
         }
         Ty::Record(name.to_owned())
@@ -562,13 +581,7 @@ impl<'a> Ctx<'a> {
         self.expect_type(expr.span(), &found, expected, context);
     }
 
-    fn expect_type(
-        &mut self,
-        span: Span,
-        found: &Ty,
-        expected: &Ty,
-        context: impl AsRef<str>,
-    ) {
+    fn expect_type(&mut self, span: Span, found: &Ty, expected: &Ty, context: impl AsRef<str>) {
         if found != expected && !matches!(found, Ty::Unknown) {
             self.error(
                 span,
