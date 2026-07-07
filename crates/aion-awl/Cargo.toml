@@ -1,0 +1,18 @@
+[package]
+name = "aion-awl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Lexer for the Aion workflow language."
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/aion-awl"
+readme = "README.md"
+keywords = ["aion", "workflow", "lexer", "awl"]
+categories = ["development-tools"]
+
+[lints]
+workspace = true
+
+[dependencies]
