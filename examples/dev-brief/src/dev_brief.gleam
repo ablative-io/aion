@@ -252,6 +252,7 @@ fn run_developer(
         gate: state.last_gate,
         verdicts: state.verdicts,
         workspace_path: state.workspace.workspace_path,
+        gates: input.config.gates,
       )),
     )
   {

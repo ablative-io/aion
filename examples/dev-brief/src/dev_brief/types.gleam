@@ -144,13 +144,18 @@ pub type DevReport {
 /// rounds — the failing gate outcome and/or the adverse lens verdicts being
 /// addressed. `workspace_path` is the brief's provisioned worktree: agents do
 /// not run git, so after a successful round the WORKER commits the delta
-/// there on the brief branch.
+/// there on the brief branch. `gates` is the brief's CONFIGURED gate battery
+/// (`config.gates`, the same list `run_gates` executes) carried on EVERY
+/// round — not just derivable from a prior `gate` outcome — so the prompt
+/// composer can put the exact argv the developer must run itself, before
+/// ending its turn, in front of it from round one.
 pub type DeveloperInput {
   DeveloperInput(
     brief: Brief,
     gate: Option(GateOutcome),
     verdicts: List(LensVerdict),
     workspace_path: String,
+    gates: List(GateCommand),
   )
 }
 
