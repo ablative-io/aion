@@ -1,0 +1,43 @@
+{
+  "brief": {
+    "id": "AWL-1",
+    "title": "aion-awl crate: lexer for the AWL workflow language",
+    "objective": "Scaffold a new workspace crate `crates/aion-awl` and implement the complete lexer for AWL per the lexical rules in docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md, with spans on every token and thorough unit tests.",
+    "context": "AWL is aion's own tiny workflow authoring language. The spec draft is at docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md (read it first — the Lexical rules section is the contract for this brief) and the worked example document is the code block in docs/design/aion-authoring/syntax-sketches/H-awl.md. Token kinds: keywords (workflow, about, input, output, error, signal, type, action, step, finish, when, each, in, do, child, wait, sleep, repeat, up, to, until, retry, every, backoff, timeout, on, failure, as, queue, node, not, and, or, true, false, fail), snake_case identifiers, TitleCase type identifiers, string literals with escapes (\\\" \\\\ \\n \\t), integer and float literals, duration literals (integer immediately followed by s|m|h|d), punctuation and operators: ( ) { } [ ] : , . -> .. + == != < <= > >=. Comments are // to end of line. Newlines are significant tokens. Indentation produces Indent/Dedent tokens (two-space indent levels; reject tabs with a span error). SPECIAL MODE: after the keyword `about`, the remainder of the line is one unquoted Prose token (leading whitespace trimmed, // is NOT a comment inside prose). Every token carries a byte-offset span (start, end) plus line/column for error messages. Lexing is fallible: produce a LexError with span and message for unterminated strings, bad escapes, tab indentation, stray characters.",
+    "pointers": [
+      "docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md",
+      "docs/design/aion-authoring/syntax-sketches/H-awl.md",
+      "Cargo.toml"
+    ],
+    "scope_in": [
+      "crates/aion-awl/",
+      "Cargo.toml"
+    ],
+    "scope_out": [
+      "No parser, no AST, no typechecker — tokens only",
+      "No changes to any other crate",
+      "No external dependencies in aion-awl (std only)",
+      "Do not modify the spec or sketch documents"
+    ],
+    "acceptance": [
+      "crates/aion-awl exists, is a workspace member, and builds standalone with zero external dependencies",
+      "The full AWL document from the code block in H-awl.md is stored as crates/aion-awl/tests/fixtures/research_report.awl and lexes end-to-end with no errors; a test asserts the exact token-kind sequence for at least the human_review step (wait/timeout/on timeout/finish/as lines)",
+      "about lines lex as a single Prose token containing the unquoted text, including when the text contains // or quotes",
+      "Duration literals 30s, 10m, 2h, 3d lex as Duration tokens with the right magnitude and unit; 30 s (with a space) does not",
+      "Indent/Dedent tokens are emitted for the two-space step-body and handler-block nesting in the fixture; a tab in indentation is a LexError with a correct span",
+      "Every token exposes its span and the lexer reports errors (unterminated string, bad escape, stray char) with spans — each covered by a unit test",
+      "cargo test -p aion-awl passes; clippy -D warnings clean"
+    ],
+    "notes": "Keep the token type and lexer loop simple and explicit — this is foundation code that a parser brief builds on next. Prefer a hand-written scanner over any lexer-generator pattern. Public API: aion_awl::lex(source: &str) -> Result<Vec<Token>, LexError> (or Vec<LexError> if you diagnose more than one; your call, document it)."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      { "name": "clippy", "argv": ["cargo", "clippy", "-p", "aion-awl", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "-p", "aion-awl"] }
+    ],
+    "max_fix_cycles": 3
+  }
+}
