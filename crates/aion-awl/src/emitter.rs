@@ -241,27 +241,23 @@ impl<'a> Emitter<'a> {
                 self.line("}");
             }
         } else if let Some(name) = step.bind_as.as_ref().map(|bind| bind.name.as_str()) {
-            self.line(&format!("use {name} <- try("));
+            self.line(&format!("let assert Ok({name}) ="));
             self.indented(|this| this.emit_step_expr(step));
-            self.line(")");
         } else {
-            self.line("use _ <- try(");
+            self.line("let assert Ok(_) =");
             self.indented(|this| this.emit_step_expr(step));
-            self.line(")");
         }
         self.blank();
     }
 
     fn emit_step_result(&mut self, step: &StepDecl) {
         if let Some(name) = step.bind_as.as_ref().map(|bind| bind.name.as_str()) {
-            self.line(&format!("use {name} <- try("));
+            self.line(&format!("let assert Ok({name}) ="));
             self.indented(|this| this.emit_step_expr(step));
-            self.line(")");
             self.line(name);
         } else {
-            self.line("use _ <- try(");
+            self.line("let assert Ok(_) =");
             self.indented(|this| this.emit_step_expr(step));
-            self.line(")");
             self.line("Nil");
         }
     }
@@ -466,7 +462,7 @@ impl<'a> Emitter<'a> {
             for target in &handler.actions {
                 let mut inner = String::new();
                 this.write_call_pipeline(&mut inner, target, &empty_step());
-                this.line(&format!("use _ <- try({inner})"));
+                this.line(&format!("let assert Ok(_) = {inner}"));
             }
             match &handler.terminal {
                 HandlerTerminal::Finish(value) => {

@@ -67,15 +67,13 @@ pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {
 pub fn execute(input: HelloInput) -> Result(Greeting, AwlError) {
   let name = input.name
 
-  use greeting <- try(
+  let assert Ok(greeting) =
     greet_activity(name) |> workflow.run |> map_activity_error
-  )
 
   let greeting = case greeting.excited == False {
     True -> {
-      use greeting <- try(
+      let assert Ok(greeting) =
         exclaim_activity(greeting) |> workflow.run |> map_activity_error
-      )
       greeting
     }
     False -> greeting

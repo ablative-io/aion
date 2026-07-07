@@ -112,23 +112,20 @@ pub fn execute(input: ResearchReportInput) -> Result(Published, AwlError) {
   let corpus = input.corpus
 
   // Break the brief into distinct research questions.
-  use questions <- try(
+  let assert Ok(questions) =
     plan_activity(brief) |> workflow.run |> map_activity_error
-  )
 
   // One agent per question, parallel across workers, exactly-once on failover.
-  use findings <- try(
+  let assert Ok(findings) =
     workflow.map(questions, fn(q) {
       investigate_activity(q, corpus) |> activity.retry(activity.RetryPolicy(max_attempts: 3, backoff: activity.Fixed(duration.milliseconds(30000))))
     }) |> map_activity_error
-  )
 
-  use draft <- try(
+  let assert Ok(draft) =
     synthesize_activity(findings, "") |> workflow.run |> map_activity_error
-  )
 
   // Durable gate — parks free while idle, survives restarts, resumable weeks later.
-  use approval <- try(
+  let assert Ok(approval) =
     case workflow.with_timeout(fn() { workflow.receive(review_signal()) |> map_receive_error }, duration.milliseconds(259200000)) {
       Ok(value) -> Ok(value)
       Error(error.TimedOutError(_)) ->
@@ -136,33 +133,29 @@ pub fn execute(input: ResearchReportInput) -> Result(Published, AwlError) {
       Error(error.InnerError(inner)) -> Error(inner)
       Error(error.TimeoutEngineFailure(message)) -> Error(TimerFailed(message))
     }
-  )
 
   // One revision pass if the reviewer pushed back.
   let draft = case !approval.ok {
     True -> {
-      use draft <- try(
+      let assert Ok(draft) =
         synthesize_activity(findings, approval.notes) |> workflow.run |> map_activity_error
-      )
       draft
     }
     False -> draft
   }
 
-  use assets <- try(
+  let assert Ok(assets) =
     upload_assets_activity(draft) |> workflow.run |> map_activity_error
-  )
 
-  use url <- try(
+  let assert Ok(url) =
     case publish_activity(draft, assets) |> workflow.run |> map_activity_error {
       Ok(value) -> Ok(value)
       Error(_) ->
         {
-          use _ <- try(delete_assets_activity(assets) |> workflow.run |> map_activity_error)
+          let assert Ok(_) = delete_assets_activity(assets) |> workflow.run |> map_activity_error
           Error(Failed)
         }
     }
-  )
 
   Ok(Published(report: draft, url: url))
 }
