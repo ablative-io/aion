@@ -1,0 +1,47 @@
+{
+  "brief": {
+    "id": "AWL-4",
+    "title": "aion-awl: Gleam codegen emitter (AWL document -> runnable aion_flow module)",
+    "objective": "Add aion_awl::emit(&Document) -> String producing a complete, compilable Gleam module that runs on the aion engine via the aion_flow SDK — the codegen stopgap that makes .awl documents executable today. Golden tests pin the generated source; a compile-proof test runs `gleam build` on generated output against the repo's local aion_flow.",
+    "context": "The parser/AST/printer are on main (crates/aion-awl: ast.rs is the input). The target SDK is gleam/aion_flow (read src/aion/workflow.gleam, activity.gleam, child.gleam, signal.gleam for the exact function signatures) and the house style for a complete workflow module is examples/dev-brief/src/dev_brief.gleam + its codecs.gleam and types.gleam (read them — generated code must follow the same run-ceremony, codec, and type patterns so it deploys with the existing `gleam build` + `aion package` path unchanged). MAPPING TABLE (AWL construct -> generated Gleam): `workflow <name>` -> the module's workflow entry with the SDK's standard run ceremony; `input name: Type` decls -> a typed input record + JSON decoder mirroring the examples' codecs; `output Type` -> encoded result; `type Name { field: Type }` -> a Gleam custom type + encoder/decoder; `action name(p: T, ...) -> R` -> an activity handle (activity.new with the action name) plus a typed call wrapper encoding args positionally-by-name and decoding R; step `do action(args)` -> workflow.run on that activity; `each x in e / do f(x)` -> workflow.map; `do child wf(field: e, ...)` -> child spawn-and-await with a JSON-encoded argument record; `wait sig` -> signal.receive on the declared signal (payload decoded to the signal's type); `sleep d` -> workflow.sleep; `timeout d` on a wait/do -> the SDK's with_timeout, with `on timeout` handler block lowering to the timeout branch of the outcome match; `retry n every d` / `retry n backoff a..b` -> activity retry configuration; `when e` -> a case on the guard: when false the step is skipped and (per the spec's rebinding rule) the prior binding flows through unchanged; `repeat up to e / do ... / until c` -> a bounded tail-recursive loop threading the `as` binding, exiting on the until condition or the cap; `on failure` -> the SDK error branch running the compensation dos then finish/fail; `as name` -> a let binding (rebinding = shadowing in the generated code); `queue \"q\"` / `node \"n\"` -> activity task_queue/node config; `finish e` -> encode and return the output; `about` prose -> a doc comment above the corresponding step code. Expressions lower directly (refs -> variables, field access -> record access, not/and/or/comparisons/string + -> Gleam operators, record construction -> constructor call, durations -> the SDK's duration/milliseconds form). Determinism holds by construction: the generated module calls ONLY SDK-mediated effects.",
+    "pointers": [
+      "crates/aion-awl/src/ast.rs",
+      "gleam/aion_flow/src/aion/workflow.gleam",
+      "gleam/aion_flow/src/aion/activity.gleam",
+      "gleam/aion_flow/src/aion/child.gleam",
+      "gleam/aion_flow/src/aion/signal.gleam",
+      "examples/dev-brief/src/dev_brief.gleam",
+      "examples/dev-brief/src/dev_brief/codecs.gleam",
+      "crates/aion-awl/tests/fixtures/research_report.awl"
+    ],
+    "scope_in": [
+      "crates/aion-awl/"
+    ],
+    "scope_out": [
+      "No changes to lexer/parser/printer behavior (additive AST accessors fine); all existing tests stay green unchanged",
+      "No CLI wiring (that is a separate follow-up), no engine or SDK changes, no changes to any other crate or to gleam/aion_flow",
+      "No external Rust dependencies (std only); the compile-proof test may invoke the `gleam` binary via std::process",
+      "Do not modify the spec/sketch documents or the existing fixtures"
+    ],
+    "acceptance": [
+      "aion_awl::emit(&Document) -> String covers every construct in the mapping table above; emitting the research_report fixture produces crates/aion-awl/tests/fixtures/research_report.gleam.golden, committed and pinned by a golden test",
+      "A second, minimal fixture crates/aion-awl/tests/fixtures/hello.awl (author it: one input, one type, two actions, two do-steps with as-bindings, a when-guarded step, finish) emits crates/aion-awl/tests/fixtures/hello.gleam.golden, committed and pinned",
+      "COMPILE PROOF: a test materializes a temp Gleam project (gleam.toml with a path dependency on the repo's gleam/aion_flow plus its stdlib deps mirrored from an example's gleam.toml), writes the emitted hello module into src/, runs `gleam build` via std::process, and asserts success with the compiler output as failure evidence; if the `gleam` binary is absent the test FAILS with a message saying so (no silent skip)",
+      "The research_report emission also compiles under the same harness (second compile-proof test)",
+      "Generated code follows the examples' conventions: module layout, codec style, run ceremony — a reviewer reading the golden next to dev_brief.gleam should see the same dialect",
+      "Determinism: the generated module contains no clock/random/IO calls outside SDK forms — asserted by a test grepping the emitted source for a denylist (erlang/os/io direct calls)",
+      "cargo test -p aion-awl fully green including all pre-existing tests unchanged; clippy -D warnings clean; cargo fmt --all leaves the tree unchanged"
+    ],
+    "notes": "DISCIPLINE (this decided every prior AWL brief): before finishing EVERY turn run the three config.gates commands VERBATIM and iterate until fully clean — the clippy profile is pedantic (expect_used denied even in tests). Emitter style: a straightforward AST walk building strings with an indent-aware writer; readability of the GENERATED code is a first-class goal (it is a view of the document, humans will read it). If an SDK signature doesn't match the mapping table's assumption, follow the SDK — read the actual .gleam sources rather than guessing; note any construct you could not lower faithfully as an explicit deviation instead of silently approximating."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      { "name": "clippy", "argv": ["cargo", "clippy", "-p", "aion-awl", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "-p", "aion-awl"] }
+    ],
+    "max_fix_cycles": 3
+  }
+}
