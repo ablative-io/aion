@@ -5,13 +5,13 @@ use aion_awl::{CheckError, Span, check, parse};
 fn errors(source: &str) -> Vec<CheckError> {
     match parse(source) {
         Ok(document) => check(&document),
-        Err(error) => panic!("parse failed: {error}"),
+        Err(error) => unreachable!("parse failed: {error}"),
     }
 }
 
 fn span_of(source: &str, needle: &str) -> Span {
     let Some(start) = source.find(needle) else {
-        panic!("missing needle {needle:?}");
+        unreachable!("missing needle {needle:?}");
     };
     let prefix = &source[..start];
     let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
