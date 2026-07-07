@@ -165,8 +165,10 @@ pub enum TokenKind {
     String(String),
     /// An integer literal.
     Integer(u64),
-    /// A floating-point literal.
-    Float(f64),
+    /// A floating-point literal, holding the exact source lexeme (e.g.
+    /// `"1.0"`, `"0.5"`) so printing can round-trip it byte-for-byte instead
+    /// of reformatting through an `f64`.
+    Float(String),
     /// An integer duration literal with a unit suffix.
     Duration {
         /// The integer value before the unit suffix.
@@ -615,10 +617,14 @@ impl<'line> Cursor<'line> {
             while matches!(self.current(), Some(ch) if ch.is_ascii_digit()) {
                 self.advance_char();
             }
-            let value = self.line[start..self.index].parse::<f64>().map_err(|_| {
-                LexError::new(self.span(start, self.index), "invalid float literal")
-            })?;
-            return Ok(self.spanned(TokenKind::Float(value), start, self.index));
+            let lexeme = &self.line[start..self.index];
+            if lexeme.parse::<f64>().is_err() {
+                return Err(LexError::new(
+                    self.span(start, self.index),
+                    "invalid float literal",
+                ));
+            }
+            return Ok(self.spanned(TokenKind::Float(lexeme.to_owned()), start, self.index));
         }
 
         let value = parse_u64(&self.line[start..number_end], self.span(start, number_end))?;

@@ -76,7 +76,12 @@ impl Printer {
             self.blank();
         }
         self.comments(0, &document.finish_leading);
-        self.line(0, &format!("finish {}", expr(&document.finish)), None);
+        self.line(
+            0,
+            &format!("finish {}", expr(&document.finish)),
+            document.finish_trailing.as_ref(),
+        );
+        self.comments(0, &document.epilogue_comments);
     }
 
     fn group_io(&mut self, keyword: &str, decls: &[IoDecl]) {
@@ -122,19 +127,23 @@ impl Printer {
         );
         if let Some(queue) = &decl.queue {
             self.action_field_comments(decl, ActionFieldTag::Queue);
-            self.line(2, &format!("queue {}", string(queue)), None);
+            let trailing = action_field_trailing(decl, ActionFieldTag::Queue);
+            self.line(2, &format!("queue {}", string(queue)), trailing);
         }
         if let Some(node) = &decl.node {
             self.action_field_comments(decl, ActionFieldTag::Node);
-            self.line(2, &format!("node {}", string(node)), None);
+            let trailing = action_field_trailing(decl, ActionFieldTag::Node);
+            self.line(2, &format!("node {}", string(node)), trailing);
         }
         if let Some(timeout) = &decl.timeout {
             self.action_field_comments(decl, ActionFieldTag::Timeout);
-            self.line(2, &format!("timeout {}", duration_text(timeout)), None);
+            let trailing = action_field_trailing(decl, ActionFieldTag::Timeout);
+            self.line(2, &format!("timeout {}", duration_text(timeout)), trailing);
         }
         if let Some(retry) = &decl.retry {
             self.action_field_comments(decl, ActionFieldTag::Retry);
-            self.line(2, &retry_text(retry), None);
+            let trailing = action_field_trailing(decl, ActionFieldTag::Retry);
+            self.line(2, &retry_text(retry), trailing);
         }
     }
     fn action_field_comments(&mut self, decl: &ActionDecl, tag: ActionFieldTag) {
@@ -159,39 +168,54 @@ impl Printer {
         }
         if let Some(when) = &step.when {
             self.step_field_comments(step, StepFieldTag::When);
-            self.line(2, &format!("when {}", expr(when)), None);
+            let trailing = step_field_trailing(step, StepFieldTag::When);
+            self.line(2, &format!("when {}", expr(when)), trailing);
         }
         if let Some(each) = &step.each {
             self.step_field_comments(step, StepFieldTag::Each);
+            let trailing = step_field_trailing(step, StepFieldTag::Each);
             self.line(
                 2,
                 &format!("each {} in {}", each.name, expr(&each.in_expr)),
-                None,
+                trailing,
             );
         }
         self.step_field_comments(step, StepFieldTag::Op);
+        let op_trailing = step_field_trailing(step, StepFieldTag::Op);
         match &step.op {
-            StepOp::Do(call) => self.line(2, &format!("do {}", call_target(call)), None),
-            StepOp::Wait { signal, .. } => self.line(2, &format!("wait {signal}"), None),
+            StepOp::Do(call) => {
+                self.line(2, &format!("do {}", call_target(call)), op_trailing);
+            }
+            StepOp::Wait { signal, .. } => {
+                self.line(2, &format!("wait {signal}"), op_trailing);
+            }
             StepOp::Sleep(duration) => {
-                self.line(2, &format!("sleep {}", duration_text(duration)), None);
+                self.line(
+                    2,
+                    &format!("sleep {}", duration_text(duration)),
+                    op_trailing,
+                );
             }
         }
         if let Some(repeat) = &step.repeat {
             self.step_field_comments(step, StepFieldTag::Repeat);
-            self.line(2, &format!("repeat up to {}", expr(repeat)), None);
+            let trailing = step_field_trailing(step, StepFieldTag::Repeat);
+            self.line(2, &format!("repeat up to {}", expr(repeat)), trailing);
         }
         if let Some(until) = &step.until {
             self.step_field_comments(step, StepFieldTag::Until);
-            self.line(2, &format!("until {}", expr(until)), None);
+            let trailing = step_field_trailing(step, StepFieldTag::Until);
+            self.line(2, &format!("until {}", expr(until)), trailing);
         }
         if let Some(retry) = &step.retry {
             self.step_field_comments(step, StepFieldTag::Retry);
-            self.line(2, &retry_text(retry), None);
+            let trailing = step_field_trailing(step, StepFieldTag::Retry);
+            self.line(2, &retry_text(retry), trailing);
         }
         if let Some(timeout) = &step.timeout {
             self.step_field_comments(step, StepFieldTag::Timeout);
-            self.line(2, &format!("timeout {}", duration_text(timeout)), None);
+            let trailing = step_field_trailing(step, StepFieldTag::Timeout);
+            self.line(2, &format!("timeout {}", duration_text(timeout)), trailing);
         }
         if let Some(handler) = &step.on_timeout {
             self.step_field_comments(step, StepFieldTag::OnTimeout);
@@ -211,11 +235,13 @@ impl Printer {
         }
         if let Some(queue) = &step.queue {
             self.step_field_comments(step, StepFieldTag::Queue);
-            self.line(2, &format!("queue {}", string(queue)), None);
+            let trailing = step_field_trailing(step, StepFieldTag::Queue);
+            self.line(2, &format!("queue {}", string(queue)), trailing);
         }
         if let Some(node) = &step.node {
             self.step_field_comments(step, StepFieldTag::Node);
-            self.line(2, &format!("node {}", string(node)), None);
+            let trailing = step_field_trailing(step, StepFieldTag::Node);
+            self.line(2, &format!("node {}", string(node)), trailing);
         }
     }
     fn step_field_comments(&mut self, step: &StepDecl, tag: StepFieldTag) {
@@ -229,14 +255,16 @@ impl Printer {
             if let Some(comments) = handler.action_leading.get(idx) {
                 self.comments(4, comments);
             }
-            self.line(4, &format!("do {}", call_target(action)), None);
+            let trailing = handler.action_trailing.get(idx).and_then(Option::as_ref);
+            self.line(4, &format!("do {}", call_target(action)), trailing);
         }
         self.comments(4, &handler.terminal_leading);
+        let terminal_trailing = handler.terminal_trailing.as_ref();
         match &handler.terminal {
             HandlerTerminal::Finish(finish) => {
-                self.line(4, &format!("finish {}", expr(finish)), None);
+                self.line(4, &format!("finish {}", expr(finish)), terminal_trailing);
             }
-            HandlerTerminal::Fail(_) => self.line(4, "fail", None),
+            HandlerTerminal::Fail(_) => self.line(4, "fail", terminal_trailing),
         }
     }
     fn comments(&mut self, indent: usize, comments: &[Comment]) {
@@ -260,6 +288,18 @@ impl Printer {
     }
 }
 
+fn step_field_trailing(step: &StepDecl, tag: StepFieldTag) -> Option<&Comment> {
+    step.trailing_comments
+        .iter()
+        .find(|(t, _)| *t == tag)
+        .map(|(_, comment)| comment)
+}
+fn action_field_trailing(decl: &ActionDecl, tag: ActionFieldTag) -> Option<&Comment> {
+    decl.trailing_comments
+        .iter()
+        .find(|(t, _)| *t == tag)
+        .map(|(_, comment)| comment)
+}
 fn ty(type_ref: &TypeRef) -> String {
     match type_ref {
         TypeRef::Named { name, .. } => name.clone(),

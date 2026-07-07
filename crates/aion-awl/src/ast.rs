@@ -17,6 +17,11 @@ pub struct Document {
     pub finish: Expr,
     /// Own-line comments immediately preceding the `finish` declaration.
     pub finish_leading: Vec<Comment>,
+    /// Same-line trailing comment on the `finish` declaration.
+    pub finish_trailing: Option<Comment>,
+    /// Own-line comments after the `finish` declaration, at the end of the
+    /// document (there is no following line for them to be "leading" of).
+    pub epilogue_comments: Vec<Comment>,
     pub comments: Vec<Comment>,
 }
 
@@ -92,6 +97,8 @@ pub struct ActionDecl {
     pub retry: Option<RetrySpec>,
     /// Own-line comments preceding a routing field, keyed by field.
     pub leading_comments: Vec<(ActionFieldTag, Vec<Comment>)>,
+    /// Same-line trailing comment on a routing field, keyed by field.
+    pub trailing_comments: Vec<(ActionFieldTag, Comment)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +146,8 @@ pub struct StepDecl {
     pub node: Option<String>,
     /// Own-line comments preceding a step field, keyed by field.
     pub leading_comments: Vec<(StepFieldTag, Vec<Comment>)>,
+    /// Same-line trailing comment on a step field, keyed by field.
+    pub trailing_comments: Vec<(StepFieldTag, Comment)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,9 +187,13 @@ pub struct HandlerBlock {
     pub actions: Vec<CallTarget>,
     /// Own-line comments preceding each entry of `actions`, index-aligned.
     pub action_leading: Vec<Vec<Comment>>,
+    /// Same-line trailing comment on each entry of `actions`, index-aligned.
+    pub action_trailing: Vec<Option<Comment>>,
     pub terminal: HandlerTerminal,
     /// Own-line comments preceding the terminal (`finish`/`fail`) line.
     pub terminal_leading: Vec<Comment>,
+    /// Same-line trailing comment on the terminal (`finish`/`fail`) line.
+    pub terminal_trailing: Option<Comment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

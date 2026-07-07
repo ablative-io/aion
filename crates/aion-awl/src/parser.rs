@@ -350,6 +350,7 @@ impl LineParser {
         let mut steps = Vec::new();
         let mut finish = None;
         let mut finish_leading = Vec::new();
+        let mut finish_trailing = None;
         let mut phase = DeclPhase::Input;
         while let Some(line) = self.peek() {
             if line.indent != 0 {
@@ -394,7 +395,9 @@ impl LineParser {
                 "step" => steps.push(self.parse_step()?),
                 "finish" => {
                     let line = self.bump().expect("peeked");
-                    finish_leading = self.take_trivia(&line).leading;
+                    let trivia = self.take_trivia(&line);
+                    finish_leading = trivia.leading;
+                    finish_trailing = trivia.trailing;
                     let rest = line.code.strip_prefix("finish").unwrap().trim_start();
                     finish = Some(parse_expr_at(&line, rest)?);
                     if self.peek().is_some() {
@@ -412,6 +415,10 @@ impl LineParser {
             ParseError::new(end, "missing finish declaration at document end")
         })?;
         let span = join_span(workflow.span, finish.span());
+        // Any own-line comments not yet claimed as leading trivia for some
+        // line sit after the `finish` declaration, at the end of the
+        // document, since `finish` is always the last line.
+        let epilogue_comments = self.own_comments[self.comment_pos..].to_vec();
         let mut comments = self.own_comments.clone();
         for line in &self.lines {
             if let Some(comment) = &line.trailing {
@@ -431,6 +438,8 @@ impl LineParser {
             steps,
             finish,
             finish_leading,
+            finish_trailing,
+            epilogue_comments,
             comments,
         })
     }
@@ -569,6 +578,7 @@ impl LineParser {
             timeout: None,
             retry: None,
             leading_comments: Vec::new(),
+            trailing_comments: Vec::new(),
         };
         if self.peek().is_some_and(|next| next.indent == 2) {
             while self.peek().is_some_and(|next| next.indent == 2) {
@@ -576,18 +586,22 @@ impl LineParser {
                 let field_trivia = self.take_trivia(&field);
                 let tag = match first_word(&field.code) {
                     "queue" => {
+                        reject_duplicate(action.queue.is_some(), field.span, "queue")?;
                         action.queue = Some(parse_string_field(&field, "queue")?);
                         ActionFieldTag::Queue
                     }
                     "node" => {
+                        reject_duplicate(action.node.is_some(), field.span, "node")?;
                         action.node = Some(parse_string_field(&field, "node")?);
                         ActionFieldTag::Node
                     }
                     "timeout" => {
+                        reject_duplicate(action.timeout.is_some(), field.span, "timeout")?;
                         action.timeout = Some(parse_duration_field(&field, "timeout")?);
                         ActionFieldTag::Timeout
                     }
                     "retry" => {
+                        reject_duplicate(action.retry.is_some(), field.span, "retry")?;
                         action.retry = Some(parse_retry(&field)?);
                         ActionFieldTag::Retry
                     }
@@ -598,9 +612,8 @@ impl LineParser {
                         ));
                     }
                 };
-                if !field_trivia.leading.is_empty() {
-                    action.leading_comments.push((tag, field_trivia.leading));
-                }
+                push_leading(&mut action.leading_comments, tag, field_trivia.leading);
+                push_trailing(&mut action.trailing_comments, tag, field_trivia.trailing);
             }
         }
         Ok(action)
@@ -629,6 +642,7 @@ impl LineParser {
         let mut queue = None;
         let mut node = None;
         let mut leading_comments: Vec<(StepFieldTag, Vec<Comment>)> = Vec::new();
+        let mut trailing_comments: Vec<(StepFieldTag, Comment)> = Vec::new();
         while self.peek().is_some_and(|line| line.indent == 2) {
             let line = self.bump().expect("peeked");
             match first_word(&line.code) {
@@ -645,26 +659,32 @@ impl LineParser {
                     });
                 }
                 "when" => {
+                    reject_duplicate(when.is_some(), line.span, "when")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::When, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::When, trivia.trailing);
                     when = Some(parse_expr_at(
                         &line,
                         line.code.strip_prefix("when").unwrap().trim_start(),
                     )?);
                 }
                 "each" => {
+                    reject_duplicate(each.is_some(), line.span, "each")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Each, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Each, trivia.trailing);
                     each = Some(parse_each(&line)?);
                 }
                 "do" => {
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Op, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Op, trivia.trailing);
                     set_op(&mut op, StepOp::Do(parse_do(&line)?), line.span)?;
                 }
                 "wait" => {
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Op, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Op, trivia.trailing);
                     set_op(
                         &mut op,
                         StepOp::Wait {
@@ -677,6 +697,7 @@ impl LineParser {
                 "sleep" => {
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Op, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Op, trivia.trailing);
                     set_op(
                         &mut op,
                         StepOp::Sleep(parse_duration_field(&line, "sleep")?),
@@ -684,47 +705,76 @@ impl LineParser {
                     )?;
                 }
                 "repeat" => {
+                    reject_duplicate(repeat.is_some(), line.span, "repeat")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Repeat, trivia.leading);
+                    push_trailing(
+                        &mut trailing_comments,
+                        StepFieldTag::Repeat,
+                        trivia.trailing,
+                    );
                     repeat = Some(parse_repeat(&line)?);
                 }
                 "until" => {
+                    reject_duplicate(until.is_some(), line.span, "until")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Until, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Until, trivia.trailing);
                     until = Some(parse_expr_at(
                         &line,
                         line.code.strip_prefix("until").unwrap().trim_start(),
                     )?);
                 }
                 "retry" => {
+                    reject_duplicate(retry.is_some(), line.span, "retry")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Retry, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Retry, trivia.trailing);
                     retry = Some(parse_retry(&line)?);
                 }
                 "timeout" => {
+                    reject_duplicate(timeout.is_some(), line.span, "timeout")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Timeout, trivia.leading);
+                    push_trailing(
+                        &mut trailing_comments,
+                        StepFieldTag::Timeout,
+                        trivia.trailing,
+                    );
                     timeout = Some(parse_duration_field(&line, "timeout")?);
                 }
                 "on" if line.code == "on timeout" => {
+                    reject_duplicate(on_timeout.is_some(), line.span, "on timeout")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(
                         &mut leading_comments,
                         StepFieldTag::OnTimeout,
                         trivia.leading,
                     );
+                    push_trailing(
+                        &mut trailing_comments,
+                        StepFieldTag::OnTimeout,
+                        trivia.trailing,
+                    );
                     on_timeout = Some(self.parse_handler(line.span)?);
                 }
                 "on" if line.code == "on failure" => {
+                    reject_duplicate(on_failure.is_some(), line.span, "on failure")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(
                         &mut leading_comments,
                         StepFieldTag::OnFailure,
                         trivia.leading,
                     );
+                    push_trailing(
+                        &mut trailing_comments,
+                        StepFieldTag::OnFailure,
+                        trivia.trailing,
+                    );
                     on_failure = Some(self.parse_handler(line.span)?);
                 }
                 "as" => {
+                    reject_duplicate(bind_as.is_some(), line.span, "as")?;
                     bind_as = Some(BindDecl {
                         span: line.span,
                         trivia: self.take_trivia(&line),
@@ -732,13 +782,17 @@ impl LineParser {
                     });
                 }
                 "queue" => {
+                    reject_duplicate(queue.is_some(), line.span, "queue")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Queue, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Queue, trivia.trailing);
                     queue = Some(parse_string_field(&line, "queue")?);
                 }
                 "node" => {
+                    reject_duplicate(node.is_some(), line.span, "node")?;
                     let trivia = self.take_trivia(&line);
                     push_leading(&mut leading_comments, StepFieldTag::Node, trivia.leading);
+                    push_trailing(&mut trailing_comments, StepFieldTag::Node, trivia.trailing);
                     node = Some(parse_string_field(&line, "node")?);
                 }
                 other => {
@@ -787,6 +841,7 @@ impl LineParser {
             queue,
             node,
             leading_comments,
+            trailing_comments,
         })
     }
 
@@ -800,8 +855,10 @@ impl LineParser {
         }
         let mut actions = Vec::new();
         let mut action_leading = Vec::new();
+        let mut action_trailing = Vec::new();
         let mut terminal: Option<HandlerTerminal> = None;
         let mut terminal_leading = Vec::new();
+        let mut terminal_trailing = None;
         while self.peek().is_some_and(|line| line.indent == 4) {
             let line = self.bump().expect("peeked");
             let trivia = self.take_trivia(&line);
@@ -814,6 +871,7 @@ impl LineParser {
                         ));
                     }
                     action_leading.push(trivia.leading);
+                    action_trailing.push(trivia.trailing);
                     actions.push(parse_do(&line)?);
                 }
                 "finish" => {
@@ -824,6 +882,7 @@ impl LineParser {
                         ));
                     }
                     terminal_leading = trivia.leading;
+                    terminal_trailing = trivia.trailing;
                     terminal = Some(HandlerTerminal::Finish(parse_expr_at(
                         &line,
                         line.code.strip_prefix("finish").unwrap().trim_start(),
@@ -837,6 +896,7 @@ impl LineParser {
                         ));
                     }
                     terminal_leading = trivia.leading;
+                    terminal_trailing = trivia.trailing;
                     terminal = Some(HandlerTerminal::Fail(line.span));
                 }
                 other => {
@@ -857,8 +917,10 @@ impl LineParser {
             span: join_span(head, end),
             actions,
             action_leading,
+            action_trailing,
             terminal,
             terminal_leading,
+            terminal_trailing,
         })
     }
 
@@ -1052,14 +1114,29 @@ fn set_op(op: &mut Option<StepOp>, new_op: StepOp, span: Span) -> Result<(), Par
 
 /// Record a run of own-line comments as leading trivia for `tag`, if any
 /// were found immediately before the field's line.
-fn push_leading(
-    leading_comments: &mut Vec<(StepFieldTag, Vec<Comment>)>,
-    tag: StepFieldTag,
-    leading: Vec<Comment>,
-) {
+fn push_leading<T>(leading_comments: &mut Vec<(T, Vec<Comment>)>, tag: T, leading: Vec<Comment>) {
     if !leading.is_empty() {
         leading_comments.push((tag, leading));
     }
+}
+
+/// Record a same-line trailing comment for `tag`, if the field's line had one.
+fn push_trailing<T>(trailing_comments: &mut Vec<(T, Comment)>, tag: T, trailing: Option<Comment>) {
+    if let Some(comment) = trailing {
+        trailing_comments.push((tag, comment));
+    }
+}
+
+/// Reject a field that has already been set once (every AWL-0 step/action
+/// field is single-valued); the error points at the *second* occurrence.
+fn reject_duplicate(already_set: bool, span: Span, field: &str) -> Result<(), ParseError> {
+    if already_set {
+        return Err(ParseError::new(
+            span,
+            format!("duplicate `{field}` field; only one is allowed"),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_do(line: &SourceLine) -> Result<CallTarget, ParseError> {
@@ -1323,7 +1400,7 @@ impl ExprParser<'_> {
             }),
             TokenKind::Float(value) => Ok(Expr::Float {
                 span: token_span,
-                value: value.to_string(),
+                value,
             }),
             TokenKind::Duration { magnitude, unit } => Ok(Expr::Duration(DurationLiteral {
                 span: token_span,
