@@ -114,37 +114,80 @@ fn printer_is_idempotent_for_noncanonical_variants() -> Result<(), Box<dyn Error
 
 #[test]
 fn parse_errors_are_spanned_and_specific() {
+    // (source, expected message substring, expected line, expected column, expected byte start)
     let cases = [
         (
+            // Second op keyword ("wait" on line 6) collides with "do" already
+            // set on line 5, so the error points at the "wait sig" line: byte
+            // offset 44 is the 'w' of "wait", the 3rd column of the 6th line.
             "workflow w\noutput String\n\nstep x\n  do a()\n  wait sig\n\nfinish ok\n",
             "exactly one",
+            6,
+            3,
+            44,
         ),
-        ("workflow w\noutput String\n", "missing finish"),
         (
+            // No `finish` line at all, so the error falls back to the span of
+            // the last parsed source line ("output String", line 2), whose
+            // code starts right after the 11-byte first line at offset 11.
+            "workflow w\noutput String\n",
+            "missing finish",
+            2,
+            1,
+            11,
+        ),
+        (
+            // The nested call `b()` inside `do a(b())` is rejected at the `b`
+            // identifier token: line 5 column 8, byte offset 40 (the do-line
+            // starts at byte 33, "  do a(" occupies 7 of those bytes).
             "workflow w\noutput String\n\nstep x\n  do a(b())\n\nfinish ok\n",
             "call expressions",
+            5,
+            8,
+            40,
         ),
         (
+            // Unknown step field `frob` spans its whole line: line 5, column
+            // 3 (after the 2-space indent), byte offset 35.
             "workflow w\noutput String\n\nstep x\n  frob yes\n\nfinish ok\n",
             "unknown step field",
+            5,
+            3,
+            35,
         ),
         (
+            // `finish Out(a: 1` runs out of tokens before the closing `)` or
+            // a `,`, so the error falls back to the expression context, which
+            // starts at the `O` of `Out`: line 7, column 8, byte offset 50.
             "workflow w\noutput String\n\nstep x\n  do a()\n\nfinish Out(a: 1\n",
             "unterminated record",
+            7,
+            8,
+            50,
         ),
         (
+            // `on failure` demands a 4-space-indented handler body next, but
+            // `  fail` is only indented 2, so the error points at that line:
+            // line 7, column 3, byte offset 57.
             "workflow w\noutput String\n\nstep x\n  do a()\n  on failure\n  fail\n\nfinish ok\n",
             "wrong indentation",
+            7,
+            3,
+            57,
         ),
     ];
-    for (source, expected) in cases {
+    for (source, expected, line, column, start) in cases {
         let error = parse(source).expect_err(source);
         assert!(
             error.message.contains(expected),
             "{expected:?} not in {:?}",
             error.message
         );
-        assert!(error.span.line > 0);
-        assert!(error.span.column > 0);
+        assert_eq!(error.span.line, line, "line mismatch for {expected:?}");
+        assert_eq!(
+            error.span.column, column,
+            "column mismatch for {expected:?}"
+        );
+        assert_eq!(error.span.start, start, "start mismatch for {expected:?}");
     }
 }
