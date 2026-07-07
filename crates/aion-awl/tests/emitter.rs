@@ -175,6 +175,36 @@ fn repeat_until_emits_bounded_loop() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A `repeat`/`until` loop whose `as` binding is fresh (no prior binding of
+/// that name exists before the step) must not thread the `as` name as one
+/// of the loop's free-name call arguments: the loop body binds it itself on
+/// every iteration, so treating it as free produces a call site that
+/// references a name unbound at the call site.
+#[test]
+fn fresh_repeat_binding_is_not_a_free_loop_param() -> Result<(), Box<dyn Error>> {
+    let source = "workflow fresh_repeat\n\
+         input token: String\n\
+         output Bool\n\
+         type Attempt { done: Bool }\n\
+         action work(token: String) -> Attempt\n\
+         step w\n\
+         \x20 repeat up to 3\n\
+         \x20 do work(token)\n\
+         \x20 as result\n\
+         \x20 until result.done\n\
+         finish result.done\n";
+    let emitted = emitted(source)?;
+    assert!(
+        emitted.contains("w_loop(3, token)"),
+        "the call site must not thread the fresh `as` binding as an argument: {emitted}"
+    );
+    assert!(
+        !emitted.contains("w_loop(3, token, result)"),
+        "`result` must not leak into the loop's free-name parameters: {emitted}"
+    );
+    compile_generated_module("fresh_repeat", &emitted)
+}
+
 /// Child calls lower to the SDK's string-name spawn with a JSON-encoded
 /// argument record; no phantom child module is referenced, and step retry
 /// config reaches the child call path.
@@ -340,6 +370,47 @@ fn queue_on_child_call_is_an_emit_error() -> Result<(), Box<dyn Error>> {
         "unexpected message: {}",
         error.message
     );
+    Ok(())
+}
+
+/// A child-workflow result bound fresh (`as fresh_result` with no prior
+/// binding of that name) is opaque: the checker has no contract for it in
+/// this revision. Referencing it in a later expression — here, as an
+/// activity-call argument — must be a spanned emit-time error rather than
+/// emitted Gleam that fails to typecheck (the opaque value decodes as
+/// `Nil`, mismatching whatever type the site expects).
+#[test]
+fn opaque_child_result_in_expression_is_an_emit_error() -> Result<(), Box<dyn Error>> {
+    let source = "workflow opaque_leak\n\
+         input token: String\n\
+         output String\n\
+         action consume(value: String) -> String\n\
+         step spawn\n\
+         \x20 do child worker(token)\n\
+         \x20 as fresh_result\n\
+         step consume\n\
+         \x20 do consume(fresh_result)\n\
+         \x20 as result\n\
+         finish result\n";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must fail")?;
+    assert!(
+        error.message.contains("fresh_result")
+            && error.message.contains("untyped in this revision")
+            && error.message.contains("cannot be used in expressions"),
+        "unexpected message: {}",
+        error.message
+    );
+    let call_site = source
+        .find("do consume(fresh_result)")
+        .ok_or("expected call site missing")?;
+    let expected_start = call_site + "do consume(".len();
+    assert_eq!(
+        error.span.start, expected_start,
+        "span must point at the offending reference in the later expression, \
+         not the call keyword or the earlier `as fresh_result` binding site"
+    );
+    assert_eq!(&source[error.span.start..error.span.end], "fresh_result");
     Ok(())
 }
 

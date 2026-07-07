@@ -304,6 +304,7 @@ impl<'a> Emitter<'a> {
     /// `finish` the workflow early.
     fn emit_steps(&mut self, steps: &[StepDecl]) -> Result<(), EmitError> {
         let Some((step, rest)) = steps.split_first() else {
+            self.check_no_opaque_refs(&self.document.finish)?;
             let finish = expr(&self.document.finish);
             self.line(&format!("Ok({finish})"));
             return Ok(());
@@ -414,6 +415,7 @@ impl<'a> Emitter<'a> {
         };
         self.record_binding(step);
         if let Some(when) = &step.when {
+            self.check_no_opaque_refs(when)?;
             let guard = expr(when);
             self.line(&format!("case {guard} {{"));
             self.indented_try(|this| {
@@ -471,6 +473,7 @@ impl<'a> Emitter<'a> {
     /// handler on this step).
     fn emit_flat_step(&mut self, step: &StepDecl) -> Result<(), EmitError> {
         if let Some(when) = &step.when {
+            self.check_no_opaque_refs(when)?;
             let guard = expr(when);
             if let Some(name) = step.bind_as.as_ref().map(|bind| ident(&bind.name)) {
                 self.line(&format!("let {name} = case {guard} {{"));
@@ -515,6 +518,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_step_expr(&mut self, step: &StepDecl) -> Result<(), EmitError> {
         if let Some(repeat) = &step.repeat {
+            self.check_no_opaque_refs(repeat)?;
             let cap = expr(repeat);
             return self.emit_repeat_call(step, &cap);
         }
@@ -527,14 +531,16 @@ impl<'a> Emitter<'a> {
         if let Some(each) = &step.each {
             // `check_step` guarantees the op is an action call here.
             if let StepOp::Do(CallTarget::Action(call)) = &step.op {
+                self.check_no_opaque_refs(&each.in_expr)?;
                 let items = expr(&each.in_expr);
                 let item_name = ident(&each.name);
                 self.line(&format!("workflow.map({items}, fn({item_name}) {{"));
-                self.indented(|this| {
+                self.indented_try(|this| {
                     let mut activity = String::new();
-                    this.write_activity_value(&mut activity, call, step);
+                    this.write_activity_value(&mut activity, call, step)?;
                     this.line(&activity);
-                });
+                    Ok(())
+                })?;
                 self.line("}) |> map_activity_error");
             }
             return Ok(());
@@ -602,7 +608,7 @@ impl<'a> Emitter<'a> {
         let threads_binding = as_name
             .as_ref()
             .is_some_and(|name| self.bindings.contains_key(name));
-        let free = Self::loop_free_names(step, as_name.as_deref(), threads_binding);
+        let free = Self::loop_free_names(step, as_name.as_deref());
         let counter = loop_counter_name(as_name.as_deref(), &free);
 
         let mut call_args = vec![cap.to_owned()];
@@ -643,6 +649,9 @@ impl<'a> Emitter<'a> {
             args.extend_from_slice(&params[1..]);
             format!("{loop_name}({})", args.join(", "))
         };
+        if let Some(until) = &step.until {
+            self.check_no_opaque_refs(until)?;
+        }
         let until = step.until.as_ref().map(expr);
         self.capture(|this| {
             this.line(&format!(
@@ -748,13 +757,14 @@ impl<'a> Emitter<'a> {
         Ok(())
     }
 
-    /// Names (beyond the loop counter and the threaded binding) that the loop
+    /// Names (beyond the loop counter and the `as` binding) that the loop
     /// body references and therefore must receive as parameters.
-    fn loop_free_names(
-        step: &StepDecl,
-        as_name: Option<&str>,
-        threads_binding: bool,
-    ) -> Vec<String> {
+    ///
+    /// The `as` name is never a free name: the loop body binds it on every
+    /// iteration (threaded through parameters when a prior binding exists,
+    /// or bound fresh by the `Ok(pattern) ->` arm otherwise), so any
+    /// reference to it inside the loop (e.g. from `until`) resolves locally.
+    fn loop_free_names(step: &StepDecl, as_name: Option<&str>) -> Vec<String> {
         let mut refs = Vec::new();
         match &step.op {
             StepOp::Do(CallTarget::Action(call)) => {
@@ -786,16 +796,64 @@ impl<'a> Emitter<'a> {
                 collect_expr_refs(value, &mut refs);
             }
         }
-        refs.retain(|name| {
-            let is_threaded = threads_binding && as_name == Some(name.as_str());
-            !is_threaded
-        });
+        refs.retain(|name| as_name != Some(name.as_str()));
         refs
+    }
+
+    /// Reject an expression that reads an opaque (untyped) child-workflow
+    /// binding anywhere but the two contexts that are allowed to carry one
+    /// unrendered (the `as` clause that names it, and threading it as a
+    /// plain child-call argument, which `write_child_pipeline` re-checks
+    /// itself since it never calls this helper).
+    ///
+    /// The checker's opaque-child rule leaves these bindings with no known
+    /// Gleam type, so splicing one into any other generated expression
+    /// (an activity argument, a `when`/`until` guard, a `finish` value, an
+    /// `each` source, a record field, ...) would compile to a value whose
+    /// real shape (`Nil`) mismatches whatever the site expects. Threading a
+    /// *rebound* child result — one whose binding took an established type
+    /// from a prior binding of the same name — stays allowed, since by then
+    /// `self.bindings` holds `Binding::Typed`, not `Binding::Opaque`.
+    fn check_no_opaque_refs(&self, value: &Expr) -> Result<(), EmitError> {
+        match value {
+            Expr::String { .. }
+            | Expr::Int { .. }
+            | Expr::Float { .. }
+            | Expr::Bool { .. }
+            | Expr::Duration(_) => Ok(()),
+            Expr::List { items, .. } => {
+                for item in items {
+                    self.check_no_opaque_refs(item)?;
+                }
+                Ok(())
+            }
+            Expr::Ref { name, span } => {
+                if matches!(self.bindings.get(name), Some(Binding::Opaque)) {
+                    return Err(opaque_ref_error(name, *span));
+                }
+                Ok(())
+            }
+            Expr::Field { base, .. } => self.check_no_opaque_refs(base),
+            Expr::Record { fields, .. } => {
+                for field in fields {
+                    self.check_no_opaque_refs(&field.value)?;
+                }
+                Ok(())
+            }
+            Expr::Not { expr: inner, .. } => self.check_no_opaque_refs(inner),
+            Expr::Binary { left, right, .. } => {
+                self.check_no_opaque_refs(left)?;
+                self.check_no_opaque_refs(right)
+            }
+        }
     }
 
     fn emit_handler_arm(&mut self, prefix: &str, handler: &HandlerBlock) -> Result<(), EmitError> {
         let terminal = match &handler.terminal {
-            HandlerTerminal::Finish(value) => format!("Ok({})", expr(value)),
+            HandlerTerminal::Finish(value) => {
+                self.check_no_opaque_refs(value)?;
+                format!("Ok({})", expr(value))
+            }
             HandlerTerminal::Fail(_) => "Error(AwlFailed)".to_owned(),
         };
         if handler.actions.is_empty() {
@@ -856,13 +914,19 @@ impl<'a> Emitter<'a> {
         self.bindings.insert(bind.name.clone(), binding);
     }
 
-    fn write_activity_value(&self, inner: &mut String, call: &CallExpr, step: &StepDecl) {
+    fn write_activity_value(
+        &self,
+        inner: &mut String,
+        call: &CallExpr,
+        step: &StepDecl,
+    ) -> Result<(), EmitError> {
         inner.push_str(&call.name);
         inner.push_str("_activity(");
         for (index, arg) in call.args.iter().enumerate() {
             if index > 0 {
                 inner.push_str(", ");
             }
+            self.check_no_opaque_refs(arg)?;
             inner.push_str(&expr(arg));
         }
         inner.push(')');
@@ -902,6 +966,7 @@ impl<'a> Emitter<'a> {
             inner.push_str(&string_lit(node));
             inner.push(')');
         }
+        Ok(())
     }
 
     fn write_call_pipeline(
@@ -912,7 +977,7 @@ impl<'a> Emitter<'a> {
     ) -> Result<(), EmitError> {
         match target {
             CallTarget::Action(call) => {
-                self.write_activity_value(inner, call, step);
+                self.write_activity_value(inner, call, step)?;
                 inner.push_str(" |> workflow.run |> map_activity_error");
                 Ok(())
             }
@@ -960,14 +1025,7 @@ impl<'a> Emitter<'a> {
             };
             let ty = match self.bindings.get(arg_name) {
                 Some(Binding::Typed(ty)) => ty.clone(),
-                Some(Binding::Opaque) => {
-                    return Err(EmitError::new(
-                        *arg_span,
-                        format!(
-                            "child argument `{arg_name}` is an opaque child-workflow result and cannot be re-encoded"
-                        ),
-                    ));
-                }
+                Some(Binding::Opaque) => return Err(opaque_ref_error(arg_name, *arg_span)),
                 None => {
                     return Err(EmitError::new(
                         *arg_span,
@@ -1687,6 +1745,17 @@ fn collect_named_ref(ty: &TypeRef, names: &mut Vec<String>) {
             collect_named_ref(inner, names);
         }
     }
+}
+
+/// The fixed error for referencing an opaque (untyped) child-workflow
+/// result in a context that needs a real Gleam type.
+fn opaque_ref_error(name: &str, span: Span) -> EmitError {
+    EmitError::new(
+        span,
+        format!(
+            "child result `{name}` is untyped in this revision and cannot be used in expressions"
+        ),
+    )
 }
 
 /// Collect the reference names an expression mentions, in first-use order.
