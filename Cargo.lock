@@ -61,6 +61,7 @@ version = "0.8.0"
 name = "aion-cli"
 version = "0.8.0"
 dependencies = [
+ "aion-awl",
  "aion-client",
  "aion-core",
  "aion-integration-norn",

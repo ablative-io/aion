@@ -20,6 +20,7 @@ use crate::payload::{
     payload_to_json,
 };
 
+mod awl;
 mod check_deterministic;
 mod deploy;
 mod dev;
@@ -87,6 +88,17 @@ enum Command {
     /// required (`--gleam-path`); there is no default. An optional
     /// `--debounce-ms` coalesces an editor's multi-event save into one rebuild.
     Dev(dev::DevArgs),
+    /// Author AWL workflow documents: check and format `.awl` files.
+    ///
+    /// Runs entirely locally and never connects to a server. `check` parses
+    /// and typechecks a document, printing compiler-style
+    /// `<file>:<line>:<column>: error: <message>` diagnostics to stderr;
+    /// `fmt` rewrites the document in place with the canonical printer (the
+    /// printer is the formatter — there is no check mode).
+    Awl {
+        #[command(subcommand)]
+        command: awl::AwlCommand,
+    },
     /// Operate a running Aion server or package workflows locally.
     #[command(flatten)]
     Client(ClientCommand),
@@ -382,6 +394,9 @@ async fn main() -> ExitCode {
                 }
             }
         }
+        // The AWL authoring commands own their own compiler-style reporting
+        // contract: diagnostics to stderr, a one-line summary to stdout.
+        Command::Awl { ref command } => awl::run(command),
         Command::Client(ref command) => {
             let result = run(&cli, command)
                 .await
@@ -741,7 +756,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        Cli, ClientCommand, Command, RemoteCommand, normalize_endpoint, payload_to_json,
+        Cli, ClientCommand, Command, RemoteCommand, awl, normalize_endpoint, payload_to_json,
         resolve_start_input,
     };
 
@@ -1038,6 +1053,37 @@ mod tests {
     }
 
     #[test]
+    fn awl_check_and_fmt_parse_the_file_path() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "awl", "check", "flows/report.awl"])?;
+        let Command::Awl {
+            command: awl::AwlCommand::Check { file },
+        } = cli.command
+        else {
+            anyhow::bail!("expected awl check command");
+        };
+        assert_eq!(file, Path::new("flows/report.awl"));
+
+        let cli = Cli::try_parse_from(["aion", "awl", "fmt", "flows/report.awl"])?;
+        let Command::Awl {
+            command: awl::AwlCommand::Fmt { file },
+        } = cli.command
+        else {
+            anyhow::bail!("expected awl fmt command");
+        };
+        assert_eq!(file, Path::new("flows/report.awl"));
+        Ok(())
+    }
+
+    #[test]
+    fn awl_commands_require_a_file_and_fmt_has_no_check_mode() {
+        // The file argument is mandatory for both commands.
+        assert!(Cli::try_parse_from(["aion", "awl", "check"]).is_err());
+        assert!(Cli::try_parse_from(["aion", "awl", "fmt"]).is_err());
+        // House rule: the printer is the formatter — no `--check` mode.
+        assert!(Cli::try_parse_from(["aion", "awl", "fmt", "f.awl", "--check"]).is_err());
+    }
+
+    #[test]
     fn input_parses_workflow_type_and_path() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "input", "order_saga", "examples/order-saga"])?;
         let Command::Client(ClientCommand::Input {
@@ -1170,6 +1216,7 @@ mod tests {
                 )) => assert!(run_id.is_none()),
                 Command::Server(_)
                 | Command::Dev(_)
+                | Command::Awl { .. }
                 | Command::Client(
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }
@@ -1224,6 +1271,7 @@ mod tests {
                 )) => assert_eq!(run_id.as_deref(), Some(RUN_ID)),
                 Command::Server(_)
                 | Command::Dev(_)
+                | Command::Awl { .. }
                 | Command::Client(
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }
