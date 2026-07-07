@@ -299,7 +299,7 @@ impl<'a> Ctx<'a> {
     fn step_op_ty(&mut self, op: &StepOp) -> Ty {
         match op {
             StepOp::Do(target) => self.call_ty(target),
-            StepOp::Wait { span, signal } => match self.signals.get(signal) {
+            StepOp::Wait { span, signal } => match self.signals.get(signal.as_str()) {
                 Some(ty) => ty.clone(),
                 None => {
                     self.error(*span, format!("unknown signal `{signal}`"));
