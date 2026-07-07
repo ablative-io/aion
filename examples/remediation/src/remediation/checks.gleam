@@ -17,10 +17,10 @@ import gleam/option.{None, Some}
 import gleam/set
 import gleam/string
 import remediation/types.{
-  type FixReport, type LedgerEntry, type ManifestEntry, type Overall,
-  type Ruling, type TestManifest, type Verdict, Accept, AcceptanceCheck,
-  Correction, Fixed, Gate1Check, NotFixed, PartialAccept, RegressionIntroduced,
-  Reject,
+  type FixReport, type Gate2Outcome, type LedgerEntry, type ManifestEntry,
+  type Overall, type Ruling, type TestManifest, type Verdict, Accept,
+  AcceptanceCheck, Correction, Fixed, Gate1Check, NotFixed, PartialAccept,
+  RegressionIntroduced, Reject,
 }
 
 // --- gate 1: coverage and routing ---------------------------------------------
@@ -184,6 +184,24 @@ pub fn accounting_violations(
         )
     }
   })
+}
+
+/// A gate-2 outcome's failure SIGNATURE (Change 1, 2026-07-07 incident
+/// W0-B2): a stable string built purely from fields [`Gate2Outcome`] already
+/// carries — its diagnostics (which finding/check failed and why) folded
+/// together with its diff (the developer's full change since the tests
+/// commit). Two consecutive failures with the IDENTICAL signature mean BOTH
+/// "the same error" AND "no diff progress" at once: the diagnostics alone
+/// could match by coincidence across genuinely different attempts, but a
+/// byte-identical diff on top of it means literally nothing changed. Used by
+/// the fix-cycle loop to abort early instead of burning the whole cycle
+/// budget on a loop that cannot self-correct (`remediation_brief.drive`,
+/// `remediation/cycle.on_gate2`).
+pub fn gate2_failure_signature(outcome: Gate2Outcome) -> String {
+  "diagnostics:"
+  <> string.trim(outcome.diagnostics)
+  <> "||diff:"
+  <> string.trim(outcome.diff)
 }
 
 // --- gate 3: derive-and-check ------------------------------------------------------

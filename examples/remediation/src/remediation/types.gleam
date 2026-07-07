@@ -617,12 +617,46 @@ pub type WaveReport {
   )
 }
 
-/// The parent `remediation_wave` workflow's result: every brief's terminal
-/// result plus the wave report skeleton.
+/// One brief whose child `remediation_brief` run failed at the engine/child
+/// boundary — a GENUINE infrastructure fault (a transient provider error, an
+/// engine failure, an undecodable child payload) rather than the brief
+/// reaching its own terminal [`Disposition`] (Change 2, 2026-07-07 incident:
+/// a transient provider error failed a child brief and cascaded the whole
+/// wave to Failed, losing every sibling's already-landed result). Recorded on
+/// [`WaveResult`] so the wave NEVER silently drops a brief's outcome —
+/// `reason` is built from the child error generically (every
+/// `aion/error.ChildError` variant, not just a specific decode-failure one:
+/// the decode path is not reliable enough to gate on).
+pub type WaveBriefFailure {
+  WaveBriefFailure(brief_id: String, reason: String)
+}
+
+/// One brief SKIPPED because an earlier stratum had a failed brief (Change
+/// 2): strata run serially and a later one may depend on an earlier
+/// stratum's landed outcome (DESIGN.md Stage 0), so once any brief fails, the
+/// wave stops spawning further strata rather than guessing whether the
+/// dependency still holds. `blocking_brief_ids` names every failed brief that
+/// forced the skip; `reason` is the human-readable rendering of the same
+/// fact, carried alongside for direct display.
+pub type WaveBriefSkip {
+  WaveBriefSkip(
+    brief_id: String,
+    blocking_brief_ids: List(String),
+    reason: String,
+  )
+}
+
+/// The parent `remediation_wave` workflow's result: every SUCCESSFULLY
+/// completed brief's terminal result, plus every brief whose child run
+/// failed or was skipped (Change 2 — the wave completes with the full
+/// per-brief outcome map instead of cascading to Failed on one child
+/// failure), plus the wave report skeleton.
 pub type WaveResult {
   WaveResult(
     wave: Int,
     briefs: List(BriefResult),
+    failed_briefs: List(WaveBriefFailure),
+    skipped_briefs: List(WaveBriefSkip),
     report: WaveReport,
     summary: String,
   )

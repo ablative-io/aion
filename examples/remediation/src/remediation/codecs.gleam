@@ -35,17 +35,18 @@ import remediation/types.{
   type RemediationError, type Ruling, type RunConfig, type TestAuthorEntry,
   type TestAuthorInput, type TestAuthoringMetrics, type TestManifest,
   type TestRun, type Verdict, type VerifierInput, type VerifyMetrics,
-  type WaveBrief, type WaveInput, type WaveMetrics, type WaveReport,
-  type WaveResult, type WorkspaceInfo, AcceptanceCheck, Brief, BriefInput,
-  BriefResult, ChildFailed, ClassInstance, ClassSibling, CleanupInput,
-  CleanupOutcome, DecodeInputFailed, DeveloperInput, Deviation, FindingBounce,
-  FindingFix, FindingRuling, FixMetrics, FixReport, FlowMetrics, Gate1Check,
-  Gate1Input, Gate1Outcome, Gate2Input, Gate2Outcome, LedgerApplication,
-  LedgerEntry, LedgerUpdateInput, LedgerUpdateOutcome, ManifestEntry,
-  ProvisionInput, ReAuditMetrics, RegressionRisk, RunConfig, StageFailed,
-  StrataInvalid, TestAuthorInput, TestAuthoringMetrics, TestManifest, TestRun,
-  Verdict, VerifierInput, VerifyMetrics, WaveBrief, WaveInput, WaveMetrics,
-  WaveReport, WaveResult, WorkspaceInfo,
+  type WaveBrief, type WaveBriefFailure, type WaveBriefSkip, type WaveInput,
+  type WaveMetrics, type WaveReport, type WaveResult, type WorkspaceInfo,
+  AcceptanceCheck, Brief, BriefInput, BriefResult, ChildFailed, ClassInstance,
+  ClassSibling, CleanupInput, CleanupOutcome, DecodeInputFailed, DeveloperInput,
+  Deviation, FindingBounce, FindingFix, FindingRuling, FixMetrics, FixReport,
+  FlowMetrics, Gate1Check, Gate1Input, Gate1Outcome, Gate2Input, Gate2Outcome,
+  LedgerApplication, LedgerEntry, LedgerUpdateInput, LedgerUpdateOutcome,
+  ManifestEntry, ProvisionInput, ReAuditMetrics, RegressionRisk, RunConfig,
+  StageFailed, StrataInvalid, TestAuthorInput, TestAuthoringMetrics,
+  TestManifest, TestRun, Verdict, VerifierInput, VerifyMetrics, WaveBrief,
+  WaveBriefFailure, WaveBriefSkip, WaveInput, WaveMetrics, WaveReport,
+  WaveResult, WorkspaceInfo,
 }
 
 // --- small shared helpers ----------------------------------------------------
@@ -1408,6 +1409,49 @@ fn wave_report_decoder() -> decode.Decoder(WaveReport) {
   ))
 }
 
+// --- parent result: Change-2 non-cascade outcomes ------------------------------------------------------------------
+
+/// A failed brief's wire shape (`wave_output.json`, additive Change-2 field
+/// `failed_briefs`) — a child that ran but never reached its own terminal
+/// [`types.Disposition`].
+fn wave_brief_failure_to_json(failure: WaveBriefFailure) -> json.Json {
+  json.object([
+    #("brief_id", json.string(failure.brief_id)),
+    #("reason", json.string(failure.reason)),
+  ])
+}
+
+fn wave_brief_failure_decoder() -> decode.Decoder(WaveBriefFailure) {
+  use brief_id <- decode.field("brief_id", decode.string)
+  use reason <- decode.field("reason", decode.string)
+  decode.success(WaveBriefFailure(brief_id: brief_id, reason: reason))
+}
+
+/// A skipped brief's wire shape (`wave_output.json`, additive Change-2 field
+/// `skipped_briefs`) — a later-stratum brief the wave never ran because an
+/// earlier stratum had a failure.
+fn wave_brief_skip_to_json(skip: WaveBriefSkip) -> json.Json {
+  json.object([
+    #("brief_id", json.string(skip.brief_id)),
+    #("blocking_brief_ids", strings(skip.blocking_brief_ids)),
+    #("reason", json.string(skip.reason)),
+  ])
+}
+
+fn wave_brief_skip_decoder() -> decode.Decoder(WaveBriefSkip) {
+  use brief_id <- decode.field("brief_id", decode.string)
+  use blocking_brief_ids <- decode.field(
+    "blocking_brief_ids",
+    decode.list(decode.string),
+  )
+  use reason <- decode.field("reason", decode.string)
+  decode.success(WaveBriefSkip(
+    brief_id: brief_id,
+    blocking_brief_ids: blocking_brief_ids,
+    reason: reason,
+  ))
+}
+
 // --- parent result ------------------------------------------------------------------------------------------------
 
 pub fn wave_result_codec() -> Codec(WaveResult) {
@@ -1418,6 +1462,14 @@ fn wave_result_to_json(result: WaveResult) -> json.Json {
   json.object([
     #("wave", json.int(result.wave)),
     #("briefs", json.array(result.briefs, brief_result_to_json)),
+    #(
+      "failed_briefs",
+      json.array(result.failed_briefs, wave_brief_failure_to_json),
+    ),
+    #(
+      "skipped_briefs",
+      json.array(result.skipped_briefs, wave_brief_skip_to_json),
+    ),
     #("report", wave_report_to_json(result.report)),
     #("summary", json.string(result.summary)),
   ])
@@ -1426,11 +1478,25 @@ fn wave_result_to_json(result: WaveResult) -> json.Json {
 fn wave_result_decoder() -> decode.Decoder(WaveResult) {
   use wave <- decode.field("wave", decode.int)
   use briefs <- decode.field("briefs", decode.list(brief_result_decoder()))
+  // Additive Change-2 fields: absent on older recorded results, so a
+  // tolerant read defaults them to empty rather than failing to decode.
+  use failed_briefs <- decode.optional_field(
+    "failed_briefs",
+    [],
+    decode.list(wave_brief_failure_decoder()),
+  )
+  use skipped_briefs <- decode.optional_field(
+    "skipped_briefs",
+    [],
+    decode.list(wave_brief_skip_decoder()),
+  )
   use report <- decode.field("report", wave_report_decoder())
   use summary <- decode.field("summary", decode.string)
   decode.success(WaveResult(
     wave: wave,
     briefs: briefs,
+    failed_briefs: failed_briefs,
+    skipped_briefs: skipped_briefs,
     report: report,
     summary: summary,
   ))

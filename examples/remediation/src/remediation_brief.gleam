@@ -259,7 +259,7 @@ fn drive(
         fix_cycles: machine.fix_rounds,
         test_edit_attempts: state.test_edit_attempts,
         verdict_mismatches: state.verdict_mismatches,
-        detail: stop_detail(disposition, state),
+        detail: stop_detail(disposition, machine, state),
       )
     cycle.Developer -> {
       use report <- try(run_developer(input, state))
@@ -282,9 +282,15 @@ fn drive(
         // counted per occurrence (DESIGN.md fix metrics).
         False -> state.test_edit_attempts + 1
       }
+      // Change 1 (2026-07-07 incident W0-B2): the failure signature folds the
+      // gate's diagnostics AND diff together, so two consecutive IDENTICAL
+      // signatures mean the same error recurred with zero diff progress —
+      // `cycle.on_gate2` aborts the loop early on that condition instead of
+      // burning the rest of the cycle budget.
+      let signature = checks.gate2_failure_signature(outcome)
       drive(
         input,
-        cycle.on_gate2(machine, outcome.pass),
+        cycle.on_gate2(machine, outcome.pass, signature),
         LoopState(
           ..state,
           last_gate2: Some(outcome),
@@ -634,13 +640,21 @@ fn run_cleanup(
 
 // --- summaries -------------------------------------------------------------------
 
-fn stop_detail(disposition: Disposition, state: LoopState) -> String {
-  case disposition {
-    Accepted -> "every ruling fixed"
-    CycleCapExhausted ->
+fn stop_detail(
+  disposition: Disposition,
+  machine: cycle.Machine,
+  state: LoopState,
+) -> String {
+  case disposition, cycle.early_abort_detail(machine) {
+    // Change 1: an identical, no-progress gate-2 failure short-circuited the
+    // cap — the machine's own recorded reason IS the detail, never
+    // recomputed here (single source of truth for the abort's cycle count).
+    CycleCapExhausted, Some(early_abort_reason) -> early_abort_reason
+    Accepted, _ -> "every ruling fixed"
+    CycleCapExhausted, None ->
       "fix-cycle budget exhausted; last adverse evidence: "
       <> last_adverse_evidence(state)
-    Gate1Failed -> "gate 1 failed"
+    Gate1Failed, _ -> "gate 1 failed"
   }
 }
 
