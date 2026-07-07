@@ -1,0 +1,25 @@
+workflow bounded_cycle
+about Fix until accepted.
+
+input state: ReviewState
+output ReviewState
+error Failed
+
+type ReviewState { accepted: Bool, notes: String }
+type Failed { reason: String }
+
+action seed() -> ReviewState
+action fix_round(state: ReviewState) -> ReviewState
+
+step seed
+  do seed()
+  as state
+
+step fix
+  repeat up to 3
+  do child fix_round(state)
+  retry 2 backoff 5s..1m
+  as state
+  until state.accepted
+
+finish state
