@@ -14,7 +14,7 @@ pub use ast::{
     EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField, RetrySpec,
     Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl,
 };
-pub use parser::{parse, ParseError};
+pub use parser::{ParseError, parse};
 pub use printer::print;
 
 use std::error::Error;

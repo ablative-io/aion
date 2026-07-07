@@ -10,11 +10,11 @@ use std::error::Error;
 use std::fmt;
 
 use crate::ast::{
-    join_span, AboutDecl, ActionDecl, BinaryOp, CallExpr, CallTarget, Comment, Document,
-    DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField,
-    RetrySpec, Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl,
+    AboutDecl, ActionDecl, BinaryOp, CallExpr, CallTarget, Comment, Document, DurationLiteral,
+    EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField, RetrySpec,
+    Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl, join_span,
 };
-use crate::{lex, DurationUnit, Keyword, LexError, Span, Token, TokenKind};
+use crate::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
@@ -679,10 +679,12 @@ fn parse_string_field(line: &SourceLine, keyword: &str) -> Result<String, ParseE
     let rest = line.code.strip_prefix(keyword).unwrap().trim();
     let tokens = lex(rest)?;
     match tokens.as_slice() {
-        [Token {
-            kind: TokenKind::String(value),
-            ..
-        }] => Ok(value.clone()),
+        [
+            Token {
+                kind: TokenKind::String(value),
+                ..
+            },
+        ] => Ok(value.clone()),
         _ => Err(ParseError::new(
             line.span,
             format!("{keyword} field needs a string literal"),
@@ -698,10 +700,12 @@ fn parse_duration_field(line: &SourceLine, keyword: &str) -> Result<DurationLite
 fn parse_duration_text(text: &str, context: Span) -> Result<DurationLiteral, ParseError> {
     let tokens = lex(text)?;
     match tokens.as_slice() {
-        [Token {
-            kind: TokenKind::Duration { magnitude, unit },
-            span,
-        }] => Ok(DurationLiteral {
+        [
+            Token {
+                kind: TokenKind::Duration { magnitude, unit },
+                span,
+            },
+        ] => Ok(DurationLiteral {
             span: *span,
             magnitude: *magnitude,
             unit: *unit,
@@ -713,19 +717,24 @@ fn parse_duration_text(text: &str, context: Span) -> Result<DurationLiteral, Par
 fn parse_retry(line: &SourceLine) -> Result<RetrySpec, ParseError> {
     let tokens = lex(line.code.as_str())?;
     match tokens.as_slice() {
-        [Token {
-            kind: TokenKind::Keyword(Keyword::Retry),
-            ..
-        }, Token {
-            kind: TokenKind::Integer(count),
-            ..
-        }, Token {
-            kind: TokenKind::Keyword(Keyword::Every),
-            ..
-        }, Token {
-            kind: TokenKind::Duration { magnitude, unit },
-            span,
-        }] => Ok(RetrySpec::Every {
+        [
+            Token {
+                kind: TokenKind::Keyword(Keyword::Retry),
+                ..
+            },
+            Token {
+                kind: TokenKind::Integer(count),
+                ..
+            },
+            Token {
+                kind: TokenKind::Keyword(Keyword::Every),
+                ..
+            },
+            Token {
+                kind: TokenKind::Duration { magnitude, unit },
+                span,
+            },
+        ] => Ok(RetrySpec::Every {
             span: line.span,
             count: *count,
             every: DurationLiteral {
@@ -734,33 +743,40 @@ fn parse_retry(line: &SourceLine) -> Result<RetrySpec, ParseError> {
                 unit: *unit,
             },
         }),
-        [Token {
-            kind: TokenKind::Keyword(Keyword::Retry),
-            ..
-        }, Token {
-            kind: TokenKind::Integer(count),
-            ..
-        }, Token {
-            kind: TokenKind::Keyword(Keyword::Backoff),
-            ..
-        }, Token {
-            kind:
-                TokenKind::Duration {
-                    magnitude: min_mag,
-                    unit: min_unit,
-                },
-            span: min_span,
-        }, Token {
-            kind: TokenKind::DotDot,
-            ..
-        }, Token {
-            kind:
-                TokenKind::Duration {
-                    magnitude: max_mag,
-                    unit: max_unit,
-                },
-            span: max_span,
-        }] => Ok(RetrySpec::Backoff {
+        [
+            Token {
+                kind: TokenKind::Keyword(Keyword::Retry),
+                ..
+            },
+            Token {
+                kind: TokenKind::Integer(count),
+                ..
+            },
+            Token {
+                kind: TokenKind::Keyword(Keyword::Backoff),
+                ..
+            },
+            Token {
+                kind:
+                    TokenKind::Duration {
+                        magnitude: min_mag,
+                        unit: min_unit,
+                    },
+                span: min_span,
+            },
+            Token {
+                kind: TokenKind::DotDot,
+                ..
+            },
+            Token {
+                kind:
+                    TokenKind::Duration {
+                        magnitude: max_mag,
+                        unit: max_unit,
+                    },
+                span: max_span,
+            },
+        ] => Ok(RetrySpec::Backoff {
             span: line.span,
             count: *count,
             min: DurationLiteral {

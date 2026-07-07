@@ -4,7 +4,7 @@
 
 use std::error::Error;
 
-use aion_awl::{parse, print, StepOp};
+use aion_awl::{StepOp, parse, print};
 
 fn assert_idempotent(source: &str) -> Result<(), Box<dyn Error>> {
     let first = print(&parse(source)?);
