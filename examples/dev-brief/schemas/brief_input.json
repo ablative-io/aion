@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dev_brief input",
+  "description": "One development brief plus its run configuration. The brief bounds and specifies the work; the config names the repo, the mechanical gate battery, and the adversarial review lenses.",
+  "type": "object",
+  "required": ["brief", "config"],
+  "additionalProperties": false,
+  "properties": {
+    "brief": {
+      "type": "object",
+      "required": ["id", "title", "objective", "acceptance"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable brief id; the work lands on branch dev/<id>."
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What to build/fix and why — the developer's marching orders."
+        },
+        "context": {
+          "type": "string",
+          "description": "Background: root cause for bugs, prior art, constraints discovered elsewhere."
+        },
+        "pointers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Where to look: files, modules, docs."
+        },
+        "scope_in": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What may change."
+        },
+        "scope_out": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What must NOT change (no-reorg boundaries, frozen surfaces)."
+        },
+        "acceptance": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "The criteria the adversarial reviewers hold the diff to."
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["repo_root"],
+      "additionalProperties": false,
+      "properties": {
+        "repo_root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the git repository the brief runs against."
+        },
+        "base_branch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch the brief worktree is based on."
+        },
+        "gates": {
+          "type": "array",
+          "description": "The mechanical gate battery, run in order in the workspace; pass = exit 0. Configure per repo (e.g. cargo fmt / cargo clippy -D warnings / cargo test).",
+          "items": {
+            "type": "object",
+            "required": ["name", "argv"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "argv": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "max_fix_cycles": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "Developer-round budget: the initial implementation plus every loop-back."
+        },
+        "lenses": {
+          "type": "array",
+          "description": "Adversarial review lenses, each run CONCURRENTLY as its own child workflow. Omit (or leave empty) for the default trio: correctness, regressions, brief_compliance.",
+          "items": {
+            "type": "object",
+            "required": ["name", "charter"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "charter": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The lens's marching orders: what failure class it hunts."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

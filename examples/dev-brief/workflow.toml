@@ -1,0 +1,35 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# TWO entries — the dev-brief family: the `dev_brief` PIPELINE (one
+# development brief end-to-end) and the `review_lens` CHILD it fans out per
+# adversarial lens per review round. A spawned child's workflow type is
+# resolved by entry-module name against the engine's loaded packages, so
+# BOTH archives must be deployed together.
+#
+# Timeouts size the longest legitimate run: a brief iterates agent fix
+# cycles (developer rounds + gate batteries + concurrent lens reviews), so
+# it gets six hours; a single lens review gets one.
+
+[[workflow]]
+entry_module = "dev_brief"
+entry_function = "run"
+timeout_seconds = 21600
+input_schema = "schemas/brief_input.json"
+output_schema = "schemas/brief_output.json"
+activities = [
+  "provision_workspace",
+  "developer",
+  "run_gates",
+  "cleanup_workspace",
+]
+output = "dev-brief.aion"
+
+[[workflow]]
+entry_module = "review_lens"
+entry_function = "run"
+timeout_seconds = 3600
+input_schema = "schemas/lens_input.json"
+output_schema = "schemas/lens-verdict.schema.json"
+activities = ["review_lens"]
+output = "review-lens.aion"
