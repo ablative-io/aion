@@ -6,6 +6,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 mod ast;
+mod emitter;
 mod parser;
 mod printer;
 
@@ -15,6 +16,7 @@ pub use ast::{
     RecordField, RetrySpec, Spanned, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
     WorkflowDecl,
 };
+pub use emitter::emit;
 pub use parser::{ParseError, parse};
 pub use printer::print;
 
