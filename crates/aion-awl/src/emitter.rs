@@ -295,10 +295,7 @@ impl<'a> Emitter<'a> {
             }
             StepOp::Sleep(duration) => {
                 let duration = duration_expr(duration);
-                let _ = write!(
-                    inner,
-                    "workflow.sleep({duration}) |> map_timer_error"
-                );
+                let _ = write!(inner, "workflow.sleep({duration}) |> map_timer_error");
             }
         }
 
@@ -542,9 +539,7 @@ impl<'a> Emitter<'a> {
             ));
             self.indented(|this| {
                 let codec = codec_name(&signal_decl.ty);
-                this.line(&format!(
-                    "signal.new(\"{signal_name}\", {codec}_codec())"
-                ));
+                this.line(&format!("signal.new(\"{signal_name}\", {codec}_codec())"));
             });
             self.line("}");
             self.blank();
@@ -843,7 +838,9 @@ impl<'a> Emitter<'a> {
     fn error_mappers(&mut self) {
         self.line("fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Result(b, AwlError) {");
         self.indented(|this| {
-            this.line("case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }");
+            this.line(
+                "case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }",
+            );
         });
         self.line("}");
         self.blank();
