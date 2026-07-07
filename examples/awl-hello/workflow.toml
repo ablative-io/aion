@@ -1,0 +1,16 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+#
+# ONE entry — the awl_hello workflow. The entry module is the GENERATED
+# module the AWL emitter drops into src/ (the checked-in placeholder has the
+# same module name and contract, so packaging works before and after
+# generation).
+
+[[workflow]]
+entry_module = "awl_hello"
+entry_function = "run"
+timeout_seconds = 60
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["greet", "shout"]
+output = "awl-hello.aion"
