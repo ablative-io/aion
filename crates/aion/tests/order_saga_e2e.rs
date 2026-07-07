@@ -440,14 +440,17 @@ async fn charge_retries_then_awaits_approval(
         "the retry loop re-dispatches with the next business attempt"
     );
     for call in &first_calls {
-        // The declared RetryPolicy rides the dispatch config verbatim, but
-        // the engine does not yet consume it: every wire delivery is
-        // stamped attempt 1 (engine-side automatic retry is unbuilt), which
-        // is exactly why the workflow drives its own bounded retry loop.
-        assert_eq!(call.config["retry"]["max_attempts"], json!(3));
-        assert_eq!(call.config["retry"]["backoff"]["kind"], json!("fixed"));
-        assert_eq!(call.config["retry"]["backoff"]["delay_ms"], json!(50));
-        assert_eq!(call.attempt, 1, "wire attempt is always 1 today");
+        // This saga drives its OWN retry loop, so `charge_payment`
+        // deliberately declares NO engine RetryPolicy (`"retry": null` on the
+        // wire — the SDK's run-exactly-once contract). The engine honors a
+        // declared policy by re-dispatching transparently (#197); declaring
+        // both would stack the two retry layers. Each workflow-driven
+        // business attempt is therefore a fresh dispatch at wire attempt 1.
+        assert_eq!(call.config["retry"], serde_json::Value::Null);
+        assert_eq!(
+            call.attempt, 1,
+            "each workflow-driven dispatch is its own first delivery"
+        );
     }
     Ok(pre_kill)
 }

@@ -75,6 +75,13 @@ pub struct RuntimeHandle {
     nif_state: Arc<super::nif_state::EngineNifState>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    /// One-based delivery attempt that produced a retained two-phase activity
+    /// outcome, keyed like [`Self::activity_results`] / [`Self::activity_errors`]
+    /// (#197). Noted by the completion task's retry loop when it delivers a
+    /// final outcome; taken by the awaiting NIF so recorded terminals carry
+    /// the genuine attempt. Absence means the first delivery (paths that never
+    /// retry — outbox re-delivery, in-VM — note nothing).
+    activity_delivery_attempts: Arc<dashmap::DashMap<(Pid, Pid), u32>>,
     /// Live in-VM activity children per workflow pid.
     ///
     /// A BEAM link tears a child down when its workflow dies ABNORMALLY, but
@@ -141,6 +148,7 @@ impl RuntimeHandle {
             nif_state,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            activity_delivery_attempts: Arc::new(dashmap::DashMap::new()),
             in_vm_children: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),

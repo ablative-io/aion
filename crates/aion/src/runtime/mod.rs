@@ -14,6 +14,7 @@ pub mod nif;
 mod nif_activity;
 mod nif_activity_dispatch;
 mod nif_activity_in_vm;
+mod nif_activity_retry;
 mod nif_child;
 mod nif_child_engine;
 mod nif_child_spawn_retry;

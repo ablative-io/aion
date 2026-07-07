@@ -323,17 +323,25 @@ impl HistoryCursor {
                 }
                 Event::ActivityFailed {
                     activity_id: event_activity_id,
+                    error,
                     ..
                 } if event_activity_id == &activity_id => {
                     matched.push(index);
-                    // A reopen supersedes this recorded failure: treat
-                    // it like a non-terminal retry attempt and keep walking, so
-                    // a later recorded attempt resolves the activity, or — with
-                    // none yet — the walk exhausts and the activity re-dispatches
-                    // live.
+                    // A RETRYABLE failure is never a terminal (#197): it is one
+                    // attempt in the engine-driven retry trail. Keep walking to
+                    // the later recorded attempt or terminal — or, when the
+                    // trail dangles (a crash mid-retry), exhaust so the
+                    // activity re-dispatches live at the next attempt.
+                    //
+                    // A reopen likewise supersedes a recorded terminal failure:
+                    // treat it as a non-terminal attempt and keep walking, so a
+                    // later recorded attempt resolves the activity, or — with
+                    // none yet — the walk exhausts and the activity
+                    // re-dispatches live.
                     let superseded_by_reopen =
                         self.activity_reopened_after(index + 1, &activity_id);
-                    if !superseded_by_reopen
+                    if !error.is_retryable()
+                        && !superseded_by_reopen
                         && !self.has_later_activity_attempt_or_outcome(index + 1, &activity_id)
                     {
                         return self.consume_indices(matched);

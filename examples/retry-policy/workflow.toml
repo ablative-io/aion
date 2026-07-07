@@ -1,0 +1,11 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# Reference: docs/packaging.md.
+
+[[workflow]]
+entry_module = "retry_policy"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["flaky_call"]
+output = "retry-policy.aion"
