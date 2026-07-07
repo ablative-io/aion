@@ -32,7 +32,8 @@ fn emits_hello_golden() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn emitted_sources_do_not_call_direct_nondeterministic_runtime_apis() -> Result<(), Box<dyn Error>> {
+fn emitted_sources_do_not_call_direct_nondeterministic_runtime_apis() -> Result<(), Box<dyn Error>>
+{
     let emitted_sources = [
         emitted(include_str!("fixtures/hello.awl"))?,
         emitted(include_str!("fixtures/research_report.awl"))?,
@@ -64,12 +65,9 @@ fn emitted_research_report_compiles_against_local_aion_flow() -> Result<(), Box<
 
 fn compile_generated_module(module_name: &str, module_source: &str) -> Result<(), Box<dyn Error>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = root
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| {
-            io::Error::other("failed to resolve repository root from CARGO_MANIFEST_DIR")
-        })?;
+    let repo_root = root.parent().and_then(Path::parent).ok_or_else(|| {
+        io::Error::other("failed to resolve repository root from CARGO_MANIFEST_DIR")
+    })?;
     let project = unique_temp_project(module_name);
     fs::create_dir_all(project.join("src"))?;
     fs::write(
@@ -79,7 +77,10 @@ fn compile_generated_module(module_name: &str, module_source: &str) -> Result<()
             repo_root.join("gleam/aion_flow").display()
         ),
     )?;
-    fs::write(project.join("src").join(format!("{module_name}.gleam")), module_source)?;
+    fs::write(
+        project.join("src").join(format!("{module_name}.gleam")),
+        module_source,
+    )?;
 
     let output = Command::new("gleam")
         .arg("build")
