@@ -266,6 +266,10 @@ fn list_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(List(a)) { de
 fn option_to_json(value: Option(a), item_to_json: fn(a) -> json.Json) -> json.Json { json.nullable(value, item_to_json) }
 fn option_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(Option(a)) { decode.optional(item_decoder) }
 
+fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Result(b, AwlError) {
+  case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }
+}
+
 fn map_activity_error(result: Result(a, error.ActivityError)) -> Result(a, AwlError) {
   case result { Ok(value) -> Ok(value) Error(_) -> Error(ActivityFailed("activity failed")) }
 }

@@ -119,10 +119,7 @@ pub fn execute(input: ResearchReportInput) -> Result(Published, AwlError) {
   // One agent per question, parallel across workers, exactly-once on failover.
   use findings <- try(
     workflow.map(questions, fn(q) {
-      investigate_activity(
-        q,
-        corpus,
-      )
+      investigate_activity(q, corpus) |> activity.retry(activity.RetryPolicy(max_attempts: 3, backoff: activity.Fixed(duration.milliseconds(30000))))
     }) |> map_activity_error
   )
 
@@ -358,7 +355,7 @@ fn dir_to_json(value: Dir) -> json.Json {
   json.string(value.value)
 }
 fn dir_decoder() -> decode.Decoder(Dir) {
-  use value <- decode.string
+  use value <- decode.then(decode.string)
   decode.success(Dir(value: value))
 }
 
@@ -674,6 +671,10 @@ fn list_to_json(values: List(a), item_to_json: fn(a) -> json.Json) -> json.Json 
 fn list_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(List(a)) { decode.list(item_decoder) }
 fn option_to_json(value: Option(a), item_to_json: fn(a) -> json.Json) -> json.Json { json.nullable(value, item_to_json) }
 fn option_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(Option(a)) { decode.optional(item_decoder) }
+
+fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Result(b, AwlError) {
+  case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }
+}
 
 fn map_activity_error(result: Result(a, error.ActivityError)) -> Result(a, AwlError) {
   case result { Ok(value) -> Ok(value) Error(_) -> Error(ActivityFailed("activity failed")) }

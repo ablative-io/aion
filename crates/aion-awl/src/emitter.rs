@@ -6,6 +6,7 @@ use crate::{
 };
 
 /// Emit a complete Gleam workflow module for a parsed AWL document.
+#[must_use]
 pub fn emit(document: &Document) -> String {
     Emitter::new(document).emit()
 }
@@ -77,7 +78,8 @@ impl<'a> Emitter<'a> {
         for name in self.external_named_types() {
             self.line(&format!("pub type {name} {{"));
             self.indented(|this| {
-                this.line(&format!("{}(value: String)", constructor(&name)));
+                let ctor = constructor(&name);
+                this.line(&format!("{ctor}(value: String)"));
             });
             self.line("}");
             self.blank();
@@ -105,11 +107,13 @@ impl<'a> Emitter<'a> {
         I: IntoIterator<Item = (&'b str, &'b TypeRef)>,
     {
         self.line(&format!("pub type {name} {{"));
+        let ctor = constructor(name);
         self.indented(|this| {
-            this.line(&format!("{}(", constructor(name)));
+            this.line(&format!("{ctor}("));
             this.indented(|this| {
                 for (field_name, field_type) in fields {
-                    this.line(&format!("{}: {},", field_name, gleam_type(field_type)));
+                    let field_type = gleam_type(field_type);
+                    this.line(&format!("{field_name}: {field_type},"));
                 }
             });
             this.line(")");
@@ -128,9 +132,12 @@ impl<'a> Emitter<'a> {
         self.indented(|this| {
             this.line("workflow.define(");
             this.indented(|this| {
-                this.line(&format!("\"{}\",", this.document.workflow.name));
-                this.line(&format!("{}_codec(),", snake(&input_type)));
-                this.line(&format!("{}_codec(),", snake(&output_type)));
+                let workflow_name = &this.document.workflow.name;
+                let input_codec = snake(&input_type);
+                let output_codec = snake(&output_type);
+                this.line(&format!("\"{workflow_name}\","));
+                this.line(&format!("{input_codec}_codec(),"));
+                this.line(&format!("{output_codec}_codec(),"));
                 this.line("awl_error_codec(),");
                 this.line("execute,");
             });
@@ -150,15 +157,16 @@ impl<'a> Emitter<'a> {
             this.indented(|this| {
                 this.line("Ok(raw_json) ->");
                 this.indented(|this| {
-                    this.line(&format!("case {}_codec().decode(raw_json) {{", snake(&input_type)));
+                    let input_codec = snake(&input_type);
+                    this.line(&format!("case {input_codec}_codec().decode(raw_json) {{"));
                     this.indented(|this| {
                         this.line("Ok(input) ->");
                         this.indented(|this| {
                             this.line("case execute(input) {");
                             this.indented(|this| {
+                                let output_codec = snake(&output_type);
                                 this.line(&format!(
-                                    "Ok(result) -> Ok({}_codec().encode(result))",
-                                    snake(&output_type)
+                                    "Ok(result) -> Ok({output_codec}_codec().encode(result))"
                                 ));
                                 this.line("Error(workflow_error) -> Error(workflow_error)");
                             });
@@ -188,7 +196,8 @@ impl<'a> Emitter<'a> {
         ));
         self.indented(|this| {
             for input in &this.document.inputs {
-                this.line(&format!("let {} = input.{}", input.name, input.name));
+                let name = &input.name;
+                this.line(&format!("let {name} = input.{name}"));
             }
             if !this.document.inputs.is_empty() {
                 this.blank();
@@ -196,7 +205,8 @@ impl<'a> Emitter<'a> {
             for step in &this.document.steps {
                 this.emit_step(step);
             }
-            this.line(&format!("Ok({})", expr(&this.document.finish)));
+            let finish = expr(&this.document.finish);
+            this.line(&format!("Ok({finish})"));
         });
         self.line("}");
         self.blank();
@@ -210,7 +220,8 @@ impl<'a> Emitter<'a> {
         }
         if let Some(when) = &step.when {
             if let Some(name) = step.bind_as.as_ref().map(|bind| bind.name.as_str()) {
-                self.line(&format!("let {name} = case {} {{", expr(when)));
+                let guard = expr(when);
+                self.line(&format!("let {name} = case {guard} {{"));
                 self.indented(|this| {
                     this.line("True -> {");
                     this.indented(|this| this.emit_step_result(step));
@@ -219,7 +230,8 @@ impl<'a> Emitter<'a> {
                 });
                 self.line("}");
             } else {
-                self.line(&format!("case {} {{", expr(when)));
+                let guard = expr(when);
+                self.line(&format!("case {guard} {{"));
                 self.indented(|this| {
                     this.line("True -> {");
                     this.indented(|this| this.emit_step_result(step));
@@ -257,19 +269,13 @@ impl<'a> Emitter<'a> {
     fn emit_step_expr(&mut self, step: &StepDecl) {
         if let Some(each) = &step.each {
             if let StepOp::Do(CallTarget::Action(call)) = &step.op {
-                self.line(&format!(
-                    "workflow.map({}, fn({}) {{",
-                    expr(&each.in_expr),
-                    each.name
-                ));
+                let items = expr(&each.in_expr);
+                let item_name = &each.name;
+                self.line(&format!("workflow.map({items}, fn({item_name}) {{"));
                 self.indented(|this| {
-                    this.line(&format!("{}_activity(", call.name));
-                    this.indented(|this| {
-                        for arg in &call.args {
-                            this.line(&format!("{},", expr(arg)));
-                        }
-                    });
-                    this.line(")");
+                    let mut activity = String::new();
+                    this.write_activity_value(&mut activity, call, step);
+                    this.line(&activity);
                 });
                 self.line("}) |> map_activity_error");
             } else {
@@ -288,18 +294,18 @@ impl<'a> Emitter<'a> {
                 );
             }
             StepOp::Sleep(duration) => {
+                let duration = duration_expr(duration);
                 let _ = write!(
                     inner,
-                    "workflow.sleep({}) |> map_timer_error",
-                    duration_expr(duration)
+                    "workflow.sleep({duration}) |> map_timer_error"
                 );
             }
         }
 
         if let Some(timeout) = &step.timeout {
+            let duration = duration_expr(timeout);
             self.line(&format!(
-                "case workflow.with_timeout(fn() {{ {inner} }}, {}) {{",
-                duration_expr(timeout)
+                "case workflow.with_timeout(fn() {{ {inner} }}, {duration}) {{"
             ));
             self.indented(|this| {
                 this.line("Ok(value) -> Ok(value)");
@@ -307,7 +313,8 @@ impl<'a> Emitter<'a> {
                 this.indented(|this| {
                     if let Some(handler) = &step.on_timeout {
                         if let HandlerTerminal::Finish(_) = &handler.terminal {
-                            this.line(&format!("Ok({})", this.default_step_value(step)));
+                            let value = this.default_step_value(step);
+                            this.line(&format!("Ok({value})"));
                         } else {
                             this.emit_handler(handler);
                         }
@@ -368,63 +375,73 @@ impl<'a> Emitter<'a> {
             let fields = decl
                 .fields
                 .iter()
-                .map(|field| format!("{}: {}", field.name, self.default_value(&field.ty)))
+                .map(|field| {
+                    let name = &field.name;
+                    let value = self.default_value(&field.ty);
+                    format!("{name}: {value}")
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{}({fields})", constructor(name))
+            let ctor = constructor(name);
+            format!("{ctor}({fields})")
         } else {
-            format!("{}(value: \"\")", constructor(name))
+            let ctor = constructor(name);
+            format!("{ctor}(value: \"\")")
+        }
+    }
+
+    fn write_activity_value(&self, inner: &mut String, call: &CallExpr, step: &StepDecl) {
+        inner.push_str(&call.name);
+        inner.push_str("_activity(");
+        for (index, arg) in call.args.iter().enumerate() {
+            if index > 0 {
+                inner.push_str(", ");
+            }
+            inner.push_str(&expr(arg));
+        }
+        inner.push(')');
+        if let Some(retry) = step
+            .retry
+            .as_ref()
+            .or_else(|| self.action(call).and_then(|a| a.retry.as_ref()))
+        {
+            inner.push_str(" |> activity.retry(");
+            inner.push_str(&retry_policy(retry));
+            inner.push(')');
+        }
+        if let Some(timeout) = step
+            .timeout
+            .as_ref()
+            .or_else(|| self.action(call).and_then(|a| a.timeout.as_ref()))
+        {
+            inner.push_str(" |> activity.timeout(");
+            inner.push_str(&duration_expr(timeout));
+            inner.push(')');
+        }
+        if let Some(queue) = step
+            .queue
+            .as_ref()
+            .or_else(|| self.action(call).and_then(|a| a.queue.as_ref()))
+        {
+            inner.push_str(" |> activity.task_queue(");
+            inner.push_str(&string_lit(queue));
+            inner.push(')');
+        }
+        if let Some(node) = step
+            .node
+            .as_ref()
+            .or_else(|| self.action(call).and_then(|a| a.node.as_ref()))
+        {
+            inner.push_str(" |> activity.node(");
+            inner.push_str(&string_lit(node));
+            inner.push(')');
         }
     }
 
     fn write_call_pipeline(&self, inner: &mut String, target: &CallTarget, step: &StepDecl) {
         match target {
             CallTarget::Action(call) => {
-                let _ = write!(inner, "{}", call.name);
-                inner.push_str("_activity(");
-                for (index, arg) in call.args.iter().enumerate() {
-                    if index > 0 {
-                        inner.push_str(", ");
-                    }
-                    inner.push_str(&expr(arg));
-                }
-                inner.push(')');
-                if let Some(retry) = step
-                    .retry
-                    .as_ref()
-                    .or_else(|| self.action(call).and_then(|a| a.retry.as_ref()))
-                {
-                    inner.push_str(" |> activity.retry(");
-                    inner.push_str(&retry_policy(retry));
-                    inner.push(')');
-                }
-                if let Some(timeout) = step
-                    .timeout
-                    .as_ref()
-                    .or_else(|| self.action(call).and_then(|a| a.timeout.as_ref()))
-                {
-                    inner.push_str(" |> activity.timeout(");
-                    inner.push_str(&duration_expr(timeout));
-                    inner.push(')');
-                }
-                if let Some(queue) = step
-                    .queue
-                    .as_ref()
-                    .or_else(|| self.action(call).and_then(|a| a.queue.as_ref()))
-                {
-                    inner.push_str(" |> activity.task_queue(");
-                    inner.push_str(&string_lit(queue));
-                    inner.push(')');
-                }
-                if let Some(node) = step
-                    .node
-                    .as_ref()
-                    .or_else(|| self.action(call).and_then(|a| a.node.as_ref()))
-                {
-                    inner.push_str(" |> activity.node(");
-                    inner.push_str(&string_lit(node));
-                    inner.push(')');
-                }
+                self.write_activity_value(inner, call, step);
                 inner.push_str(" |> workflow.run |> map_activity_error");
             }
             CallTarget::Child {
@@ -455,7 +472,10 @@ impl<'a> Emitter<'a> {
                 this.line(&format!("use _ <- try({inner})"));
             }
             match &handler.terminal {
-                HandlerTerminal::Finish(value) => this.line(&format!("Ok({})", expr(value))),
+                HandlerTerminal::Finish(value) => {
+                    let value = expr(value);
+                    this.line(&format!("Ok({value})"));
+                }
                 HandlerTerminal::Fail(_) => this.line("Error(Failed)"),
             }
         });
@@ -464,7 +484,8 @@ impl<'a> Emitter<'a> {
 
     fn activity_wrappers(&mut self) {
         for action in &self.document.actions {
-            let input_name = format!("{}Input", pascal(&action.name));
+            let action_type_name = pascal(&action.name);
+            let input_name = format!("{action_type_name}Input");
             self.emit_type(
                 &input_name,
                 action
@@ -472,29 +493,37 @@ impl<'a> Emitter<'a> {
                     .iter()
                     .map(|field| (field.name.as_str(), &field.ty)),
             );
-            self.line(&format!("fn {}_activity(", action.name));
+            let action_name = &action.name;
+            self.line(&format!("fn {action_name}_activity("));
             self.indented(|this| {
                 for param in &action.params {
-                    this.line(&format!("{}: {},", param.name, gleam_type(&param.ty)));
+                    let name = &param.name;
+                    let ty = gleam_type(&param.ty);
+                    this.line(&format!("{name}: {ty},"));
                 }
             });
+            let return_type = gleam_type(&action.returns);
             self.line(&format!(
-                ") -> activity.Activity({input_name}, {}) {{",
-                gleam_type(&action.returns)
+                ") -> activity.Activity({input_name}, {return_type}) {{"
             ));
             self.indented(|this| {
                 this.line("activity.new(");
                 this.indented(|this| {
-                    this.line(&format!("\"{}\",", action.name));
-                    this.line(&format!("{}(", constructor(&input_name)));
+                    let action_name = &action.name;
+                    let ctor = constructor(&input_name);
+                    this.line(&format!("\"{action_name}\","));
+                    this.line(&format!("{ctor}("));
                     this.indented(|this| {
                         for param in &action.params {
-                            this.line(&format!("{}: {},", param.name, param.name));
+                            let name = &param.name;
+                            this.line(&format!("{name}: {name},"));
                         }
                     });
                     this.line("),");
-                    this.line(&format!("{}_codec(),", snake(&input_name)));
-                    this.line(&format!("{}_codec(),", codec_name(&action.returns)));
+                    let input_codec = snake(&input_name);
+                    let return_codec = codec_name(&action.returns);
+                    this.line(&format!("{input_codec}_codec(),"));
+                    this.line(&format!("{return_codec}_codec(),"));
                     this.line("fn(_) { Error(error.terminal(\"activity body is provided by a worker\")) },");
                 });
                 this.line(")");
@@ -506,16 +535,15 @@ impl<'a> Emitter<'a> {
 
     fn signal_refs(&mut self) {
         for signal_decl in &self.document.signals {
+            let signal_name = &signal_decl.name;
+            let signal_type = gleam_type(&signal_decl.ty);
             self.line(&format!(
-                "fn {}_signal() -> signal.SignalRef({}) {{",
-                signal_decl.name,
-                gleam_type(&signal_decl.ty)
+                "fn {signal_name}_signal() -> signal.SignalRef({signal_type}) {{"
             ));
             self.indented(|this| {
+                let codec = codec_name(&signal_decl.ty);
                 this.line(&format!(
-                    "signal.new(\"{}\", {}_codec())",
-                    signal_decl.name,
-                    codec_name(&signal_decl.ty)
+                    "signal.new(\"{signal_name}\", {codec}_codec())"
                 ));
             });
             self.line("}");
@@ -525,7 +553,9 @@ impl<'a> Emitter<'a> {
 
     fn codecs(&mut self) {
         self.line("fn awl_error_codec() -> Codec(AwlError) {");
-        self.indented(|this| this.line("codec.json_codec(awl_error_to_json, awl_error_decoder())"));
+        self.indented(|this| {
+            this.line("codec.json_codec(awl_error_to_json, awl_error_decoder())");
+        });
         self.line("}");
         self.blank();
         self.line("fn awl_error_to_json(error_value: AwlError) -> json.Json {");
@@ -588,8 +618,9 @@ impl<'a> Emitter<'a> {
             );
         }
         for action in &self.document.actions {
+            let action_type_name = pascal(&action.name);
             self.emit_codec(
-                &format!("{}Input", pascal(&action.name)),
+                &format!("{action_type_name}Input"),
                 action
                     .params
                     .iter()
@@ -612,19 +643,21 @@ impl<'a> Emitter<'a> {
         self.indented(|this| {
             this.line(&format!(
                 "codec.json_codec({codec_fn}_to_json, {codec_fn}_decoder())"
-            ))
+            ));
         });
         self.line("}");
         self.line(&format!(
             "fn {codec_fn}_to_json(value: {name}) -> json.Json {{"
         ));
-        self.indented(|this| this.line("json.string(value.value)"));
+        self.indented(|this| {
+            this.line("json.string(value.value)");
+        });
         self.line("}");
         self.line(&format!(
             "fn {codec_fn}_decoder() -> decode.Decoder({name}) {{"
         ));
         self.indented(|this| {
-            this.line("use value <- decode.string");
+            this.line("use value <- decode.then(decode.string)");
             this.line(&format!("decode.success({constructor_name}(value: value))"));
         });
         self.line("}");
@@ -642,7 +675,7 @@ impl<'a> Emitter<'a> {
         self.indented(|this| {
             this.line(&format!(
                 "codec.json_codec({codec_fn}_to_json, {codec_fn}_decoder())"
-            ))
+            ));
         });
         self.line("}");
         self.blank();
@@ -653,11 +686,9 @@ impl<'a> Emitter<'a> {
             this.line("json.object([");
             this.indented(|this| {
                 for (field_name, field_type) in &fields {
+                    let codec = codec_name(field_type);
                     this.line(&format!(
-                        "#(\"{}\", {}_to_json({value_var}.{})),",
-                        field_name,
-                        codec_name(field_type),
-                        field_name
+                        "#(\"{field_name}\", {codec}_to_json({value_var}.{field_name})),"
                     ));
                 }
             });
@@ -670,17 +701,16 @@ impl<'a> Emitter<'a> {
         ));
         self.indented(|this| {
             for (field_name, field_type) in &fields {
+                let codec = codec_name(field_type);
                 this.line(&format!(
-                    "use {} <- decode.field(\"{}\", {}_decoder())",
-                    field_name,
-                    field_name,
-                    codec_name(field_type)
+                    "use {field_name} <- decode.field(\"{field_name}\", {codec}_decoder())"
                 ));
             }
-            this.line(&format!("decode.success({}(", constructor(name)));
+            let ctor = constructor(name);
+            this.line(&format!("decode.success({ctor}("));
             this.indented(|this| {
                 for (field_name, _) in &fields {
-                    this.line(&format!("{}: {},", field_name, field_name));
+                    this.line(&format!("{field_name}: {field_name},"));
                 }
             });
             this.line("))");
@@ -725,7 +755,7 @@ impl<'a> Emitter<'a> {
                 self.indented(|this| {
                     this.line(&format!(
                         "codec.json_codec({name}_to_json, {name}_decoder())"
-                    ))
+                    ));
                 });
                 self.line("}");
                 self.line(&format!(
@@ -733,14 +763,16 @@ impl<'a> Emitter<'a> {
                     gleam_type(ty)
                 ));
                 self.indented(|this| {
-                    this.line(&format!("list_to_json(values, {inner_name}_to_json)"))
+                    this.line(&format!("list_to_json(values, {inner_name}_to_json)"));
                 });
                 self.line("}");
                 self.line(&format!(
                     "fn {name}_decoder() -> decode.Decoder({}) {{",
                     gleam_type(ty)
                 ));
-                self.indented(|this| this.line(&format!("list_decoder({inner_name}_decoder())")));
+                self.indented(|this| {
+                    this.line(&format!("list_decoder({inner_name}_decoder())"));
+                });
                 self.line("}");
                 self.blank();
             }
@@ -754,7 +786,7 @@ impl<'a> Emitter<'a> {
                 self.indented(|this| {
                     this.line(&format!(
                         "codec.json_codec({name}_to_json, {name}_decoder())"
-                    ))
+                    ));
                 });
                 self.line("}");
                 self.line(&format!(
@@ -762,14 +794,16 @@ impl<'a> Emitter<'a> {
                     gleam_type(ty)
                 ));
                 self.indented(|this| {
-                    this.line(&format!("option_to_json(value, {inner_name}_to_json)"))
+                    this.line(&format!("option_to_json(value, {inner_name}_to_json)"));
                 });
                 self.line("}");
                 self.line(&format!(
                     "fn {name}_decoder() -> decode.Decoder({}) {{",
                     gleam_type(ty)
                 ));
-                self.indented(|this| this.line(&format!("option_decoder({inner_name}_decoder())")));
+                self.indented(|this| {
+                    this.line(&format!("option_decoder({inner_name}_decoder())"));
+                });
                 self.line("}");
                 self.blank();
             }
@@ -807,6 +841,12 @@ impl<'a> Emitter<'a> {
     }
 
     fn error_mappers(&mut self) {
+        self.line("fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Result(b, AwlError) {");
+        self.indented(|this| {
+            this.line("case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }");
+        });
+        self.line("}");
+        self.blank();
         self.line("fn map_activity_error(result: Result(a, error.ActivityError)) -> Result(a, AwlError) {");
         self.indented(|this| {
             this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(ActivityFailed(\"activity failed\")) }");
@@ -884,7 +924,8 @@ impl<'a> Emitter<'a> {
     }
 
     fn input_type_name(&self) -> String {
-        format!("{}Input", pascal(&self.document.workflow.name))
+        let workflow_type_name = pascal(&self.document.workflow.name);
+        format!("{workflow_type_name}Input")
     }
 
     fn output_type_name(&self) -> String {
@@ -982,16 +1023,28 @@ fn collect_composite_type(ty: &TypeRef, types: &mut Vec<TypeRef>) {
 fn gleam_type(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Named { name, .. } => name.clone(),
-        TypeRef::List { inner, .. } => format!("List({})", gleam_type(inner)),
-        TypeRef::Option { inner, .. } => format!("Option({})", gleam_type(inner)),
+        TypeRef::List { inner, .. } => {
+            let inner = gleam_type(inner);
+            format!("List({inner})")
+        }
+        TypeRef::Option { inner, .. } => {
+            let inner = gleam_type(inner);
+            format!("Option({inner})")
+        }
     }
 }
 
 fn codec_name(ty: &TypeRef) -> String {
     match ty {
         TypeRef::Named { name, .. } => snake(name),
-        TypeRef::List { inner, .. } => format!("list_{}", codec_name(inner)),
-        TypeRef::Option { inner, .. } => format!("option_{}", codec_name(inner)),
+        TypeRef::List { inner, .. } => {
+            let inner = codec_name(inner);
+            format!("list_{inner}")
+        }
+        TypeRef::Option { inner, .. } => {
+            let inner = codec_name(inner);
+            format!("option_{inner}")
+        }
     }
 }
 
@@ -1007,25 +1060,34 @@ fn expr(value: &Expr) -> String {
             format!("[{values}]")
         }
         Expr::Ref { name, .. } => name.clone(),
-        Expr::Field { base, field, .. } => format!("{}.{}", expr(base), field),
+        Expr::Field { base, field, .. } => {
+            let base = expr(base);
+            format!("{base}.{field}")
+        }
         Expr::Record { name, fields, .. } => {
             let fields = fields
                 .iter()
-                .map(|field| format!("{}: {}", field.name, expr(&field.value)))
+                .map(|field| {
+                    let name = &field.name;
+                    let value = expr(&field.value);
+                    format!("{name}: {value}")
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{}({fields})", constructor(name))
+            let ctor = constructor(name);
+            format!("{ctor}({fields})")
         }
-        Expr::Not { expr: inner, .. } => format!("!{}", parenthesized(inner)),
+        Expr::Not { expr: inner, .. } => {
+            let inner = parenthesized(inner);
+            format!("!{inner}")
+        }
         Expr::Binary {
             left, op, right, ..
         } => {
-            format!(
-                "{} {} {}",
-                parenthesized(left),
-                binary_op(*op),
-                parenthesized(right)
-            )
+            let left = parenthesized(left);
+            let op = binary_op(*op);
+            let right = parenthesized(right);
+            format!("{left} {op} {right}")
         }
     }
 }
@@ -1041,7 +1103,10 @@ fn parenthesized(value: &Expr) -> String {
         | Expr::Ref { .. }
         | Expr::Field { .. }
         | Expr::Record { .. } => expr(value),
-        Expr::Not { .. } | Expr::Binary { .. } => format!("({})", expr(value)),
+        Expr::Not { .. } | Expr::Binary { .. } => {
+            let value = expr(value);
+            format!("({value})")
+        }
     }
 }
 

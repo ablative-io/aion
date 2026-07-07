@@ -1,3 +1,5 @@
+//! Integration tests for AWL-to-Gleam emission.
+
 use std::error::Error;
 use std::fs;
 use std::io;
