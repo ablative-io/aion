@@ -81,6 +81,13 @@ pub struct ActionDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindDecl {
+    pub span: Span,
+    pub trivia: Trivia,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepDecl {
     pub span: Span,
     pub trivia: Trivia,
@@ -95,7 +102,7 @@ pub struct StepDecl {
     pub timeout: Option<DurationLiteral>,
     pub on_timeout: Option<HandlerBlock>,
     pub on_failure: Option<HandlerBlock>,
-    pub bind_as: Option<String>,
+    pub bind_as: Option<BindDecl>,
     pub queue: Option<String>,
     pub node: Option<String>,
 }

@@ -180,8 +180,12 @@ impl Printer {
         if let Some(handler) = &step.on_failure {
             self.handler("failure", handler);
         }
-        if let Some(name) = &step.bind_as {
-            self.line(2, &format!("as {name}"), None);
+        if let Some(bind) = &step.bind_as {
+            self.line(
+                2,
+                &format!("as {}", bind.name),
+                bind.trivia.trailing.as_ref(),
+            );
         }
         if let Some(queue) = &step.queue {
             self.line(2, &format!("queue {}", string(queue)), None);

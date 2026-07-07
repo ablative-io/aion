@@ -10,9 +10,9 @@ use std::error::Error;
 use std::fmt;
 
 use crate::ast::{
-    AboutDecl, ActionDecl, BinaryOp, CallExpr, CallTarget, Comment, Document, DurationLiteral,
-    EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField, RetrySpec,
-    Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl, join_span,
+    AboutDecl, ActionDecl, BinaryOp, BindDecl, CallExpr, CallTarget, Comment, Document,
+    DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField,
+    RetrySpec, Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl, join_span,
 };
 use crate::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 
@@ -529,7 +529,16 @@ impl LineParser {
                 "on" if line.code == "on failure" => {
                     on_failure = Some(self.parse_handler(line.span)?);
                 }
-                "as" => bind_as = Some(line.code.strip_prefix("as").unwrap().trim().to_owned()),
+                "as" => {
+                    bind_as = Some(BindDecl {
+                        span: line.span,
+                        trivia: Trivia {
+                            leading: Vec::new(),
+                            trailing: line.trailing.clone(),
+                        },
+                        name: line.code.strip_prefix("as").unwrap().trim().to_owned(),
+                    });
+                }
                 "queue" => queue = Some(parse_string_field(&line, "queue")?),
                 "node" => node = Some(parse_string_field(&line, "node")?),
                 other => {
