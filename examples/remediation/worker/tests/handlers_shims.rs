@@ -311,6 +311,177 @@ fn gate1_flags_a_test_name_that_matched_nothing() {
     );
 }
 
+/// Write a `[package]`-bearing `Cargo.toml` at `rel` under the workspace, so
+/// gate 1's crate derivation (walk up to the nearest manifest) finds it.
+fn write_crate_manifest(work: &std::path::Path, rel: &str, name: &str) {
+    let dir = work.join(rel);
+    fs::create_dir_all(&dir).expect("crate dir");
+    fs::write(
+        dir.join("Cargo.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+    )
+    .expect("manifest");
+}
+
+#[test]
+fn gate1_fails_when_an_authored_crate_is_clippy_dirty() {
+    let shims = Shims::new();
+    gate1_git(&shims);
+    // The authored test fails for the RIGHT reason, but its crate carries a
+    // clippy lint — the exact paradox: gate 2's workspace-wide clippy would
+    // fail the developer on a file they are forbidden to modify.
+    shims.install(
+        "cargo",
+        "case \"$1\" in \
+           test) echo 'running 1 test'; echo 'test yg268 ... FAILED: teardown deleted uncommitted work' 1>&2; exit 101 ;; \
+           clippy) echo 'error: pedantic lint in tests/yg268_teardown.rs' 1>&2; exit 101 ;; \
+           *) exit 0 ;; \
+         esac",
+    );
+    let work = workdir();
+    write_crate_manifest(work.path(), "crates/yg", "yg");
+
+    let outcome = handlers::gate1(
+        &shims.shell(),
+        gate1_input(
+            work.path(),
+            vec![check("teardown deleted uncommitted work")],
+        ),
+    )
+    .expect("gate1 ok (a clippy-dirty authored crate is a recorded gate failure)");
+    assert!(!outcome.pass);
+    // The fail-first re-run itself was fine; clippy alone sank the gate.
+    assert!(outcome.results[0].failed);
+    assert!(outcome.results[0].signature_matched);
+    assert!(
+        outcome.detail.contains("crate `yg`") && outcome.detail.contains("clippy"),
+        "detail: {}",
+        outcome.detail
+    );
+    assert!(
+        outcome
+            .detail
+            .contains("pedantic lint in tests/yg268_teardown.rs"),
+        "the clippy output rides back as evidence: {}",
+        outcome.detail
+    );
+    assert!(
+        shims
+            .log()
+            .contains("clippy -p yg --all-targets -- -D warnings"),
+        "log: {}",
+        shims.log()
+    );
+}
+
+#[test]
+fn gate1_passes_when_the_authored_crate_is_clippy_clean() {
+    let shims = Shims::new();
+    gate1_git(&shims);
+    shims.install(
+        "cargo",
+        "case \"$1\" in \
+           test) echo 'running 1 test'; echo 'test yg268 ... FAILED: teardown deleted uncommitted work' 1>&2; exit 101 ;; \
+           clippy) exit 0 ;; \
+           *) exit 0 ;; \
+         esac",
+    );
+    let work = workdir();
+    write_crate_manifest(work.path(), "crates/yg", "yg");
+
+    let outcome = handlers::gate1(
+        &shims.shell(),
+        gate1_input(
+            work.path(),
+            vec![check("teardown deleted uncommitted work")],
+        ),
+    )
+    .expect("gate1 ok");
+    assert!(
+        outcome.pass,
+        "a clean clippy must leave the verdict unchanged; detail: {}",
+        outcome.detail
+    );
+    assert!(
+        shims.log().contains("clippy -p yg"),
+        "the check must actually have run: {}",
+        shims.log()
+    );
+}
+
+#[test]
+fn gate1_skips_clippy_when_there_are_no_authored_files() {
+    let shims = Shims::new();
+    gate1_git_with_diff(&shims, "");
+    // A clippy that WOULD fail — it must never be invoked.
+    shims.install(
+        "cargo",
+        "case \"$1\" in clippy) echo 'error: lint' 1>&2; exit 101 ;; *) exit 0 ;; esac",
+    );
+    let work = workdir();
+    write_crate_manifest(work.path(), "", "rootpkg");
+
+    let outcome =
+        handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![])).expect("gate1 ok");
+    assert!(outcome.pass, "detail: {}", outcome.detail);
+    assert!(
+        !shims.log().contains("clippy"),
+        "zero authored files must skip the clippy check: {}",
+        shims.log()
+    );
+}
+
+#[test]
+fn gate1_runs_clippy_once_per_distinct_authored_crate_and_names_the_dirty_one() {
+    let shims = Shims::new();
+    // Two authored files in crate_a (deduplicated to ONE clippy run), one in
+    // crate_b; crate_a is clean, crate_b is dirty. The cargo test re-run also
+    // fails for the WRONG reason, so the detail must lead with that primary
+    // signal and only then the clippy failure.
+    gate1_git_with_diff(
+        &shims,
+        "crates/a/tests/one_test.rs\\ncrates/a/tests/two_test.rs\\ncrates/b/tests/three_test.rs\\n",
+    );
+    shims.install(
+        "cargo",
+        "case \"$1\" in \
+           test) echo 'running 1 test'; echo 'error[E0432]: unresolved import' 1>&2; exit 101 ;; \
+           clippy) case \"$*\" in *crate_b*) echo 'error: lint in crate_b' 1>&2; exit 101 ;; *) exit 0 ;; esac ;; \
+           *) exit 0 ;; \
+         esac",
+    );
+    let work = workdir();
+    write_crate_manifest(work.path(), "crates/a", "crate_a");
+    write_crate_manifest(work.path(), "crates/b", "crate_b");
+
+    let outcome = handlers::gate1(&shims.shell(), gate1_input(work.path(), vec![check("sig")]))
+        .expect("gate1 ok");
+    assert!(!outcome.pass);
+    assert!(
+        outcome.detail.contains("crate `crate_b`"),
+        "the failing crate must be named: {}",
+        outcome.detail
+    );
+    let wrong_reason = outcome
+        .detail
+        .find("wrong reason")
+        .expect("wrong-reason line");
+    let clippy = outcome.detail.find("clippy").expect("clippy line");
+    assert!(
+        wrong_reason < clippy,
+        "the wrong-reason failure stays the primary signal: {}",
+        outcome.detail
+    );
+    let log = shims.log();
+    assert_eq!(
+        log.matches("clippy -p ").count(),
+        2,
+        "one clippy run per DISTINCT crate: {log}"
+    );
+    assert!(log.contains("clippy -p crate_a"), "log: {log}");
+    assert!(log.contains("clippy -p crate_b"), "log: {log}");
+}
+
 #[test]
 fn gate1_fails_when_the_authored_tests_are_not_committed() {
     let shims = Shims::new();
