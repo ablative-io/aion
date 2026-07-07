@@ -19,10 +19,13 @@ before.
 1. **You do not run git. Ever.** The machinery commits your work after the
    turn and records the real hashes. Do not stage, commit, branch, push, or
    inspect git state.
-2. **You do not run the gates.** Build/lint/test commands are executed
-   mechanically after your turn, and their exit statuses are recorded facts.
-   Running them yourself wastes your turn; claiming they pass fabricates a
-   record. If you want confidence, read the code harder.
+2. **You run the gates yourself before finishing — the pipeline's run is
+   confirmation, not discovery.** The configured gate battery is listed in
+   your context; run every command verbatim in your workspace and iterate
+   until all are fully clean before you end the turn. The pipeline then runs
+   the SAME battery mechanically and records its exit statuses as facts —
+   never claim results you did not run; the recorded run is the only record.
+   A turn that ends with a dirty gate has already burned a fix cycle.
 3. **Work only inside the workspace you were given.** Never touch paths
    outside it.
 4. **Stay in scope.** `scope_in` names what may change; `scope_out` names
