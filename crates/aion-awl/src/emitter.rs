@@ -1,20 +1,91 @@
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
 use std::fmt::Write as _;
+use std::mem;
 
 use crate::{
     ActionDecl, BinaryOp, CallExpr, CallTarget, Document, DurationLiteral, DurationUnit, Expr,
-    HandlerBlock, HandlerTerminal, RetrySpec, StepDecl, StepOp, TypeRef,
+    HandlerBlock, HandlerTerminal, RetrySpec, Span, Spanned, StepDecl, StepOp, TypeRef,
 };
 
+/// An error produced while lowering a parsed AWL document to Gleam.
+///
+/// Emission fails when a document uses a construct the emitter cannot lower
+/// faithfully (rather than emitting panicking or non-compiling Gleam).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmitError {
+    /// The span of the construct that could not be lowered.
+    pub span: Span,
+    /// What was wrong and, where possible, what to do instead.
+    pub message: String,
+}
+
+impl EmitError {
+    fn new(span: Span, message: impl Into<String>) -> Self {
+        Self {
+            span,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for EmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} at line {}, column {}",
+            self.message, self.span.line, self.span.column
+        )
+    }
+}
+
+impl Error for EmitError {}
+
 /// Emit a complete Gleam workflow module for a parsed AWL document.
-#[must_use]
-pub fn emit(document: &Document) -> String {
+///
+/// # Errors
+///
+/// Returns [`EmitError`] when the document uses a construct that cannot be
+/// lowered faithfully (for example `each` on a non-action step, a
+/// `when`-guarded rebind of a name with no prior binding, or routing fields
+/// on a child workflow call).
+pub fn emit(document: &Document) -> Result<String, EmitError> {
     Emitter::new(document).emit()
+}
+
+/// The type the emitter knows for a value binding while walking the steps.
+#[derive(Debug, Clone)]
+enum Binding {
+    /// The binding has a statically-known AWL type.
+    Typed(TypeRef),
+    /// The binding is a child-workflow result with no contract in this
+    /// revision (the checker's opaque-child rule).
+    Opaque,
+}
+
+/// A step handler whose terminal is `finish`, which must terminate the whole
+/// workflow with that value (continuation nesting).
+enum TerminatingHandler<'a> {
+    Timeout(&'a HandlerBlock),
+    Failure(&'a HandlerBlock),
 }
 
 struct Emitter<'a> {
     document: &'a Document,
     out: String,
     indent: usize,
+    /// Value bindings in scope, keyed by their original AWL names.
+    bindings: HashMap<String, Binding>,
+    /// Rendered `repeat` loop functions, emitted after `execute`.
+    loop_fns: Vec<String>,
+    /// Names of already-rendered loop functions (guarded steps emit their
+    /// continuation twice, which would otherwise duplicate the loop).
+    loop_fn_names: HashSet<String>,
+    /// Emit the encode-only JSON codec used for child workflow inputs.
+    uses_child_calls: bool,
+    /// Emit the bounded retry-with-backoff helper for child workflow calls.
+    uses_child_retry: bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -23,19 +94,29 @@ impl<'a> Emitter<'a> {
             document,
             out: String::new(),
             indent: 0,
+            bindings: HashMap::new(),
+            loop_fns: Vec::new(),
+            loop_fn_names: HashSet::new(),
+            uses_child_calls: false,
+            uses_child_retry: false,
         }
     }
 
-    fn emit(mut self) -> String {
+    fn emit(mut self) -> Result<String, EmitError> {
         self.header();
         self.types();
         self.definition();
         self.run();
-        self.execute();
+        self.execute()?;
+        let loop_fns = mem::take(&mut self.loop_fns);
+        for loop_fn in loop_fns {
+            self.out.push_str(&loop_fn);
+            self.blank();
+        }
         self.activity_wrappers();
         self.signal_refs();
         self.codecs();
-        self.out
+        Ok(self.out)
     }
 
     fn header(&mut self) {
@@ -64,13 +145,13 @@ impl<'a> Emitter<'a> {
     fn types(&mut self) {
         self.line("pub type AwlError {");
         self.indented(|this| {
-            this.line("DecodeInputFailed(String)");
-            this.line("ActivityFailed(String)");
-            this.line("SignalFailed(String)");
-            this.line("ChildFailed(String)");
-            this.line("TimerFailed(String)");
-            this.line("TimedOut(String)");
-            this.line("Failed");
+            this.line("AwlDecodeInputFailed(String)");
+            this.line("AwlActivityFailed(String)");
+            this.line("AwlSignalFailed(String)");
+            this.line("AwlChildFailed(String)");
+            this.line("AwlTimerFailed(String)");
+            this.line("AwlTimedOut(String)");
+            this.line("AwlFailed");
         });
         self.line("}");
         self.blank();
@@ -106,17 +187,23 @@ impl<'a> Emitter<'a> {
     where
         I: IntoIterator<Item = (&'b str, &'b TypeRef)>,
     {
+        let fields = fields.into_iter().collect::<Vec<_>>();
         self.line(&format!("pub type {name} {{"));
         let ctor = constructor(name);
         self.indented(|this| {
-            this.line(&format!("{ctor}("));
-            this.indented(|this| {
-                for (field_name, field_type) in fields {
-                    let field_type = gleam_type(field_type);
-                    this.line(&format!("{field_name}: {field_type},"));
-                }
-            });
-            this.line(")");
+            if fields.is_empty() {
+                this.line(&ctor);
+            } else {
+                this.line(&format!("{ctor}("));
+                this.indented(|this| {
+                    for (field_name, field_type) in fields {
+                        let field_name = ident(field_name);
+                        let field_type = gleam_type(field_type);
+                        this.line(&format!("{field_name}: {field_type},"));
+                    }
+                });
+                this.line(")");
+            }
         });
         self.line("}");
         self.blank();
@@ -174,12 +261,12 @@ impl<'a> Emitter<'a> {
                         });
                         this.line("Error(codec.DecodeError(reason: reason, path: _)) ->");
                         this.indented(|this| {
-                            this.line("Error(DecodeInputFailed(\"failed to decode workflow input: \" <> reason))");
+                            this.line("Error(AwlDecodeInputFailed(\"failed to decode workflow input: \" <> reason))");
                         });
                     });
                     this.line("}");
                 });
-                this.line("Error(_) -> Error(DecodeInputFailed(\"workflow input payload was not a string\"))");
+                this.line("Error(_) -> Error(AwlDecodeInputFailed(\"workflow input payload was not a string\"))");
             });
             this.line("}");
         });
@@ -187,86 +274,261 @@ impl<'a> Emitter<'a> {
         self.blank();
     }
 
-    fn execute(&mut self) {
+    fn execute(&mut self) -> Result<(), EmitError> {
         let input_type = self.input_type_name();
         let output_type = self.output_type_name();
         self.line("/// Workflow body generated from the AWL steps.");
         self.line(&format!(
             "pub fn execute(input: {input_type}) -> Result({output_type}, AwlError) {{"
         ));
-        self.indented(|this| {
-            for input in &this.document.inputs {
-                let name = &input.name;
+        let document = self.document;
+        self.indented_try(|this| {
+            for input in &document.inputs {
+                let name = ident(&input.name);
                 this.line(&format!("let {name} = input.{name}"));
+                this.bindings
+                    .insert(input.name.clone(), Binding::Typed(input.ty.clone()));
             }
-            if !this.document.inputs.is_empty() {
+            if !document.inputs.is_empty() {
                 this.blank();
             }
-            for step in &this.document.steps {
-                this.emit_step(step);
-            }
-            let finish = expr(&this.document.finish);
-            this.line(&format!("Ok({finish})"));
-        });
+            this.emit_steps(&document.steps)
+        })?;
         self.line("}");
         self.blank();
+        Ok(())
     }
 
-    fn emit_step(&mut self, step: &StepDecl) {
+    /// Emit `steps` followed by the document's `finish`, nesting the
+    /// continuation inside the success arm of any step whose handler can
+    /// `finish` the workflow early.
+    fn emit_steps(&mut self, steps: &[StepDecl]) -> Result<(), EmitError> {
+        let Some((step, rest)) = steps.split_first() else {
+            let finish = expr(&self.document.finish);
+            self.line(&format!("Ok({finish})"));
+            return Ok(());
+        };
         if let Some(about) = &step.about {
             for line in wrap_doc(&about.text) {
                 self.line(&format!("// {line}"));
             }
         }
+        self.check_step(step)?;
+        if let Some(handler) = terminating_handler(step) {
+            self.emit_terminating_step(step, rest, &handler)
+        } else {
+            self.emit_flat_step(step)?;
+            self.blank();
+            self.record_binding(step);
+            self.emit_steps(rest)
+        }
+    }
+
+    /// Reject step shapes the emitter cannot lower faithfully.
+    fn check_step(&self, step: &StepDecl) -> Result<(), EmitError> {
+        if let Some(each) = &step.each {
+            if !matches!(step.op, StepOp::Do(CallTarget::Action(_))) {
+                return Err(EmitError::new(
+                    each.span,
+                    format!(
+                        "step `{}`: `each` is only supported for action calls",
+                        step.name
+                    ),
+                ));
+            }
+            if step.repeat.is_some() {
+                return Err(EmitError::new(
+                    each.span,
+                    format!(
+                        "step `{}`: `each` and `repeat` cannot be combined on one step",
+                        step.name
+                    ),
+                ));
+            }
+            if terminating_handler(step).is_some() {
+                return Err(EmitError::new(
+                    each.span,
+                    format!(
+                        "step `{}`: a `finish` handler on an `each` step is not supported in this revision",
+                        step.name
+                    ),
+                ));
+            }
+        }
+        if step.until.is_some() && step.repeat.is_none() {
+            return Err(EmitError::new(
+                step.span,
+                format!("step `{}`: `until` requires `repeat up to`", step.name),
+            ));
+        }
+        if step.repeat.is_some() && terminating_handler(step).is_some() {
+            return Err(EmitError::new(
+                step.span,
+                format!(
+                    "step `{}`: a `finish` handler on a repeated step is not supported in this revision",
+                    step.name
+                ),
+            ));
+        }
+        if step.on_timeout.is_some() && step.timeout.is_none() {
+            return Err(EmitError::new(
+                step.span,
+                format!(
+                    "step `{}`: `on timeout` requires a `timeout` field",
+                    step.name
+                ),
+            ));
+        }
+        if step.when.is_some() {
+            if let Some(bind) = &step.bind_as {
+                if !self.bindings.contains_key(&bind.name) {
+                    return Err(EmitError::new(
+                        bind.span,
+                        format!(
+                            "step `{}`: `when`-guarded step rebinds `{}`, but no prior binding of that name exists to flow through when the guard is false",
+                            step.name, bind.name
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit a step whose handler terminates the workflow with `finish`: the
+    /// remainder of the workflow is nested inside the success arm, and the
+    /// handler arm returns the workflow output directly.
+    fn emit_terminating_step(
+        &mut self,
+        step: &StepDecl,
+        rest: &[StepDecl],
+        handler: &TerminatingHandler<'_>,
+    ) -> Result<(), EmitError> {
+        let inner = self.step_inner(step)?;
+        let scrutinee = match handler {
+            TerminatingHandler::Timeout(_) => {
+                let duration = step.timeout.as_ref().map(duration_expr).unwrap_or_default();
+                format!("workflow.with_timeout(fn() {{ {inner} }}, {duration})")
+            }
+            TerminatingHandler::Failure(_) => inner,
+        };
+        self.record_binding(step);
         if let Some(when) = &step.when {
-            if let Some(name) = step.bind_as.as_ref().map(|bind| bind.name.as_str()) {
-                let guard = expr(when);
+            let guard = expr(when);
+            self.line(&format!("case {guard} {{"));
+            self.indented_try(|this| {
+                this.line("True ->");
+                this.indented_try(|this| {
+                    this.emit_terminating_case(step, rest, &scrutinee, handler)
+                })?;
+                this.line("False -> {");
+                this.indented_try(|this| this.emit_steps(rest))?;
+                this.line("}");
+                Ok(())
+            })?;
+            self.line("}");
+            Ok(())
+        } else {
+            self.emit_terminating_case(step, rest, &scrutinee, handler)
+        }
+    }
+
+    fn emit_terminating_case(
+        &mut self,
+        step: &StepDecl,
+        rest: &[StepDecl],
+        scrutinee: &str,
+        handler: &TerminatingHandler<'_>,
+    ) -> Result<(), EmitError> {
+        let pattern = step
+            .bind_as
+            .as_ref()
+            .map_or_else(|| "_".to_owned(), |bind| ident(&bind.name));
+        self.line(&format!("case {scrutinee} {{"));
+        self.indented_try(|this| {
+            this.line(&format!("Ok({pattern}) -> {{"));
+            this.indented_try(|this| this.emit_steps(rest))?;
+            this.line("}");
+            match handler {
+                TerminatingHandler::Timeout(block) => {
+                    this.emit_handler_arm("Error(error.TimedOutError(_)) ->", block)?;
+                    this.line("Error(error.InnerError(inner)) -> Error(inner)");
+                    this.line(
+                        "Error(error.TimeoutEngineFailure(message)) -> Error(AwlTimerFailed(message))",
+                    );
+                }
+                TerminatingHandler::Failure(block) => {
+                    this.emit_handler_arm("Error(_) ->", block)?;
+                }
+            }
+            Ok(())
+        })?;
+        self.line("}");
+        Ok(())
+    }
+
+    /// Emit a step in the flat let-chain form (no workflow-terminating
+    /// handler on this step).
+    fn emit_flat_step(&mut self, step: &StepDecl) -> Result<(), EmitError> {
+        if let Some(when) = &step.when {
+            let guard = expr(when);
+            if let Some(name) = step.bind_as.as_ref().map(|bind| ident(&bind.name)) {
                 self.line(&format!("let {name} = case {guard} {{"));
-                self.indented(|this| {
+                self.indented_try(|this| {
                     this.line("True -> {");
-                    this.indented(|this| this.emit_step_result(step));
+                    this.indented_try(|this| {
+                        this.line(&format!("let assert Ok({name}) ="));
+                        this.indented_try(|this| this.emit_step_expr(step))?;
+                        this.line(&name);
+                        Ok(())
+                    })?;
                     this.line("}");
                     this.line(&format!("False -> {name}"));
-                });
+                    Ok(())
+                })?;
                 self.line("}");
             } else {
-                let guard = expr(when);
                 self.line(&format!("case {guard} {{"));
-                self.indented(|this| {
+                self.indented_try(|this| {
                     this.line("True -> {");
-                    this.indented(|this| this.emit_step_result(step));
+                    this.indented_try(|this| {
+                        this.line("let assert Ok(_) =");
+                        this.indented_try(|this| this.emit_step_expr(step))?;
+                        this.line("Nil");
+                        Ok(())
+                    })?;
                     this.line("}");
                     this.line("False -> Nil");
-                });
+                    Ok(())
+                })?;
                 self.line("}");
             }
-        } else if let Some(name) = step.bind_as.as_ref().map(|bind| bind.name.as_str()) {
+        } else if let Some(name) = step.bind_as.as_ref().map(|bind| ident(&bind.name)) {
             self.line(&format!("let assert Ok({name}) ="));
-            self.indented(|this| this.emit_step_expr(step));
+            self.indented_try(|this| this.emit_step_expr(step))?;
         } else {
             self.line("let assert Ok(_) =");
-            self.indented(|this| this.emit_step_expr(step));
+            self.indented_try(|this| this.emit_step_expr(step))?;
         }
-        self.blank();
+        Ok(())
     }
 
-    fn emit_step_result(&mut self, step: &StepDecl) {
-        if let Some(name) = step.bind_as.as_ref().map(|bind| bind.name.as_str()) {
-            self.line(&format!("let assert Ok({name}) ="));
-            self.indented(|this| this.emit_step_expr(step));
-            self.line(name);
-        } else {
-            self.line("let assert Ok(_) =");
-            self.indented(|this| this.emit_step_expr(step));
-            self.line("Nil");
+    fn emit_step_expr(&mut self, step: &StepDecl) -> Result<(), EmitError> {
+        if let Some(repeat) = &step.repeat {
+            let cap = expr(repeat);
+            return self.emit_repeat_call(step, &cap);
         }
+        self.emit_attempt(step)
     }
 
-    fn emit_step_expr(&mut self, step: &StepDecl) {
+    /// Emit one attempt of the step body: the fan-out, timeout, and
+    /// non-terminating handler forms around the inner pipeline.
+    fn emit_attempt(&mut self, step: &StepDecl) -> Result<(), EmitError> {
         if let Some(each) = &step.each {
+            // `check_step` guarantees the op is an action call here.
             if let StepOp::Do(CallTarget::Action(call)) = &step.op {
                 let items = expr(&each.in_expr);
-                let item_name = &each.name;
+                let item_name = ident(&each.name);
                 self.line(&format!("workflow.map({items}, fn({item_name}) {{"));
                 self.indented(|this| {
                     let mut activity = String::new();
@@ -274,15 +536,50 @@ impl<'a> Emitter<'a> {
                     this.line(&activity);
                 });
                 self.line("}) |> map_activity_error");
-            } else {
-                self.line("Error(ActivityFailed(\"each is only supported for action calls\"))");
             }
-            return;
+            return Ok(());
         }
 
+        let inner = self.step_inner(step)?;
+        if let Some(timeout) = &step.timeout {
+            let duration = duration_expr(timeout);
+            self.line(&format!(
+                "case workflow.with_timeout(fn() {{ {inner} }}, {duration}) {{"
+            ));
+            self.indented_try(|this| {
+                this.line("Ok(value) -> Ok(value)");
+                if let Some(handler) = &step.on_timeout {
+                    this.emit_handler_arm("Error(error.TimedOutError(_)) ->", handler)?;
+                } else {
+                    this.line(
+                        "Error(error.TimedOutError(_)) -> Error(AwlTimedOut(\"step timed out\"))",
+                    );
+                }
+                this.line("Error(error.InnerError(inner)) -> Error(inner)");
+                this.line(
+                    "Error(error.TimeoutEngineFailure(message)) -> Error(AwlTimerFailed(message))",
+                );
+                Ok(())
+            })?;
+            self.line("}");
+        } else if let Some(handler) = &step.on_failure {
+            self.line(&format!("case {inner} {{"));
+            self.indented_try(|this| {
+                this.line("Ok(value) -> Ok(value)");
+                this.emit_handler_arm("Error(_) ->", handler)
+            })?;
+            self.line("}");
+        } else {
+            self.line(&inner);
+        }
+        Ok(())
+    }
+
+    /// Build the single-expression pipeline for the step's operation.
+    fn step_inner(&mut self, step: &StepDecl) -> Result<String, EmitError> {
         let mut inner = String::new();
         match &step.op {
-            StepOp::Do(target) => self.write_call_pipeline(&mut inner, target, step),
+            StepOp::Do(target) => self.write_call_pipeline(&mut inner, target, step)?,
             StepOp::Wait { signal, .. } => {
                 let _ = write!(
                     inner,
@@ -294,93 +591,269 @@ impl<'a> Emitter<'a> {
                 let _ = write!(inner, "workflow.sleep({duration}) |> map_timer_error");
             }
         }
-
-        if let Some(timeout) = &step.timeout {
-            let duration = duration_expr(timeout);
-            self.line(&format!(
-                "case workflow.with_timeout(fn() {{ {inner} }}, {duration}) {{"
-            ));
-            self.indented(|this| {
-                this.line("Ok(value) -> Ok(value)");
-                this.line("Error(error.TimedOutError(_)) ->");
-                this.indented(|this| {
-                    if let Some(handler) = &step.on_timeout {
-                        if let HandlerTerminal::Finish(_) = &handler.terminal {
-                            let value = this.default_step_value(step);
-                            this.line(&format!("Ok({value})"));
-                        } else {
-                            this.emit_handler(handler);
-                        }
-                    } else {
-                        this.line("Error(TimedOut(\"step timed out\"))");
-                    }
-                });
-                this.line("Error(error.InnerError(inner)) -> Error(inner)");
-                this.line(
-                    "Error(error.TimeoutEngineFailure(message)) -> Error(TimerFailed(message))",
-                );
-            });
-            self.line("}");
-        } else if let Some(handler) = &step.on_failure {
-            self.line(&format!("case {inner} {{"));
-            self.indented(|this| {
-                this.line("Ok(value) -> Ok(value)");
-                this.line("Error(_) ->");
-                this.indented(|this| this.emit_handler(handler));
-            });
-            self.line("}");
-        } else {
-            self.line(&inner);
-        }
+        Ok(inner)
     }
 
-    fn default_step_value(&self, step: &StepDecl) -> String {
+    /// Emit the call to a bounded `repeat` loop and render the loop function
+    /// itself (a top-level tail-recursive function emitted after `execute`).
+    fn emit_repeat_call(&mut self, step: &StepDecl, cap: &str) -> Result<(), EmitError> {
+        let loop_name = format!("{}_loop", ident(&step.name));
+        let as_name = step.bind_as.as_ref().map(|bind| bind.name.clone());
+        let threads_binding = as_name
+            .as_ref()
+            .is_some_and(|name| self.bindings.contains_key(name));
+        let free = Self::loop_free_names(step, as_name.as_deref(), threads_binding);
+        let counter = loop_counter_name(as_name.as_deref(), &free);
+
+        let mut call_args = vec![cap.to_owned()];
+        let mut params = vec![counter.clone()];
+        if threads_binding {
+            if let Some(name) = &as_name {
+                call_args.push(ident(name));
+                params.push(ident(name));
+            }
+        }
+        for name in &free {
+            call_args.push(ident(name));
+            params.push(ident(name));
+        }
+        self.line(&format!("{loop_name}({})", call_args.join(", ")));
+
+        if self.loop_fn_names.insert(loop_name.clone()) {
+            let rendered = self.render_loop_fn(step, &loop_name, &params, &counter)?;
+            self.loop_fns.push(rendered);
+        }
+        Ok(())
+    }
+
+    fn render_loop_fn(
+        &mut self,
+        step: &StepDecl,
+        loop_name: &str,
+        params: &[String],
+        counter: &str,
+    ) -> Result<String, EmitError> {
+        let as_name = step.bind_as.as_ref().map(|bind| ident(&bind.name));
+        let threads_binding = step
+            .bind_as
+            .as_ref()
+            .is_some_and(|bind| self.bindings.contains_key(&bind.name));
+        let recurse = {
+            let mut args = vec![format!("{counter} - 1")];
+            args.extend_from_slice(&params[1..]);
+            format!("{loop_name}({})", args.join(", "))
+        };
+        let until = step.until.as_ref().map(expr);
+        self.capture(|this| {
+            this.line(&format!(
+                "/// Bounded `repeat` loop for step `{}`: runs the step body up to the",
+                step.name
+            ));
+            this.line("/// cap, threading the `as` binding through iterations and exiting early");
+            this.line("/// when the `until` condition holds.");
+            this.line(&format!("fn {loop_name}({}) {{", params.join(", ")));
+            this.indented_try(|this| {
+                if threads_binding {
+                    let bound = as_name.clone().unwrap_or_default();
+                    this.line(&format!("case {counter} <= 0 {{"));
+                    this.indented_try(|this| {
+                        this.line(&format!("True -> Ok({bound})"));
+                        this.line("False -> {");
+                        this.indented_try(|this| {
+                            this.emit_loop_round(step, &bound, until.as_deref(), &recurse)
+                        })?;
+                        this.line("}");
+                        Ok(())
+                    })?;
+                    this.line("}");
+                    Ok(())
+                } else {
+                    let pattern = as_name.clone().unwrap_or_else(|| "_".to_owned());
+                    let exit = as_name.clone().unwrap_or_else(|| "Nil".to_owned());
+                    this.line("let attempt =");
+                    this.indented_try(|t| t.emit_attempt(step))?;
+                    this.line("case attempt {");
+                    this.indented_try(|this| {
+                        this.line(&format!("Ok({pattern}) ->"));
+                        this.indented_try(|this| {
+                            let cap_case = format!("case {counter} <= 1 {{");
+                            if let Some(until) = &until {
+                                this.line(&format!("case {until} {{"));
+                                this.indented_try(|this| {
+                                    this.line(&format!("True -> Ok({exit})"));
+                                    this.line("False ->");
+                                    this.indented(|this| {
+                                        this.line(&cap_case);
+                                        this.indented(|this| {
+                                            this.line(&format!("True -> Ok({exit})"));
+                                            this.line(&format!("False -> {recurse}"));
+                                        });
+                                        this.line("}");
+                                    });
+                                    Ok(())
+                                })?;
+                                this.line("}");
+                            } else {
+                                this.line(&cap_case);
+                                this.indented(|this| {
+                                    this.line(&format!("True -> Ok({exit})"));
+                                    this.line(&format!("False -> {recurse}"));
+                                });
+                                this.line("}");
+                            }
+                            Ok(())
+                        })?;
+                        this.line("Error(awl_error) -> Error(awl_error)");
+                        Ok(())
+                    })?;
+                    this.line("}");
+                    Ok(())
+                }
+            })?;
+            this.line("}");
+            Ok(())
+        })
+    }
+
+    /// One round of a binding-threading loop: run the attempt, rebind, check
+    /// `until`, and recurse or exit with the current binding.
+    fn emit_loop_round(
+        &mut self,
+        step: &StepDecl,
+        bound: &str,
+        until: Option<&str>,
+        recurse: &str,
+    ) -> Result<(), EmitError> {
+        self.line("let attempt =");
+        self.indented_try(|this| this.emit_attempt(step))?;
+        self.line("case attempt {");
+        self.indented_try(|this| {
+            if let Some(until) = until {
+                this.line(&format!("Ok({bound}) ->"));
+                this.indented(|this| {
+                    this.line(&format!("case {until} {{"));
+                    this.indented(|this| {
+                        this.line(&format!("True -> Ok({bound})"));
+                        this.line(&format!("False -> {recurse}"));
+                    });
+                    this.line("}");
+                });
+            } else {
+                this.line(&format!("Ok({bound}) -> {recurse}"));
+            }
+            this.line("Error(awl_error) -> Error(awl_error)");
+            Ok(())
+        })?;
+        self.line("}");
+        Ok(())
+    }
+
+    /// Names (beyond the loop counter and the threaded binding) that the loop
+    /// body references and therefore must receive as parameters.
+    fn loop_free_names(
+        step: &StepDecl,
+        as_name: Option<&str>,
+        threads_binding: bool,
+    ) -> Vec<String> {
+        let mut refs = Vec::new();
         match &step.op {
-            StepOp::Do(CallTarget::Action(call)) => self.action(call).map_or_else(
-                || "Nil".to_owned(),
-                |action| self.default_value(&action.returns),
-            ),
-            StepOp::Do(CallTarget::Child { .. }) | StepOp::Sleep(_) => "Nil".to_owned(),
+            StepOp::Do(CallTarget::Action(call)) => {
+                for arg in &call.args {
+                    collect_expr_refs(arg, &mut refs);
+                }
+            }
+            StepOp::Do(CallTarget::Child { args, .. }) => {
+                for arg in args {
+                    collect_expr_refs(arg, &mut refs);
+                }
+            }
+            StepOp::Wait { .. } | StepOp::Sleep(_) => {}
+        }
+        if let Some(until) = &step.until {
+            collect_expr_refs(until, &mut refs);
+        }
+        for handler in [&step.on_timeout, &step.on_failure].into_iter().flatten() {
+            for action in &handler.actions {
+                let args = match action {
+                    CallTarget::Action(call) => &call.args,
+                    CallTarget::Child { args, .. } => args,
+                };
+                for arg in args {
+                    collect_expr_refs(arg, &mut refs);
+                }
+            }
+            if let HandlerTerminal::Finish(value) = &handler.terminal {
+                collect_expr_refs(value, &mut refs);
+            }
+        }
+        refs.retain(|name| {
+            let is_threaded = threads_binding && as_name == Some(name.as_str());
+            !is_threaded
+        });
+        refs
+    }
+
+    fn emit_handler_arm(&mut self, prefix: &str, handler: &HandlerBlock) -> Result<(), EmitError> {
+        let terminal = match &handler.terminal {
+            HandlerTerminal::Finish(value) => format!("Ok({})", expr(value)),
+            HandlerTerminal::Fail(_) => "Error(AwlFailed)".to_owned(),
+        };
+        if handler.actions.is_empty() {
+            self.line(&format!("{prefix} {terminal}"));
+            return Ok(());
+        }
+        self.line(&format!("{prefix} {{"));
+        self.indented_try(|this| {
+            for target in &handler.actions {
+                let mut inner = String::new();
+                this.write_call_pipeline(&mut inner, target, &empty_step())?;
+                this.line(&format!("let assert Ok(_) = {inner}"));
+            }
+            this.line(&terminal);
+            Ok(())
+        })?;
+        self.line("}");
+        Ok(())
+    }
+
+    /// Record the type the step's `as` binding will have from here on.
+    fn record_binding(&mut self, step: &StepDecl) {
+        let Some(bind) = &step.bind_as else {
+            return;
+        };
+        let binding = match &step.op {
+            StepOp::Do(CallTarget::Action(call)) => {
+                self.action(call).map_or(Binding::Opaque, |action| {
+                    let returns = action.returns.clone();
+                    if step.each.is_some() {
+                        Binding::Typed(TypeRef::List {
+                            span: step.span,
+                            inner: Box::new(returns),
+                        })
+                    } else {
+                        Binding::Typed(returns)
+                    }
+                })
+            }
+            // A child result decodes with the rebound name's established
+            // codec; a fresh child binding stays opaque (checker rule).
+            StepOp::Do(CallTarget::Child { .. }) => self
+                .bindings
+                .get(&bind.name)
+                .cloned()
+                .unwrap_or(Binding::Opaque),
             StepOp::Wait { signal, .. } => self
                 .document
                 .signals
                 .iter()
                 .find(|decl| decl.name == *signal)
-                .map_or_else(|| "Nil".to_owned(), |decl| self.default_value(&decl.ty)),
-        }
-    }
-
-    fn default_value(&self, ty: &TypeRef) -> String {
-        match ty {
-            TypeRef::Named { name, .. } if name == "String" => "\"\"".to_owned(),
-            TypeRef::Named { name, .. } if name == "Int" => "0".to_owned(),
-            TypeRef::Named { name, .. } if name == "Float" => "0.0".to_owned(),
-            TypeRef::Named { name, .. } if name == "Bool" => "False".to_owned(),
-            TypeRef::Named { name, .. } if name == "Nil" => "Nil".to_owned(),
-            TypeRef::Named { name, .. } => self.default_named_value(name),
-            TypeRef::List { .. } => "[]".to_owned(),
-            TypeRef::Option { .. } => "None".to_owned(),
-        }
-    }
-
-    fn default_named_value(&self, name: &str) -> String {
-        if let Some(decl) = self.document.types.iter().find(|decl| decl.name == name) {
-            let fields = decl
-                .fields
-                .iter()
-                .map(|field| {
-                    let name = &field.name;
-                    let value = self.default_value(&field.ty);
-                    format!("{name}: {value}")
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let ctor = constructor(name);
-            format!("{ctor}({fields})")
-        } else {
-            let ctor = constructor(name);
-            format!("{ctor}(value: \"\")")
-        }
+                .map_or(Binding::Opaque, |decl| Binding::Typed(decl.ty.clone())),
+            StepOp::Sleep(_) => Binding::Typed(TypeRef::Named {
+                span: step.span,
+                name: "Nil".to_owned(),
+            }),
+        };
+        self.bindings.insert(bind.name.clone(), binding);
     }
 
     fn write_activity_value(&self, inner: &mut String, call: &CallExpr, step: &StepDecl) {
@@ -431,48 +904,106 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn write_call_pipeline(&self, inner: &mut String, target: &CallTarget, step: &StepDecl) {
+    fn write_call_pipeline(
+        &mut self,
+        inner: &mut String,
+        target: &CallTarget,
+        step: &StepDecl,
+    ) -> Result<(), EmitError> {
         match target {
             CallTarget::Action(call) => {
                 self.write_activity_value(inner, call, step);
                 inner.push_str(" |> workflow.run |> map_activity_error");
+                Ok(())
             }
             CallTarget::Child {
+                span,
                 workflow: name,
                 args,
-                ..
-            } => {
-                let input = if args.len() == 1 {
-                    expr(&args[0])
-                } else {
-                    "Nil".to_owned()
-                };
-                let snake_name = snake(name);
-                let _ = write!(
-                    inner,
-                    "workflow.spawn_and_wait(\"{snake_name}\", {snake_name}.execute, {input}, {snake_name}.input_codec(), {snake_name}.output_codec(), {snake_name}.awl_error_codec()) |> map_child_error"
-                );
-            }
+            } => self.write_child_pipeline(inner, *span, name, args, step),
         }
     }
 
-    fn emit_handler(&mut self, handler: &HandlerBlock) {
-        self.line("{");
-        self.indented(|this| {
-            for target in &handler.actions {
-                let mut inner = String::new();
-                this.write_call_pipeline(&mut inner, target, &empty_step());
-                this.line(&format!("let assert Ok(_) = {inner}"));
-            }
-            match &handler.terminal {
-                HandlerTerminal::Finish(value) => {
-                    let value = expr(value);
-                    this.line(&format!("Ok({value})"));
+    /// Lower a child call to the SDK's string-name spawn: the workflow name
+    /// spawns by registration name, the anchor `fn` is a type witness the SDK
+    /// never calls, and the input is the named arguments encoded as one JSON
+    /// object.
+    fn write_child_pipeline(
+        &mut self,
+        inner: &mut String,
+        span: Span,
+        name: &str,
+        args: &[Expr],
+        step: &StepDecl,
+    ) -> Result<(), EmitError> {
+        if step.queue.is_some() || step.node.is_some() {
+            return Err(EmitError::new(
+                span,
+                format!(
+                    "step `{}`: `queue`/`node` routing is not supported on child workflow calls (the aion_flow spawn API has no placement parameters)",
+                    step.name
+                ),
+            ));
+        }
+        self.uses_child_calls = true;
+        let mut fields = Vec::new();
+        for arg in args {
+            let Expr::Ref {
+                name: arg_name,
+                span: arg_span,
+            } = arg
+            else {
+                return Err(EmitError::new(
+                    arg.span(),
+                    "child call arguments must be plain references (bind the value with `as` first) so each argument's name can key the child input record",
+                ));
+            };
+            let ty = match self.bindings.get(arg_name) {
+                Some(Binding::Typed(ty)) => ty.clone(),
+                Some(Binding::Opaque) => {
+                    return Err(EmitError::new(
+                        *arg_span,
+                        format!(
+                            "child argument `{arg_name}` is an opaque child-workflow result and cannot be re-encoded"
+                        ),
+                    ));
                 }
-                HandlerTerminal::Fail(_) => this.line("Error(Failed)"),
-            }
-        });
-        self.line("}");
+                None => {
+                    return Err(EmitError::new(
+                        *arg_span,
+                        format!(
+                            "child argument `{arg_name}` has no binding with a known type in scope"
+                        ),
+                    ));
+                }
+            };
+            let codec = codec_name(&ty);
+            let value = ident(arg_name);
+            fields.push(format!("#(\"{arg_name}\", {codec}_to_json({value}))"));
+        }
+        let input = format!("json.object([{}])", fields.join(", "));
+        let output_codec = match step
+            .bind_as
+            .as_ref()
+            .and_then(|bind| self.bindings.get(&bind.name))
+        {
+            Some(Binding::Typed(ty)) => format!("{}_codec()", codec_name(ty)),
+            _ => "nil_codec()".to_owned(),
+        };
+        let spawn_call = format!(
+            "workflow.spawn_and_wait(\"{name}\", fn(_: json.Json) {{ Error(AwlChildFailed(\"child workflow body runs in its own execution\")) }}, {input}, json_value_codec(), {output_codec}, awl_error_codec()) |> map_child_error"
+        );
+        if let Some(retry) = &step.retry {
+            self.uses_child_retry = true;
+            let (attempts, delay_ms, multiplier, max_delay_ms) = child_retry_params(retry);
+            let _ = write!(
+                inner,
+                "awl_retry({attempts}, {delay_ms}, {multiplier}, {max_delay_ms}, fn() {{ {spawn_call} }})"
+            );
+        } else {
+            inner.push_str(&spawn_call);
+        }
+        Ok(())
     }
 
     fn activity_wrappers(&mut self) {
@@ -487,32 +1018,42 @@ impl<'a> Emitter<'a> {
                     .map(|field| (field.name.as_str(), &field.ty)),
             );
             let action_name = &action.name;
-            self.line(&format!("fn {action_name}_activity("));
-            self.indented(|this| {
-                for param in &action.params {
-                    let name = &param.name;
-                    let ty = gleam_type(&param.ty);
-                    this.line(&format!("{name}: {ty},"));
-                }
-            });
             let return_type = gleam_type(&action.returns);
-            self.line(&format!(
-                ") -> activity.Activity({input_name}, {return_type}) {{"
-            ));
+            if action.params.is_empty() {
+                self.line(&format!(
+                    "fn {action_name}_activity() -> activity.Activity({input_name}, {return_type}) {{"
+                ));
+            } else {
+                self.line(&format!("fn {action_name}_activity("));
+                self.indented(|this| {
+                    for param in &action.params {
+                        let name = ident(&param.name);
+                        let ty = gleam_type(&param.ty);
+                        this.line(&format!("{name}: {ty},"));
+                    }
+                });
+                self.line(&format!(
+                    ") -> activity.Activity({input_name}, {return_type}) {{"
+                ));
+            }
             self.indented(|this| {
                 this.line("activity.new(");
                 this.indented(|this| {
                     let action_name = &action.name;
                     let ctor = constructor(&input_name);
                     this.line(&format!("\"{action_name}\","));
-                    this.line(&format!("{ctor}("));
-                    this.indented(|this| {
-                        for param in &action.params {
-                            let name = &param.name;
-                            this.line(&format!("{name}: {name},"));
-                        }
-                    });
-                    this.line("),");
+                    if action.params.is_empty() {
+                        this.line(&format!("{ctor},"));
+                    } else {
+                        this.line(&format!("{ctor}("));
+                        this.indented(|this| {
+                            for param in &action.params {
+                                let name = ident(&param.name);
+                                this.line(&format!("{name}: {name},"));
+                            }
+                        });
+                        this.line("),");
+                    }
                     let input_codec = snake(&input_name);
                     let return_codec = codec_name(&action.returns);
                     this.line(&format!("{input_codec}_codec(),"));
@@ -553,10 +1094,10 @@ impl<'a> Emitter<'a> {
         self.indented(|this| {
             this.line("case error_value {");
             this.indented(|this| {
-                for variant in ["DecodeInputFailed", "ActivityFailed", "SignalFailed", "ChildFailed", "TimerFailed", "TimedOut"] {
+                for variant in ["AwlDecodeInputFailed", "AwlActivityFailed", "AwlSignalFailed", "AwlChildFailed", "AwlTimerFailed", "AwlTimedOut"] {
                     this.line(&format!("{variant}(message) -> json.object([#(\"tag\", json.string(\"{variant}\")), #(\"message\", json.string(message))])"));
                 }
-                this.line("Failed -> json.object([#(\"tag\", json.string(\"Failed\"))])");
+                this.line("AwlFailed -> json.object([#(\"tag\", json.string(\"AwlFailed\"))])");
             });
             this.line("}");
         });
@@ -568,12 +1109,12 @@ impl<'a> Emitter<'a> {
             this.line("case tag {");
             this.indented(|this| {
                 for variant in [
-                    "DecodeInputFailed",
-                    "ActivityFailed",
-                    "SignalFailed",
-                    "ChildFailed",
-                    "TimerFailed",
-                    "TimedOut",
+                    "AwlDecodeInputFailed",
+                    "AwlActivityFailed",
+                    "AwlSignalFailed",
+                    "AwlChildFailed",
+                    "AwlTimerFailed",
+                    "AwlTimedOut",
                 ] {
                     this.line(&format!("\"{variant}\" -> {{"));
                     this.indented(|this| {
@@ -582,8 +1123,8 @@ impl<'a> Emitter<'a> {
                     });
                     this.line("}");
                 }
-                this.line("\"Failed\" -> decode.success(Failed)");
-                this.line("_ -> decode.failure(Failed, \"AwlError\")");
+                this.line("\"AwlFailed\" -> decode.success(AwlFailed)");
+                this.line("_ -> decode.failure(AwlFailed, \"AwlError\")");
             });
             this.line("}");
         });
@@ -625,6 +1166,7 @@ impl<'a> Emitter<'a> {
         }
         self.builtin_codecs();
         self.error_mappers();
+        self.child_helpers();
     }
 
     fn emit_external_codec(&mut self, name: &str) {
@@ -661,7 +1203,7 @@ impl<'a> Emitter<'a> {
     {
         let fields = fields.into_iter().collect::<Vec<_>>();
         let codec_fn = snake(name);
-        let value_var = snake(name);
+        let value_var = ident(&snake(name));
         self.line(&format!("fn {codec_fn}_codec() -> Codec({name}) {{"));
         self.indented(|this| {
             this.line(&format!(
@@ -670,16 +1212,21 @@ impl<'a> Emitter<'a> {
         });
         self.line("}");
         self.blank();
-        self.line(&format!(
-            "fn {codec_fn}_to_json({value_var}: {name}) -> json.Json {{"
-        ));
+        if fields.is_empty() {
+            self.line(&format!("fn {codec_fn}_to_json(_: {name}) -> json.Json {{"));
+        } else {
+            self.line(&format!(
+                "fn {codec_fn}_to_json({value_var}: {name}) -> json.Json {{"
+            ));
+        }
         self.indented(|this| {
             this.line("json.object([");
             this.indented(|this| {
                 for (field_name, field_type) in &fields {
                     let codec = codec_name(field_type);
+                    let access = ident(field_name);
                     this.line(&format!(
-                        "#(\"{field_name}\", {codec}_to_json({value_var}.{field_name})),"
+                        "#(\"{field_name}\", {codec}_to_json({value_var}.{access})),"
                     ));
                 }
             });
@@ -693,18 +1240,24 @@ impl<'a> Emitter<'a> {
         self.indented(|this| {
             for (field_name, field_type) in &fields {
                 let codec = codec_name(field_type);
+                let binding = ident(field_name);
                 this.line(&format!(
-                    "use {field_name} <- decode.field(\"{field_name}\", {codec}_decoder())"
+                    "use {binding} <- decode.field(\"{field_name}\", {codec}_decoder())"
                 ));
             }
             let ctor = constructor(name);
-            this.line(&format!("decode.success({ctor}("));
-            this.indented(|this| {
-                for (field_name, _) in &fields {
-                    this.line(&format!("{field_name}: {field_name},"));
-                }
-            });
-            this.line("))");
+            if fields.is_empty() {
+                this.line(&format!("decode.success({ctor})"));
+            } else {
+                this.line(&format!("decode.success({ctor}("));
+                this.indented(|this| {
+                    for (field_name, _) in &fields {
+                        let binding = ident(field_name);
+                        this.line(&format!("{binding}: {binding},"));
+                    }
+                });
+                this.line("))");
+            }
         });
         self.line("}");
         self.blank();
@@ -842,7 +1395,7 @@ impl<'a> Emitter<'a> {
         self.blank();
         self.line("fn map_activity_error(result: Result(a, error.ActivityError)) -> Result(a, AwlError) {");
         self.indented(|this| {
-            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(ActivityFailed(\"activity failed\")) }");
+            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlActivityFailed(\"activity failed\")) }");
         });
         self.line("}");
         self.blank();
@@ -850,13 +1403,13 @@ impl<'a> Emitter<'a> {
             "fn map_receive_error(result: Result(a, error.ReceiveError)) -> Result(a, AwlError) {",
         );
         self.indented(|this| {
-            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(SignalFailed(\"signal receive failed\")) }");
+            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlSignalFailed(\"signal receive failed\")) }");
         });
         self.line("}");
         self.blank();
         self.line("fn map_child_error(result: Result(a, error.ChildError(AwlError))) -> Result(a, AwlError) {");
         self.indented(|this| {
-            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(ChildFailed(\"child workflow failed\")) }");
+            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlChildFailed(\"child workflow failed\")) }");
         });
         self.line("}");
         self.blank();
@@ -864,10 +1417,83 @@ impl<'a> Emitter<'a> {
             "fn map_timer_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {",
         );
         self.indented(|this| {
-            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(TimerFailed(\"timer failed\")) }");
+            this.line("case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlTimerFailed(\"timer failed\")) }");
         });
         self.line("}");
         self.blank();
+    }
+
+    fn child_helpers(&mut self) {
+        if self.uses_child_calls {
+            self.line("/// Encode-only codec for child workflow inputs: the parent assembles the");
+            self.line("/// child's input record as JSON and never decodes it back.");
+            self.line("fn json_value_codec() -> Codec(json.Json) {");
+            self.indented(|this| {
+                this.line("codec.Codec(");
+                this.indented(|this| {
+                    this.line("encode: json.to_string,");
+                    this.line("decode: fn(_) {");
+                    this.indented(|this| {
+                        this.line("Error(codec.DecodeError(reason: \"child call input is encode-only\", path: []))");
+                    });
+                    this.line("},");
+                });
+                this.line(")");
+            });
+            self.line("}");
+            self.blank();
+        }
+        if self.uses_child_retry {
+            self.line("/// Bounded retry with backoff for child workflow calls: `attempts` total");
+            self.line("/// attempts with an SDK timer sleep between them (fixed when `multiplier`");
+            self.line("/// is 1, exponential capped at `max_delay_ms` otherwise).");
+            self.line("fn awl_retry(");
+            self.indented(|this| {
+                this.line("attempts: Int,");
+                this.line("delay_ms: Int,");
+                this.line("multiplier: Int,");
+                this.line("max_delay_ms: Int,");
+                this.line("operation: fn() -> Result(value, AwlError),");
+            });
+            self.line(") -> Result(value, AwlError) {");
+            self.indented(|this| {
+                this.line("case operation() {");
+                this.indented(|this| {
+                    this.line("Ok(value) -> Ok(value)");
+                    this.line("Error(awl_error) ->");
+                    this.indented(|this| {
+                        this.line("case attempts <= 1 {");
+                        this.indented(|this| {
+                            this.line("True -> Error(awl_error)");
+                            this.line("False ->");
+                            this.indented(|this| {
+                                this.line("case workflow.sleep(duration.milliseconds(delay_ms)) {");
+                                this.indented(|this| {
+                                    this.line("Ok(_) -> {");
+                                    this.indented(|this| {
+                                        this.line("let next_delay_ms = delay_ms * multiplier");
+                                        this.line("let capped_delay_ms = case next_delay_ms > max_delay_ms {");
+                                        this.indented(|this| {
+                                            this.line("True -> max_delay_ms");
+                                            this.line("False -> next_delay_ms");
+                                        });
+                                        this.line("}");
+                                        this.line("awl_retry(attempts - 1, capped_delay_ms, multiplier, max_delay_ms, operation)");
+                                    });
+                                    this.line("}");
+                                    this.line("Error(_) -> Error(AwlTimerFailed(\"timer failed while backing off\"))");
+                                });
+                                this.line("}");
+                            });
+                        });
+                        this.line("}");
+                    });
+                });
+                this.line("}");
+            });
+            self.line("}");
+            self.blank();
+        }
     }
 
     fn external_named_types(&self) -> Vec<String> {
@@ -945,6 +1571,72 @@ impl<'a> Emitter<'a> {
         f(self);
         self.indent -= 1;
     }
+
+    fn indented_try(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<(), EmitError>,
+    ) -> Result<(), EmitError> {
+        self.indent += 1;
+        let result = f(self);
+        self.indent -= 1;
+        result
+    }
+
+    /// Run `f` against a fresh output buffer at indent zero and return the
+    /// text it produced, restoring the main buffer afterwards.
+    fn capture(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<(), EmitError>,
+    ) -> Result<String, EmitError> {
+        let saved_out = mem::take(&mut self.out);
+        let saved_indent = mem::replace(&mut self.indent, 0);
+        let result = f(self);
+        let captured = mem::replace(&mut self.out, saved_out);
+        self.indent = saved_indent;
+        result.map(|()| captured)
+    }
+}
+
+/// Which handler on this step, if any, terminates the workflow with `finish`.
+///
+/// A `timeout` field takes over the step's outcome handling, so `on failure`
+/// is only consulted when no timeout is present (matching the attempt
+/// lowering).
+fn terminating_handler(step: &StepDecl) -> Option<TerminatingHandler<'_>> {
+    if step.timeout.is_some() {
+        let handler = step.on_timeout.as_ref()?;
+        matches!(handler.terminal, HandlerTerminal::Finish(_))
+            .then_some(TerminatingHandler::Timeout(handler))
+    } else {
+        let handler = step.on_failure.as_ref()?;
+        matches!(handler.terminal, HandlerTerminal::Finish(_))
+            .then_some(TerminatingHandler::Failure(handler))
+    }
+}
+
+/// Pick a loop-counter name that cannot shadow a name the loop body needs.
+fn loop_counter_name(as_name: Option<&str>, free: &[String]) -> String {
+    let mut counter = "remaining".to_owned();
+    let taken =
+        |candidate: &str| as_name == Some(candidate) || free.iter().any(|name| name == candidate);
+    while taken(&counter) {
+        counter.push('_');
+    }
+    counter
+}
+
+/// `retry` parameters for the generated `awl_retry` child helper:
+/// `(attempts, initial delay ms, multiplier, max delay ms)`.
+fn child_retry_params(retry: &RetrySpec) -> (u64, u64, u64, u64) {
+    match retry {
+        RetrySpec::Every { count, every, .. } => {
+            let delay = duration_ms(every);
+            (*count, delay, 1, delay)
+        }
+        RetrySpec::Backoff {
+            count, min, max, ..
+        } => (*count, duration_ms(min), 2, duration_ms(max)),
+    }
 }
 
 fn empty_step() -> StepDecl {
@@ -993,6 +1685,38 @@ fn collect_named_ref(ty: &TypeRef, names: &mut Vec<String>) {
         }
         TypeRef::List { inner, .. } | TypeRef::Option { inner, .. } => {
             collect_named_ref(inner, names);
+        }
+    }
+}
+
+/// Collect the reference names an expression mentions, in first-use order.
+fn collect_expr_refs(value: &Expr, names: &mut Vec<String>) {
+    match value {
+        Expr::String { .. }
+        | Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Bool { .. }
+        | Expr::Duration(_) => {}
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_expr_refs(item, names);
+            }
+        }
+        Expr::Ref { name, .. } => {
+            if !names.iter().any(|seen| seen == name) {
+                names.push(name.clone());
+            }
+        }
+        Expr::Field { base, .. } => collect_expr_refs(base, names),
+        Expr::Record { fields, .. } => {
+            for field in fields {
+                collect_expr_refs(&field.value, names);
+            }
+        }
+        Expr::Not { expr: inner, .. } => collect_expr_refs(inner, names),
+        Expr::Binary { left, right, .. } => {
+            collect_expr_refs(left, names);
+            collect_expr_refs(right, names);
         }
     }
 }
@@ -1052,22 +1776,26 @@ fn expr(value: &Expr) -> String {
             let values = items.iter().map(expr).collect::<Vec<_>>().join(", ");
             format!("[{values}]")
         }
-        Expr::Ref { name, .. } => name.clone(),
+        Expr::Ref { name, .. } => ident(name),
         Expr::Field { base, field, .. } => {
             let base = expr(base);
+            let field = ident(field);
             format!("{base}.{field}")
         }
         Expr::Record { name, fields, .. } => {
+            let ctor = constructor(name);
+            if fields.is_empty() {
+                return ctor;
+            }
             let fields = fields
                 .iter()
                 .map(|field| {
-                    let name = &field.name;
+                    let name = ident(&field.name);
                     let value = expr(&field.value);
                     format!("{name}: {value}")
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            let ctor = constructor(name);
             format!("{ctor}({fields})")
         }
         Expr::Not { expr: inner, .. } => {
@@ -1117,13 +1845,17 @@ fn binary_op(op: BinaryOp) -> &'static str {
     }
 }
 
-fn duration_expr(duration: &DurationLiteral) -> String {
-    let milliseconds = match duration.unit {
+fn duration_ms(duration: &DurationLiteral) -> u64 {
+    match duration.unit {
         DurationUnit::Seconds => duration.magnitude.saturating_mul(1_000),
         DurationUnit::Minutes => duration.magnitude.saturating_mul(60_000),
         DurationUnit::Hours => duration.magnitude.saturating_mul(3_600_000),
         DurationUnit::Days => duration.magnitude.saturating_mul(86_400_000),
-    };
+    }
+}
+
+fn duration_expr(duration: &DurationLiteral) -> String {
+    let milliseconds = duration_ms(duration);
     format!("duration.milliseconds({milliseconds})")
 }
 
@@ -1194,6 +1926,44 @@ fn snake(name: &str) -> String {
         }
     }
     out
+}
+
+/// Reserved words in Gleam that cannot be used as value identifiers.
+fn is_gleam_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "assert"
+            | "auto"
+            | "case"
+            | "const"
+            | "delegate"
+            | "derive"
+            | "echo"
+            | "else"
+            | "fn"
+            | "if"
+            | "implement"
+            | "import"
+            | "let"
+            | "macro"
+            | "opaque"
+            | "panic"
+            | "pub"
+            | "test"
+            | "todo"
+            | "type"
+            | "use"
+    )
+}
+
+/// Sanitize an AWL identifier for emission: Gleam reserved words gain a
+/// trailing underscore, applied consistently at every emission site.
+fn ident(name: &str) -> String {
+    if is_gleam_keyword(name) {
+        format!("{name}_")
+    } else {
+        name.to_owned()
+    }
 }
 
 fn wrap_doc(text: &str) -> Vec<String> {

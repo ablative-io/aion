@@ -13,13 +13,13 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 
 pub type AwlError {
-  DecodeInputFailed(String)
-  ActivityFailed(String)
-  SignalFailed(String)
-  ChildFailed(String)
-  TimerFailed(String)
-  TimedOut(String)
-  Failed
+  AwlDecodeInputFailed(String)
+  AwlActivityFailed(String)
+  AwlSignalFailed(String)
+  AwlChildFailed(String)
+  AwlTimerFailed(String)
+  AwlTimedOut(String)
+  AwlFailed
 }
 
 pub type Dir {
@@ -100,9 +100,9 @@ pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {
             Error(workflow_error) -> Error(workflow_error)
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
-          Error(DecodeInputFailed("failed to decode workflow input: " <> reason))
+          Error(AwlDecodeInputFailed("failed to decode workflow input: " <> reason))
       }
-    Error(_) -> Error(DecodeInputFailed("workflow input payload was not a string"))
+    Error(_) -> Error(AwlDecodeInputFailed("workflow input payload was not a string"))
   }
 }
 
@@ -125,39 +125,36 @@ pub fn execute(input: ResearchReportInput) -> Result(Published, AwlError) {
     synthesize_activity(findings, "") |> workflow.run |> map_activity_error
 
   // Durable gate — parks free while idle, survives restarts, resumable weeks later.
-  let assert Ok(approval) =
-    case workflow.with_timeout(fn() { workflow.receive(review_signal()) |> map_receive_error }, duration.milliseconds(259200000)) {
-      Ok(value) -> Ok(value)
-      Error(error.TimedOutError(_)) ->
-        Ok(Approval(ok: False, notes: ""))
-      Error(error.InnerError(inner)) -> Error(inner)
-      Error(error.TimeoutEngineFailure(message)) -> Error(TimerFailed(message))
-    }
-
-  // One revision pass if the reviewer pushed back.
-  let draft = case !approval.ok {
-    True -> {
-      let assert Ok(draft) =
-        synthesize_activity(findings, approval.notes) |> workflow.run |> map_activity_error
-      draft
-    }
-    False -> draft
-  }
-
-  let assert Ok(assets) =
-    upload_assets_activity(draft) |> workflow.run |> map_activity_error
-
-  let assert Ok(url) =
-    case publish_activity(draft, assets) |> workflow.run |> map_activity_error {
-      Ok(value) -> Ok(value)
-      Error(_) ->
-        {
-          let assert Ok(_) = delete_assets_activity(assets) |> workflow.run |> map_activity_error
-          Error(Failed)
+  case workflow.with_timeout(fn() { workflow.receive(review_signal()) |> map_receive_error }, duration.milliseconds(259200000)) {
+    Ok(approval) -> {
+      // One revision pass if the reviewer pushed back.
+      let draft = case !approval.ok {
+        True -> {
+          let assert Ok(draft) =
+            synthesize_activity(findings, approval.notes) |> workflow.run |> map_activity_error
+          draft
         }
-    }
+        False -> draft
+      }
 
-  Ok(Published(report: draft, url: url))
+      let assert Ok(assets) =
+        upload_assets_activity(draft) |> workflow.run |> map_activity_error
+
+      let assert Ok(url) =
+        case publish_activity(draft, assets) |> workflow.run |> map_activity_error {
+          Ok(value) -> Ok(value)
+          Error(_) -> {
+            let assert Ok(_) = delete_assets_activity(assets) |> workflow.run |> map_activity_error
+            Error(AwlFailed)
+          }
+        }
+
+      Ok(Published(report: draft, url: url))
+    }
+    Error(error.TimedOutError(_)) -> Ok(Published(report: draft, url: ""))
+    Error(error.InnerError(inner)) -> Error(inner)
+    Error(error.TimeoutEngineFailure(message)) -> Error(AwlTimerFailed(message))
+  }
 }
 
 pub type PlanInput {
@@ -299,45 +296,45 @@ fn awl_error_codec() -> Codec(AwlError) {
 
 fn awl_error_to_json(error_value: AwlError) -> json.Json {
   case error_value {
-    DecodeInputFailed(message) -> json.object([#("tag", json.string("DecodeInputFailed")), #("message", json.string(message))])
-    ActivityFailed(message) -> json.object([#("tag", json.string("ActivityFailed")), #("message", json.string(message))])
-    SignalFailed(message) -> json.object([#("tag", json.string("SignalFailed")), #("message", json.string(message))])
-    ChildFailed(message) -> json.object([#("tag", json.string("ChildFailed")), #("message", json.string(message))])
-    TimerFailed(message) -> json.object([#("tag", json.string("TimerFailed")), #("message", json.string(message))])
-    TimedOut(message) -> json.object([#("tag", json.string("TimedOut")), #("message", json.string(message))])
-    Failed -> json.object([#("tag", json.string("Failed"))])
+    AwlDecodeInputFailed(message) -> json.object([#("tag", json.string("AwlDecodeInputFailed")), #("message", json.string(message))])
+    AwlActivityFailed(message) -> json.object([#("tag", json.string("AwlActivityFailed")), #("message", json.string(message))])
+    AwlSignalFailed(message) -> json.object([#("tag", json.string("AwlSignalFailed")), #("message", json.string(message))])
+    AwlChildFailed(message) -> json.object([#("tag", json.string("AwlChildFailed")), #("message", json.string(message))])
+    AwlTimerFailed(message) -> json.object([#("tag", json.string("AwlTimerFailed")), #("message", json.string(message))])
+    AwlTimedOut(message) -> json.object([#("tag", json.string("AwlTimedOut")), #("message", json.string(message))])
+    AwlFailed -> json.object([#("tag", json.string("AwlFailed"))])
   }
 }
 
 fn awl_error_decoder() -> decode.Decoder(AwlError) {
   use tag <- decode.field("tag", decode.string)
   case tag {
-    "DecodeInputFailed" -> {
+    "AwlDecodeInputFailed" -> {
       use message <- decode.field("message", decode.string)
-      decode.success(DecodeInputFailed(message))
+      decode.success(AwlDecodeInputFailed(message))
     }
-    "ActivityFailed" -> {
+    "AwlActivityFailed" -> {
       use message <- decode.field("message", decode.string)
-      decode.success(ActivityFailed(message))
+      decode.success(AwlActivityFailed(message))
     }
-    "SignalFailed" -> {
+    "AwlSignalFailed" -> {
       use message <- decode.field("message", decode.string)
-      decode.success(SignalFailed(message))
+      decode.success(AwlSignalFailed(message))
     }
-    "ChildFailed" -> {
+    "AwlChildFailed" -> {
       use message <- decode.field("message", decode.string)
-      decode.success(ChildFailed(message))
+      decode.success(AwlChildFailed(message))
     }
-    "TimerFailed" -> {
+    "AwlTimerFailed" -> {
       use message <- decode.field("message", decode.string)
-      decode.success(TimerFailed(message))
+      decode.success(AwlTimerFailed(message))
     }
-    "TimedOut" -> {
+    "AwlTimedOut" -> {
       use message <- decode.field("message", decode.string)
-      decode.success(TimedOut(message))
+      decode.success(AwlTimedOut(message))
     }
-    "Failed" -> decode.success(Failed)
-    _ -> decode.failure(Failed, "AwlError")
+    "AwlFailed" -> decode.success(AwlFailed)
+    _ -> decode.failure(AwlFailed, "AwlError")
   }
 }
 
@@ -670,18 +667,18 @@ fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Resul
 }
 
 fn map_activity_error(result: Result(a, error.ActivityError)) -> Result(a, AwlError) {
-  case result { Ok(value) -> Ok(value) Error(_) -> Error(ActivityFailed("activity failed")) }
+  case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlActivityFailed("activity failed")) }
 }
 
 fn map_receive_error(result: Result(a, error.ReceiveError)) -> Result(a, AwlError) {
-  case result { Ok(value) -> Ok(value) Error(_) -> Error(SignalFailed("signal receive failed")) }
+  case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlSignalFailed("signal receive failed")) }
 }
 
 fn map_child_error(result: Result(a, error.ChildError(AwlError))) -> Result(a, AwlError) {
-  case result { Ok(value) -> Ok(value) Error(_) -> Error(ChildFailed("child workflow failed")) }
+  case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlChildFailed("child workflow failed")) }
 }
 
 fn map_timer_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {
-  case result { Ok(value) -> Ok(value) Error(_) -> Error(TimerFailed("timer failed")) }
+  case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlTimerFailed("timer failed")) }
 }
 

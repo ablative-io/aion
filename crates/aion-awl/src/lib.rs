@@ -16,7 +16,7 @@ pub use ast::{
     RecordField, RetrySpec, Spanned, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
     WorkflowDecl,
 };
-pub use emitter::emit;
+pub use emitter::{EmitError, emit};
 pub use parser::{ParseError, parse};
 pub use printer::print;
 

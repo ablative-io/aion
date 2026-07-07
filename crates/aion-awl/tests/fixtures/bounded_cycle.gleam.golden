@@ -1,4 +1,4 @@
-//// Say hello with a guarded enrichment step.
+//// Fix until accepted.
 
 import aion/activity
 import aion/codec.{type Codec}
@@ -22,25 +22,31 @@ pub type AwlError {
   AwlFailed
 }
 
-pub type HelloInput {
-  HelloInput(
-    name: String,
+pub type BoundedCycleInput {
+  BoundedCycleInput(
+    state: ReviewState,
   )
 }
 
-pub type Greeting {
-  Greeting(
-    message: String,
-    excited: Bool,
+pub type ReviewState {
+  ReviewState(
+    accepted: Bool,
+    notes: String,
+  )
+}
+
+pub type Failed {
+  Failed(
+    reason: String,
   )
 }
 
 /// Typed definition binding the codecs to the execute function.
-pub fn definition() -> workflow.WorkflowDefinition(HelloInput, Greeting, AwlError) {
+pub fn definition() -> workflow.WorkflowDefinition(BoundedCycleInput, ReviewState, AwlError) {
   workflow.define(
-    "hello",
-    hello_input_codec(),
-    greeting_codec(),
+    "bounded_cycle",
+    bounded_cycle_input_codec(),
+    review_state_codec(),
     awl_error_codec(),
     execute,
   )
@@ -50,10 +56,10 @@ pub fn definition() -> workflow.WorkflowDefinition(HelloInput, Greeting, AwlErro
 pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {
   case decode.run(raw_input, decode.string) {
     Ok(raw_json) ->
-      case hello_input_codec().decode(raw_json) {
+      case bounded_cycle_input_codec().decode(raw_json) {
         Ok(input) ->
           case execute(input) {
-            Ok(result) -> Ok(greeting_codec().encode(result))
+            Ok(result) -> Ok(review_state_codec().encode(result))
             Error(workflow_error) -> Error(workflow_error)
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
@@ -64,60 +70,69 @@ pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {
 }
 
 /// Workflow body generated from the AWL steps.
-pub fn execute(input: HelloInput) -> Result(Greeting, AwlError) {
-  let name = input.name
+pub fn execute(input: BoundedCycleInput) -> Result(ReviewState, AwlError) {
+  let state = input.state
 
-  let assert Ok(greeting) =
-    greet_activity(name) |> workflow.run |> map_activity_error
+  let assert Ok(state) =
+    seed_activity() |> workflow.run |> map_activity_error
 
-  let greeting = case greeting.excited == False {
-    True -> {
-      let assert Ok(greeting) =
-        exclaim_activity(greeting) |> workflow.run |> map_activity_error
-      greeting
+  let assert Ok(state) =
+    fix_loop(3, state)
+
+  Ok(state)
+}
+
+/// Bounded `repeat` loop for step `fix`: runs the step body up to the
+/// cap, threading the `as` binding through iterations and exiting early
+/// when the `until` condition holds.
+fn fix_loop(remaining, state) {
+  case remaining <= 0 {
+    True -> Ok(state)
+    False -> {
+      let attempt =
+        awl_retry(2, 5000, 2, 60000, fn() { workflow.spawn_and_wait("fix_round", fn(_: json.Json) { Error(AwlChildFailed("child workflow body runs in its own execution")) }, json.object([#("state", review_state_to_json(state))]), json_value_codec(), review_state_codec(), awl_error_codec()) |> map_child_error })
+      case attempt {
+        Ok(state) ->
+          case state.accepted {
+            True -> Ok(state)
+            False -> fix_loop(remaining - 1, state)
+          }
+        Error(awl_error) -> Error(awl_error)
+      }
     }
-    False -> greeting
   }
-
-  Ok(greeting)
 }
 
-pub type GreetInput {
-  GreetInput(
-    name: String,
-  )
+pub type SeedInput {
+  SeedInput
 }
 
-fn greet_activity(
-  name: String,
-) -> activity.Activity(GreetInput, Greeting) {
+fn seed_activity() -> activity.Activity(SeedInput, ReviewState) {
   activity.new(
-    "greet",
-    GreetInput(
-      name: name,
-    ),
-    greet_input_codec(),
-    greeting_codec(),
+    "seed",
+    SeedInput,
+    seed_input_codec(),
+    review_state_codec(),
     fn(_) { Error(error.terminal("activity body is provided by a worker")) },
   )
 }
 
-pub type ExclaimInput {
-  ExclaimInput(
-    greeting: Greeting,
+pub type FixRoundInput {
+  FixRoundInput(
+    state: ReviewState,
   )
 }
 
-fn exclaim_activity(
-  greeting: Greeting,
-) -> activity.Activity(ExclaimInput, Greeting) {
+fn fix_round_activity(
+  state: ReviewState,
+) -> activity.Activity(FixRoundInput, ReviewState) {
   activity.new(
-    "exclaim",
-    ExclaimInput(
-      greeting: greeting,
+    "fix_round",
+    FixRoundInput(
+      state: state,
     ),
-    exclaim_input_codec(),
-    greeting_codec(),
+    fix_round_input_codec(),
+    review_state_codec(),
     fn(_) { Error(error.terminal("activity body is provided by a worker")) },
   )
 }
@@ -170,74 +185,87 @@ fn awl_error_decoder() -> decode.Decoder(AwlError) {
   }
 }
 
-fn hello_input_codec() -> Codec(HelloInput) {
-  codec.json_codec(hello_input_to_json, hello_input_decoder())
+fn bounded_cycle_input_codec() -> Codec(BoundedCycleInput) {
+  codec.json_codec(bounded_cycle_input_to_json, bounded_cycle_input_decoder())
 }
 
-fn hello_input_to_json(hello_input: HelloInput) -> json.Json {
+fn bounded_cycle_input_to_json(bounded_cycle_input: BoundedCycleInput) -> json.Json {
   json.object([
-    #("name", string_to_json(hello_input.name)),
+    #("state", review_state_to_json(bounded_cycle_input.state)),
   ])
 }
 
-fn hello_input_decoder() -> decode.Decoder(HelloInput) {
-  use name <- decode.field("name", string_decoder())
-  decode.success(HelloInput(
-    name: name,
+fn bounded_cycle_input_decoder() -> decode.Decoder(BoundedCycleInput) {
+  use state <- decode.field("state", review_state_decoder())
+  decode.success(BoundedCycleInput(
+    state: state,
   ))
 }
 
-fn greeting_codec() -> Codec(Greeting) {
-  codec.json_codec(greeting_to_json, greeting_decoder())
+fn review_state_codec() -> Codec(ReviewState) {
+  codec.json_codec(review_state_to_json, review_state_decoder())
 }
 
-fn greeting_to_json(greeting: Greeting) -> json.Json {
+fn review_state_to_json(review_state: ReviewState) -> json.Json {
   json.object([
-    #("message", string_to_json(greeting.message)),
-    #("excited", bool_to_json(greeting.excited)),
+    #("accepted", bool_to_json(review_state.accepted)),
+    #("notes", string_to_json(review_state.notes)),
   ])
 }
 
-fn greeting_decoder() -> decode.Decoder(Greeting) {
-  use message <- decode.field("message", string_decoder())
-  use excited <- decode.field("excited", bool_decoder())
-  decode.success(Greeting(
-    message: message,
-    excited: excited,
+fn review_state_decoder() -> decode.Decoder(ReviewState) {
+  use accepted <- decode.field("accepted", bool_decoder())
+  use notes <- decode.field("notes", string_decoder())
+  decode.success(ReviewState(
+    accepted: accepted,
+    notes: notes,
   ))
 }
 
-fn greet_input_codec() -> Codec(GreetInput) {
-  codec.json_codec(greet_input_to_json, greet_input_decoder())
+fn failed_codec() -> Codec(Failed) {
+  codec.json_codec(failed_to_json, failed_decoder())
 }
 
-fn greet_input_to_json(greet_input: GreetInput) -> json.Json {
+fn failed_to_json(failed: Failed) -> json.Json {
   json.object([
-    #("name", string_to_json(greet_input.name)),
+    #("reason", string_to_json(failed.reason)),
   ])
 }
 
-fn greet_input_decoder() -> decode.Decoder(GreetInput) {
-  use name <- decode.field("name", string_decoder())
-  decode.success(GreetInput(
-    name: name,
+fn failed_decoder() -> decode.Decoder(Failed) {
+  use reason <- decode.field("reason", string_decoder())
+  decode.success(Failed(
+    reason: reason,
   ))
 }
 
-fn exclaim_input_codec() -> Codec(ExclaimInput) {
-  codec.json_codec(exclaim_input_to_json, exclaim_input_decoder())
+fn seed_input_codec() -> Codec(SeedInput) {
+  codec.json_codec(seed_input_to_json, seed_input_decoder())
 }
 
-fn exclaim_input_to_json(exclaim_input: ExclaimInput) -> json.Json {
+fn seed_input_to_json(_: SeedInput) -> json.Json {
   json.object([
-    #("greeting", greeting_to_json(exclaim_input.greeting)),
   ])
 }
 
-fn exclaim_input_decoder() -> decode.Decoder(ExclaimInput) {
-  use greeting <- decode.field("greeting", greeting_decoder())
-  decode.success(ExclaimInput(
-    greeting: greeting,
+fn seed_input_decoder() -> decode.Decoder(SeedInput) {
+  decode.success(SeedInput)
+}
+
+fn fix_round_input_codec() -> Codec(FixRoundInput) {
+  codec.json_codec(fix_round_input_to_json, fix_round_input_decoder())
+}
+
+fn fix_round_input_to_json(fix_round_input: FixRoundInput) -> json.Json {
+  json.object([
+    #("state", review_state_to_json(fix_round_input.state)),
+  ])
+}
+
+fn fix_round_input_decoder() -> decode.Decoder(FixRoundInput) {
+  use state <- decode.field("state", review_state_decoder())
+  decode.success(FixRoundInput(
+    state: state,
   ))
 }
 
@@ -282,5 +310,47 @@ fn map_child_error(result: Result(a, error.ChildError(AwlError))) -> Result(a, A
 
 fn map_timer_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {
   case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlTimerFailed("timer failed")) }
+}
+
+/// Encode-only codec for child workflow inputs: the parent assembles the
+/// child's input record as JSON and never decodes it back.
+fn json_value_codec() -> Codec(json.Json) {
+  codec.Codec(
+    encode: json.to_string,
+    decode: fn(_) {
+      Error(codec.DecodeError(reason: "child call input is encode-only", path: []))
+    },
+  )
+}
+
+/// Bounded retry with backoff for child workflow calls: `attempts` total
+/// attempts with an SDK timer sleep between them (fixed when `multiplier`
+/// is 1, exponential capped at `max_delay_ms` otherwise).
+fn awl_retry(
+  attempts: Int,
+  delay_ms: Int,
+  multiplier: Int,
+  max_delay_ms: Int,
+  operation: fn() -> Result(value, AwlError),
+) -> Result(value, AwlError) {
+  case operation() {
+    Ok(value) -> Ok(value)
+    Error(awl_error) ->
+      case attempts <= 1 {
+        True -> Error(awl_error)
+        False ->
+          case workflow.sleep(duration.milliseconds(delay_ms)) {
+            Ok(_) -> {
+              let next_delay_ms = delay_ms * multiplier
+              let capped_delay_ms = case next_delay_ms > max_delay_ms {
+                True -> max_delay_ms
+                False -> next_delay_ms
+              }
+              awl_retry(attempts - 1, capped_delay_ms, multiplier, max_delay_ms, operation)
+            }
+            Error(_) -> Error(AwlTimerFailed("timer failed while backing off"))
+          }
+      }
+  }
 }
 
