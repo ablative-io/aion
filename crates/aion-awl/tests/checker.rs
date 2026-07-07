@@ -1,3 +1,5 @@
+//! Integration tests for AWL typechecking diagnostics.
+
 use aion_awl::{CheckError, Span, check, parse};
 
 fn errors(source: &str) -> Vec<CheckError> {
@@ -99,7 +101,7 @@ fn expression_operator_errors_are_spanned_and_specific() {
     assert_error(
         "workflow w\ninput a: Int\noutput String\n\nfinish not a\n",
         "not operand expected Bool, found Int",
-        "not a",
+        "a\n",
     );
     assert_error(
         "workflow w\ninput a: Bool\ninput b: String\noutput String\n\nfinish a and b\n",

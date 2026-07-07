@@ -81,6 +81,7 @@ struct Ctx<'a> {
 }
 
 /// Typecheck a parsed AWL document. An empty vector means the document is well-typed.
+#[must_use]
 pub fn check(document: &Document) -> Vec<CheckError> {
     let mut ctx = Ctx::new(document);
     ctx.check_document(document);
@@ -299,13 +300,14 @@ impl<'a> Ctx<'a> {
     fn step_op_ty(&mut self, op: &StepOp) -> Ty {
         match op {
             StepOp::Do(target) => self.call_ty(target),
-            StepOp::Wait { span, signal } => match self.signals.get(signal.as_str()) {
-                Some(ty) => ty.clone(),
-                None => {
+            StepOp::Wait { span, signal } => {
+                if let Some(ty) = self.signals.get(signal.as_str()) {
+                    ty.clone()
+                } else {
                     self.error(*span, format!("unknown signal `{signal}`"));
                     Ty::Unknown
                 }
-            },
+            }
             StepOp::Sleep(_) => Ty::Nil,
         }
     }
@@ -406,12 +408,11 @@ impl<'a> Ctx<'a> {
             Expr::List { span, items } => self.list_ty(*span, items),
             Expr::Ref { span, name } => {
                 self.check_value_name(name, *span, "reference");
-                match self.bindings.get(name) {
-                    Some(ty) => ty.clone(),
-                    None => {
-                        self.error(*span, format!("unresolved reference `{name}`"));
-                        Ty::Unknown
-                    }
+                if let Some(ty) = self.bindings.get(name) {
+                    ty.clone()
+                } else {
+                    self.error(*span, format!("unresolved reference `{name}`"));
+                    Ty::Unknown
                 }
             }
             Expr::Field { span, base, field } => self.field_ty(*span, base, field),
