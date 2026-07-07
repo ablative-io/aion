@@ -9,8 +9,12 @@ mod ast;
 mod parser;
 mod printer;
 
-pub use ast::*;
-pub use parser::{ParseError, parse};
+pub use ast::{
+    AboutDecl, ActionDecl, BinaryOp, CallExpr, CallTarget, Comment, Document, DurationLiteral,
+    EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField, RetrySpec,
+    Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl,
+};
+pub use parser::{parse, ParseError};
 pub use printer::print;
 
 use std::error::Error;

@@ -1,6 +1,12 @@
-use crate::ast::*;
+#![allow(missing_docs)]
+
+use crate::ast::{
+    BinaryOp, CallExpr, CallTarget, Comment, Document, Expr, HandlerBlock, HandlerTerminal,
+    RetrySpec, StepDecl, StepOp, TypeRef,
+};
 use crate::parser::duration_text;
 
+/// Render an AWL document in the canonical AWL-0 format.
 pub fn print(document: &Document) -> String {
     let mut p = Printer { out: String::new() };
     p.document(document);

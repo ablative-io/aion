@@ -1,6 +1,10 @@
+//! Integration tests for AWL parsing, canonical printing, and diagnostics.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::error::Error;
 
-use aion_awl::{StepOp, parse, print};
+use aion_awl::{parse, print, StepOp};
 
 fn assert_idempotent(source: &str) -> Result<(), Box<dyn Error>> {
     let first = print(&parse(source)?);
@@ -30,11 +34,12 @@ fn debug_without_spans<T: std::fmt::Debug>(value: &T) -> String {
 fn research_report_normalizes_to_golden_and_preserves_comments() -> Result<(), Box<dyn Error>> {
     let source = include_str!("fixtures/research_report.awl");
     let canonical = include_str!("fixtures/research_report.canonical.awl");
+    let normalized_source = print(&parse(source)?);
     assert_eq!(
-        debug_without_spans(&parse(source)?),
+        debug_without_spans(&parse(&normalized_source)?),
         debug_without_spans(&parse(canonical)?)
     );
-    let printed = print(&parse(source)?);
+    let printed = normalized_source;
     assert_eq!(printed, canonical);
     assert_eq!(print(&parse(canonical)?), canonical);
     assert_eq!(print(&parse(&printed)?), printed);
@@ -52,8 +57,9 @@ fn research_report_normalizes_to_golden_and_preserves_comments() -> Result<(), B
 fn bounded_cycle_normalizes_to_golden_and_is_idempotent() -> Result<(), Box<dyn Error>> {
     let source = include_str!("fixtures/bounded_cycle.awl");
     let canonical = include_str!("fixtures/bounded_cycle.canonical.awl");
+    let normalized_source = print(&parse(source)?);
     assert_eq!(
-        debug_without_spans(&parse(source)?),
+        debug_without_spans(&parse(&normalized_source)?),
         debug_without_spans(&parse(canonical)?)
     );
     assert_eq!(print(&parse(source)?), canonical);

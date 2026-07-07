@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use crate::{DurationUnit, Span};
 
 #[derive(Debug, Clone, PartialEq)]
