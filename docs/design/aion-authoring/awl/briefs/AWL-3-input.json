@@ -1,0 +1,44 @@
+{
+  "brief": {
+    "id": "AWL-3",
+    "title": "aion-awl: typechecker (action contracts, binding flow, spanned compiler-quality errors)",
+    "objective": "Add the typechecker tier to crates/aion-awl: aion_awl::check(&Document) -> Vec<CheckError> (empty means well-typed), validating a parsed document against its own declarations with compiler-quality spanned errors.",
+    "context": "The lexer (AWL-1), parser and canonical printer (AWL-2) are on main; spec is docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md (Types-on-actions is design constant 3; the step-field table and expression micro-grammar define what needs typing). Built-in types: Bool, Int, Float, String, Nil, Dir, List(T), Option(T); user types are nominal records declared with `type Name { field: Type }`. Checks to implement, each with a precise spanned error: (1) REFERENCE RESOLUTION — every expression reference resolves to a declared input, a declared signal binding, an `each` loop variable in scope, or a prior step's `as` binding in document order; `as` REBINDING of an existing name is legal (the spec's rebinding rule) but the rebound value's type must equal the original binding's type. (2) ACTION CALLS — `do name(args)` must name a declared action; arity and each argument's type must match the declaration; call arguments are positional. `do child name(field: expr, ...)` is NOT typechecked against a contract in this rev (child workflows are external) — but its argument EXPRESSIONS are still type-inferred and its `as` binding gets an opaque type that cannot be field-accessed (error message should say the child result is untyped in this revision). (3) EXPRESSION TYPING — field access only on record types with that field; not/and/or take Bool; comparisons require both operands the same primitive type (Int, Float, String, Bool, or Duration); string + takes two Strings; list literals require element-type agreement; record construction must name a declared type, cover EVERY declared field exactly once, each with the declared type. (4) STEP-FIELD SEMANTICS — `when` and `until` guards must type Bool; `each x in e` requires e: List(T) and binds x: T for that step's do; `wait s` must name a declared signal and the step's `as` binds the signal's payload type; `sleep`/`timeout`/retry durations are already syntactic (no check needed); `repeat up to e` requires e: Int. (5) FINISH — the finish expression must type to the declared output type; if an `on timeout`/`on failure` handler ends in `finish e`, e must also match the output type. (6) DECLARATION HYGIENE — duplicate declaration names (two types, two actions, two signals, two inputs with the same name) are errors; a type/action/signal referenced nowhere is NOT an error in this rev. (7) IDENTIFIER LEXICAL RULES (promoted from an AWL-2 review advisory) — declared and referenced value identifiers must be snake_case ([a-z][a-z0-9_]*), type names TitleCase ([A-Z][A-Za-z0-9]*); violations are spanned errors at the offending name. Every CheckError carries the span of the offending expression/name (AWL-2's spans are source-correct — rely on them) plus a message that names what was expected and what was found.",
+    "pointers": [
+      "docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md",
+      "crates/aion-awl/src/ast.rs",
+      "crates/aion-awl/src/parser.rs",
+      "crates/aion-awl/tests/fixtures/research_report.awl"
+    ],
+    "scope_in": [
+      "crates/aion-awl/"
+    ],
+    "scope_out": [
+      "No changes to lexer/parser/printer BEHAVIOR — additive public accessors or small AST helper methods are fine; parse and print output for existing tests must be byte-identical",
+      "No execution/interpretation (that is #216), no projection to the aion-package graph",
+      "No warning tier — errors only in this rev",
+      "No changes to any other crate; no external dependencies (std only)",
+      "Do not modify the spec or sketch documents, the two source fixtures, or their .canonical.awl goldens"
+    ],
+    "acceptance": [
+      "aion_awl::check(&Document) -> Vec<CheckError> exists; CheckError exposes span (byte start/end, line, column) and message",
+      "tests/fixtures/research_report.awl parses AND checks with zero errors (it is internally consistent) — golden test",
+      "Every check class above has at least one negative unit test asserting BOTH the exact message content and the exact span (line, column, byte start) of the error, in the style of parse_errors_are_spanned_and_specific after its span-pinning",
+      "The rebinding rule is tested positively (as re-binds with the same type, later references see it) and negatively (rebinding to a different type is a spanned error)",
+      "each/wait/when/until/repeat/finish step-field typing each covered positively and negatively",
+      "Record construction errors cover: unknown type, missing field, extra field, wrong field type, duplicate field — each spanned",
+      "cargo test -p aion-awl fully green including all pre-existing AWL-1/AWL-2 tests unchanged; clippy -D warnings clean; cargo fmt --all leaves the tree unchanged"
+    ],
+    "notes": "DISCIPLINE THAT DECIDED PRIOR BRIEFS: before finishing EVERY turn, run the three gate commands from config.gates VERBATIM in your workspace and iterate until all are fully clean — the workspace clippy profile is pedantic (expect_used is denied even in test code; manual_let_else, match_same_arms, semicolon_if_nothing_returned all fire). Prior briefs exhausted their fix cycles purely on this. Keep the checker a straightforward two-pass walk (collect declarations, then check steps in order, threading a binding environment); no inference beyond what the rules above require — when a type cannot be determined, error at that span rather than guessing."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      { "name": "clippy", "argv": ["cargo", "clippy", "-p", "aion-awl", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "-p", "aion-awl"] }
+    ],
+    "max_fix_cycles": 3
+  }
+}
