@@ -330,6 +330,10 @@ fn dispatch_unscheduled(
             &deps.tokio_handle,
             Arc::clone(&deps.runtime),
             Arc::clone(dispatcher),
+            super::nif_activity_dispatch::RetryRecorderSeam {
+                recorder: context.recorder(),
+                run_id: context.workflow_handle().run_id().clone(),
+            },
             context.pid(),
             super::nif_activity::correlation_id(*ordinal),
             ActivityDispatch {
@@ -839,12 +843,13 @@ fn scheduled_node(history: &[Event], ordinal: u64) -> Option<String> {
 ///
 /// The durable source of truth for re-stamping the SAME attempt on a crash-recovery re-dispatch, so
 /// the re-armed dispatch keeps the identity the original `ActivityStarted` recorded. Returns the
-/// recorded `attempt` for a recorded `ActivityStarted`, or `None` if no `ActivityStarted` exists for
-/// the ordinal. A history recorded before the `attempt` field existed decodes it to the legacy
+/// recorded `attempt` of the LATEST `ActivityStarted` for the ordinal — with an engine-driven retry
+/// trail (#197) the last start IS the in-flight delivery — or `None` if no `ActivityStarted` exists
+/// for the ordinal. A history recorded before the `attempt` field existed decodes it to the legacy
 /// sentinel (`0`) via the event's serde default — deterministically replay-safe, never a panic.
 fn started_attempt(history: &[Event], ordinal: u64) -> Option<u32> {
     let target = ActivityId::from_sequence_position(ordinal);
-    history.iter().find_map(|event| match event {
+    history.iter().rev().find_map(|event| match event {
         Event::ActivityStarted {
             activity_id,
             attempt,

@@ -406,6 +406,36 @@ impl RuntimeHandle {
             .map(|(_, error)| error)
     }
 
+    /// Retain the one-based delivery attempt that produced the outcome about
+    /// to be delivered for `(parent_pid, activity_sequence)` (#197).
+    ///
+    /// Called by the completion task's retry loop right before it retains the
+    /// final payload/error, so the awaiting NIF records the terminal with the
+    /// genuine attempt instead of assuming the first delivery.
+    pub(crate) fn note_delivery_attempt(
+        &self,
+        parent_pid: Pid,
+        activity_sequence: Pid,
+        attempt: u32,
+    ) {
+        self.activity_delivery_attempts
+            .insert((parent_pid, activity_sequence), attempt);
+    }
+
+    /// Take the noted delivery attempt for a retained outcome, if any.
+    ///
+    /// `None` means the outcome arrived through a path that never retries
+    /// (outbox re-delivery, in-VM children) and is the first delivery.
+    pub(crate) fn take_delivery_attempt(
+        &self,
+        parent_pid: Pid,
+        activity_sequence: Pid,
+    ) -> Option<u32> {
+        self.activity_delivery_attempts
+            .remove(&(parent_pid, activity_sequence))
+            .map(|(_, attempt)| attempt)
+    }
+
     /// Drop every retained activity completion and failure for a workflow pid.
     ///
     /// Called from the workflow process monitor when the process exits: a
@@ -416,6 +446,8 @@ impl RuntimeHandle {
         self.activity_results
             .retain(|(parent, _), _| *parent != workflow_pid);
         self.activity_errors
+            .retain(|(parent, _), _| *parent != workflow_pid);
+        self.activity_delivery_attempts
             .retain(|(parent, _), _| *parent != workflow_pid);
     }
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
-use crate::durability::{Command, CorrelationKey, Resolution, ResolveOutcome};
+use crate::durability::{Command, CorrelationKey, Recorder, Resolution, ResolveOutcome};
 use crate::runtime::nif_activity::{
     activity_error, activity_id_from_correlation, context_error_term, correlation_id,
     decode_string_arg, error_result_term, json_payload, labels_from_config, ok_result_term,
@@ -13,7 +13,6 @@ use crate::runtime::nif_context::NifContext;
 use aion_core::{ActivityId, Payload};
 use beamr::native::ProcessContext;
 use beamr::term::Term;
-use futures::FutureExt;
 
 /// NIF backing `aion_flow_ffi:dispatch_activity/3`.
 pub(super) fn dispatch_activity_impl(
@@ -154,21 +153,22 @@ fn decode_dispatch_args(args: &[Term]) -> Result<(String, String, String), ()> {
     Ok((name, input, config))
 }
 
-/// First delivery: every dispatch issued from workflow code is attempt 1.
+/// First delivery: a dispatch for an ordinal with no recorded attempt trail
+/// is attempt 1.
 ///
-/// The retry executor (unbuilt; the retry POLICY rides in the `config` JSON,
-/// `gleam/aion_flow/src/aion/workflow/run.gleam`, and is consumed by nothing
-/// yet — for EVERY tier, in-VM included) re-invokes with the incremented
-/// attempt when it lands — the wire and the [`ActivityDispatcher`] seam are
-/// ready for it. This is the single documented producer-side constant; no
-/// consumer guesses an attempt.
+/// The remote-tier retry loop ([`spawn_completion_task`], #197) re-dispatches
+/// with the incremented attempt when the SDK-declared retry policy (decoded
+/// from the dispatch `config` JSON by [`super::nif_activity_retry`]) has
+/// budget left, and a live re-dispatch after a crash continues the recorded
+/// trail via [`super::nif_activity_retry::next_delivery_attempt`]. This is
+/// the single documented producer-side constant; no consumer guesses an
+/// attempt.
 ///
-/// In-VM retry-seam constraint: unlike remote activities, whose retries can be
-/// driven by outbox re-delivery to a worker, an in-VM retry must be driven
-/// from a seam that HOLDS THE RUNNER — the dispatch NIF itself (replay's
-/// reopen path re-supplies the thunk on every re-execution of workflow code)
-/// or an SDK-level loop. A future retry executor cannot re-deliver an in-VM
-/// attempt from outside the workflow process.
+/// In-VM retry-seam constraint: unlike remote activities, an in-VM retry must
+/// be driven from a seam that HOLDS THE RUNNER — the dispatch NIF itself
+/// (replay's reopen path re-supplies the thunk on every re-execution of
+/// workflow code) or an SDK-level loop. The remote retry loop deliberately
+/// does not cover the in-VM tier, whose dispatches stay single-attempt.
 pub(super) const FIRST_DELIVERY_ATTEMPT: u32 = 1;
 
 /// Grouped parameters for the activity being dispatched.
@@ -234,6 +234,14 @@ fn dispatch_activity_with_context(
             // value onto BOTH the recorded `ActivityScheduled` and the live
             // dispatch so history and routing never diverge.
             let node = super::nif_activity::resolve_node(&call.config);
+            // #197: a live re-dispatch continues the ordinal's recorded attempt
+            // trail instead of restarting it — a crash-recovery resume after a
+            // dangling retryable failure keeps `(workflow, activity, attempt)` a
+            // stable identity. A fresh ordinal resolves to `call.attempt`
+            // (`FIRST_DELIVERY_ATTEMPT`) exactly as before.
+            let attempt =
+                super::nif_activity_retry::next_delivery_attempt(context.history(), &activity_id)
+                    .max(call.attempt);
             record_started(
                 ctx,
                 &context,
@@ -246,7 +254,7 @@ fn dispatch_activity_with_context(
                     // NOI-0: stamp the SAME one-based attempt onto the recorded `ActivityStarted`
                     // that is stamped onto the live `ActivityDispatch` below, so history and the
                     // worker wire agree.
-                    attempt: call.attempt,
+                    attempt,
                 },
             )?;
             let labels = labels_from_config(&call.config);
@@ -259,13 +267,17 @@ fn dispatch_activity_with_context(
                 name: call.name,
                 input: call.input,
                 config: call.config,
-                attempt: call.attempt,
+                attempt,
                 labels,
             };
             spawn_completion_task(
                 tokio_handle,
                 runtime,
                 dispatcher,
+                RetryRecorderSeam {
+                    recorder: context.recorder(),
+                    run_id: context.workflow_handle().run_id().clone(),
+                },
                 context.pid(),
                 correlation.clone(),
                 request,
@@ -275,19 +287,45 @@ fn dispatch_activity_with_context(
     }
 }
 
+/// Spawn the completion task for one dispatched activity.
+///
+/// The task drives the dispatch to its FINAL outcome before waking the
+/// workflow: a retryable-class failure (`retryable:` reason prefix — the
+/// string form of the wire's structured `ActivityErrorKind`, see
+/// [`super::nif_activity_retry`]) with budget left under the SDK-declared
+/// retry policy is recorded durably as a non-terminal `ActivityFailed`
+/// (kind `Retryable`), backed off, and re-dispatched with the SAME ordinal
+/// and routing at the incremented attempt. Non-retryable failures, absent
+/// policies (`"retry": null` — the SDK's run-exactly-once contract), and an
+/// exhausted budget deliver to the workflow exactly as before, with the last
+/// reason verbatim.
+///
+/// Every durable retry record is guarded against the settle races the
+/// workflow thread can win mid-loop (a `with_timeout` expiry recording the
+/// ordinal's terminal, a workflow terminal): the guard re-reads history under
+/// the recorder lock and aborts the loop once the decision was made elsewhere.
+/// The backoff sleep itself is task-local, not a durable timer: an engine
+/// crash mid-backoff recovers through replay, whose dangling retryable
+/// failure re-dispatches the activity live at the next attempt.
 pub(super) fn spawn_completion_task(
     tokio_handle: &tokio::runtime::Handle,
     runtime: Arc<crate::RuntimeHandle>,
     dispatcher: Arc<dyn ActivityDispatcher>,
+    seam: RetryRecorderSeam,
     workflow_pid: u64,
     correlation_id: String,
     request: ActivityDispatch,
 ) {
-    let future = dispatcher
-        .dispatch_async(request)
-        .map(move |result| {
-            match result {
-            Ok(payload) => {
+    let future = async move {
+        let outcome = dispatch_with_retries(&dispatcher, &seam, &request).await;
+        let attempt = outcome.attempt;
+        match outcome.terminal {
+            RetryLoopTerminal::Completed(payload) => {
+                runtime.note_delivery_attempt(
+                    workflow_pid,
+                    request.activity_id.sequence_position(),
+                    attempt,
+                );
                 if let Err(error) = runtime.deliver_activity_completion_message(
                     workflow_pid,
                     &correlation_id,
@@ -296,18 +334,234 @@ pub(super) fn spawn_completion_task(
                     tracing::warn!(%error, workflow_pid, correlation_id, "activity completion delivery failed");
                 }
             }
-            Err(reason) => {
-                if let Err(error) = runtime.deliver_activity_failure_message(
+            RetryLoopTerminal::Failed(reason) => {
+                runtime.note_delivery_attempt(
                     workflow_pid,
-                    &correlation_id,
-                    reason,
-                ) {
+                    request.activity_id.sequence_position(),
+                    attempt,
+                );
+                if let Err(error) =
+                    runtime.deliver_activity_failure_message(workflow_pid, &correlation_id, reason)
+                {
                     tracing::warn!(%error, workflow_pid, correlation_id, "activity failure delivery failed");
                 }
             }
+            RetryLoopTerminal::SettledElsewhere => {
+                // The awaited ordinal (or the whole workflow) reached a
+                // recorded terminal while the loop ran — deliver nothing; the
+                // workflow already took that branch.
+                tracing::debug!(
+                    workflow_id = %request.workflow_id,
+                    activity_id = %request.activity_id,
+                    attempt,
+                    "activity retry loop stopped: the activity settled through another path"
+                );
+            }
         }
-    });
+    };
     tokio_handle.spawn(future);
+}
+
+/// The durable seam one completion task records retry attempts through: the
+/// workflow's single-writer recorder plus the run the dispatch belongs to
+/// (settlement is a per-run question — see [`record_retry_event`]).
+pub(super) struct RetryRecorderSeam {
+    /// The workflow's single-writer recorder, shared with the NIF contexts.
+    pub(super) recorder: Arc<tokio::sync::Mutex<Recorder>>,
+    /// The run this dispatch was issued by.
+    pub(super) run_id: aion_core::RunId,
+}
+
+/// The retry loop's final disposition, carrying the attempt that produced it.
+struct RetryLoopOutcome {
+    attempt: u32,
+    terminal: RetryLoopTerminal,
+}
+
+enum RetryLoopTerminal {
+    /// The encoded output of the successful attempt.
+    Completed(String),
+    /// The last failure reason, verbatim (prefix included).
+    Failed(String),
+    /// A terminal for this ordinal/workflow was recorded by another path
+    /// mid-loop; nothing may be delivered or recorded for it anymore.
+    SettledElsewhere,
+}
+
+/// Drive one activity dispatch to its final outcome under the SDK-declared
+/// retry policy carried in the dispatch config (#197).
+async fn dispatch_with_retries(
+    dispatcher: &Arc<dyn ActivityDispatcher>,
+    seam: &RetryRecorderSeam,
+    request: &ActivityDispatch,
+) -> RetryLoopOutcome {
+    use super::nif_activity_retry::{is_retryable_reason, retry_policy_from_config};
+
+    let policy = retry_policy_from_config(&request.config);
+    let mut attempt = request.attempt;
+    loop {
+        let mut delivery = request.clone();
+        delivery.attempt = attempt;
+        let reason = match Arc::clone(dispatcher).dispatch_async(delivery).await {
+            Ok(payload) => {
+                return RetryLoopOutcome {
+                    attempt,
+                    terminal: RetryLoopTerminal::Completed(payload),
+                };
+            }
+            Err(reason) => reason,
+        };
+        let Some(policy) = policy
+            .as_ref()
+            .filter(|policy| is_retryable_reason(&reason) && attempt < policy.max_attempts)
+        else {
+            return RetryLoopOutcome {
+                attempt,
+                terminal: RetryLoopTerminal::Failed(reason),
+            };
+        };
+        // Record the failed attempt durably as a NON-terminal (Retryable)
+        // `ActivityFailed` — the observable retry record the history cursor
+        // walks past to the eventual terminal. Recording failures abort the
+        // loop into an honest terminal failure: an unrecorded retry is a
+        // silent retry.
+        match record_retry_event(
+            seam,
+            request,
+            RetryRecord::AttemptFailed {
+                attempt,
+                reason: reason.clone(),
+            },
+        )
+        .await
+        {
+            RetryRecordOutcome::Recorded => {}
+            RetryRecordOutcome::Settled => {
+                return RetryLoopOutcome {
+                    attempt,
+                    terminal: RetryLoopTerminal::SettledElsewhere,
+                };
+            }
+            RetryRecordOutcome::RecordFailed(record_error) => {
+                tracing::warn!(
+                    workflow_id = %request.workflow_id,
+                    activity_id = %request.activity_id,
+                    attempt,
+                    error = %record_error,
+                    "failed to record a retryable activity failure; failing the activity instead \
+                     of retrying unrecorded"
+                );
+                return RetryLoopOutcome {
+                    attempt,
+                    terminal: RetryLoopTerminal::Failed(reason),
+                };
+            }
+        }
+        let delay = policy.backoff.delay_after(attempt);
+        tracing::warn!(
+            workflow_id = %request.workflow_id,
+            activity_id = %request.activity_id,
+            activity_type = %request.name,
+            attempt,
+            max_attempts = policy.max_attempts,
+            retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            reason = %reason,
+            "activity attempt failed with a retryable error; re-dispatching"
+        );
+        tokio::time::sleep(delay).await;
+        attempt += 1;
+        // Record the retry delivery's `ActivityStarted` before it goes on the
+        // wire, so history and the worker wire agree on the attempt (NOI-0) —
+        // re-guarded, because the backoff sleep is a settle-race window.
+        match record_retry_event(seam, request, RetryRecord::AttemptStarted { attempt }).await {
+            RetryRecordOutcome::Recorded => {}
+            RetryRecordOutcome::Settled => {
+                return RetryLoopOutcome {
+                    attempt,
+                    terminal: RetryLoopTerminal::SettledElsewhere,
+                };
+            }
+            RetryRecordOutcome::RecordFailed(record_error) => {
+                tracing::warn!(
+                    workflow_id = %request.workflow_id,
+                    activity_id = %request.activity_id,
+                    attempt,
+                    error = %record_error,
+                    "failed to record a retry attempt start; failing the activity instead of \
+                     dispatching unrecorded"
+                );
+                return RetryLoopOutcome {
+                    attempt,
+                    terminal: RetryLoopTerminal::Failed(reason),
+                };
+            }
+        }
+    }
+}
+
+/// One durable retry record the loop appends between attempts.
+enum RetryRecord {
+    /// The just-failed attempt's non-terminal `ActivityFailed`.
+    AttemptFailed { attempt: u32, reason: String },
+    /// The next delivery's `ActivityStarted`.
+    AttemptStarted { attempt: u32 },
+}
+
+enum RetryRecordOutcome {
+    Recorded,
+    /// The ordinal (or workflow) already has a recorded terminal; the loop
+    /// must stop without recording or delivering anything further.
+    Settled,
+    RecordFailed(crate::durability::DurabilityError),
+}
+
+/// Append one retry record under the recorder lock, re-checking settlement
+/// first so the append can never land after a terminal recorded by the
+/// workflow thread (`with_timeout` expiry, workflow terminal).
+async fn record_retry_event(
+    seam: &RetryRecorderSeam,
+    request: &ActivityDispatch,
+    record: RetryRecord,
+) -> RetryRecordOutcome {
+    let mut recorder = seam.recorder.lock().await;
+    let history = match recorder.read_history().await {
+        Ok(history) => history,
+        Err(error) => return RetryRecordOutcome::RecordFailed(error),
+    };
+    // Settlement is a per-run question: scope to the current run's segment so
+    // a prior run's terminal (continue-as-new) never aborts this run's loop.
+    let history = match crate::durability::current_run_segment(history, &seam.run_id) {
+        Ok(history) => history,
+        Err(error) => return RetryRecordOutcome::RecordFailed(error),
+    };
+    if super::nif_activity_retry::activity_settled(&history, &request.activity_id) {
+        return RetryRecordOutcome::Settled;
+    }
+    let append_result = match record {
+        RetryRecord::AttemptFailed { attempt, reason } => {
+            recorder
+                .record_activity_failed(
+                    chrono::Utc::now(),
+                    request.activity_id.clone(),
+                    aion_core::ActivityError {
+                        kind: aion_core::ActivityErrorKind::Retryable,
+                        message: reason,
+                        details: None,
+                    },
+                    attempt,
+                )
+                .await
+        }
+        RetryRecord::AttemptStarted { attempt } => {
+            recorder
+                .record_activity_started(chrono::Utc::now(), request.activity_id.clone(), attempt)
+                .await
+        }
+    };
+    match append_result {
+        Ok(()) => RetryRecordOutcome::Recorded,
+        Err(error) => RetryRecordOutcome::RecordFailed(error),
+    }
 }
 
 fn await_activity_result_with_context(
@@ -408,12 +662,20 @@ pub(super) fn await_activity_step(
         .is_some()
     {
         let message = crate::runtime::nif_timeout::SCOPE_EXPIRED_MESSAGE.to_owned();
+        // #197: stamp the terminal with the LATEST attempt the resolution
+        // snapshot recorded for this ordinal (a retry loop may have moved it
+        // past the first delivery); a snapshot with no attempt trail keeps
+        // the first delivery, exactly as before.
+        let attempt =
+            super::nif_activity_retry::latest_recorded_attempt(context.history(), activity_id)
+                .unwrap_or(FIRST_DELIVERY_ATTEMPT)
+                .max(FIRST_DELIVERY_ATTEMPT);
         context
             .record_activity_failed(
                 chrono::Utc::now(),
                 activity_id.clone(),
                 activity_error(message.clone()),
-                1,
+                attempt,
             )
             .map_err(|error| error.error_reason())?;
         return Ok(ActivityAwaitStep::Failed(message));
@@ -458,30 +720,33 @@ fn take_runtime_completion(
     runtime: &crate::RuntimeHandle,
     activity_id: ActivityId,
 ) -> Result<Option<ActivityAwaitStep>, String> {
-    if let Some(payload) =
-        runtime.take_activity_result(context.pid(), activity_id.sequence_position())
-    {
+    let ordinal = activity_id.sequence_position();
+    if let Some(payload) = runtime.take_activity_result(context.pid(), ordinal) {
+        // NOI-0/#197: the completion task notes the attempt that produced the
+        // delivered outcome (a retry loop can move it past the first
+        // delivery); paths that never retry (outbox re-delivery, in-VM) note
+        // nothing and resolve to the first delivery exactly as before.
+        let attempt = runtime
+            .take_delivery_attempt(context.pid(), ordinal)
+            .unwrap_or(FIRST_DELIVERY_ATTEMPT);
         context
-            // NOI-0: this completion resolves the single delivery dispatched for this activity, whose
-            // attempt is `FIRST_DELIVERY_ATTEMPT` (no retry executor re-delivers yet). Same source as
-            // the sibling `ActivityFailed` below, so start/terminal share one attempt.
-            .record_activity_completed(
-                chrono::Utc::now(),
-                activity_id,
-                payload.clone(),
-                FIRST_DELIVERY_ATTEMPT,
-            )
+            .record_activity_completed(chrono::Utc::now(), activity_id, payload.clone(), attempt)
             .map_err(|error| error.error_reason())?;
         return Ok(Some(ActivityAwaitStep::Completed(payload.bytes().to_vec())));
     }
-    if let Some(error) = runtime.take_activity_error(context.pid(), activity_id.sequence_position())
-    {
+    if let Some(error) = runtime.take_activity_error(context.pid(), ordinal) {
+        // #197: an exhausted retry budget fails the workflow with the LAST
+        // reason verbatim and the final attempt count on the recorded
+        // terminal `ActivityFailed`.
+        let attempt = runtime
+            .take_delivery_attempt(context.pid(), ordinal)
+            .unwrap_or(FIRST_DELIVERY_ATTEMPT);
         context
             .record_activity_failed(
                 chrono::Utc::now(),
                 activity_id,
                 activity_error(error.message.clone()),
-                1,
+                attempt,
             )
             .map_err(|record_error| record_error.error_reason())?;
         return Ok(Some(ActivityAwaitStep::Failed(error.message)));
@@ -835,17 +1100,26 @@ mod tests {
             let dispatcher: Arc<dyn ActivityDispatcher> = Arc::new(GatedDispatcher {
                 release: std::sync::Mutex::new(Some(release_rx)),
             });
+            let workflow_id = WorkflowId::new_v4();
+            let recorder = Arc::new(tokio::sync::Mutex::new(Recorder::new(
+                workflow_id.clone(),
+                Arc::new(aion_store::InMemoryStore::default()),
+            )));
             spawn_completion_task(
                 &tokio::runtime::Handle::current(),
                 Arc::clone(&runtime),
                 dispatcher,
+                super::RetryRecorderSeam {
+                    recorder,
+                    run_id: RunId::new_v4(),
+                },
                 pid,
                 super::correlation_id(0),
                 ActivityDispatch {
                     namespace: String::from("default"),
                     task_queue: String::from("default"),
                     node: None,
-                    workflow_id: WorkflowId::new_v4(),
+                    workflow_id,
                     activity_id: ActivityId::from_sequence_position(0),
                     name: "gated".to_owned(),
                     input: r#""r0""#.to_owned(),
@@ -894,5 +1168,357 @@ mod tests {
             )??;
         assert_eq!(payload, br#""r0""#.to_vec());
         Ok(())
+    }
+
+    // ---- #197: retry loop at the dispatch seam ------------------------------
+
+    /// Scripted dispatcher for the retry-loop tests: pops one outcome per
+    /// dispatch and records the wire attempt each delivery carried.
+    struct ScriptedRetryDispatcher {
+        outcomes: std::sync::Mutex<std::collections::VecDeque<Result<String, String>>>,
+        attempts: std::sync::Mutex<Vec<u32>>,
+    }
+
+    impl ScriptedRetryDispatcher {
+        fn new(outcomes: Vec<Result<String, String>>) -> Arc<Self> {
+            Arc::new(Self {
+                outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
+                attempts: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen_attempts(&self) -> Vec<u32> {
+            self.attempts
+                .lock()
+                .map(|attempts| attempts.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    impl ActivityDispatcher for ScriptedRetryDispatcher {
+        fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
+            self.attempts
+                .lock()
+                .map_err(|_| "attempts lock poisoned".to_owned())?
+                .push(request.attempt);
+            self.outcomes
+                .lock()
+                .map_err(|_| "outcomes lock poisoned".to_owned())?
+                .pop_front()
+                .ok_or_else(|| "terminal:script exhausted — unexpected extra dispatch".to_owned())?
+        }
+    }
+
+    /// Store + recorder + request over a seeded `WorkflowStarted` +
+    /// `ActivityScheduled` + `ActivityStarted(attempt 1)` history — exactly
+    /// what the dispatch NIF records before spawning the completion task.
+    struct RetryLoopHarness {
+        store: Arc<dyn EventStore>,
+        seam: super::RetryRecorderSeam,
+        request: ActivityDispatch,
+        workflow_id: WorkflowId,
+    }
+
+    impl RetryLoopHarness {
+        async fn seeded(config: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            let store: Arc<dyn EventStore> = Arc::new(aion_store::InMemoryStore::default());
+            let workflow_id = WorkflowId::new_v4();
+            let run_id = RunId::new_v4();
+            let events = vec![
+                Event::WorkflowStarted {
+                    envelope: envelope(&workflow_id, 1),
+                    workflow_type: "retrier".to_owned(),
+                    input: Payload::from_json(&json!({}))?,
+                    run_id: run_id.clone(),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("b".repeat(64)),
+                },
+                Event::ActivityScheduled {
+                    envelope: envelope(&workflow_id, 2),
+                    activity_id: ActivityId::from_sequence_position(0),
+                    activity_type: "flaky".to_owned(),
+                    input: Payload::new(ContentType::Json, br#""in""#.to_vec()),
+                    task_queue: String::from("default"),
+                    node: None,
+                },
+                Event::ActivityStarted {
+                    envelope: envelope(&workflow_id, 3),
+                    activity_id: ActivityId::from_sequence_position(0),
+                    attempt: 1,
+                },
+            ];
+            store
+                .append(WriteToken::recorder(), &workflow_id, &events, 0)
+                .await?;
+            let recorder = Recorder::resume_at(workflow_id.clone(), Arc::clone(&store), 3);
+            let request = ActivityDispatch {
+                namespace: String::from("default"),
+                task_queue: String::from("default"),
+                node: None,
+                workflow_id: workflow_id.clone(),
+                activity_id: ActivityId::from_sequence_position(0),
+                name: "flaky".to_owned(),
+                input: r#""in""#.to_owned(),
+                config: config.to_owned(),
+                attempt: super::FIRST_DELIVERY_ATTEMPT,
+                labels: std::collections::BTreeMap::new(),
+            };
+            Ok(Self {
+                store,
+                seam: super::RetryRecorderSeam {
+                    recorder: Arc::new(tokio::sync::Mutex::new(recorder)),
+                    run_id,
+                },
+                request,
+                workflow_id,
+            })
+        }
+
+        async fn history(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+            Ok(self.store.read_history(&self.workflow_id).await?)
+        }
+    }
+
+    const FIXED_RETRY_CONFIG: &str =
+        r#"{"retry":{"max_attempts":3,"backoff":{"kind":"fixed","delay_ms":2}}}"#;
+
+    /// Retryable failure + budget left: the SAME ordinal re-dispatches at the
+    /// incremented attempt after the non-terminal failure and the retry start
+    /// are recorded — the observable per-attempt trail.
+    #[tokio::test]
+    async fn retryable_failure_redispatches_with_incremented_recorded_attempt() -> TestResult {
+        let harness = RetryLoopHarness::seeded(FIXED_RETRY_CONFIG).await?;
+        let dispatcher = ScriptedRetryDispatcher::new(vec![
+            Err("retryable:stream reset".to_owned()),
+            Ok(r#""done""#.to_owned()),
+        ]);
+        let outcome = super::dispatch_with_retries(
+            &(Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>),
+            &harness.seam,
+            &harness.request,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &outcome.terminal,
+                super::RetryLoopTerminal::Completed(payload) if payload == r#""done""#
+            ),
+            "the second attempt's success must be the delivered outcome"
+        );
+        assert_eq!(outcome.attempt, 2, "the completing attempt is attempt 2");
+        assert_eq!(
+            dispatcher.seen_attempts(),
+            vec![1, 2],
+            "the wire must carry the incremented attempt on the re-dispatch"
+        );
+        let history = harness.history().await?;
+        assert!(
+            matches!(
+                history.get(3),
+                Some(Event::ActivityFailed { error, attempt: 1, .. })
+                    if error.kind == aion_core::ActivityErrorKind::Retryable
+                        && error.message == "retryable:stream reset"
+            ),
+            "the failed attempt must be recorded as a NON-terminal retryable failure: {history:#?}"
+        );
+        assert!(
+            matches!(
+                history.get(4),
+                Some(Event::ActivityStarted { attempt: 2, .. })
+            ),
+            "the retry delivery must record its ActivityStarted: {history:#?}"
+        );
+        Ok(())
+    }
+
+    /// Exhausted budget: the loop stops at `max_attempts`, the LAST reason is
+    /// the delivered failure (verbatim), and the final attempt count rides
+    /// with it.
+    #[tokio::test]
+    async fn exhausted_retry_budget_fails_with_last_reason_and_attempt_count() -> TestResult {
+        let harness = RetryLoopHarness::seeded(FIXED_RETRY_CONFIG).await?;
+        let dispatcher = ScriptedRetryDispatcher::new(vec![
+            Err("retryable:reset one".to_owned()),
+            Err("retryable:reset two".to_owned()),
+            Err("retryable:reset three".to_owned()),
+            Ok(r#""never delivered""#.to_owned()),
+        ]);
+        let outcome = super::dispatch_with_retries(
+            &(Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>),
+            &harness.seam,
+            &harness.request,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &outcome.terminal,
+                super::RetryLoopTerminal::Failed(reason) if reason == "retryable:reset three"
+            ),
+            "the LAST reason must surface verbatim"
+        );
+        assert_eq!(outcome.attempt, 3, "the budget is total attempts");
+        assert_eq!(
+            dispatcher.seen_attempts(),
+            vec![1, 2, 3],
+            "exactly max_attempts deliveries, one per attempt"
+        );
+        let history = harness.history().await?;
+        // Two recorded retryable failures (attempts 1 and 2) and two retry
+        // starts (attempts 2 and 3); the THIRD failure is the delivered
+        // terminal, recorded by the awaiting workflow, not the loop.
+        let retryable_failures = history
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Event::ActivityFailed { error, .. }
+                        if error.kind == aion_core::ActivityErrorKind::Retryable
+                )
+            })
+            .count();
+        assert_eq!(retryable_failures, 2, "{history:#?}");
+        assert!(
+            matches!(
+                history.last(),
+                Some(Event::ActivityStarted { attempt: 3, .. })
+            ),
+            "the final delivery's start must be recorded: {history:#?}"
+        );
+        Ok(())
+    }
+
+    /// Non-retryable failures behave exactly as before the retry loop:
+    /// one delivery, no recorded retry trail, the reason delivered verbatim.
+    #[tokio::test]
+    async fn non_retryable_failure_fails_immediately_without_a_retry_trail() -> TestResult {
+        let harness = RetryLoopHarness::seeded(FIXED_RETRY_CONFIG).await?;
+        let dispatcher = ScriptedRetryDispatcher::new(vec![Err("terminal:bad request".to_owned())]);
+        let outcome = super::dispatch_with_retries(
+            &(Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>),
+            &harness.seam,
+            &harness.request,
+        )
+        .await;
+
+        assert!(matches!(
+            &outcome.terminal,
+            super::RetryLoopTerminal::Failed(reason) if reason == "terminal:bad request"
+        ));
+        assert_eq!(outcome.attempt, 1);
+        assert_eq!(dispatcher.seen_attempts(), vec![1]);
+        assert_eq!(
+            harness.history().await?.len(),
+            3,
+            "no retry events may be recorded for a non-retryable failure"
+        );
+        Ok(())
+    }
+
+    /// No declared policy (`"retry": null`) keeps the SDK's run-exactly-once
+    /// contract: a retryable-class failure is delivered after one attempt.
+    #[tokio::test]
+    async fn absent_policy_keeps_run_exactly_once_for_retryable_failures() -> TestResult {
+        let harness = RetryLoopHarness::seeded(r#"{"retry":null}"#).await?;
+        let dispatcher =
+            ScriptedRetryDispatcher::new(vec![Err("retryable:stream reset".to_owned())]);
+        let outcome = super::dispatch_with_retries(
+            &(Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>),
+            &harness.seam,
+            &harness.request,
+        )
+        .await;
+
+        assert!(matches!(
+            &outcome.terminal,
+            super::RetryLoopTerminal::Failed(reason) if reason == "retryable:stream reset"
+        ));
+        assert_eq!(dispatcher.seen_attempts(), vec![1]);
+        assert_eq!(harness.history().await?.len(), 3);
+        Ok(())
+    }
+
+    /// Settle race: a terminal recorded by another path (a `with_timeout`
+    /// expiry) while the loop runs must stop the loop — no retry record may
+    /// ever land after the ordinal's terminal.
+    #[tokio::test]
+    async fn retry_loop_aborts_without_recording_once_the_activity_settled() -> TestResult {
+        let harness = RetryLoopHarness::seeded(FIXED_RETRY_CONFIG).await?;
+        // The workflow thread already recorded the ordinal's durable timeout
+        // terminal (seq 4) before the loop's first failure comes back.
+        let timeout_terminal = vec![Event::ActivityFailed {
+            envelope: envelope(&harness.workflow_id, 4),
+            activity_id: ActivityId::from_sequence_position(0),
+            error: aion_core::ActivityError {
+                kind: aion_core::ActivityErrorKind::Terminal,
+                message: "timeout:deadline expired".to_owned(),
+                details: None,
+            },
+            attempt: 1,
+        }];
+        harness
+            .store
+            .append(
+                WriteToken::recorder(),
+                &harness.workflow_id,
+                &timeout_terminal,
+                3,
+            )
+            .await?;
+        let dispatcher =
+            ScriptedRetryDispatcher::new(vec![Err("retryable:stream reset".to_owned())]);
+        let outcome = super::dispatch_with_retries(
+            &(Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>),
+            &harness.seam,
+            &harness.request,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome.terminal, super::RetryLoopTerminal::SettledElsewhere),
+            "the loop must observe the recorded terminal and stand down"
+        );
+        assert_eq!(
+            harness.history().await?.len(),
+            4,
+            "nothing may be recorded after the ordinal's terminal"
+        );
+        Ok(())
+    }
+
+    /// The completion task notes the final attempt where the awaiting NIF
+    /// takes it, and the recorded terminal carries it (NOI-0 fidelity across
+    /// the retry loop).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn awaited_terminal_records_the_noted_final_attempt() -> TestResult {
+        let backing = Arc::new(StaleReadStore::new(0));
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let (workflow_id, run_id) = seed_pending_activity_then_deadline(&store, 7).await?;
+        let harness =
+            AwaitHarness::over_store(Arc::clone(&store), workflow_id.clone(), run_id).await?;
+        harness.runtime.note_delivery_attempt(harness.pid, 0, 3);
+        harness.runtime.deliver_activity_failure_message(
+            harness.pid,
+            "activity:0",
+            "retryable:reset three".to_owned(),
+        )?;
+
+        assert_eq!(
+            harness.step(),
+            Ok(ActivityAwaitStep::Failed(
+                "retryable:reset three".to_owned()
+            ))
+        );
+        let history = store.read_history(&workflow_id).await?;
+        assert!(
+            matches!(
+                history.last(),
+                Some(Event::ActivityFailed { attempt: 3, error, .. })
+                    if error.message == "retryable:reset three"
+            ),
+            "the recorded terminal must carry the noted final attempt: {history:#?}"
+        );
+        harness.shutdown()
     }
 }

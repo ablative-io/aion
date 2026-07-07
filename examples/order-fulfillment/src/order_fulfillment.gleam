@@ -18,13 +18,14 @@
 //// Every step is durably recorded: kill the engine mid-flight and replay
 //// resumes from recorded history without re-running completed activities.
 ////
-//// Note on retries: `charge_payment` carries an explicit `RetryPolicy` and
-//// the engine records each failed attempt, but engine-side automatic
-//// re-dispatch from that policy is not wired up yet (dispatch always stamps
-//// attempt 1). This workflow therefore drives its own bounded retry loop —
-//// each attempt is a fresh recorded dispatch carrying the attempt number in
-//// the activity input — which is also the honest way to keep retry counts
-//// replay-deterministic today.
+//// Note on retries: this saga deliberately drives its OWN bounded retry
+//// loop — each attempt is a fresh recorded dispatch carrying the business
+//// attempt number in the activity input, with a durable backoff sleep
+//// between attempts — because the retry count is part of the demonstrated
+//// business flow (the status query reports it). The engine ALSO honors a
+//// declared `activity.retry(RetryPolicy(...))` by re-dispatching the same
+//// activity transparently (#197); `charge_payment` declares none here, so
+//// the two retry layers never stack.
 
 import aion/activity
 import aion/codec
@@ -45,8 +46,8 @@ import order_types.{
   RefundInput, Reject, ShippingFailed, ShippingInput,
 }
 
-/// Bounded attempt budget for `charge_payment`. The same constant feeds the
-/// declared `RetryPolicy` and the workflow-driven retry loop.
+/// Bounded attempt budget for the workflow-driven `charge_payment` retry
+/// loop.
 pub const max_payment_attempts = 3
 
 /// Fixed durable backoff between payment attempts, in milliseconds.
@@ -323,6 +324,11 @@ fn approval_signal() -> workflow.SignalRef(Approval) {
 fn charge_payment_activity(
   input: ChargeInput,
 ) -> activity.Activity(ChargeInput, PaymentReceipt) {
+  // Deliberately NO `activity.retry(..)` policy: the engine honors a declared
+  // policy by re-dispatching transparently (#197), and this saga's retries are
+  // workflow-driven (fresh dispatch per business attempt, durable backoff
+  // sleep) so the status query can report the attempt count. Declaring both
+  // would stack the two retry layers.
   activity.new(
     "charge_payment",
     input,
@@ -330,10 +336,6 @@ fn charge_payment_activity(
     order_types.payment_receipt_codec(),
     local_charge_payment,
   )
-  |> activity.retry(activity.RetryPolicy(
-    max_attempts: max_payment_attempts,
-    backoff: activity.Fixed(delay: duration.milliseconds(payment_backoff_ms)),
-  ))
 }
 
 fn refund_payment_activity(

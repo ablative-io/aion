@@ -1,0 +1,10 @@
+name = "aion_retry_policy"
+version = "0.1.0"
+target = "erlang"
+description = "Aion workflow exercising the engine-honored per-activity retry policy (#197)."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = { path = "../../gleam/aion_flow" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"

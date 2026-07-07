@@ -30,6 +30,7 @@ const EXAMPLE_PROJECTS: &[&str] = &[
     "order-saga",
     "order-fulfillment",
     "hello-world",
+    "retry-policy",
     "stacked-dev",
     "invm-demo",
 ];

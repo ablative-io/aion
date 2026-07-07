@@ -635,8 +635,13 @@ mod tests {
         Ok(())
     }
 
+    /// A history ending in a retryable (non-terminal) `ActivityFailed` is a
+    /// retry trail interrupted mid-flight — an engine crash during the
+    /// backoff window (#197). It must resolve `ResumeLive` so the activity
+    /// re-dispatches at the next attempt, never a history-shape fault (the
+    /// pre-#197 behaviour) and never a recorded terminal.
     #[test]
-    fn rejects_non_terminal_activity_failure_as_history_shape_error()
+    fn dangling_retryable_failure_resumes_live_for_redispatch()
     -> Result<(), Box<dyn std::error::Error>> {
         let retryable_error = ActivityError {
             kind: ActivityErrorKind::Retryable,
@@ -654,12 +659,11 @@ mod tests {
         ])?;
         let mut resolver = Resolver::new(workflow_id(), cursor);
 
-        let error = resolver.resolve(run_activity_command(0)?).err();
-
-        assert!(matches!(
-            error,
-            Some(crate::durability::DurabilityError::HistoryShape { .. })
-        ));
+        assert_eq!(
+            resolver.resolve(run_activity_command(0)?)?,
+            ResolveOutcome::ResumeLive,
+            "a dangling retry trail must hand off to a live re-dispatch"
+        );
         Ok(())
     }
 }
