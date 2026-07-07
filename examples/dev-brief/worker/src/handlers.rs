@@ -71,6 +71,19 @@ pub fn provision(shell: &Shell, input: ProvisionInput) -> Result<WorkspaceInfo, 
         &input.repo_root,
     );
 
+    // A PREVIOUS run of this brief may have abandoned a worktree elsewhere
+    // (a failed run never reaches cleanup), and git refuses to reset a
+    // branch checked out in another worktree — which would block every
+    // re-run of the brief forever. Reclaim stale holders of this branch:
+    // remove them when CLEAN; refuse loudly (naming the path) when dirty,
+    // because uncommitted work must never be destroyed.
+    reclaim_branch_worktrees(
+        shell,
+        &input.repo_root,
+        &input.branch,
+        &input.workspace_path,
+    )?;
+
     require_run(
         shell,
         "git",
@@ -104,6 +117,63 @@ pub fn provision(shell: &Shell, input: ProvisionInput) -> Result<WorkspaceInfo, 
         branch: input.branch,
         base_commit: head.stdout.trim().to_owned(),
     })
+}
+
+/// Find every OTHER worktree of `repo_root` holding `branch` and remove it
+/// when clean; a dirty holder is a terminal error naming the path (operator
+/// salvage beats silent destruction).
+fn reclaim_branch_worktrees(
+    shell: &Shell,
+    repo_root: &str,
+    branch: &str,
+    own_workspace: &str,
+) -> Result<(), ActivityFailure> {
+    let listing = require_run(
+        shell,
+        "git",
+        &["-C", repo_root, "worktree", "list", "--porcelain"],
+        repo_root,
+        "git worktree list (stale branch holders)",
+    )?;
+    let wanted_ref = format!("refs/heads/{branch}");
+    let mut current_path: Option<String> = None;
+    let mut holders: Vec<String> = Vec::new();
+    for line in listing.stdout.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current_path = Some(path.trim().to_owned());
+        } else if let Some(branch_ref) = line.strip_prefix("branch ")
+            && branch_ref.trim() == wanted_ref
+            && let Some(path) = current_path.clone()
+            && path != own_workspace
+        {
+            holders.push(path);
+        }
+    }
+    for holder in holders {
+        let status = require_run(
+            shell,
+            "git",
+            &["-C", &holder, "status", "--porcelain"],
+            repo_root,
+            "git status (stale holder dirty check)",
+        )?;
+        if !status.stdout.trim().is_empty() {
+            return Err(ActivityFailure::terminal(format!(
+                "branch {branch} is held by the stale worktree {holder}, which \
+                 has UNCOMMITTED changes — refusing to destroy work; salvage \
+                 or remove it, then re-run"
+            )));
+        }
+        require_run(
+            shell,
+            "git",
+            &["-C", repo_root, "worktree", "remove", "--force", &holder],
+            repo_root,
+            "git worktree remove (stale clean holder)",
+        )?;
+        tracing::info!(%holder, %branch, "removed a stale clean worktree holding the brief branch");
+    }
+    Ok(())
 }
 
 // --- run_gates ----------------------------------------------------------------------

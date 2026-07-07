@@ -269,3 +269,50 @@ fn cleanup_refuses_a_dirty_worktree_and_removes_a_clean_one() {
     assert!(removed.removed, "detail: {}", removed.detail);
     assert!(!std::path::Path::new(&workspace).exists());
 }
+
+#[test]
+fn provision_reclaims_a_stale_clean_worktree_holding_the_brief_branch() {
+    // A failed prior run abandons its worktree (cleanup never ran); a fresh
+    // run of the same brief must reclaim the branch, not die at provision.
+    let (dir, root) = repo_with_initial_commit();
+    let stale = dir.path().join("stale-ws").display().to_string();
+    provision(&root, &stale);
+
+    let fresh = dir.path().join("fresh-ws").display().to_string();
+    let info = provision(&root, &fresh);
+    assert!(std::path::Path::new(&fresh).is_dir());
+    assert!(
+        !std::path::Path::new(&stale).exists(),
+        "the stale clean holder is removed"
+    );
+    assert_eq!(info.branch, "dev/DB-T");
+}
+
+#[test]
+fn provision_refuses_to_destroy_a_dirty_stale_holder() {
+    let (dir, root) = repo_with_initial_commit();
+    let stale = dir.path().join("stale-ws").display().to_string();
+    provision(&root, &stale);
+    std::fs::write(std::path::Path::new(&stale).join("wip.txt"), "precious\n").expect("dirty");
+
+    let fresh = dir.path().join("fresh-ws").display().to_string();
+    let error = handlers::provision(
+        &Shell::inherited(),
+        ProvisionInput {
+            repo_root: root,
+            base_branch: "main".to_owned(),
+            branch: "dev/DB-T".to_owned(),
+            workspace_path: fresh,
+        },
+    )
+    .expect_err("must refuse");
+    assert!(
+        error.message().contains("UNCOMMITTED"),
+        "{}",
+        error.message()
+    );
+    assert!(
+        std::path::Path::new(&stale).join("wip.txt").is_file(),
+        "the dirty holder and its work survive"
+    );
+}
