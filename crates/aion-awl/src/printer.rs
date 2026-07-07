@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
 use crate::ast::{
-    BinaryOp, CallExpr, CallTarget, Comment, Document, Expr, HandlerBlock, HandlerTerminal,
-    RetrySpec, StepDecl, StepOp, TypeRef,
+    ActionDecl, BinaryOp, CallExpr, CallTarget, Comment, Document, Expr, HandlerBlock,
+    HandlerTerminal, IoDecl, RetrySpec, StepDecl, StepOp, TypeDecl, TypeRef,
 };
 use crate::parser::duration_text;
 
