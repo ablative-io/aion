@@ -296,6 +296,7 @@ fn developer_input_to_json(input: DeveloperInput) -> json.Json {
     #("gate", json.nullable(input.gate, gate_outcome_to_json)),
     #("verdicts", json.array(input.verdicts, lens_verdict_to_json)),
     #("workspace_path", json.string(input.workspace_path)),
+    #("gates", json.array(input.gates, gate_command_to_json)),
   ])
 }
 
@@ -304,11 +305,17 @@ fn developer_input_decoder() -> decode.Decoder(DeveloperInput) {
   use gate <- decode.field("gate", decode.optional(gate_outcome_decoder()))
   use verdicts <- decode.field("verdicts", decode.list(lens_verdict_decoder()))
   use workspace_path <- decode.field("workspace_path", decode.string)
+  use gates <- decode.optional_field(
+    "gates",
+    [],
+    decode.list(gate_command_decoder()),
+  )
   decode.success(DeveloperInput(
     brief: brief,
     gate: gate,
     verdicts: verdicts,
     workspace_path: workspace_path,
+    gates: gates,
   ))
 }
 
