@@ -1,0 +1,65 @@
+workflow research_report
+about Research a brief, gate it through a durable human review, publish.
+
+input brief: Brief      // structured — parsed + validated from brief.json at start
+input corpus: Dir       // bulk — content-addressed snapshot handle (haematite)
+output Published
+
+signal review: Approval
+
+type Brief     { topic: String, audience: String, depth: Int }
+type Question  { text: String, angle: String }
+type Finding   { question: String, summary: String, sources: List(String) }
+type Report    { title: String, body: String, findings: List(Finding) }
+type Approval  { ok: Bool, notes: String }
+type Published { report: Report, url: String }
+
+action plan(brief: Brief) -> List(Question)
+action investigate(q: Question, corpus: Dir) -> Finding
+action synthesize(findings: List(Finding), notes: String) -> Report
+action upload_assets(report: Report) -> List(String)
+action publish(report: Report, assets: List(String)) -> String
+action delete_assets(assets: List(String)) -> Nil
+
+step plan
+  about Break the brief into distinct research questions.
+  do plan(brief)
+  as questions
+
+step investigate
+  about One agent per question, parallel across workers, exactly-once on failover.
+  each q in questions
+  do investigate(q, corpus)
+  retry 3 every 30s
+  as findings
+
+step first_draft
+  do synthesize(findings, "")
+  as draft
+
+step human_review
+  about Durable gate — parks free while idle, survives restarts, resumable weeks later.
+  wait review
+  timeout 3d
+  on timeout
+    finish Published(report: draft, url: "")
+  as approval
+
+step revise
+  about One revision pass if the reviewer pushed back.
+  when not approval.ok
+  do synthesize(findings, approval.notes)
+  as draft                       // rebinds — every later step sees the revised draft
+
+step upload_assets
+  do upload_assets(draft)
+  as assets
+
+step publish
+  do publish(draft, assets)
+  on failure
+    do delete_assets(assets)
+    fail
+  as url
+
+finish Published(report: draft, url: url)
