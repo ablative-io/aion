@@ -1,0 +1,47 @@
+# Rust activity worker for the awl-hello workflow (the AWL codegen e2e runway).
+#
+# Standalone (NOT a workspace member) so it builds from a plain `cargo build`
+# in this directory, mirroring the `dev-brief` example worker.
+#
+# It serves TWO pure computational activities (`greet`, `shout`) on ONE task
+# queue (`awl_hello`), from a single liminal connection registered on node
+# `hello`. No agents, no harness, no shelling out — the smallest honest
+# worker a generated AWL workflow module can dispatch against.
+[package]
+name = "awl-hello-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust activity worker serving the awl-hello workflow's two pure computational activities (greet, shout)."
+
+[[bin]]
+name = "awl-hello-worker"
+path = "src/main.rs"
+
+[lib]
+name = "awl_hello_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+# The `liminal-transport` feature enables the server-push serve path
+# (`serve_with_redial`) this worker's one connection runs on. The aion crates
+# are consumed by PATH, matching the dev-brief worker.
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

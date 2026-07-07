@@ -1,0 +1,10 @@
+name = "awl_hello"
+version = "0.1.0"
+target = "erlang"
+description = "AWL codegen end-to-end runway: a project shell whose one workflow module is REPLACED by AWL-generated code."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = { path = "../../gleam/aion_flow" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"
