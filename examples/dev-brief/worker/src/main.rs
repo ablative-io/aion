@@ -62,6 +62,14 @@ const TASK_QUEUE: &str = "dev_brief";
 /// node table); the agent connections' node ids mirror that table's
 /// `developer_node`/`reviewer_node` constants.
 const SHELL_NODE: &str = "shell";
+/// The reviewer role's Norn workspace root: a STATIC scratch directory the
+/// worker creates at startup. Lens children read the brief/diff/report from
+/// their prompt context — the workspace is just Norn's working home, and it
+/// must EXIST before a session starts (Norn refuses a missing
+/// `--workspace-root`; the developer's per-brief root exists because
+/// `provision_workspace` creates that exact worktree first — the live proof
+/// run 1ac905ed failed on exactly this).
+const REVIEW_SCRATCH: &str = "/tmp/aion-dev/review-scratch";
 const REDIAL_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const REDIAL_MAX_BACKOFF: Duration = Duration::from_secs(5);
 
@@ -106,6 +114,8 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let args = parse_args()?;
+    std::fs::create_dir_all(REVIEW_SCRATCH)
+        .map_err(|error| anyhow::anyhow!("could not create {REVIEW_SCRATCH}: {error}"))?;
     let profiles =
         profiles::load(Path::new(&args.profiles_dir)).map_err(|error| anyhow::anyhow!(error))?;
     tracing::info!(
@@ -166,7 +176,7 @@ fn roles(profiles: Profiles) -> Vec<Role> {
             node: "reviewer",
             output_schema: schemas::LENS_VERDICT,
             session_suffix: "reviewer",
-            workspace_root: format!("{WORKSPACE_BASE}/review/{{workflow_id}}"),
+            workspace_root: REVIEW_SCRATCH.to_owned(),
             profile: profiles.reviewer,
             assemble: prompts::review_lens,
             post_run_commit: None,
@@ -463,11 +473,7 @@ mod tests {
             summary,
             vec![
                 ("developer", "developer", "/tmp/aion-dev/ws/{workflow_id}"),
-                (
-                    "review_lens",
-                    "reviewer",
-                    "/tmp/aion-dev/ws/review/{workflow_id}"
-                ),
+                ("review_lens", "reviewer", "/tmp/aion-dev/review-scratch"),
             ]
         );
         for role in &roles {
