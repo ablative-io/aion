@@ -1,0 +1,45 @@
+{
+  "brief": {
+    "id": "AWL-2-fix",
+    "title": "aion-awl: complete the parser + printer from the near-done branch (one failing round-trip golden)",
+    "objective": "Finish AWL-2 starting from the existing branch dev/AWL-2 (local, in this repo): fix the single failing golden test research_report_normalizes_to_golden_and_preserves_comments — the printer/parser currently DROPS a trailing comment — and deliver the full AWL-2 acceptance with all gates green.",
+    "context": "FIRST ACTION: in your provisioned workspace run `git merge --no-edit dev/AWL-2` — that branch contains a near-complete parser (src/parser.rs), canonical printer (src/printer.rs), extended lexer trivia support, both canonical fixtures, and tests/parser_printer.rs (150 lines). It is clippy-clean and 15 of 16 tests pass. The ONE failure: research_report_normalizes_to_golden_and_preserves_comments in tests/parser_printer.rs — the canonical output is missing the trailing comment 'rebinds — every later step sees the revised draft' (it sits on the `as draft` line of the revise step in tests/fixtures/research_report.awl) and spans drift after that point. Diagnose where the trailing-comment trivia on step-field lines (specifically `as`) is lost — attachment in the parser, or emission in the printer — and fix it at that seam. Then re-verify the whole AWL-2 contract (below). The grammar contract is docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md; canonical comment rendering: own-line comments print on their own line at the indentation of the item they precede; trailing comments print on the same line separated by exactly two spaces. PRINTER DISCIPLINE (non-negotiable): print renders purely from the AST + attached trivia; the Document must not retain raw source text or source slices for re-emission.",
+    "pointers": [
+      "crates/aion-awl/src/parser.rs",
+      "crates/aion-awl/src/printer.rs",
+      "crates/aion-awl/tests/parser_printer.rs",
+      "crates/aion-awl/tests/fixtures/research_report.awl",
+      "docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md"
+    ],
+    "scope_in": [
+      "crates/aion-awl/"
+    ],
+    "scope_out": [
+      "Do NOT modify tests/fixtures/research_report.awl or tests/fixtures/bounded_cycle.awl (the source fixtures) — only their .canonical.awl goldens may be regenerated, and only such that every fixture comment appears in them",
+      "Do NOT weaken, delete, or #[ignore] any existing test; the failing golden test must pass by fixing the code, not the assertion — except where an assertion is provably wrong against the spec, in which case say so explicitly in your report",
+      "No typechecker (AWL-3)",
+      "No changes to any other crate, no external dependencies (std only)",
+      "Do not modify the spec or sketch documents"
+    ],
+    "acceptance": [
+      "git history shows the work builds on dev/AWL-2 (merge or cherry-picks), not a from-scratch rewrite",
+      "research_report_normalizes_to_golden_and_preserves_comments passes: print(parse(research_report.awl)) contains EVERY comment from the fixture, including the trailing comment on the revise step's `as draft` line, and matches the committed canonical golden byte-for-byte",
+      "The canonical goldens round-trip: print(parse(canonical)) == canonical byte-identical, for both fixtures",
+      "Anti-echo holds: the Document stores no source text or slice references for re-emission; a test mutates the AST in code and sees the mutation in print output; two differently-formatted sources of the same document print identically",
+      "Printer idempotence on both fixtures plus non-canonical whitespace variants: print(parse(print(parse(src)))) == print(parse(src))",
+      "Parse errors carry correct spans, covered by tests (two world-touching fields in one step, finish missing, call outside do, unknown step field, unterminated record construction, wrong handler-block indentation)",
+      "Every test in the crate passes: cargo test -p aion-awl fully green; clippy -D warnings clean; cargo fmt --all leaves the tree unchanged"
+    ],
+    "notes": "This is a completion brief, not a rewrite: the diff you add on top of dev/AWL-2 should be small and targeted at the trivia-attachment defect plus anything the full acceptance re-check surfaces. The reviewers will see the whole crate diff vs main — that is intended; this code has not yet had its adversarial review."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      { "name": "clippy", "argv": ["cargo", "clippy", "-p", "aion-awl", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "-p", "aion-awl"] }
+    ],
+    "max_fix_cycles": 3
+  }
+}
