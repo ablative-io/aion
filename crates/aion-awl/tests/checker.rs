@@ -106,7 +106,7 @@ fn expression_operator_errors_are_spanned_and_specific() {
     assert_error(
         "workflow w\ninput a: Bool\ninput b: String\noutput String\n\nfinish a and b\n",
         "right boolean operand expected Bool, found String",
-        "b",
+        "b\n",
     );
     assert_error(
         "workflow w\ninput a: Int\ninput b: String\noutput String\n\nfinish a == b\n",
@@ -116,7 +116,7 @@ fn expression_operator_errors_are_spanned_and_specific() {
     assert_error(
         "workflow w\ninput a: String\ninput b: Int\noutput String\n\nfinish a + b\n",
         "right + operand expected String, found Int",
-        "b",
+        "b\n",
     );
     assert_error(
         "workflow w\noutput List(String)\n\nfinish [\"a\", 1]\n",
