@@ -32,7 +32,7 @@ node "\\"
             TokenKind::Keyword(Keyword::Or),
             TokenKind::Identifier("ratio".to_owned()),
             TokenKind::Less,
-            TokenKind::Float(1.5),
+            TokenKind::Float("1.5".to_owned()),
             TokenKind::Newline,
             TokenKind::Keyword(Keyword::Action),
             TokenKind::Identifier("run".to_owned()),

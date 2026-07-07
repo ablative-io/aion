@@ -5,6 +5,19 @@
 
 #![allow(clippy::module_name_repetitions)]
 
+mod ast;
+mod parser;
+mod printer;
+
+pub use ast::{
+    AboutDecl, ActionDecl, ActionFieldTag, BinaryOp, BindDecl, CallExpr, CallTarget, Comment,
+    Document, DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl,
+    RecordField, RetrySpec, Spanned, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
+    WorkflowDecl,
+};
+pub use parser::{ParseError, parse};
+pub use printer::print;
+
 use std::error::Error;
 use std::fmt;
 
@@ -152,8 +165,10 @@ pub enum TokenKind {
     String(String),
     /// An integer literal.
     Integer(u64),
-    /// A floating-point literal.
-    Float(f64),
+    /// A floating-point literal, holding the exact source lexeme (e.g.
+    /// `"1.0"`, `"0.5"`) so printing can round-trip it byte-for-byte instead
+    /// of reformatting through an `f64`.
+    Float(String),
     /// An integer duration literal with a unit suffix.
     Duration {
         /// The integer value before the unit suffix.
@@ -199,6 +214,8 @@ pub enum TokenKind {
     GreaterEqual,
     /// A significant line break after a non-blank source line.
     Newline,
+    /// A `//` source comment without the marker or leading single space.
+    Comment(String),
     /// Increase in two-space indentation level.
     Indent,
     /// Decrease in two-space indentation level.
@@ -305,7 +322,21 @@ impl<'src> Lexer<'src> {
 
         let content_start = count_leading_spaces(line_text, self.offset, self.line)?;
         let after_indent = &line_text[content_start..];
-        if after_indent.trim().is_empty() || after_indent.trim_start().starts_with("//") {
+        if after_indent.trim().is_empty() {
+            return Ok(());
+        }
+        if after_indent.trim_start().starts_with("//") {
+            let comment_start = content_start + after_indent.find("//").unwrap_or(0);
+            let comment_text = normalize_comment_text(&line_text[comment_start + 2..]);
+            self.tokens.push(Token::new(
+                TokenKind::Comment(comment_text.to_owned()),
+                Span::new(
+                    self.offset + comment_start,
+                    self.offset + line_text.len(),
+                    self.line,
+                    comment_start + 1,
+                ),
+            ));
             return Ok(());
         }
         if content_start % 2 != 0 {
@@ -338,6 +369,17 @@ impl<'src> Lexer<'src> {
             }
 
             if cursor.starts_with("//") {
+                let comment_start = cursor.index;
+                let comment_text = normalize_comment_text(&line_text[comment_start + 2..]);
+                self.tokens.push(Token::new(
+                    TokenKind::Comment(comment_text.to_owned()),
+                    Span::new(
+                        self.offset + comment_start,
+                        self.offset + line_text.len(),
+                        self.line,
+                        comment_start + 1,
+                    ),
+                ));
                 break;
             }
 
@@ -575,10 +617,14 @@ impl<'line> Cursor<'line> {
             while matches!(self.current(), Some(ch) if ch.is_ascii_digit()) {
                 self.advance_char();
             }
-            let value = self.line[start..self.index].parse::<f64>().map_err(|_| {
-                LexError::new(self.span(start, self.index), "invalid float literal")
-            })?;
-            return Ok(self.spanned(TokenKind::Float(value), start, self.index));
+            let lexeme = &self.line[start..self.index];
+            if lexeme.parse::<f64>().is_err() {
+                return Err(LexError::new(
+                    self.span(start, self.index),
+                    "invalid float literal",
+                ));
+            }
+            return Ok(self.spanned(TokenKind::Float(lexeme.to_owned()), start, self.index));
         }
 
         let value = parse_u64(&self.line[start..number_end], self.span(start, number_end))?;
@@ -623,6 +669,10 @@ fn count_leading_spaces(line: &str, base: usize, line_no: usize) -> Result<usize
 
 fn is_identifier_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn normalize_comment_text(text: &str) -> &str {
+    text.strip_prefix(' ').unwrap_or(text)
 }
 
 fn duration_unit(ch: char) -> Option<DurationUnit> {
