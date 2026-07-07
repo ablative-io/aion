@@ -1,3 +1,5 @@
+//! Integration tests for AWL lexer fixture handling, spans, and diagnostics.
+
 use std::error::Error;
 use std::io;
 

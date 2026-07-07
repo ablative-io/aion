@@ -1,3 +1,5 @@
+//! Integration tests for AWL lexer operators and literal forms.
+
 use std::error::Error;
 
 use aion_awl::{Keyword, Token, TokenKind, lex};
