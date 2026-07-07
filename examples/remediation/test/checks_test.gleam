@@ -1,6 +1,7 @@
 //// Unit tests for the pure mechanical checks (`remediation/checks`): gate-1
 //// coverage and routing, D4 could_not_reproduce surfacing, gate-2 fix-report
-//// accounting (exactly-one rule), and gate-3 derive-and-check acceptance.
+//// accounting (exactly-one rule) and its Change-1 failure signature, and
+//// gate-3 derive-and-check acceptance.
 
 import gleam/list
 import gleam/option.{None, Some}
@@ -8,9 +9,9 @@ import gleeunit/should
 import remediation/checks
 import remediation/types.{
   Accept, AcceptanceCheck, Completion, Correction, Deviation, FindingBounce,
-  FindingFix, FindingRuling, FixReport, Fixed, Gate1Check, LedgerEntry,
-  ManifestEntry, NotFixed, Partial, PartialAccept, RegressionIntroduced, Reject,
-  TestManifest, Verdict,
+  FindingFix, FindingRuling, FixReport, Fixed, Gate1Check, Gate2Outcome,
+  LedgerEntry, ManifestEntry, NotFixed, Partial, PartialAccept,
+  RegressionIntroduced, Reject, TestManifest, Verdict,
 }
 
 fn entry(id: String, category: types.Category) -> types.LedgerEntry {
@@ -373,4 +374,54 @@ pub fn adverse_rulings_render_id_and_ruling_test() {
 pub fn branch_safe_reduces_hostile_ids_test() {
   checks.branch_safe("B 1/weird~id")
   |> should.equal("B-1-weird-id")
+}
+
+fn gate2_outcome(diagnostics: String, diff: String) -> types.Gate2Outcome {
+  Gate2Outcome(
+    pass: False,
+    test_diff_clean: True,
+    clippy_pass: False,
+    suite_pass: True,
+    diagnostics: diagnostics,
+    diff: diff,
+  )
+}
+
+pub fn gate2_failure_signature_matches_on_identical_diagnostics_and_diff_test() {
+  // Change 1 (2026-07-07 incident): the signature folds diagnostics AND diff
+  // together, so a match means both "same error" and "zero diff progress".
+  checks.gate2_failure_signature(gate2_outcome(
+    "clippy: forbidden file",
+    "diff-a",
+  ))
+  |> should.equal(
+    checks.gate2_failure_signature(gate2_outcome(
+      "clippy: forbidden file",
+      "diff-a",
+    )),
+  )
+}
+
+pub fn gate2_failure_signature_differs_when_the_diagnostics_change_test() {
+  {
+    checks.gate2_failure_signature(gate2_outcome("clippy: lint A", "diff-a"))
+    == checks.gate2_failure_signature(gate2_outcome("clippy: lint B", "diff-a"))
+  }
+  |> should.be_false
+}
+
+pub fn gate2_failure_signature_differs_when_only_the_diff_changes_test() {
+  // Same error, but the diff moved: real progress, even though the specific
+  // failure persists — must NOT collapse to the same signature.
+  {
+    checks.gate2_failure_signature(gate2_outcome(
+      "clippy: forbidden file",
+      "diff-a",
+    ))
+    == checks.gate2_failure_signature(gate2_outcome(
+      "clippy: forbidden file",
+      "diff-b",
+    ))
+  }
+  |> should.be_false
 }

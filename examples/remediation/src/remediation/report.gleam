@@ -13,8 +13,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import remediation/codecs
 import remediation/types.{
-  type BriefResult, type WaveMetrics, type WaveReport, Accepted, FixMetrics,
-  TestAuthoringMetrics, VerifyMetrics, WaveReport,
+  type BriefResult, type WaveBriefFailure, type WaveBriefSkip, type WaveMetrics,
+  type WaveReport, Accepted, FixMetrics, TestAuthoringMetrics, VerifyMetrics,
+  WaveReport,
 }
 
 /// Build the wave-report skeleton from the wave number and the collected
@@ -113,8 +114,16 @@ pub fn class_siblings_per_brief(results: List(BriefResult)) -> Option(Float) {
   ratio(list.fold(verified, 0, int.add), list.length(verified))
 }
 
-/// A one-line human summary of the wave for the result payload.
-pub fn summary(wave: Int, results: List(BriefResult)) -> String {
+/// A one-line human summary of the wave for the result payload. `failed` and
+/// `skipped` are the Change-2 non-cascade outcomes (a child brief failure, or
+/// a later-stratum skip caused by one) — surfaced here so a glance at the
+/// summary never reads as "every brief ran" when some did not.
+pub fn summary(
+  wave: Int,
+  results: List(BriefResult),
+  failed: List(WaveBriefFailure),
+  skipped: List(WaveBriefSkip),
+) -> String {
   let accepted =
     results
     |> list.filter(fn(result) { result.disposition == Accepted })
@@ -123,15 +132,20 @@ pub fn summary(wave: Int, results: List(BriefResult)) -> String {
     list.fold(results, 0, fn(count, result) {
       count + list.length(result.could_not_reproduce)
     })
+  let total = list.length(results) + list.length(failed) + list.length(skipped)
   "Wave "
   <> int.to_string(wave)
   <> ": "
   <> int.to_string(accepted)
   <> "/"
-  <> int.to_string(list.length(results))
+  <> int.to_string(total)
   <> " briefs accepted; "
   <> int.to_string(unreproduced)
-  <> " could_not_reproduce finding(s) for the operator."
+  <> " could_not_reproduce finding(s) for the operator; "
+  <> int.to_string(list.length(failed))
+  <> " failed; "
+  <> int.to_string(list.length(skipped))
+  <> " skipped."
 }
 
 fn ratio(numerator: Int, denominator: Int) -> Option(Float) {

@@ -9,8 +9,13 @@
 //// left out of the strata (an omitted brief would silently never run).
 
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
-import remediation/types.{type WaveBrief}
+import gleam/string
+import remediation/types.{
+  type BriefResult, type WaveBrief, type WaveBriefFailure, type WaveBriefSkip,
+  WaveBriefFailure, WaveBriefSkip,
+}
 
 /// Why a wave plan's strata are not runnable. Every variant names the
 /// offending id — an actionable error, never a bare "invalid".
@@ -100,4 +105,125 @@ pub fn wave_number(briefs: List(WaveBrief)) -> Int {
       False -> highest
     }
   })
+}
+
+// --- Change 2: non-cascade on child (brief) failure ---------------------------
+//
+// Real incident, 2026-07-07: a transient provider error failed a
+// remediation_brief child workflow, and the parent remediation_wave cascaded
+// to Failed, losing the wave's whole bookkeeping — results for briefs that
+// had already succeeded were lost. The rule from here down: a child brief's
+// failure is recorded, never propagated; siblings ALREADY DISPATCHED in the
+// same stratum still run to completion; every LATER stratum is skipped
+// (serial-stratum execution means a later stratum may depend on the landed
+// outcome of the one that failed, DESIGN.md Stage 0); the wave itself
+// completes with the full per-brief outcome map. `remediation_wave.gleam`
+// drives this pure reducer stratum by stratum — the effects (spawn/await) are
+// the only part that module owns; the policy lives here, unit-tested without
+// the engine.
+
+/// One child brief's OWN run outcome, as the parent observes it after
+/// awaiting: a normal terminal result, or a GENERIC child failure. `reason`
+/// is built from every `aion/error.ChildError` variant uniformly (decode
+/// failures included) — the decode path is not reliable enough to gate
+/// continuation on a specific variant (2026-07-07 wire quirk).
+pub type BriefRunOutcome {
+  BriefCompleted(BriefResult)
+  BriefRunFailed(reason: String)
+}
+
+/// The reducer's running state across strata. `blocked_by` is `None` while
+/// every stratum run so far succeeded outright, and becomes `Some(ids)` the
+/// moment any stratum produces a failure — every stratum folded in afterward
+/// is recorded skipped, citing those same `ids`, instead of being run at all.
+pub type WaveProgress {
+  WaveProgress(
+    succeeded: List(BriefResult),
+    failed: List(WaveBriefFailure),
+    skipped: List(WaveBriefSkip),
+    blocked_by: Option(List(String)),
+  )
+}
+
+/// The reducer's identity element: nothing has run, nothing is blocked.
+pub fn empty_progress() -> WaveProgress {
+  WaveProgress(succeeded: [], failed: [], skipped: [], blocked_by: None)
+}
+
+/// Fold one stratum into the running progress.
+///
+/// When the wave is ALREADY blocked (an earlier stratum had a failure), every
+/// brief named in `stratum` is recorded skipped — `outcomes` is ignored, and
+/// the caller should not have spawned or awaited anything for a blocked
+/// stratum in the first place (a later stratum may depend on the landed
+/// outcome of the one that failed).
+///
+/// Otherwise every named brief actually ran: `outcomes` pairs each brief id
+/// with what its child returned, folded into `succeeded`/`failed`. If ANY of
+/// them failed, the wave becomes blocked-by their ids for every stratum
+/// folded in after this one.
+pub fn fold_stratum(
+  progress: WaveProgress,
+  stratum: List(String),
+  outcomes: List(#(String, BriefRunOutcome)),
+) -> WaveProgress {
+  case progress.blocked_by {
+    Some(blocking) ->
+      WaveProgress(
+        ..progress,
+        skipped: list.append(progress.skipped, skips_for(stratum, blocking)),
+      )
+    None -> {
+      let #(succeeded, failed) = partition_outcomes(outcomes)
+      let blocked_by = case failed {
+        [] -> None
+        _ -> Some(list.map(failed, fn(failure) { failure.brief_id }))
+      }
+      WaveProgress(
+        succeeded: list.append(progress.succeeded, succeeded),
+        failed: list.append(progress.failed, failed),
+        skipped: progress.skipped,
+        blocked_by: blocked_by,
+      )
+    }
+  }
+}
+
+fn partition_outcomes(
+  outcomes: List(#(String, BriefRunOutcome)),
+) -> #(List(BriefResult), List(WaveBriefFailure)) {
+  list.fold(outcomes, #([], []), fn(acc, pair) {
+    let #(succeeded, failed) = acc
+    case pair {
+      #(_, BriefCompleted(result)) -> #(
+        list.append(succeeded, [result]),
+        failed,
+      )
+      #(brief_id, BriefRunFailed(reason)) -> #(
+        succeeded,
+        list.append(failed, [
+          WaveBriefFailure(brief_id: brief_id, reason: reason),
+        ]),
+      )
+    }
+  })
+}
+
+fn skips_for(
+  stratum: List(String),
+  blocking: List(String),
+) -> List(WaveBriefSkip) {
+  let reason = skip_reason(blocking)
+  list.map(stratum, fn(brief_id) {
+    WaveBriefSkip(
+      brief_id: brief_id,
+      blocking_brief_ids: blocking,
+      reason: reason,
+    )
+  })
+}
+
+/// The human-readable rendering of a skip, naming every blocking brief.
+pub fn skip_reason(blocking: List(String)) -> String {
+  "skipped: blocked by failed brief(s) " <> string.join(blocking, ", ")
 }

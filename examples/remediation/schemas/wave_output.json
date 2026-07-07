@@ -6,7 +6,9 @@
   "required": ["wave", "briefs", "report", "summary"],
   "properties": {
     "wave": { "type": "integer", "minimum": 0 },
-    "briefs": { "type": "array", "items": { "type": "object" } },
+    "briefs": { "type": "array", "items": { "type": "object" }, "description": "Every SUCCESSFULLY completed brief (brief_output.json shape) — a child that reached its own terminal disposition, whatever that disposition was." },
+    "failed_briefs": { "type": "array", "items": { "type": "object", "required": ["brief_id", "reason"], "properties": { "brief_id": { "type": "string" }, "reason": { "type": "string" } } }, "description": "ADDITIVE (Change 2, 2026-07-07): briefs whose child run failed at the engine/child boundary (a genuine infrastructure fault, e.g. a transient provider error) rather than reaching a terminal disposition. Absent on results recorded before this field existed; treat a missing key the same as an empty array." },
+    "skipped_briefs": { "type": "array", "items": { "type": "object", "required": ["brief_id", "blocking_brief_ids", "reason"], "properties": { "brief_id": { "type": "string" }, "blocking_brief_ids": { "type": "array", "items": { "type": "string" } }, "reason": { "type": "string" } } }, "description": "ADDITIVE (Change 2, 2026-07-07): briefs the wave never ran because an earlier stratum had a failed brief (serial-stratum execution — a later stratum may depend on the landed outcome of the one that failed). Absent on results recorded before this field existed; treat a missing key the same as an empty array." },
     "report": { "type": "object", "description": "wave-report.schema.json skeleton; scalar metrics are number-or-null here until the ledger-keeper fills them." },
     "summary": { "type": "string" }
   }
