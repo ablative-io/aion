@@ -129,7 +129,18 @@ pub fn provision(shell: &Shell, input: ProvisionInput) -> Result<WorkspaceInfo, 
 ///    `expected_failure_signature` — failing for the RIGHT reason. A passing
 ///    test, an unmatched name, or a missing signature is a recorded gate
 ///    failure with the captured output as evidence.
-/// 4. Manual-acceptance entries run nothing; they are echoed into the result
+/// 4. AFTER the fail-first re-runs (so a wrong-reason failure stays the
+///    primary signal when both are broken), each DISTINCT crate containing
+///    an authored file must pass
+///    `cargo clippy -p <package> --all-targets -- -D warnings` (Scott's
+///    paradox ruling, DESIGN.md 1b1cf0c0): gate 2 lints the whole workspace
+///    with the authored tests FROZEN, so a lint shipped in a test file would
+///    otherwise turn gate 2 into a gate the developer cannot pass. The
+///    package name is derived mechanically — walk up from the authored file
+///    to the nearest `Cargo.toml` and read `[package].name`. A violation is
+///    a recorded gate failure with the clippy output as evidence; zero
+///    authored files (or none inside a package) skips the check.
+/// 5. Manual-acceptance entries run nothing; they are echoed into the result
 ///    as acceptance-check records for the verifier.
 ///
 /// # Errors
@@ -218,6 +229,11 @@ pub fn gate1(shell: &Shell, input: Gate1Input) -> Result<Gate1Outcome, ActivityF
             scope_violations.join(", ")
         ));
     }
+    // Clippy on the authored crates — deliberately AFTER the fail-first
+    // re-runs, so its line lands after any wrong-reason failure in `detail`.
+    if let Some(clippy_failure) = clippy_authored_crates(shell, workspace, &authored_test_paths)? {
+        failures.push(clippy_failure);
+    }
 
     let pass = failures.is_empty();
     let ran = results.len();
@@ -299,6 +315,114 @@ fn rerun_authored_checks(
         }
     }
     Ok((results, failures))
+}
+
+/// Run `cargo clippy -p <package> --all-targets -- -D warnings` in the
+/// workspace root for each DISTINCT crate containing an authored file. A
+/// non-zero exit is the returned gate-failure line — naming the crate, with
+/// the clipped clippy output as evidence — and stops the sweep (first
+/// failure wins). `None` means every authored crate is clippy-clean, or no
+/// authored file resolved to a package (nothing to check).
+///
+/// # Errors
+///
+/// Terminal when `cargo` cannot run at all.
+fn clippy_authored_crates(
+    shell: &Shell,
+    workspace: &str,
+    authored_test_paths: &[String],
+) -> Result<Option<String>, ActivityFailure> {
+    for package in authored_packages(workspace, authored_test_paths) {
+        let run = require_can_run(
+            shell,
+            "cargo",
+            &[
+                "clippy",
+                "-p",
+                &package,
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+            workspace,
+            "cargo clippy (authored test targets)",
+        )?;
+        if !run.succeeded() {
+            return Ok(Some(format!(
+                "authored tests in crate `{package}` fail `cargo clippy -D \
+                 warnings` — the developer is forbidden to modify them, so \
+                 gate 2's workspace-wide clippy would be unpassable; the \
+                 author must ship them lint-clean:\n{}",
+                clip(&run.output)
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// The DISTINCT `[package].name`s of the crates containing the authored
+/// files, in first-seen order. Authored paths that resolve to no package
+/// (no package-bearing `Cargo.toml` above them inside the workspace)
+/// contribute nothing.
+fn authored_packages(workspace: &str, authored_test_paths: &[String]) -> Vec<String> {
+    let root = Path::new(workspace);
+    let mut packages: Vec<String> = Vec::new();
+    for path in authored_test_paths {
+        let Some(package) = package_of(root, Path::new(path)) else {
+            continue;
+        };
+        if !packages.contains(&package) {
+            packages.push(package);
+        }
+    }
+    packages
+}
+
+/// The `[package].name` of the nearest `Cargo.toml` at or above `file`
+/// (a workspace-root-relative path), walking up to the workspace root and
+/// never past it. `None` when no manifest is found or the nearest one
+/// declares no package (a virtual workspace manifest).
+fn package_of(root: &Path, file: &Path) -> Option<String> {
+    let mut dir = root.join(file);
+    loop {
+        dir = dir.parent()?.to_path_buf();
+        if !dir.starts_with(root) {
+            return None;
+        }
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file() {
+            return package_name(&std::fs::read_to_string(manifest).ok()?);
+        }
+        if dir == root {
+            return None;
+        }
+    }
+}
+
+/// Extract `name = "…"` from a manifest's `[package]` section. Deliberately
+/// plain line parsing — the same no-external-deps discipline as the rest of
+/// this worker; a manifest odd enough to defeat it simply yields `None` and
+/// the crate goes unchecked here (gate 2 still covers the workspace).
+fn package_name(manifest: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("name") else {
+            continue;
+        };
+        if let Some(value) = rest.trim_start().strip_prefix('=') {
+            return Some(value.trim().trim_matches('"').to_owned());
+        }
+    }
+    None
 }
 
 /// The shared test-path rule (used by gate 1's diff-scope check; gate 2's

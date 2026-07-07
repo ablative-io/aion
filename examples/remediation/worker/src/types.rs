@@ -99,8 +99,11 @@ pub struct TestRun {
 
 /// Result of `gate1` (`codecs.gate1_outcome_codec`). `pass` is true only when
 /// the authored tests are committed, the authored diff stayed on test paths,
-/// and every named test failed WITH its signature in the output. Anything
-/// else is a recorded FAIL verdict with evidence, never an activity error.
+/// every named test failed WITH its signature in the output, and every crate
+/// containing an authored file passes `cargo clippy -D warnings` (a lint
+/// shipped in a frozen test file would make gate 2 unpassable for the
+/// developer). Anything else is a recorded FAIL verdict with evidence
+/// (clippy evidence rides in `detail`), never an activity error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gate1Outcome {
     /// Whether the gate passed.
