@@ -10,9 +10,10 @@ use std::error::Error;
 use std::fmt;
 
 use crate::ast::{
-    AboutDecl, ActionDecl, BinaryOp, BindDecl, CallExpr, CallTarget, Comment, Document,
-    DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField,
-    RetrySpec, Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl, join_span,
+    AboutDecl, ActionDecl, ActionFieldTag, BinaryOp, BindDecl, CallExpr, CallTarget, Comment,
+    Document, DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl,
+    RecordField, RetrySpec, Spanned, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
+    WorkflowDecl, join_span,
 };
 use crate::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 
@@ -67,6 +68,28 @@ struct SourceLine {
     code: String,
     trailing: Option<Comment>,
     span: Span,
+}
+
+impl SourceLine {
+    /// Compute the true document span of `fragment`, which must be a
+    /// byte-level subslice of `self.code` (produced via `strip_prefix`,
+    /// `trim`, `split_once`, indexing, and similar zero-copy operations).
+    ///
+    /// Uses pointer arithmetic against `self.code`'s backing buffer, so it
+    /// stays correct no matter how many slicing operations were chained to
+    /// derive `fragment` — the result is exact even across multi-byte UTF-8
+    /// content, since offsets are computed in bytes.
+    fn fragment_span(&self, fragment: &str) -> Span {
+        let code_start = self.code.as_ptr() as usize;
+        let fragment_start = fragment.as_ptr() as usize;
+        let offset = fragment_start.saturating_sub(code_start);
+        span(
+            self.span.start + offset,
+            self.span.start + offset + fragment.len(),
+            self.span.line,
+            self.span.column + offset,
+        )
+    }
 }
 
 struct SourceLines {
@@ -209,6 +232,95 @@ fn span(start: usize, end: usize, line: usize, column: usize) -> Span {
     }
 }
 
+/// Lex `text`, a fragment of a source line, and rebase every resulting token
+/// (and any lexical error) onto its true position in the original document.
+///
+/// `base` must be `text`'s real document span, as produced by
+/// [`SourceLine::fragment_span`]. Fragments never span more than one physical
+/// source line, so the rebased line number is always `base.line`.
+fn lex_at(text: &str, base: Span) -> Result<Vec<Token>, LexError> {
+    lex(text)
+        .map(|tokens| {
+            tokens
+                .into_iter()
+                .map(|token| Token {
+                    span: rebase_span(token.span, base),
+                    ..token
+                })
+                .collect()
+        })
+        .map_err(|err| LexError {
+            span: rebase_span(err.span, base),
+            message: err.message,
+        })
+}
+
+/// Shift a span produced by lexing a fragment in isolation (line 1, column 1
+/// at byte 0) onto its true document position, given the fragment's real
+/// `base` span.
+fn rebase_span(fragment_relative: Span, base: Span) -> Span {
+    span(
+        base.start + fragment_relative.start,
+        base.start + fragment_relative.end,
+        base.line,
+        base.column + fragment_relative.column - 1,
+    )
+}
+
+/// The canonical top-level declaration order: `workflow`, `about`, `input*`,
+/// `output`, `error?`, `signal*`, `type*`, `action*`, `step*`, `finish`.
+/// `workflow`/`about` are parsed unconditionally before the phase loop
+/// begins, and `finish` is checked separately as the mandatory final line,
+/// so this only orders the middle group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DeclPhase {
+    Input,
+    Output,
+    Error,
+    Signal,
+    Type,
+    Action,
+    Step,
+}
+
+impl DeclPhase {
+    fn of(keyword: &str) -> Option<Self> {
+        match keyword {
+            "input" => Some(Self::Input),
+            "output" => Some(Self::Output),
+            "error" => Some(Self::Error),
+            "signal" => Some(Self::Signal),
+            "type" => Some(Self::Type),
+            "action" => Some(Self::Action),
+            "step" => Some(Self::Step),
+            _ => None,
+        }
+    }
+
+    /// Whether more than one declaration may occupy this phase (`input`,
+    /// `signal`, `type`, `action`, `step` are repeatable; `output` and
+    /// `error` admit at most one).
+    const fn repeatable(self) -> bool {
+        !matches!(self, Self::Output | Self::Error)
+    }
+
+    /// Human-readable list of declarations still valid from this phase
+    /// onward, for "out of order" diagnostics.
+    const fn expected_text(self) -> &'static str {
+        match self {
+            Self::Input => {
+                "`input`, `output`, `error`, `signal`, `type`, `action`, `step`, or `finish`"
+            }
+            Self::Output => "`output`, `error`, `signal`, `type`, `action`, `step`, or `finish`",
+            Self::Error => "`error`, `signal`, `type`, `action`, `step`, or `finish`",
+            Self::Signal => "`signal`, `type`, `action`, `step`, or `finish`",
+            Self::Type => "`type`, `action`, `step`, or `finish`",
+            Self::Action => "`action`, `step`, or `finish`",
+            Self::Step => "`step` or `finish`",
+        }
+    }
+}
+
 struct LineParser {
     lines: Vec<SourceLine>,
     own_comments: Vec<Comment>,
@@ -237,6 +349,8 @@ impl LineParser {
         let mut actions = Vec::new();
         let mut steps = Vec::new();
         let mut finish = None;
+        let mut finish_leading = Vec::new();
+        let mut phase = DeclPhase::Input;
         while let Some(line) = self.peek() {
             if line.indent != 0 {
                 return Err(ParseError::new(
@@ -245,6 +359,27 @@ impl LineParser {
                 ));
             }
             let first = first_word(&line.code);
+            if first != "finish" {
+                let this_phase = DeclPhase::of(first).ok_or_else(|| {
+                    ParseError::new(line.span, format!("unknown declaration `{first}`"))
+                })?;
+                if this_phase < phase {
+                    return Err(ParseError::new(
+                        line.span,
+                        format!(
+                            "`{first}` is out of canonical order; expected {} here (canonical order is workflow, about, input, output, error, signal, type, action, step, finish)",
+                            phase.expected_text()
+                        ),
+                    ));
+                }
+                if this_phase == phase && !this_phase.repeatable() {
+                    return Err(ParseError::new(
+                        line.span,
+                        format!("duplicate `{first}` declaration; only one is allowed"),
+                    ));
+                }
+                phase = this_phase;
+            }
             match first {
                 "input" => inputs.push(self.parse_io("input")?),
                 "output" => {
@@ -259,8 +394,9 @@ impl LineParser {
                 "step" => steps.push(self.parse_step()?),
                 "finish" => {
                     let line = self.bump().expect("peeked");
+                    finish_leading = self.take_trivia(&line).leading;
                     let rest = line.code.strip_prefix("finish").unwrap().trim_start();
-                    finish = Some(parse_expr_at(rest, line.span)?);
+                    finish = Some(parse_expr_at(&line, rest)?);
                     if self.peek().is_some() {
                         return Err(ParseError::new(
                             line.span,
@@ -268,12 +404,7 @@ impl LineParser {
                         ));
                     }
                 }
-                _ => {
-                    return Err(ParseError::new(
-                        line.span,
-                        format!("unknown declaration `{first}`"),
-                    ));
-                }
+                _ => unreachable!("unknown declarations are rejected above"),
             }
         }
         let finish = finish.ok_or_else(|| {
@@ -299,6 +430,7 @@ impl LineParser {
             actions,
             steps,
             finish,
+            finish_leading,
             comments,
         })
     }
@@ -361,7 +493,7 @@ impl LineParser {
             span: line.span,
             trivia,
             name: name.trim().to_owned(),
-            ty: parse_type_at(ty_text.trim(), line.span)?,
+            ty: parse_type_at(&line, ty_text.trim())?,
         })
     }
 
@@ -386,7 +518,7 @@ impl LineParser {
             fields.push(FieldDecl {
                 span: line.span,
                 name: field.trim().to_owned(),
-                ty: parse_type_at(ty.trim(), line.span)?,
+                ty: parse_type_at(&line, ty.trim())?,
             });
         }
         Ok(TypeDecl {
@@ -422,34 +554,52 @@ impl LineParser {
             params.push(FieldDecl {
                 span: line.span,
                 name: param.trim().to_owned(),
-                ty: parse_type_at(ty.trim(), line.span)?,
+                ty: parse_type_at(&line, ty.trim())?,
             });
         }
+        let returns = parse_type_at(&line, ret.trim())?;
         let mut action = ActionDecl {
             span: line.span,
             trivia,
             name,
             params,
-            returns: parse_type_at(ret.trim(), line.span)?,
+            returns,
             queue: None,
             node: None,
             timeout: None,
             retry: None,
+            leading_comments: Vec::new(),
         };
         if self.peek().is_some_and(|next| next.indent == 2) {
             while self.peek().is_some_and(|next| next.indent == 2) {
                 let field = self.bump().expect("peeked");
-                match first_word(&field.code) {
-                    "queue" => action.queue = Some(parse_string_field(&field, "queue")?),
-                    "node" => action.node = Some(parse_string_field(&field, "node")?),
-                    "timeout" => action.timeout = Some(parse_duration_field(&field, "timeout")?),
-                    "retry" => action.retry = Some(parse_retry(&field)?),
+                let field_trivia = self.take_trivia(&field);
+                let tag = match first_word(&field.code) {
+                    "queue" => {
+                        action.queue = Some(parse_string_field(&field, "queue")?);
+                        ActionFieldTag::Queue
+                    }
+                    "node" => {
+                        action.node = Some(parse_string_field(&field, "node")?);
+                        ActionFieldTag::Node
+                    }
+                    "timeout" => {
+                        action.timeout = Some(parse_duration_field(&field, "timeout")?);
+                        ActionFieldTag::Timeout
+                    }
+                    "retry" => {
+                        action.retry = Some(parse_retry(&field)?);
+                        ActionFieldTag::Retry
+                    }
                     other => {
                         return Err(ParseError::new(
                             field.span,
                             format!("unknown action field `{other}`"),
                         ));
                     }
+                };
+                if !field_trivia.leading.is_empty() {
+                    action.leading_comments.push((tag, field_trivia.leading));
                 }
             }
         }
@@ -478,6 +628,7 @@ impl LineParser {
         let mut bind_as = None;
         let mut queue = None;
         let mut node = None;
+        let mut leading_comments: Vec<(StepFieldTag, Vec<Comment>)> = Vec::new();
         while self.peek().is_some_and(|line| line.indent == 2) {
             let line = self.bump().expect("peeked");
             match first_word(&line.code) {
@@ -494,53 +645,102 @@ impl LineParser {
                     });
                 }
                 "when" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::When, trivia.leading);
                     when = Some(parse_expr_at(
+                        &line,
                         line.code.strip_prefix("when").unwrap().trim_start(),
-                        line.span,
                     )?);
                 }
-                "each" => each = Some(parse_each(&line)?),
-                "do" => set_op(&mut op, StepOp::Do(parse_do(&line)?), line.span)?,
-                "wait" => set_op(
-                    &mut op,
-                    StepOp::Wait {
-                        span: line.span,
-                        signal: line.code.strip_prefix("wait").unwrap().trim().to_owned(),
-                    },
-                    line.span,
-                )?,
-                "sleep" => set_op(
-                    &mut op,
-                    StepOp::Sleep(parse_duration_field(&line, "sleep")?),
-                    line.span,
-                )?,
-                "repeat" => repeat = Some(parse_repeat(&line)?),
+                "each" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Each, trivia.leading);
+                    each = Some(parse_each(&line)?);
+                }
+                "do" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Op, trivia.leading);
+                    set_op(&mut op, StepOp::Do(parse_do(&line)?), line.span)?;
+                }
+                "wait" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Op, trivia.leading);
+                    set_op(
+                        &mut op,
+                        StepOp::Wait {
+                            span: line.span,
+                            signal: line.code.strip_prefix("wait").unwrap().trim().to_owned(),
+                        },
+                        line.span,
+                    )?;
+                }
+                "sleep" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Op, trivia.leading);
+                    set_op(
+                        &mut op,
+                        StepOp::Sleep(parse_duration_field(&line, "sleep")?),
+                        line.span,
+                    )?;
+                }
+                "repeat" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Repeat, trivia.leading);
+                    repeat = Some(parse_repeat(&line)?);
+                }
                 "until" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Until, trivia.leading);
                     until = Some(parse_expr_at(
+                        &line,
                         line.code.strip_prefix("until").unwrap().trim_start(),
-                        line.span,
                     )?);
                 }
-                "retry" => retry = Some(parse_retry(&line)?),
-                "timeout" => timeout = Some(parse_duration_field(&line, "timeout")?),
+                "retry" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Retry, trivia.leading);
+                    retry = Some(parse_retry(&line)?);
+                }
+                "timeout" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Timeout, trivia.leading);
+                    timeout = Some(parse_duration_field(&line, "timeout")?);
+                }
                 "on" if line.code == "on timeout" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(
+                        &mut leading_comments,
+                        StepFieldTag::OnTimeout,
+                        trivia.leading,
+                    );
                     on_timeout = Some(self.parse_handler(line.span)?);
                 }
                 "on" if line.code == "on failure" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(
+                        &mut leading_comments,
+                        StepFieldTag::OnFailure,
+                        trivia.leading,
+                    );
                     on_failure = Some(self.parse_handler(line.span)?);
                 }
                 "as" => {
                     bind_as = Some(BindDecl {
                         span: line.span,
-                        trivia: Trivia {
-                            leading: Vec::new(),
-                            trailing: line.trailing.clone(),
-                        },
+                        trivia: self.take_trivia(&line),
                         name: line.code.strip_prefix("as").unwrap().trim().to_owned(),
                     });
                 }
-                "queue" => queue = Some(parse_string_field(&line, "queue")?),
-                "node" => node = Some(parse_string_field(&line, "node")?),
+                "queue" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Queue, trivia.leading);
+                    queue = Some(parse_string_field(&line, "queue")?);
+                }
+                "node" => {
+                    let trivia = self.take_trivia(&line);
+                    push_leading(&mut leading_comments, StepFieldTag::Node, trivia.leading);
+                    node = Some(parse_string_field(&line, "node")?);
+                }
                 other => {
                     return Err(ParseError::new(
                         line.span,
@@ -586,6 +786,7 @@ impl LineParser {
             bind_as,
             queue,
             node,
+            leading_comments,
         })
     }
 
@@ -598,18 +799,46 @@ impl LineParser {
             ));
         }
         let mut actions = Vec::new();
-        let mut terminal = None;
+        let mut action_leading = Vec::new();
+        let mut terminal: Option<HandlerTerminal> = None;
+        let mut terminal_leading = Vec::new();
         while self.peek().is_some_and(|line| line.indent == 4) {
             let line = self.bump().expect("peeked");
+            let trivia = self.take_trivia(&line);
             match first_word(&line.code) {
-                "do" => actions.push(parse_do(&line)?),
+                "do" => {
+                    if terminal.is_some() {
+                        return Err(ParseError::new(
+                            line.span,
+                            "handler block `do` line must come before the terminal (`finish`/`fail` must be last)",
+                        ));
+                    }
+                    action_leading.push(trivia.leading);
+                    actions.push(parse_do(&line)?);
+                }
                 "finish" => {
+                    if terminal.is_some() {
+                        return Err(ParseError::new(
+                            line.span,
+                            "handler block must have exactly one terminal (`finish` or `fail`)",
+                        ));
+                    }
+                    terminal_leading = trivia.leading;
                     terminal = Some(HandlerTerminal::Finish(parse_expr_at(
+                        &line,
                         line.code.strip_prefix("finish").unwrap().trim_start(),
-                        line.span,
                     )?));
                 }
-                "fail" if line.code == "fail" => terminal = Some(HandlerTerminal::Fail(line.span)),
+                "fail" if line.code == "fail" => {
+                    if terminal.is_some() {
+                        return Err(ParseError::new(
+                            line.span,
+                            "handler block must have exactly one terminal (`finish` or `fail`)",
+                        ));
+                    }
+                    terminal_leading = trivia.leading;
+                    terminal = Some(HandlerTerminal::Fail(line.span));
+                }
                 other => {
                     return Err(ParseError::new(
                         line.span,
@@ -627,7 +856,9 @@ impl LineParser {
         Ok(HandlerBlock {
             span: join_span(head, end),
             actions,
+            action_leading,
             terminal,
+            terminal_leading,
         })
     }
 
@@ -671,7 +902,7 @@ fn parse_each(line: &SourceLine) -> Result<EachSpec, ParseError> {
     Ok(EachSpec {
         span: line.span,
         name: name.trim().to_owned(),
-        in_expr: parse_expr_at(expr.trim(), line.span)?,
+        in_expr: parse_expr_at(line, expr.trim())?,
     })
 }
 
@@ -681,12 +912,13 @@ fn parse_repeat(line: &SourceLine) -> Result<Expr, ParseError> {
         .strip_prefix("up to")
         .ok_or_else(|| ParseError::new(line.span, "repeat field needs `up to expr`"))?
         .trim_start();
-    parse_expr_at(expr, line.span)
+    parse_expr_at(line, expr)
 }
 
 fn parse_string_field(line: &SourceLine, keyword: &str) -> Result<String, ParseError> {
     let rest = line.code.strip_prefix(keyword).unwrap().trim();
-    let tokens = lex(rest)?;
+    let base = line.fragment_span(rest);
+    let tokens = lex_at(rest, base)?;
     match tokens.as_slice() {
         [
             Token {
@@ -695,7 +927,7 @@ fn parse_string_field(line: &SourceLine, keyword: &str) -> Result<String, ParseE
             },
         ] => Ok(value.clone()),
         _ => Err(ParseError::new(
-            line.span,
+            base,
             format!("{keyword} field needs a string literal"),
         )),
     }
@@ -703,11 +935,12 @@ fn parse_string_field(line: &SourceLine, keyword: &str) -> Result<String, ParseE
 
 fn parse_duration_field(line: &SourceLine, keyword: &str) -> Result<DurationLiteral, ParseError> {
     let rest = line.code.strip_prefix(keyword).unwrap().trim();
-    parse_duration_text(rest, line.span)
+    parse_duration_text(line, rest)
 }
 
-fn parse_duration_text(text: &str, context: Span) -> Result<DurationLiteral, ParseError> {
-    let tokens = lex(text)?;
+fn parse_duration_text(line: &SourceLine, text: &str) -> Result<DurationLiteral, ParseError> {
+    let base = line.fragment_span(text);
+    let tokens = lex_at(text, base)?;
     match tokens.as_slice() {
         [
             Token {
@@ -719,12 +952,12 @@ fn parse_duration_text(text: &str, context: Span) -> Result<DurationLiteral, Par
             magnitude: *magnitude,
             unit: *unit,
         }),
-        _ => Err(ParseError::new(context, "expected duration literal")),
+        _ => Err(ParseError::new(base, "expected duration literal")),
     }
 }
 
 fn parse_retry(line: &SourceLine) -> Result<RetrySpec, ParseError> {
-    let tokens = lex(line.code.as_str())?;
+    let tokens = lex_at(line.code.as_str(), line.span)?;
     match tokens.as_slice() {
         [
             Token {
@@ -817,42 +1050,55 @@ fn set_op(op: &mut Option<StepOp>, new_op: StepOp, span: Span) -> Result<(), Par
     Ok(())
 }
 
+/// Record a run of own-line comments as leading trivia for `tag`, if any
+/// were found immediately before the field's line.
+fn push_leading(
+    leading_comments: &mut Vec<(StepFieldTag, Vec<Comment>)>,
+    tag: StepFieldTag,
+    leading: Vec<Comment>,
+) {
+    if !leading.is_empty() {
+        leading_comments.push((tag, leading));
+    }
+}
+
 fn parse_do(line: &SourceLine) -> Result<CallTarget, ParseError> {
     let rest = line.code.strip_prefix("do").unwrap().trim_start();
     if let Some(child) = rest.strip_prefix("child ") {
-        let call = parse_call_text(child, line.span)?;
+        let call = parse_call_text(line, child)?;
         Ok(CallTarget::Child {
             span: call.span,
             workflow: call.name,
             args: call.args,
         })
     } else {
-        Ok(CallTarget::Action(parse_call_text(rest, line.span)?))
+        Ok(CallTarget::Action(parse_call_text(line, rest)?))
     }
 }
 
-fn parse_call_text(text: &str, context: Span) -> Result<CallExpr, ParseError> {
+fn parse_call_text(line: &SourceLine, text: &str) -> Result<CallExpr, ParseError> {
+    let base = line.fragment_span(text);
     let open = text
         .find('(')
-        .ok_or_else(|| ParseError::new(context, "do target must be a call"))?;
+        .ok_or_else(|| ParseError::new(base, "do target must be a call"))?;
     let close = text
         .rfind(')')
-        .ok_or_else(|| ParseError::new(context, "do target call needs closing `)`"))?;
+        .ok_or_else(|| ParseError::new(base, "do target call needs closing `)`"))?;
     if text[close + 1..].trim().is_empty() {
         let mut args = Vec::new();
         for part in comma_parts(&text[open + 1..close]) {
             if part.trim().is_empty() {
                 continue;
             }
-            args.push(parse_expr_at(part.trim(), context)?);
+            args.push(parse_expr_at(line, part.trim())?);
         }
         Ok(CallExpr {
-            span: context,
+            span: base,
             name: text[..open].trim().to_owned(),
             args,
         })
     } else {
-        Err(ParseError::new(context, "unexpected text after call"))
+        Err(ParseError::new(base, "unexpected text after call"))
     }
 }
 
@@ -888,8 +1134,9 @@ fn comma_parts(text: &str) -> Vec<&str> {
     parts
 }
 
-fn parse_type_at(text: &str, context: Span) -> Result<TypeRef, ParseError> {
-    let tokens = lex(text)?;
+fn parse_type_at(line: &SourceLine, text: &str) -> Result<TypeRef, ParseError> {
+    let context = line.fragment_span(text);
+    let tokens = lex_at(text, context)?;
     let mut parser = TypeParser {
         tokens: &tokens,
         pos: 0,
@@ -967,8 +1214,9 @@ impl TypeParser<'_> {
     }
 }
 
-fn parse_expr_at(text: &str, context: Span) -> Result<Expr, ParseError> {
-    let tokens = lex(text)?;
+fn parse_expr_at(line: &SourceLine, text: &str) -> Result<Expr, ParseError> {
+    let context = line.fragment_span(text);
+    let tokens = lex_at(text, context)?;
     let mut parser = ExprParser {
         tokens: &tokens,
         pos: 0,

@@ -10,9 +10,10 @@ mod parser;
 mod printer;
 
 pub use ast::{
-    AboutDecl, ActionDecl, BinaryOp, BindDecl, CallExpr, CallTarget, Comment, Document,
-    DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl, RecordField,
-    RetrySpec, Spanned, StepDecl, StepOp, Trivia, TypeDecl, TypeRef, WorkflowDecl,
+    AboutDecl, ActionDecl, ActionFieldTag, BinaryOp, BindDecl, CallExpr, CallTarget, Comment,
+    Document, DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl,
+    RecordField, RetrySpec, Spanned, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
+    WorkflowDecl,
 };
 pub use parser::{ParseError, parse};
 pub use printer::print;

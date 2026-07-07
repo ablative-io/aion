@@ -1,8 +1,9 @@
 #![allow(missing_docs)]
 
 use crate::ast::{
-    ActionDecl, BinaryOp, CallExpr, CallTarget, Comment, Document, Expr, HandlerBlock,
-    HandlerTerminal, IoDecl, RetrySpec, StepDecl, StepOp, TypeDecl, TypeRef,
+    ActionDecl, ActionFieldTag, BinaryOp, CallExpr, CallTarget, Comment, Document, Expr,
+    HandlerBlock, HandlerTerminal, IoDecl, RetrySpec, StepDecl, StepFieldTag, StepOp, TypeDecl,
+    TypeRef,
 };
 use crate::parser::duration_text;
 
@@ -74,6 +75,7 @@ impl Printer {
         if !document.steps.is_empty() {
             self.blank();
         }
+        self.comments(0, &document.finish_leading);
         self.line(0, &format!("finish {}", expr(&document.finish)), None);
     }
 
@@ -119,16 +121,25 @@ impl Printer {
             decl.trivia.trailing.as_ref(),
         );
         if let Some(queue) = &decl.queue {
+            self.action_field_comments(decl, ActionFieldTag::Queue);
             self.line(2, &format!("queue {}", string(queue)), None);
         }
         if let Some(node) = &decl.node {
+            self.action_field_comments(decl, ActionFieldTag::Node);
             self.line(2, &format!("node {}", string(node)), None);
         }
         if let Some(timeout) = &decl.timeout {
+            self.action_field_comments(decl, ActionFieldTag::Timeout);
             self.line(2, &format!("timeout {}", duration_text(timeout)), None);
         }
         if let Some(retry) = &decl.retry {
+            self.action_field_comments(decl, ActionFieldTag::Retry);
             self.line(2, &retry_text(retry), None);
+        }
+    }
+    fn action_field_comments(&mut self, decl: &ActionDecl, tag: ActionFieldTag) {
+        if let Some((_, comments)) = decl.leading_comments.iter().find(|(t, _)| *t == tag) {
+            self.comments(2, comments);
         }
     }
     fn step(&mut self, step: &StepDecl) {
@@ -139,6 +150,7 @@ impl Printer {
             step.trivia.trailing.as_ref(),
         );
         if let Some(about) = &step.about {
+            self.comments(2, &about.trivia.leading);
             self.line(
                 2,
                 &format!("about {}", about.text),
@@ -146,15 +158,18 @@ impl Printer {
             );
         }
         if let Some(when) = &step.when {
+            self.step_field_comments(step, StepFieldTag::When);
             self.line(2, &format!("when {}", expr(when)), None);
         }
         if let Some(each) = &step.each {
+            self.step_field_comments(step, StepFieldTag::Each);
             self.line(
                 2,
                 &format!("each {} in {}", each.name, expr(&each.in_expr)),
                 None,
             );
         }
+        self.step_field_comments(step, StepFieldTag::Op);
         match &step.op {
             StepOp::Do(call) => self.line(2, &format!("do {}", call_target(call)), None),
             StepOp::Wait { signal, .. } => self.line(2, &format!("wait {signal}"), None),
@@ -163,24 +178,31 @@ impl Printer {
             }
         }
         if let Some(repeat) = &step.repeat {
+            self.step_field_comments(step, StepFieldTag::Repeat);
             self.line(2, &format!("repeat up to {}", expr(repeat)), None);
         }
         if let Some(until) = &step.until {
+            self.step_field_comments(step, StepFieldTag::Until);
             self.line(2, &format!("until {}", expr(until)), None);
         }
         if let Some(retry) = &step.retry {
+            self.step_field_comments(step, StepFieldTag::Retry);
             self.line(2, &retry_text(retry), None);
         }
         if let Some(timeout) = &step.timeout {
+            self.step_field_comments(step, StepFieldTag::Timeout);
             self.line(2, &format!("timeout {}", duration_text(timeout)), None);
         }
         if let Some(handler) = &step.on_timeout {
+            self.step_field_comments(step, StepFieldTag::OnTimeout);
             self.handler("timeout", handler);
         }
         if let Some(handler) = &step.on_failure {
+            self.step_field_comments(step, StepFieldTag::OnFailure);
             self.handler("failure", handler);
         }
         if let Some(bind) = &step.bind_as {
+            self.comments(2, &bind.trivia.leading);
             self.line(
                 2,
                 &format!("as {}", bind.name),
@@ -188,17 +210,28 @@ impl Printer {
             );
         }
         if let Some(queue) = &step.queue {
+            self.step_field_comments(step, StepFieldTag::Queue);
             self.line(2, &format!("queue {}", string(queue)), None);
         }
         if let Some(node) = &step.node {
+            self.step_field_comments(step, StepFieldTag::Node);
             self.line(2, &format!("node {}", string(node)), None);
+        }
+    }
+    fn step_field_comments(&mut self, step: &StepDecl, tag: StepFieldTag) {
+        if let Some((_, comments)) = step.leading_comments.iter().find(|(t, _)| *t == tag) {
+            self.comments(2, comments);
         }
     }
     fn handler(&mut self, kind: &str, handler: &HandlerBlock) {
         self.line(2, &format!("on {kind}"), None);
-        for action in &handler.actions {
+        for (idx, action) in handler.actions.iter().enumerate() {
+            if let Some(comments) = handler.action_leading.get(idx) {
+                self.comments(4, comments);
+            }
             self.line(4, &format!("do {}", call_target(action)), None);
         }
+        self.comments(4, &handler.terminal_leading);
         match &handler.terminal {
             HandlerTerminal::Finish(finish) => {
                 self.line(4, &format!("finish {}", expr(finish)), None);

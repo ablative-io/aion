@@ -15,6 +15,8 @@ pub struct Document {
     pub actions: Vec<ActionDecl>,
     pub steps: Vec<StepDecl>,
     pub finish: Expr,
+    /// Own-line comments immediately preceding the `finish` declaration.
+    pub finish_leading: Vec<Comment>,
     pub comments: Vec<Comment>,
 }
 
@@ -67,6 +69,16 @@ pub struct FieldDecl {
     pub ty: TypeRef,
 }
 
+/// Identifies which routing field of an [`ActionDecl`] a run of own-line
+/// comments precedes, so the printer can re-emit them in the right place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionFieldTag {
+    Queue,
+    Node,
+    Timeout,
+    Retry,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDecl {
     pub span: Span,
@@ -78,6 +90,8 @@ pub struct ActionDecl {
     pub node: Option<String>,
     pub timeout: Option<DurationLiteral>,
     pub retry: Option<RetrySpec>,
+    /// Own-line comments preceding a routing field, keyed by field.
+    pub leading_comments: Vec<(ActionFieldTag, Vec<Comment>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +99,24 @@ pub struct BindDecl {
     pub span: Span,
     pub trivia: Trivia,
     pub name: String,
+}
+
+/// Identifies which step field a run of own-line comments precedes, for
+/// fields whose value type has no room of its own for leading trivia (the
+/// `about` and `as` fields carry their own [`Trivia`] instead).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepFieldTag {
+    When,
+    Each,
+    Op,
+    Repeat,
+    Until,
+    Retry,
+    Timeout,
+    OnTimeout,
+    OnFailure,
+    Queue,
+    Node,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +137,8 @@ pub struct StepDecl {
     pub bind_as: Option<BindDecl>,
     pub queue: Option<String>,
     pub node: Option<String>,
+    /// Own-line comments preceding a step field, keyed by field.
+    pub leading_comments: Vec<(StepFieldTag, Vec<Comment>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +176,11 @@ pub struct CallExpr {
 pub struct HandlerBlock {
     pub span: Span,
     pub actions: Vec<CallTarget>,
+    /// Own-line comments preceding each entry of `actions`, index-aligned.
+    pub action_leading: Vec<Vec<Comment>>,
     pub terminal: HandlerTerminal,
+    /// Own-line comments preceding the terminal (`finish`/`fail`) line.
+    pub terminal_leading: Vec<Comment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
