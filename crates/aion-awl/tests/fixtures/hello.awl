@@ -1,0 +1,21 @@
+workflow hello
+about Say hello with a guarded enrichment step.
+
+input name: String
+output Greeting
+
+type Greeting { message: String, excited: Bool }
+
+action greet(name: String) -> Greeting
+action exclaim(greeting: Greeting) -> Greeting
+
+step greet
+  do greet(name)
+  as greeting
+
+step exclaim
+  when greeting.excited == false
+  do exclaim(greeting)
+  as greeting
+
+finish greeting

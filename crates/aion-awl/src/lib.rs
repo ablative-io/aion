@@ -7,6 +7,7 @@
 
 mod ast;
 mod checker;
+mod emitter;
 mod parser;
 mod printer;
 
@@ -17,6 +18,7 @@ pub use ast::{
     WorkflowDecl,
 };
 pub use checker::{CheckError, check};
+pub use emitter::{EmitError, emit};
 pub use parser::{ParseError, parse};
 pub use printer::print;
 
