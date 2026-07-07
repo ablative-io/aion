@@ -1084,6 +1084,42 @@ mod tests {
     }
 
     #[test]
+    fn awl_emit_parses_the_file_path_and_optional_output() -> anyhow::Result<()> {
+        let cli = Cli::try_parse_from(["aion", "awl", "emit", "flows/report.awl"])?;
+        let Command::Awl {
+            command: awl::AwlCommand::Emit { file, output },
+        } = cli.command
+        else {
+            anyhow::bail!("expected awl emit command");
+        };
+        assert_eq!(file, Path::new("flows/report.awl"));
+        assert_eq!(output, None);
+
+        let cli = Cli::try_parse_from([
+            "aion",
+            "awl",
+            "emit",
+            "flows/report.awl",
+            "-o",
+            "flows/report.gleam",
+        ])?;
+        let Command::Awl {
+            command: awl::AwlCommand::Emit { file, output },
+        } = cli.command
+        else {
+            anyhow::bail!("expected awl emit command");
+        };
+        assert_eq!(file, Path::new("flows/report.awl"));
+        assert_eq!(output, Some(PathBuf::from("flows/report.gleam")));
+        Ok(())
+    }
+
+    #[test]
+    fn awl_emit_requires_a_file() {
+        assert!(Cli::try_parse_from(["aion", "awl", "emit"]).is_err());
+    }
+
+    #[test]
     fn input_parses_workflow_type_and_path() -> anyhow::Result<()> {
         let cli = Cli::try_parse_from(["aion", "input", "order_saga", "examples/order-saga"])?;
         let Command::Client(ClientCommand::Input {

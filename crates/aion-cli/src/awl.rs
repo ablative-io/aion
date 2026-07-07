@@ -5,8 +5,12 @@
 //! error to stderr and exiting non-zero when any is found. `aion awl fmt`
 //! rewrites the document in place with the canonical printer — the printer IS
 //! the formatter, one rendering — so there is deliberately no `--check` mode.
+//! `aion awl emit` lowers a document to Gleam source, but only past a clean
+//! typecheck — generated code quality depends on it, so a parse error, a
+//! typecheck error, and an emit error all report the same way and exit
+//! non-zero.
 //!
-//! Both commands run entirely locally and own their own compiler-style
+//! All three commands run entirely locally and own their own compiler-style
 //! reporting contract (diagnostics to stderr, a one-line summary to stdout)
 //! instead of the client commands' JSON rendering.
 
@@ -39,6 +43,21 @@ pub(crate) enum AwlCommand {
         /// Path to the `.awl` document.
         file: PathBuf,
     },
+    /// Generate Gleam source from an AWL workflow document.
+    ///
+    /// Parses and typechecks the document first — emission requires a clean
+    /// typecheck, since generated code quality depends on it — then lowers
+    /// it to Gleam. A parse error, a typecheck error, or an emit error all
+    /// print `<file>:<line>:<column>: error: <message>` diagnostics to
+    /// stderr and exit non-zero. On success the generated module is written
+    /// to `--output` if given, otherwise to stdout.
+    Emit {
+        /// Path to the `.awl` document.
+        file: PathBuf,
+        /// Path to write the generated Gleam module. Defaults to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// Runs an `aion awl` subcommand.
@@ -46,6 +65,7 @@ pub(crate) fn run(command: &AwlCommand) -> ExitCode {
     match command {
         AwlCommand::Check { file } => check_command(file),
         AwlCommand::Fmt { file } => fmt_command(file),
+        AwlCommand::Emit { file, output } => emit_command(file, output.as_deref()),
     }
 }
 
@@ -80,6 +100,27 @@ fn fmt_command(file: &Path) -> ExitCode {
     }
 }
 
+fn emit_command(file: &Path, output: Option<&Path>) -> ExitCode {
+    let Some(source) = read_source(file) else {
+        return ExitCode::FAILURE;
+    };
+    match emit_source(file, &source) {
+        Ok(generated) => {
+            if let Some(output) = output {
+                if let Err(error) = fs::write(output, generated) {
+                    eprintln!("error: failed to write {}: {error}", output.display());
+                    return ExitCode::FAILURE;
+                }
+                println!("emitted: {}", output.display());
+            } else {
+                print!("{generated}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(diagnostics) => report(&diagnostics),
+    }
+}
+
 /// Parses and typechecks `source`, returning the workflow step count on a
 /// clean pass or the rendered diagnostic lines otherwise. A parse error
 /// yields the same diagnostic shape as a typecheck error.
@@ -104,6 +145,23 @@ fn format_source(file: &Path, source: &str) -> Result<String, Vec<String>> {
     let document = aion_awl::parse(source)
         .map_err(|error| vec![diagnostic(file, error.span, &error.message)])?;
     Ok(aion_awl::print(&document))
+}
+
+/// Parses, typechecks, and emits `source` as Gleam source. Emission
+/// deliberately requires a clean typecheck — unlike `format_source` — since
+/// the generated code's quality depends on it: a parse error, any typecheck
+/// error, or an emit error all yield the same diagnostic shape.
+fn emit_source(file: &Path, source: &str) -> Result<String, Vec<String>> {
+    let document = aion_awl::parse(source)
+        .map_err(|error| vec![diagnostic(file, error.span, &error.message)])?;
+    let errors = aion_awl::check(&document);
+    if !errors.is_empty() {
+        return Err(errors
+            .iter()
+            .map(|error| diagnostic(file, error.span, &error.message))
+            .collect());
+    }
+    aion_awl::emit(&document).map_err(|error| vec![diagnostic(file, error.span, &error.message)])
 }
 
 /// Renders one compiler-style diagnostic line from a diagnostic's span.
@@ -210,6 +268,49 @@ mod tests {
         };
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].starts_with("probe.awl:1:1: error: "));
+        Ok(())
+    }
+
+    #[test]
+    fn emit_source_generates_gleam_for_a_clean_document() -> anyhow::Result<()> {
+        let generated = emit_source(Path::new("probe.awl"), VALID_DOC)
+            .map_err(|d| anyhow::anyhow!("unexpected diagnostics: {d:?}"))?;
+        assert!(
+            generated.contains("pub fn execute"),
+            "expected generated code to contain `pub fn execute`: {generated}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn emit_source_is_gated_on_a_clean_typecheck() -> anyhow::Result<()> {
+        // Well-formed, but `finish` names a binding that never exists — emit
+        // must refuse rather than generate code from an ill-typed document.
+        let source = "workflow probe\noutput String\n\nfinish missing\n";
+        let Err(diagnostics) = emit_source(Path::new("probe.awl"), source) else {
+            anyhow::bail!("expected a typecheck diagnostic");
+        };
+        assert!(!diagnostics.is_empty());
+        for line in &diagnostics {
+            assert!(
+                line.starts_with("probe.awl:") && line.contains(": error: "),
+                "unexpected diagnostic: {line}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn emit_source_renders_a_parse_error_as_a_diagnostic() -> anyhow::Result<()> {
+        let Err(diagnostics) = emit_source(Path::new("probe.awl"), "not a workflow\n") else {
+            anyhow::bail!("expected a parse diagnostic");
+        };
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].starts_with("probe.awl:1:1: error: "),
+            "unexpected diagnostic: {}",
+            diagnostics[0]
+        );
         Ok(())
     }
 }
