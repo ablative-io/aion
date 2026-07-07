@@ -14,8 +14,7 @@ use crate::{
     NamespacePlacementWire, OverlapPolicy, PackageVersion, Payload, ProgressDetail, RunId,
     ScheduleConfig, ScheduleId, SearchAttributeType, SearchAttributeValue, StopKind,
     TimerCancelCause, TimerId, TimerIdKind, TriggerSpec, WithTimeoutOutcome, WorkerDeathReason,
-    WorkerTransport,
-    WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
+    WorkerTransport, WorkflowError, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
 };
 
 const OPS_CONSOLE_GENERATED_DIR: &str = "../../apps/aion-ops-console/src/types/generated";
