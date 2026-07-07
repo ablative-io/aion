@@ -61,16 +61,22 @@ schemas/lens-verdict.schema.json (norn --output-schema).
 ## Status / next steps
 
 - [x] worktree `.yggdrasil-worktrees/dev-brief` on branch `dev-brief`
-- [x] scaffold copied from examples/remediation, artifacts stripped
-- [ ] types.gleam
-- [ ] cycle.gleam, verdicts.gleam
-- [ ] codecs.gleam
-- [ ] activities.gleam, dev_brief.gleam, review_lens.gleam
-- [ ] gleam.toml / workflow.toml / schemas/ / test/ rewrite; `gleam test` green
-- [ ] worker rewrite; cargo clippy -D warnings + tests green
-- [ ] package (`aion package`), deploy to :8080 server, launchd worker
-      io.ablative.aion-worker-dev-brief (mirror remediation plist)
-- [ ] LIVE proof on a real small stack brief, driven through the console;
-      verify lenses run in parallel ON TOM'S SCREEN before claiming it
+- [x] Gleam side complete: types/cycle/verdicts/codecs/activities +
+      dev_brief + review_lens; 29 tests green; committed
+- [x] worker complete: 3 connections (shell/developer/reviewer), run_gates
+      w/ --no-ext-diff + mechanical normalization commit, commit_dev_work
+      (git add -A in the wholly-owned worktree), in-package profiles;
+      clippy -D warnings + 28 tests green; committed
+- [x] packaged (dev-brief.aion + review-lens.aion) + DEPLOYED to the
+      production server (both routed, content hash 8c404a5f…)
+- [ ] LIVE proof running: proof repo
+      ~/Developer/ablative/deploy/aion/drill/dev-brief-proof (clamp bug),
+      brief JSON ../dev-brief-proof-brief.json; worker release build in
+      background; then start dev_brief on queue dev_brief and VERIFY:
+      developer commits, gates run, THREE review_lens children run
+      CONCURRENTLY (overlapping started_at), branch dev/DBP-1 has the fix
+- [ ] launchd io.ablative.aion-worker-dev-brief (mirror remediation plist)
+      once live proof lands
+- [ ] merge dev-brief branch to aion main + push after proof
 - Bars: never trust green I didn't run; cargo fmt (never --check) before
   commit; stage explicit paths; package name for engine builds is aion-rs.
