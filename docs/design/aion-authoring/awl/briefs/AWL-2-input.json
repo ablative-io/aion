@@ -1,0 +1,46 @@
+{
+  "brief": {
+    "id": "AWL-2",
+    "title": "aion-awl: parser + canonical printer with lossless round-trip",
+    "objective": "Extend crates/aion-awl with a parser producing a spanned Document AST for the full AWL-0 grammar, and a canonical printer, such that printing is idempotent (print . parse . print = print) and the research_report fixture round-trips byte-identically (print(parse(fixture)) == fixture, comments included).",
+    "context": "The lexer landed in AWL-1 (crates/aion-awl/src/lib.rs, aion_awl::lex -> Vec<Token> with spans, Indent/Dedent, Prose mode for about lines). The grammar contract is docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md (Document grammar + Step fields + Expressions sections) and the worked example is the code block in docs/design/aion-authoring/syntax-sketches/H-awl.md, already stored as crates/aion-awl/tests/fixtures/research_report.awl. Declarations in order: workflow, about, input (repeatable), output, error (optional), signal (repeatable), type (repeatable, nominal record { field: Type, ... }), action (repeatable, with optional indented routing fields queue/node/timeout/retry), step (repeatable, ordered), finish <expr>. Step fields, one per line: about (Prose), when <expr>, each <id> in <expr>, do <call> or do child <workflow>(args), wait <signal>, sleep <duration>, repeat up to <expr>, until <expr>, retry <n> every <d> or retry <n> backoff <d>..<d>, timeout <duration>, on timeout / on failure handler blocks (indented one further: do lines then finish <expr> or fail), as <name>, queue \"<q>\", node \"<n>\". A step does exactly one of: do, wait, sleep (enforce in the parser with a spanned error). Expression micro-grammar: literals (string/int/float/bool/duration), list literals [a, b], references, field access (approval.ok, chained), record construction TypeName(field: expr, ...), calls ONLY as the do target, not/and/or (standard precedence: not > and > or), comparisons (== != < <= > >=, non-associative), string +. Types in signatures: TitleCase names, List(T), Option(T), and the builtins Bool/Int/Float/String/Nil/Dir. COMMENT PRESERVATION: the fixture contains // comments (own-line and trailing); the current lexer may discard them. Byte-identical round-trip requires retaining them, so extending the lexer to emit comment/trivia tokens (or capture trivia on adjacent tokens) is IN SCOPE this brief; keep the public lex API shape (aion_awl::lex(source) -> Result<Vec<Token>, LexError>) backward compatible.",
+    "pointers": [
+      "docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md",
+      "docs/design/aion-authoring/syntax-sketches/H-awl.md",
+      "crates/aion-awl/src/lib.rs",
+      "crates/aion-awl/tests/fixtures/research_report.awl"
+    ],
+    "scope_in": [
+      "crates/aion-awl/"
+    ],
+    "scope_out": [
+      "No typechecker, no action-contract checking, no binding-flow analysis — that is AWL-3",
+      "No projection to the aion-package WorkflowGraph model yet",
+      "No changes to any other crate and no changes to the workspace Cargo.toml",
+      "No external dependencies (std only)",
+      "Do not modify the spec or sketch documents",
+      "Do not rename or break the existing public lex API"
+    ],
+    "acceptance": [
+      "aion_awl::parse(source: &str) -> Result<Document, ParseError> (or Vec<ParseError>; document the choice) covers the full AWL-0 grammar: every declaration kind, every step field, handler blocks, and the complete expression micro-grammar; every AST node carries a span",
+      "aion_awl::print(&Document) -> String emits exactly one canonical rendering: declarations in canonical order as written, step fields one per line in the spec's canonical field order, two-space indentation, comments preserved",
+      "crates/aion-awl/tests/fixtures/research_report.awl parses with zero errors and print(parse(fixture)) is byte-identical to the fixture file, comments included — asserted by a golden test",
+      "A second fixture exercises the bounded-cycle shape from H-awl.md (step with repeat up to <expr> / do child fix_round(...) / as state / until state.accepted) plus retry backoff d..d and an error declaration; it parses and round-trips byte-identically",
+      "Printer idempotence: for both fixtures and at least three hand-written non-canonical-whitespace variants, print(parse(print(parse(src)))) == print(parse(src))",
+      "Parse errors carry correct spans and messages, each unit-tested: a step with two world-touching fields (do + wait), finish missing at document end, a call expression outside do, an unknown step field, an unterminated record construction, wrong indentation depth for a handler block body",
+      "The step-shape rule is enforced structurally: each/repeat bodies are exactly one do (the field-per-line grammar makes this implicit — assert the two-do error covers it)",
+      "cargo test -p aion-awl passes; clippy -D warnings clean; cargo fmt --all leaves the tree unchanged"
+    ],
+    "notes": "Hand-written recursive-descent parser over the AWL-1 token stream; no parser generators. Keep the AST plain data (public fields or simple accessors) — the AWL-3 typechecker and the future graph projection both walk it. Printer discipline: there is no configuration and no check mode; the printer IS the formatter. If the current lexer's comment handling blocks byte-identical printing, extend the lexer minimally (trivia tokens or attached trivia) rather than post-processing strings in the printer."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      { "name": "clippy", "argv": ["cargo", "clippy", "-p", "aion-awl", "--all-targets", "--", "-D", "warnings"] },
+      { "name": "test", "argv": ["cargo", "test", "-p", "aion-awl"] }
+    ],
+    "max_fix_cycles": 3
+  }
+}
