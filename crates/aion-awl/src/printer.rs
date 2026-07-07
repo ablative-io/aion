@@ -7,6 +7,7 @@ use crate::ast::{
 use crate::parser::duration_text;
 
 /// Render an AWL document in the canonical AWL-0 format.
+#[must_use]
 pub fn print(document: &Document) -> String {
     let mut p = Printer { out: String::new() };
     p.document(document);
@@ -22,12 +23,16 @@ impl Printer {
         self.comments(0, &document.workflow.trivia.leading);
         self.line(
             0,
-            format!("workflow {}", document.workflow.name),
-            &document.workflow.trivia.trailing,
+            &format!("workflow {}", document.workflow.name),
+            document.workflow.trivia.trailing.as_ref(),
         );
         if let Some(about) = &document.about {
             self.comments(0, &about.trivia.leading);
-            self.line(0, format!("about {}", about.text), &about.trivia.trailing);
+            self.line(
+                0,
+                &format!("about {}", about.text),
+                about.trivia.trailing.as_ref(),
+            );
         }
         self.blank();
         self.group_io("input", &document.inputs);
@@ -69,7 +74,7 @@ impl Printer {
         if !document.steps.is_empty() {
             self.blank();
         }
-        self.line(0, format!("finish {}", expr(&document.finish)), &None);
+        self.line(0, &format!("finish {}", expr(&document.finish)), None);
     }
 
     fn group_io(&mut self, keyword: &str, decls: &[IoDecl]) {
@@ -84,7 +89,7 @@ impl Printer {
         } else {
             format!("{keyword} {}: {}", decl.name, ty(&decl.ty))
         };
-        self.line(0, code, &decl.trivia.trailing);
+        self.line(0, &code, decl.trivia.trailing.as_ref());
     }
     fn type_decl(&mut self, decl: &TypeDecl) {
         self.comments(0, &decl.trivia.leading);
@@ -96,8 +101,8 @@ impl Printer {
             .join(", ");
         self.line(
             0,
-            format!("type {} {{ {} }}", decl.name, fields),
-            &decl.trivia.trailing,
+            &format!("type {} {{ {} }}", decl.name, fields),
+            decl.trivia.trailing.as_ref(),
         );
     }
     fn action(&mut self, decl: &ActionDecl) {
@@ -110,56 +115,64 @@ impl Printer {
             .join(", ");
         self.line(
             0,
-            format!("action {}({}) -> {}", decl.name, params, ty(&decl.returns)),
-            &decl.trivia.trailing,
+            &format!("action {}({}) -> {}", decl.name, params, ty(&decl.returns)),
+            decl.trivia.trailing.as_ref(),
         );
         if let Some(queue) = &decl.queue {
-            self.line(2, format!("queue {}", string(queue)), &None);
+            self.line(2, &format!("queue {}", string(queue)), None);
         }
         if let Some(node) = &decl.node {
-            self.line(2, format!("node {}", string(node)), &None);
+            self.line(2, &format!("node {}", string(node)), None);
         }
         if let Some(timeout) = &decl.timeout {
-            self.line(2, format!("timeout {}", duration_text(timeout)), &None);
+            self.line(2, &format!("timeout {}", duration_text(timeout)), None);
         }
         if let Some(retry) = &decl.retry {
-            self.line(2, retry_text(retry), &None);
+            self.line(2, &retry_text(retry), None);
         }
     }
     fn step(&mut self, step: &StepDecl) {
         self.comments(0, &step.trivia.leading);
-        self.line(0, format!("step {}", step.name), &step.trivia.trailing);
+        self.line(
+            0,
+            &format!("step {}", step.name),
+            step.trivia.trailing.as_ref(),
+        );
         if let Some(about) = &step.about {
-            self.line(2, format!("about {}", about.text), &about.trivia.trailing);
+            self.line(
+                2,
+                &format!("about {}", about.text),
+                about.trivia.trailing.as_ref(),
+            );
         }
         if let Some(when) = &step.when {
-            self.line(2, format!("when {}", expr(when)), &None);
+            self.line(2, &format!("when {}", expr(when)), None);
         }
         if let Some(each) = &step.each {
             self.line(
                 2,
-                format!("each {} in {}", each.name, expr(&each.in_expr)),
-                &None,
+                &format!("each {} in {}", each.name, expr(&each.in_expr)),
+                None,
             );
         }
         match &step.op {
-            StepOp::Do(call) => self.line(2, format!("do {}", call_target(call)), &None),
-            StepOp::Wait { signal, .. } => self.line(2, format!("wait {signal}"), &None),
+            StepOp::Do(call) => self.line(2, &format!("do {}", call_target(call)), None),
+            StepOp::Wait { signal, .. } => self.line(2, &format!("wait {signal}"), None),
             StepOp::Sleep(duration) => {
-                self.line(2, format!("sleep {}", duration_text(duration)), &None)
+                self.line(2, &format!("sleep {}", duration_text(duration)), None);
             }
         }
         if let Some(repeat) = &step.repeat {
-            self.line(2, format!("repeat up to {}", expr(repeat)), &None);
+            self.line(2, &format!("repeat up to {}", expr(repeat)), None);
         }
         if let Some(until) = &step.until {
-            self.line(2, format!("until {}", expr(until)), &None);
+            self.line(2, &format!("until {}", expr(until)), None);
         }
         if let Some(retry) = &step.retry {
-            self.line(2, retry_text(retry), &None);
+            self.line(2, &retry_text(retry), None);
         }
         if let Some(timeout) = &step.timeout {
-            self.line(2, format!("timeout {}", duration_text(timeout)), &None);
+            self.line(2, &format!("timeout {}", duration_text(timeout)), None);
         }
         if let Some(handler) = &step.on_timeout {
             self.handler("timeout", handler);
@@ -168,35 +181,35 @@ impl Printer {
             self.handler("failure", handler);
         }
         if let Some(name) = &step.bind_as {
-            self.line(2, format!("as {name}"), &None);
+            self.line(2, &format!("as {name}"), None);
         }
         if let Some(queue) = &step.queue {
-            self.line(2, format!("queue {}", string(queue)), &None);
+            self.line(2, &format!("queue {}", string(queue)), None);
         }
         if let Some(node) = &step.node {
-            self.line(2, format!("node {}", string(node)), &None);
+            self.line(2, &format!("node {}", string(node)), None);
         }
     }
     fn handler(&mut self, kind: &str, handler: &HandlerBlock) {
-        self.line(2, format!("on {kind}"), &None);
+        self.line(2, &format!("on {kind}"), None);
         for action in &handler.actions {
-            self.line(4, format!("do {}", call_target(action)), &None);
+            self.line(4, &format!("do {}", call_target(action)), None);
         }
         match &handler.terminal {
             HandlerTerminal::Finish(finish) => {
-                self.line(4, format!("finish {}", expr(finish)), &None)
+                self.line(4, &format!("finish {}", expr(finish)), None);
             }
-            HandlerTerminal::Fail(_) => self.line(4, "fail".to_owned(), &None),
+            HandlerTerminal::Fail(_) => self.line(4, "fail", None),
         }
     }
     fn comments(&mut self, indent: usize, comments: &[Comment]) {
         for comment in comments {
-            self.line(indent, format!("// {}", comment.text), &None);
+            self.line(indent, &format!("// {}", comment.text), None);
         }
     }
-    fn line(&mut self, indent: usize, code: String, trailing: &Option<Comment>) {
+    fn line(&mut self, indent: usize, code: &str, trailing: Option<&Comment>) {
         self.out.push_str(&" ".repeat(indent));
-        self.out.push_str(&code);
+        self.out.push_str(code);
         if let Some(comment) = trailing {
             self.out.push_str("  // ");
             self.out.push_str(&comment.text);

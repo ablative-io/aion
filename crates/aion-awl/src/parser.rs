@@ -491,13 +491,13 @@ impl LineParser {
                             .unwrap()
                             .trim_start()
                             .to_owned(),
-                    })
+                    });
                 }
                 "when" => {
                     when = Some(parse_expr_at(
                         line.code.strip_prefix("when").unwrap().trim_start(),
                         line.span,
-                    )?)
+                    )?);
                 }
                 "each" => each = Some(parse_each(&line)?),
                 "do" => set_op(&mut op, StepOp::Do(parse_do(&line)?), line.span)?,
@@ -519,15 +519,15 @@ impl LineParser {
                     until = Some(parse_expr_at(
                         line.code.strip_prefix("until").unwrap().trim_start(),
                         line.span,
-                    )?)
+                    )?);
                 }
                 "retry" => retry = Some(parse_retry(&line)?),
                 "timeout" => timeout = Some(parse_duration_field(&line, "timeout")?),
                 "on" if line.code == "on timeout" => {
-                    on_timeout = Some(self.parse_handler(line.span)?)
+                    on_timeout = Some(self.parse_handler(line.span)?);
                 }
                 "on" if line.code == "on failure" => {
-                    on_failure = Some(self.parse_handler(line.span)?)
+                    on_failure = Some(self.parse_handler(line.span)?);
                 }
                 "as" => bind_as = Some(line.code.strip_prefix("as").unwrap().trim().to_owned()),
                 "queue" => queue = Some(parse_string_field(&line, "queue")?),
@@ -581,7 +581,7 @@ impl LineParser {
     }
 
     fn parse_handler(&mut self, head: Span) -> Result<HandlerBlock, ParseError> {
-        if !self.peek().is_some_and(|line| line.indent == 4) {
+        if self.peek().is_none_or(|line| line.indent != 4) {
             let err = self.peek().map_or(head, |line| line.span);
             return Err(ParseError::new(
                 err,
@@ -598,7 +598,7 @@ impl LineParser {
                     terminal = Some(HandlerTerminal::Finish(parse_expr_at(
                         line.code.strip_prefix("finish").unwrap().trim_start(),
                         line.span,
-                    )?))
+                    )?));
                 }
                 "fail" if line.code == "fail" => terminal = Some(HandlerTerminal::Fail(line.span)),
                 other => {
@@ -1137,9 +1137,8 @@ impl ExprParser<'_> {
                 .bump()
                 .ok_or_else(|| ParseError::new(start, "unterminated record construction"))?;
             let token_span = token.span;
-            let field = match token.kind {
-                TokenKind::Identifier(field) => field,
-                _ => return Err(ParseError::new(token_span, "record field needs a name")),
+            let TokenKind::Identifier(field) = token.kind else {
+                return Err(ParseError::new(token_span, "record field needs a name"));
             };
             self.expect(&TokenKind::Colon, "record field needs `:`")?;
             let value = self.parse_or()?;
