@@ -1,0 +1,67 @@
+# Rust activity worker for the dev-brief workflow family.
+#
+# Standalone (NOT a workspace member) so it builds from a plain `cargo build`
+# in this directory, mirroring the `remediation` example worker.
+#
+# It serves FIVE activity types on ONE task queue (`dev_brief`):
+#
+# - TWO DRIVEN AGENT activities (`developer`, `review_lens`) — each routed
+#   through its OWN composed harness: a `ProfiledNornHarness` that assembles
+#   the prompt as {the role's profile markdown, loaded at startup from
+#   `--profiles-dir`} + {the activity's structured context JSON}, then
+#   delegates to a `NornHarness` (driven mode, jsonrpc) carrying the role's
+#   `--output-schema` and a `{workflow_id}`-derived `--session-id`, over the
+#   liminal server-push transport (`serve_with_redial`). One connection per
+#   role.
+# - THREE SHELL activities (`provision_workspace`, `run_gates`,
+#   `cleanup_workspace`) — typed registry handlers running real git and the
+#   brief's configured gate commands, on a third connection with no harness.
+[package]
+name = "dev-brief-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust activity worker serving the dev-brief workflow's two driven Norn agent roles (developer, review lens) and three git/gate shell activities."
+
+[[bin]]
+name = "dev-brief-worker"
+path = "src/main.rs"
+
+[lib]
+name = "dev_brief_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+# The `liminal-transport` feature enables the server-push serve path
+# (`serve_with_redial`) the driven agent-harness wiring runs on. The composed
+# agent-harness seam is unpublished, so the aion crates are consumed by PATH.
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
+anyhow = "1"
+async-trait = "0.1"
+# The harness wrapper implements `AgentSession` itself (to run the
+# developer's post-turn commit), whose event stream is a futures BoxStream.
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
