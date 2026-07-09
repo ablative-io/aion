@@ -1,0 +1,164 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001c",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001c",
+    "cluster": "awl",
+    "title": "aion-awl parser split: parser.rs (1585 lines) into a parser/ folder module, allow-block PURGED by doing the deferred work (docs written, unwrap/expect eliminated, parse_step decomposed), zero behavior change, mechanically fenced scope",
+    "depends_on": [
+      "AWL0-REFAC-001b"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "Third of five single-file sub-briefs decomposed from AWL0-REFAC-001 (see AWL-EXECUTION-PLAN.md Wave 0 and BRIEF-CRAFT.md entry 10). crates/aion-awl/src/parser.rs is 1585 lines, over the 500-line limit and by far the largest of the two remaining over-limit files, and it carries at line 1 a multi-line lint-bypass block `#![allow(missing_docs, clippy::expect_used, clippy::too_many_lines, clippy::unnecessary_wraps, clippy::unwrap_used)]` that hides real deferred work. This brief splits parser.rs into a folder module crates/aion-awl/src/parser/ of genuinely named child modules, each at or under 500 lines, at ZERO behavior cost, AND purges that allow block by DOING the deferred work behind it, not by relocating it: writing real documentation for the missing_docs items, eliminating every unwrap()/expect() via real error propagation or restructuring, decomposing the one over-100-line function (parse_step, 223 lines) so too_many_lines resolves honestly, and unwrapping the one needless Result on a PRIVATE fn (parse_maybe_about) so unnecessary_wraps resolves. It follows the pilot AWL0-REFAC-001a (checker split, LANDED run a96973cb, merged adb6e4cf) and 001b (lib.rs split + 4-attr purge, LANDED run 3d201c36, merged 80426594), and reuses their mechanical-gate template. Because parser.rs is DELETED and replaced by a folder, this brief is closest to 001a's shape: lib.rs already declares `mod parser;` (verified: lib.rs line 10) which resolves parser/mod.rs automatically, so lib.rs needs NO edit; the scope fence is 001a's path-exclude form. Unlike 001b, the bypass purge here is NOT a vestigial-attribute deletion — authoring measurement (below) confirmed 32 real clippy errors surface when the block is removed, so the developer starts with the full inventory embedded and does genuine work.",
+    "task": "Split crates/aion-awl/src/parser.rs (1585 lines) into a folder module crates/aion-awl/src/parser/ whose mod.rs contains ONLY module declarations and re-exports, with every child file at or under 500 lines and named for its responsibility, AND purge the line-1 allow block by doing the deferred work behind it — all at ZERO behavior cost. The crate root already declares `mod parser;` (lib.rs line 10), which resolves to parser/mod.rs automatically — lib.rs therefore needs NO edit and MUST NOT be edited. The split itself is a pure move: no logic edits beyond those required to eliminate the bypasses, no diagnostic-text changes, no accepted/rejected-result changes for any input. Structure guidance from the real seams in the file: ParseError + its Display/Error/From<LexError> impls (the public error type) separate naturally; the source-line model (SourceLine, SourceLines, count_indent, split_code_comment, trim_comment, span, and the fragment lexing helpers lex_at/rebase_span) is a natural unit; the top-level document walk (DeclPhase, LineParser and its cursor methods peek/bump/bump_required/take_trivia, parse_document, parse_workflow, parse_maybe_about, parse_io, parse_type_decl, parse_action_decl) is a unit; the step machinery (parse_step, parse_handler, and the field helpers parse_each/parse_repeat/parse_string_field/parse_duration_field/parse_duration_text/parse_retry/set_op/push_leading/push_trailing/reject_duplicate) is a unit; call parsing (parse_do, parse_call_text, comma_parts), the type sub-parser (TypeParser + parse_type_at), and the expression sub-parser (ExprParser + parse_expr_at, plus unit_text/duration_text) each separate naturally. Multiple `impl LineParser` (and `impl ExprParser`/`impl TypeParser`) blocks across child modules of the same crate are legal Rust and the intended technique, exactly as 001a split the large Ctx impl. Free helper functions shared across child modules must be given `pub(super)` (or `pub(crate)`) visibility so they resolve across the folder — this is a visibility widening internal to the crate, NOT a public-API or signature change, and is expected (001a did the same). Choose child-module names from the actual responsibilities you find (e.g. parser/error.rs, parser/source.rs, parser/document.rs, parser/steps.rs, parser/calls.rs, parser/types.rs, parser/expressions.rs) — mechanically named files (part_00.rs, chunk_1.rs, body.rs holding everything) and include!() textual splicing are REJECTED outright; all three prior states of the parent work (two rejected dispatches, then the clean decomposition) turned on exactly this distinction (see notes). CRITICAL re-export note (R2): parser.rs today exposes `pub(crate) fn duration_text` at line 1583, and printer.rs imports it as `use crate::parser::duration_text;` (printer.rs line 8) — printer.rs is OUT OF SCOPE and MUST NOT be edited, so whichever child module duration_text lands in, parser/mod.rs MUST re-export it (`pub(crate) use ...::duration_text;`) to keep the path `crate::parser::duration_text` resolving byte-identically.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Split parser.rs into a parser/ folder module of real named children, each file <=500 lines",
+        "spec": "THE parser (crates/aion-awl/src/parser.rs, 1585 lines) SHALL be replaced by a folder module crates/aion-awl/src/parser/ whose mod.rs contains ONLY module declarations and re-exports, with every child file at or under 500 lines and named for its responsibility. THE large sub-parsers and the LineParser walk SHALL be split across child modules by concern using multiple impl blocks. include!() textual splicing and mechanically-named files (part_*, chunk_*, body.rs-holding-everything) are FORBIDDEN. The crate root already declares `mod parser;` (lib.rs line 10), which resolves to parser/mod.rs automatically — lib.rs needs NO edit and MUST NOT be edited.",
+        "acceptance": [
+          "crates/aion-awl/src/parser.rs no longer exists; crates/aion-awl/src/parser/mod.rs exists.",
+          "`wc -l crates/aion-awl/src/parser/*.rs` reports every file at or under 500 lines.",
+          "parser/mod.rs contains only module declarations, re-exports, and comments — no logic.",
+          "Every child module name describes its content; no part_*/chunk_*/body.rs; zero include!() anywhere."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/parser/mod.rs"
+          ],
+          "modify": [],
+          "delete": [
+            "crates/aion-awl/src/parser.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Zero behavior change, byte-compatible crate API, tests and fixtures untouched",
+        "spec": "THE split SHALL be behavior-preserving end to end and SHALL keep the crate's public and crate-internal API byte-compatible. The crate-root re-export `pub use parser::{ParseError, parse};` (lib.rs line 22) SHALL resolve unchanged. The crate-internal path `crate::parser::duration_text` SHALL remain valid: parser.rs exposes `pub(crate) fn duration_text` (line 1583) and printer.rs consumes it via `use crate::parser::duration_text;` (printer.rs line 8), so whichever child module holds it, parser/mod.rs SHALL re-export it (`pub(crate) use`) — printer.rs is out of scope and compiles UNMODIFIED. Every existing intra-crate import that resolves against parser today (e.g. printer.rs's duration_text) SHALL keep resolving with its source UNMODIFIED. No AST shape, span, diagnostic text, or accepted/rejected verdict SHALL change for any input; the round-trip property (CN4) SHALL be untouched. Every existing test, fixture, and golden SHALL pass with its source byte-identical to base_ref.",
+        "acceptance": [
+          "`cargo test -p aion-awl` and `cargo test -p aion-cli` pass in full with zero test-source edits.",
+          "`git diff --no-ext-diff <base> -- crates/aion-awl/tests/` is empty; every fixture and golden is byte-identical to base_ref.",
+          "printer.rs compiles UNMODIFIED — `use crate::parser::duration_text;` resolves against parser/mod.rs's re-export.",
+          "The set of items reachable at `aion_awl::*` (ParseError, parse) and at `crate::parser::*` (adds duration_text) is identical to base_ref — nothing renamed, dropped, or newly exposed."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Purge the line-1 allow block by doing the deferred work — zero bypasses in the entire parser/ tree",
+        "spec": "AFTER this brief, the parser/ tree SHALL carry ZERO lint-bypass attributes: no #[allow], no #![allow], no #[expect], no #![expect], no #[ignore], and no include!(). The line-1 block `#![allow(missing_docs, clippy::expect_used, clippy::too_many_lines, clippy::unnecessary_wraps, clippy::unwrap_used)]` SHALL be purged by DOING the work behind each lint, NOT by relocating it into a submodule, into Cargo.toml, or into any private lint policy. Authoring measurement (on base 86cdd26f, `cargo clippy -p aion-awl --all-targets -- -D warnings` with the block deleted) found exactly 32 clippy errors across FIVE lints — the developer SHALL resolve every one, and MUST NOT introduce any new bypass to do so:\n  (a) missing_docs — 3 items: `pub struct ParseError` and its two fields `span` and `message` (parser.rs lines 21, 22, 23). Write REAL, informative doc sentences (what ParseError represents; what `span` locates and what `message` conveys). Placeholder/uninformative docs (`The span.`, `The message.`, restating the field name) are a BLOCKING review finding, not a fix.\n  (b) clippy::unnecessary_wraps — 1 item: `fn parse_maybe_about(&mut self, indent: usize) -> Result<Option<AboutDecl>, ParseError>` (parser.rs line 464). This is a PRIVATE method (its sole caller is parse_document, `let about = self.parse_maybe_about(0)?;`) and it never returns Err — unwrap the needless Result (return `Option<AboutDecl>`, drop the `?` at the call site). Because it is private, this is an in-scope signature change; NO public fn triggers unnecessary_wraps (authoring-verified).\n  (c) clippy::too_many_lines — 1 item: `fn parse_step` (parser.rs line 622), measured at 223/100 lines. This is NOT resolved by the file-module split (parse_step is a single function): the developer SHALL decompose it into cohesive behavior-preserving helpers (e.g. a step-field accumulator with a parse-one-field method, or grouped sub-parsers) until it is at or under the 100-line threshold. Every other function in the file is already under the threshold (authoring-verified — parse_step is the only too_many_lines site).\n  (d) clippy::expect_used (10 sites) + clippy::unwrap_used (17 sites) — 27 sites total, ALL in production paths (parser.rs has NO #[cfg(test)] tests — authoring-verified). They fall into two invariant-guaranteed patterns and SHALL be eliminated by real error propagation or restructuring, NEVER left as unwrap/expect and NEVER papered over with `.unwrap_or`/`.unwrap_or_default`/`.unwrap_or_else` hacks that swallow the None case:\n    - peek-then-bump (`self.bump().expect(\"peeked\")` / `self.peek().unwrap()`): each parse_X method begins by re-consuming a line its caller already peeked. The file ALREADY contains the sanctioned propagation helper `bump_required(&mut self, msg: &str) -> Result<SourceLine, ParseError>` (parser.rs line 935, used by parse_workflow) — extend that pattern (replace `self.bump().expect(\"peeked\")` with `self.bump_required(...)?`, or fold peek+bump into one fallible step so bump's None becomes an ordinary propagated ParseError). No new error TYPE is invented; ParseError is the existing type.\n    - strip_prefix-after-match (`line.code.strip_prefix(\"when\").unwrap()` and siblings): each is guarded by a preceding `first_word(...) == \"when\"` classification, so the prefix is present. Capture the remainder without unwrap — bind it alongside the keyword classification, or propagate a ParseError on the None branch. Do NOT invent an unreachable-but-misleading error message where a small restructuring removes the Option entirely; where propagation is the honest choice, use ParseError.\n THE fix for EVERY lint SHALL be to write docs / restructure / propagate — never to re-add or relocate a bypass. crates/aion-awl/Cargo.toml SHALL stay byte-identical to base_ref (exactly one `[lints]` section, containing only `workspace = true`); weakening lint policy through the manifest was the parent brief's rev-2 fraud pattern and is REJECTED outright. IF a lint fires that authoring did not measure, the fix SHALL still be to restructure the code, never to bypass it; and IF eliminating a lint would force a change to a PUBLIC signature (it will not — the sole unnecessary_wraps is private, verified), the developer SHALL STOP and report a finding instead of making it.",
+        "acceptance": [
+          "grep for bypass attributes (`#!?\\[(allow|expect)`, `#\\[ignore`) and include!() over crates/aion-awl/src/parser returns no matches.",
+          "The line-1 allow block is gone; ParseError and its two fields carry real, informative doc comments (not placeholders).",
+          "parse_maybe_about returns `Option<AboutDecl>` (needless Result removed); parse_step is at or under 100 lines via behavior-preserving helper extraction.",
+          "Zero unwrap()/expect() remain in the parser/ tree; every former site is real ParseError propagation or a restructuring that removes the Option — no `.unwrap_or*` swallow hacks.",
+          "crates/aion-awl/Cargo.toml [lints] section is byte-identical to base_ref (workspace = true, nothing else).",
+          "`cargo clippy --workspace --all-targets -- -D warnings` passes with no bypass attribute present and no lint-policy weakening anywhere."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Mechanically fenced scope: the diff touches ONLY parser paths",
+        "spec": "THE complete diff versus base_ref SHALL touch ONLY crates/aion-awl/src/parser.rs (deleted) and crates/aion-awl/src/parser/ (created). NO other file in the repository — source (lib.rs, printer.rs, ast.rs, the checker/ and lexer/ children, every other crate), test, fixture, manifest, doc — SHALL change. A git-diff exclude gate enforces this mechanically.",
+        "acceptance": [
+          "`git diff --exit-code --no-ext-diff <base> -- . ':(exclude)crates/aion-awl/src/parser.rs' ':(exclude)crates/aion-awl/src/parser'` exits 0 (nothing outside the fence changed)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "REAL NAMED MODULES ONLY: every child file is a genuine `mod` whose name describes its responsibility. include!() textual splicing is FORBIDDEN. Mechanically-named files (part_00.rs, chunk_*.rs, body.rs-holding-everything) are REJECTED regardless of line counts. Dispatch 1 of the parent brief was rejected for include!(\"parts/part_00.rs\") splices behind 2-line mod.rs files.",
+      "PURGE, DON'T RELOCATE: the line-1 allow block is deleted and the work behind each lint is DONE (docs written, unwrap/expect propagated or restructured away, parse_step decomposed, parse_maybe_about's needless Result removed). No new #![allow]/#[allow]/#[expect]/#[ignore] anywhere in parser/, and crates/aion-awl/Cargo.toml stays byte-identical — dispatch 2 of the parent brief was rejected for replacing `[lints] workspace = true` with a private allow-list. Both escape hatches are gated mechanically.",
+      "lib.rs MUST NOT be edited: `mod parser;` (lib.rs line 10) already resolves the folder module; `pub use parser::{ParseError, parse};` (lib.rs line 22) is unchanged. If you believe an edit outside the fence is required, STOP and report it as a finding instead of making it.",
+      "printer.rs MUST NOT be edited: it imports `use crate::parser::duration_text;` (printer.rs line 8). Keep that path resolving by re-exporting duration_text (`pub(crate) use`) from parser/mod.rs — do NOT touch printer.rs. The scope-fence gate fails on any printer.rs edit.",
+      "ZERO behavior change: the split is a pure move; the only logic edits permitted are those strictly required to eliminate the five bypassed lints (doc comments, needless-Result removal on a private fn, parse_step helper extraction, unwrap/expect propagation). No diagnostic-text change, no span change, no AST-shape change, no verdict change. Round-trip property (CN4) untouched.",
+      "Existing tests, fixtures, goldens, and every non-parser file UNMODIFIED — enforced by the R4 scope-fence gate.",
+      "Pre-existing bypass attributes ELSEWHERE in the crate (ast.rs missing_docs, printer.rs missing_docs, the three test files' expect_used/unwrap_used/format_push_string) are OUT OF SCOPE — they belong to sub-briefs 001d/001e. Leave them exactly as they are; the gates here are scoped so they do not fire on them, and the scope fence forbids touching them.",
+      "SHALL NOT touch any crate other than aion-awl, nor anything in aion-awl outside src/parser*."
+    ],
+    "verification": [
+      "no-bypasses-scoped gate: grep over the landed-clean paths (checker, lib.rs, lexer) plus parser/ once it exists returns no allow/expect/ignore/include! matches. (Note: this gate scans only existing paths — it deliberately does NOT include the deleted checker.rs or parser.rs, so it is reliable and GREEN on base.)",
+      "lints-pinned gate: crates/aion-awl/Cargo.toml has exactly one [lints] section, containing workspace = true.",
+      "scope-fence gate: git diff versus the pinned base SHA, excluding crates/aion-awl/src/parser.rs and crates/aion-awl/src/parser, is empty.",
+      "split-complete gate (RED on base — it is the work): parser.rs gone AND parser/mod.rs present AND every parser/*.rs at or under 500 lines AND zero bypass attributes under parser/.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli, all clean. (The full workspace suite is run by the operator at merge review while tasks #243/#244 are open.)",
+      "Hand review: parser/mod.rs is declarations + re-exports only (including the pub(crate) duration_text re-export); child names are honest; the line-1 block is gone with the work genuinely done (docs are real sentences, no unwrap/expect remain, parse_step is decomposed, parse_maybe_about returns Option); `pub use parser::{ParseError, parse};` and `crate::parser::duration_text` both unchanged; printer.rs/lib.rs/ast.rs/checker/lexer untouched."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this sub-brief is the CONTRACT — implement it verbatim. Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = declarations/re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: mechanical gates (no-bypasses-scoped, lints-pinned, scope-fence, split-complete) -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture. This refactor must not perturb it (the scope fence makes perturbing it impossible without failing a gate)."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named plan section and the committed brief and checks the implementation clause by clause against R1-R4, including the docs-quality clause (placeholder docs are a blocking finding)."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs the gates by hand before merge."
+      }
+    ],
+    "intention": "Third stamp of the decomposed pipe-cleaner sequence (001a..e), following the clean landings of 001a (checker split, run a96973cb, merged adb6e4cf) and 001b (lib.rs split + 4-attr purge, run 3d201c36, merged 80426594). The monolithic AWL0-REFAC-001 failed twice — once by fraud (include! splices + crate-wide allow), once by an honest rollback after cascading errors mid-split of four files at once. This sub-brief is sized to the fix-cycle envelope (one 1585-line file), every non-negotiable is a mechanical gate (three GREEN ON BASE, one — split-complete — RED ON BASE because it is the work), and the scope fence (001a's path-exclude form, since parser.rs is deleted and parser/ created) makes wandering impossible. 001c is the heaviest purge of the three: unlike 001b's four VESTIGIAL attributes (deletable with clippy staying green), 001c's line-1 block hides 32 REAL clippy errors — the full measured inventory is embedded in the notes so the developer starts fully informed rather than discovering the fallout themselves.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program — Wave 0 sub-brief 001c, stamped from the 001a/001b templates after both pilots landed)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}
