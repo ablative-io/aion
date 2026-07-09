@@ -255,6 +255,57 @@ impl EngineNifState {
         }
     }
 
+    /// Release every engine seam this state holds, breaking the
+    /// `RuntimeHandle` ↔ `EngineNifState` reference cycle at engine shutdown.
+    ///
+    /// The scheduler installs this state as its NIF private data and the
+    /// [`RuntimeHandle`](crate::RuntimeHandle) owns it through its `nif_state`
+    /// field; in turn the runtime-context, signal, and child seams stored here
+    /// each hold an `Arc<RuntimeHandle>` back, and the timer, context-source,
+    /// and child seams each hold an `Arc<dyn EventStore>` (plus the shared
+    /// `Arc<Registry>`, whose retained terminal handles carry recorder store
+    /// clones). That mutual ownership is a strong cycle: dropping the `Engine`
+    /// alone leaves the runtime, this state, and every store clone they reach
+    /// alive forever, which pins a durable backend's cross-process writer lock
+    /// past shutdown.
+    ///
+    /// Called from [`Engine::shutdown`](crate::Engine::shutdown) AFTER the
+    /// scheduler has stopped and the child-task and timer-wheel epochs have
+    /// closed, so no NIF, watcher, or wheel task can still read a slot. Every
+    /// slot is emptied, releasing the store, runtime, and registry clones held
+    /// through the seams so the runtime and this state drop with the `Engine`.
+    /// Idempotent: a second call finds every slot already empty.
+    pub(crate) fn clear_engine_seams(&self) {
+        match self.runtime_context.write() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.activity_dispatcher.write() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.context_source.write() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.signal_bridge.write() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.child_bridge.write() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.query_bridge.lock() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.timer_bridge.lock() {
+            Ok(mut slot) => *slot = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+    }
+
     fn installed_timer_bridge(&self) -> Option<Arc<TimerNifBridge>> {
         match self.timer_bridge.lock() {
             Ok(slot) => slot.clone(),

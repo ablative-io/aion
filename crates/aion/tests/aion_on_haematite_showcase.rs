@@ -53,6 +53,7 @@
 mod example_build;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use aion::EngineBuilder;
 use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
@@ -206,6 +207,12 @@ async fn aion_workflow_survives_restart_recovered_from_haematite()
     // ----------------------------------------------------------------------
     println!("\n--- ACT 3: simulate a restart (drop engine + store) ---");
     engine.shutdown()?;
+    // The workflow handle and the engine each hold their own Arc to the store;
+    // every one must be dropped or the database stays alive and haematite's A4
+    // writer lock (0.4.1) correctly refuses the reopen as a second concurrent
+    // writer.
+    drop(handle);
+    drop(engine);
     drop(store);
     println!("  engine shut down and the haematite handle dropped.");
     println!("  the ONLY surviving state is on disk at the path above.");
@@ -216,7 +223,30 @@ async fn aion_workflow_survives_restart_recovered_from_haematite()
     // the reopened, on-disk database.
     // ----------------------------------------------------------------------
     println!("\n--- ACT 4: reopen haematite from disk + rebuild the engine ---");
-    let reopened_store: Arc<dyn EventStore> = Arc::new(HaematiteStore::open(&store_path)?);
+    // haematite 0.4.1's A4 writer lock admits ONE live writer per data dir. A
+    // real restart releases it at process death (kernel-released flock); this
+    // in-process simulation instead has to wait for the first engine's
+    // background tasks to finish dropping their store handles after shutdown.
+    // Bounded retry: quiesce is normally milliseconds; ten seconds without
+    // release means teardown leaked a handle and the test MUST fail.
+    let reopened = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match HaematiteStore::open(&store_path) {
+                Ok(reopened) => break reopened,
+                Err(error) if std::time::Instant::now() < deadline => {
+                    let message = error.to_string();
+                    if message.contains("locked by another live writer") {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    };
+    let reopened_store: Arc<dyn EventStore> = Arc::new(reopened);
     println!("  haematite database REOPENED from disk (fresh handle).");
 
     // Prove the bytes are really on disk BEFORE the engine touches them: read

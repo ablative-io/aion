@@ -844,6 +844,15 @@ impl Engine {
         // timer and can record the one durable `TimerFired` first, leaving the
         // survivor's resident sleeper parked forever.
         self.runtime.nif_state().shutdown_timer_wheel();
+        // Break the RuntimeHandle <-> EngineNifState reference cycle (see
+        // EngineNifState::clear_engine_seams). The engine-scoped NIF seams each
+        // hold an Arc back to the runtime and/or clones of the event store and
+        // registry; without releasing them here the runtime, its NIF state, and
+        // every store clone they reach would outlive the dropped Engine
+        // forever, keeping a durable backend's writer lock held past shutdown.
+        // Safe now: the scheduler has stopped and the child-task and timer-wheel
+        // epochs have closed, so no NIF or background task can still read a slot.
+        self.runtime.nif_state().clear_engine_seams();
         Ok(())
     }
 }

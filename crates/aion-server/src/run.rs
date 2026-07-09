@@ -640,6 +640,13 @@ fn build_liminal_row_dispatch(
         routing_rules: Vec::new(),
         persistence_path: None,
         cluster: None,
+        // liminal 0.2.3 (H4) added an optional shared-token Connect gate. `None`
+        // keeps this embedded worker front door open at the liminal layer —
+        // identical to the pre-0.2.3 wire behavior; worker identity/authorization
+        // stays aion's job (x-aion-* registration metadata). Threading an
+        // operator-configured token through aion's outbox config is a separate
+        // feature decision, not part of the dependency alignment.
+        auth: None,
     };
 
     // (1) Reuse the registry already in ServerState: gRPC + liminal workers share

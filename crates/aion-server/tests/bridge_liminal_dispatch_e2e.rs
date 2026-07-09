@@ -151,6 +151,9 @@ impl RunningServer {
             routing_rules: Vec::new(),
             persistence_path: None,
             cluster: None,
+            // Open at the liminal layer (no Connect token), matching the embedded
+            // production listener; aion-level registration metadata is the auth story.
+            auth: None,
             drain_timeout_ms: 30_000,
         };
         // The notifier registers in-band worker registrations into the SAME
