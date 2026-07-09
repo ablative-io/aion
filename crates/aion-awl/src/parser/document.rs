@@ -231,21 +231,28 @@ impl LineParser {
     }
 
     fn parse_maybe_about(&mut self, indent: usize) -> Option<AboutDecl> {
-        if self
-            .peek()
-            .is_some_and(|line| line.indent == indent && first_word(&line.code) == "about")
-        {
-            let line = self.bump()?;
-            let trivia = self.take_trivia(&line);
-            let text = line.code.strip_prefix("about")?.trim_start().to_owned();
-            Some(AboutDecl {
-                span: line.span,
-                trivia,
-                text,
-            })
-        } else {
-            None
+        let line = self.peek()?;
+        if line.indent != indent {
+            return None;
         }
+        // Classification and extraction are a single, inseparable operation:
+        // the line is an `about` declaration only if its code is the bare
+        // keyword `about` or `about` immediately followed by whitespace, and
+        // the declaration text is captured by the very `strip_prefix` that
+        // decides it. A line that only *looks* like `about` under
+        // Unicode-whitespace word splitting — e.g. a leading no-break space
+        // before the keyword — fails byte-level extraction and is left
+        // unconsumed, so the document loop reports it through the normal
+        // unknown-declaration error path rather than the line being silently
+        // bumped and dropped.
+        let text = about_text(&line.code)?.to_owned();
+        let line = self.bump()?;
+        let trivia = self.take_trivia(&line);
+        Some(AboutDecl {
+            span: line.span,
+            trivia,
+            text,
+        })
     }
 
     fn parse_io(&mut self, keyword: &str) -> Result<IoDecl, ParseError> {
@@ -413,4 +420,22 @@ impl LineParser {
 
 pub(super) fn first_word(code: &str) -> &str {
     code.split_whitespace().next().unwrap_or("")
+}
+
+/// Recognise an `about` declaration and return its trimmed text in one step.
+///
+/// Returns `Some(text)` only when `code` begins with the whole keyword
+/// `about` — the bare keyword or `about` followed by whitespace — mirroring
+/// exactly which lines `first_word(code) == "about"` classified while also
+/// performing the byte-level extraction. Returning `None` (rather than
+/// bumping the line and discarding it) keeps classification and extraction
+/// inseparable, so a line that cannot be extracted is never silently
+/// consumed.
+fn about_text(code: &str) -> Option<&str> {
+    let rest = code.strip_prefix("about")?;
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest.trim_start())
+    } else {
+        None
+    }
 }
