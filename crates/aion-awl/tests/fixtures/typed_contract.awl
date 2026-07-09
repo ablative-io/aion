@@ -1,0 +1,25 @@
+workflow typed_contract
+about Exercise described JSON-shaped type declarations.
+
+input id: String
+output Brief
+
+type Tag { value: String }
+/// A development brief emitted as a model output contract.
+type Brief {
+  /// Stable identifier, for example AWL1-001.
+  id: String
+  /// One-line human title.
+  title: String
+  pointers: List(String)
+  acceptance: List(String)
+  optional_note: Option(String)
+}
+
+action build(id: String) -> Brief
+
+step build
+  do build(id)
+  as brief
+
+finish brief

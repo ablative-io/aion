@@ -66,6 +66,58 @@ fn bounded_cycle_normalizes_to_golden_and_is_idempotent() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn typed_contract_normalizes_to_golden_and_is_idempotent() -> Result<(), Box<dyn Error>> {
+    let source = include_str!("fixtures/typed_contract.awl");
+    let canonical = include_str!("fixtures/typed_contract.canonical.awl");
+    assert_eq!(print(&parse(source)?), canonical);
+    assert_eq!(print(&parse(canonical)?), canonical);
+    assert_idempotent(source)
+}
+
+#[test]
+fn described_type_fields_are_load_bearing_data() -> Result<(), Box<dyn Error>> {
+    let document = parse(include_str!("fixtures/typed_contract.awl"))?;
+    let brief = document
+        .types
+        .iter()
+        .find(|ty| ty.name == "Brief")
+        .ok_or("Brief type")?;
+    assert_eq!(
+        brief.description.as_deref(),
+        Some("A development brief emitted as a model output contract.")
+    );
+    assert_eq!(
+        brief.fields[0].description.as_deref(),
+        Some("Stable identifier, for example AWL1-001.")
+    );
+    assert_eq!(brief.fields[2].description, None);
+    Ok(())
+}
+
+#[test]
+fn type_printer_uses_the_inclusive_100_column_boundary() -> Result<(), Box<dyn Error>> {
+    let at_limit = "a".repeat(81);
+    let over_limit = "a".repeat(82);
+    let source_at_limit = format!(
+        "workflow w\noutput String\n\ntype T {{ {at_limit}: String }}\n\nfinish \"done\"\n"
+    );
+    let source_over_limit = format!(
+        "workflow w\noutput String\n\ntype T {{ {over_limit}: String }}\n\nfinish \"done\"\n"
+    );
+    let printed_at_limit = print(&parse(&source_at_limit)?);
+    let type_line = printed_at_limit
+        .lines()
+        .find(|line| line.starts_with("type T"))
+        .ok_or("type line")?;
+    assert_eq!(type_line.chars().count(), 100);
+    assert!(type_line.ends_with(" }"));
+    let printed_over_limit = print(&parse(&source_over_limit)?);
+    assert!(printed_over_limit.contains("type T {\n  "));
+    assert!(printed_over_limit.contains(": String,\n}"));
+    Ok(())
+}
+
+#[test]
 fn differently_formatted_same_document_print_identically() -> Result<(), Box<dyn Error>> {
     let fixture = include_str!("fixtures/research_report.awl");
     let variant = fixture

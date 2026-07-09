@@ -4,6 +4,13 @@ use crate::{LexError, Span, Token, lex};
 use super::ParseError;
 
 #[derive(Debug, Clone)]
+pub(super) struct DescriptionLine {
+    pub(super) indent: usize,
+    pub(super) text: String,
+    pub(super) span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct SourceLine {
     pub(super) indent: usize,
     pub(super) code: String,
@@ -36,6 +43,7 @@ impl SourceLine {
 pub(super) struct SourceLines {
     pub(super) lines: Vec<SourceLine>,
     pub(super) comments: Vec<Comment>,
+    pub(super) descriptions: Vec<DescriptionLine>,
 }
 
 impl SourceLines {
@@ -44,6 +52,7 @@ impl SourceLines {
         let mut line_no = 1;
         let mut lines = Vec::new();
         let mut comments = Vec::new();
+        let mut descriptions = Vec::new();
         for raw in source.split_inclusive('\n') {
             let had_newline = raw.ends_with('\n');
             let mut text = if had_newline {
@@ -57,6 +66,21 @@ impl SourceLines {
             let indent = count_indent(text, offset, line_no)?;
             let rest = &text[indent..];
             if rest.trim().is_empty() {
+                offset += raw.len();
+                if had_newline {
+                    line_no += 1;
+                }
+                continue;
+            }
+            if let Some(description_at) = rest.trim_start().strip_prefix("///") {
+                let skipped = rest.len() - rest.trim_start().len();
+                let start_col = indent + skipped + 1;
+                let start = offset + indent + skipped;
+                descriptions.push(DescriptionLine {
+                    indent,
+                    text: trim_comment(description_at).to_owned(),
+                    span: span(start, offset + text.len(), line_no, start_col),
+                });
                 offset += raw.len();
                 if had_newline {
                     line_no += 1;
@@ -97,7 +121,11 @@ impl SourceLines {
                 line_no += 1;
             }
         }
-        Ok(Self { lines, comments })
+        Ok(Self {
+            lines,
+            comments,
+            descriptions,
+        })
     }
 }
 

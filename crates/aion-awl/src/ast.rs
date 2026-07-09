@@ -89,6 +89,8 @@ pub struct TypeDecl {
     pub span: Span,
     /// Comments attached to the `type` declaration.
     pub trivia: Trivia,
+    /// Load-bearing prose from contiguous `///` lines above the declaration.
+    pub description: Option<String>,
     /// Type name introduced by the declaration.
     pub name: String,
     /// Field declarations listed inside the record body.
@@ -99,6 +101,8 @@ pub struct TypeDecl {
 pub struct FieldDecl {
     /// Source span of the declaration line that contains this field.
     pub span: Span,
+    /// Load-bearing prose from contiguous `///` lines above a record field.
+    pub description: Option<String>,
     /// Field or parameter name introduced by the declaration.
     pub name: String,
     /// Type reference assigned to the field or parameter.

@@ -9,6 +9,7 @@ mod emitter;
 mod lexer;
 mod parser;
 mod printer;
+mod schema;
 
 pub use ast::{
     AboutDecl, ActionDecl, ActionFieldTag, BinaryOp, BindDecl, CallExpr, CallTarget, Comment,
@@ -21,3 +22,4 @@ pub use emitter::{EmitError, emit};
 pub use lexer::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 pub use parser::{ParseError, parse};
 pub use printer::print;
+pub use schema::{SchemaError, schema_for_type};

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A development brief emitted as a model output contract.",
+  "properties": {
+    "acceptance": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "id": {
+      "description": "Stable identifier, for example AWL1-001.",
+      "type": "string"
+    },
+    "optional_note": {
+      "type": "string"
+    },
+    "pointers": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "title": {
+      "description": "One-line human title.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "pointers",
+    "acceptance"
+  ],
+  "type": "object"
+}
