@@ -1,0 +1,218 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/beamr",
+  "clone_url": "https://github.com/ablative-io/beamr.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "BC-1",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "BC-1",
+    "cluster": "awl",
+    "title": "beamr `encode` module: the .beam writer mirroring loader/decode, plus the folded-spike capstone",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-BC-DESIGN-DRAFT.md#3-the-beam-writer-lives-in-beamr-encode",
+      "AWL-BC-DESIGN-DRAFT.md#6-phases-oracles-ownership"
+    ],
+    "purpose": "AWL-BC §3 puts the .beam writer in beamr, next to the reader, as an `encode` module (feature-gated). beamr already defines the entire BEAM container format decode-side — loader/parser.rs (IFF container), loader/decode/chunks.rs (AtU8/Code/ImpT/ExpT/LocT/LitT/FunT), loader/decode/compact.rs (compact term operand encoding), loader/decode/opcode.rs (the supported opcode set with arities), loader/decode/instruction.rs (typed Instruction), loader/decode/etf.rs (external term format for literals), and loader/validate.rs (load-time validation). The writer is the mirror image and shares those types, so no format knowledge is duplicated and round-trip property tests come essentially for free: encode(decode(x)) == x over every .beam in the existing corpus, and decode(encode(ir)) == ir for generated ones. The capstone acceptance criterion (the folded spike, ruled by Tom 2026-07-09) is mandatory: encode one minimal hand-built workflow module; beamr loads and validates it; it calls the aion_flow SDK and completes a run end-to-end with an event trail matching its Gleam-built twin. BC-2/BC-3 do not start until this capstone is green — the mechanical core (the round-trip writer) is needed under any design outcome, so nothing is wasted if the capstone surprises us (validator rejection, ABI mismatch, missing opcode), in which case the AWL-BC doc is amended before BC-2/BC-3 move.",
+    "task": "Add a .beam writer to beamr as an `encode` cargo feature (default-off; aion enables it), mirroring loader/decode and reusing its chunk/operand/instruction/ETF types so no format knowledge is duplicated. Implement: the IFF container writer (mirror of loader/parser.rs), the chunk writers for AtU8/Code/ImpT/ExpT/LocT/LitT/FunT (mirror of chunks.rs and the Code-chunk decoder code.rs), the compact operand encoder (mirror of compact.rs), the opcode+instruction encoder (mirror of opcode.rs + instruction.rs), and the ETF literal encoder (mirror of etf.rs). Emit ONLY within beamr's supported opcode subset (loader/decode/opcode.rs). Prove it with round-trip property tests over the existing .beam corpus and per-shape decode(encode(ir))==ir unit tests, and gate emitted modules through loader/validate.rs. Then deliver the folded-spike capstone: hand-build one minimal workflow module's IR, encode it, load+validate it in beamr, call the aion_flow SDK, complete a run e2e, and assert its durable event trail matches the Gleam-built twin (run-id normalized). The compiled aion_flow SDK artifacts and the Gleam-built twin needed by the capstone are produced from the local aion checkout and committed into beamr's test corpus as a pinned, provenance-recorded snapshot (resolution in R6).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "`encode` cargo feature, default-off",
+        "spec": "beamr SHALL gain an `encode` cargo feature that is OFF by default; the encode module SHALL compile only under that feature and aion SHALL enable it. The default beamr build SHALL be byte-for-byte behavior-unchanged (the encoder is not compiled).",
+        "acceptance": [
+          "`cargo build -p beamr` (no features) does NOT compile the encode module.",
+          "`cargo build -p beamr --features encode` compiles the encode module.",
+          "beamr/crates/beamr/Cargo.toml declares `encode` under [features] and gates the module with `#[cfg(feature = \"encode\")]`.",
+          "`cargo test --workspace` with default features passes unchanged; `cargo test --workspace --features encode` exercises the encoder."
+        ],
+        "files": {
+          "create": [
+            "crates/beamr/src/encode/mod.rs"
+          ],
+          "modify": [
+            "crates/beamr/Cargo.toml",
+            "crates/beamr/src/lib.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Writer mirroring loader/decode, reusing the decode-side types",
+        "spec": "THE encoder SHALL mirror loader/decode and REUSE its existing chunk/operand/instruction/ETF types (no duplicated format knowledge). It SHALL implement: the IFF container writer (mirror of loader/parser.rs); chunk writers for AtU8, Code, ImpT, ExpT, LocT, LitT, and FunT (mirror of loader/decode/chunks.rs and the Code-chunk decoder in loader/decode/code.rs); the compact operand encoder (mirror of loader/decode/compact.rs); the opcode+instruction encoder (mirror of loader/decode/opcode.rs and instruction.rs); and the ETF literal encoder (mirror of loader/decode/etf.rs).",
+        "acceptance": [
+          "The encode module contains a container writer and chunk writers for AtU8/Code/ImpT/ExpT/LocT/LitT/FunT, a compact operand encoder, an opcode+instruction encoder, and an ETF literal encoder.",
+          "The encoder consumes the SAME Rust types the decoder produces (Instruction, chunk structs, compact operands, ETF terms) — grep confirms the encode module imports the decode-side types rather than redefining them.",
+          "No encode file exceeds 500 lines of code; mod.rs is declarations + re-exports only.",
+          "`cargo test -p beamr --features encode` compiles and runs the encoder unit tests."
+        ],
+        "files": {
+          "create": [
+            "crates/beamr/src/encode/chunks.rs",
+            "crates/beamr/src/encode/compact.rs",
+            "crates/beamr/src/encode/instruction.rs",
+            "crates/beamr/src/encode/etf.rs",
+            "crates/beamr/src/encode/container.rs"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Round-trip property test over the existing .beam corpus: encode(decode(x)) == x",
+        "spec": "THE encoder SHALL satisfy encode(decode(x)) == x over EVERY .beam module in the existing corpus (the beamr test-workflows corpus plus the provisioned aion_flow ebin snapshot from R6). The comparison SHALL be byte-identical for chunks beamr models exactly, or structurally identical after a documented canonical normalization where a chunk's on-disk form is not uniquely determined; any such normalization SHALL be named and justified in the brief result.",
+        "acceptance": [
+          "A property/loop test decodes every .beam in the corpus, re-encodes it, and asserts equality (byte-identical, or structurally identical under a named normalization).",
+          "The corpus enumerated by the test includes the beamr test-workflows .beam files and the provisioned aion_flow ebin snapshot.",
+          "Any chunk requiring canonical normalization for round-trip is documented with the reason in the brief result.",
+          "`cargo test -p beamr --features encode` runs the round-trip test and it passes over the whole corpus."
+        ],
+        "files": {
+          "create": [
+            "crates/beamr/tests/encode_roundtrip.rs"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Per-shape decode(encode(ir)) == ir unit tests",
+        "spec": "FOR generated instruction sequences and literals, decode(encode(ir)) == ir SHALL hold per shape: a unit test per chunk kind and per instruction/operand/ETF-term shape encodes a hand-built IR value, decodes it back, and asserts equality.",
+        "acceptance": [
+          "Unit tests cover each chunk writer (AtU8/Code/ImpT/ExpT/LocT/LitT/FunT), representative instruction shapes, compact operand kinds, and ETF term kinds.",
+          "Each test asserts decode(encode(ir)) == ir for its shape.",
+          "`cargo test -p beamr --features encode` runs and passes these tests."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/beamr/src/encode/chunks.rs",
+            "crates/beamr/src/encode/compact.rs",
+            "crates/beamr/src/encode/instruction.rs",
+            "crates/beamr/src/encode/etf.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R5",
+        "title": "validate.rs is the first-line oracle: emitted modules load and validate",
+        "spec": "EVERY module the encoder emits SHALL load and validate through the SAME loader/validate.rs path that erlc output passes. THE encoder SHALL emit ONLY within beamr's supported opcode subset (loader/decode/opcode.rs); an attempt to encode an unsupported opcode SHALL be a loud, typed error, never a silently-emitted bad module.",
+        "acceptance": [
+          "A test loads and validates an encoder-produced module through loader/validate.rs and asserts acceptance.",
+          "A test asserts that encoding an opcode outside the supported set returns a typed error (no panic, no silent bad output).",
+          "The supported-opcode-subset constraint is enforced in code, not just documented."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/beamr/src/encode/instruction.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R6",
+        "title": "Capstone (folded spike, mandatory): hand-built module runs e2e with a trail matching its Gleam-built twin",
+        "spec": "THE capstone SHALL: hand-build the IR of one minimal workflow module; encode it via the encoder; load AND validate it in beamr; have it call the aion_flow SDK and complete a run END-TO-END; and assert its durable event trail matches the Gleam-built twin of the same workflow (run-id normalized). BC-2/BC-3 SHALL NOT start until this capstone is green. If the capstone surprises us (validator rejection, ABI mismatch, missing opcode), the AWL-BC design doc SHALL be amended before BC-2/BC-3 proceed. ARTIFACT PROVISIONING (RESOLVED 2026-07-09): placement is local, so the aion checkout at /Users/tom/Developer/ablative/aion is available read-only. Author the capstone twin's Gleam source INSIDE beamr's test corpus (e.g. crates/beamr/tests/fixtures/capstone/), build it there with the local gleam toolchain against the aion_flow package pulled by path from the aion checkout, and copy the resulting twin .beam plus the aion_flow ebin .beam files (aion/gleam/aion_flow/build/prod/erlang/aion_flow/ebin) into the fixtures tree as a COMMITTED pinned snapshot, with a PROVENANCE.md alongside recording the source aion commit hash and the exact build+copy commands so the snapshot is reproducible. No floating symlink or path-dependency into the aion checkout may survive in committed test code — tests consume only the committed snapshot.",
+        "acceptance": [
+          "A minimal workflow module's IR is hand-built in the test, encoded, and the resulting bytes load AND validate in beamr via loader/validate.rs.",
+          "The encoded module calls aion_flow and completes a run end-to-end under a real engine.",
+          "The run's durable event trail is asserted equal (run-id normalized) to the Gleam-built twin's trail.",
+          "The pinned aion_flow ebin snapshot and the Gleam-built twin used by the capstone are committed into beamr's test corpus with the source aion commit recorded in a note.",
+          "If the capstone surprises (validator/ABI/opcode), the surprise and the required AWL-BC doc amendment are reported in the brief result and BC-2/BC-3 are flagged blocked.",
+          "`cargo test -p beamr --features encode` runs the capstone e2e test and it passes."
+        ],
+        "files": {
+          "create": [
+            "crates/beamr/tests/encode_capstone.rs"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "Feature default-off: the DEFAULT beamr build MUST NOT pull in the encode module; existing beamr behavior is byte-for-byte unchanged without `--features encode`.",
+      "NO decode-side rewrite: the encoder MIRRORS the decoder and REUSES its types; do not rewrite, restructure, or change loader/decode or loader/validate beyond what sharing a type genuinely requires.",
+      "Supported-opcode-subset constraint: emit ONLY within beamr's supported opcode set. Do NOT add opcodes to beamr to satisfy the capstone; if a needed opcode is genuinely missing, that is a capstone SURPRISE — report it and amend the AWL-BC doc before proceeding, per §6, rather than silently widening the set.",
+      "NO aion-awl / MIR / lower / select work: BC-1 is the writer plus the hand-built capstone ONLY. The CheckedDocument->MIR lowering (BC-2) and MIR->Instruction selection (BC-3) are out of scope and gated behind this capstone.",
+      "The capstone module is HAND-BUILT IR, not emitted from AWL — no AWL lowering pipeline is built here.",
+      "SHALL NOT vendor unpinned or unrecorded artifacts: the aion_flow ebin snapshot and Gleam-built twin MUST be pinned with their source aion commit recorded; no floating copy.",
+      "CLAUDE.md standards apply: unsafe_code denied, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = re-exports only, thiserror for the encoder's error type."
+    ],
+    "verification": [
+      "Gate argv (beamr variant), run EXACTLY in order: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test --workspace. Additionally run cargo test --workspace --features encode. All clean, zero failures.",
+      "`cargo build -p beamr` (default) does not compile encode; `cargo build -p beamr --features encode` does; default `cargo test --workspace` is unchanged.",
+      "Round-trip: encode(decode(x)) == x holds over the entire corpus (beamr test-workflows + the pinned aion_flow ebin snapshot), byte-identical or under a named, justified normalization.",
+      "Per-shape decode(encode(ir)) == ir unit tests pass for every chunk/instruction/operand/ETF-term shape.",
+      "validate.rs oracle: encoder output loads and validates through loader/validate.rs; encoding an unsupported opcode returns a typed error, never a silent bad module.",
+      "Capstone: the hand-built module encodes, loads, validates, calls aion_flow, completes a run e2e, and its durable event trail equals the Gleam-built twin's (run-id normalized); the pinned artifacts and their source aion commit are recorded.",
+      "Spec-fidelity: AWL-BC §3 (writer mirrors decode, feature-gated, round-trip + validate oracles) and §6 (the capstone acceptance row) are each demonstrably satisfied; any capstone surprise is reported with the required doc amendment."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; AWL-BC §3 ('The .beam writer lives in beamr (encode)') and §6 (the phase table with the capstone acceptance criterion) are the CONTRACT — implement them verbatim. Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): unsafe_code denied, no #[allow]/#[expect]/#[ignore] bypasses, thiserror for the encoder error type, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = pub mod / pub use re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv (beamr variant), run EXACTLY in order before reporting: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test --workspace. Additionally run cargo test --workspace --features encode to exercise the encoder."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred (beamr variant): encode(decode(x)) == x over every .beam in the corpus, and decode(encode(ir)) == ir for generated modules — byte-identical, or structurally identical under a named and justified canonical normalization."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads AWL-BC §3 and §6 and checks the writer and the capstone against them clause by clause. Fable reviews the encode API design and the capstone artifact specifically."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — Fable/Tom re-run the gates by hand before merge. BC-1 is a beamr-repo brief independent of the aion front-end briefs, so it may pair 2-wide with one aion-awl front-end brief."
+      }
+    ],
+    "intention": "BC-1 delivers the mechanical core of direct bytecode emission — a .beam writer that mirrors beamr's existing decoder and therefore inherits its format knowledge and round-trips for free — and proves the whole approach with the folded-spike capstone: a hand-built module that encodes, loads, validates, calls the aion_flow SDK, and runs to completion with a durable event trail identical to its Gleam-built twin. It is independent of the aion front-end briefs (it lives in the beamr repo) and can run 2-wide alongside one of them. The capstone is deliberately mandatory and falsification-shaped: if beamr's validator, the Gleam ABI, or the opcode subset surprises us, we amend the AWL-BC design before BC-2/BC-3, and because the round-trip writer is needed under any outcome, nothing is wasted. The capstone's cross-repo artifact dependency is resolved in R6: the twin is authored and built inside beamr's test corpus against the local aion checkout's aion_flow package, and the twin + aion_flow ebin .beam files are committed as a pinned snapshot with a PROVENANCE.md recording the source aion commit and reproduction commands.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program kickoff)",
+      "quote": "encode one minimal hand-built workflow module; beamr loads + validates it; it calls aion_flow and completes a run e2e with an event trail matching its Gleam-built twin"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}

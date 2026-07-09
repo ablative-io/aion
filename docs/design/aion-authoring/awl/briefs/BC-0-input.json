@@ -1,0 +1,204 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "BC-0",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "BC-0",
+    "cluster": "awl",
+    "title": "AWL-BC-0: hoist workflow-independent helpers into the aion_flow SDK so emitted Gleam shrinks to pure glue",
+    "depends_on": [
+      "AWL0-REFAC-001"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-BC-DESIGN-DRAFT.md#2-the-keystone-shrink-the-emitted-surface-first-awl-bc-0"
+    ],
+    "purpose": "AWL-BC §2 is the keystone for direct bytecode emission: today the Gleam emitter generates substantial WORKFLOW-INDEPENDENT helper code per module — JSON value codecs, the map_activity_error / map_timer_error / map_receive_error / map_child_error adapters, the retry loop (case + workflow.sleep backoff), and decoder plumbing. Textual codegen makes that cheap; bytecode codegen (BC-2/BC-3) makes it expensive and pointless. BC-0 hoists every workflow-independent helper into the aion_flow SDK as generic functions, so an emitted module — in either backend — is pure glue: module-level literals, external calls into aion_flow, closures wrapping step bodies, and Result pattern matches routing to handler blocks. This lands as a pure win for the existing Gleam path (smaller generated modules, one canonical retry/codec implementation) and is gated entirely by the existing differential fixtures. It needs no bytecode knowledge and shrinks instruction selection from 'reimplement a chunk of a Gleam code generator' to roughly ten node shapes.",
+    "task": "Refactor the aion_flow Gleam SDK and the aion-awl Gleam emitter so that all workflow-independent helper code moves out of per-module generated output and into aion_flow as generic functions, with emission still producing identical durable event trails. Concretely: (1) hoist the JSON value codecs; (2) hoist the map_activity_error / map_timer_error / map_receive_error / map_child_error adapters; (3) hoist the retry/backoff loop (case + workflow.sleep); (4) hoist the decoder plumbing. After each hoist, the emitter references the SDK function instead of generating the helper inline, and the emitter goldens are regenerated to show the shrunk output. The existing differential fixtures — every AWL fixture compiled through the Gleam path and run — must stay green (identical durable event trails). The change is additive to the aion_flow public surface so hand-written Gleam workflows (a first-class, fully supported authoring option) keep compiling. This brief touches the Gleam SDK (aion/gleam/aion_flow) and the emitter goldens; it does NOT touch the aion-awl parser, checker, or AST, and does NO bytecode work.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Hoist the JSON value codecs into aion_flow as generic functions",
+        "spec": "THE JSON value codecs currently generated per module by the emitter SHALL be moved into the aion_flow SDK as generic functions, and the emitter SHALL reference the SDK codecs instead of generating them inline. Emitted modules SHALL NOT define their own copies of these codecs.",
+        "acceptance": [
+          "The hoisted codec functions exist in aion_flow Gleam source and are exported for use by emitted and hand-written modules.",
+          "grep of the regenerated emitter *.gleam.golden fixtures shows the per-module codec definitions are gone and replaced by calls into aion_flow.",
+          "The differential fixture suite is green after the hoist.",
+          "`gleam test` in aion/gleam/aion_flow passes for the new SDK functions."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Hoist the map_*_error adapters into aion_flow",
+        "spec": "THE map_activity_error, map_timer_error, map_receive_error, and map_child_error adapters SHALL be moved into aion_flow as generic functions; the emitter SHALL call them from the SDK rather than generating them per module.",
+        "acceptance": [
+          "aion_flow exports map_activity_error, map_timer_error, map_receive_error, and map_child_error.",
+          "The regenerated emitter goldens reference aion_flow's adapters and contain no inline map_*_error definitions.",
+          "The differential fixture suite is green.",
+          "`gleam test` in aion/gleam/aion_flow covers the adapters."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Hoist the retry/backoff loop into aion_flow",
+        "spec": "THE retry loop currently generated inline (a case expression plus workflow.sleep backoff) SHALL be moved into aion_flow as a generic retry helper parameterised by the per-step policy (attempts, interval/backoff), and the emitter SHALL call it. The retry SEMANTICS (attempt count, interval, backoff schedule, failure mapping) SHALL be identical to the pre-hoist generated code.",
+        "acceptance": [
+          "aion_flow exposes a generic retry helper; the emitter emits a call plus a step-body closure instead of an inline retry loop.",
+          "The regenerated emitter goldens contain no inline case+sleep retry loop.",
+          "A fixture exercising retry produces an identical durable event trail (retry attempts and backoff timers) before and after the hoist.",
+          "The differential fixture suite is green."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Hoist the decoder plumbing into aion_flow",
+        "spec": "THE decoder plumbing currently generated per module SHALL be moved into aion_flow as generic functions and referenced from there by the emitter. (NOTE: the exact set of decoder helpers to hoist must be confirmed against the current emitter output; see the reported ambiguity in the brief README — hoist the workflow-independent decoder helpers and leave any genuinely per-type decoder shape in the glue.)",
+        "acceptance": [
+          "The workflow-independent decoder helpers live in aion_flow and are referenced by emitted modules.",
+          "The regenerated emitter goldens show the decoder plumbing removed from per-module output.",
+          "The differential fixture suite is green.",
+          "Any decoder shape that is genuinely per-type (not workflow-independent) is documented in the brief result as intentionally left in the glue."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "gleam/aion_flow/src"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R5",
+        "title": "Regenerate emitter goldens; the generated-Gleam diff shrinks",
+        "spec": "THE emitter *.gleam.golden fixtures SHALL be regenerated to reflect the shrunk output, and the net change across the goldens SHALL be a REDUCTION in generated lines (the emitted module becomes pure glue: module-level literals, external calls into aion_flow, step-body closures, and Result pattern matches). No emitted module SHALL still define a hoisted helper inline.",
+        "acceptance": [
+          "`git diff --stat` on the emitter *.gleam.golden fixtures is net-negative in line count.",
+          "grep across the regenerated goldens finds no inline JSON codec, map_*_error, retry loop, or hoisted decoder definitions.",
+          "The regenerated goldens are the deterministic output of the emitter (regenerating twice yields identical bytes)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/tests/fixtures"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R6",
+        "title": "Differential fixtures stay green: identical durable event trails (the oracle)",
+        "spec": "EVERY existing differential fixture SHALL stay green: an AWL fixture compiled through the Gleam path and run SHALL produce a durable event trail identical to its pre-hoist trail. The differential suite is the gate for this brief.",
+        "acceptance": [
+          "The full differential fixture suite passes with zero divergences after all hoists.",
+          "A representative fixture's durable event trail is demonstrably byte-identical (after run-id normalization) before and after the change.",
+          "`cargo test --workspace` passes, including the emitter/differential tests."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "Behavior-preserving: emitted workflows MUST produce byte-identical durable event trails (after run-id normalization). NO semantic change to any workflow, retry schedule, error mapping, or codec result.",
+      "SHALL NOT touch the AWL front end: no edits to crates/aion-awl parser, checker, or AST. This brief is the Gleam SDK plus the emitter's helper-generation and its goldens only.",
+      "NO bytecode work: BC-0 needs no beamr, no MIR, no instruction selection — those are BC-1..BC-3.",
+      "Hoisted helpers MUST be genuinely workflow-independent (generic) — no per-workflow specialization may leak into the aion_flow SDK; anything genuinely per-type stays in the emitted glue.",
+      "Changes to aion_flow MUST be ADDITIVE to its public surface: hand-writing workflows in Gleam against aion_flow is a first-class, permanently supported authoring option and MUST keep compiling. No breaking change to an existing exported function's signature.",
+      "SHALL NOT regenerate goldens by hand: goldens are the deterministic output of the emitter; regenerating twice must yield identical bytes.",
+      "SHALL keep the CLAUDE.md standards for any Rust touched (files <=500 lines, no unwrap/expect/panic in library code)."
+    ],
+    "verification": [
+      "Gate argv, run EXACTLY in order: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace. All clean, zero failures.",
+      "`gleam test` in aion/gleam/aion_flow passes for the hoisted SDK functions.",
+      "The differential fixture suite passes with zero divergences (identical durable event trails, run-id normalized).",
+      "`git diff --stat` on the emitter *.gleam.golden fixtures is net-negative; no inline hoisted helper remains in any golden.",
+      "aion_flow's public surface changes are additive only (a hand-written Gleam workflow against the prior SDK still compiles).",
+      "Spec-fidelity: AWL-BC §2's four helper families (JSON codecs, map_*_error adapters, retry loop, decoder plumbing) are each demonstrably hoisted, leaving emitted modules as pure glue."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; AWL-BC §2 ('The keystone: shrink the emitted surface first (AWL-BC-0)') is the CONTRACT — implement it verbatim. Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = pub mod / pub use re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace. Additionally run `gleam test` in aion/gleam/aion_flow."
+      },
+      {
+        "id": "CN4",
+        "text": "The differential trails are sacred: every AWL fixture compiled through the Gleam path must produce a durable event trail identical (run-id normalized) to its pre-change trail. The Gleam path is the oracle and is never weakened."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads AWL-BC §2 and checks the four hoisted helper families clause by clause."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders (every AWL brief): stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; the package name is aion-rs; NEVER trust the workflow's own green — Fable/Tom re-run the gates by hand before merge. BC-0 is NOT a front-end brief, so it may pair 2-wide with one aion-awl front-end brief."
+      }
+    ],
+    "intention": "BC-0 is the keystone that makes direct bytecode emission tractable: by hoisting the workflow-independent helpers into aion_flow, it collapses the instruction-selection surface from 'reimplement a slice of a Gleam code generator' to roughly ten node shapes, and it lands as an immediate, independent win for the existing Gleam path (smaller modules, one canonical retry/codec implementation). It depends on AWL0-REFAC-001 only for golden stability — it touches the Gleam SDK and the emitter goldens, not aion-awl internals, but the refactor must land first so the emitter goldens it regenerates are stable. The existing differential fixtures are the whole safety net: this is a pure-win refactor whose entire job is to change generated shape while holding durable behavior exactly constant.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program kickoff)",
+      "quote": "an emitted module — in either backend — is pure glue"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}

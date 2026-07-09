@@ -1,0 +1,111 @@
+// rev level: AWL-0 (rev-0). Every construct here is implemented in aion-awl
+// today; this file passes `aion awl check` as committed.
+// 
+// This re-expresses examples/dev-brief's pipeline in AWL. One divergence from
+// the Gleam original is forced by a rev-0 limitation, not by choice: the real
+// pipeline runs each fix round and each review lens as CHILD workflows and
+// adjudicates their results, but rev-0 child results are opaque (they cannot be
+// field-accessed, passed to a typed parameter, or returned). So the round and
+// the lens here are typed ACTIONS, which keeps the document checkable end to
+// end. See examples/README.md ("Gaps discovered while authoring") for the full
+// account, including the two committed fixtures that fail the checker for this
+// exact reason.
+workflow dev_brief
+about A development brief goes in; an adversarially reviewed branch comes out. Provision an isolated worktree, drive a bounded developer/gate fix cycle until the mechanical gates are green, fan out one adversarial review lens per configured charter, and rework once more if the review rejected the round. Nothing is pushed: the handoff is the branch plus this run's evidence, and the operator merges.
+
+input brief: Brief
+input config: RunConfig
+output BriefResult
+error Failure
+
+type Lens { name: String, charter: String }
+type GateCommand { name: String, argv: List(String) }
+type Brief { id: String, title: String, objective: String, context: String, pointers: List(String), scope_in: List(String), scope_out: List(String), acceptance: List(String), notes: String }
+type RunConfig { repo_root: String, base_branch: String, max_fix_cycles: Int, gates: List(GateCommand), lenses: List(Lens) }
+type Workspace { path: String, branch: String, base_commit: String }
+type DevReport { brief_id: String, summary: String }
+type GateOutcome { pass: Bool, diff: String, diagnostics: String }
+type Round { report: DevReport, gate: GateOutcome, gates_green: Bool, cycles: Int }
+type LensVerdict { lens: String, overall: String, reject_reason: String, blocking: Bool }
+type Review { accepted: Bool, mismatches: List(String) }
+type Cleanup { removed: Bool, detail: String }
+type BriefResult { brief_id: String, disposition: String, fix_cycles: Int, first_pass_accepted: Bool, branch: String, workspace_removed: Bool, summary: String }
+type Failure { reason: String }
+
+action provision_workspace(repo_root: String, base_branch: String, brief: Brief) -> Workspace
+  queue "dev_brief"
+  node "shell"
+  timeout 5m
+  retry 2 every 30s
+action seed_round(brief: Brief) -> Round
+action fix_round(brief: Brief, config: RunConfig, workspace: Workspace, prior: Round) -> Round
+  queue "dev_brief"
+  node "developer"
+  timeout 30m
+action review_lens(lens: Lens, brief: Brief, round: Round) -> LensVerdict
+  queue "dev_brief"
+  node "reviewer"
+  timeout 20m
+  retry 2 every 30s
+action adjudicate(verdicts: List(LensVerdict)) -> Review
+action rework(brief: Brief, config: RunConfig, workspace: Workspace, prior: Round, review: Review) -> Round
+  queue "dev_brief"
+  node "developer"
+  timeout 30m
+action cleanup_workspace(repo_root: String, workspace: Workspace) -> Cleanup
+  queue "dev_brief"
+  node "shell"
+action force_teardown(repo_root: String, workspace: Workspace) -> Cleanup
+  queue "dev_brief"
+  node "shell"
+action summarize(brief: Brief, round: Round, review: Review, cleanup: Cleanup) -> BriefResult
+
+step provision
+  about Create the brief's isolated git worktree on a fresh dev branch off the configured base.
+  do provision_workspace(config.repo_root, config.base_branch, brief)
+  as workspace
+
+step seed
+  about Seed the threaded round state — no work done yet, gates not green, zero cycles spent.
+  do seed_round(brief)
+  as round
+
+step fix_cycle
+  about Bounded fix cycle: each round is a developer turn followed by the brief's mechanical gate battery, exit-status-is-data. Loop back to the developer while the gates are red, up to the configured cap; cap exhaustion is a recorded disposition, never a silent success.
+  do fix_round(brief, config, workspace, round)
+  repeat up to config.max_fix_cycles
+  until round.gates_green
+  as round
+
+step review
+  about Fan out one adversarial review lens per configured charter — each an independent driven session hunting its own failure class over the same diff, report, and gate evidence.
+  each lens in config.lenses
+  do review_lens(lens, brief, round)
+  retry 2 every 30s
+  as verdicts
+
+step adjudicate
+  about Derive-and-check every lens verdict: any blocking finding rejects, and a rejection needs a substantiating reason. The decision flows through the derived overall, never an asserted one.
+  do adjudicate(verdicts)
+  as review
+
+step rework
+  about One final bounded rework if the adversarial review rejected the round, carrying every verdict back to the developer.
+  when not review.accepted
+  do rework(brief, config, workspace, round, review)
+  as round
+
+step cleanup
+  about Remove the worktree; the branch and its commits remain. A dirty worktree is refused, and a failed cleanup is compensated and recorded, never swallowed.
+  do cleanup_workspace(config.repo_root, workspace)
+  on failure
+    do force_teardown(config.repo_root, workspace)
+    fail
+  as cleanup
+
+step summarize
+  about Build the terminal record: the disposition, cycle accounting, the branch the work landed on, and whether the worktree was removed.
+  do summarize(brief, round, review, cleanup)
+  as result
+
+finish result

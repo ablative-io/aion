@@ -1,0 +1,214 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL1-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL1-001",
+    "cluster": "awl",
+    "title": "AWL-1 types-as-schemas: JSON-shaped described type declarations + `aion awl schema` JSON Schema emission",
+    "depends_on": [
+      "AWL0-REFAC-001"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-0-SPEC-DRAFT.md#type-declarations-json-shaped-described-schema-emitting-decided-2026-07-09"
+    ],
+    "purpose": "The first AWL-1 construct after the refactor, and the highest-value one: it makes an AWL `type` declaration the single source of the output contracts handed to models (--output-schema), the start-form schemas, and the worker contracts. The spec section 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' is the contract, and it states exactly three rules: (1) JSON-shaped layout — braces, `field: Type` pairs, comma-separated, with a deterministic canonical rendering (single-line iff the whole declaration fits within 100 columns, else one field per line with a trailing comma on every line) and a tolerant parse that accepts both forms and missing/trailing commas either way; (2) descriptions are `///` doc lines on the type and on any field, load-bearing data that flow into the JSON Schema `description` at each level while `//` stays ignorable trivia; (3) every type is a JSON Schema on demand via `aion awl schema <file> [--type Name]`, emitting draft 2020-12 (records -> object with properties/required where non-Option fields are required and Option(T) fields are optional, `///` text -> description at every level). This is a full vertical: grammar + AST + parser + printer canonical form + checker + Gleam emitter lowering + fixtures + checker-run goldens + spec cross-reference.",
+    "task": "Implement the three-rule types-as-schemas contract from AWL-0-SPEC-DRAFT.md, and only that. (1) Extend the grammar/AST and parser so `type Name { field: Type, ... }` accepts JSON-shaped, comma-separated field declarations in both single-line and multi-line form, tolerating missing and trailing commas either way, and carries `///` descriptions on the type and each field. (2) Extend the printer's canonical form so a type declaration renders single-line iff the whole declaration fits within 100 columns and otherwise one field per line with a trailing comma on every field line, preserving the round-trip property byte-for-byte. (3) Add a new `aion awl schema <file> [--type Name]` CLI subcommand that emits JSON Schema draft 2020-12 for a declared type (or, with no --type, for the workflow's input/output contracts): records become an `object` with `properties` and a `required` array that excludes Option(T) fields, and every `///` description flows to `description` at its level. Flow the new type form through the checker and Gleam emitter with NO behavior change to existing emission, and add fixtures plus checker-run and schema-emission goldens. Enum -> string-enum schema emission is explicitly OUT of scope (it belongs to AWL1-002); do not half-implement it. Deliberately do NOT import the JSON Schema constraint vocabulary (minLength, pattern, numeric bounds).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "JSON-shaped type-declaration grammar, AST, and tolerant parse",
+        "spec": "THE parser SHALL accept a `type Name { field: Type, ... }` declaration with brace-delimited, comma-separated `field: Type` pairs, in BOTH single-line and multi-line form, and SHALL tolerate a missing OR a trailing comma in either form (spec rule 1: 'a comma should never be the reason a check fails'). THE AST SHALL represent the fields as an ordered list preserving declaration order. Parsing the same logical declaration written single-line, multi-line, with a trailing comma, and without a trailing comma SHALL yield the same field list.",
+        "acceptance": [
+          "A fixture declaring a type single-line (`type Brief { id: String, title: String }`) and the same type multi-line with a trailing comma on every line parse to AST field lists that are equal (ignoring spans).",
+          "A declaration missing its final comma and one with a trailing comma both parse without error and produce equal field lists.",
+          "Field order in the AST matches declaration order.",
+          "`cargo test -p aion-awl` parser tests for the new forms pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/src/ast.rs",
+            "crates/aion-awl/src/parser/ (child modules per post-AWL0-REFAC-001 layout; mod.rs stays re-exports only)"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Deterministic canonical printer form with the 100-column single-vs-multi-line rule",
+        "spec": "THE printer SHALL render a type declaration single-line iff the whole declaration fits within 100 columns, and otherwise one field per line with a trailing comma on EVERY field line (spec rule 1). THE 100-column measure is the total character count of the rendered single-line form — the entire physical line from column 1, including the `type Name {` prefix and the closing `}` (type declarations are top-level, so no indentation enters the count); a line of exactly 100 characters fits (pinned in the spec 2026-07-09). THE round-trip property SHALL hold byte-for-byte for every fixture: parse . print = id and print . parse . print = print.",
+        "acceptance": [
+          "A type whose single-line rendering is <=100 columns prints single-line; a type whose single-line rendering exceeds 100 columns prints one field per line, each line ending in a comma.",
+          "A fixture that is already canonical is byte-identical after one print pass.",
+          "The existing round-trip integration tests pass over all fixtures including the new type-declaration fixtures, byte-level.",
+          "`cargo test -p aion-awl` printer/round-trip tests pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/src/printer.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "`///` descriptions on the type and on fields as load-bearing data",
+        "spec": "THE lexer/parser SHALL treat `///` doc lines on a `type` declaration and on any field as load-bearing description DATA carried in the AST (spec rule 2), while `//` remains ignorable comment trivia. A `///` line above the `type` keyword SHALL attach as the type description; a `///` line above a field SHALL attach as that field's description. The canonical printer SHALL round-trip `///` descriptions byte-for-byte.",
+        "acceptance": [
+          "The AST carries a description string for a type with a `///` line above it and for each field with a `///` line above it.",
+          "A `//` comment above a type or field does NOT populate a description (it stays trivia).",
+          "A fixture with type-level and field-level `///` descriptions round-trips byte-for-byte.",
+          "`cargo test -p aion-awl` tests covering description attachment pass."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/src/ast.rs",
+            "crates/aion-awl/src/parser/ (child modules per post-AWL0-REFAC-001 layout; mod.rs stays re-exports only)",
+            "crates/aion-awl/src/printer.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "`aion awl schema <file> [--type Name]` emitting JSON Schema draft 2020-12",
+        "spec": "THE CLI SHALL gain an `aion awl schema <file> [--type Name]` subcommand that emits JSON Schema draft 2020-12 for a declared type, or (with no --type) for the workflow's `input`/`output` contracts (spec rule 3). A record type SHALL map to `{\"type\": \"object\", \"properties\": {...}, \"required\": [...]}` where `required` lists exactly the non-Option fields (Option(T) fields are optional and their property schema is that of T), the top-level `$schema` SHALL be the draft 2020-12 URI, and every `///` description SHALL appear as `description` at its level (type and field). THE command SHALL exit non-zero with a span-anchored diagnostic if the document does not check clean, and SHALL NOT emit the JSON Schema constraint vocabulary (minLength, pattern, numeric bounds).",
+        "acceptance": [
+          "`aion awl schema <file> --type Brief` emits an object schema whose `properties` cover every field and whose `required` array excludes Option(T) fields and includes all non-Option fields.",
+          "The emitted document's `$schema` is the JSON Schema draft 2020-12 URI.",
+          "Type-level and field-level `///` text appear as `description` at the matching level in the emitted schema.",
+          "A committed golden JSON file pins the emitted schema for a representative fixture; the command reproduces it byte-for-byte.",
+          "No `minLength`/`pattern`/`minimum`/`maximum` keys appear in any emitted schema.",
+          "The subcommand is wired into the `aion awl` command group and exits non-zero on a document that fails the checker."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/tests/fixtures/brief.schema.golden.json"
+          ],
+          "modify": [
+            "crates/aion-awl/src/checker/ (child modules per post-AWL0-REFAC-001 layout; mod.rs stays re-exports only)",
+            "crates/aion-cli/src/awl.rs",
+            "crates/aion-cli/src/main.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R5",
+        "title": "Checker + Gleam emitter lowering with no behavior change to existing emission",
+        "spec": "THE new type-declaration form SHALL flow through the checker (types validate; descriptions are accepted and non-semantic to typing) and the Gleam emitter with NO behavior change to emission of any existing fixture. Existing *.gleam.golden fixtures SHALL be byte-identical unless a fixture is deliberately updated to exercise the new type form, in which case its regeneration SHALL be shown as an intentional golden change.",
+        "acceptance": [
+          "Every pre-existing *.gleam.golden fixture is byte-identical (git diff empty) OR its change is an intentional, reviewed update tied to a new type-form fixture.",
+          "A new fixture using JSON-shaped described types checks clean and emits Gleam that compiles under the existing differential path.",
+          "`cargo test -p aion-awl` emitter tests pass."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/tests/fixtures/typed_contract.awl"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R6",
+        "title": "Fixtures, checker-run goldens, and byte-level round-trip over all fixtures",
+        "spec": "THE brief SHALL add fixtures exercising single-line and multi-line JSON-shaped types, type-level and field-level `///` descriptions, and Option(T) fields, with a canonical (.canonical.awl) golden and a schema (.schema.golden.json) golden, and the round-trip property (parse . print = id, print . parse . print = print) SHALL hold byte-for-byte over EVERY fixture including the new ones.",
+        "acceptance": [
+          "New fixtures cover: a <=100-col single-line type, a >100-col multi-line type with trailing commas, type-level and field-level `///` descriptions, and an Option(T) field.",
+          "Each new fixture has a committed .canonical.awl golden; the schema fixture has a committed .schema.golden.json.",
+          "The round-trip integration test passes byte-for-byte over all fixtures.",
+          "`cargo test -p aion-awl` passes in full."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/tests/fixtures/typed_contract.canonical.awl"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "NO other AWL-1 construct sneaks in: this brief implements ONLY JSON-shaped type declarations, `///` descriptions, and `aion awl schema` emission. NO enums, NO match/case, NO named-argument change, NO typed child contracts, NO otherwise, NO parallel/race, NO spawn, NO `each ... in order`, NO indexing, NO until-fresh-binding fix. Each of those is its own AWL-1 brief.",
+      "Enum -> string-enum schema emission is DEFERRED to AWL1-002 and MUST NOT be half-implemented here; records + Option(T) are the schema surface for this brief.",
+      "The JSON Schema constraint vocabulary (minLength, pattern, numeric minimum/maximum, format) is DELIBERATELY NOT imported — types + descriptions are the contract surface; value validation is an action's job.",
+      "The determinism constant is untouched: no clock, entropy, or IO vocabulary is added; `do` remains the only world-touching verb.",
+      "Existing emission behavior is preserved: pre-existing *.gleam.golden fixtures stay byte-identical unless a fixture is intentionally updated to exercise the new type form.",
+      "SHALL NOT reintroduce or bypass the CLAUDE.md standards: files <=500 lines, mod.rs = re-exports only, thiserror in the library, no unwrap()/expect()/panic!() in library code."
+    ],
+    "verification": [
+      "Gate argv, run EXACTLY in order: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace. All clean, zero failures.",
+      "Round-trip property holds byte-for-byte over every fixture: parse . print = id and print . parse . print = print.",
+      "Schema-emission golden: `aion awl schema <fixture> --type <Name>` reproduces the committed .schema.golden.json byte-for-byte; `$schema` is draft 2020-12; `required` excludes Option(T) fields; `///` text appears as `description` at every level; no constraint-vocabulary keys present.",
+      "Spec-fidelity: the three rules of AWL-0-SPEC-DRAFT.md 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' are each demonstrably realised (layout+tolerant parse; `///` descriptions; on-demand JSON Schema).",
+      "No pre-existing *.gleam.golden fixture changed except intentional, reviewed updates tied to a new type-form fixture."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the spec section named in this brief — 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' — is the CONTRACT, implemented verbatim. Discovered spec ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = pub mod / pub use re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture including the new ones."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named spec section and checks the implementation clause by clause."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders (every AWL brief): stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; the package name is aion-rs; NEVER trust the workflow's own green — Fable/Tom re-run the gates by hand before merge. This is a front-end (aion-awl) brief: it must NEVER be dispatched concurrently with another front-end brief."
+      }
+    ],
+    "intention": "Types-as-schemas is the highest-value AWL-1 construct because it unblocks model output contracts: one `type` declaration becomes the model's --output-schema, the start-form schema, and the worker contract — killing the 'same shape described three times' wound. It is FIRST after the refactor because the spec ratified all three rules on 2026-07-09 with no open questions, and because a solid `type`/schema surface is what every later AWL-1 construct (enums, match, typed child contracts) builds on. It depends on AWL0-REFAC-001 so the parser/printer/checker/emitter modules it edits are already split and their goldens stable. Scope is deliberately narrow: records + Option + descriptions + emission, with enums and everything else held to their own briefs so no half-state ships.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program kickoff)",
+      "quote": "One declaration, every consumer — the model's output contract, the start form, and the worker contract are the same bytes."
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}

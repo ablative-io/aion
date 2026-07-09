@@ -1,0 +1,218 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001",
+    "cluster": "awl",
+    "title": "aion-awl module refactor: split the four over-limit files, wire awl-check-over-fixtures CI, zero behavior change",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "aion-awl has four source files over the 500-line limit: emitter.rs (2043 lines), parser.rs (1585), lib.rs (737), checker.rs (641). This brief is the AWL program's pipe-cleaner: split each into a folder module of files each <=500 lines, with mod.rs holding only pub mod declarations and re-exports, at ZERO behavior cost. The public API surface re-exported from the crate root must be byte-identical, every existing test must pass UNMODIFIED, every round-trip and Gleam golden must be byte-identical, and clippy/-D-warnings plus fmt must stay clean. As a second, self-contained deliverable it closes a CI blind spot: `aion awl check` is never run over the committed .awl fixtures, which is exactly how the two bounded_cycle fixtures came to fail the checker unnoticed (they parse/print fine but do not typecheck against the current child-result gap). Wire a fixture-check gate over every committed .awl fixture, with the two bounded_cycle fixtures listed as KNOWN expected-failures pointing at AWL1-004, so the gap stays visible without being fixed or silenced here.",
+    "task": "Refactor aion-awl for the 500-line limit and add the missing fixture-check gate, changing no behavior. (1) Split crates/aion-awl/src/emitter.rs, parser.rs, and checker.rs into folder modules (emitter/, parser/, checker/) whose mod.rs contains ONLY `pub mod` and `pub use`, with every child file <=500 lines of code. (2) lib.rs is the crate root and cannot become a folder module: extract its non-entry-point logic (the Span type, the diagnostic/error scaffolding, and any free functions) into named sibling modules so lib.rs is a thin entry point (module declarations + re-exports) under 500 lines; the crate-root re-export set must stay byte-identical. (3) The move is purely mechanical: no logic edits, no signature changes, no output changes. ast.rs (332) and printer.rs (401) are already under the limit and are not restructured unless a symbol genuinely must move to preserve the re-export graph. (4) Add a test (or CI step) that runs the checker over every committed .awl fixture and asserts it passes, EXCEPT crates/aion-awl/tests/fixtures/bounded_cycle.awl and bounded_cycle.canonical.awl, which are declared expected-failures in an in-test table with a comment pointing at AWL1-004 (typed child contracts) as the brief that will make them pass and remove the carve-out. Do NOT fix, delete, or rename the bounded_cycle fixtures; do NOT edit any existing test source.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Split emitter.rs into an emitter/ folder module, each file <=500 lines",
+        "spec": "THE emitter (crates/aion-awl/src/emitter.rs, 2043 lines) SHALL be split into a folder module crates/aion-awl/src/emitter/ whose emitter/mod.rs contains ONLY `pub mod` declarations and `pub use` re-exports, with every child file at or under 500 lines of code. The move SHALL be mechanical: no emitter logic, function signature, or emitted-Gleam output SHALL change.",
+        "acceptance": [
+          "`wc -l crates/aion-awl/src/emitter/*.rs` reports every file at or under 500 lines.",
+          "`grep -nvE '^\\s*(pub mod|pub use|mod |//|/\\*|\\*|$)' crates/aion-awl/src/emitter/mod.rs` returns no matches (mod.rs is declarations + re-exports only).",
+          "The crate-root re-export `pub use emitter::{EmitError, emit};` in lib.rs still resolves and is unchanged.",
+          "`cargo test -p aion-awl` emitter tests pass with the test sources unmodified; every *.gleam.golden fixture is byte-identical (git diff on tests/fixtures is empty)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/emitter/mod.rs"
+          ],
+          "modify": [
+            "crates/aion-awl/src/lib.rs"
+          ],
+          "delete": [
+            "crates/aion-awl/src/emitter.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Split parser.rs into a parser/ folder module, each file <=500 lines",
+        "spec": "THE parser (crates/aion-awl/src/parser.rs, 1585 lines) SHALL be split into a folder module crates/aion-awl/src/parser/ whose parser/mod.rs contains ONLY `pub mod` declarations and `pub use` re-exports, with every child file at or under 500 lines of code. No parser behavior, error span, or diagnostic text SHALL change.",
+        "acceptance": [
+          "`wc -l crates/aion-awl/src/parser/*.rs` reports every file at or under 500 lines.",
+          "`grep -nvE '^\\s*(pub mod|pub use|mod |//|/\\*|\\*|$)' crates/aion-awl/src/parser/mod.rs` returns no matches.",
+          "The crate-root re-export `pub use parser::{ParseError, parse};` still resolves and is unchanged.",
+          "`cargo test -p aion-awl` parser/printer tests pass with the test sources unmodified; every *.canonical.awl fixture is byte-identical."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/parser/mod.rs"
+          ],
+          "modify": [
+            "crates/aion-awl/src/lib.rs"
+          ],
+          "delete": [
+            "crates/aion-awl/src/parser.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Split checker.rs into a checker/ folder module, each file <=500 lines",
+        "spec": "THE checker (crates/aion-awl/src/checker.rs, 641 lines) SHALL be split into a folder module crates/aion-awl/src/checker/ whose checker/mod.rs contains ONLY `pub mod` declarations and `pub use` re-exports, with every child file at or under 500 lines of code. No check class, diagnostic, or accepted/rejected result SHALL change for any input.",
+        "acceptance": [
+          "`wc -l crates/aion-awl/src/checker/*.rs` reports every file at or under 500 lines.",
+          "`grep -nvE '^\\s*(pub mod|pub use|mod |//|/\\*|\\*|$)' crates/aion-awl/src/checker/mod.rs` returns no matches.",
+          "The crate-root re-export `pub use checker::{CheckError, check};` still resolves and is unchanged.",
+          "`cargo test -p aion-awl` checker tests pass with the test sources unmodified."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/checker/mod.rs"
+          ],
+          "modify": [
+            "crates/aion-awl/src/lib.rs"
+          ],
+          "delete": [
+            "crates/aion-awl/src/checker.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Reduce lib.rs to a thin entry point under 500 lines",
+        "spec": "THE crate root (crates/aion-awl/src/lib.rs, 737 lines) SHALL be reduced to a thin entry point of module declarations and re-exports under 500 lines by extracting its non-entry-point logic (the `Span` type and its impls, and any diagnostic/error scaffolding or free functions) into named sibling modules. Every symbol currently re-exported from the crate root SHALL remain re-exported from the crate root under the SAME name and path.",
+        "acceptance": [
+          "`wc -l crates/aion-awl/src/lib.rs` reports 500 or fewer lines.",
+          "`aion_awl::Span` and every ast/checker/emitter/parser/printer symbol currently in the `pub use` set remain importable from the crate root (the existing integration tests in crates/aion-awl/tests/ compile unmodified).",
+          "The set of crate-root re-exported identifiers is unchanged versus base_ref (no additions, removals, or renames)."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/span.rs"
+          ],
+          "modify": [
+            "crates/aion-awl/src/lib.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R5",
+        "title": "Public API and behavior parity: existing tests green UNMODIFIED, goldens byte-identical",
+        "spec": "THE refactor SHALL be behavior-preserving end to end: every existing test in crates/aion-awl (unit and integration) SHALL pass without any edit to its source, and every committed fixture and golden SHALL be byte-identical to base_ref. THE public API surface (the crate-root `pub use` set) SHALL be byte-identical to base_ref.",
+        "acceptance": [
+          "`git diff --no-ext-diff base_ref -- crates/aion-awl/tests/` shows no changes to existing test source files (new fixture-check test from R6 excepted).",
+          "`git diff --no-ext-diff base_ref -- crates/aion-awl/tests/fixtures/` is empty (all *.awl, *.canonical.awl, *.gleam.golden byte-identical).",
+          "`cargo test -p aion-awl` passes in full with zero failures.",
+          "A diff of the crate-root re-export identifiers versus base_ref is empty."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R6",
+        "title": "Wire `aion awl check` over every committed .awl fixture in CI, with the bounded_cycle expected-failure carve-out",
+        "spec": "THE test suite SHALL gain a test (or CI step) that runs the checker over EVERY committed .awl fixture and asserts a clean check, EXCEPT crates/aion-awl/tests/fixtures/bounded_cycle.awl and bounded_cycle.canonical.awl, which SHALL be listed in an explicit expected-failures table inside the test with a comment naming AWL1-004 (typed child contracts) as the brief that will make them pass and remove the carve-out. THE test SHALL FAIL if a fixture outside that table fails to check, AND SHALL FAIL if a fixture inside that table unexpectedly starts checking clean (so the carve-out cannot rot). THE bounded_cycle fixtures SHALL NOT be fixed, deleted, renamed, or dropped from the fixture set.",
+        "acceptance": [
+          "A new test iterates every committed .awl fixture, calls the checker, and asserts success for all except the two named bounded_cycle fixtures.",
+          "The two bounded_cycle fixtures are named in an in-test expected-failures table with a comment referencing AWL1-004.",
+          "The test fails if a non-carved fixture fails to check; the test fails if a carved fixture checks clean (a stale-carve-out guard).",
+          "`cargo test -p aion-awl` runs this test and passes with exactly the two expected failures accounted for.",
+          "bounded_cycle.awl and bounded_cycle.canonical.awl are unchanged and still present in tests/fixtures/."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/tests/fixture_check.rs"
+          ],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "ZERO public-API change: the crate-root `pub use` set (ast/checker/emitter/parser/printer re-exports plus Span and siblings) SHALL be byte-identical to base_ref — no symbol added, removed, renamed, or re-pathed.",
+      "ZERO behavior change: this is a pure move/split. No logic edit, no signature change, no diagnostic-text change, no emitted-Gleam change, no accepted/rejected-input change for the parser, checker, printer, or emitter.",
+      "Fixtures and goldens byte-identical: no *.awl, *.canonical.awl, or *.gleam.golden file may change; `git diff` on tests/fixtures MUST be empty.",
+      "Existing tests UNMODIFIED: existing test source files MUST pass without edits; the ONLY new test file is the R6 fixture-check gate.",
+      "bounded_cycle carve-out EXACTLY as specified: the two bounded_cycle fixtures stay red under R6, listed as expected-failures with an AWL1-004 pointer — NOT fixed, NOT deleted, NOT silenced by removing them from the corpus, and guarded so an accidental green fails the test.",
+      "mod.rs files contain ONLY `pub mod` and `pub use` (CLAUDE.md; CN2). No logic in any mod.rs.",
+      "SHALL NOT touch the language, the AWL-1 feature set, the CLI `aion awl` subcommands' behavior, or any crate other than aion-awl (plus the fixture-check test)."
+    ],
+    "verification": [
+      "Gate argv, run EXACTLY in order: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace. All clean, zero failures.",
+      "`wc -l crates/aion-awl/src/**/*.rs crates/aion-awl/src/*.rs` shows no non-test source file over 500 lines.",
+      "`git diff --no-ext-diff base_ref -- crates/aion-awl/tests/fixtures/` is empty (fixtures + goldens byte-identical).",
+      "`git diff --no-ext-diff base_ref -- crates/aion-awl/tests/` shows only the new fixture_check.rs added; no existing test source edited.",
+      "The R6 fixture-check test passes with exactly the two bounded_cycle fixtures carved out and guarded against silent green.",
+      "The crate-root re-export identifier set is byte-identical to base_ref."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this brief is the CONTRACT — implement it verbatim. Discovered spec ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = pub mod / pub use re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture including new ones. This refactor must not perturb it."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named plan section and checks the implementation clause by clause."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders (every AWL brief): stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; the package name is aion-rs; NEVER trust the workflow's own green — Fable/Tom re-run the gates by hand before merge."
+      }
+    ],
+    "intention": "This is the AWL program's pipe-cleaner: it must go SOLO first, before anything dispatches 2-wide, because it proves the aion dev_brief pipeline end to end on a change with a crisp, machine-checkable success condition (line counts down, public API byte-identical, all goldens byte-identical, gates green). It also removes a live hazard for every later front-end brief: four files already over the 500-line limit, and a CI blind spot that let the bounded_cycle checker failures hide. Landing the split first makes the goldens and module layout stable so subsequent AWL-1 briefs edit small, focused files; wiring the fixture-check gate makes the checker's verdict on every fixture visible from now on. The carve-out keeps the known bounded_cycle gap honest and pinned to AWL1-004 rather than papered over.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program kickoff)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}
