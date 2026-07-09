@@ -92,6 +92,18 @@ jobs:
       - name: cargo xtask no-norn-in-platform
         run: cargo xtask no-norn-in-platform
 
+  no-bypasses-aion-awl:
+    name: aion-awl zero-bypass guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep the crate free of lint/test bypasses and textual source splices.
+      # The directory assertion prevents a missing path from becoming a false green.
+      - name: reject bypasses in crates/aion-awl
+        run: |
+          test -d crates/aion-awl
+          ! grep -rnE '#!?\[(allow|expect)|#\[ignore|include!\(' crates/aion-awl/
+
   # Every nested standalone crate (own Cargo.lock, NOT a workspace member) gets
   # the same build/clippy/test bar as the workspace, run in its own directory.
   # These crates rot silently otherwise: no workspace gate compiles them, so an
@@ -143,6 +155,38 @@ jobs:
         run: cargo test --workspace
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features
+
+  awl-check:
+    name: aion awl check (checker fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: aion awl check (checker fixtures)
+        run: |
+          cargo build -p aion-cli --bin aion -q
+          B=target/debug/aion
+          s=0
+          for f in \
+            crates/aion-awl/tests/fixtures/hello.awl \
+            crates/aion-awl/tests/fixtures/research_report.awl \
+            crates/aion-awl/tests/fixtures/research_report.canonical.awl
+          do
+            "$B" awl check "$f" || { echo "MUST-PASS FAILED: $f"; s=1; }
+          done
+          # AWL1-004 adds typed child contracts; when it lands, move both
+          # bounded_cycle fixtures into the must-pass set and retire this carve-out.
+          for f in \
+            crates/aion-awl/tests/fixtures/bounded_cycle.awl \
+            crates/aion-awl/tests/fixtures/bounded_cycle.canonical.awl
+          do
+            if "$B" awl check "$f"; then
+              echo "EXPECTED-FAIL NOW GREEN (AWL1-004 landed - retire carve-out): $f"
+              s=1
+            fi
+          done
+          exit "$s"
 
   # Types-first drift gate (ADR-014): the committed examples/order-saga must
   # be byte-current against what `aion generate` derives from its authored
