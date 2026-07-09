@@ -1,4 +1,6 @@
-import { Badge } from '@/components/ui';
+import { memo, useState } from 'react';
+
+import { Badge, Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import type { ActivityEvent, ActivityEventKind, ProgressDetail, StopKind } from '@/types';
 
@@ -11,7 +13,16 @@ import { parseReasoningItem } from '../lib/reasoning';
  * ToolResult / Progress / Stop / Reasoning / Raw), a live coalesced token stream,
  * or a counted progress-note run — with the agent role, a kind label, and the
  * payload. REAL DATA ONLY: every field comes straight from the streamed events.
+ *
+ * The row is memoized on its (immutable) `entry` reference so a streamed token only
+ * re-runs the presentation + `JSON.stringify` for the ONE row whose text grew, not
+ * every row on the list. An oversized body ({@link BODY_CLAMP_THRESHOLD_CHARS}) is
+ * clamped to a fixed height with a "Show all" toggle — nothing is ever dropped, the
+ * full payload is always in the DOM and expands in place.
  */
+
+/** Bodies longer than this render collapsed behind a "Show all" toggle. */
+const BODY_CLAMP_THRESHOLD_CHARS = 4000;
 
 export type TranscriptEntryRowProps = {
   entry: TranscriptEntry;
@@ -126,10 +137,71 @@ function stringify(value: unknown): string {
   }
 }
 
+/** Whether a body is large enough to render collapsed behind a "Show all" toggle. */
+export function isBodyClamped(body: string): boolean {
+  return body.length > BODY_CLAMP_THRESHOLD_CHARS;
+}
+
+/** Human-readable size of a clamped body for the toggle label, e.g. `"812 lines · 47 KB"`. */
+export function bodySizeLabel(body: string): string {
+  const lines = body.split('\n').length;
+  const kb = new TextEncoder().encode(body).length / 1024;
+  const kbLabel = kb >= 10 ? String(Math.round(kb)) : kb.toFixed(1);
+  const linesLabel = lines === 1 ? '1 line' : `${lines} lines`;
+  return `${linesLabel} · ${kbLabel} KB`;
+}
+
+const PRE_CLASSES = 'whitespace-pre-wrap break-words font-mono text-foreground text-xs';
+
+export type TranscriptBodyProps = {
+  body: string;
+  /** Only meaningful when the body is clamped; ignored for short bodies. */
+  expanded: boolean;
+  onToggle: () => void;
+};
+
+/**
+ * The payload body. A short body renders as a plain `<pre>`. A large body renders
+ * clamped to a fixed height with a bottom fade and a toggle; the FULL text is always
+ * present in the DOM (the clamp is CSS `overflow-hidden`), so expanding never fetches
+ * or reveals anything that was dropped — it just lifts the height cap.
+ */
+export function TranscriptBody({ body, expanded, onToggle }: TranscriptBodyProps) {
+  if (!isBodyClamped(body)) {
+    return <pre className={PRE_CLASSES}>{body}</pre>;
+  }
+
+  return (
+    <div>
+      {expanded ? (
+        <pre className={PRE_CLASSES}>{body}</pre>
+      ) : (
+        <div className="relative max-h-64 overflow-hidden">
+          <pre className={PRE_CLASSES}>{body}</pre>
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface-default to-transparent"
+          />
+        </div>
+      )}
+      <Button
+        className="mt-2 h-7 px-2 text-xs"
+        onClick={onToggle}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        {expanded ? 'Collapse' : `Show all (${bodySizeLabel(body)})`}
+      </Button>
+    </div>
+  );
+}
+
 /** One folded transcript entry as a list row. */
-export function TranscriptEntryRow({ entry, isNew = false }: TranscriptEntryRowProps) {
+function TranscriptEntryRowImpl({ entry, isNew = false }: TranscriptEntryRowProps) {
   const { label, tone, body } = entryPresentation(entry);
   const { event } = entry;
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <li
@@ -151,13 +223,24 @@ export function TranscriptEntryRow({ entry, isNew = false }: TranscriptEntryRowP
             ) : null}
           </span>
         </div>
-        <pre className="whitespace-pre-wrap break-words font-mono text-foreground text-xs">
-          {body}
-        </pre>
+        <TranscriptBody body={body} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
       </div>
     </li>
   );
 }
+
+/**
+ * Memoized on the (immutable) `entry` reference. The fold hands each row a frozen
+ * entry object, so a streamed token produces a NEW reference only for the one row
+ * that grew; every other row keeps its reference and is skipped. `isNew` is
+ * deliberately excluded from the comparator: it drives a mount-only CSS entrance
+ * animation (`animate-in`) that has already played by the time the flag flips to
+ * `false`, so re-rendering the row just to observe that flip would be wasted work.
+ */
+export const TranscriptEntryRow = memo(
+  TranscriptEntryRowImpl,
+  (prev, next) => prev.entry === next.entry
+);
 
 /** A single classified event as a row (the common `event` entry). */
 export function TranscriptEventRow({ event }: TranscriptEventRowProps) {

@@ -1,5 +1,4 @@
-import { useState } from 'react';
-
+import { ChatInputMorph, type ChatPriority } from '@/components/kit';
 import { Badge, Button } from '@/components/ui';
 import type { AttemptCapabilities } from '@/lib/api';
 import type {
@@ -11,6 +10,23 @@ import type {
 } from '@/types';
 
 import { useIntervene } from '../hooks/useIntervene';
+
+/** Capability chips shown on the inject composer's docked pill (honest wire support). */
+const INJECT_CAPABILITIES = ['interrupt', 'queue'] as const;
+
+/**
+ * The `InjectMessage` command for a composed draft. The composer's delivery toggle
+ * maps onto the wire {@link InjectPriority} union: `interrupt` acts now (`Interrupt`),
+ * `queued` queues the turn (`Normal` — the wire's "queue the turn" variant). Both are
+ * genuinely supported, so the pill advertises `interrupt` and `queue` honestly.
+ */
+export function injectKindFor(text: string, priority: ChatPriority): InterventionKind {
+  return {
+    kind: 'InjectMessage',
+    text,
+    priority: { priority: priority === 'interrupt' ? 'Interrupt' : 'Normal' },
+  };
+}
 
 /**
  * Capability-gated mid-run intervention controls (NOI-7).
@@ -47,7 +63,10 @@ export function InterventionControls({
   attempt,
 }: InterventionControlsProps) {
   const { submit, submitState, lastOutcome, error } = useIntervene({ namespace });
-  const [injectText, setInjectText] = useState('');
+
+  // Per-target draft key: drafts persist across navigation but never leak between
+  // attempts (each `(workflow, activity, attempt)` keeps its own composed message).
+  const draftKey = `intervene:${workflowId}:${attempt.activityId}:${attempt.attempt}`;
 
   const supported = attempt.capabilities.supported;
   if (supported.length === 0) {
@@ -74,68 +93,60 @@ export function InterventionControls({
     <section className="flex flex-col gap-2" data-testid="intervention-controls">
       <h3 className="font-medium text-foreground text-xs">Intervene</h3>
       <ul className="flex flex-col gap-2">
-        {supported.map((primitive) => (
-          <li key={primitive.primitive}>
-            <PrimitiveControl
-              disabled={submitState === 'submitting'}
-              injectText={injectText}
-              onInjectTextChange={setInjectText}
-              onRun={run}
-              primitive={primitive.primitive}
-            />
-          </li>
-        ))}
+        {supported.map((primitive) =>
+          primitive.primitive === 'InjectMessage' ? (
+            <li key={primitive.primitive}>
+              <InjectMessageControl draftKey={draftKey} onRun={run} />
+            </li>
+          ) : (
+            <li key={primitive.primitive}>
+              <PrimitiveControl
+                disabled={submitState === 'submitting'}
+                onRun={run}
+                primitive={primitive.primitive}
+              />
+            </li>
+          )
+        )}
       </ul>
       <OutcomeNotice error={error} outcome={lastOutcome} submitState={submitState} />
     </section>
   );
 }
 
-type PrimitiveControlProps = {
-  primitive: InterventionPrimitive['primitive'];
-  disabled: boolean;
-  injectText: string;
-  onInjectTextChange: (text: string) => void;
+type InjectMessageControlProps = {
+  draftKey: string;
   onRun: (kind: InterventionKind) => void;
 };
 
-/** One primitive's control affordance (its inputs + submit button). */
-function PrimitiveControl({
-  primitive,
-  disabled,
-  injectText,
-  onInjectTextChange,
-  onRun,
-}: PrimitiveControlProps) {
-  if (primitive === 'InjectMessage') {
-    return (
-      <div className="flex flex-col gap-1.5">
-        <textarea
-          aria-label="Message to inject"
-          className="min-h-16 rounded-lg border border-border bg-surface-default p-2 text-xs"
-          onChange={(fieldEvent) => onInjectTextChange(fieldEvent.target.value)}
-          placeholder="Steer the agent (interrupt-priority)…"
-          value={injectText}
-        />
-        <Button
-          className="h-7 self-start px-3 text-xs"
-          disabled={disabled || injectText.trim().length === 0}
-          onClick={() =>
-            onRun({
-              kind: 'InjectMessage',
-              text: injectText,
-              priority: { priority: 'Interrupt' },
-            })
-          }
-          type="button"
-          variant="outline"
-        >
-          {PRIMITIVE_LABELS.InjectMessage}
-        </Button>
-      </div>
-    );
-  }
+/**
+ * The inject-message affordance: the kit composer ({@link ChatInputMorph}) docked as
+ * a slim pill that expands into a textarea with a delivery-priority toggle. Submitting
+ * issues an `InjectMessage` command whose priority is the operator's toggle (see
+ * {@link injectKindFor}). No escalation machine is wired here — Cancel is a separate
+ * gated control — and the composer is never bespoke-disabled: submission state is
+ * surfaced by {@link OutcomeNotice}, exactly as the assistant page does it.
+ */
+function InjectMessageControl({ draftKey, onRun }: InjectMessageControlProps) {
+  return (
+    <ChatInputMorph
+      capabilities={INJECT_CAPABILITIES}
+      draftKey={draftKey}
+      onSubmit={(message, priority) => onRun(injectKindFor(message, priority))}
+      placeholder="Steer the agent…"
+      status="live"
+    />
+  );
+}
 
+type PrimitiveControlProps = {
+  primitive: Exclude<InterventionPrimitive['primitive'], 'InjectMessage'>;
+  disabled: boolean;
+  onRun: (kind: InterventionKind) => void;
+};
+
+/** One non-text primitive's control affordance (its submit button). */
+function PrimitiveControl({ primitive, disabled, onRun }: PrimitiveControlProps) {
   return (
     <Button
       className="h-7 px-3 text-xs"

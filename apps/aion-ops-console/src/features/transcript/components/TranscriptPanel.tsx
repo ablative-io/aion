@@ -73,7 +73,7 @@ export function TranscriptPanelContent({
 
   return (
     <section
-      className="flex max-h-[70vh] min-h-0 flex-col gap-3 rounded-xl border border-border p-3"
+      className="flex max-h-[70vh] min-h-0 flex-col gap-3 overflow-hidden rounded-xl border border-border p-3"
       data-testid="transcript-panel"
     >
       <header className="flex items-center justify-between gap-2">
