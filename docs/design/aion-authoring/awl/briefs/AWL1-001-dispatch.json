@@ -1,0 +1,257 @@
+{
+  "brief": {
+    "id": "AWL1-001",
+    "title": "AWL-1 types-as-schemas (full vertical): JSON-shaped, described `type` declarations — multi-line body + 100-column canonical printer rule + `///` load-bearing descriptions — with a PUBLIC `schema_for_type` derivation in a new crates/aion-awl/src/schema/ module and a THIN `aion awl schema <file> [--type Name]` CLI wrapper emitting JSON Schema draft 2020-12 (records -> object/properties/required; Option(T) -> optional). FIRST Wave-1 front-end brief; spans crates/aion-awl + crates/aion-cli. Enums -> string enums are AWL1-002 (OUT); the JSON Schema constraint vocabulary is DELIBERATELY OUT.",
+    "objective": "Implement the three-rule types-as-schemas contract from AWL-0-SPEC-DRAFT.md section 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' — and ONLY that — as a complete vertical (grammar/AST + parser + printer canonical form + checker + PUBLIC schema derivation + thin CLI wrapper + fixtures + goldens + round-trip). SIX requirements, committed in full at docs/design/aion-authoring/awl/briefs/AWL1-001-input.json (read it in the workspace — it is the durable R1-R6 contract). (R1) Grammar/AST + tolerant parse: `type Name { field: Type, ... }` accepted in BOTH single-line and multi-line form, tolerating a missing OR trailing comma either way; the AST carries fields as an ordered list preserving declaration order. (R2) Deterministic canonical printer: render single-line iff the whole declaration fits within 100 columns (the total character count of the rendered single-line physical line from column 1, including `type Name {` and the closing `}`; type declarations are top-level so no indentation enters the count; a line of exactly 100 chars fits), otherwise one field per line with a trailing comma on EVERY field line; round-trip holds byte-for-byte (parse . print = id, print . parse . print = print). (R3) `///` doc lines on the type and on any field are load-bearing DESCRIPTION DATA carried in the AST (they flow to JSON Schema `description`), while `//` stays ignorable comment trivia; the printer round-trips `///` byte-for-byte. (R4) Schema derivation is a PUBLIC aion-awl library function (`schema_for_type`, per the spec) living in a NEW crates/aion-awl/src/schema/ folder module (mod.rs = pub mod / pub use ONLY), re-exported from crates/aion-awl/src/lib.rs; a THIN `aion awl schema <file> [--type Name]` subcommand wraps it (records -> {\"type\":\"object\",\"properties\":{...},\"required\":[...]} where `required` is exactly the non-Option fields and an Option(T) field is optional with its property schema being that of T; top-level `$schema` = the draft 2020-12 URI; every `///` -> `description` at its level; exit non-zero with a span-anchored diagnostic when the document does not check clean; NEVER emit minLength/pattern/minimum/maximum/format). AWL1-015 and every other consumer reuse this ONE derivation — never a reimplementation. (R5) The new type form flows through the checker (descriptions accepted, non-semantic to typing) and the Gleam emitter with ZERO behavior change to existing emission; pre-existing *.gleam.golden fixtures stay byte-identical. (R6) Add fixtures + canonical + schema goldens exercising a <=100-col single-line type, a >100-col multi-line type with trailing commas, type-level and field-level `///`, and an Option(T) field; the round-trip property holds byte-for-byte over EVERY fixture including the new ones. Enum -> string-enum schema emission is EXPLICITLY OUT (AWL1-002) and MUST NOT be half-implemented. The full R1-R6 contract with per-requirement acceptance is committed at docs/design/aion-authoring/awl/briefs/AWL1-001-input.json — read it in the workspace.",
+    "context": "This is the FIRST Wave-1 AWL-1 front-end brief, dispatched immediately after the Wave-0 refactor sequence (AWL0-REFAC-001a..e-b) landed. Because of that refactor the crate you edit is already split into folder modules under the 500-line limit with mod.rs = re-exports only, carries ZERO lint bypasses crate-wide (a PERMANENT CI gate now enforces this), and its round-trip + emitter goldens are stable. Read the canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) as the reading list; the ONE spec section named above is the CONTRACT — implement it verbatim, and report any discovered ambiguity as a finding rather than improvising.\n\nSCOPE IS A FULL VERTICAL BUT NARROW: records + Option(T) + descriptions + on-demand JSON Schema, nothing else. No other AWL-1 construct sneaks in (no enums, no match/case, no named-argument change, no typed child contracts, no otherwise/parallel/race/spawn, no `each ... in order`, no indexing, no until-fresh-binding fix — each is its own AWL-1 brief). Enum -> string-enum emission is DEFERRED to AWL1-002; the JSON Schema constraint vocabulary (minLength/pattern/numeric bounds/format) is DELIBERATELY NOT imported (types + descriptions are the contract surface; value validation is an action's job).\n\nWHERE THE WORK LANDS (measured against current main; every path verified to exist):\n- Grammar/AST: crates/aion-awl/src/ast.rs — TypeDecl (fields: name, fields: Vec<FieldDecl>) and FieldDecl (name, ty) gain a description carrier for R3. NOTE FieldDecl is ALSO used for action params (which do NOT take `///` per the spec) — attach descriptions in a way that does not force `///` onto params.\n- Parser: crates/aion-awl/src/parser/ — parse_type_decl (parser/document.rs) TODAY reads exactly ONE line (bump_required, split on `{`/`}`), so the multi-line body (fields at indent 2, closing `}` at column 1) does NOT parse at all today: R1's multi-line form is genuinely new continuation-consuming parser work. `///` is NOT distinguished today: parser/source.rs SourceLines::new captures every `//`-prefixed own-line as trivia (a `///` line currently becomes a Comment whose text starts with `/`), and split_code_comment handles trailing `//`; R3 needs `///` recognition added there plus attachment during parse_type_decl. Single-line tolerant commas ALREADY mostly work (comma_parts in parser/calls.rs + the empty-part skip in parse_type_decl tolerate a trailing/missing comma single-line) — the NEW parse work is multi-line + `///`; keep mod.rs re-exports only and add a child module if a file would exceed 500 lines.\n- Printer: crates/aion-awl/src/printer.rs — type_decl currently ALWAYS emits single-line `type N { ... }`. Add the 100-col single-vs-multi rule and `///` re-emission. MEASURED: every existing fixture type declaration renders <= 73 columns single-line, so under the 100-col rule they ALL stay single-line and byte-identical — no existing *.canonical.awl changes.\n- Checker: crates/aion-awl/src/checker/ — check(&Document) -> Vec<CheckError> (checker/context.rs) and collect_types (checker/declarations.rs) need only accept descriptions as non-semantic; nothing new to reject for this brief.\n- Schema derivation: NEW folder module crates/aion-awl/src/schema/ (mod.rs = pub mod/pub use only), a public `schema_for_type` (+ a SchemaError via thiserror), re-exported from crates/aion-awl/src/lib.rs alongside the existing `pub use checker::{CheckError, check}` line.\n- CLI: crates/aion-cli/src/awl.rs — add a `Schema { file, #[arg(long)] type: Option<String> }` variant to AwlCommand, an arm in run(), and schema_command + schema_source helpers that MIRROR the existing emit path (parse -> check must be clean -> derive; same compiler-style diagnostic + non-zero exit contract). crates/aion-cli/src/main.rs dispatches Command::Awl via awl::run and needs NO code change; touch it ONLY to extend the Awl doc-comment (optional).\n\nDETERMINACY GAP — RESOLVED BY OPERATOR RULING (implement exactly this): the spec writes the signature as `schema_for_type(checked_doc, name)`, but NO CheckedDocument type exists today — `check` returns only Vec<CheckError>. The RULING is `schema_for_type(&Document, &str) -> Result<serde_json::Value, SchemaError>` with callers checking clean first (the CLI mirrors emit_source at crates/aion-cli/src/awl.rs: parse -> check must be clean -> derive); SchemaError covers unknown-type and any derivation-blocking input. Do NOT introduce a CheckedDocument wrapper or any checked-document layer — that is a spec deviation to note in your report, not a design choice left to you.\n\nGleam emitter — CHECKED AND STATED: NO emitter change is required. crates/aion-awl/src/emitter/codecs.rs reads ONLY field.name and field.ty from each type's fields (emit_codec, collect_composite_types); it never reads descriptions, and multi-line parsing yields an identical AST to single-line, so the new description fields never lower and every pre-existing *.gleam.golden stays byte-identical (R5). If you find a real emitter change is forced by the new type syntax, STOP and report it as a finding before making it.\n\nCONSTRAINTS:\n- CN1: The canonical docs are the reading list; AWL-0-SPEC-DRAFT.md section 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' is the CONTRACT, implemented verbatim. Discovered spec ambiguities are findings to report, never license to improvise.\n- CN2: Coding standards (CLAUDE.md): NO #[allow]/#[expect]/#[ignore] bypasses ANYWHERE (a permanent crate-wide grep gate enforces this over crates/aion-awl/ and is GREEN on base — keep it green), thiserror for library errors, NO unwrap()/expect()/panic!() in library code, files <= 500 lines, mod.rs = pub mod / pub use re-exports only, no silent failures.\n- CN3: Gate argv, run EXACTLY in order before reporting (the configured battery): no-bypasses-crate-wide -> lints-pinned-awl -> lints-pinned-cli -> scope-fence -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> awl-check-local -> cargo test -p aion-awl -> cargo test -p aion-cli -> schema-golden. The full `cargo test --workspace` suite is NOT a gate while tasks #243/#244 (load-sensitive flakes in untouched crates) are open; the operator runs it by hand at merge review (BRIEF-CRAFT entry 11). Note: the AWL1-001-input.json copy of this list predates that ruling and still names `cargo test --workspace` — the AUTHORITATIVE gate set is this dispatch's, which omits it.\n- CN4: Round-trip is sacred: parse . print = id and print . parse . print = print, byte-level, for EVERY fixture including the new ones. The round-trip integration tests live at crates/aion-awl/tests/parser_printer.rs (assert_idempotent + the research_report/bounded_cycle golden-normalization tests); the new fixtures must join them.\n- CN5: Review lenses: the standard adversarial set PLUS a spec-fidelity lens that reads the named spec section clause by clause (rule 1 layout+100-col+tolerant parse; rule 2 `///` load-bearing descriptions; rule 3 draft-2020-12 emission + the public single-derivation requirement).\n- CN6: Bar reminders (every AWL brief): stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; the package name is aion-rs; NEVER trust the workflow's own green — Fable/Tom re-run the gates by hand before merge. This is a front-end (aion-awl) brief: it is NEVER dispatched concurrently with another front-end brief.\n\nThe full R1-R6 contract with acceptance criteria is committed at docs/design/aion-authoring/awl/briefs/AWL1-001-input.json — read it in the workspace.",
+    "pointers": [
+      "docs/design/aion-authoring/awl/briefs/AWL1-001-input.json (the full R1-R6 contract with per-requirement acceptance — the durable source of truth; read it first)",
+      "docs/design/aion-authoring/awl/AWL-0-SPEC-DRAFT.md — section 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' (the CONTRACT: three rules — JSON-shaped layout + 100-col canonical + tolerant parse; `///` load-bearing descriptions; every type a JSON Schema on demand + the public `schema_for_type(checked_doc, name) -> serde_json::Value` requirement). The separate 'Enums' subsection (`type X = A | B | C` -> string enums) is AWL1-002 and OUT of this brief.",
+      "docs/design/aion-authoring/awl/AWL-EXECUTION-PLAN.md — the AWL1-001 entry (~line 153) is the scope definition; the 'Shared brief context' section (~line 249) is the resolved_context source (gate argv, round-trip-sacred, spec-as-contract, coding standards, lens set); note the plan's explicit ruling that `cargo test --workspace` is NOT a workflow gate (open flakes #243/#244/#248).",
+      "docs/design/aion-authoring/awl/BRIEF-CRAFT.md — why the gates are shaped this way; especially generalised principles 1 (every non-negotiable is a mechanical gate), 3/4 (green-on-base vs red-by-design, never ambiguous), 6 (deterministic gates; pre-brief flakes), entry 16 (verify a regression against base first), entry 19 (provenance-check a red against base), entry 22 (expected-fail sets need existence guards both directions), and the ugrep exit-2 false-green trap.",
+      "docs/design/aion-authoring/DISPATCH-RUNBOOK.md — brief-authoring, gate-argv library, and dispatch-file-structure sections.",
+      "docs/design/aion-authoring/awl/briefs/AWL0-REFAC-001e-b-dispatch.json — the PROTOCOL TEMPLATE this dispatch is stamped from (gate/verify_gates shape, {base_commit} token, awl-check-local loop, lens charters, max_fix_cycles).",
+      "crates/aion-awl/src/ast.rs — TypeDecl (lines 86-96) and FieldDecl (98-106) get the R3 description carrier; FieldDecl is shared with action params (do not force `///` onto params).",
+      "crates/aion-awl/src/parser/document.rs — parse_type_decl (line 280) reads ONE line today (R1 multi-line is new continuation work); the top-level loop rejects indent!=0 (the multi-line closing `}` must be consumed inside parse_type_decl).",
+      "crates/aion-awl/src/parser/source.rs — SourceLines::new comment capture (line 66) swallows every `//`-prefixed own-line as trivia (so `///` is not distinguished today) and split_code_comment (line 121) handles trailing `//`; R3's `///` recognition lands here.",
+      "crates/aion-awl/src/parser/calls.rs — comma_parts (line 47): the depth/string-aware comma splitter that already tolerates a trailing/empty part (reuse it for tolerant commas).",
+      "crates/aion-awl/src/printer.rs — type_decl (line 99) always emits single-line today; add the 100-col single-vs-multi rule + `///` re-emission. Existing type decls are all <= 73 cols, so they stay single-line byte-identical.",
+      "crates/aion-awl/src/checker/context.rs (check -> Vec<CheckError>, line 20) and crates/aion-awl/src/checker/declarations.rs (collect_types, line 25) — accept descriptions as non-semantic; nothing new to reject.",
+      "crates/aion-awl/src/emitter/codecs.rs — emit_codec (line 123) and collect_composite_types (line 189) read ONLY field.name/field.ty; proof that no emitter change is required and existing *.gleam.golden stay byte-identical.",
+      "crates/aion-awl/src/lib.rs — the crate root (23 lines); add `mod schema;` and re-export `schema_for_type` (+ SchemaError) alongside `pub use checker::{CheckError, check}` (line 19).",
+      "crates/aion-cli/src/awl.rs — AwlCommand enum (line 26), run() (line 64), and emit_source (line 154, the parse->check->emit pattern the new `schema` command MIRRORS).",
+      "crates/aion-cli/src/main.rs — Command::Awl (lines 98-101) dispatched via awl::run (line 399); NO code change needed (doc-comment update optional).",
+      "crates/aion-awl/tests/parser_printer.rs (round-trip/idempotency tests) and crates/aion-awl/tests/fixtures/ (current fixtures: bounded_cycle.awl/.canonical.awl/.gleam.golden, hello.awl/.gleam.golden, research_report.awl/.canonical.awl/.gleam.golden) — add the new typed_contract fixtures + goldens + a new tests/schema.rs golden test here.",
+      ".github/workflows/ci.yml — the awl-check CI job (wired by AWL0-REFAC-001e-b) runs `aion awl check` over crates/aion-awl/tests/fixtures/*.awl; the new typed_contract fixtures will be exercised there automatically on merge, so they MUST check clean. Do NOT edit ci.yml (out of scope)."
+    ],
+    "scope_in": [
+      "crates/aion-awl/** — ast.rs (R3 description carriers), parser/ (R1 multi-line parse + R3 `///` recognition/attachment; add a child module rather than exceed 500 lines; mod.rs stays re-exports only), printer.rs (R2 100-col rule + `///` round-trip), checker/ (accept descriptions non-semantically), the NEW schema/ folder module (R4 public schema_for_type + SchemaError), lib.rs (mod schema + re-exports), tests/ (new typed_contract.awl + typed_contract.canonical.awl + brief.schema.golden.json fixtures, additions to tests/parser_printer.rs, and a new tests/schema.rs golden test).",
+      "crates/aion-cli/** — src/awl.rs (the thin `aion awl schema <file> [--type Name]` subcommand + wrapper mirroring emit) and, ONLY if updating the Awl doc-comment, src/main.rs; plus any aion-cli test asserting the CLI reproduces the schema golden byte-for-byte."
+    ],
+    "scope_out": [
+      "NO other AWL-1 construct: this brief implements ONLY JSON-shaped type declarations, `///` descriptions, and `aion awl schema` emission. NO enums, NO match/case, NO named-argument change, NO typed child contracts, NO otherwise, NO parallel/race, NO spawn, NO `each ... in order`, NO indexing, NO until-fresh-binding fix — each is its own AWL-1 brief.",
+      "Enum -> string-enum schema emission is DEFERRED to AWL1-002 and MUST NOT be half-implemented; records + Option(T) are the schema surface for this brief.",
+      "The JSON Schema constraint vocabulary (minLength, pattern, numeric minimum/maximum, format) is DELIBERATELY NOT imported — types + descriptions are the contract surface; value validation is an action's job. No such key may appear in any emitted schema.",
+      "NO Gleam-emitter behavior change: pre-existing *.gleam.golden fixtures stay byte-identical (measured: the emitter reads only field.name/field.ty). If a real emitter change is forced, STOP and report it before making it.",
+      "The schema derivation is ONE public aion-awl function reused by the CLI; do NOT reimplement schema logic inside crates/aion-cli — the CLI is a thin wrapper (AWL1-015 and other consumers depend on the single derivation).",
+      "SCOPE FENCE: the diff touches ONLY files under crates/aion-awl/ and crates/aion-cli/. NO ci.yml, NO docs, NO other crate, NO workspace Cargo.toml. If you believe an edit outside those two crates is required, STOP and report it as a finding.",
+      "NO LINT-POLICY WEAKENING: crates/aion-awl/Cargo.toml and crates/aion-cli/Cargo.toml keep exactly one `[lints]` section = `workspace = true`; introduce NO bypass by any mechanism, and do not re-open any bypass the Wave-0 purge removed.",
+      "CLAUDE.md standards are not bypassed: files <= 500 lines, mod.rs = re-exports only, thiserror in the library, no unwrap()/expect()/panic!() in library code."
+    ],
+    "acceptance": [
+      "no-bypasses-crate-wide gate (GREEN invariant on base): `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` exits 0 — no bypass introduced by the new modules/tests.",
+      "lints-pinned-awl and lints-pinned-cli gates (GREEN on base): each crate's Cargo.toml has exactly one `[lints]` section and it is `workspace = true` (blocks the Cargo.toml lint-policy escape hatch).",
+      "scope-fence gate (GREEN on base): `git diff --exit-code --no-ext-diff {base_commit} -- . ':(exclude)crates/aion-awl' ':(exclude)crates/aion-cli'` is empty — nothing changed outside the two owned crates.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings, both clean.",
+      "awl-check-local gate (RED on base BY DESIGN — the new must-pass fixtures do not exist yet): builds aion once, asserts the must-pass set {hello.awl, research_report.awl, research_report.canonical.awl, typed_contract.awl, typed_contract.canonical.awl} each exists and exits 0, and holds {bounded_cycle.awl, bounded_cycle.canonical.awl} as an expected failure that fails the gate if either is missing OR ever exits 0 (existence-guarded BOTH directions, BRIEF-CRAFT entry 22). Green when the new fixtures land and check clean.",
+      "cargo test -p aion-awl passes in full, including: R1 parser tests (single-line, multi-line, missing-comma, trailing-comma all parse to equal ordered field lists); R2/CN4 byte-level round-trip over ALL fixtures incl. the new ones; R3 description attachment (type-level and field-level `///` populate descriptions; a `//` above a type/field does NOT); R5 emitter tests with every pre-existing *.gleam.golden byte-identical.",
+      "cargo test -p aion-cli passes, including a test asserting `aion awl schema` reproduces the committed schema golden byte-for-byte and exits non-zero on a document that fails the checker.",
+      "schema-golden gate (RED on base BY DESIGN — no such test target yet): `cargo test -p aion-awl --test schema` passes; the golden test lives at crates/aion-awl/tests/schema.rs and pins schema_for_type's output for a representative fixture type. The emitted schema has `$schema` = the draft 2020-12 URI, `required` excluding Option(T) fields and including all non-Option fields, `///` text as `description` at type and field level, and NO minLength/pattern/minimum/maximum/format key.",
+      "Hand review (operator, before merge): schema_for_type is a PUBLIC aion-awl function in crates/aion-awl/src/schema/ (mod.rs = re-exports only), re-exported from lib.rs, and the CLI is a thin wrapper over it (no reimplementation in aion-cli); the new multi-line/`///`/Option fixtures round-trip byte-for-byte; every pre-existing *.canonical.awl and *.gleam.golden is unchanged; no enum, match, constraint-vocabulary, or other AWL-1 construct crept in; files <= 500 lines; mod.rs re-exports only; no bypass anywhere; both Cargo.tomls byte-identical."
+    ],
+    "notes": "DISPATCH HISTORY (read this first): this is the FIRST Wave-1 front-end brief; the Wave-0 refactor sequence (AWL0-REFAC-001a..e-b) LANDED just before it. Two facts from that sequence bind you. (1) The parent AWL0-REFAC-001 was REJECTED TWICE at operator review for fraud: dispatch 1 faked a module split with `include!(\"parts/part_00.rs\")` splices behind 2-line mod.rs files plus a crate-wide `#![allow(...)]`; dispatch 2 replaced aion-awl's `[lints] workspace = true` with a private allow-list to silence clippy. BOTH escape hatches are now mechanical gates here (the crate-wide no-bypasses grep and the two lints-pinned checks), and the crate is currently ZERO-bypass and fully split under 500 lines. Do the real work; an honest \"cannot be done within these boundaries\" report beats any green obtained by weakening a gate. (2) AWL0-REFAC-001e-b wired a CI `awl-check` job that runs `aion awl check` over crates/aion-awl/tests/fixtures/*.awl — so the typed_contract fixtures you add WILL run in CI on merge and MUST check clean; the two bounded_cycle fixtures remain a knowing expected-failure until AWL1-004 lands typed child contracts.\n\nTECHNIQUE: (R1) Extend parse_type_decl in crates/aion-awl/src/parser/document.rs to consume a multi-line body: when the header line does not close the record on its own line, consume the following indent-2 field lines and the column-1 `}` line, reusing comma_parts (parser/calls.rs) and the existing empty-part skip so a missing/trailing comma never errors; single-line stays as-is. Keep parser files <= 500 lines — add a child module (e.g. parser/types.rs already exists for TypeRef; a type-declaration helper can live beside it) rather than bloating document.rs, and keep parser/mod.rs re-exports only. (R3) Add `///` recognition to parser/source.rs: a line whose trimmed code begins with exactly `///` is a description line, not a `//` comment (careful: `strip_prefix(\"//\")` currently matches `///` too — distinguish `///` FIRST); attach a `///` run above `type` as the type description and above a field as that field's description during parse_type_decl; `//` stays trivia. (R2) In printer.rs type_decl, compute the single-line rendering, measure its full character width from column 1, and emit single-line iff <= 100 else one `field: Type,` per line (trailing comma on every line) with the `///` lines re-emitted above the type and each field. (R4) Create crates/aion-awl/src/schema/ (mod.rs = pub mod/pub use only) with a public schema_for_type building a serde_json::Value (records -> object/properties/required, Option(T) -> optional property = schema-of-T, `///` -> description, `$schema` = draft 2020-12 URI) and a thiserror SchemaError for unknown-type / unclean-document; re-export from lib.rs. Then add the `Schema { file, #[arg(long)] type: Option<String> }` variant + wrapper in crates/aion-cli/src/awl.rs, mirroring emit_source (parse -> check-clean -> derive -> print; same diagnostic contract). Prove the CLI reproduces the golden with an aion-cli test. serde_json is already a workspace dependency (used throughout aion-cli); if aion-awl does not yet depend on it, adding serde_json to crates/aion-awl/Cargo.toml [dependencies] is in-scope and does NOT touch [lints] (the lints-pinned gate checks only the [lints] section).\n\nDETERMINACY GAP — OPERATOR-RULED (see context; not yours to choose): signature is `schema_for_type(&Document, &str) -> Result<serde_json::Value, SchemaError>`, callers check clean first, NO checked-document wrapper. Note it as a spec deviation in your report. SECOND OPERATOR RULING — Option(T) schema shape: the spec's literal words are the contract — an Option(T) field's property schema IS the schema of T (no null-union, no {\"type\":[\"T\",\"null\"]}, no anyOf-with-null), and optionality is expressed SOLELY by exclusion from `required`. Do not invent nullable emission; whether explicit-null should validate is a spec-revision question the operator owns, not this brief's.\n\nMEASURED RECON (authoring, against current main HEAD; the run substitutes {base_commit} at gate time). Verified against the code: (a) multi-line `type` bodies do NOT parse today — parse_type_decl reads one line and the indent-2 body / column-1 `}` are not consumed, so R1's multi-line form is entirely new. (b) `///` is NOT distinguished today — parser/source.rs SourceLines::new captures every `//`-prefixed own-line as trivia (a `///` line becomes a Comment with text starting `/`), so R3 needs new recognition + attachment. (c) Single-line tolerant commas ALREADY work (comma_parts + empty-part skip). (d) The printer emits type decls single-line only; the longest existing fixture type decl renders 73 columns, so under the 100-col rule ALL existing type decls stay single-line byte-identical -> NO existing *.canonical.awl changes. (e) The Gleam emitter reads only field.name/field.ty (emitter/codecs.rs emit_codec + collect_composite_types) and never descriptions, and multi-line parse yields an identical AST -> NO emitter change and every existing *.gleam.golden stays byte-identical (R5). (f) check(&Document) -> Vec<CheckError>; no CheckedDocument (see the determinacy gap). (g) Both crates/aion-awl/Cargo.toml and crates/aion-cli/Cargo.toml carry exactly one `[lints]` section = `workspace = true`. (h) No crates/aion-awl/src/schema module exists. (i) No dev/AWL1-001 branch exists.\n\nDIVERGENCES from the AWL1-001-input.json contract (resolved at authoring, stated per CN1): (1) the input.json's gate list and CN3 still name `cargo test --workspace` as a gate; the AUTHORITATIVE gate set is this dispatch's scoped one (aion-awl + aion-cli), per AWL-EXECUTION-PLAN.md's ruling that the workspace suite is NOT a workflow gate while #243/#244 are open — the operator runs it by hand at merge. (2) The input.json lists the schema golden as brief.schema.golden.json (R4) while the fixture is typed_contract.awl / typed_contract.canonical.awl (R5/R6); this dispatch reconciles them as one coherent set: typed_contract.awl declares a `Brief` type, and `aion awl schema typed_contract.awl --type Brief` reproduces brief.schema.golden.json — honoring both file lists. (3) The input.json lists crates/aion-cli/src/main.rs under R4 modify; measured, main.rs needs NO code change (Command::Awl already dispatches via awl::run) — touch it only for the optional Awl doc-comment.\n\nSIZING: this is a genuine full vertical (AST + a new multi-line parser path + `///` lexer/attachment + a 100-col printer rule + a new public schema module + a CLI subcommand + fixtures + three kinds of golden), materially larger than the deliberately one-file Wave-0 sub-briefs. It fits the one-dev-round + 3-fix-cycle envelope only if the developer stays strictly within the three spec rules; the scope fence, the enum/constraint-vocabulary exclusions, and the measured 'no emitter change / no existing-golden change' facts are embedded precisely so the developer neither over-builds (enums, constraints, a checked-document layer) nor chases phantom golden churn. If mid-run the vertical proves too large for the envelope, report it honestly and land what is complete rather than faking the rest — the operator would rather split than accept a half-state.\n\nGATES: FOUR are GREEN ON BASE (any red in them is yours): no-bypasses-crate-wide (crates/aion-awl/ is zero-bypass post Wave-0; keep it so), lints-pinned-awl, lints-pinned-cli, scope-fence (empty diff on a clean tree; goes red on ANY edit outside the two owned crates). TWO are RED ON BASE BY DESIGN because they ARE the work: awl-check-local (the new typed_contract must-pass fixtures do not exist yet -> MISSING MUST-PASS on base; green when they land and check clean, with bounded_cycle still red-as-expected and existence-guarded both directions per entry 22) and schema-golden (`cargo test -p aion-awl --test schema` has no target on base; green when tests/schema.rs + brief.schema.golden.json land). The scope-fence is pinned to the `{base_commit}` token, which the worker substitutes at gate-run time with the run's provisioned base — no manual re-pin no matter how far main moves. KNOWN FLAKES, pre-briefed verbatim: the gates here deliberately avoid the flaky full-workspace suite. #243 (aion-package append_run_regenerates_type_checking_gleam) and #244 (aion-server --lib) flake under load in crates this diff never touches and are not run by any gate here. #248 is load-sensitive and DOES intersect a gate: the aion-awl emitter compile tests (invoked under `cargo test -p aion-awl`) and examples_e2e invm_demo can flake under load. Protocol: if `cargo test -p aion-awl` fails ONLY on an emitter compile / gleam-toolchain test while your type/parser/printer/schema tests pass and your diff touches only the two owned crates, re-run the gate ONCE and, before blaming your change, provenance-check against {base_commit} (does the same test fail on the untouched base under the same load?) — report the flake honestly rather than attempting an out-of-scope fix. Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs every gate by hand (plus the full workspace suite) before merge."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "max_fix_cycles": 3,
+    "gates": [
+      {
+        "name": "no-bypasses-crate-wide",
+        "argv": [
+          "bash",
+          "-lc",
+          "! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/"
+        ]
+      },
+      {
+        "name": "lints-pinned-awl",
+        "argv": [
+          "bash",
+          "-lc",
+          "test \"$(grep -c '^\\[lints' crates/aion-awl/Cargo.toml)\" -eq 1 && grep -A1 '^\\[lints\\]$' crates/aion-awl/Cargo.toml | grep -q '^workspace = true'"
+        ]
+      },
+      {
+        "name": "lints-pinned-cli",
+        "argv": [
+          "bash",
+          "-lc",
+          "test \"$(grep -c '^\\[lints' crates/aion-cli/Cargo.toml)\" -eq 1 && grep -A1 '^\\[lints\\]$' crates/aion-cli/Cargo.toml | grep -q '^workspace = true'"
+        ]
+      },
+      {
+        "name": "scope-fence",
+        "argv": [
+          "bash",
+          "-lc",
+          "git diff --exit-code --no-ext-diff {base_commit} -- . ':(exclude)crates/aion-awl' ':(exclude)crates/aion-cli'"
+        ]
+      },
+      {
+        "name": "fmt",
+        "argv": [
+          "cargo",
+          "fmt"
+        ]
+      },
+      {
+        "name": "clippy",
+        "argv": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ]
+      },
+      {
+        "name": "awl-check-local",
+        "argv": [
+          "bash",
+          "-lc",
+          "cargo build -p aion-cli --bin aion -q && B=target/debug/aion; s=0; for f in crates/aion-awl/tests/fixtures/hello.awl crates/aion-awl/tests/fixtures/research_report.awl crates/aion-awl/tests/fixtures/research_report.canonical.awl crates/aion-awl/tests/fixtures/typed_contract.awl crates/aion-awl/tests/fixtures/typed_contract.canonical.awl; do test -f \"$f\" || { echo \"MISSING MUST-PASS: $f\"; s=1; continue; }; \"$B\" awl check \"$f\" >/dev/null 2>&1 || { echo \"MUST-PASS FAILED: $f\"; s=1; }; done; for f in crates/aion-awl/tests/fixtures/bounded_cycle.awl crates/aion-awl/tests/fixtures/bounded_cycle.canonical.awl; do test -f \"$f\" || { echo \"MISSING EXPECTED-FAIL: $f\"; s=1; continue; }; \"$B\" awl check \"$f\" >/dev/null 2>&1 && { echo \"EXPECTED-FAIL NOW GREEN (AWL1-004 landed - retire carve-out): $f\"; s=1; }; done; exit $s"
+        ]
+      },
+      {
+        "name": "test-aion-awl",
+        "argv": [
+          "cargo",
+          "test",
+          "-p",
+          "aion-awl"
+        ]
+      },
+      {
+        "name": "test-aion-cli",
+        "argv": [
+          "cargo",
+          "test",
+          "-p",
+          "aion-cli"
+        ]
+      },
+      {
+        "name": "schema-golden",
+        "argv": [
+          "cargo",
+          "test",
+          "-p",
+          "aion-awl",
+          "--test",
+          "schema"
+        ]
+      }
+    ],
+    "lenses": [
+      {
+        "name": "correctness",
+        "charter": "Hunt defects in the change itself. Highest-value classes for this brief: (1) the tolerant parse is not actually tolerant — a missing or trailing comma, single-line OR multi-line, must parse without error to the SAME ordered field list; construct all four spellings of one declaration and confirm equal ASTs (ignoring spans). (2) The 100-col printer rule is off-by-one or measures the wrong thing — the measure is the full single-line physical width from column 1 including `type Name {` and the closing `}`; exactly 100 fits, 101 breaks to one-field-per-line with a trailing comma on EVERY line; verify a boundary case and that round-trip (parse.print=id, print.parse.print=print) holds byte-for-byte. (3) `///` is mis-attached or leaks — a `///` above `type` is the type description, a `///` above a field is that field's description, a `//` above either stays trivia and populates NO description; and `///` round-trips byte-for-byte. (4) The schema is wrong — `required` must exclude exactly the Option(T) fields; an Option(T) field's property schema is EXACTLY the schema of T (the operator has RULED no null-union / no nullable wrapper — emitting one is a defect, not a judgment call); `$schema` is the draft 2020-12 URI, descriptions appear at every level, and NO constraint-vocabulary key (minLength/pattern/minimum/maximum/format) is emitted. (5) Silent failure — the schema derivation and CLI must error loudly (span-anchored for the CLI) on an unknown --type or an unclean document, never emit a partial or empty schema. Before labeling any change to an existing golden a REGRESSION, read the base version (`git show {base_commit}:<file>`): the measured expectation is that NO existing *.canonical.awl or *.gleam.golden changes — a change that does is a real defect, not a preserved quirk."
+      },
+      {
+        "name": "regressions",
+        "charter": "Hunt collateral damage: behaviour the diff changes that the brief did not ask to change. This brief touches ONLY crates/aion-awl/ and crates/aion-cli/ — any edit elsewhere is an automatic regression and a scope-fence failure. Watch specifically: (a) every pre-existing *.gleam.golden MUST be byte-identical (the emitter reads only field.name/field.ty; a golden change means the developer perturbed emission — blocking unless it is an intentional, reviewed update tied to a new type-form fixture, which this brief does not require); (b) every pre-existing *.canonical.awl MUST be byte-identical (all existing type decls are <= 73 cols and stay single-line); (c) existing parser/printer/checker tests must stay green UNMODIFIED except where the developer legitimately extends a test file with new cases; (d) mod.rs files stay re-exports only; no file crosses 500 lines; (e) both Cargo.tomls keep `[lints] workspace = true` and introduce no new [lints] policy (adding serde_json to [dependencies] is fine). Before calling a preserved pre-existing behaviour a regression, read the base version first (BRIEF-CRAFT entry 16)."
+      },
+      {
+        "name": "brief_compliance",
+        "charter": "Hold the diff to the brief, adversarially: every acceptance criterion either demonstrably met (with evidence in the diff or gate output) or a blocking finding; every scope_out boundary respected; every claimed deviation actually declared. Pass-and-still-wrong is the failure class. Confirm specifically: R1 both forms parse tolerantly to equal ordered field lists; R2 the 100-col canonical rule with byte-level round-trip; R3 `///` load-bearing on type and field with `//` staying trivia; R4 schema_for_type is a PUBLIC aion-awl function in crates/aion-awl/src/schema/ (mod.rs re-exports only), re-exported from lib.rs, and `aion awl schema <file> [--type Name]` is a THIN wrapper over it (NO schema logic reimplemented in aion-cli), emitting draft 2020-12 with required excluding Option(T) and NO constraint vocabulary; R5 no emitter behavior change and every *.gleam.golden byte-identical; R6 the new fixtures cover single-line <=100col, multi-line >100col with trailing commas, type-level AND field-level `///`, and an Option(T) field, each with its committed golden, and round-trip holds over all fixtures. Confirm the OUT items are truly absent: no enum/string-enum emission, no match, no named-arg change, no constraint vocabulary, no other AWL-1 construct. Docs-quality clause: a placeholder doc-comment or a golden that is not actually reproduced by the shipped command is a blocking finding. Run the awl-check-local and schema-golden gate shells yourself to confirm they are not hollow."
+      },
+      {
+        "name": "spec_fidelity",
+        "charter": "Read AWL-0-SPEC-DRAFT.md section 'Type declarations: JSON-shaped, described, schema-emitting (DECIDED 2026-07-09)' (the CONTRACT) and check the implementation CLAUSE BY CLAUSE. Rule 1 (JSON-shaped layout): braces + `field: Type` pairs + comma-separated; canonical rendering single-line iff <=100 columns else one field per line with a trailing comma on every line (the 100-col measure is the full single-line physical width from column 1 including `type Name {` and `}`, no indentation since types are top-level, exactly 100 fits); tolerant parse accepting both forms and missing/trailing commas either way ('a comma should never be the reason a check fails'). Rule 2 (descriptions): `///` on the type and on any field are load-bearing DATA that flow into the JSON Schema `description` at each level, while `//` remains ignorable trivia. Rule 3 (schema on demand): `aion awl schema <file> [--type Name]` emits draft 2020-12 — records -> object with properties/required (non-Option required, Option(T) optional), `///` -> description at every level; AND the derivation is a PURE PUBLIC aion-awl function reused by every consumer (the CLI is an on-demand inspection of that same derivation, never a reimplementation). Confirm the deliberate EXCLUSIONS the spec states: the constraint vocabulary (minLength/pattern/numeric bounds) is NOT authorable inline and NOT emitted; enum -> string-enum mapping belongs to AWL1-002 and must NOT appear here (the spec's separate 'Enums' subsection is out of this brief). Any clause under- or over-implemented — including a heavy checked-document layer the spec did not ask for, or enum/constraint scope creep — is a spec-fidelity finding. TWO clauses carry OPERATOR RULINGS that resolve spec ambiguity — hold the implementation to the ruling, and do NOT reject for following it: (i) the signature is schema_for_type(&Document, &str) with callers checking clean first (no CheckedDocument layer exists or may be invented); (ii) an Option(T) property schema is EXACTLY the schema of T with optionality expressed solely via `required` exclusion (no null-union). Report any OTHER spec ambiguity as a finding, not as license to redesign."
+      }
+    ],
+    "verify_gates": [
+      {
+        "name": "no-bypasses-crate-wide",
+        "argv": [
+          "bash",
+          "-lc",
+          "! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/"
+        ]
+      },
+      {
+        "name": "lints-pinned-awl",
+        "argv": [
+          "bash",
+          "-lc",
+          "test \"$(grep -c '^\\[lints' crates/aion-awl/Cargo.toml)\" -eq 1 && grep -A1 '^\\[lints\\]$' crates/aion-awl/Cargo.toml | grep -q '^workspace = true'"
+        ]
+      },
+      {
+        "name": "lints-pinned-cli",
+        "argv": [
+          "bash",
+          "-lc",
+          "test \"$(grep -c '^\\[lints' crates/aion-cli/Cargo.toml)\" -eq 1 && grep -A1 '^\\[lints\\]$' crates/aion-cli/Cargo.toml | grep -q '^workspace = true'"
+        ]
+      },
+      {
+        "name": "scope-fence",
+        "argv": [
+          "bash",
+          "-lc",
+          "git diff --exit-code --no-ext-diff {base_commit} -- . ':(exclude)crates/aion-awl' ':(exclude)crates/aion-cli'"
+        ]
+      },
+      {
+        "name": "fmt",
+        "argv": [
+          "cargo",
+          "fmt"
+        ]
+      },
+      {
+        "name": "clippy",
+        "argv": [
+          "cargo",
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ]
+      },
+      {
+        "name": "awl-check-local",
+        "argv": [
+          "bash",
+          "-lc",
+          "cargo build -p aion-cli --bin aion -q && B=target/debug/aion; s=0; for f in crates/aion-awl/tests/fixtures/hello.awl crates/aion-awl/tests/fixtures/research_report.awl crates/aion-awl/tests/fixtures/research_report.canonical.awl crates/aion-awl/tests/fixtures/typed_contract.awl crates/aion-awl/tests/fixtures/typed_contract.canonical.awl; do test -f \"$f\" || { echo \"MISSING MUST-PASS: $f\"; s=1; continue; }; \"$B\" awl check \"$f\" >/dev/null 2>&1 || { echo \"MUST-PASS FAILED: $f\"; s=1; }; done; for f in crates/aion-awl/tests/fixtures/bounded_cycle.awl crates/aion-awl/tests/fixtures/bounded_cycle.canonical.awl; do test -f \"$f\" || { echo \"MISSING EXPECTED-FAIL: $f\"; s=1; continue; }; \"$B\" awl check \"$f\" >/dev/null 2>&1 && { echo \"EXPECTED-FAIL NOW GREEN (AWL1-004 landed - retire carve-out): $f\"; s=1; }; done; exit $s"
+        ]
+      },
+      {
+        "name": "test-aion-awl",
+        "argv": [
+          "cargo",
+          "test",
+          "-p",
+          "aion-awl"
+        ]
+      },
+      {
+        "name": "test-aion-cli",
+        "argv": [
+          "cargo",
+          "test",
+          "-p",
+          "aion-cli"
+        ]
+      },
+      {
+        "name": "schema-golden",
+        "argv": [
+          "cargo",
+          "test",
+          "-p",
+          "aion-awl",
+          "--test",
+          "schema"
+        ]
+      }
+    ]
+  }
+}
