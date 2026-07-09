@@ -1,0 +1,142 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001e-b",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001e-b",
+    "cluster": "awl",
+    "title": "aion-awl CI WIRING (finale part B): wire `aion awl check` over the tests/fixtures/*.awl checker-fixture set into .github/workflows/ci.yml with a mechanically-visible bounded_cycle expected-failures carve-out pointing at AWL1-004, AND wire the crate-wide zero-bypass grep as a PERMANENT CI gate. A TINY diff scoped to ONE file (.github/workflows/ci.yml). Depends on AWL0-REFAC-001e-a landing (the purge that turns the crate-wide grep green). Split from the AWL0-REFAC-001e finale per operator right-sizing ruling.",
+    "depends_on": [
+      "AWL0-REFAC-001e-a"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "Part B of the two-way split of the AWL0-REFAC-001e hygiene finale (operator ruling 2026-07-09; see the SIZING note in the superseded AWL0-REFAC-001e-input.json and BRIEF-CRAFT entry 10 / generalised principle 5). 001e-a HYGIENE PURGE made crates/aion-awl/ zero-bypass a TRUE fact (ast.rs 190 docs, printer.rs vestigial deletion, the three test files' 55 sites converted to Result-returning tests); 001e-b CI WIRING makes that state PERMANENT and closes the CI blind spot that hid the bounded_cycle checker failures. This brief is DEPENDENT on 001e-a having landed: at dispatch time crates/aion-awl/ carries ZERO bypasses (so the crate-wide grep is already GREEN — this brief wires it as a permanent GUARD, not to flip it), and the crate is fully split under the 500-line limit. This brief owns EXACTLY ONE file — .github/workflows/ci.yml — and adds (1) an additive fast-lane `awl-check` job running `aion awl check` over every committed checker fixture in crates/aion-awl/tests/fixtures/*.awl, asserting the must-pass set exits 0 and holding the two bounded_cycle fixtures as an EXPLICIT, mechanically-visible expected-failure that FAILS THE JOB if either ever exits 0, with an inline comment pointing at AWL1-004 (typed child contracts) as the brief that retires the carve-out; and (2) the permanent crate-wide zero-bypass grep as a CI gate. AUTHORING NOTE (measure-first, BRIEF-CRAFT principle 10): `aion awl check <file>` (crates/aion-cli/src/awl.rs) parses+typechecks one .awl document, prints `ok: <file> (N steps)` + exit 0 on success and a `<file>:<line>:<col>: error: <message>` diagnostic + non-zero exit on failure. Authoring RE-RAN it on base fab18d2373dd22b2f2794ede8ce02c41d33234d6 over the five committed checker fixtures: crates/aion-awl/tests/fixtures/{hello.awl (ok, 2 steps), research_report.awl (ok, 7 steps), research_report.canonical.awl (ok, 7 steps)} PASS; crates/aion-awl/tests/fixtures/bounded_cycle.awl FAILS at 22:3 and bounded_cycle.canonical.awl FAILS at 23:3, both with `error: as binding \\`state\\` expected ReviewState, found untyped child result`. The two aspirational AWL-1 example docs docs/design/aion-authoring/awl/examples/{approval_gate.awl, sized_fanout.awl} are documentation ahead of the implementation (they fail with AWL1-005 `unknown step field \\`otherwise\\`` and AWL1-002 `type declaration needs record fields` respectively) and are OUT OF this checker-fixtures gate's scope by design — do NOT wire them.",
+    "task": "Wire two additive CI gates into .github/workflows/ci.yml at ZERO cost to any other file. TWO concerns, one file. (1) awl-check job — add an additive fast-lane job (mirror the existing `codegen-drift` and `no-norn-in-platform` additive-job convention: checkout, dtolnay/rust-toolchain@stable, Swatinem/rust-cache@v2, then a run step; codegen-drift uses `cargo run -p aion-cli --bin aion -- generate ...` — use the same `cargo run -p aion-cli --bin aion -- awl check <file>` invocation, or build the binary once and invoke it) that runs `aion awl check` over every committed checker fixture in crates/aion-awl/tests/fixtures/*.awl and enforces this contract: the MUST-PASS set crates/aion-awl/tests/fixtures/{hello.awl, research_report.awl, research_report.canonical.awl} SHALL each exit 0 (the job fails if any regresses); the two bounded_cycle fixtures crates/aion-awl/tests/fixtures/{bounded_cycle.awl, bounded_cycle.canonical.awl} SHALL be held as an EXPLICIT EXPECTED FAILURE — each currently exits non-zero with `... error: as binding \\`state\\` expected ReviewState, found untyped child result` (bounded_cycle.awl at 22:3, bounded_cycle.canonical.awl at 23:3) — and the job SHALL FAIL LOUDLY if EITHER bounded_cycle fixture ever exits 0, with an inline comment naming AWL1-004 (typed child contracts) as the brief that makes them pass and instructing the reader to retire the carve-out (move the fixture into the must-pass set) at that point. This makes the carve-out mechanically-visible and self-retiring — a silent skip (not running the bounded_cycle fixtures), a deleted fixture, or an edited fixture that makes the checker pass are each a BLOCKING finding, not a fix. Do NOT add the two aspirational AWL-1 example docs (docs/design/aion-authoring/awl/examples/approval_gate.awl, sized_fanout.awl) to this job — they are documentation ahead of the implementation (AWL1-005 / AWL1-002) and out of this checker-fixtures gate's scope. (2) crate-wide zero-bypass permanent gate — add a job (or a step in a mechanical-assertion job, mirroring `no-norn-in-platform`) that runs `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` (or the CI-portable equivalent over the same pattern and the same crates/aion-awl/ path) so any future bypass in src OR tests dies in CI forever. 001e-a made this grep GREEN; this brief makes it a PERMANENT guard. Do NOT edit any file outside .github/workflows/ci.yml — in particular do NOT touch any src file, any test file, any fixture/.golden/.canonical file, crates/aion-awl/Cargo.toml, any other crate, or any doc; a git-diff scope fence enforces this. In particular do NOT edit a fixture to make the checker pass, and do NOT re-open any bypass 001e-a purged. If you believe an edit outside ci.yml is required, STOP and report it as a finding instead of making it.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Wire `aion awl check` over the tests/fixtures set in CI with a mechanically-visible bounded_cycle expected-failures carve-out pointing at AWL1-004",
+        "spec": "THE .github/workflows/ci.yml SHALL gain an additive fast-lane job (mirroring the existing `codegen-drift` / `no-norn-in-platform` additive-job convention) that runs `aion awl check` over every committed checker fixture in crates/aion-awl/tests/fixtures/*.awl and enforces the following contract. `aion awl check <file>` parses+typechecks one .awl document, exits 0 printing `ok: <file> (N steps)` on success and exits non-zero printing a `<file>:<line>:<col>: error: <message>` diagnostic on failure (authoring-run on base fab18d23). THE job SHALL assert the MUST-PASS set — crates/aion-awl/tests/fixtures/{hello.awl, research_report.awl, research_report.canonical.awl} — each exits 0, failing the job if any regresses. THE job SHALL hold the two bounded_cycle fixtures — crates/aion-awl/tests/fixtures/{bounded_cycle.awl, bounded_cycle.canonical.awl} — as an EXPLICIT EXPECTED FAILURE: each currently exits non-zero with `... error: as binding \\`state\\` expected ReviewState, found untyped child result` (authoring-run: bounded_cycle.awl at 22:3, bounded_cycle.canonical.awl at 23:3). The job SHALL FAIL LOUDLY if EITHER bounded_cycle fixture ever exits 0, with an inline comment naming AWL1-004 (typed child contracts) as the brief that makes them pass and instructing the reader to retire the carve-out (move the fixture into the must-pass set) at that point. This is the plan's `expected-failures note guarded against silent green`: a silent skip (not running the bounded_cycle fixtures), a deleted fixture, or an edited fixture that makes the checker pass are each a BLOCKING finding, not a fix. THE two aspirational AWL-1 example docs docs/design/aion-authoring/awl/examples/{approval_gate.awl, sized_fanout.awl} SHALL NOT be added to this gate (authoring-measured: they fail with `unknown step field \\`otherwise\\`` = AWL1-005 and `type declaration needs record fields` = AWL1-002 respectively; they are documentation ahead of the implementation, out of this checker-fixtures gate's scope). No source, fixture, golden, or canonical file SHALL be edited to satisfy this requirement; only .github/workflows/ci.yml changes.",
+        "acceptance": [
+          ".github/workflows/ci.yml contains a job that runs `aion awl check` over crates/aion-awl/tests/fixtures/*.awl.",
+          "The must-pass set (hello, research_report, research_report.canonical) is asserted to check clean; the job fails if any regresses.",
+          "The two bounded_cycle fixtures are held as an expected failure that FAILS THE JOB if either checks clean, with an inline comment pointing at AWL1-004 — not a silent skip.",
+          "No fixture, golden, or canonical file changed (the scope fence forbids it); approval_gate.awl and sized_fanout.awl are NOT wired into this gate.",
+          "The awl-check-local gate (the same shell the CI job runs) passes: must-pass fixtures exit 0, bounded_cycle fixtures exit non-zero."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            ".github/workflows/ci.yml"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Wire the crate-wide zero-bypass grep as a PERMANENT CI gate",
+        "spec": "THE .github/workflows/ci.yml SHALL gain a permanent gate (a job, or a step in a mechanical-assertion job mirroring `no-norn-in-platform`) that runs `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` (or the CI-portable equivalent over the same pattern and the same crates/aion-awl/ path) so any future #[allow]/#![allow]/#[expect]/#![expect]/#[ignore]/include!() introduced in src OR tests fails CI forever. 001e-a made this grep GREEN (crates/aion-awl/ carries zero bypasses at this brief's dispatch); this brief wires it as the permanent guard. The gate SHALL name only the crates/aion-awl/ path, which EXISTS, so it does not hit the ugrep exit-2 false-green trap (a `! grep` over a nonexistent path exits 2 and the `!` flips it to a false green — never name a path that might not exist). crates/aion-awl/Cargo.toml SHALL remain byte-identical to base_ref — no lint-policy weakening through the manifest.",
+        "acceptance": [
+          ".github/workflows/ci.yml contains a permanent gate running `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` (or the CI-portable equivalent) over crates/aion-awl/.",
+          "The gate names only paths that exist (crates/aion-awl/), avoiding the ugrep exit-2 false-green.",
+          "`! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` exits 0 at this brief's base (001e-a landed) — the gate is a green invariant guard, not a red-by-design flip.",
+          "crates/aion-awl/Cargo.toml is byte-identical to base_ref."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            ".github/workflows/ci.yml"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Mechanically fenced scope: the diff touches ONLY .github/workflows/ci.yml",
+        "spec": "THE complete diff versus base_ref SHALL touch ONLY .github/workflows/ci.yml. NO other file in the repository — any src file, any test file, any fixture/.golden/.canonical file, crates/aion-awl/Cargo.toml, any other crate, any doc — SHALL change. In particular NO fixture SHALL be edited to make the checker pass, and NO bypass 001e-a purged SHALL be re-opened. A git-diff exclude gate pinned to the dispatch base SHA enforces this mechanically.",
+        "acceptance": [
+          "`git diff --exit-code --no-ext-diff <base> -- . ':(exclude).github/workflows/ci.yml'` exits 0 (nothing outside ci.yml changed)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "CI CARVE-OUT MUST BE MECHANICALLY VISIBLE (R1): the two bounded_cycle fixtures are an EXPECTED failure that fails the job if either ever checks clean, with an inline AWL1-004 pointer. A silent skip, a deleted fixture, or a fixture edited to pass the checker are each BLOCKING. Do NOT wire the aspirational examples (approval_gate.awl, sized_fanout.awl) into this gate — they are AWL-1 documentation ahead of the implementation and out of this gate's scope.",
+      "PERMANENT CRATE-WIDE GATE, NAMED PATHS ONLY (R2): the crate-wide zero-bypass grep is wired over crates/aion-awl/ (which exists — no ugrep exit-2 false-green). It is GREEN at this brief's base (001e-a purged the last five bypasses) — this brief makes it a permanent guard, it is not a red-by-design flip here.",
+      "SCOPE FENCE (R3): the diff touches ONLY .github/workflows/ci.yml. Every src/test/fixture/golden/canonical file, crates/aion-awl/Cargo.toml, and every other crate are UNMODIFIED. Do NOT edit a fixture to make the checker pass; do NOT re-open a purged bypass. If you believe an edit outside ci.yml is required, STOP and report it as a finding.",
+      "ZERO behavior change to the crate: this brief adds CI gates only. No src, test, fixture, golden, or manifest change; the round-trip property and emitter goldens are untouched (the scope fence makes perturbing them impossible without failing a gate).",
+      "NO LINT-POLICY WEAKENING: crates/aion-awl/Cargo.toml byte-identical; no bypass re-introduced anywhere (001e-a's zero-bypass state is preserved and now guarded)."
+    ],
+    "verification": [
+      "scope-fence gate (GREEN on base): git diff versus the pinned base SHA, excluding only .github/workflows/ci.yml, is empty.",
+      "no-bypasses-crate-wide gate (GREEN invariant on base — 001e-a landed): `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` exits 0. This brief must not re-open any bypass; the gate stays green.",
+      "ci-wired gate (RED on base BY DESIGN — it IS the work): .github/workflows/ci.yml wires the `aion awl check` fixtures job, the AWL1-004 carve-out pointer, and the crate-wide bypass-pattern permanent gate. RED on base (none present), GREEN when all three are wired.",
+      "awl-check-local gate (behavioural guard, GREEN on base): builds aion, runs `aion awl check` over crates/aion-awl/tests/fixtures/*.awl (the SAME shell the CI job will run), asserts the must-pass set exits 0 and the two bounded_cycle fixtures exit non-zero (fails if a bounded_cycle fixture is edited to pass — guards against silent green). GREEN on base and stays green as long as the carve-out is honest.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli, all clean (green invariants — this brief changes no Rust). (The full workspace suite is run by the operator at merge review while tasks #243/#244 are open.)",
+      "Hand review: ci.yml's awl-check job is present with the mechanically-visible bounded_cycle-expected-failure carve-out pointing at AWL1-004 (not a silent skip) and the aspirational examples deliberately excluded; the crate-wide zero-bypass grep is wired permanently over crates/aion-awl/ (named path exists); no fixture/golden/canonical/src/test/Cargo.toml edit; the crate-wide no-bypasses grep is GREEN."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 AWL0-REFAC-001e entry (the CI-wiring half) is the CONTRACT — implement it verbatim. The gate is scoped to the CHECKER-FIXTURE set crates/aion-awl/tests/fixtures/*.awl (five files, of which exactly the two bounded_cycle fixtures fail), which makes the plan's `two bounded_cycle fixtures` carve-out exactly complete; the two aspirational example docs are out of scope (see DIVERGENCES). Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses. This brief adds a CI gate that ENFORCES that standard crate-wide forever. It changes no Rust, so the library-code rules (thiserror, no unwrap in lib) do not arise; the one discipline that matters is not re-opening any bypass 001e-a purged."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: mechanical gates (scope-fence, no-bypasses-crate-wide, ci-wired, awl-check-local) -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred and the emitter goldens are byte-pinned; this brief touches only ci.yml, so it cannot perturb either (the scope fence forbids touching any src/test/fixture/golden)."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set (correctness, regressions, brief_compliance) PLUS a spec-fidelity lens — one reviewer reads the AWL0-REFAC-001e plan entry (the CI-wiring half) and this committed brief and checks the implementation clause by clause against R1-R3, especially that the bounded_cycle carve-out is an EXPLICIT, mechanically-visible expected-failure pointing at AWL1-004 (a silent skip or a fixture edited/deleted to pass is BLOCKING) and that the aspirational examples were not wired. All four lenses carry the docs-quality clause (a placeholder is a blocking finding — applied here to comment quality: the AWL1-004 carve-out comment must be a real, informative pointer, not a bare label) and the check-base-before-labeling-regression clause (BRIEF-CRAFT entry 16)."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs the gates by hand before merge, including running the awl-check job's shell locally."
+      }
+    ],
+    "intention": "Part B of the split AWL0-REFAC-001e hygiene finale (operator ruling 2026-07-09 — right-size the finale into 001e-a PURGE + 001e-b CI WIRING, e-b depending on e-a). 001e-a purged the last bypasses and made crates/aion-awl/ zero-bypass a TRUE fact; this brief makes that state PERMANENT (wiring the crate-wide zero-bypass grep as a CI gate) and closes the CI blind spot that hid the bounded_cycle checker failures (wiring `aion awl check` over the checker fixtures with a mechanically-visible bounded_cycle expected-failures carve-out pointing at AWL1-004). It is a TINY diff scoped to ONE file. Every non-negotiable is a mechanical gate (three GREEN on base — scope-fence, no-bypasses-crate-wide, awl-check-local; one RED on base by design — ci-wired, because it IS the work). CRUCIAL authoring findings (BRIEF-CRAFT principle 10 — MEASURE before mandating): `aion awl check` over EVERY committed .awl yields FOUR failures, of which exactly the two bounded_cycle fixtures are this gate's carve-out (scoping the gate to crates/aion-awl/tests/fixtures/*.awl makes the plan's `two bounded_cycle fixtures` carve-out exactly complete), and the other two are the plan's own aspirational AWL-1 example docs (approval_gate.awl = AWL1-005, sized_fanout.awl = AWL1-002), which are documentation ahead of the implementation and OUT OF scope. The measured pass/fail split and these resolutions are embedded so the developer neither wires phantom fixtures nor improvises the divergences.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program — Wave 0 sub-brief 001e split into 001e-b CI WIRING per operator right-sizing ruling; re-measured on current main fab18d23 after 001c's salvage landing)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}

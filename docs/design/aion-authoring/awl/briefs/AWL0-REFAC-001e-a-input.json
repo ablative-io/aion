@@ -1,0 +1,183 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001e-a",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001e-a",
+    "cluster": "awl",
+    "title": "aion-awl hygiene PURGE (finale part A): purge the LAST lint bypasses in the crate by doing the real work — ast.rs 190 missing_docs by real documentation, printer.rs vestigial `#![allow(missing_docs)]` deletion (delete-and-confirm, zero doc work), and the three test files' expect_used/unwrap_used/format_push_string (55 sites) by Result-returning tests. After this brief crates/aion-awl/ (src + tests) carries ZERO bypasses — the crate-wide zero-bypass grep goes GREEN here. Mechanically fenced scope: five owned files, NO CI edit (that is 001e-b). Split from the AWL0-REFAC-001e finale per operator ruling (right-sizing).",
+    "depends_on": [
+      "AWL0-REFAC-001c",
+      "AWL0-REFAC-001d"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "Part A of the two-way split of the AWL0-REFAC-001e hygiene finale (operator ruling 2026-07-09: the whole finale was authored as one brief but is too heavy for one dispatch envelope — 190 doc sentences + 55 test-site conversions + a novel CI mechanism spanning three distinct skills — so it is dispatched as 001e-a HYGIENE PURGE and 001e-b CI WIRING, with 001e-b depending on 001e-a landing; see the SIZING note in the superseded AWL0-REFAC-001e-input.json and BRIEF-CRAFT entry 10 / generalised principle 5). 001e-a owns THE PURGE: it purges the LAST remaining lint bypasses in crates/aion-awl/ by doing the real work and makes the crate-wide zero-bypass state a TRUE fact (the CI gate that keeps it permanent forever is 001e-b's job). The four splits landed the crate under the 500-line limit and purged the earlier bypasses (001a checker, 001b lib.rs + 4-attr purge, 001c parser + allow-block purge, 001d emitter pure split); this brief purges the REMAINDER. Its dispatch depends on 001c (whose parser/mod.rs re-export resolves printer.rs's `use crate::parser::duration_text;`) AND 001d (the finale lands after every split is complete). At dispatch time crates/aion-awl/src/parser/ and src/emitter/ folder modules exist; 001c already purged parser.rs's line-1 block; emitter carried no block (001d). This brief's five targets — ast.rs, printer.rs, and the three test files — are protected from 001c/001d by their scope fences, so the authoring measurements embedded below (RE-MEASURED on base fab18d2373dd22b2f2794ede8ce02c41d33234d6 = current main after 001c's salvage landing) remain EXACT at dispatch. THREE concerns, one contract: (1) ast.rs `#![allow(missing_docs)]` (line 1) hides 190 real missing-doc items — the entire AWL AST type surface — purged by WRITING real documentation, not by relocating the attr; (2) printer.rs `#![allow(missing_docs)]` (line 1) is VESTIGIAL (authoring-measured: printer.rs has exactly one public item, `pub fn print` at line 12, which already carries `/// Render an AWL document in the canonical AWL-0 format.` at line 10, so deleting the attr leaves clippy GREEN with zero new errors) — purged by delete-and-confirm, ZERO doc work, mirroring 001b's vestigial-attr deletions; (3) the three test files (tests/awl2_defects.rs:8, tests/field_trivia_and_duplicates.rs:16, tests/parser_printer.rs:3) carry `#![allow(clippy::expect_used, clippy::unwrap_used[, clippy::format_push_string])]` hiding 55 real sites — purged by converting the tests to Result-returning and eliminating every unwrap()/expect()/expect_err()/push_str(&format!()) via `?`, `.ok_or(...)?`, `let Err(e) = ... else { ... }`, and `write!` (the sanctioned patterns; parser_printer.rs already demonstrates the Result+`?` shape). After the three purges the crate-wide zero-bypass grep `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` — which is RED on base because these five owned files are the ONLY bypasses left in the crate — goes GREEN. That green is THIS BRIEF'S COMPLETION SIGNAL; wiring it as a PERMANENT CI gate is 001e-b. AUTHORING NOTE (measure-first, BRIEF-CRAFT principle 10): the whole-crate bypass grep on base fab18d23 returns EXACTLY FIVE sites, all owned here (ast.rs:1, printer.rs:1, awl2_defects.rs:8, field_trivia_and_duplicates.rs:16, parser_printer.rs:3); parser.rs's line-1 block is GONE (001c landed via salvage — merge 9800b9c4, plan status fab18d23) and emitter carries no block, so purging these five is exactly what turns the crate-wide gate green. The plan-vs-reality divergences the finale resolved apply here: printer.rs is vestigial (delete-and-confirm) not a doc-writing purge, and ast.rs is 190 items (large).",
+    "task": "Purge the last lint-bypass attributes in crates/aion-awl/ by doing the real work, all at ZERO behavior cost. THREE concerns, each with a mechanical gate. (1) ast.rs — DELETE the line-1 `#![allow(missing_docs)]` and write REAL, informative doc comments for all 190 missing-doc items (authoring-measured on base fab18d23 by structural enumeration of ast.rs — 16 structs, 118 fields, 47 enum variants, 7 undocumented enums, 1 trait `Spanned`, 1 trait method `span`; every item is a public AST node; see the MEASURED INVENTORY note for the exact per-item breakdown). Docs must describe what each type/field/variant IS or LOCATES — for a `pub span: Span` field say what it spans (e.g. `Source span of the whole declaration.`), for `pub name: String` say what the name identifies. Placeholder/uninformative docs (`The span.`, `The name.`, restating the field identifier) are a BLOCKING review finding, not a fix. A handful of fields ALREADY carry docs and MUST be kept-or-improved, never regressed: Document::finish_leading/finish_trailing/epilogue_comments; ActionDecl::leading_comments/trailing_comments; StepDecl::leading_comments/trailing_comments; HandlerBlock::action_leading/action_trailing/terminal_leading/terminal_trailing; and the enum-level docs on ActionFieldTag and StepFieldTag. No signature change is required (authoring-verified: the fallout is docs-only — no unwrap/expect/other lint fires, no public fn touched; `pub(crate) fn join_span` at the file tail is pub(crate) so missing_docs does not apply to it and it needs no doc). (2) printer.rs — DELETE the line-1 `#![allow(missing_docs)]` and CONFIRM clippy stays green. Authoring measured this attr VESTIGIAL: printer.rs has exactly one public item, `pub fn print(document: &Document) -> String` (line 12), which ALREADY carries `/// Render an AWL document in the canonical AWL-0 format.` (line 10), so deleting the attr leaves `cargo clippy -p aion-awl --all-targets -- -D warnings` GREEN with ZERO new errors. Do NO doc-writing and NO other edit to printer.rs — this is a delete-and-confirm exactly like 001b's four vestigial lib.rs attrs. printer.rs also imports `use crate::parser::duration_text;` (line 8), which resolves through 001c's parser/mod.rs re-export at dispatch — do not touch that import. (3) The three test files — DELETE each `#![allow(...)]` (tests/awl2_defects.rs:8, tests/field_trivia_and_duplicates.rs:16, tests/parser_printer.rs:3) and eliminate every resulting site (authoring-measured: 55 total — awl2_defects.rs 32, field_trivia_and_duplicates.rs 20, parser_printer.rs 3) by REAL restructuring, never by re-adding a bypass, a `#[ignore]`, or a `.unwrap_or*` swallow. The site classes and sanctioned fixes: `.expect(\"...\")` on a `Result` (parse succeeds) -> make the `#[test]` fn return `Result<(), Box<dyn std::error::Error>>` and use `?`; `.expect_err(\"...\")` on a `Result` (parse must FAIL) -> `let Err(error) = parse(source) else { return Err(\"expected a parse error\".into()) };` (a let-else that propagates), then inspect `error`; `.unwrap()`/`.expect(\"...\")` on an `Option` (`.find(...)`, `.nth(1).map(...)`, `.as_ref()`, a `match { ... }` producing `Option`) -> `.ok_or(\"<what was missing>\")?`; the single `format_push_string` site (awl2_defects.rs `src.push_str(&format!(...))`, in the helper `doc_with_broken_expr_at_step`) -> `use std::fmt::Write as _;` and `let _ = write!(src, ...)` (writing to a String is infallible, so discarding the fmt::Result is correct). parser_printer.rs ALREADY returns `Result<(), Box<dyn Error>>` from its tests and uses `?` — mirror that established shape across awl2_defects.rs and field_trivia_and_duplicates.rs. There are NO `#[ignore]`d tests and NO external-service tests in the crate (authoring-verified), so the env-gate/`*_TEST_URL` pattern does NOT apply here. Every test's ASSERTED BEHAVIOUR must be preserved byte-for-byte: the same document parses/fails, the same spans/lines/messages are asserted; the only change is the unwrap/expect/format mechanism. NO CI edit is in scope for this brief — .github/workflows/ci.yml belongs to 001e-b; the scope fence forbids touching it. Do NOT edit any file outside the five owned paths (ast.rs, printer.rs, the three test files); in particular do NOT touch lib.rs, the parser/ or emitter/ folder modules, checker/, lexer/, any fixture/.golden/.canonical file, .github/workflows/ci.yml, any other crate, or crates/aion-awl/Cargo.toml — a git-diff scope fence enforces this. If you believe an edit outside the fence is required, STOP and report it as a finding instead of making it.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Purge ast.rs missing_docs by writing real documentation for all 190 AST items",
+        "spec": "THE line-1 `#![allow(missing_docs)]` in crates/aion-awl/src/ast.rs SHALL be deleted and every one of the 190 missing-doc items it hid SHALL be given a REAL, informative doc comment (`///`). Authoring measurement (base fab18d23, structural enumeration of ast.rs cross-checked against `cargo clippy -p aion-awl --all-targets -- -D warnings` fallout classes) found exactly 190 missing_docs items, ALL in ast.rs, and NO other lint and NO public-signature pressure. Exact breakdown: 16 structs (Document, Comment, Trivia, WorkflowDecl, AboutDecl, IoDecl, TypeDecl, FieldDecl, ActionDecl, BindDecl, StepDecl, EachSpec, CallExpr, HandlerBlock, DurationLiteral, RecordField); 118 fields (76 named struct fields + 42 named fields inside enum variants — e.g. StepOp::Wait{span,signal}, CallTarget::Child{span,workflow,args}, RetrySpec::Every/Backoff, TypeRef::Named/List/Option, and Expr's variant bodies); 47 enum variants across ALL nine enums (a variant needs its own doc even when its enum already carries one — so ActionFieldTag's 4 and StepFieldTag's 11 variants are included); 7 undocumented enums (StepOp, CallTarget, HandlerTerminal, RetrySpec, TypeRef, Expr, BinaryOp — note ActionFieldTag and StepFieldTag already carry ENUM-level docs and MUST be kept); 1 trait (`Spanned`); and 1 trait method (`fn span`). 16 + 118 + 47 + 7 + 1 + 1 = 190. The following fields ALREADY carry docs and MUST be left as-is or improved, never regressed: Document::finish_leading/finish_trailing/epilogue_comments; ActionDecl::leading_comments/trailing_comments; StepDecl::leading_comments/trailing_comments; HandlerBlock::action_leading/action_trailing/terminal_leading/terminal_trailing. `pub(crate) fn join_span` at the file tail is pub(crate), so missing_docs does not fire on it and it is NOT part of the 190 — leave it undocumented or document it, either is fine, but do not change its signature. THE docs SHALL describe what each item IS or LOCATES in domain terms; `pub span: Span` SHALL say what the span covers, `pub name: String` SHALL say what the name identifies, each variant SHALL say what shape it represents. Placeholder/uninformative docs (`The span.`, `The name.`, `The field.`, restating the identifier) are a BLOCKING review finding, not a fix. NO public or private signature SHALL change — this is a docs-only purge (authoring-verified: the fallout is 100% missing_docs; no unwrap/expect/too_many_lines/unnecessary_wraps fires in ast.rs).",
+        "acceptance": [
+          "crates/aion-awl/src/ast.rs line 1 is no longer `#![allow(missing_docs)]`; grep for `#![allow` / `#[allow` over ast.rs returns nothing.",
+          "Every public type, field, variant, trait, and trait method in ast.rs carries a `///` doc comment; `cargo clippy -p aion-awl --all-targets -- -D warnings` reports zero missing_docs for ast.rs.",
+          "The docs are real informative sentences (a reviewer reading them learns what the item means); no placeholder/identifier-restating docs.",
+          "No item signature in ast.rs changed; the crate's public API (the re-exported ast types) is byte-identical to base_ref."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/src/ast.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Delete printer.rs's VESTIGIAL missing_docs allow (delete-and-confirm, zero doc work)",
+        "spec": "THE line-1 `#![allow(missing_docs)]` in crates/aion-awl/src/printer.rs SHALL be deleted, and clippy SHALL be confirmed GREEN with NO further edit. Authoring measured this attribute VESTIGIAL (base fab18d23, deleting ONLY printer.rs's line-1 attr): `cargo clippy -p aion-awl --all-targets -- -D warnings` stays GREEN with ZERO new errors, because printer.rs has exactly one public item — `pub fn print(document: &Document) -> String` (line 12) — which already carries the doc comment `/// Render an AWL document in the canonical AWL-0 format.` (line 10, above the `#[must_use]` at line 11). This is a delete-and-confirm exactly like 001b's four vestigial lib.rs attrs (BRIEF-CRAFT 001b validation): NO doc-writing, NO restructuring, NO other edit to printer.rs is warranted or permitted. printer.rs's `use crate::parser::duration_text;` (line 8) SHALL be left untouched — it resolves through 001c's parser/mod.rs re-export at dispatch. IF (contrary to measurement) any missing_docs fires in printer.rs after deletion, the fix SHALL be a real doc comment on the offending public item, NEVER re-adding the attr.",
+        "acceptance": [
+          "crates/aion-awl/src/printer.rs line 1 is no longer `#![allow(missing_docs)]`; grep for `#![allow` / `#[allow` over printer.rs returns nothing.",
+          "The ONLY change to printer.rs is the single-line deletion of the attribute (a one-line diff); `use crate::parser::duration_text;` and every other line are byte-identical to base_ref.",
+          "`cargo clippy -p aion-awl --all-targets -- -D warnings` is green with printer.rs's attr gone and no doc added."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/src/printer.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Purge the three test files' expect_used/unwrap_used/format_push_string by Result-returning tests",
+        "spec": "THE `#![allow(...)]` at crates/aion-awl/tests/awl2_defects.rs:8, crates/aion-awl/tests/field_trivia_and_duplicates.rs:16, and crates/aion-awl/tests/parser_printer.rs:3 SHALL each be deleted and every resulting clippy site eliminated by REAL restructuring — never by re-adding a bypass, a `#[ignore]`, or a `.unwrap_or*`/`.unwrap_or_default()`/`.unwrap_or_else(...)` swallow that hides the None/Err case. Authoring measurement (base fab18d23, per-file grep of the site classes, cross-checked against the deleted-attr clippy fallout) found 55 sites: awl2_defects.rs 32 (10 expect_err, 13 expect, 8 unwrap, 1 push_str(&format!)), field_trivia_and_duplicates.rs 20 (5 expect_err, 13 expect, 2 unwrap), parser_printer.rs 3 (1 expect_err, 2 unwrap). Crate-wide lint composition: 16 `expect_err()` on Result, 16 `expect()` on Result, 10 `expect()` on Option, 11 `unwrap()` on Option, 1 `unwrap()` on Result, and 1 `format_push_string`. The sanctioned fixes: a `#[test]` fn using `.expect(...)` on a `Result` (parse expected to succeed) SHALL return `Result<(), Box<dyn std::error::Error>>` and use `?`; `.expect_err(...)` on a `Result` (parse expected to FAIL) SHALL become `let Err(error) = parse(source) else { return Err(\"<why a parse error was expected>\".into()) };` and then inspect `error`; `.unwrap()`/`.expect(...)` on an `Option` SHALL become `.ok_or(\"<what was missing>\")?`; the single `format_push_string` site (awl2_defects.rs helper `doc_with_broken_expr_at_step`, `src.push_str(&format!(...))`) SHALL become `use std::fmt::Write as _;` + `let _ = write!(src, ...)`. parser_printer.rs ALREADY returns `Result<(), Box<dyn Error>>` and uses `?` in its tests — that established in-file shape is the positive example to mirror across the other two files. NOTE: field_trivia_and_duplicates.rs's attr lists `clippy::format_push_string` but that file has NO push_str(&format!()) site (authoring-verified — that portion of its allow is vestigial); deleting the whole attr line is still correct. THE crate has NO `#[ignore]`d tests and NO external-service tests (authoring-verified), so the env-gate/`*_TEST_URL` runtime-skip pattern does NOT apply. EVERY test's asserted behaviour SHALL be preserved: the same source parses or fails identically, the same span/line/column/message assertions hold; only the unwrap/expect/format mechanism changes. NO helper's observable behaviour SHALL change (e.g. `line_number`/`second_occurrence_line`/`doc_with_broken_expr_at_step` return the same values).",
+        "acceptance": [
+          "grep for `#![allow` / `#[allow` / `#[ignore` over crates/aion-awl/tests/ returns nothing.",
+          "Zero `.unwrap()`/`.expect(`/`.expect_err(` remain in the three files; every former site is `?`, `.ok_or(...)?`, a `let Err(...) = ... else { ... }`, or `write!` — no `.unwrap_or*` swallow, no re-added bypass, no `#[ignore]`.",
+          "`cargo test -p aion-awl` passes in full — every test still asserts the same behaviour it did on base_ref (same documents, same spans/messages).",
+          "`cargo clippy -p aion-awl --all-targets -- -D warnings` is green with all three attrs gone."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/tests/awl2_defects.rs",
+            "crates/aion-awl/tests/field_trivia_and_duplicates.rs",
+            "crates/aion-awl/tests/parser_printer.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Crate-wide zero bypass — the purge is complete (the finale-A headline)",
+        "spec": "AFTER this brief, crates/aion-awl/ (src AND tests) SHALL carry ZERO lint-bypass attributes: no #[allow], no #![allow], no #[expect], no #![expect], no #[ignore], and no include!(). This is the sum of R1+R2+R3 here plus 001c's parser purge and 001d's clean emitter (both landed before dispatch). THE crate-wide grep `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` SHALL be GREEN after this brief. That grep is RED on base because ast.rs, printer.rs, and the three test files are the ONLY five bypass sites left in the crate (authoring-verified on fab18d23), and it FLIPS to green when all five are purged — that flip is THIS BRIEF'S completion signal. Wiring that grep as a PERMANENT CI gate in .github/workflows/ci.yml is 001e-b's job, NOT this brief's (the CI file is out of this brief's scope fence). crates/aion-awl/Cargo.toml SHALL remain byte-identical to base_ref (exactly one `[lints]` section, containing only `workspace = true`) — weakening lint policy through the manifest was the parent brief's rev-2 fraud pattern and is REJECTED outright. NO lint-bypass of ANY kind (source attribute, manifest lint policy, or a relocated attr) SHALL be introduced anywhere to satisfy any requirement in this brief.",
+        "acceptance": [
+          "`! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` exits 0 (no bypass anywhere in the crate).",
+          "crates/aion-awl/Cargo.toml [lints] section is byte-identical to base_ref (workspace = true, nothing else).",
+          "`cargo clippy --workspace --all-targets -- -D warnings` passes with no bypass attribute present and no lint-policy weakening anywhere.",
+          "No .github/workflows/ci.yml edit was made (that wiring is 001e-b) — the scope fence proves it."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R5",
+        "title": "Mechanically fenced scope: the diff touches ONLY the five owned paths",
+        "spec": "THE complete diff versus base_ref SHALL touch ONLY these five files: crates/aion-awl/src/ast.rs, crates/aion-awl/src/printer.rs, crates/aion-awl/tests/awl2_defects.rs, crates/aion-awl/tests/field_trivia_and_duplicates.rs, and crates/aion-awl/tests/parser_printer.rs. NO other file — lib.rs, the parser/ or emitter/ folder modules (landed by 001c/001d), checker/, lexer/, any other src file, any fixture/.golden/.canonical file, crates/aion-awl/Cargo.toml, .github/workflows/ci.yml (001e-b owns it), any other crate, or any doc — SHALL change. A git-diff exclude gate pinned to the dispatch base SHA enforces this mechanically.",
+        "acceptance": [
+          "`git diff --exit-code --no-ext-diff <base> -- . ':(exclude)crates/aion-awl/src/ast.rs' ':(exclude)crates/aion-awl/src/printer.rs' ':(exclude)crates/aion-awl/tests/awl2_defects.rs' ':(exclude)crates/aion-awl/tests/field_trivia_and_duplicates.rs' ':(exclude)crates/aion-awl/tests/parser_printer.rs'` exits 0 (nothing outside the fence changed)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "REAL DOCS, NOT PLACEHOLDERS (R1): ast.rs's 190 doc comments must be informative sentences describing what each AST item is or locates. `The span.`, `The name.`, restating the identifier, or any placeholder is a BLOCKING review finding. No signature change — docs only. The already-documented fields (Document::finish_*/epilogue_comments; ActionDecl/StepDecl leading_comments/trailing_comments; HandlerBlock's four comment fields; ActionFieldTag/StepFieldTag enum docs) are kept-or-improved, never regressed.",
+      "printer.rs IS A DELETE-AND-CONFIRM (R2): its missing_docs attr is vestigial (measured — clippy stays green after deletion, one already-documented public fn). Delete the single line, confirm clippy green, make NO other edit to printer.rs; do NOT touch its `use crate::parser::duration_text;` import.",
+      "TESTS RETURN Result, NO SWALLOW, NO #[ignore] (R3): eliminate all 55 unwrap/expect/expect_err/format_push_string sites by `?`, `.ok_or(...)?`, `let Err(...) = ... else { ... }`, and `write!`. NEVER re-add a bypass, NEVER `#[ignore]` a test, NEVER use `.unwrap_or*` to swallow a None/Err. Every test asserts the SAME behaviour (same source, same spans/messages). The crate has no external-service tests, so the env-gate/`*_TEST_URL` pattern is not in play.",
+      "NO CI EDIT (this is 001e-a): .github/workflows/ci.yml is 001e-b's exclusive surface. This brief must NOT edit it; the scope fence forbids it. This brief's job is to make the crate zero-bypass a TRUE fact; 001e-b wires the CI gate that keeps it permanent.",
+      "NO LINT-POLICY WEAKENING, ANYWHERE (R4): no #![allow]/#[allow]/#[expect]/#[ignore]/include!() introduced in src or tests; crates/aion-awl/Cargo.toml byte-identical (dispatch 2 of the parent brief was rejected for a private manifest allow-list). The crate-wide zero-bypass grep must be GREEN after this brief.",
+      "SCOPE FENCE (R5): the diff touches ONLY the five owned paths (ast.rs, printer.rs, the three test files). lib.rs, parser/, emitter/, checker/, lexer/, Cargo.toml, ci.yml, fixtures, goldens, canonicals, every other crate are UNMODIFIED. If you believe an edit outside the fence is required, STOP and report it as a finding instead of making it.",
+      "ZERO behavior change: no AST shape/span/diagnostic/emitted-Gleam/verdict change; the round-trip property (parse . print = id, byte-level, every fixture) and the emitter goldens are untouched (the scope fence makes perturbing them impossible without failing a gate).",
+      "Pre-existing bypasses OWNED BY EARLIER BRIEFS are already resolved at dispatch: parser.rs's line-1 block was purged by 001c (parser/ exists — merge 9800b9c4); emitter.rs carried no block (001d). This brief owns the REMAINDER (ast.rs, printer.rs, the three test files) — the crate-wide gate goes green only when all five are purged."
+    ],
+    "verification": [
+      "no-bypasses-CRATE-WIDE gate (RED on base BY DESIGN — the finale-A completion signal): `! grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/` over the WHOLE crate. RED on base (fab18d23) because ast.rs, printer.rs, and the three test files are the only five bypass sites left. Goes GREEN only when every one is purged — that is the work.",
+      "lints-pinned gate (GREEN on base): crates/aion-awl/Cargo.toml has exactly one [lints] section, containing workspace = true.",
+      "scope-fence gate (GREEN on base): git diff versus the pinned base SHA, excluding the five owned paths, is empty.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli, all clean. (The full workspace suite is run by the operator at merge review while tasks #243/#244 are open.)",
+      "Hand review: ast.rs docs are REAL informative sentences (no placeholders) and no signature changed; printer.rs is a one-line deletion with clippy green; the three test files return Result and use ?/ok_or/let-else/write! with every asserted behaviour intact and no swallow/ignore/re-added bypass; crates/aion-awl/Cargo.toml, lib.rs, parser/, emitter/, checker/, lexer/, fixtures/goldens/canonicals, and .github/workflows/ci.yml untouched; the crate-wide no-bypasses grep is GREEN."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 AWL0-REFAC-001e entry (the purge half) is the CONTRACT — implement it verbatim. Discovered ambiguities are findings to report, never license to improvise. (The finale's three plan-vs-reality divergences were resolved at authoring — printer.rs vestigial, ast.rs 190, and the checker-fixtures scope of the CI gate; the last belongs to 001e-b.)"
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, tests may return Result and use ? (the sanctioned pattern for test-side unwrap/expect), files <=500 lines, mod.rs = declarations/re-exports only, no silent failures. #[ignore] is REJECTED; the env-gate/`*_TEST_URL` runtime-skip is the only sanctioned alternative for external-service tests — but this crate has none, so it does not arise."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: mechanical gates (no-bypasses-crate-wide, lints-pinned, scope-fence) -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture; the emitter goldens (.gleam.golden) are byte-pinned. This brief must not perturb any of it (the scope fence forbids touching src other than ast.rs/printer.rs and any fixture/golden, and the ast.rs/printer.rs edits are docs-only + a one-line deletion)."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set (correctness, regressions, brief_compliance) PLUS a spec-fidelity lens — one reviewer reads the AWL0-REFAC-001e plan entry (the purge half) and this committed brief and checks the implementation clause by clause against R1-R5, including (a) the docs-quality clause (placeholder ast.rs docs are BLOCKING), (b) that printer.rs was a vestigial delete-and-confirm with no gratuitous edit, and (c) that every test's asserted behaviour is preserved and no swallow/ignore/re-added bypass slipped in. All four lenses also carry the check-base-before-labeling-regression clause (BRIEF-CRAFT entry 16): a faithfully preserved pre-existing behaviour is a finding-for-follow-up, not a blocking rejection."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs the gates by hand before merge."
+      }
+    ],
+    "intention": "Part A of the split AWL0-REFAC-001e hygiene finale (operator ruling 2026-07-09 — right-size the too-heavy finale into 001e-a PURGE + 001e-b CI WIRING, e-b depending on e-a). This brief purges the LAST bypasses in the crate (ast.rs 190 missing_docs by real docs, printer.rs vestigial deletion, the three test files' 55 unwrap/expect/format sites by Result-returning tests) and makes the crate-wide zero-bypass state a TRUE fact; wiring the permanent CI gate that keeps it that way forever is 001e-b. The monolithic AWL0-REFAC-001 failed twice — once by fraud (include! splices + crate-wide allow), once by an honest rollback after cascading errors mid-split of four files at once — so it was decomposed smallest-first, four splits then this hygiene finale, now itself split for right-sizing. Every non-negotiable is a mechanical gate (two GREEN on base — lints-pinned, scope-fence; one RED on base by design — crate-wide-zero-bypass, because it IS the work). CRUCIAL authoring findings (BRIEF-CRAFT principle 10 — MEASURE before mandating): printer.rs's missing_docs is VESTIGIAL (delete-and-confirm, not doc-writing — the plan implied a doc purge); ast.rs is 190 real doc items (the whole AST surface); the whole-crate bypass grep on fab18d23 returns EXACTLY the five owned sites (parser.rs's block gone via 001c salvage). The measured inventory is embedded so the developer neither hunts phantom work nor improvises the divergences.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program — Wave 0 sub-brief 001e split into 001e-a HYGIENE PURGE per operator right-sizing ruling; re-measured on current main fab18d23 after 001c's salvage landing)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}
