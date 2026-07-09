@@ -434,3 +434,41 @@ that reproduced the old `.unwrap()` panic at parser.rs:474 on the NBSP input.
     under the same load. Corollary: capture the REAL exit code and full log —
     a `| grep | head` pipeline masks cargo's exit status and can print a
     passing summary over a failing run.
+
+20. **The pipeline automation retired two rituals — do not resurrect them,
+    and probe fences with TRACKED files only.** Landed `a41afa4e`
+    (2026-07-10): review lenses now sit READ-ONLY in the run's own worktree
+    (`<repo_root>/.yggdrasil-worktrees/dev-brief/<wf-id>`, norn
+    `--disallowed-tools write,edit,apply_patch`), a mechanical
+    `reset_workspace` restores the tree after every lens round, gate argv
+    carries a `{base_commit}` token the worker substitutes with the run's
+    provisioned base, and an optional `config.verify_gates` battery re-runs
+    the gates post-accept in the same worktree behind a clean-tree
+    assertion. Consequences for brief authors: the rsync-into-review-scratch
+    step and the PINNED_SHA sed re-pin are GONE from the runbook — a brief
+    or profile that mentions them is stale. Separately, a pre-flight trap
+    found while dispatching 001e-a: probing a scope fence by appending to a
+    file that no longer exists on base creates an UNTRACKED file, which
+    `git diff` cannot see — the probe reads green while proving nothing.
+    Fence probes must mutate a TRACKED file.
+
+21. **Doc-purge briefs must mandate a claim-by-claim self-audit, because
+    fix cycles only fix the cited instance, not the class.** 001e-a (run
+    `467e4f4b`, 2026-07-10) wrote ~190 rustdoc items into ast.rs; three
+    review rounds each ended with the correctness lens catching exactly ONE
+    materially false claim (false field semantics; span-coverage overclaim;
+    BinaryOp::Add "numeric addition" when AWL's `+` is string
+    concatenation), and each fix round corrected only the cited line — the
+    cap exhausted before the class did. A post-run adversarial sweep (every
+    doc claim traced to the parser/checker/emitter line that proves it)
+    found a FOURTH survivor (StepDecl.repeat documented as a boolean
+    repeat-decider; it is the `repeat up to N` integer cap, checker types
+    it Int). Two accommodations: (a) the brief must require the developer
+    to attach, per documented item, the implementation site that proves the
+    claim — docs written against the code, not against the identifier's
+    vibe; span docs in this run were flawless precisely where the developer
+    read the parser. (b) At review/salvage, run the adversarial doc sweep
+    as a matter of course; the lenses sample, the sweep enumerates. Also
+    operational (task #249): a 3-round dev_brief history exceeds the CLI's
+    4 MiB decode limit — `describe`/`inspect` die on the parent run; watch
+    via `aion list` and describe the per-lens CHILD workflows instead.

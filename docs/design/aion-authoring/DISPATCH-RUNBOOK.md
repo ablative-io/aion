@@ -219,6 +219,18 @@ while true; do
 done
 ```
 
+**KNOWN LIMIT (task #249): `aion describe` dies on histories over 4 MiB**
+("decoded message length too large") — a 3-round dev_brief run exceeds this,
+so the watcher above reads `parse-err` forever on such runs and `inspect`
+fails the same way. Fall back to terminal-state polling via
+`aion list | jq '.[] | select(.workflow_id=="'$wf'") | .status'`, and read
+verdicts from the per-lens CHILD workflows (small histories; find them with
+`aion list | jq '.[] | select(.workflow_type=="review_lens")'` filtered by
+start time, then `aion describe <child> --pretty | jq
+'.history[-1].data.result'`). The worker log
+(`deploy/aion/logs/worker-dev-brief.log`) gives the parent's activity
+timeline by ordinal.
+
 ## 5. Live operations during a run
 
 **Reviewer workspace — no mitigation needed (tasks #245/#246 landed).** Review

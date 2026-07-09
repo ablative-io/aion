@@ -98,7 +98,14 @@ tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
   collapse preserved → task #247; merged `9800b9c4` after full operator
   hand review incl. live base-panic probe).
 - **AWL0-REFAC-001d** emitter.rs (2043) → `emitter/`.
-- **AWL0-REFAC-001e** hygiene finale: ast.rs + printer.rs missing_docs
+  **LANDED 2026-07-10** (run `72334d13`, accepted after 1 fix cycle, merged
+  `1b25f02b`; pure split into 9 named children (max 352 lines), exact 76=76
+  fn parity vs base, 3 .gleam.golden byte-identity tests green; operator
+  amend narrowed 4 same-file codecs.rs methods pub(super)→private; full §7
+  hand review).
+- **AWL0-REFAC-001e** hygiene finale — SPLIT into **001e-a** (the purge) and
+  **001e-b** (CI fixture wiring), dispatch pairs committed `9d0f07e1`:
+  ast.rs + printer.rs missing_docs
   purge, the three test files' expect_used/unwrap_used/format_push_string
   purge (tests return Result + `?`), wire `aion awl check` over every
   committed .awl fixture in CI (closes the blind spot that hid the
@@ -108,6 +115,20 @@ tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
   with a comment pointing at AWL1-004 (a rejected-run salvage of this test
   exists; see briefs/). The crate-wide zero-bypass gate goes green here
   and stays a permanent gate from then on.
+  **001e-a LANDED 2026-07-10** (run `467e4f4b` → `cycle_cap_exhausted`:
+  three review rounds, each round's correctness lens caught one materially
+  false ast.rs doc claim; salvaged per doctrine — round-3 finding
+  (BinaryOp::Add "numeric addition" vs actual string concatenation) plus a
+  fourth false claim found by the operator's post-run adversarial doc sweep
+  (StepDecl.repeat "boolean decider" vs actual `repeat up to N` Int cap)
+  fixed on the branch `bbb644df`, full 7-gate battery re-run green by hand,
+  merged `3698b85d`. First live run of the automated pipeline: in-repo
+  worktree provision, lens in-worktree rooting, per-round resets, and
+  {base_commit} substitution all behaved; verify_gates correctly did not
+  fire on a non-accept. Operational find: the parent run's history exceeded
+  the CLI's 4 MiB gRPC decode limit → `describe`/`inspect` unusable, task
+  #249; watch runs via `aion list` + per-lens child describes.)
+  **001e-b** remains to dispatch.
 
 001b..e are stamped out from 001a's template once the pilot lands clean.
 
