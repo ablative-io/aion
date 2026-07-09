@@ -41,8 +41,8 @@ import dev_brief/types.{
   type Brief, type BriefInput, type BriefResult, type DevBriefError,
   type DevReport, type Disposition, type GateOutcome, type Lens,
   type LensVerdict, type WorkspaceInfo, Accepted, BriefResult, ChildFailed,
-  CleanupInput, CycleCapExhausted, DeveloperInput, GateInput, LensInput,
-  ProvisionInput, StageFailed,
+  CleanupInput, CycleCapExhausted, DeveloperInput, GateCommandRun, GateInput,
+  GateOutcome, LensInput, ProvisionInput, StageFailed,
 }
 import dev_brief/verdicts
 import gleam/dynamic.{type Dynamic}
@@ -249,7 +249,7 @@ fn run_developer(
     workflow.run(
       activities.developer(DeveloperInput(
         brief: input.brief,
-        gate: state.last_gate,
+        gate: option.map(state.last_gate, developer_gate_feedback),
         verdicts: state.verdicts,
         workspace_path: state.workspace.workspace_path,
         gates: input.config.gates,
@@ -259,6 +259,30 @@ fn run_developer(
     Ok(report) -> Ok(report)
     Error(activity_error) -> stage_error("developer", activity_error)
   }
+}
+
+/// The gate outcome as DEVELOPER loop-back feedback. The developer's norn
+/// session is RESUMED across rounds, so the brief and the workspace are
+/// already in its conversation — what a loop-back needs is the FAILING
+/// commands' evidence, nothing else. Passing runs keep only their verdict
+/// line (`output_tail` cleared); `diff` is reviewer evidence the developer
+/// can regenerate in its own worktree; `diagnostics` duplicates the failing
+/// runs' clipped output verbatim. Stripping them here keeps the developer
+/// activity's durable history entry and the injected prompt at the size of
+/// the actual news. The LENSES still receive the FULL outcome — this
+/// projection is applied only on the developer path.
+pub fn developer_gate_feedback(gate: GateOutcome) -> GateOutcome {
+  GateOutcome(
+    pass: gate.pass,
+    runs: list.map(gate.runs, fn(run) {
+      case run.passed {
+        True -> GateCommandRun(..run, output_tail: "")
+        False -> run
+      }
+    }),
+    diff: "",
+    diagnostics: "",
+  )
 }
 
 fn run_gates(
