@@ -1,11 +1,34 @@
 # AWL program — dispatch corpus (Wave 0 / Wave 1 / BC track)
 
 Four dispatch briefs for the aion `dev_brief` workflow (norn-driven, always in
-driven mode). Format: the established `-input.json` shape (template reference:
+driven mode). Format: the rich `-input.json` shape (template reference:
 `~/Developer/ablative/haematite/docs/design/core/briefs/PERF-003-input.json`).
 Authored 2026-07-09 at the AWL program kickoff. Canonical program plan:
 `../AWL-EXECUTION-PLAN.md`; language contract `../AWL-0-SPEC-DRAFT.md`;
 bytecode contract `../AWL-BC-DESIGN-DRAFT.md`.
+
+> **These files are the durable CONTRACT, not the literal workflow input.**
+> Verified at first dispatch (2026-07-09, run `ea934d73` failed decode): the
+> `dev_brief` workflow's input type is `BriefInput` —
+> `{brief: {id, title, objective, context?, pointers?, scope_in?, scope_out?,
+> acceptance, notes?}, config: {repo_root, base_branch?, gates?,
+> max_fix_cycles?, lenses?}}` (see `examples/dev-brief/src/dev_brief/types.gleam`
+> and `codecs.gleam`; `aion input dev_brief` prints the skeleton). The
+> top-level dispatch-config fields in these files (`workspace_id`,
+> `reviewers`, `review_cap`, `verify_fix_cap`, …) are the OLD stacked_dev
+> pipeline's shape and are ignored by `dev_brief` — the workflow provisions
+> its own worktree, so nothing is minted at dispatch anymore.
+>
+> **Translation at dispatch:** `objective` ← `brief_document.task`;
+> `context` ← `purpose` + `resolved_context.intention` + the CN constraints +
+> a pointer to THIS file (the builder must read the full R1..RN contract);
+> `scope_out` ← `boundaries`; `acceptance` ← `verification`; `pointers` ←
+> the key source files + canonical docs; `config.gates` ← the gate argv as
+> `{name, argv[]}` entries; `config.lenses` ← the three dev_brief defaults
+> (copied verbatim, since providing the field overrides them) PLUS the
+> `spec_fidelity` lens the plan mandates, chartered at the named plan section
+> and this brief's R-numbers. First real dispatch of this translation:
+> AWL0-REFAC-001, run `672b43a4-0256-498b-9c31-d2b6e299ed62`.
 
 ## The briefs
 
@@ -60,9 +83,10 @@ bytecode contract `../AWL-BC-DESIGN-DRAFT.md`.
 
 ## Dispatch protocol
 
-- **`workspace_id` = a fresh UUID minted at dispatch time.** Every file carries
-  the placeholder `"MINT-AT-DISPATCH"` so nobody reuses a stale UUID — replace
-  it with a newly minted UUID at the moment of dispatch, never before.
+- **Translate to `BriefInput` at dispatch** (see the note at the top of this
+  file): the workflow provisions its own worktree from `config.repo_root` +
+  `config.base_branch`; the `workspace_id`/`MINT-AT-DISPATCH` placeholder in
+  these files is stacked_dev legacy and is not sent.
 - **Pipe-cleaner goes SOLO first.** Dispatch `AWL0-REFAC-001` alone, before
   anything else, to prove the pipeline end-to-end on a change with a crisp,
   machine-checkable success condition. Do not go 2-wide until it lands.
