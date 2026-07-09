@@ -31,7 +31,7 @@ pub struct Document {
     /// Own-line comments after the `finish` declaration, at the end of the
     /// document (there is no following line for them to be "leading" of).
     pub epilogue_comments: Vec<Comment>,
-    /// All comments encountered in lexical source order.
+    /// Own-line comments followed by trailing comments retained for diagnostics.
     pub comments: Vec<Comment>,
 }
 /// Own-line or same-line comment captured from the source document.
@@ -77,7 +77,7 @@ pub struct IoDecl {
     pub span: Span,
     /// Comments attached to the I/O declaration.
     pub trivia: Trivia,
-    /// Declared channel or signal name, or the keyword for anonymous outputs.
+    /// Declared channel or signal name; empty for anonymous output/error declarations.
     pub name: String,
     /// Type reference declared for the I/O value.
     pub ty: TypeRef,
@@ -97,7 +97,7 @@ pub struct TypeDecl {
 /// Named field and type pair used by type and action declarations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDecl {
-    /// Source span covering the field name and type annotation.
+    /// Source span of the declaration line that contains this field.
     pub span: Span,
     /// Field or parameter name introduced by the declaration.
     pub name: String,
@@ -120,7 +120,7 @@ pub enum ActionFieldTag {
 /// Action declaration describing an external callable operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDecl {
-    /// Source span covering the action header and routing fields.
+    /// Source span covering the action declaration header line.
     pub span: Span,
     /// Comments attached to the action declaration header.
     pub trivia: Trivia,
@@ -253,7 +253,7 @@ pub enum CallTarget {
     Action(CallExpr),
     /// Call a named child workflow with argument expressions.
     Child {
-        /// Source span covering the full child workflow call.
+        /// Source span covering the child workflow call expression after `child`.
         span: Span,
         /// Child workflow identifier being invoked.
         workflow: String,
