@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 use crate::ast::{
     ActionDecl, ActionFieldTag, BinaryOp, CallExpr, CallTarget, Comment, Document, Expr,
     HandlerBlock, HandlerTerminal, IoDecl, RetrySpec, StepDecl, StepFieldTag, StepOp, TypeDecl,
