@@ -2,7 +2,7 @@ use crate::{DurationUnit, Span};
 /// Parsed representation of a complete workflow document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
-    /// Source span covering the parsed document body.
+    /// Source span from the workflow declaration through the stored finish expression span.
     pub span: Span,
     /// Required workflow declaration that names the document.
     pub workflow: WorkflowDecl,
@@ -343,14 +343,14 @@ pub enum TypeRef {
     },
     /// List type whose elements share one inner type.
     List {
-        /// Source span covering the list type expression.
+        /// Source span covering the `List` type constructor token.
         span: Span,
         /// Element type contained by the list.
         inner: Box<TypeRef>,
     },
     /// Optional type that may be absent at runtime.
     Option {
-        /// Source span covering the optional type expression.
+        /// Source span covering the `Option` type constructor token.
         span: Span,
         /// Value type wrapped by the option.
         inner: Box<TypeRef>,
@@ -391,7 +391,7 @@ pub enum Expr {
     Duration(DurationLiteral),
     /// List literal expression containing zero or more items.
     List {
-        /// Source span covering the complete list literal.
+        /// Source span from `[` through the last item, or just `[` when empty.
         span: Span,
         /// Item expressions in source order.
         items: Vec<Expr>,
@@ -405,7 +405,7 @@ pub enum Expr {
     },
     /// Field access expression on a base expression.
     Field {
-        /// Source span covering the full field access expression.
+        /// Source span from the base expression span through the selected field name.
         span: Span,
         /// Expression that produces the record value being accessed.
         base: Box<Expr>,
@@ -414,7 +414,7 @@ pub enum Expr {
     },
     /// Record construction expression with named fields.
     Record {
-        /// Source span covering the complete record expression.
+        /// Source span from the type name through the last field, or just the type name when empty.
         span: Span,
         /// Record type name being constructed.
         name: String,
@@ -423,14 +423,14 @@ pub enum Expr {
     },
     /// Logical negation expression.
     Not {
-        /// Source span covering the `not` expression.
+        /// Source span of the inner expression being negated.
         span: Span,
         /// Inner expression whose truth value is inverted.
         expr: Box<Expr>,
     },
     /// Binary expression with an infix operator.
     Binary {
-        /// Source span covering the full binary expression.
+        /// Source span from the left operand span through the right operand span.
         span: Span,
         /// Left operand of the binary operator.
         left: Box<Expr>,
@@ -443,7 +443,7 @@ pub enum Expr {
 /// Named field initializer inside a record expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordField {
-    /// Source span covering the full record field initializer.
+    /// Source span from the field name through the stored value expression span.
     pub span: Span,
     /// Record field name being initialized.
     pub name: String,
