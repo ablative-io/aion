@@ -40,9 +40,10 @@ import dev_brief/cycle
 import dev_brief/types.{
   type Brief, type BriefInput, type BriefResult, type DevBriefError,
   type DevReport, type Disposition, type GateOutcome, type Lens,
-  type LensVerdict, type WorkspaceInfo, Accepted, BriefResult, ChildFailed,
-  CleanupInput, CycleCapExhausted, DeveloperInput, GateCommandRun, GateInput,
-  GateOutcome, LensInput, ProvisionInput, StageFailed,
+  type LensVerdict, type ResetOutcome, type VerifyOutcome, type WorkspaceInfo,
+  Accepted, BriefResult, ChildFailed, CleanupInput, CycleCapExhausted,
+  DeveloperInput, GateCommandRun, GateInput, GateOutcome, LensInput,
+  ProvisionInput, ResetInput, StageFailed, VerifyInput,
 }
 import dev_brief/verdicts
 import gleam/dynamic.{type Dynamic}
@@ -53,13 +54,16 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import review_lens
 
-/// The workflow and the worker agree on this base directory for brief
-/// workspaces: each brief's worktree lives at `<base>/<workflow_id>`. The
-/// Rust worker's developer harness points norn's `--workspace-root` at the
-/// SAME `<base>/{workflow_id}` template, so the driven agent operates in
-/// exactly the worktree the `provision_workspace` activity created. Keep
-/// this in sync with `WORKSPACE_BASE` in `worker/src/handlers.rs`.
-pub const workspace_base = "/tmp/aion-dev/ws"
+/// The repo-relative directory brief worktrees live under: each brief's
+/// worktree is `<repo_root>/<worktrees_subdir>/<workflow_id>`. Rooting the
+/// worktrees INSIDE the repo (not a shared `/tmp` base) means the reviewer's
+/// read-only Norn session and every destructive git operation stay confined
+/// to a path the destructive-path guard can prove is under the repo — never
+/// the repo itself. `.yggdrasil-worktrees/` is already git-ignored. The base
+/// is now PER-RUN data derived from `config.repo_root`, so the worker no
+/// longer mirrors a static constant: it roots each agent session at the
+/// `workspace_path` the workflow carries on the activity input.
+pub const worktrees_subdir = ".yggdrasil-worktrees/dev-brief"
 
 /// Typed definition binding the codecs to the execute function.
 pub fn definition() -> workflow.WorkflowDefinition(
@@ -195,13 +199,21 @@ fn drive(
             "lens " <> name <> " returned no verdict"
           }),
         )
-      let stamped =
-        list.map(issues, fn(issue) {
-          "cycle " <> int.to_string(machine.fix_rounds) <> ": " <> issue
-        })
       let accepted =
         verdicts.all_accept(collected)
         && verdicts.missing_lenses(lenses, collected) == []
+      // The mechanical post-review reset runs after EVERY lens round — before
+      // any loop-back developer round AND before the verify stage on accept —
+      // so the worktree is provably back at the reviewed branch head (the
+      // lenses only read; the reviewer tool deny-list forbids their writing,
+      // and this restore is the belt to that deny-list's braces). Any
+      // droppings it records mean a lens wrote anyway: cycle-stamped evidence,
+      // never a failed run.
+      use reset <- try(run_reset(input, state))
+      let stamped =
+        list.map(list.append(issues, reset_notes(reset)), fn(issue) {
+          "cycle " <> int.to_string(machine.fix_rounds) <> ": " <> issue
+        })
       drive(
         input,
         lenses,
@@ -220,7 +232,8 @@ fn drive(
 
 fn provision(input: BriefInput) -> Result(WorkspaceInfo, DevBriefError) {
   use workflow_id <- try(engine_id())
-  let workspace_path = workspace_base <> "/" <> workflow_id
+  let workspace_path =
+    input.config.repo_root <> "/" <> worktrees_subdir <> "/" <> workflow_id
   let branch = "dev/" <> verdicts.branch_safe(input.brief.id)
   case
     workflow.run(
@@ -303,6 +316,42 @@ fn run_gates(
   }
 }
 
+/// The mechanical post-review restore in the run's worktree: `git clean -fd`
+/// (untracked droppings) + `git checkout -- .` (reverted tracked edits),
+/// guarded to the dev-brief worktree root. The lenses run only on a green
+/// gate, so the tree is provably clean when they start — `was_clean` is
+/// normally True; a False means a lens wrote anyway, recorded as evidence.
+fn run_reset(
+  input: BriefInput,
+  state: LoopState,
+) -> Result(ResetOutcome, DevBriefError) {
+  case
+    workflow.run(
+      activities.reset(ResetInput(
+        repo_root: input.config.repo_root,
+        workspace_path: state.workspace.workspace_path,
+      )),
+    )
+  {
+    Ok(outcome) -> Ok(outcome)
+    Error(activity_error) -> stage_error("reset_workspace", activity_error)
+  }
+}
+
+/// The reset outcome as cycle-stampable evidence lines: nothing when the
+/// worktree was clean (the normal case), else one line naming that a lens
+/// wrote into the shared worktree, with the droppings it left.
+fn reset_notes(reset: ResetOutcome) -> List(String) {
+  case reset.was_clean {
+    True -> []
+    False -> [
+      "post-review reset removed lens droppings from the shared worktree "
+      <> "(a lens wrote despite the reviewer tool deny-list): "
+      <> string.join(reset.droppings, ", "),
+    ]
+  }
+}
+
 /// THE INTRA-BRIEF FAN-OUT: spawn one `review_lens` child per lens,
 /// CONCURRENTLY; the awaits then collect their verdicts in order. While this
 /// runs, every lens is a live agent session of its own — parallel work
@@ -317,7 +366,13 @@ fn fan_out_review(
   // engine-ordering fault surfaced loudly, never defaulted around.
   case state.report, state.last_gate {
     Some(report), Some(gate) -> {
-      use handles <- try(spawn_lenses(input.brief, lenses, report, gate))
+      use handles <- try(spawn_lenses(
+        input.brief,
+        lenses,
+        report,
+        gate,
+        state.workspace,
+      ))
       await_all(handles, [])
     }
     _, _ ->
@@ -334,6 +389,7 @@ fn spawn_lenses(
   lenses: List(Lens),
   report: DevReport,
   gate: GateOutcome,
+  workspace: WorkspaceInfo,
 ) -> Result(List(child.ChildHandle(LensVerdict, DevBriefError)), DevBriefError) {
   case lenses {
     [] -> Ok([])
@@ -348,6 +404,11 @@ fn spawn_lenses(
             diff: gate.diff,
             report: report,
             gate_runs: gate.runs,
+            // The reviewer's read-only Norn session is rooted at the parent
+            // run's worktree at the exact reviewed state; `base_commit` lets a
+            // lens reconstruct a truncated diff with `git diff <base_commit>`.
+            workspace_path: workspace.workspace_path,
+            base_commit: workspace.base_commit,
           ),
           codecs.lens_input_codec(),
           codecs.lens_verdict_codec(),
@@ -355,7 +416,13 @@ fn spawn_lenses(
         )
       {
         Ok(handle) -> {
-          use rest_handles <- try(spawn_lenses(brief, rest, report, gate))
+          use rest_handles <- try(spawn_lenses(
+            brief,
+            rest,
+            report,
+            gate,
+            workspace,
+          ))
           Ok([handle, ..rest_handles])
         }
         Error(engine_error) ->
@@ -401,7 +468,10 @@ fn child_error_to_dev_brief(
 
 // --- the mechanical tail: cleanup + result ------------------------------------
 
-/// Remove the worktree and build the terminal result. Cleanup refusals are
+/// Run the post-accept verification stage (when configured), remove the
+/// worktree, and build the terminal result. Verification runs BEFORE cleanup
+/// so it exercises the real branch head; its outcome is recorded evidence
+/// (`verification`), never a disposition change. Cleanup refusals are
 /// RECORDED on the result (`workspace_removed: False`), never swallowed.
 fn finalize(
   input: BriefInput,
@@ -410,6 +480,7 @@ fn finalize(
   fix_cycles fix_cycles: Int,
   detail detail: String,
 ) -> Result(BriefResult, DevBriefError) {
+  use verification <- try(run_verification(input, state, disposition))
   use cleanup <- try(run_cleanup(input, state.workspace))
   let first_pass_accepted = disposition == Accepted && fix_cycles == 1
   Ok(BriefResult(
@@ -423,8 +494,52 @@ fn finalize(
     gate: state.last_gate,
     verdicts: state.verdicts,
     workspace_removed: cleanup.removed,
+    verification: verification,
     summary: brief_summary(input, disposition, fix_cycles, detail),
   ))
+}
+
+/// The post-accept verification stage. It runs ONLY on an `accepted`
+/// disposition with a non-empty `verify_gates` battery — every other run
+/// records `None` (the stage skipped, fully backward compatible). The
+/// mechanical post-review reset already ran on the accepting round, so the
+/// tree is clean; the handler re-asserts that (`git status --porcelain`) and
+/// re-runs the battery in the same worktree as recorded evidence. The log
+/// file lands at `<repo_root>/.yggdrasil-worktrees/dev-brief/logs/
+/// <workflow-id>-verify.log`. A red verify gate NEVER loops back and NEVER
+/// changes the disposition — it is the operator's mechanical evidence.
+fn run_verification(
+  input: BriefInput,
+  state: LoopState,
+  disposition: Disposition,
+) -> Result(Option(VerifyOutcome), DevBriefError) {
+  case disposition, input.config.verify_gates {
+    Accepted, [_, ..] as verify_gates -> {
+      use workflow_id <- try(engine_id())
+      let log_path =
+        input.config.repo_root
+        <> "/"
+        <> worktrees_subdir
+        <> "/logs/"
+        <> workflow_id
+        <> "-verify.log"
+      case
+        workflow.run(
+          activities.verify_gates(VerifyInput(
+            workspace_path: state.workspace.workspace_path,
+            base_commit: state.workspace.base_commit,
+            gates: verify_gates,
+            log_path: log_path,
+          )),
+        )
+      {
+        Ok(outcome) -> Ok(Some(outcome))
+        Error(activity_error) -> stage_error("verify_gates", activity_error)
+      }
+    }
+    // Not accepted, or no verify battery configured: the stage is skipped.
+    _, _ -> Ok(None)
+  }
 }
 
 fn run_cleanup(

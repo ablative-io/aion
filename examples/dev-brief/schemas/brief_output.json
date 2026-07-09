@@ -34,6 +34,10 @@
     "gate": { "type": ["object", "null"] },
     "verdicts": { "type": "array" },
     "workspace_removed": { "type": "boolean" },
+    "verification": {
+      "type": ["object", "null"],
+      "description": "The post-accept verification stage's outcome (pass, pre_clean/post_clean assertions, per-command runs, log file path). Present only on an accepted run that configured a non-empty verify_gates battery; null otherwise. Recorded evidence — never a disposition change."
+    },
     "summary": { "type": "string" }
   }
 }

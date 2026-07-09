@@ -57,11 +57,20 @@ pub type Lens {
 /// [`default_base_branch`] / [`default_max_fix_cycles`] / [`default_lenses`].
 /// An EMPTY `gates` list is honoured as the operator's explicit choice and
 /// recorded as a vacuous pass — visible in the outcome, never silent.
+///
+/// `verify_gates` is the OPTIONAL post-accept verification battery (§ the
+/// post-accept verification stage): when a run reaches `accepted`, this
+/// battery is re-run in the clean workspace BEFORE cleanup as recorded
+/// evidence — it never loops the developer back and never changes the
+/// disposition. Absent or empty means the stage is skipped entirely (fully
+/// backward compatible), so a brief authored before the stage existed keeps
+/// its exact behaviour.
 pub type RunConfig {
   RunConfig(
     repo_root: String,
     base_branch: String,
     gates: List(GateCommand),
+    verify_gates: List(GateCommand),
     max_fix_cycles: Int,
     lenses: List(Lens),
   )
@@ -199,6 +208,16 @@ pub type LensVerdict {
 /// `review_lens` agent activity): the lens, the brief, the developer's diff
 /// and report, and the gate evidence. Structurally lens-blind: no sibling
 /// verdicts, no developer session.
+///
+/// `workspace_path` is the PARENT run's provisioned worktree at the exact
+/// reviewed state (dev work + gate normalization committed, tree clean): the
+/// reviewer's Norn session is rooted there read-only, so a lens can grep the
+/// code and run `git diff` for itself instead of reasoning from the prompt
+/// diff alone. The reviewer runs in a CHILD workflow, so its own
+/// `{workflow_id}` template can never name the parent's path — it must be
+/// plumbed through here. `base_commit` is the provisioned base the parent's
+/// diff was taken against: a lens whose prompt diff shows a truncation marker
+/// reconstructs the full diff with `git diff <base_commit>` in the workspace.
 pub type LensInput {
   LensInput(
     lens: Lens,
@@ -206,6 +225,8 @@ pub type LensInput {
     diff: String,
     report: DevReport,
     gate_runs: List(GateCommandRun),
+    workspace_path: String,
+    base_commit: String,
   )
 }
 
@@ -214,8 +235,10 @@ pub type LensInput {
 /// Input to the `provision_workspace` shell activity: create the brief's
 /// isolated git worktree at `workspace_path`, checking out `branch` freshly
 /// based on `base_branch`. The workflow derives `workspace_path` as
-/// `<workspace_base>/<workflow_id>` so it matches the `--workspace-root` the
-/// driven developer harness points norn at.
+/// `<repo_root>/.yggdrasil-worktrees/dev-brief/<workflow_id>` (per-run data,
+/// no longer a static base) and carries it on every agent activity input, so
+/// the driven harness roots Norn's `--workspace-root` at exactly this
+/// worktree by reading the input rather than expanding a static template.
 pub type ProvisionInput {
   ProvisionInput(
     repo_root: String,
@@ -245,9 +268,16 @@ pub type GateInput {
 /// One gate command's recorded run. `passed` is exit == 0; `output_tail`
 /// carries the trailing output as loop-back diagnostics and reviewer
 /// evidence. A red command is recorded DATA, never an activity error.
+///
+/// `argv` is the command ACTUALLY executed — after `{base_commit}` token
+/// substitution (§ the `{base_commit}` gate token) — not the configured
+/// template. Recording the resolved argv keeps the evidence honest: the run
+/// shows the real SHA the gate diffed against, so a brief that pins its scope
+/// fence to `{base_commit}` is auditable without re-deriving the substitution.
 pub type GateCommandRun {
   GateCommandRun(
     name: String,
+    argv: List(String),
     exit_code: Int,
     passed: Bool,
     output_tail: String,
@@ -280,6 +310,61 @@ pub type CleanupOutcome {
   CleanupOutcome(removed: Bool, detail: String)
 }
 
+/// Input to the `reset_workspace` shell activity: the mechanical restore run
+/// after EVERY lens round (`git clean -fd` + `git checkout -- .`), which
+/// re-establishes the worktree's exclusivity before the next developer round
+/// or the verify stage. `repo_root` is carried so the destructive-path guard
+/// can canonicalize and confirm `workspace_path` is strictly under
+/// `<repo_root>/.yggdrasil-worktrees/dev-brief/` before touching anything.
+pub type ResetInput {
+  ResetInput(repo_root: String, workspace_path: String)
+}
+
+/// Result of `reset_workspace`. The lenses run only on a green gate, so the
+/// tree is provably clean when they start and `was_clean` is normally True
+/// with no `droppings`: a False here means a lens WROTE into the shared
+/// worktree despite the reviewer tool deny-list — recorded as evidence for
+/// the operator, never a failed run.
+pub type ResetOutcome {
+  ResetOutcome(was_clean: Bool, droppings: List(String), detail: String)
+}
+
+/// Input to the `verify_gates` shell activity: the post-accept verification
+/// battery re-run in the SAME workspace before cleanup. `gates` is
+/// `config.verify_gates`; `base_commit` feeds the `{base_commit}` token;
+/// `log_path` is where the UNTRUNCATED per-command logs are written
+/// (`<repo_root>/.yggdrasil-worktrees/dev-brief/logs/<workflow-id>-verify.log`)
+/// — the handler creates its parent directory.
+pub type VerifyInput {
+  VerifyInput(
+    workspace_path: String,
+    base_commit: String,
+    gates: List(GateCommand),
+    log_path: String,
+  )
+}
+
+/// Result of `verify_gates`. `pre_clean` records the handler's own
+/// clean-tree assertion (`git status --porcelain` empty ⇒ the directory is
+/// the branch head ⇒ the gates test exactly what merges); `post_clean`
+/// records whether any verify gate DIRTIED the tree (there is no
+/// normalization commit in the verify stage — a gate that mutates the tree
+/// here is itself a recorded failure). `pass` is True only when every gate
+/// exited zero AND both clean assertions held. The full untruncated logs live
+/// at `log_path`; `runs` carries the same clipped output the event payload
+/// keeps. A red gate here is EVIDENCE — it never loops the developer back and
+/// never changes the disposition.
+pub type VerifyOutcome {
+  VerifyOutcome(
+    pass: Bool,
+    pre_clean: Bool,
+    post_clean: Bool,
+    runs: List(GateCommandRun),
+    log_path: String,
+    detail: String,
+  )
+}
+
 // --- pipeline result ---------------------------------------------------------------
 
 /// The terminal disposition of one brief's run. Exhaustion is a terminal
@@ -296,6 +381,12 @@ pub type Disposition {
 /// everything the operator needs — cycle accounting, the final artifacts,
 /// and every derive-and-check violation (`verdict_mismatches`, cycle-stamped
 /// evidence, never silently accepted).
+///
+/// `verification` is present only on an `accepted` run that configured a
+/// non-empty `verify_gates` battery: the post-accept stage's recorded
+/// outcome, surfaced in `aion describe` so the operator sees the mechanical
+/// re-run's verdict without retyping it. `None` when the run was not accepted
+/// or no verify battery was configured.
 pub type BriefResult {
   BriefResult(
     brief_id: String,
@@ -308,6 +399,7 @@ pub type BriefResult {
     gate: Option(GateOutcome),
     verdicts: List(LensVerdict),
     workspace_removed: Bool,
+    verification: Option(VerifyOutcome),
     summary: String,
   )
 }

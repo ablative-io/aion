@@ -3,7 +3,15 @@
   "title": "review_lens input",
   "description": "One adversarial review lens's working set: the lens charter, the brief, the developer's diff and report, and the gate evidence. Structurally lens-blind: no sibling verdicts. Normally composed by the dev_brief parent (child spawn), not authored by hand.",
   "type": "object",
-  "required": ["lens", "brief", "diff", "report", "gate_runs"],
+  "required": [
+    "lens",
+    "brief",
+    "diff",
+    "report",
+    "gate_runs",
+    "workspace_path",
+    "base_commit"
+  ],
   "properties": {
     "lens": {
       "type": "object",
@@ -16,6 +24,14 @@
     "brief": { "type": "object" },
     "diff": { "type": "string" },
     "report": { "type": "object" },
-    "gate_runs": { "type": "array" }
+    "gate_runs": { "type": "array" },
+    "workspace_path": {
+      "type": "string",
+      "description": "The parent run's provisioned worktree at the exact reviewed state; the reviewer's read-only Norn session is rooted here."
+    },
+    "base_commit": {
+      "type": "string",
+      "description": "The provisioned base the parent's diff was taken against; a lens reconstructs a truncated diff with `git diff <base_commit>`."
+    }
   }
 }

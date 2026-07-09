@@ -67,7 +67,24 @@
         },
         "gates": {
           "type": "array",
-          "description": "The mechanical gate battery, run in order in the workspace; pass = exit 0. Configure per repo (e.g. cargo fmt / cargo clippy -D warnings / cargo test).",
+          "description": "The mechanical gate battery, run in order in the workspace; pass = exit 0. Configure per repo (e.g. cargo fmt / cargo clippy -D warnings / cargo test). The literal token {base_commit} in any argv element is replaced with the provisioned base commit before execution.",
+          "items": {
+            "type": "object",
+            "required": ["name", "argv"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "argv": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "verify_gates": {
+          "type": "array",
+          "description": "OPTIONAL post-accept verification battery, same shape as gates. When a run reaches 'accepted', this battery is re-run in the clean workspace BEFORE cleanup as recorded evidence (attached to the result's 'verification'); it never loops the developer back and never changes the disposition. Absent or empty means the stage is skipped entirely (fully backward compatible). The {base_commit} token is substituted here too.",
           "items": {
             "type": "object",
             "required": ["name", "argv"],

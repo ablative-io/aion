@@ -4,9 +4,10 @@
 
 import dev_brief/codecs
 import dev_brief/types.{
-  Accept, AcceptanceClaim, Blocking, Brief, BriefInput, BriefResult,
+  Accept, AcceptanceClaim, Accepted, Blocking, Brief, BriefInput, BriefResult,
   CycleCapExhausted, DevReport, Deviation, GateCommand, GateCommandRun,
-  GateOutcome, Lens, LensInput, LensVerdict, Reject, ReviewFinding, RunConfig,
+  GateOutcome, Lens, LensInput, LensVerdict, Reject, ResetInput, ResetOutcome,
+  ReviewFinding, RunConfig, VerifyInput, VerifyOutcome,
 }
 import gleam/option.{None, Some}
 import gleeunit/should
@@ -45,6 +46,9 @@ pub fn brief_input_roundtrip_test() {
         repo_root: "/repo",
         base_branch: "main",
         gates: [GateCommand(name: "fmt", argv: ["cargo", "fmt"])],
+        verify_gates: [
+          GateCommand(name: "test", argv: ["cargo", "test", "--workspace"]),
+        ],
         max_fix_cycles: 2,
         lenses: [Lens(name: "correctness", charter: "hunt bugs")],
       ),
@@ -70,6 +74,8 @@ pub fn brief_input_omitted_config_fields_resolve_to_defaults_test() {
       input.config.max_fix_cycles
       |> should.equal(types.default_max_fix_cycles())
       input.config.gates
+      |> should.equal([])
+      input.config.verify_gates
       |> should.equal([])
       input.config.lenses
       |> should.equal([])
@@ -130,11 +136,14 @@ pub fn lens_input_roundtrip_test() {
       gate_runs: [
         GateCommandRun(
           name: "test",
+          argv: ["cargo", "test"],
           exit_code: 0,
           passed: True,
           output_tail: "ok",
         ),
       ],
+      workspace_path: "/repo/.yggdrasil-worktrees/dev-brief/wf-1",
+      base_commit: "abc123",
     )
   let codec = codecs.lens_input_codec()
   codec.encode(input)
@@ -157,6 +166,7 @@ pub fn brief_result_roundtrip_test() {
         runs: [
           GateCommandRun(
             name: "clippy",
+            argv: ["cargo", "clippy"],
             exit_code: 0,
             passed: True,
             output_tail: "",
@@ -174,12 +184,138 @@ pub fn brief_result_roundtrip_test() {
         ),
       ],
       workspace_removed: True,
+      verification: None,
       summary: "Brief DB-1: cycle_cap_exhausted after 3 fix cycle(s)",
     )
   let codec = codecs.brief_result_codec()
   codec.encode(result)
   |> codec.decode
   |> should.equal(Ok(result))
+}
+
+pub fn run_config_omitted_verify_gates_decodes_as_empty_test() {
+  // The post-accept verify battery is OPTIONAL: a brief authored before the
+  // stage existed omits the key and decodes to an empty battery — the stage
+  // then skips entirely (backward compatible).
+  let raw =
+    "{\"brief\":{\"id\":\"DB-3\",\"title\":\"t\",\"objective\":\"o\","
+    <> "\"acceptance\":[\"a\"]},\"config\":{\"repo_root\":\"/repo\"}}"
+  case codecs.brief_input_codec().decode(raw) {
+    Ok(input) ->
+      input.config.verify_gates
+      |> should.equal([])
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn reset_input_roundtrip_test() {
+  let input =
+    ResetInput(
+      repo_root: "/repo",
+      workspace_path: "/repo/.yggdrasil-worktrees/dev-brief/wf-1",
+    )
+  let codec = codecs.reset_input_codec()
+  codec.encode(input)
+  |> codec.decode
+  |> should.equal(Ok(input))
+}
+
+pub fn reset_outcome_roundtrip_test() {
+  let outcome =
+    ResetOutcome(
+      was_clean: False,
+      droppings: ["?? scratch.txt"],
+      detail: "a lens wrote scratch.txt; removed",
+    )
+  let codec = codecs.reset_outcome_codec()
+  codec.encode(outcome)
+  |> codec.decode
+  |> should.equal(Ok(outcome))
+}
+
+pub fn verify_input_roundtrip_test() {
+  let input =
+    VerifyInput(
+      workspace_path: "/repo/.yggdrasil-worktrees/dev-brief/wf-1",
+      base_commit: "abc123",
+      gates: [GateCommand(name: "test", argv: ["cargo", "test", "--workspace"])],
+      log_path: "/repo/.yggdrasil-worktrees/dev-brief/logs/wf-1-verify.log",
+    )
+  let codec = codecs.verify_input_codec()
+  codec.encode(input)
+  |> codec.decode
+  |> should.equal(Ok(input))
+}
+
+pub fn verify_outcome_roundtrip_test() {
+  let outcome =
+    VerifyOutcome(
+      pass: True,
+      pre_clean: True,
+      post_clean: True,
+      runs: [
+        GateCommandRun(
+          name: "test",
+          argv: ["cargo", "test", "--workspace"],
+          exit_code: 0,
+          passed: True,
+          output_tail: "ok",
+        ),
+      ],
+      log_path: "/repo/.yggdrasil-worktrees/dev-brief/logs/wf-1-verify.log",
+      detail: "all verify gate(s) green on a clean tree",
+    )
+  let codec = codecs.verify_outcome_codec()
+  codec.encode(outcome)
+  |> codec.decode
+  |> should.equal(Ok(outcome))
+}
+
+pub fn brief_result_with_verification_roundtrips_test() {
+  // An accepted run that configured a verify battery carries the stage's
+  // outcome on `verification`; it must survive the result roundtrip.
+  let result =
+    BriefResult(
+      brief_id: "DB-1",
+      disposition: Accepted,
+      fix_cycles: 1,
+      first_pass_accepted: True,
+      verdict_mismatches: [],
+      branch: "dev/DB-1",
+      report: None,
+      gate: None,
+      verdicts: [],
+      workspace_removed: True,
+      verification: Some(VerifyOutcome(
+        pass: True,
+        pre_clean: True,
+        post_clean: True,
+        runs: [],
+        log_path: "/repo/.yggdrasil-worktrees/dev-brief/logs/wf-1-verify.log",
+        detail: "no verify gates ran",
+      )),
+      summary: "Brief DB-1: accepted after 1 fix cycle(s)",
+    )
+  let codec = codecs.brief_result_codec()
+  codec.encode(result)
+  |> codec.decode
+  |> should.equal(Ok(result))
+}
+
+pub fn brief_result_omitted_verification_decodes_as_none_test() {
+  // A result document without the `verification` key (a run that skipped the
+  // stage, or an older payload) decodes to None — backward compatible.
+  let raw =
+    "{\"brief_id\":\"DB-9\",\"disposition\":\"accepted\",\"fix_cycles\":1,"
+    <> "\"first_pass_accepted\":true,\"verdict_mismatches\":[],"
+    <> "\"branch\":\"dev/DB-9\",\"report\":null,\"gate\":null,"
+    <> "\"verdicts\":[],\"workspace_removed\":true,\"summary\":\"s\"}"
+  case codecs.brief_result_codec().decode(raw) {
+    Ok(result) ->
+      result.verification
+      |> should.equal(None)
+    Error(_) -> should.fail()
+  }
 }
 
 pub fn error_codec_roundtrip_test() {
