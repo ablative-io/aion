@@ -326,3 +326,90 @@ advisory. Honesty is real but must be made the cheapest path.
   clippy → scoped tests) so fraud and format noise die in seconds, not
   after a full workspace build. Partially realized: entry 11 removed the
   most expensive, least deterministic gate from workflows entirely.
+
+## Run 15342a09 (AWL0-REFAC-001c, 2026-07-09) — entries 13–18
+
+The third dispatch of the decomposed sequence, and the richest single run in
+this ledger: it ended `cycle_cap_exhausted` with 8/8 gates green and 3/4 lens
+accepts, having surfaced two worker defects, one lens false-positive, one
+genuine purge defect, and the first live salvage. Salvage-from-branch
+(principle 12) validated exactly as designed: the worker destroyed the
+worktree and retained `dev/AWL0-REFAC-001c`.
+
+13. **The reviewer workspace is EMPTY — doctrine says "read the callers",
+    machinery refuses every read.** The lens charters instruct reviewers to
+    read surrounding code, but the worker confines `review_lens` sessions to
+    the static, empty `/tmp/aion-dev/review-scratch`
+    (`examples/dev-brief/worker/src/main.rs` REVIEW_SCRATCH). The 001c
+    regressions lens believed "the runtime has set the review workspace",
+    tried to read `/tmp/aion-dev/ws/<wf-id>/...`, and looped on
+    `confinement_refused`. **Live mitigation (now standing procedure until
+    task #245 lands):** at every lens round, rsync the current workflow
+    checkout into the confinement root —
+    `rsync -a --delete --exclude target --exclude .git /private/tmp/aion-dev/ws/<wf-id>/ /private/tmp/aion-dev/review-scratch/`
+    — RE-RUN after every developer round (the tree changes between rounds),
+    and if a lens is already wedged, inject via the console: "your confinement
+    root is /private/tmp/aion-dev/review-scratch; a copy of the checkout under
+    review is there in repo-relative layout; do not retry /tmp/aion-dev/ws/
+    paths."
+
+14. **Diff-artifact truncation converts an honest lens into a spurious
+    blocker.** The structured diff embedded in lens prompts truncated on the
+    1585-line split; brief_compliance could not see the `parser/mod.rs` /
+    `error.rs` hunks and (correctly, per its no-claim-without-evidence
+    charter) rejected — burning a real fix cycle on a non-defect. The
+    developer's only possible "fix" was to restate evidence in prose. A lens
+    must be able to distinguish "not shown" from "not changed" (task #246:
+    label every elision, point at the workspace copy). Until fixed: expect
+    large-diff briefs to lose one cycle to evidence gaps, and provision the
+    checkout copy (entry 13) BEFORE the first lens round, since head-state
+    criteria (mod.rs shape, doc quality) are verifiable from files alone.
+
+15. **Blind lenses false-accept — the mirror image of entry 14.** correctness
+    and regressions both ACCEPTED with zero findings in round 1 (no file
+    access), then both REJECTED with real, concrete, probe-backed findings in
+    round 2 once the checkout copy existed. A green lens verdict is only as
+    strong as its evidence channel. Operator consequence: never let lens
+    accepts substitute for the hand review — the hand review exists precisely
+    because the lenses' evidence can silently be worse than yours.
+
+16. **Verify a "regression" claim against BASE before accepting it.** The
+    correctness lens flagged duplicate step `about` fields silently
+    collapsing as a defect "of the refactored accumulator" — but
+    `git show <base>:crates/aion-awl/src/parser.rs` showed the OLD code had
+    the identical gap (no `reject_duplicate` on `about`, while the adjacent
+    `when` arm calls it). Under a zero-behavior-change contract, faithfully
+    preserving a pre-existing bug is CORRECT and "fixing" it would violate
+    the brief. Ruling: preserve, file the language bug separately (#247).
+    Accommodation for future refactor-brief lens charters: "before labeling a
+    defect a regression, read the base version; a preserved pre-existing bug
+    is a finding-for-follow-up, not a blocking rejection." Operator side:
+    always diff the claim against base yourself before treating it as real.
+
+17. **Purge technique: classification and extraction must be ONE operation.**
+    The genuine defect of the run: converting
+    `line.code.strip_prefix("about").unwrap()` (old: panic on the
+    classifier/extractor mismatch) into `strip_prefix("about")?` inside an
+    Option-returning fn produced a bumped-then-dropped line — silent data
+    loss on an NBSP-prefixed input where Unicode-aware `first_word` says
+    "about" but the byte-level prefix strip fails. A consumed-then-discarded
+    line is the swallow anti-pattern even though no `.unwrap_or*` appears.
+    Future purge briefs converting guarded unwraps must mandate: only consume
+    input when extraction succeeds (peek → attempt extraction → bump on
+    success); panic→explicit-ParseError is the sanctioned direction of
+    behavior change, silent-accept never is. And the lens found ONE instance
+    — the salvage must always audit the whole PATTERN CLASS (~25 sites here),
+    not the flagged site.
+
+18. **Cycle-cap arithmetic: infrastructure failures eat the same cap as code
+    defects.** 001c's three cycles went: (1) ordinary gate red, (2)
+    truncated-diff evidence gap (entry 14 — not a code defect), (3) consumed,
+    so the two REAL round-2 findings never got a fix round and the workflow
+    completed `cycle_cap_exhausted`. Consequences: (a) worker improvement —
+    infra-caused loop-backs should not count against `max_fix_cycles`;
+    (b) operator watching a run should track WHY each cycle was consumed and
+    anticipate salvage when non-code cycles eat the budget; (c)
+    `cycle_cap_exhausted` with green gates and majority accepts is a salvage
+    candidate, not a discard — the branch survives, findings triage into
+    pre-existing (preserve + file) vs genuine (fix on the branch), and an
+    Opus subagent can do the fixing under operator rulings.
