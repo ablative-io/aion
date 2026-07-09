@@ -12,9 +12,14 @@
 //! JSON the workflow encoded), runs the role's ONE assembly function
 //! (`crate::prompts`), and hands the inner harness the same spec with its input
 //! replaced by the assembled context prompt as a JSON string — which
-//! `NornHarness` unwraps verbatim. Everything else (driven mode, jsonrpc,
-//! `--output-schema`, `--append-system-prompt` doctrine, `{workflow_id}`
-//! session identity, env hygiene) stays the inner harness's, untouched.
+//! `NornHarness` unwraps verbatim. It ALSO reads `workspace_path` from that
+//! same input and appends it as the per-run `--workspace-root` (the base is no
+//! longer a static template, so the session is rooted at the run's ACTUAL
+//! worktree — the developer's own, or the reviewer's parent-run tree at the
+//! reviewed state). Everything else (driven mode, jsonrpc, `--output-schema`,
+//! `--append-system-prompt` doctrine, `{workflow_id}` session identity, the
+//! reviewer's tool deny-list, env hygiene) stays the inner harness's,
+//! untouched.
 //!
 //! THE MECHANICAL-GIT SEAM (doctrine: agents do not run git — the machinery
 //! does): the developer role is built with [`PostRunCommit::DevWork`] and
@@ -34,6 +39,7 @@ use aion_integrations::{
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::commit::{self, CommitContext};
@@ -102,6 +108,14 @@ impl AgentHarness for ProfiledNornHarness {
                 HarnessError::protocol(format!("run input is not valid UTF-8: {source}"))
             })?
             .to_owned();
+        // The workspace root is now PER-RUN data, not a static harness arg:
+        // both roles carry `workspace_path` on their activity input (the
+        // developer's own worktree; the reviewer's the parent run's worktree
+        // at the reviewed state). A missing or empty value is a loud error
+        // here — never a silent fallback to some default directory that would
+        // let a session escape the run's isolation.
+        let workspace_root =
+            workspace_root_from_input(&context_json).map_err(HarnessError::protocol)?;
         // Resolve the commit plan BEFORE the run: an input that cannot name
         // the workspace must fail here, not after an expensive agent turn.
         let commit = match self.post_run_commit {
@@ -117,9 +131,47 @@ impl AgentHarness for ProfiledNornHarness {
         spec.input = Payload::from_json(&Value::String(prompt)).map_err(|source| {
             HarnessError::protocol(format!("could not encode the assembled prompt: {source}"))
         })?;
-        let inner = self.inner.start(spec).await?;
+        // Root THIS run's session at the input's worktree. The inner harness is
+        // a template; a per-run clone appends the resolved `--workspace-root`.
+        let inner = self
+            .inner
+            .clone()
+            .with_arg("--workspace-root")
+            .with_arg(workspace_root)
+            .start(spec)
+            .await?;
         Ok(ProfiledSession { inner, commit })
     }
+}
+
+/// The one slice of an agent activity input the harness reads to root the
+/// session: `workspace_path`, carried on both `DeveloperInput` and
+/// `LensInput`. Extra fields are ignored.
+#[derive(Debug, Deserialize)]
+struct WorkspaceRoot {
+    #[serde(default)]
+    workspace_path: String,
+}
+
+/// Read the worktree an agent session must be rooted at from its activity
+/// input. A missing or blank `workspace_path` is a wiring fault surfaced
+/// loudly — never a silent fallback that would unconfine the session.
+///
+/// # Errors
+///
+/// Returns a message when the input does not carry a non-empty
+/// `workspace_path`.
+fn workspace_root_from_input(context_json: &str) -> Result<String, String> {
+    let parsed: WorkspaceRoot = serde_json::from_str(context_json)
+        .map_err(|error| format!("agent activity input does not carry workspace_path: {error}"))?;
+    if parsed.workspace_path.trim().is_empty() {
+        return Err(
+            "agent activity input carries an empty workspace_path — the harness \
+             cannot root the session at an unnamed worktree"
+                .to_owned(),
+        );
+    }
+    Ok(parsed.workspace_path)
 }
 
 /// The wrapper session: everything delegates to the inner Norn session; for
@@ -192,7 +244,7 @@ async fn commit_dev_work(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::ProfiledNornHarness;
+    use super::{ProfiledNornHarness, workspace_root_from_input};
     use aion_integration_norn::NornHarness;
 
     #[test]
@@ -204,5 +256,28 @@ mod tests {
         assert!(!prompt.contains("# Reviewer"));
         assert!(prompt.contains("{\"diff\":\"...\"}"));
         assert!(prompt.contains("```json"));
+    }
+
+    #[test]
+    fn the_workspace_root_is_read_from_the_input_workspace_path() {
+        let root = workspace_root_from_input(
+            "{\"lens\":{},\"workspace_path\":\"/repo/.yggdrasil-worktrees/dev-brief/wf-1\"}",
+        )
+        .expect("a present workspace_path resolves");
+        assert_eq!(root, "/repo/.yggdrasil-worktrees/dev-brief/wf-1");
+    }
+
+    #[test]
+    fn a_missing_workspace_path_is_a_loud_error() {
+        let error = workspace_root_from_input("{\"brief\":{\"id\":\"DB-1\"}}")
+            .expect_err("a missing workspace_path must fail loudly");
+        assert!(error.contains("workspace_path"), "error was: {error}");
+    }
+
+    #[test]
+    fn an_empty_workspace_path_is_a_loud_error() {
+        let error = workspace_root_from_input("{\"workspace_path\":\"   \"}")
+            .expect_err("a blank workspace_path must fail loudly, never a silent fallback");
+        assert!(error.contains("empty workspace_path"), "error was: {error}");
     }
 }

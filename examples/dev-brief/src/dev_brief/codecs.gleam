@@ -21,12 +21,13 @@ import dev_brief/types.{
   type DeveloperInput, type Deviation, type Disposition, type GateCommand,
   type GateCommandRun, type GateInput, type GateOutcome, type Lens,
   type LensInput, type LensVerdict, type Overall, type ProvisionInput,
-  type ReviewFinding, type RunConfig, type Severity, type WorkspaceInfo,
+  type ResetInput, type ResetOutcome, type ReviewFinding, type RunConfig,
+  type Severity, type VerifyInput, type VerifyOutcome, type WorkspaceInfo,
   AcceptanceClaim, Brief, BriefInput, BriefResult, ChildFailed, CleanupInput,
   CleanupOutcome, DecodeInputFailed, DevReport, DeveloperInput, Deviation,
   GateCommand, GateCommandRun, GateInput, GateOutcome, Lens, LensInput,
-  LensVerdict, ProvisionInput, ReviewFinding, RunConfig, StageFailed,
-  WorkspaceInfo,
+  LensVerdict, ProvisionInput, ResetInput, ResetOutcome, ReviewFinding,
+  RunConfig, StageFailed, VerifyInput, VerifyOutcome, WorkspaceInfo,
 }
 import gleam/dynamic/decode
 import gleam/json
@@ -160,6 +161,7 @@ fn run_config_to_json(config: RunConfig) -> json.Json {
     #("repo_root", json.string(config.repo_root)),
     #("base_branch", json.string(config.base_branch)),
     #("gates", json.array(config.gates, gate_command_to_json)),
+    #("verify_gates", json.array(config.verify_gates, gate_command_to_json)),
     #("max_fix_cycles", json.int(config.max_fix_cycles)),
     #("lenses", json.array(config.lenses, lens_to_json)),
   ])
@@ -177,6 +179,14 @@ fn run_config_decoder() -> decode.Decoder(RunConfig) {
     [],
     decode.list(gate_command_decoder()),
   )
+  // The post-accept verification battery is OPTIONAL: an omitted (or empty)
+  // key skips the stage entirely, so a brief authored before the stage
+  // existed decodes unchanged.
+  use verify_gates <- decode.optional_field(
+    "verify_gates",
+    [],
+    decode.list(gate_command_decoder()),
+  )
   use max_fix_cycles <- decode.optional_field(
     "max_fix_cycles",
     types.default_max_fix_cycles(),
@@ -190,6 +200,7 @@ fn run_config_decoder() -> decode.Decoder(RunConfig) {
     repo_root: repo_root,
     base_branch: base_branch,
     gates: gates,
+    verify_gates: verify_gates,
     max_fix_cycles: max_fix_cycles,
     lenses: lenses,
   ))
@@ -388,6 +399,8 @@ fn lens_input_to_json(input: LensInput) -> json.Json {
     #("diff", json.string(input.diff)),
     #("report", dev_report_to_json(input.report)),
     #("gate_runs", json.array(input.gate_runs, gate_command_run_to_json)),
+    #("workspace_path", json.string(input.workspace_path)),
+    #("base_commit", json.string(input.base_commit)),
   ])
 }
 
@@ -400,12 +413,16 @@ fn lens_input_decoder() -> decode.Decoder(LensInput) {
     "gate_runs",
     decode.list(gate_command_run_decoder()),
   )
+  use workspace_path <- decode.field("workspace_path", decode.string)
+  use base_commit <- decode.field("base_commit", decode.string)
   decode.success(LensInput(
     lens: lens,
     brief: brief,
     diff: diff,
     report: report,
     gate_runs: gate_runs,
+    workspace_path: workspace_path,
+    base_commit: base_commit,
   ))
 }
 
@@ -489,6 +506,7 @@ fn gate_input_decoder() -> decode.Decoder(GateInput) {
 fn gate_command_run_to_json(run: GateCommandRun) -> json.Json {
   json.object([
     #("name", json.string(run.name)),
+    #("argv", strings(run.argv)),
     #("exit_code", json.int(run.exit_code)),
     #("passed", json.bool(run.passed)),
     #("output_tail", json.string(run.output_tail)),
@@ -497,11 +515,16 @@ fn gate_command_run_to_json(run: GateCommandRun) -> json.Json {
 
 fn gate_command_run_decoder() -> decode.Decoder(GateCommandRun) {
   use name <- decode.field("name", decode.string)
+  // `argv` is the RESOLVED command (after `{base_commit}` substitution). An
+  // older payload without the key degrades to an empty list rather than a
+  // decode failure — the run's identity still rides in `name`.
+  use argv <- decode.optional_field("argv", [], decode.list(decode.string))
   use exit_code <- decode.field("exit_code", decode.int)
   use passed <- decode.field("passed", decode.bool)
   use output_tail <- decode.field("output_tail", decode.string)
   decode.success(GateCommandRun(
     name: name,
+    argv: argv,
     exit_code: exit_code,
     passed: passed,
     output_tail: output_tail,
@@ -574,6 +597,111 @@ fn cleanup_outcome_decoder() -> decode.Decoder(CleanupOutcome) {
   decode.success(CleanupOutcome(removed: removed, detail: detail))
 }
 
+/// `reset_workspace` input codec.
+pub fn reset_input_codec() -> Codec(ResetInput) {
+  codec.json_codec(reset_input_to_json, reset_input_decoder())
+}
+
+fn reset_input_to_json(input: ResetInput) -> json.Json {
+  json.object([
+    #("repo_root", json.string(input.repo_root)),
+    #("workspace_path", json.string(input.workspace_path)),
+  ])
+}
+
+fn reset_input_decoder() -> decode.Decoder(ResetInput) {
+  use repo_root <- decode.field("repo_root", decode.string)
+  use workspace_path <- decode.field("workspace_path", decode.string)
+  decode.success(ResetInput(
+    repo_root: repo_root,
+    workspace_path: workspace_path,
+  ))
+}
+
+/// `reset_workspace` output codec.
+pub fn reset_outcome_codec() -> Codec(ResetOutcome) {
+  codec.json_codec(reset_outcome_to_json, reset_outcome_decoder())
+}
+
+fn reset_outcome_to_json(outcome: ResetOutcome) -> json.Json {
+  json.object([
+    #("was_clean", json.bool(outcome.was_clean)),
+    #("droppings", strings(outcome.droppings)),
+    #("detail", json.string(outcome.detail)),
+  ])
+}
+
+fn reset_outcome_decoder() -> decode.Decoder(ResetOutcome) {
+  use was_clean <- decode.field("was_clean", decode.bool)
+  use droppings <- decode.field("droppings", decode.list(decode.string))
+  use detail <- decode.field("detail", decode.string)
+  decode.success(ResetOutcome(
+    was_clean: was_clean,
+    droppings: droppings,
+    detail: detail,
+  ))
+}
+
+/// `verify_gates` input codec.
+pub fn verify_input_codec() -> Codec(VerifyInput) {
+  codec.json_codec(verify_input_to_json, verify_input_decoder())
+}
+
+fn verify_input_to_json(input: VerifyInput) -> json.Json {
+  json.object([
+    #("workspace_path", json.string(input.workspace_path)),
+    #("base_commit", json.string(input.base_commit)),
+    #("gates", json.array(input.gates, gate_command_to_json)),
+    #("log_path", json.string(input.log_path)),
+  ])
+}
+
+fn verify_input_decoder() -> decode.Decoder(VerifyInput) {
+  use workspace_path <- decode.field("workspace_path", decode.string)
+  use base_commit <- decode.field("base_commit", decode.string)
+  use gates <- decode.field("gates", decode.list(gate_command_decoder()))
+  use log_path <- decode.field("log_path", decode.string)
+  decode.success(VerifyInput(
+    workspace_path: workspace_path,
+    base_commit: base_commit,
+    gates: gates,
+    log_path: log_path,
+  ))
+}
+
+/// `verify_gates` output codec.
+pub fn verify_outcome_codec() -> Codec(VerifyOutcome) {
+  codec.json_codec(verify_outcome_to_json, verify_outcome_decoder())
+}
+
+fn verify_outcome_to_json(outcome: VerifyOutcome) -> json.Json {
+  json.object([
+    #("pass", json.bool(outcome.pass)),
+    #("pre_clean", json.bool(outcome.pre_clean)),
+    #("post_clean", json.bool(outcome.post_clean)),
+    #("runs", json.array(outcome.runs, gate_command_run_to_json)),
+    #("log_path", json.string(outcome.log_path)),
+    #("detail", json.string(outcome.detail)),
+  ])
+}
+
+fn verify_outcome_decoder() -> decode.Decoder(VerifyOutcome) {
+  use pass <- decode.field("pass", decode.bool)
+  use pre_clean <- decode.field("pre_clean", decode.bool)
+  use post_clean <- decode.field("post_clean", decode.bool)
+  use runs <- decode.field("runs", decode.list(gate_command_run_decoder()))
+  use log_path <- decode.field("log_path", decode.string)
+  use detail <- decode.field("detail", decode.string)
+  decode.success(VerifyOutcome(
+    pass: pass,
+    pre_clean: pre_clean,
+    post_clean: post_clean,
+    runs: runs,
+    log_path: log_path,
+    detail: detail,
+  ))
+}
+
 // --- pipeline result ------------------------------------------------------------------
 
 /// The `dev_brief` workflow result codec.
@@ -593,6 +721,10 @@ fn brief_result_to_json(result: BriefResult) -> json.Json {
     #("gate", json.nullable(result.gate, gate_outcome_to_json)),
     #("verdicts", json.array(result.verdicts, lens_verdict_to_json)),
     #("workspace_removed", json.bool(result.workspace_removed)),
+    #(
+      "verification",
+      json.nullable(result.verification, verify_outcome_to_json),
+    ),
     #("summary", json.string(result.summary)),
   ])
 }
@@ -611,6 +743,11 @@ fn brief_result_decoder() -> decode.Decoder(BriefResult) {
   use gate <- decode.field("gate", decode.optional(gate_outcome_decoder()))
   use verdicts <- decode.field("verdicts", decode.list(lens_verdict_decoder()))
   use workspace_removed <- decode.field("workspace_removed", decode.bool)
+  use verification <- decode.optional_field(
+    "verification",
+    option.None,
+    decode.optional(verify_outcome_decoder()),
+  )
   use summary <- decode.field("summary", decode.string)
   decode.success(BriefResult(
     brief_id: brief_id,
@@ -623,6 +760,7 @@ fn brief_result_decoder() -> decode.Decoder(BriefResult) {
     gate: gate,
     verdicts: verdicts,
     workspace_removed: workspace_removed,
+    verification: verification,
     summary: summary,
   ))
 }

@@ -12,6 +12,7 @@
 pub mod commit;
 pub mod handlers;
 pub mod harness;
+pub mod paths;
 pub mod profiles;
 pub mod prompts;
 pub mod schemas;

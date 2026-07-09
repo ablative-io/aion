@@ -353,15 +353,66 @@ pub fn developer(context_json: &str) -> String {
     format!("{prompt}\n{gate_discipline}")
 }
 
+/// The slice of the lens context the workspace section reads: `base_commit`,
+/// the provisioned base the parent's diff was taken against — printed so a
+/// lens can copy the exact `git diff <sha>` command. Tolerant: a context
+/// missing the key renders the generic `<base_commit>` placeholder rather
+/// than failing the prompt composer.
+#[derive(Debug, Deserialize)]
+struct ReviewerContext {
+    #[serde(default)]
+    base_commit: String,
+}
+
+/// The reviewer workspace section, appended after the lens run context. It
+/// states the standing fact the reviewer role now depends on: the session's
+/// working directory IS the run's checkout at the EXACT reviewed state, the
+/// lens is READ-ONLY (its file-mutating tools are denied at the process
+/// boundary), and — because the `diff` in the context is clipped — a lens that
+/// sees a truncation marker must reconstruct the full change with `git diff`
+/// against the base commit itself.
+fn reviewer_workspace_section(context_json: &str) -> String {
+    let base_commit = serde_json::from_str::<ReviewerContext>(context_json)
+        .map(|parsed| parsed.base_commit)
+        .unwrap_or_default();
+    let base = if base_commit.trim().is_empty() {
+        "<base_commit>".to_owned()
+    } else {
+        base_commit
+    };
+    format!(
+        "## YOUR WORKSPACE — the checkout under review\n\n\
+         Your working directory IS the run's git checkout at the EXACT state \
+         you are reviewing (the developer's work and any gate normalization \
+         are committed; the tree is clean). You are READ-ONLY: your \
+         file-writing tools are disabled — read, grep, and run `git` freely, \
+         but do not attempt to modify anything.\n\n\
+         The `diff` in your run context above is CLIPPED to keep the durable \
+         record small. If it shows a truncation marker (`bytes TRUNCATED`), it \
+         is a PARTIAL capture, not the whole change — do not mistake \
+         `not shown` for `not changed`. Reconstruct the full diff yourself, in \
+         your workspace:\n\n\
+         ```\n\
+         git diff {base}\n\
+         ```\n\n\
+         and read any file at its reviewed state directly. Ground every \
+         finding in what the code and the real diff actually say.\n"
+    )
+}
+
 /// The review-lens prompt (context only — the doctrine is the session's
 /// `--append-system-prompt` text): {lens charter + brief + diff + dev report +
-/// gate evidence}.
+/// gate evidence}, followed by the workspace section (the lens is rooted,
+/// read-only, at the run's checkout and can reconstruct a truncated diff with
+/// `git diff <base_commit>`).
 #[must_use]
 pub fn review_lens(context_json: &str) -> String {
-    context_section(
+    let context = context_section(
         "Run context: lens charter + brief + diff + dev report + gate evidence",
         context_json,
-    )
+    );
+    let workspace = reviewer_workspace_section(context_json);
+    format!("{context}\n{workspace}")
 }
 
 #[cfg(test)]
@@ -545,6 +596,50 @@ mod tests {
         assert!(
             !prompt.contains("GATE DISCIPLINE"),
             "the review lens does not run gates; it must not get this section"
+        );
+    }
+
+    /// The review-lens prompt carries the workspace section: the checkout is
+    /// the session's working directory, the lens is read-only, and the exact
+    /// `git diff <base_commit>` command uses the run's real base commit so a
+    /// truncated diff can be reconstructed.
+    #[test]
+    fn review_lens_prompt_carries_the_read_only_workspace_section() {
+        let context = "{\"lens\":{\"name\":\"correctness\",\"charter\":\"c\"},\
+             \"brief\":{\"id\":\"DB-1\"},\"diff\":\"...\",\
+             \"report\":{\"brief_id\":\"DB-1\"},\"gate_runs\":[],\
+             \"workspace_path\":\"/repo/.yggdrasil-worktrees/dev-brief/wf-1\",\
+             \"base_commit\":\"deadbeefcafe\"}";
+        let prompt = super::review_lens(context);
+        assert!(
+            prompt.contains("YOUR WORKSPACE"),
+            "the lens must be told its cwd is the checkout; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("READ-ONLY"),
+            "the lens must be told it is read-only; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("git diff deadbeefcafe"),
+            "the exact git diff command must carry the run's real base commit; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("TRUNCATED"),
+            "the lens must be told a clipped diff is partial, not complete; \
+             prompt was:\n{prompt}"
+        );
+    }
+
+    /// A lens context missing `base_commit` degrades to the `<base_commit>`
+    /// placeholder rather than failing the prompt composer.
+    #[test]
+    fn review_lens_workspace_section_degrades_without_a_base_commit() {
+        let prompt = super::review_lens(CONTEXT);
+        assert!(prompt.contains("YOUR WORKSPACE"));
+        assert!(
+            prompt.contains("git diff <base_commit>"),
+            "a missing base_commit renders the placeholder; prompt was:\n{prompt}"
         );
     }
 

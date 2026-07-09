@@ -1,6 +1,6 @@
 //// The typed activity constructors the dev-brief workflows dispatch.
 ////
-//// Five activity types, all served by the dev-brief worker on ONE distinct
+//// Seven activity types, all served by the dev-brief worker on ONE distinct
 //// task queue (`dev_brief`) so runs never collide with other workers on
 //// `default`, each PINNED to the one worker connection that serves it via
 //// the node routing dimension (namespace × task_queue × node):
@@ -10,9 +10,10 @@
 ////   the worker assembles the final prompt as {role profile markdown} +
 ////   {this context JSON} and the driven harness returns the
 ////   schema-constrained structured result.
-//// - THREE shell activities (`provision_workspace`, `run_gates`,
-////   `cleanup_workspace`) — typed registry handlers running real git and the
-////   brief's configured gate commands, pinned to the `shell` node.
+//// - FIVE shell activities (`provision_workspace`, `run_gates`,
+////   `reset_workspace`, `verify_gates`, `cleanup_workspace`) — typed registry
+////   handlers running real git and the brief's configured gate commands,
+////   pinned to the `shell` node.
 ////
 //// The node pin is LOAD-BEARING (the remediation flow's lesson, kept): the
 //// server routes a pushed activity to a worker connection by (namespace,
@@ -31,7 +32,8 @@ import dev_brief/codecs
 import dev_brief/types.{
   type CleanupInput, type CleanupOutcome, type DevReport, type DeveloperInput,
   type GateInput, type GateOutcome, type LensInput, type LensVerdict,
-  type ProvisionInput, type WorkspaceInfo,
+  type ProvisionInput, type ResetInput, type ResetOutcome, type VerifyInput,
+  type VerifyOutcome, type WorkspaceInfo,
 }
 
 /// The one task queue every dev-brief activity is dispatched on.
@@ -150,6 +152,38 @@ pub fn cleanup(input: CleanupInput) -> Activity(CleanupInput, CleanupOutcome) {
     codecs.cleanup_input_codec(),
     codecs.cleanup_outcome_codec(),
     remote_only("cleanup_workspace"),
+  )
+  |> route(shell_node)
+}
+
+/// `reset_workspace`: the mechanical post-review restore (`git clean -fd` +
+/// `git checkout -- .`) run after EVERY lens round, re-establishing the
+/// worktree's exclusivity before the next developer round or the verify
+/// stage. Guarded to a path strictly under the repo's dev-brief worktree
+/// root; droppings are recorded, never fatal.
+pub fn reset(input: ResetInput) -> Activity(ResetInput, ResetOutcome) {
+  activity.new(
+    "reset_workspace",
+    input,
+    codecs.reset_input_codec(),
+    codecs.reset_outcome_codec(),
+    remote_only("reset_workspace"),
+  )
+  |> route(shell_node)
+}
+
+/// `verify_gates`: the post-accept verification battery, re-run in the clean
+/// workspace before cleanup. Recorded evidence only — a red gate here never
+/// loops the developer back and never changes the disposition.
+pub fn verify_gates(
+  input: VerifyInput,
+) -> Activity(VerifyInput, VerifyOutcome) {
+  activity.new(
+    "verify_gates",
+    input,
+    codecs.verify_input_codec(),
+    codecs.verify_outcome_codec(),
+    remote_only("verify_gates"),
   )
   |> route(shell_node)
 }

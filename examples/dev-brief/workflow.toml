@@ -21,6 +21,8 @@ activities = [
   "provision_workspace",
   "developer",
   "run_gates",
+  "reset_workspace",
+  "verify_gates",
   "cleanup_workspace",
 ]
 output = "dev-brief.aion"

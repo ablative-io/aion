@@ -1,6 +1,6 @@
 //! Composition root for the dev-brief worker.
 //!
-//! It serves five activity types on ONE task queue (`dev_brief`) across
+//! It serves seven activity types on ONE task queue (`dev_brief`) across
 //! THREE liminal connections in this single process, each connection
 //! registered on its OWN node (the third routing dimension: namespace ×
 //! `task_queue` × node) so the server — which routes by those three
@@ -9,13 +9,14 @@
 //!
 //! - two DRIVEN AGENT connections (`developer`, `reviewer`), each registered
 //!   on its role's node, each with its OWN composed [`ProfiledNornHarness`]:
-//!   a distinct `--output-schema`, a `{workflow_id}`-templated `--session-id`
-//!   / `--workspace-root`, and the role's profile markdown (loaded once at
+//!   a distinct `--output-schema`, a `{workflow_id}`-templated `--session-id`,
+//!   a per-run `--workspace-root` the harness reads from the activity input's
+//!   `workspace_path`, and the role's profile markdown (loaded once at
 //!   startup from `--profiles-dir`, this package's `worker/profiles/`)
 //!   assembled with the per-run context by the role's ONE prompt function.
 //! - one SHELL connection, registered on node `shell`, serving
-//!   `provision_workspace`, `run_gates`, and `cleanup_workspace` from a typed
-//!   registry, with no harness.
+//!   `provision_workspace`, `run_gates`, `reset_workspace`, `verify_gates`,
+//!   and `cleanup_workspace` from a typed registry, with no harness.
 //!
 //! Session isolation falls out of the topology: the developer runs inside
 //! the `dev_brief` workflow (`{workflow_id}-developer` — per brief, resumed
@@ -41,7 +42,7 @@ use aion_worker::{
     WorkerConfig, WorkerConfigBuildError,
 };
 
-use dev_brief_worker::handlers::{self, WORKSPACE_BASE};
+use dev_brief_worker::handlers;
 use dev_brief_worker::harness::{PostRunCommit, ProfiledNornHarness};
 use dev_brief_worker::profiles::{self, Profiles};
 use dev_brief_worker::prompts;
@@ -62,29 +63,36 @@ const TASK_QUEUE: &str = "dev_brief";
 /// node table); the agent connections' node ids mirror that table's
 /// `developer_node`/`reviewer_node` constants.
 const SHELL_NODE: &str = "shell";
-/// The reviewer role's Norn workspace root: a STATIC scratch directory the
-/// worker creates at startup. Lens children read the brief/diff/report from
-/// their prompt context — the workspace is just Norn's working home, and it
-/// must EXIST before a session starts (Norn refuses a missing
-/// `--workspace-root`; the developer's per-brief root exists because
-/// `provision_workspace` creates that exact worktree first — the live proof
-/// run 1ac905ed failed on exactly this).
-const REVIEW_SCRATCH: &str = "/tmp/aion-dev/review-scratch";
+/// The exact Norn file-mutating tool names denied to the reviewer role's
+/// sessions (a comma-separated `--disallowed-tools` value). A review lens is
+/// READ-ONLY: it is rooted at the run's actual worktree so it can grep the
+/// code and run `git diff`, but it must never write there — so `write`,
+/// `edit`, and `apply_patch` are removed from its tool set. `read`, `search`,
+/// `bash`, and `lsp` stay available (a lens needs `bash` for `git diff`). The
+/// post-review reset is the belt to this deny-list's braces.
+const REVIEWER_DISALLOWED_TOOLS: &str = "write,edit,apply_patch";
 const REDIAL_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const REDIAL_MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 /// One driven-agent role: its activity type, the node its connection
-/// registers, its output schema, the `--session-id` role suffix, the Norn
-/// `--workspace-root` (carrying the `{workflow_id}` placeholder), the profile
-/// doctrine, and the prompt assembly function.
+/// registers, its output schema, the `--session-id` role suffix, the profile
+/// doctrine, the prompt assembly function, its Norn tool deny-list, and its
+/// post-turn commit. The Norn `--workspace-root` is NO LONGER a role field: it
+/// is now per-run data, read from each activity input's `workspace_path` by
+/// the harness (both roles operate in the run's actual worktree — the
+/// developer to edit it, the reviewer to read it).
 struct Role {
     activity_type: &'static str,
     node: &'static str,
     output_schema: &'static str,
     session_suffix: &'static str,
-    workspace_root: String,
     profile: String,
     assemble: prompts::AssembleFn,
+    /// The comma-separated Norn tool deny-list this role's sessions run with
+    /// (`--disallowed-tools`), or `None` for no deny-list. `Some` for the
+    /// reviewer (file-mutating tools removed — a lens is read-only); `None`
+    /// for the developer (it must write to implement the brief).
+    disallowed_tools: Option<&'static str>,
     /// The mechanical commit this role's harness performs in the brief
     /// workspace after a successful turn (the doctrine: agents never run git
     /// — the machinery does). `DevWork` for the developer (the report's
@@ -114,8 +122,6 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let args = parse_args()?;
-    std::fs::create_dir_all(REVIEW_SCRATCH)
-        .map_err(|error| anyhow::anyhow!("could not create {REVIEW_SCRATCH}: {error}"))?;
     let profiles =
         profiles::load(Path::new(&args.profiles_dir)).map_err(|error| anyhow::anyhow!(error))?;
     tracing::info!(
@@ -123,7 +129,7 @@ fn main() -> anyhow::Result<()> {
         norn_bin = %args.norn_bin,
         profiles_dir = %args.profiles_dir,
         task_queue = TASK_QUEUE,
-        "dev-brief-worker starting: 2 driven agent roles + 3 shell activities across 3 connections"
+        "dev-brief-worker starting: 2 driven agent roles + 5 shell activities across 3 connections"
     );
 
     let roles = roles(profiles);
@@ -152,23 +158,24 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The two agent roles. Both operate in the per-brief worktree at
-/// `<base>/{workflow_id}` — for the developer that is the `dev_brief` run's
-/// worktree; for the reviewer the placeholder resolves to the `review_lens`
-/// CHILD's id, so its Norn session is per-lens-run by construction (the lens
-/// reads the diff and report from its prompt context; the workspace root
-/// gives it a benign scratch home, not the developer's tree).
+/// The two agent roles. Both root their Norn session at the run's ACTUAL
+/// worktree, read from the activity input's `workspace_path` by the harness —
+/// for the developer the `dev_brief` run's worktree (it edits the code); for
+/// the reviewer the PARENT run's worktree at the exact reviewed state (it
+/// reads the code, with file-mutating tools denied). The reviewer runs in the
+/// `review_lens` CHILD workflow, so its own `{workflow_id}` keys a per-lens
+/// session, but the parent's path can only reach it through `LensInput` — the
+/// harness plumbs it, not a template.
 fn roles(profiles: Profiles) -> Vec<Role> {
-    let brief_workspace = format!("{WORKSPACE_BASE}/{{workflow_id}}");
     vec![
         Role {
             activity_type: "developer",
             node: "developer",
             output_schema: schemas::DEV_REPORT,
             session_suffix: "developer",
-            workspace_root: brief_workspace,
             profile: profiles.developer,
             assemble: prompts::developer,
+            disallowed_tools: None,
             post_run_commit: Some(PostRunCommit::DevWork),
         },
         Role {
@@ -176,9 +183,9 @@ fn roles(profiles: Profiles) -> Vec<Role> {
             node: "reviewer",
             output_schema: schemas::LENS_VERDICT,
             session_suffix: "reviewer",
-            workspace_root: REVIEW_SCRATCH.to_owned(),
             profile: profiles.reviewer,
             assemble: prompts::review_lens,
+            disallowed_tools: Some(REVIEWER_DISALLOWED_TOOLS),
             post_run_commit: None,
         },
     ]
@@ -243,9 +250,15 @@ fn composed_agent_harness(norn_bin: &str, role: &Role) -> AgentHarnessConfig {
 /// `{workflow_id}`/`{activity_type}` placeholder, so the harness's `expand_arg`
 /// leaves it byte-identical. `--fast` / `--reasoning-effort high` are the
 /// operator's speed/effort settings.
+///
+/// The reviewer role adds `--disallowed-tools` (its file-mutating tools
+/// removed — a lens is read-only). `--workspace-root` is NOT set here: it is
+/// per-run data the [`ProfiledNornHarness`] appends from the activity input's
+/// `workspace_path` at start time, so both roles root at the run's actual
+/// worktree rather than a static template.
 fn inner_norn_harness(norn_bin: &str, role: &Role) -> NornHarness {
     let session_id = format!("{{workflow_id}}-{}", role.session_suffix);
-    NornHarness::with_binary(norn_bin)
+    let mut harness = NornHarness::with_binary(norn_bin)
         .with_arg("--fast")
         .with_arg("--reasoning-effort")
         .with_arg("high")
@@ -255,12 +268,13 @@ fn inner_norn_harness(norn_bin: &str, role: &Role) -> NornHarness {
         .with_arg(role.output_schema.trim_start())
         .with_arg("--session-id")
         .with_arg(session_id)
-        .with_arg("--resume-if-exists")
-        .with_arg("--workspace-root")
-        .with_arg(role.workspace_root.clone())
-        // Force the ChatGPT OAuth login: a stray ambient API key would take
-        // precedence and fail. No secret is ever set here.
-        .without_env("OPENAI_API_KEY")
+        .with_arg("--resume-if-exists");
+    if let Some(disallowed) = role.disallowed_tools {
+        harness = harness.with_arg("--disallowed-tools").with_arg(disallowed);
+    }
+    // Force the ChatGPT OAuth login: a stray ambient API key would take
+    // precedence and fail. No secret is ever set here.
+    harness.without_env("OPENAI_API_KEY")
 }
 
 /// The three shell activities as a typed registry — the ONE definition of
@@ -273,6 +287,11 @@ fn shell_registry(shell: Shell) -> Result<ActivityRegistry, aion_worker::WorkerE
             blocking(shell.clone(), handlers::provision),
         )?
         .register_activity("run_gates", blocking(shell.clone(), handlers::run_gates))?
+        .register_activity("reset_workspace", blocking(shell.clone(), handlers::reset))?
+        .register_activity(
+            "verify_gates",
+            blocking(shell.clone(), handlers::verify_gates),
+        )?
         .register_activity("cleanup_workspace", blocking(shell, handlers::cleanup))
 }
 
@@ -297,7 +316,10 @@ fn serve_shell(args: &Args) -> anyhow::Result<()> {
             {
                 tracing::error!(%error, "failed to write worker readiness file");
             }
-            tracing::info!("shell connection registered; serving provision/run_gates/cleanup");
+            tracing::info!(
+                "shell connection registered; serving \
+                 provision/run_gates/reset/verify_gates/cleanup"
+            );
         },
     )?;
     Ok(())
@@ -470,31 +492,66 @@ mod tests {
     }
 
     /// The role wiring: each role carries its own schema, session suffix,
-    /// profile, and workspace root — the brief worktree for the developer,
-    /// a per-lens scratch root for the reviewer.
+    /// profile, and tool deny-list. The workspace root is NO LONGER a role
+    /// field — it is per-run data the harness reads from the activity input —
+    /// so the deny-list is the discriminator the reviewer carries and the
+    /// developer does not.
     #[test]
-    fn roles_bind_schema_session_profile_and_workspace() {
+    fn roles_bind_schema_session_profile_and_deny_list() {
         let roles = roles(profiles());
-        let summary: Vec<(&str, &str, &str)> = roles
+        let summary: Vec<(&str, &str, Option<&str>)> = roles
             .iter()
             .map(|role| {
                 (
                     role.activity_type,
                     role.session_suffix,
-                    role.workspace_root.as_str(),
+                    role.disallowed_tools,
                 )
             })
             .collect();
         assert_eq!(
             summary,
             vec![
-                ("developer", "developer", "/tmp/aion-dev/ws/{workflow_id}"),
-                ("review_lens", "reviewer", "/tmp/aion-dev/review-scratch"),
+                ("developer", "developer", None),
+                ("review_lens", "reviewer", Some("write,edit,apply_patch")),
             ]
         );
         for role in &roles {
             assert!(role.output_schema.trim_start().starts_with('{'));
             assert!(!role.profile.is_empty());
+        }
+    }
+
+    /// The reviewer's read-only guarantee at the process boundary: its
+    /// composed Norn command carries `--disallowed-tools` naming exactly the
+    /// file-mutating tools (`write`, `edit`, `apply_patch`), and the developer
+    /// carries no deny-list at all (it must write to implement the brief).
+    #[test]
+    fn the_reviewer_denies_file_mutating_tools_and_the_developer_does_not() {
+        let roles = roles(profiles());
+        for role in &roles {
+            let debug = format!("{:?}", inner_norn_harness("norn", role));
+            match role.activity_type {
+                "review_lens" => {
+                    assert!(
+                        debug.contains("\"--disallowed-tools\", \"write,edit,apply_patch\""),
+                        "the reviewer must deny the file-mutating tools; args were:\n{debug}"
+                    );
+                }
+                "developer" => {
+                    assert!(
+                        !debug.contains("--disallowed-tools"),
+                        "the developer must carry no tool deny-list; args were:\n{debug}"
+                    );
+                }
+                other => panic!("unexpected role {other}"),
+            }
+            // No role bakes a static --workspace-root: it is per-run input data.
+            assert!(
+                !debug.contains("--workspace-root"),
+                "the workspace root is per-run input, never a static harness arg; \
+                 args were:\n{debug}"
+            );
         }
     }
 
@@ -562,8 +619,10 @@ mod tests {
                 "cleanup_workspace",
                 "developer",
                 "provision_workspace",
+                "reset_workspace",
                 "review_lens",
                 "run_gates",
+                "verify_gates",
             ],
             "the served activity-type set changed; update the node table \
              (worker AND src/dev_brief/activities.gleam) together"
@@ -594,9 +653,9 @@ mod tests {
             node: "developer",
             output_schema: "{}",
             session_suffix: "developer",
-            workspace_root: "/tmp/ws".to_owned(),
             profile: "MARKER_PROFILE_TEXT".to_owned(),
             assemble: prompts::developer,
+            disallowed_tools: None,
             post_run_commit: Some(PostRunCommit::DevWork),
         };
         let debug = format!("{:?}", inner_norn_harness("norn", &role));
