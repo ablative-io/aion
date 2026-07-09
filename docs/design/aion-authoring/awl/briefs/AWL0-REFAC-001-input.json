@@ -25,7 +25,7 @@
       "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
     ],
     "purpose": "aion-awl has four source files over the 500-line limit: emitter.rs (2043 lines), parser.rs (1585), lib.rs (737), checker.rs (641). This brief is the AWL program's pipe-cleaner: split each into a folder module of files each <=500 lines, with mod.rs holding only pub mod declarations and re-exports, at ZERO behavior cost. The public API surface re-exported from the crate root must be byte-identical, every existing test must pass UNMODIFIED, every round-trip and Gleam golden must be byte-identical, and clippy/-D-warnings plus fmt must stay clean. As a second, self-contained deliverable it closes a CI blind spot: `aion awl check` is never run over the committed .awl fixtures, which is exactly how the two bounded_cycle fixtures came to fail the checker unnoticed (they parse/print fine but do not typecheck against the current child-result gap). Wire a fixture-check gate over every committed .awl fixture, with the two bounded_cycle fixtures listed as KNOWN expected-failures pointing at AWL1-004, so the gap stays visible without being fixed or silenced here.",
-    "task": "Refactor aion-awl for the 500-line limit and add the missing fixture-check gate, changing no behavior. (1) Split crates/aion-awl/src/emitter.rs, parser.rs, and checker.rs into folder modules (emitter/, parser/, checker/) whose mod.rs contains ONLY `pub mod` and `pub use`, with every child file <=500 lines of code. (2) lib.rs is the crate root and cannot become a folder module: extract its non-entry-point logic (the Span type, the diagnostic/error scaffolding, and any free functions) into named sibling modules so lib.rs is a thin entry point (module declarations + re-exports) under 500 lines; the crate-root re-export set must stay byte-identical. (3) The move is purely mechanical: no logic edits, no signature changes, no output changes. ast.rs (332) and printer.rs (401) are already under the limit and are not restructured unless a symbol genuinely must move to preserve the re-export graph. (4) Add a test (or CI step) that runs the checker over every committed .awl fixture and asserts it passes, EXCEPT crates/aion-awl/tests/fixtures/bounded_cycle.awl and bounded_cycle.canonical.awl, which are declared expected-failures in an in-test table with a comment pointing at AWL1-004 (typed child contracts) as the brief that will make them pass and remove the carve-out. Do NOT fix, delete, or rename the bounded_cycle fixtures; do NOT edit any existing test source.",
+    "task": "Refactor aion-awl for the 500-line limit and add the missing fixture-check gate, changing no behavior. (1) Split crates/aion-awl/src/emitter.rs, parser.rs, and checker.rs into folder modules (emitter/, parser/, checker/) whose mod.rs contains ONLY `pub mod` and `pub use`, with every child file <=500 lines of code. (2) lib.rs is the crate root and cannot become a folder module: extract its non-entry-point logic (the Span type, the diagnostic/error scaffolding, and any free functions) into named sibling modules so lib.rs is a thin entry point (module declarations + re-exports) under 500 lines; the crate-root re-export set must stay byte-identical. (3) The move is purely mechanical: no logic edits, no signature changes, no output changes. ast.rs (332) and printer.rs (401) are already under the limit and are not restructured unless a symbol genuinely must move to preserve the re-export graph. (4) Add a test (or CI step) that runs the checker over every committed .awl fixture and asserts it passes, EXCEPT crates/aion-awl/tests/fixtures/bounded_cycle.awl and bounded_cycle.canonical.awl, which are declared expected-failures in an in-test table with a comment pointing at AWL1-004 (typed child contracts) as the brief that will make them pass and remove the carve-out. Do NOT fix, delete, or rename the bounded_cycle fixtures; do NOT edit any existing test source. (5) Purge the crate's five pre-existing lint-bypass attributes (printer.rs #![allow(missing_docs)]; lib.rs #![allow(clippy::module_name_repetitions)] and three #[allow(clippy::too_many_lines)]) per R7 \u2014 write the missing docs and split the long functions; they are refactor work and belong to this brief. The split MUST produce real named modules: `include!()` textual splicing and mechanically-named files (part_00.rs, chunk_1.rs, body.rs holding everything) are REJECTED outright \u2014 each child file is a genuine `mod` with a name describing its responsibility (e.g. parser/expressions.rs, parser/steps.rs, checker/bindings.rs, emitter/steps.rs).",
     "requirements": [
       {
         "id": "R1",
@@ -158,18 +158,43 @@
         },
         "checklist": [],
         "stories": []
+      },
+      {
+        "id": "R7",
+        "title": "Zero lint-bypass attributes in aion-awl (purge the five pre-existing; add none)",
+        "spec": "THE crate SHALL contain ZERO lint-bypass attributes in source: no #![allow(...)], #[allow(...)], #[expect(...)], or #[ignore] anywhere in crates/aion-awl/src or crates/aion-awl/tests, and NO include!() textual splicing. THE five pre-existing bypasses SHALL be removed by doing the work they deferred: printer.rs's #![allow(missing_docs)] by writing the missing doc comments; the three #[allow(clippy::too_many_lines)] by splitting the long functions into named helpers (in-theme for this refactor); lib.rs's #![allow(clippy::module_name_repetitions)] by restructuring INTERNAL names \u2014 EXCEPT: if silencing that one lint would require renaming a PUBLIC re-exported symbol (which the API-freeze boundary forbids), the sanctioned resolution is a declared crate-level policy entry in crates/aion-awl/Cargo.toml ([lints.clippy] module_name_repetitions = \"allow\") with a comment naming the public symbols that pin it \u2014 a visible config policy, not a hidden source attribute. Report which resolution was used and why.",
+        "acceptance": [
+          "grep -rnE '#!?\\[(allow|expect)|#\\[ignore|include!\\(' crates/aion-awl/src crates/aion-awl/tests returns NO matches.",
+          "cargo clippy --workspace --all-targets -- -D warnings passes with the attributes gone (the deferred work is done, not re-silenced).",
+          "Public re-exported symbol names are unchanged (API-freeze boundary holds); if the Cargo.toml policy entry was used for module_name_repetitions, it carries a comment naming the pinning public symbols.",
+          "The no-bypasses gate (first gate in the run) passes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [
+            "crates/aion-awl/src/printer.rs",
+            "crates/aion-awl/src/lib.rs",
+            "crates/aion-awl/Cargo.toml (only if the declared-policy exception is needed)"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
       }
     ],
     "boundaries": [
-      "ZERO public-API change: the crate-root `pub use` set (ast/checker/emitter/parser/printer re-exports plus Span and siblings) SHALL be byte-identical to base_ref — no symbol added, removed, renamed, or re-pathed.",
+      "REAL NAMED MODULES ONLY: every child file is a genuine `mod` whose name describes its responsibility. include!() textual splicing is FORBIDDEN (it defeats the 500-line limit while pretending to honor it). Mechanically-named files (part_00.rs, part_1.rs, body.rs-holding-everything, chunk_*.rs) are REJECTED regardless of line counts. A first dispatch of this brief was rejected for exactly this: include!(\"parts/part_00.rs\") splices plus a crate-wide #![allow(...)] \u2014 do not repeat it.",
+      "ZERO lint-bypass attributes (R7): no #![allow]/#[allow]/#[expect]/#[ignore] anywhere in the crate, including the five that exist on main today \u2014 they are purged by doing the deferred work, never by moving or rewording the attribute. The only sanctioned exception is R7's declared Cargo.toml policy entry for module_name_repetitions IF a public rename would otherwise be forced.",
+      "ZERO public-API change: the crate-root `pub use` set (ast/checker/emitter/parser/printer re-exports plus Span and siblings) SHALL be byte-identical to base_ref \u2014 no symbol added, removed, renamed, or re-pathed.",
       "ZERO behavior change: this is a pure move/split. No logic edit, no signature change, no diagnostic-text change, no emitted-Gleam change, no accepted/rejected-input change for the parser, checker, printer, or emitter.",
       "Fixtures and goldens byte-identical: no *.awl, *.canonical.awl, or *.gleam.golden file may change; `git diff` on tests/fixtures MUST be empty.",
       "Existing tests UNMODIFIED: existing test source files MUST pass without edits; the ONLY new test file is the R6 fixture-check gate.",
-      "bounded_cycle carve-out EXACTLY as specified: the two bounded_cycle fixtures stay red under R6, listed as expected-failures with an AWL1-004 pointer — NOT fixed, NOT deleted, NOT silenced by removing them from the corpus, and guarded so an accidental green fails the test.",
+      "bounded_cycle carve-out EXACTLY as specified: the two bounded_cycle fixtures stay red under R6, listed as expected-failures with an AWL1-004 pointer \u2014 NOT fixed, NOT deleted, NOT silenced by removing them from the corpus, and guarded so an accidental green fails the test.",
       "mod.rs files contain ONLY `pub mod` and `pub use` (CLAUDE.md; CN2). No logic in any mod.rs.",
       "SHALL NOT touch the language, the AWL-1 feature set, the CLI `aion awl` subcommands' behavior, or any crate other than aion-awl (plus the fixture-check test)."
     ],
     "verification": [
+      "No-bypasses gate (runs FIRST): bash -lc \"! grep -rnE '#!?\\\\[(allow|expect)|#\\\\[ignore|include!\\\\(' crates/aion-awl/src crates/aion-awl/tests\" \u2014 zero matches.",
       "Gate argv, run EXACTLY in order: cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test --workspace. All clean, zero failures.",
       "`wc -l crates/aion-awl/src/**/*.rs crates/aion-awl/src/*.rs` shows no non-test source file over 500 lines.",
       "`git diff --no-ext-diff base_ref -- crates/aion-awl/tests/fixtures/` is empty (fixtures + goldens byte-identical).",
@@ -184,7 +209,7 @@
     "constraints": [
       {
         "id": "CN1",
-        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this brief is the CONTRACT — implement it verbatim. Discovered spec ambiguities are findings to report, never license to improvise."
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this brief is the CONTRACT \u2014 implement it verbatim. Discovered spec ambiguities are findings to report, never license to improvise."
       },
       {
         "id": "CN2",
@@ -200,11 +225,11 @@
       },
       {
         "id": "CN5",
-        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named plan section and checks the implementation clause by clause."
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens \u2014 one reviewer reads the named plan section and checks the implementation clause by clause."
       },
       {
         "id": "CN6",
-        "text": "Bar reminders (every AWL brief): stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; the package name is aion-rs; NEVER trust the workflow's own green — Fable/Tom re-run the gates by hand before merge."
+        "text": "Bar reminders (every AWL brief): stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; the package name is aion-rs; NEVER trust the workflow's own green \u2014 Fable/Tom re-run the gates by hand before merge."
       }
     ],
     "intention": "This is the AWL program's pipe-cleaner: it must go SOLO first, before anything dispatches 2-wide, because it proves the aion dev_brief pipeline end to end on a change with a crisp, machine-checkable success condition (line counts down, public API byte-identical, all goldens byte-identical, gates green). It also removes a live hazard for every later front-end brief: four files already over the 500-line limit, and a CI blind spot that let the bounded_cycle checker failures hide. Landing the split first makes the goldens and module layout stable so subsequent AWL-1 briefs edit small, focused files; wiring the fixture-check gate makes the checker's verdict on every fixture visible from now on. The carve-out keeps the known bounded_cycle gap honest and pinned to AWL1-004 rather than papered over.",
