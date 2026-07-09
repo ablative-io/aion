@@ -1,0 +1,164 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001b",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001b",
+    "cluster": "awl",
+    "title": "aion-awl lib.rs split: the 737-line crate-root-plus-lexer into a thin crate root plus responsibility-named modules, bypass purge by doing the deferred work, zero behavior change, mechanically fenced scope",
+    "depends_on": [
+      "AWL0-REFAC-001a"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "Second of five single-file sub-briefs decomposed from AWL0-REFAC-001 (see AWL-EXECUTION-PLAN.md Wave 0 and BRIEF-CRAFT.md entry 10). crates/aion-awl/src/lib.rs is 737 lines, over the 500-line limit. Despite its name and its crate-level doc comment (\"Lexer for the AWL workflow language.\"), lib.rs is TWO things fused: the crate root (the `mod ast/checker/emitter/parser/printer;` declarations plus every `pub use` re-export that forms the crate's public API) AND the entire hand-written lexer (the public token vocabulary types Span/Token/Keyword/DurationUnit/TokenKind/LexError, the public entry point `lex`, and the private scanning engine Lexer/Cursor plus its free helper functions). This brief splits lib.rs into a THIN crate root plus responsibility-named child modules, each at or under 500 lines, at ZERO behavior cost, AND purges the four pre-existing lint-bypass attributes lib.rs carries today by doing the deferred work (deleting them and keeping clippy green), not by relocating them. It follows the pilot AWL0-REFAC-001a (checker split, LANDED run a96973cb, merged adb6e4cf) and reuses that brief's mechanical-gate template, adapted where 001b differs: the child-module names are developer-chosen, so the scope fence is a git name-status subset check rather than 001a's path-exclude, and the bypass purge is a work requirement rather than a preservation requirement.",
+    "task": "Split crates/aion-awl/src/lib.rs (737 lines) into a THIN crate root plus a set of responsibility-named child modules, each file at or under 500 lines, changing NOTHING outside crates/aion-awl/src/. lib.rs is MODIFIED in place (it remains the crate root and must stay present); it is NOT deleted. After the split the crate root SHALL be docs + `mod` declarations + `pub use` re-exports + at most trivial glue, and SHALL carry ZERO lint-bypass attributes. The lexer (both its public vocabulary types and its private scanning engine) moves out of lib.rs into named child modules; the crate root re-exports every moved public item so the crate's public API and every existing `crate::X` / `aion_awl::X` path stay byte-compatible. The split is purely structural: no logic edits, no signature changes, no token-kind or diagnostic-text changes, no lexing-result changes for any input. Structure guidance from the real seams in the file: the public token vocabulary types (Span, Token, Keyword, DurationUnit, TokenKind) separate naturally as a unit; the public error type LexError separates naturally; the scanning engine (the private `struct Lexer` + its impls, the private `struct Cursor` + its impls, the public `pub fn lex` entry point, and the free helper functions count_leading_spaces / is_identifier_continue / normalize_comment_text / duration_unit / parse_u64 / keyword) separates naturally. Choose child-module names from the actual responsibilities you find (e.g. a lexer/ folder module mirroring checker/, with lexer/tokens.rs for the vocabulary types, lexer/error.rs for LexError, and lexer/scanner.rs for the scanning engine plus helpers; or an equivalent honest arrangement) — mechanically named files (part_00.rs, chunk_1.rs, body.rs holding everything) and include!() textual splicing are REJECTED outright; both previous dispatches of the parent brief were rejected for those exact fraud patterns (see notes). Keep every new module PRIVATE (`mod lexer;`, not `pub mod lexer;`) and re-export its public items from the crate root, exactly as the crate already does for ast/checker/emitter/parser/printer — this is required for byte-compatible public paths AND is what keeps clippy::module_name_repetitions dormant (verified at authoring: the lint fires only on items in PUBLIC modules).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Split lib.rs into a thin crate root plus real responsibility-named child modules, each file <=500 lines",
+        "spec": "THE crate root (crates/aion-awl/src/lib.rs, 737 lines) SHALL be reduced to a THIN root — crate/module docs, `mod` declarations, `pub use` re-exports, and at most trivial glue — by moving the lexer (its public vocabulary types, its public `lex` entry point, and its private scanning engine and helpers) into responsibility-named child modules under crates/aion-awl/src/, each file at or under 500 lines and named for its responsibility. lib.rs SHALL remain present (it is the crate root) and SHALL be at or under 500 lines. Any new folder module's mod.rs SHALL contain ONLY module declarations, re-exports, and comments — no logic. include!() textual splicing and mechanically-named files (part_*, chunk_*, body.rs-holding-everything) are FORBIDDEN: dispatch 1 of the parent brief was rejected for include!(\"parts/part_00.rs\") splices behind 2-line mod.rs files; do the real work.",
+        "acceptance": [
+          "crates/aion-awl/src/lib.rs still exists and is at or under 500 lines (`awk 'END{print NR}'`).",
+          "The crate root is docs + `mod` declarations + `pub use` re-exports + at most trivial glue; the lexer's type machinery and scanning logic no longer live in lib.rs.",
+          "Every newly added crates/aion-awl/src/*.rs file (and any new folder module's children) is at or under 500 lines and named for its responsibility; any new mod.rs is declarations/re-exports only.",
+          "No part_*/chunk_*/body.rs naming anywhere; zero include!() anywhere in the crate."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/<lexer-module(s) named for responsibility, developer's choice>"
+          ],
+          "modify": [
+            "crates/aion-awl/src/lib.rs"
+          ],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Zero behavior change and byte-compatible crate API; every other module compiles UNMODIFIED",
+        "spec": "THE split SHALL be behavior-preserving end to end and SHALL keep the crate's public API byte-compatible. Every public item currently reachable at the crate root — the lexer types Span, Token, Keyword, DurationUnit, TokenKind, LexError; the entry point `lex`; and the existing re-export sets `pub use ast::{...}`, `pub use checker::{CheckError, check}`, `pub use emitter::{EmitError, emit}`, `pub use parser::{ParseError, parse}`, `pub use printer::print` — SHALL remain reachable at the SAME path (`aion_awl::X` and `crate::X`). Whatever moves out of lib.rs SHALL be re-exported from the crate root so that every existing intra-crate import keeps resolving with its source UNMODIFIED: ast.rs (`use crate::{DurationUnit, Span};`), parser.rs (`use crate::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};`), emitter.rs (`crate::Span`), printer.rs, and every checker/ child (`use crate::{... Span ...}`). No token kind, span, diagnostic text, or lexing verdict SHALL change for any input; every existing test, fixture, and golden SHALL pass with its source byte-identical to base_ref.",
+        "acceptance": [
+          "`cargo test -p aion-awl` and `cargo test -p aion-cli` pass in full with zero test-source edits.",
+          "`git diff --no-ext-diff <base> -- crates/aion-awl/tests/` is empty; every fixture and golden is byte-identical to base_ref.",
+          "ast.rs, parser.rs, emitter.rs, printer.rs, and every crates/aion-awl/src/checker/ child compile UNMODIFIED — their `use crate::{...}` imports resolve against the crate root's re-exports.",
+          "The set of public items reachable at `aion_awl::*` is identical to base_ref (nothing renamed, nothing dropped, nothing newly exposed)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Purge lib.rs's four lint-bypass attributes by doing the work — zero bypasses in the crate root and every new module",
+        "spec": "AFTER this brief, crates/aion-awl/src/lib.rs AND every module it adds SHALL carry ZERO lint-bypass attributes: no #[allow], no #![allow], no #[expect], no #![expect], no #[ignore]. lib.rs today carries exactly four, all of which authoring verification confirmed are VESTIGIAL at the crate's current clippy configuration (clippy 0.1.92; workspace lint policy): the crate-level `#![allow(clippy::module_name_repetitions)]` (lib.rs line 6) and three `#[allow(clippy::too_many_lines)]` sites (on `pub fn lex` line 269, on `fn lex_line` line 315, on `fn next_token` line 486). They SHALL be purged by DELETING them and confirming `cargo clippy --workspace --all-targets -- -D warnings` stays green — NOT by relocating them into a submodule, into Cargo.toml, or into any private lint policy. The `module_name_repetitions` attribute is dormant because every aion-awl module is PRIVATE and re-exported from the root (verified: the lint fires only on items in PUBLIC modules); keeping the new lexer module(s) private and re-exporting from the root (required anyway by R2) keeps it dormant, so honest INTERNAL naming suffices. IF — contrary to the authoring finding — any lint fires after deletion, the fix SHALL be to restructure the code, never to re-add or relocate a bypass; and IF purging `module_name_repetitions` would genuinely force a PUBLIC API rename (an item whose public path would have to change to satisfy the lint), the developer SHALL STOP and report a finding instead of making the rename or re-adding the attribute — a workspace-policy move is operator-level (the #38 precedent) and is OUT OF SCOPE for this brief. crates/aion-awl/Cargo.toml SHALL stay byte-identical to base_ref (exactly one `[lints]` section, containing only `workspace = true`); weakening lint policy through the manifest was the rev-2 fraud pattern and is REJECTED outright.",
+        "acceptance": [
+          "grep for bypass attributes (`#!?\\[(allow|expect)` and `#\\[ignore`) over crates/aion-awl/src/lib.rs returns no matches.",
+          "grep for the same bypass attributes over every module file this brief adds returns no matches.",
+          "crates/aion-awl/Cargo.toml is byte-identical to base_ref — exactly one `[lints]` section, `workspace = true`, nothing else.",
+          "`cargo clippy --workspace --all-targets -- -D warnings` passes with no bypass attribute present and no lint-policy weakening anywhere.",
+          "If a public rename would have been required to satisfy module_name_repetitions, the report contains a finding to that effect and no rename/bypass was made."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Mechanically fenced scope: the diff is exactly one modification of lib.rs plus additions under src/",
+        "spec": "THE complete diff versus base_ref SHALL consist ONLY of: a Modification of crates/aion-awl/src/lib.rs, and Additions of files under crates/aion-awl/src/. NO other change SHALL appear — no deletion of any file (lib.rs is modified, not deleted; nothing else is removed), no modification of any file other than lib.rs (no manifest, no test, no fixture, no doc, no other source file), no addition outside crates/aion-awl/src/, no rename. A git name-status subset gate enforces this mechanically: every changed path must be either `M\\tcrates/aion-awl/src/lib.rs` or `A\\tcrates/aion-awl/src/...`; any other status (any D, any R, any M elsewhere, any A elsewhere) fails the gate.",
+        "acceptance": [
+          "The scope-fence gate (git diff --name-status against the pinned base SHA, filtered to allow only M-of-lib.rs and A-under-src/) exits 0.",
+          "No file other than crates/aion-awl/src/lib.rs is modified; no file is deleted or renamed; nothing outside crates/aion-awl/src/ changes."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "REAL NAMED MODULES ONLY: every child file is a genuine `mod` whose name describes its responsibility. include!() textual splicing is FORBIDDEN. Mechanically-named files (part_00.rs, chunk_*.rs, body.rs-holding-everything) are REJECTED regardless of line counts. Dispatch 1 of the parent brief was rejected for include!(\"parts/part_00.rs\") splices behind 2-line mod.rs files.",
+      "NO lint-policy weakening by ANY mechanism: the four bypass attributes in lib.rs are PURGED (deleted), not relocated. No new #![allow]/#[allow]/#[expect]/#[ignore] attributes anywhere in the crate root or the new modules, and crates/aion-awl/Cargo.toml stays byte-identical — dispatch 2 of the parent brief was rejected for replacing `[lints] workspace = true` with a private allow-list. Both escape hatches are gated mechanically.",
+      "lib.rs is MODIFIED IN PLACE, never deleted: it remains the crate root. If you believe a change outside crates/aion-awl/src/ (a manifest, a test, another crate) is required, STOP and report it as a finding instead of making it — the scope-fence gate will fail on it.",
+      "ZERO behavior change: pure move/split plus bypass deletion. No logic edit, no signature change, no token-kind change, no diagnostic-text change, no lexing-verdict change. Public API byte-compatible: nothing renamed, dropped, or newly exposed.",
+      "KEEP NEW MODULES PRIVATE and re-export from the crate root (the crate's existing convention for ast/checker/emitter/parser/printer). A `pub mod` that exposes a public item whose name repeats the module name would newly trigger clippy::module_name_repetitions; private-module + root re-export keeps it dormant AND keeps public paths byte-compatible.",
+      "Existing tests, fixtures, goldens, and every non-lib.rs file UNMODIFIED — enforced by the R4 scope-fence gate. ast.rs, parser.rs, emitter.rs, printer.rs, and checker/ compile against the crate root's re-exports without edits.",
+      "Pre-existing bypass attributes ELSEWHERE in the crate (parser.rs:1 multi-line allow block, ast.rs missing_docs, printer.rs missing_docs, the three test files) are OUT OF SCOPE — they belong to sub-briefs 001c/001d/001e. Leave them exactly as they are; the gates here are scoped so they do not fire on them, and the scope fence forbids touching them.",
+      "SHALL NOT touch any crate other than aion-awl, nor anything in aion-awl outside crates/aion-awl/src/ (and within src/, only lib.rs is modified; everything else added is new)."
+    ],
+    "verification": [
+      "no-bypasses-scoped gate (regression guard, GREEN on base): grep over crates/aion-awl/src/checker.rs + crates/aion-awl/src/checker returns no allow/expect/ignore/include! matches — the checker paths 001a cleaned stay clean.",
+      "lints-pinned gate (GREEN on base): crates/aion-awl/Cargo.toml has exactly one [lints] section, containing workspace = true.",
+      "scope-fence gate: git diff --name-status versus the pinned base SHA, filtered to allow ONLY M-of-lib.rs and A-under-crates/aion-awl/src/, is empty.",
+      "split-complete gate (RED on base — it is the work): lib.rs exists AND is at or under 500 lines AND carries zero #[allow]/#![allow]/#[expect]/#[ignore] attributes.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli, all clean. (The full workspace suite is run by the operator at merge review while tasks #243/#244 are open.)",
+      "Hand review: the crate root is genuinely thin (docs + mod declarations + re-exports + at most trivial glue, zero bypasses); child-module names honestly describe their contents; new modules are private and re-exported; every re-export path (Span, Token, Keyword, DurationUnit, TokenKind, LexError, lex, and the ast/checker/emitter/parser/printer sets) is byte-compatible with base_ref."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this sub-brief is the CONTRACT — implement it verbatim. Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = declarations/re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: mechanical gates (no-bypasses-scoped, lints-pinned, scope-fence, split-complete) -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture. This refactor must not perturb it (the scope fence makes perturbing it impossible without failing a gate)."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named plan section and the committed brief and checks the implementation clause by clause against R1-R4."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs the gates by hand before merge."
+      }
+    ],
+    "intention": "Second stamp of the decomposed pipe-cleaner sequence (001a..e), following the clean pilot landing of 001a (checker split, run a96973cb, merged adb6e4cf). The monolithic AWL0-REFAC-001 failed twice — once by fraud (include! splices + crate-wide allow), once by an honest rollback after cascading errors mid-split of four files at once. This sub-brief is sized to the fix-cycle envelope (one 737-line file), every non-negotiable is a mechanical gate (three GREEN ON BASE, one — split-complete — RED ON BASE because it is the work), and the scope fence (a git name-status subset check, since child-module names are developer-chosen) makes wandering impossible. 001b differs from 001a in two ways: lib.rs is modified in place rather than deleted (it stays the crate root), and the bypass purge is a work requirement — lib.rs carries four vestigial bypass attributes that must be deleted, not preserved.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program — Wave 0 sub-brief 001b, stamped from the 001a template after the pilot landed)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}
