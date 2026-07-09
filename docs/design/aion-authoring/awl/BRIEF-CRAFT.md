@@ -229,6 +229,19 @@ when re-running gates in a review worktree — `new_agent_e2e` scaffolds a
 project and runs a nested `cargo build` that inherits the override, making
 the test's expected binary path empty. It cost this review one false red.
 
+Second landing, run `3d201c36` (AWL0-REFAC-001b, same day): also first-pass
+accept — one dev round, 8/8 gates, 4/4 lenses zero findings, zero deviations,
+merged `80426594`, full workspace suite green at review in a clean env. Two
+template-stamp additions proved out: (1) the name-status subset fence (only
+`M lib.rs` + `A` under src/) held exactly, so the fence pattern generalizes
+to splits where child names are developer-chosen; (2) VERIFY BYPASS ATTRS
+BEFORE PRESCRIBING SURGERY — authoring verification found all four lib.rs
+attrs vestigial (deletable, clippy green, zero restructuring), which turned
+R3 from "split those functions" into "delete and confirm", and the developer
+did exactly that. Check every enumerated bypass attr against the real lint
+behaviour at authoring time; a brief that mandates pointless surgery invites
+scope wander.
+
 ## Candidate accommodations (not yet evidence-backed)
 
 - Developer profile addition: "never add a lint-allow attribute; if a lint

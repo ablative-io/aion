@@ -85,6 +85,9 @@ tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
   purges lib.rs's module_name_repetitions + 3× too_many_lines by doing the
   deferred work (module_name_repetitions may move to a DECLARED workspace
   policy iff a public rename would otherwise be forced — #38 precedent).
+  **LANDED 2026-07-09** (run `3d201c36`, first-pass accept, merged
+  `80426594`; all four attrs proved VESTIGIAL and were deleted outright —
+  crate root now 23 lines + private lexer/ module).
 - **AWL0-REFAC-001c** parser.rs (1585) → `parser/`; purges the parser.rs:1
   allow block (docs written, unwrap/expect eliminated, long fns split).
 - **AWL0-REFAC-001d** emitter.rs (2043) → `emitter/`.
