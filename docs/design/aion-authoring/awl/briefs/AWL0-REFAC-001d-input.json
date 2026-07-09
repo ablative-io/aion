@@ -1,0 +1,162 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001d",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001d",
+    "cluster": "awl",
+    "title": "aion-awl emitter split: emitter.rs (2043 lines) into an emitter/ folder module of real named children each <=500 lines, ZERO behavior change, mechanically fenced scope. PURE SPLIT — authoring measurement found emitter.rs carries NO lint-bypass block and NO lint debt (base clippy green), so there is nothing to purge (mirrors the 001a checker split, not the 001b/001c purge briefs).",
+    "depends_on": [
+      "AWL0-REFAC-001c"
+    ],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "Fourth of five single-file sub-briefs decomposed from AWL0-REFAC-001 (see AWL-EXECUTION-PLAN.md Wave 0 and BRIEF-CRAFT.md entry 10). crates/aion-awl/src/emitter.rs is 2043 lines, over the 500-line limit and the largest file in the crate. This brief splits it into a folder module crates/aion-awl/src/emitter/ of genuinely named child modules, each at or under 500 lines, at ZERO behavior cost. IMPORTANT DEVIATION FROM 001c'S SHAPE (authoring measurement, embedded below): the AWL-EXECUTION-PLAN Wave 0 entry for 001d lists only `emitter.rs (2043) -> emitter/` with NO allow-block clause, and the plan's pre-existing-bypass inventory (parser.rs:1, ast.rs:1, printer.rs:1, lib.rs x4, three test files) does NOT list emitter.rs. Authoring verified this on base 81b0fa06: emitter.rs line 1 is `use std::collections::{HashMap, HashSet};` (NOT an allow block); grep for bypass attributes (`#!?\\[(allow|expect)`, `#[ignore`, `include!(`) over emitter.rs returns ZERO matches; `cargo clippy -p aion-awl --all-targets -- -D warnings` is GREEN on the unmodified base; there are ZERO unwrap()/expect() sites (only allowed `.unwrap_or*` combinators); the largest function (render_loop_fn) is ~94 source lines, under the too_many_lines threshold of 100, so NO function triggers too_many_lines; and the public `EmitError` type and its two public fields already carry real doc comments. This brief is therefore a PURE SPLIT that MIRRORS the pilot AWL0-REFAC-001a (checker split, LANDED run a96973cb, merged adb6e4cf — `No pre-existing attrs`), NOT the purge-by-doing-the-work shape of 001b (lib.rs 4-attr purge, LANDED run 3d201c36, merged 80426594) or 001c (parser.rs allow-block purge, in flight). It follows 001a/001b/001c and reuses their mechanical-gate template. Because emitter.rs is DELETED and replaced by a folder, lib.rs already declares `mod emitter;` (verified: lib.rs line 8) which resolves emitter/mod.rs automatically, so lib.rs needs NO edit; the scope fence is 001a/001c's path-exclude form.",
+    "task": "Split crates/aion-awl/src/emitter.rs (2043 lines) into a folder module crates/aion-awl/src/emitter/ whose mod.rs contains ONLY module declarations and re-exports, with every child file at or under 500 lines and named for its responsibility — all at ZERO behavior cost. This is a PURE MOVE: authoring measurement (below) confirmed emitter.rs carries no lint-bypass attribute and no lint debt, so there is NOTHING to purge and NO logic edit is warranted beyond the visibility widenings the move itself forces. The crate root already declares `mod emitter;` (lib.rs line 8), which resolves to emitter/mod.rs automatically — lib.rs therefore needs NO edit and MUST NOT be edited. The split is a pure move: no logic edits, no diagnostic-text changes, no accepted/rejected-result changes, no change to the byte-for-byte emitted Gleam for any input. Structure guidance from the real seams in the file (the emitter is one `Emitter<'a>` struct with a single large impl plus free helper functions): the public error type + entry point (EmitError, its new/Display/Error impls, the `pub fn emit`, and the free `opaque_ref_error` that builds one) separate naturally into an error module; the Emitter struct + Binding + TerminatingHandler definitions + `new` + the top-level `emit` driver method + the output primitives (line/blank/indented/indented_try/capture) form a context module; the module-frame emission (header/types/emit_type/definition/run) is a unit; the step machinery (execute/emit_steps/check_step/emit_terminating_step/emit_terminating_case/emit_flat_step/emit_step_expr/emit_attempt/step_inner) is a unit; the bounded-repeat loop machinery (emit_repeat_call/render_loop_fn/emit_loop_round/loop_free_names + the free loop_counter_name/child_retry_params) is a unit; the call/handler/binding lowering (check_no_opaque_refs/emit_handler_arm/record_binding/write_activity_value/write_call_pipeline/write_child_pipeline + the free empty_step/collect_expr_refs/collect_named_ref) is a unit; the codec + activity-wrapper emission (codecs/emit_external_codec/emit_codec/collect_composite_types/emit_composite_codec/builtin_codecs/activity_wrappers/signal_refs/error_mappers/child_helpers) is a large unit that may split further to stay under 500 lines; and the pure naming/formatting helpers (external_named_types/collect_named_refs/action/input_type_name/output_type_name + the free gleam_type/codec_name/expr/parenthesized/binary_op/duration_ms/duration_expr/retry_policy/string_lit/constructor/pascal/snake/is_gleam_keyword/ident/wrap_doc/is_builtin_type/collect_composite_type) form a helpers unit. Multiple `impl Emitter<'a>` blocks across child modules of the same crate are legal Rust and the intended technique, exactly as 001a split the large Ctx impl across checker/{context,declarations,expressions,steps,types,idents}.rs. Free helper functions and the private `EmitError::new` associated fn, once shared across child modules, must be given `pub(super)` (or `pub(crate)`) visibility so they resolve across the folder — this is a visibility widening internal to the crate, NOT a public-API or signature change, and is expected (001a did the same). Choose child-module names from the actual responsibilities you find (e.g. emitter/error.rs, emitter/context.rs, emitter/module_frame.rs, emitter/steps.rs, emitter/loops.rs, emitter/calls.rs, emitter/codecs.rs, emitter/helpers.rs) — mechanically named files (part_00.rs, chunk_1.rs, body.rs holding everything) and include!() textual splicing are REJECTED outright; all three prior states of the parent work (two rejected dispatches, then the clean decomposition) turned on exactly this distinction (see notes). CRITICAL re-export note (R2): lib.rs re-exports `pub use emitter::{EmitError, emit};` (lib.rs line 20). Whichever child module `EmitError` and `emit` land in, emitter/mod.rs MUST re-export both (`pub use ...::{EmitError, emit};`) so the crate-root path resolves byte-identically. Authoring verified there is NO intra-crate consumer of a private/pub(crate) emitter item (no sibling module does `use crate::emitter::X` — the only occurrence of `emitter::` anywhere in the workspace is lib.rs line 20), so unlike 001c's duration_text there is NO additional pub(crate) re-export trap; and emitter.rs imports from `crate::` (the crate-root re-exports of ast items + the lexer Span) and NOT from `crate::parser::` (authoring-verified), so the in-flight 001c parser split cannot affect it.",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Split emitter.rs into an emitter/ folder module of real named children, each file <=500 lines",
+        "spec": "THE emitter (crates/aion-awl/src/emitter.rs, 2043 lines) SHALL be replaced by a folder module crates/aion-awl/src/emitter/ whose mod.rs contains ONLY module declarations and re-exports, with every child file at or under 500 lines and named for its responsibility. THE single large `Emitter<'a>` impl and the free helper functions SHALL be split across child modules by concern using multiple impl blocks. include!() textual splicing and mechanically-named files (part_*, chunk_*, body.rs-holding-everything) are FORBIDDEN. The crate root already declares `mod emitter;` (lib.rs line 8), which resolves to emitter/mod.rs automatically — lib.rs needs NO edit and MUST NOT be edited.",
+        "acceptance": [
+          "crates/aion-awl/src/emitter.rs no longer exists; crates/aion-awl/src/emitter/mod.rs exists.",
+          "`wc -l crates/aion-awl/src/emitter/*.rs` reports every file at or under 500 lines.",
+          "emitter/mod.rs contains only module declarations, re-exports, and comments — no logic.",
+          "Every child module name describes its content; no part_*/chunk_*/body.rs; zero include!() anywhere."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/emitter/mod.rs"
+          ],
+          "modify": [],
+          "delete": [
+            "crates/aion-awl/src/emitter.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Zero behavior change, byte-compatible crate API, tests and goldens untouched",
+        "spec": "THE split SHALL be behavior-preserving end to end and SHALL keep the crate's public and crate-internal API byte-compatible. The crate-root re-export `pub use emitter::{EmitError, emit};` (lib.rs line 20) SHALL resolve unchanged: whichever child module holds `EmitError` and `emit`, emitter/mod.rs SHALL re-export both (`pub use ...::{EmitError, emit};`). Authoring verified there is NO other consumer of an emitter path — no sibling module imports `use crate::emitter::X` (the sole `emitter::` occurrence in the workspace is lib.rs line 20), so there is no additional pub(crate) re-export trap (contrast 001c's duration_text). The out-of-crate consumer aion-cli (crates/aion-cli/src/awl.rs line 164, `aion_awl::emit(&document)` and `error.span`/`error.message` on the returned `EmitError`) SHALL compile UNMODIFIED against the crate-root re-export. No AST shape, span, diagnostic text, generated-Gleam text, or accepted/rejected verdict SHALL change for any input. Every existing test, fixture, and golden SHALL pass with its source byte-identical to base_ref; in particular the three emitter goldens (crates/aion-awl/tests/fixtures/{hello,research_report,bounded_cycle}.gleam.golden), which crates/aion-awl/tests/emitter.rs `assert_golden` compares against `emit(&parse(source))` byte-for-byte, SHALL remain byte-identical and pass UNMODIFIED — byte-identity of the emitted Gleam is THE regression invariant for this brief.",
+        "acceptance": [
+          "`cargo test -p aion-awl` and `cargo test -p aion-cli` pass in full with zero test-source and zero golden edits.",
+          "`git diff --no-ext-diff <base> -- crates/aion-awl/tests/` is empty; every fixture and every .gleam.golden is byte-identical to base_ref.",
+          "aion-cli compiles UNMODIFIED — `aion_awl::emit` and `aion_awl::EmitError` resolve against emitter/mod.rs's re-export through the crate root.",
+          "The set of items reachable at `aion_awl::*` (EmitError, emit) is identical to base_ref — nothing renamed, dropped, or newly exposed."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Zero bypasses in the entire emitter/ tree — and NO purge work, because there is no pre-existing debt (measurement-confirmed)",
+        "spec": "AFTER this brief, the emitter/ tree SHALL carry ZERO lint-bypass attributes: no #[allow], no #![allow], no #[expect], no #![expect], no #[ignore], and no include!(). UNLIKE sub-briefs 001b and 001c, emitter.rs on base carries NO lint-bypass block and NO deferred lint debt, so there is NOTHING to purge — this requirement is satisfied simply by not INTRODUCING a bypass while splitting. Authoring measurement (on base 81b0fa068dc670ecbecb083e8efd4368c0ba69f5, `cargo clippy -p aion-awl --all-targets -- -D warnings` against the UNMODIFIED file) is GREEN: (a) emitter.rs has zero bypass attributes (grep for `#!?\\[(allow|expect)`, `#[ignore`, `include!(` returns no matches; line 1 is `use std::collections::{HashMap, HashSet};`); (b) there are ZERO `.unwrap()`/`.expect()` sites — the only unwrap-family calls are the allowed combinators `.unwrap_or_default()`/`.unwrap_or_else(...)`/`.unwrap_or(...)` at lines 411, 666, 680, 681, 902, which do not trigger clippy::unwrap_used/expect_used; (c) NO function triggers clippy::too_many_lines — the largest function `render_loop_fn` is ~94 source lines, under the 100-line threshold, and every other function is smaller; (d) the public `pub struct EmitError` and its two public fields `span`/`message` already carry real doc comments (lines 12-22), so missing_docs does not fire. THE developer SHALL therefore make NO lint-motivated logic edit: no function decomposition, no unwrap/expect rewrite, no doc additions, no signature change. The ONLY edits permitted are the mechanical move and the `pub(super)`/`pub(crate)` visibility widenings the move forces (e.g. exposing the private `EmitError::new` associated fn and the free helper fns across child modules). crates/aion-awl/Cargo.toml SHALL stay byte-identical to base_ref (exactly one `[lints]` section, containing only `workspace = true`); weakening lint policy through the manifest was the parent brief's rev-2 fraud pattern and is REJECTED outright. IF a clippy lint fires that authoring did not measure (e.g. a pedantic lint newly triggered by the move — a needless `pub(crate)` widened wider than necessary, an item ordering, or a re-export that clippy flags), the fix SHALL be to restructure/narrow the code, NEVER to add or relocate a bypass; and IF eliminating such a lint would force a change to a PUBLIC signature, the developer SHALL STOP and report a finding instead of making it (authoring found no such case — the split is a pure move of private items behind an unchanged public surface).",
+        "acceptance": [
+          "grep for bypass attributes (`#!?\\[(allow|expect)`, `#[ignore`) and include!() over crates/aion-awl/src/emitter returns no matches.",
+          "No lint-motivated logic edit was made: no function was decomposed, no unwrap/expect rewritten (there were none), no doc added, no signature changed — the diff is the move plus visibility widenings only.",
+          "crates/aion-awl/Cargo.toml [lints] section is byte-identical to base_ref (workspace = true, nothing else).",
+          "`cargo clippy --workspace --all-targets -- -D warnings` passes with no bypass attribute present and no lint-policy weakening anywhere."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Mechanically fenced scope: the diff touches ONLY emitter paths",
+        "spec": "THE complete diff versus base_ref SHALL touch ONLY crates/aion-awl/src/emitter.rs (deleted) and crates/aion-awl/src/emitter/ (created). NO other file in the repository — source (lib.rs, printer.rs, ast.rs, the checker/ lexer/ and (once 001c lands) parser/ children, every other crate including aion-cli), test, fixture, golden, manifest, doc — SHALL change. A git-diff exclude gate enforces this mechanically.",
+        "acceptance": [
+          "`git diff --exit-code --no-ext-diff <base> -- . ':(exclude)crates/aion-awl/src/emitter.rs' ':(exclude)crates/aion-awl/src/emitter'` exits 0 (nothing outside the fence changed)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "REAL NAMED MODULES ONLY: every child file is a genuine `mod` whose name describes its responsibility. include!() textual splicing is FORBIDDEN. Mechanically-named files (part_00.rs, chunk_*.rs, body.rs-holding-everything) are REJECTED regardless of line counts. Dispatch 1 of the parent brief was rejected for include!(\"parts/part_00.rs\") splices behind 2-line mod.rs files.",
+      "PURE MOVE, NO GRATUITOUS EDITS: emitter.rs carries no bypass block and no lint debt (measurement-confirmed), so this brief adds NO #![allow]/#[allow]/#[expect]/#[ignore] anywhere in emitter/, makes NO lint-motivated logic edit, and keeps crates/aion-awl/Cargo.toml byte-identical — dispatch 2 of the parent brief was rejected for replacing `[lints] workspace = true` with a private allow-list. Both escape hatches are gated mechanically.",
+      "lib.rs MUST NOT be edited: `mod emitter;` (lib.rs line 8) already resolves the folder module; `pub use emitter::{EmitError, emit};` (lib.rs line 20) is unchanged. If you believe an edit outside the fence is required, STOP and report it as a finding instead of making it.",
+      "aion-cli MUST NOT be edited: it consumes `aion_awl::emit` and `aion_awl::EmitError` (crates/aion-cli/src/awl.rs line 164) through the crate root. Keep those resolving by re-exporting EmitError and emit from emitter/mod.rs — the scope-fence gate fails on any aion-cli edit.",
+      "ZERO behavior change: the split is a pure move; the only edits permitted are the mechanical relocation and the pub(super)/pub(crate) visibility widenings it forces. No diagnostic-text change, no span change, no AST-shape change, no verdict change, and — the regression invariant — no change to the byte-for-byte emitted Gleam (the three .gleam.golden files stay byte-identical and pass unmodified). Round-trip property (CN4) untouched.",
+      "Existing tests, fixtures, goldens, and every non-emitter file UNMODIFIED — enforced by the R4 scope-fence gate.",
+      "Pre-existing bypass attributes ELSEWHERE in the crate (ast.rs missing_docs, printer.rs missing_docs, the three test files' expect_used/unwrap_used/format_push_string; and, until 001c lands, parser.rs:1) are OUT OF SCOPE — they belong to sub-briefs 001c/001e. Leave them exactly as they are; the gates here are scoped so they do not fire on them, and the scope fence forbids touching them.",
+      "SHALL NOT touch any crate other than aion-awl, nor anything in aion-awl outside src/emitter*."
+    ],
+    "verification": [
+      "no-bypasses-scoped gate: grep over the landed-clean paths (checker, lib.rs, lexer) plus parser/ and emitter/ once they exist returns no allow/expect/ignore/include! matches. (Note: this gate scans only EXISTING paths — it deliberately does NOT name the deleted checker.rs, the not-yet-split parser.rs, or emitter.rs the file — so it is reliable and GREEN on base even while parser.rs still carries its line-1 block until 001c lands.)",
+      "lints-pinned gate: crates/aion-awl/Cargo.toml has exactly one [lints] section, containing workspace = true.",
+      "scope-fence gate: git diff versus the pinned base SHA, excluding crates/aion-awl/src/emitter.rs and crates/aion-awl/src/emitter, is empty.",
+      "split-complete gate (RED on base — it is the work): emitter.rs gone AND emitter/mod.rs present AND every emitter/*.rs at or under 500 lines AND zero bypass attributes under emitter/.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli, all clean. (The full workspace suite is run by the operator at merge review while tasks #243/#244 are open.)",
+      "Hand review: emitter/mod.rs is declarations + re-exports only (including the `pub use ...::{EmitError, emit};` re-export); child names are honest and each <=500 lines; NO bypass exists anywhere under emitter/ and NO gratuitous logic edit was made (the diff is the move plus visibility widenings only — no function decomposition, no unwrap/expect rewrite, no doc churn); `pub use emitter::{EmitError, emit};` unchanged; the three .gleam.golden files byte-identical and passing; printer.rs/lib.rs/ast.rs/checker/lexer/parser/aion-cli untouched."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this sub-brief is the CONTRACT — implement it verbatim. Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = declarations/re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: mechanical gates (no-bypasses-scoped, lints-pinned, scope-fence, split-complete) -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture. This refactor must not perturb it (the scope fence makes perturbing it impossible without failing a gate). The emitter's own regression invariant is stronger: the emitted Gleam must stay byte-identical to the three committed .gleam.golden files."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named plan section and the committed brief and checks the implementation clause by clause against R1-R4, including confirming that R3 required NO purge work (emitter.rs had no debt) and that no gratuitous logic edit slipped in under cover of the split."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs the gates by hand before merge."
+      }
+    ],
+    "intention": "Fourth stamp of the decomposed pipe-cleaner sequence (001a..e), following the clean landings of 001a (checker split, run a96973cb, merged adb6e4cf), 001b (lib.rs split + 4-attr purge, run 3d201c36, merged 80426594), and the in-flight 001c (parser split, dispatched). The monolithic AWL0-REFAC-001 failed twice — once by fraud (include! splices + crate-wide allow), once by an honest rollback after cascading errors mid-split of four files at once. This sub-brief is sized to the fix-cycle envelope (one 2043-line file), every non-negotiable is a mechanical gate (three GREEN ON BASE, one — split-complete — RED ON BASE because it is the work), and the scope fence (001a/001c's path-exclude form, since emitter.rs is deleted and emitter/ created) makes wandering impossible. CRUCIAL authoring finding (BRIEF-CRAFT principle 10 — MEASURE before mandating): unlike 001c, whose line-1 block hid 32 real clippy errors, emitter.rs carries NO bypass block and NO lint debt — base clippy is green with the file exactly as-is. This brief is therefore a PURE SPLIT that mirrors 001a's shape (`No pre-existing attrs`), and R3 is recast from `purge by doing the deferred work` to `introduce no bypass; there is no pre-existing debt`. The measured evidence is embedded in the notes so the developer neither hunts for phantom purge work nor introduces gratuitous edits under cover of the split.",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program — Wave 0 sub-brief 001d, stamped from the 001c template after measurement recast it from a purge brief to a pure split)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}
