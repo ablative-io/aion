@@ -77,8 +77,11 @@ cross-reference). Spec section named in each brief is the contract.
   parse), `///` doc descriptions (type + field level, load-bearing),
   `aion awl schema <file> [--type Name]` emitting JSON Schema draft 2020-12
   (records → object/properties/required; Option(T) → optional; enum →
-  string enum once AWL1-002 lands; descriptions at every level). Highest
-  value: unblocks model output contracts. FIRST after refactor.
+  string enum once AWL1-002 lands; descriptions at every level). The
+  derivation is a PUBLIC aion-awl library function (`schema_for_type`); the
+  CLI is a thin wrapper over it — AWL1-015 and every other consumer reuse
+  the same derivation, never a reimplementation. Highest value: unblocks
+  model output contracts. FIRST after refactor.
 - **AWL1-002 enums + match**: `type X = A | B | C` (payload-less),
   exhaustive `match`/`case` step construct (one-call arms, same-name/type
   bindings across arms), `case Some as x`/`case None` for Option. Schema
@@ -111,6 +114,22 @@ cross-reference). Spec section named in each brief is the contract.
 - **AWL1-013 polish sweep**: task #238 items 1,3–10 (sentinel leak, builtin
   shadowing, each+wait rejection, UTF-8 span columns, span gaps,
   over-parenthesization, test breadth, fmt `//`→`// ` trailing whitespace).
+- **AWL1-014 schema file imports**: `type Name from "file.schema.json"` —
+  nominal type loaded from an existing JSON Schema at check time; typing via
+  the record-shaped projection (unsupported structural keywords are named
+  check errors), constraint keywords preserved and re-emitted canonically;
+  the file travels into the package content-addressed. Spec section
+  "Referencing existing JSON Schema files (DECIDED 2026-07-09)" is the
+  contract. Front-end brief; anywhere after AWL1-001.
+- **AWL1-015 automatic schema plumbing** (Tom 2026-07-09: "there shouldn't
+  be an additional step"): `aion package` embeds schemas for all
+  contract-reachable types in the package manifest; server exposes them
+  (start forms, #209); model-output-contract action dispatches carry the
+  schema to the worker so norn's `--output-schema` is fed automatically
+  (rides the #186 contract-verification seam). Depends on AWL1-001's public
+  `schema_for_type` derivation. NOT a front-end-only brief — touches
+  packaging, server API, and worker dispatch; treat it like a BC-track
+  partner for pairing purposes.
 - **HELD (needs Tom value ruling, blocks nothing):** engine implicit
   continue-as-new at a history threshold → then unbounded `repeat until`
   becomes legal (spec AWL-1 ruling 3).

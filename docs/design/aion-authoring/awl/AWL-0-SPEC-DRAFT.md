@@ -313,18 +313,60 @@ type Brief {
 }
 ```
 
-**3. Every type is a JSON Schema, on demand.** `aion awl schema <file>
-[--type Name]` emits JSON Schema (draft 2020-12) for any declared type, or
-for the workflow's `input`/`output` contracts: records → `object` with
-`properties`/`required` (non-`Option` fields are required; `Option(T)` fields
-are optional), enums → string enums, `///` text → `description` at every
-level. One declaration, every consumer — the model's output contract, the
-start form, and the worker contract are the same bytes.
+**3. Every type is a JSON Schema, on demand — and automatically.** `aion awl
+schema <file> [--type Name]` emits JSON Schema (draft 2020-12) for any
+declared type, or for the workflow's `input`/`output` contracts: records →
+`object` with `properties`/`required` (non-`Option` fields are required;
+`Option(T)` fields are optional), enums → string enums, `///` text →
+`description` at every level. One declaration, every consumer — the model's
+output contract, the start form, and the worker contract are the same bytes.
 
-Deliberately NOT imported from JSON Schema: the constraint vocabulary
-(`minLength`, `pattern`, numeric bounds…). Types + descriptions + enums are
-the contract surface; value validation is an action's job (plumbing yes,
-computation no).
+**Seamlessness is a requirement, not a convenience (Tom, 2026-07-09):**
+schema derivation is a pure public function in `aion-awl`
+(`schema_for_type(checked_doc, name) -> serde_json::Value`), and every
+consumer reads that one derivation automatically — `aion package` embeds the
+schemas for all contract-reachable types in the package manifest at packaging
+time, the server exposes them (start forms, #209), and an action whose result
+type is a model output contract has its schema carried to the worker on
+dispatch so norn's `--output-schema` receives it with NO manual step (rides
+the #186 deploy-time contract verification seam). The CLI subcommand is an
+on-demand inspection of the same derivation, never a required pipeline step.
+Plumbing lands as its own brief (AWL1-015) so AWL1-001 stays narrow.
+
+Deliberately NOT authorable inline: the constraint vocabulary (`minLength`,
+`pattern`, numeric bounds…). Types + descriptions + enums are the contract
+surface; value validation is an action's job (plumbing yes, computation no).
+
+### Referencing existing JSON Schema files (DECIDED 2026-07-09)
+
+Shops already have JSON Schemas; AWL consumes them without transcription:
+
+```
+type Brief from "schemas/brief.schema.json"
+```
+
+declares a nominal type whose shape is loaded from a JSON Schema file at
+check time (path relative to the `.awl` file). Rules:
+
+- **Typing uses the record-shaped projection.** The checker maps
+  `object`/`properties`/`required`/`description`, nested objects, `array` →
+  `List(T)`, `string`/`integer`/`number`/`boolean`, `$defs`-local `$ref`,
+  and string `enum` onto the same nominal record/enum model as inline
+  declarations; a property absent from `required` types as `Option(T)`.
+  Structural keywords the type model cannot honor (`oneOf`, `anyOf`,
+  `patternProperties`, `additionalProperties: <schema>`, conditional
+  schemas…) are check ERRORS with a diagnostic naming the unsupported
+  keyword and its JSON path — never silently ignored.
+- **Constraint keywords pass through.** `minLength`, `pattern`, numeric
+  bounds, `format` are ignored for typing but PRESERVED: `aion awl schema`
+  for an imported type re-emits the source schema canonically (sorted keys,
+  stable whitespace), constraints intact. Existing contracts keep their
+  validation vocabulary; AWL just doesn't let you author it inline.
+- **The file is source.** It travels with the document into the package
+  (content-addressed, so the deployed contract is pinned); a missing or
+  unparseable file is a check error with the declaration's span. `aion awl
+  fmt` never rewrites the imported file; the declaration's canonical form is
+  the single line above.
 
 ### Enums
 
