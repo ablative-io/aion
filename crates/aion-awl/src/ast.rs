@@ -198,7 +198,8 @@ pub struct StepDecl {
     pub each: Option<EachSpec>,
     /// Required operation performed by the step.
     pub op: StepOp,
-    /// Optional expression deciding whether the step repeats.
+    /// Optional integer expression bounding the maximum number of
+    /// repetitions (`repeat up to N`).
     pub repeat: Option<Expr>,
     /// Optional expression deciding when repeated execution stops.
     pub until: Option<Expr>,
@@ -469,7 +470,8 @@ pub enum BinaryOp {
     Gt,
     /// Greater-than-or-equal comparison operator.
     Ge,
-    /// Numeric addition operator.
+    /// String concatenation operator: `+` accepts only `String` operands
+    /// and yields `String`.
     Add,
 }
 /// Provides the source span covered by a parsed syntax node.
