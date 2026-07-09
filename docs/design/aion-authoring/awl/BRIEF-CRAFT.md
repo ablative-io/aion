@@ -327,7 +327,7 @@ advisory. Honesty is real but must be made the cheapest path.
   after a full workspace build. Partially realized: entry 11 removed the
   most expensive, least deterministic gate from workflows entirely.
 
-## Run 15342a09 (AWL0-REFAC-001c, 2026-07-09) — entries 13–18
+## Run 15342a09 (AWL0-REFAC-001c, 2026-07-09) — entries 13–19
 
 The third dispatch of the decomposed sequence, and the richest single run in
 this ledger: it ended `cycle_cap_exhausted` with 8/8 gates green and 3/4 lens
@@ -413,3 +413,24 @@ worktree and retained `dev/AWL0-REFAC-001c`.
     candidate, not a discard — the branch survives, findings triage into
     pre-existing (preserve + file) vs genuine (fix on the branch), and an
     Opus subagent can do the fixing under operator rulings.
+
+**Salvage outcome (landed `9800b9c4`, 2026-07-09):** the entry-17/18 protocol
+worked end-to-end. Salvage agent fixed the NBSP swallow (classification +
+extraction unified in `about_text`, line consumed only after extraction
+succeeds), audited all ~25 pattern-A/B sites old-vs-new (one DEFECT→fixed,
+four SANCTIONED panic→explicit-error at document level, rest EQUIVALENT),
+added 5 bypass-free regression tests. Operator hand review per
+DISPATCH-RUNBOOK §7 confirmed everything, including a live base-worktree probe
+that reproduced the old `.unwrap()` panic at parser.rs:474 on the NBSP input.
+
+19. **Provenance-check a red workspace suite against BASE before blaming the
+    branch.** Three full `cargo test --workspace` runs each failed exactly one
+    gleam-toolchain-invoking e2e test (emitter compile / invm-demo), a
+    different one each time, all green scoped; the same run on the BASE
+    worktree failed identically → pre-existing load flake, branch exonerated,
+    filed #248 (invm-demo builds in the SHARED example dir — prime suspect).
+    This is entry 16's verify-against-base doctrine applied to tests: a red
+    suite at review time is evidence about the branch only if base is green
+    under the same load. Corollary: capture the REAL exit code and full log —
+    a `| grep | head` pipeline masks cargo's exit status and can print a
+    passing summary over a failing run.

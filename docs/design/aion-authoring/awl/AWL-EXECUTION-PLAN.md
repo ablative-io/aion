@@ -90,6 +90,13 @@ tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
   crate root now 23 lines + private lexer/ module).
 - **AWL0-REFAC-001c** parser.rs (1585) → `parser/`; purges the parser.rs:1
   allow block (docs written, unwrap/expect eliminated, long fns split).
+  **LANDED 2026-07-09** (run `15342a09` → `cycle_cap_exhausted` with green
+  gates after two infra loop-backs ate the cap — see BRIEF-CRAFT entries
+  13–18; salvaged on the surviving branch: NBSP-swallow defect fixed as
+  classification+extraction-one-operation, full 25-site pattern-class audit
+  old-vs-new, 5 edge-regression tests added; pre-existing duplicate-about
+  collapse preserved → task #247; merged `9800b9c4` after full operator
+  hand review incl. live base-panic probe).
 - **AWL0-REFAC-001d** emitter.rs (2043) → `emitter/`.
 - **AWL0-REFAC-001e** hygiene finale: ast.rs + printer.rs missing_docs
   purge, the three test files' expect_used/unwrap_used/format_push_string
