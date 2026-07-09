@@ -17,9 +17,13 @@ Canonical documents (read in this order to reconstruct full context):
 4. `examples/` — dev_brief.awl (rev-0, checks green), sized_fanout.awl +
    approval_gate.awl (AWL-1, aspirational), README.md (construct tables,
    verified gaps).
-5. `briefs/` — the dispatch corpus (format: the established dev_brief
-   `-input.json` shape; template reference:
-   `~/Developer/ablative/haematite/docs/design/core/briefs/PERF-003-input.json`).
+5. `briefs/` — the dispatch corpus (rich `-input.json` shape = the durable
+   CONTRACT; the dev_brief workflow takes a translated `BriefInput` — see
+   `briefs/README.md` for the verified contract + translation rule).
+6. `BRIEF-CRAFT.md` — the accommodations ledger: what measurably improves
+   norn-driven brief output quality, each entry pinned to a real run.
+   UPDATE IT AT EVERY DISPATCH REVIEW (Tom's standing instruction,
+   2026-07-09).
 
 ## Decision doctrine (Tom, 2026-07-09)
 
