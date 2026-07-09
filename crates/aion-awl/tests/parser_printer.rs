@@ -1,7 +1,5 @@
 //! Integration tests for AWL parsing, canonical printing, and diagnostics.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
-
 use std::error::Error;
 
 use aion_awl::{StepOp, parse, print};
@@ -85,10 +83,10 @@ fn mutating_ast_changes_printed_output() -> Result<(), Box<dyn Error>> {
         .steps
         .iter_mut()
         .find(|step| step.name == "fix")
-        .unwrap();
+        .ok_or("fix step present")?;
     step.name = "repair".to_owned();
     if let StepOp::Do(_) = &step.op {
-        let retry = step.retry.as_mut().unwrap();
+        let retry = step.retry.as_mut().ok_or("retry present on fix step")?;
         if let aion_awl::RetrySpec::Backoff { min, .. } = retry {
             min.magnitude = 10;
         }
@@ -113,7 +111,7 @@ fn printer_is_idempotent_for_noncanonical_variants() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn parse_errors_are_spanned_and_specific() {
+fn parse_errors_are_spanned_and_specific() -> Result<(), Box<dyn Error>> {
     // (source, expected message substring, expected line, expected column, expected byte start)
     let cases = [
         (
@@ -177,7 +175,9 @@ fn parse_errors_are_spanned_and_specific() {
         ),
     ];
     for (source, expected, line, column, start) in cases {
-        let error = parse(source).expect_err(source);
+        let Err(error) = parse(source) else {
+            return Err("diagnostic fixture should be rejected".into());
+        };
         assert!(
             error.message.contains(expected),
             "{expected:?} not in {:?}",
@@ -190,4 +190,5 @@ fn parse_errors_are_spanned_and_specific() {
         );
         assert_eq!(error.span.start, start, "start mismatch for {expected:?}");
     }
+    Ok(())
 }
