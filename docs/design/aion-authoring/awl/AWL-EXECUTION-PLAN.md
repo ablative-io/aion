@@ -128,7 +128,19 @@ tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
   fire on a non-accept. Operational find: the parent run's history exceeded
   the CLI's 4 MiB gRPC decode limit → `describe`/`inspect` unusable, task
   #249; watch runs via `aion list` + per-lens child describes.)
-  **001e-b** remains to dispatch.
+  **001e-b LANDED 2026-07-10** (run `c11a5600`, accepted after 1 fix cycle,
+  merged `01fbf3d1`; diff = ci.yml only, +45: awl-check job with the three
+  must-pass fixtures and the bounded_cycle expected-fail carve-out
+  (missing-fixture guard + goes red when AWL1-004 lands, inline pointer),
+  plus the permanent crate-wide zero-bypass grep job with a `test -d` path
+  guard. Round-1 spec_fidelity lens made a real catch: without the fixture
+  guard, deleting a bounded_cycle fixture false-greened the job. First run
+  with verify_gates configured — all 8 re-ran green on a clean tree
+  post-accept — and first on norn's new default gpt-5.6-sol. §7 hand
+  review: both CI job shells run verbatim locally, bounded_cycle red on the
+  real AWL1-004 gap, fmt/clippy/tests green; one full-workspace
+  examples_e2e invm_demo failure was the known #248 load flake, green in
+  isolation.) **Wave 0 COMPLETE.**
 
 001b..e are stamped out from 001a's template once the pilot lands clean.
 

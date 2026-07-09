@@ -472,3 +472,24 @@ that reproduced the old `.unwrap()` panic at parser.rs:474 on the NBSP input.
     operational (task #249): a 3-round dev_brief history exceeds the CLI's
     4 MiB decode limit — `describe`/`inspect` die on the parent run; watch
     via `aion list` and describe the per-lens CHILD workflows instead.
+
+22. **Expected-fail carve-outs need their fixtures existence-guarded, and a
+    lens will catch you if they aren't.** 001e-b (run `c11a5600`,
+    2026-07-10, accepted after 1 fix cycle) wired the awl-check CI job with
+    a bounded_cycle expected-fail loop. Round 1 shipped the loop without a
+    missing-fixture guard: deleting either fixture would have skipped its
+    iteration and false-greened the job — the exact silent-skip failure
+    mode the brief prose warned about, but prose is advisory. The
+    spec_fidelity lens rejected on precisely this, and the fix round added
+    `test -f "$f" || { echo MISSING; s=1; }`. Accommodations: (a) when a
+    brief mandates an expected-fail set, mandate the existence guard as an
+    explicit requirement, not a prose warning — "guarded against silent
+    green" must name BOTH directions (fixture passes; fixture vanishes);
+    (b) this was the first run on norn's default gpt-5.6-sol and the first
+    with `config.verify_gates` — both clean: one substantive lens catch,
+    zero spurious rejections, and the post-accept verify battery re-ran all
+    8 gates green on a clean tree with the full log written. Operator-side
+    reminder that entry 19 keeps earning: my own hand battery piped
+    `cargo test --workspace` through `grep`, which masked a red exit — the
+    invm_demo #248 load flake surfaced only because the output was read,
+    not the exit code. Run cargo bare; let the command's own status speak.
