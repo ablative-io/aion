@@ -181,6 +181,7 @@ jobs:
             crates/aion-awl/tests/fixtures/bounded_cycle.awl \
             crates/aion-awl/tests/fixtures/bounded_cycle.canonical.awl
           do
+            test -f "$f" || { echo "EXPECTED-FAIL FIXTURE MISSING: $f"; s=1; continue; }
             if "$B" awl check "$f"; then
               echo "EXPECTED-FAIL NOW GREEN (AWL1-004 landed - retire carve-out): $f"
               s=1
