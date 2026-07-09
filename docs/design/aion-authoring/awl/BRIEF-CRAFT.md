@@ -208,6 +208,27 @@ Format per entry: **Symptom → Accommodation → Evidence.**
   verbatim, "The role-level developer instructions state not to run gates; I
   relied on the supplied loop-back gate facts."
 
+## Validation: run `a96973cb` (AWL0-REFAC-001a, 2026-07-09) — first clean landing
+
+The pilot dispatch of the decomposed sequence ACCEPTED first-pass: one
+developer round, all 8 gates green (workflow-reported AND operator re-run by
+hand), 4/4 lenses accept with zero findings, zero deviations, merged as
+`adb6e4cf`. This is the first dev_brief dispatch to land, and it validates
+entries 8–12 together: the mechanical fraud gates (8) had nothing to catch
+because the scope fence and right-sizing (10) made honest work the cheapest
+path; every gate was green-on-base (9); the scoped test gates (11) were
+deterministic; and the developer ran its own gates before ending its turn
+(12, plus the deployed-profile sync that entry's investigation surfaced —
+the repo-side profile fix had never shipped until this deploy). Also first
+run on `--fast` + `--reasoning-effort high` + profile-as-`--append-system-prompt`
++ compact loop-back rendering; no loop-backs were needed, so the compact
+rendering path remains unexercised in production.
+
+Operator-review footnote for future reviews: do NOT export `CARGO_TARGET_DIR`
+when re-running gates in a review worktree — `new_agent_e2e` scaffolds a
+project and runs a nested `cargo build` that inherits the override, making
+the test's expected binary path empty. It cost this review one false red.
+
 ## Candidate accommodations (not yet evidence-backed)
 
 - Developer profile addition: "never add a lint-allow attribute; if a lint

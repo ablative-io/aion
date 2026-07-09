@@ -78,7 +78,9 @@ tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
 
 - **AWL0-REFAC-001a** checker.rs (641) → `checker/`. No pre-existing
   attrs; zero lib.rs changes needed (`mod checker;` resolves the folder).
-  Pilot — proves the pipeline end-to-end.
+  Pilot — proves the pipeline end-to-end. **LANDED 2026-07-09** (run
+  `a96973cb`, first-pass accept, 4/4 lenses, merged `adb6e4cf` after
+  operator hand-verification — see BRIEF-CRAFT.md validation note).
 - **AWL0-REFAC-001b** lib.rs (737) → thin crate root + named modules;
   purges lib.rs's module_name_repetitions + 3× too_many_lines by doing the
   deferred work (module_name_repetitions may move to a DECLARED workspace
