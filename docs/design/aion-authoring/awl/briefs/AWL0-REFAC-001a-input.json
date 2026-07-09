@@ -1,0 +1,157 @@
+{
+  "repo_root": "/Users/tom/Developer/ablative/aion",
+  "clone_url": "https://github.com/ablative-io/aion.git",
+  "workspace_id": "MINT-AT-DISPATCH",
+  "brief_id": "AWL0-REFAC-001a",
+  "reviewers": [
+    "Waffles the Terrible"
+  ],
+  "base_ref": "main",
+  "placement": "local",
+  "isolation": "worktree",
+  "review_cap": 1,
+  "round_backoff_ms": 2000,
+  "verify_fix_cap": 3,
+  "review_deadline_ms": 7200000,
+  "brief_document": {
+    "id": "AWL0-REFAC-001a",
+    "cluster": "awl",
+    "title": "aion-awl checker split: checker.rs (641 lines) into a checker/ folder module, zero behavior change, mechanically fenced scope",
+    "depends_on": [],
+    "blocked_by": [],
+    "checklist": [],
+    "stories": [],
+    "design_anchor": [
+      "AWL-EXECUTION-PLAN.md#wave-0-pipe-cleaner"
+    ],
+    "purpose": "First of five single-file sub-briefs decomposed from AWL0-REFAC-001 (see AWL-EXECUTION-PLAN.md Wave 0 and BRIEF-CRAFT.md entry 10). crates/aion-awl/src/checker.rs is 641 lines, over the 500-line limit. This brief splits it into a folder module crates/aion-awl/src/checker/ of genuinely named child modules, each at or under 500 lines, at ZERO behavior cost. It is deliberately the smallest of the four over-limit files and the pilot for the decomposed sequence: its scope is fenced mechanically (a git-diff gate proves the diff touches ONLY checker paths), so success and failure are both unambiguous. checker.rs today carries NO lint-bypass attributes; the split must keep it that way.",
+    "task": "Split crates/aion-awl/src/checker.rs (641 lines) into a folder module crates/aion-awl/src/checker/ whose mod.rs contains ONLY module declarations and re-exports, with every child file at or under 500 lines, changing nothing else in the repository. The crate root already declares `mod checker;` (lib.rs line 9), which resolves to checker/mod.rs automatically — lib.rs therefore needs NO edit and MUST NOT be edited. The split is purely mechanical: no logic edits, no signature changes, no diagnostic-text changes, no accepted/rejected-result changes for any input. Structure guidance from the real seams in the file: `CheckError` (the public error type) and `Ty`/`ActionSig` (internal type machinery) separate naturally; the large `impl<'a> Ctx<'a>` block (lines 91–621, itself over 500 lines) MUST be split across child modules by concern — multiple `impl<'a> Ctx<'a>` blocks in separate files of the same crate are legal Rust and the intended technique; the identifier helpers (is_builtin, is_snake_case, is_title_case) are a natural small module. Choose child-module names from the actual responsibilities you find (e.g. checker/error.rs, checker/types.rs, checker/declarations.rs, checker/steps.rs, checker/expressions.rs, checker/idents.rs) — mechanically named files (part_00.rs, chunk_1.rs, body.rs holding everything) and include!() textual splicing are REJECTED outright; both previous dispatches of the parent brief were rejected for fraud patterns (see notes).",
+    "requirements": [
+      {
+        "id": "R1",
+        "title": "Split checker.rs into a checker/ folder module of real named children, each file <=500 lines",
+        "spec": "THE checker (crates/aion-awl/src/checker.rs, 641 lines) SHALL be replaced by a folder module crates/aion-awl/src/checker/ whose mod.rs contains ONLY module declarations and re-exports, with every child file at or under 500 lines and named for its responsibility. THE large Ctx impl SHALL be split across child modules by concern using multiple impl blocks. include!() and mechanically-named files are FORBIDDEN.",
+        "acceptance": [
+          "crates/aion-awl/src/checker.rs no longer exists; crates/aion-awl/src/checker/mod.rs exists.",
+          "`wc -l crates/aion-awl/src/checker/*.rs` reports every file at or under 500 lines.",
+          "checker/mod.rs contains only module declarations, re-exports, and comments — no logic.",
+          "Every child module name describes its content; no part_*/chunk_*/body.rs; zero include!() anywhere."
+        ],
+        "files": {
+          "create": [
+            "crates/aion-awl/src/checker/mod.rs"
+          ],
+          "modify": [],
+          "delete": [
+            "crates/aion-awl/src/checker.rs"
+          ]
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R2",
+        "title": "Zero behavior change, zero API change, tests and fixtures untouched",
+        "spec": "THE split SHALL be behavior-preserving end to end: the crate-root re-export `pub use checker::{CheckError, check};` SHALL resolve unchanged; every existing test SHALL pass with its source unmodified; every fixture and golden SHALL be byte-identical to base_ref. No check class, diagnostic text, span, or accepted/rejected verdict SHALL change for any input.",
+        "acceptance": [
+          "`cargo test -p aion-awl` and `cargo test -p aion-cli` pass in full with zero test-source edits.",
+          "`git diff --no-ext-diff <base> -- crates/aion-awl/tests/` is empty.",
+          "The crate-root re-export set is byte-identical to base_ref (lib.rs untouched)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R3",
+        "title": "Zero lint-bypass attributes and untouched lint policy",
+        "spec": "THE new checker/ tree SHALL contain ZERO lint-bypass attributes (#![allow], #[allow], #[expect], #[ignore]) and zero include!(). checker.rs has none today; the split SHALL NOT introduce any. crates/aion-awl/Cargo.toml SHALL keep exactly `[lints]` + `workspace = true` — weakening lint policy through the manifest (the rev-2 fraud pattern) is REJECTED outright. If clippy fires on the moved code, fix the code.",
+        "acceptance": [
+          "grep for bypass attributes and include!() over crates/aion-awl/src/checker returns no matches.",
+          "crates/aion-awl/Cargo.toml [lints] section is byte-identical to base_ref (workspace = true, nothing else).",
+          "`cargo clippy --workspace --all-targets -- -D warnings` passes with no new policy weakening anywhere."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      },
+      {
+        "id": "R4",
+        "title": "Mechanically fenced scope: the diff touches ONLY checker paths",
+        "spec": "THE complete diff versus base_ref SHALL touch ONLY crates/aion-awl/src/checker.rs (deleted) and crates/aion-awl/src/checker/ (created). NO other file in the repository — source, test, fixture, manifest, doc — SHALL change. A git-diff exclude gate enforces this mechanically.",
+        "acceptance": [
+          "`git diff --exit-code --no-ext-diff <base> -- . ':(exclude)crates/aion-awl/src/checker.rs' ':(exclude)crates/aion-awl/src/checker'` exits 0 (nothing outside the fence changed)."
+        ],
+        "files": {
+          "create": [],
+          "modify": [],
+          "delete": []
+        },
+        "checklist": [],
+        "stories": []
+      }
+    ],
+    "boundaries": [
+      "REAL NAMED MODULES ONLY: every child file is a genuine `mod` whose name describes its responsibility. include!() textual splicing is FORBIDDEN. Mechanically-named files (part_00.rs, chunk_*.rs, body.rs-holding-everything) are REJECTED regardless of line counts. Dispatch 1 of the parent brief was rejected for include!(\"parts/part_00.rs\") splices behind a 2-line mod.rs.",
+      "NO lint-policy weakening by ANY mechanism: no new #![allow]/#[allow]/#[expect]/#[ignore] attributes, and crates/aion-awl/Cargo.toml stays byte-identical — dispatch 2 of the parent brief was rejected for replacing `[lints] workspace = true` with a private allow-list. Both escape hatches are now gated mechanically.",
+      "lib.rs MUST NOT be edited: `mod checker;` already resolves the folder module. If you believe an edit outside the fence is required, STOP and report it as a finding instead of making it.",
+      "ZERO behavior change: pure move/split. No logic edit, no signature change, no diagnostic-text change, no verdict change.",
+      "Existing tests, fixtures, goldens, and every non-checker file UNMODIFIED — enforced by the R4 scope-fence gate.",
+      "Pre-existing bypass attributes elsewhere in the crate (parser.rs, ast.rs, printer.rs, lib.rs, three test files) are OUT OF SCOPE — they belong to sub-briefs 001b..e. Leave them exactly as they are; the gates here are scoped so they do not fire on them.",
+      "SHALL NOT touch any crate other than aion-awl, nor anything in aion-awl outside src/checker*."
+    ],
+    "verification": [
+      "Scoped no-bypasses gate: grep over crates/aion-awl/src/checker.rs + crates/aion-awl/src/checker returns no allow/expect/ignore/include! matches.",
+      "Cargo.toml lints-pinned gate: exactly one [lints] section, containing workspace = true.",
+      "Scope-fence gate: git diff versus the pinned base SHA, excluding the two checker paths, is empty.",
+      "Completion gate: checker.rs gone, checker/mod.rs present, every checker/*.rs at or under 500 lines.",
+      "cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli, all clean. (The full workspace suite is run by the operator at merge review while tasks #243/#244 are open.)",
+      "Hand review: mod.rs is declarations + re-exports only; child names are honest; `pub use checker::{CheckError, check};` unchanged."
+    ]
+  },
+  "resolved_context": {
+    "adrs": [],
+    "checklist": [],
+    "constraints": [
+      {
+        "id": "CN1",
+        "text": "Canonical docs (AWL-EXECUTION-PLAN.md, AWL-0-SPEC-DRAFT.md, AWL-BC-DESIGN-DRAFT.md, AWL-UX.md, examples/) are the reading list; the plan's Wave 0 spec for this sub-brief is the CONTRACT — implement it verbatim. Discovered ambiguities are findings to report, never license to improvise."
+      },
+      {
+        "id": "CN2",
+        "text": "Coding standards (CLAUDE.md): no #[allow]/#[expect]/#[ignore] bypasses, thiserror in libraries, no unwrap()/expect()/panic!() in library code, files <=500 lines, mod.rs = declarations/re-exports only, no silent failures."
+      },
+      {
+        "id": "CN3",
+        "text": "Gate argv, run EXACTLY in order before reporting: mechanical gates (no-bypasses, lints-pinned, scope-fence, completion) -> cargo fmt -> cargo clippy --workspace --all-targets -- -D warnings -> cargo test -p aion-awl -> cargo test -p aion-cli."
+      },
+      {
+        "id": "CN4",
+        "text": "Round-trip property is sacred: parse . print = id and print . parse . print = print, byte-level, for every fixture. This refactor must not perturb it (the scope fence makes perturbing it impossible without failing a gate)."
+      },
+      {
+        "id": "CN5",
+        "text": "Review lenses: the standard adversarial set PLUS a spec-fidelity lens — one reviewer reads the named plan section and checks the implementation clause by clause."
+      },
+      {
+        "id": "CN6",
+        "text": "Bar reminders: stage explicit paths (never `git add -A`); inspect with `git diff --no-ext-diff`; NEVER trust the workflow's own green — the operator re-runs the gates by hand before merge."
+      }
+    ],
+    "intention": "Pilot of the decomposed pipe-cleaner sequence (001a..e). The monolithic AWL0-REFAC-001 failed twice — once by fraud (include! splices + crate-wide allow), once by an honest rollback after cascading errors mid-split of four files at once. This sub-brief is sized to the fix-cycle envelope (one 641-line file), every non-negotiable is a mechanical gate that is GREEN ON BASE (verified before dispatch), and the scope fence makes wandering impossible. When it lands clean it becomes the template for 001b (lib.rs), 001c (parser.rs), 001d (emitter.rs), and 001e (hygiene finale).",
+    "provenance": {
+      "requested_by": "Tom (2026-07-09, AWL program kickoff)",
+      "quote": "a construct lands complete (parser + printer + checker + emitter + fixtures + goldens) or not at all"
+    },
+    "design_path": "docs/design/aion-authoring/awl",
+    "stories": []
+  }
+}

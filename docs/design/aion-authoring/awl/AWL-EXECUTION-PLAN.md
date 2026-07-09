@@ -58,17 +58,46 @@ before merge.
 
 ### Wave 0 — pipe-cleaner
 
-- **AWL0-REFAC-001** `aion-awl` module refactor. Four files over the
-  500-line limit: emitter.rs 2043, parser.rs 1585, lib.rs 737, checker.rs
-  641. Split each into folder modules ≤500 lines; `mod.rs` = declarations +
-  re-exports only; **zero behavior change** — public API identical, every
-  existing test green UNMODIFIED, round-trip goldens byte-identical, clippy
-  `-D warnings`, fmt. Also: wire `aion awl check` over every committed .awl
-  fixture in CI (closes the blind spot that hid the bounded_cycle checker
-  failures) — EXCEPT the two bounded_cycle fixtures, which are knowingly red
-  until AWL1-004 lands typed child contracts; list them explicitly in an
-  expected-failures note in the test, with a comment pointing at AWL1-004,
-  so the gap stays visible without blocking the refactor.
+**AWL0-REFAC-001** `aion-awl` module refactor — DECOMPOSED 2026-07-09 into
+five sequential single-file sub-briefs after the monolithic brief failed
+twice with opposite modes (run `672b43a4` fraud, run `a4b40d8a` honest
+rollback; BRIEF-CRAFT entry 10). Four files over the 500-line limit:
+emitter.rs 2043, parser.rs 1585, lib.rs 737, checker.rs 641. Shared
+contract for every sub-brief: split into folder modules ≤500 lines with
+REAL responsibility-named children (`include!`/part_NN = auto-reject);
+`mod.rs` = declarations + re-exports only; **zero behavior change** —
+public API identical, every existing test green UNMODIFIED (except where a
+sub-brief explicitly owns a test file's bypass purge), round-trip goldens
+byte-identical, clippy `-D warnings`, fmt. Each sub-brief carries a
+mechanical scope-fence gate (git-diff exclude over its owned paths), the
+Cargo.toml lints-pinned gate, and a scoped no-bypasses grep; the developer
+purges the pre-existing bypass attrs in the files it owns (full inventory:
+parser.rs:1 multi-line block, ast.rs:1 + printer.rs:1 missing_docs,
+lib.rs ×4, tests/awl2_defects.rs, tests/parser_printer.rs,
+tests/field_trivia_and_duplicates.rs). Sequenced smallest-first:
+
+- **AWL0-REFAC-001a** checker.rs (641) → `checker/`. No pre-existing
+  attrs; zero lib.rs changes needed (`mod checker;` resolves the folder).
+  Pilot — proves the pipeline end-to-end.
+- **AWL0-REFAC-001b** lib.rs (737) → thin crate root + named modules;
+  purges lib.rs's module_name_repetitions + 3× too_many_lines by doing the
+  deferred work (module_name_repetitions may move to a DECLARED workspace
+  policy iff a public rename would otherwise be forced — #38 precedent).
+- **AWL0-REFAC-001c** parser.rs (1585) → `parser/`; purges the parser.rs:1
+  allow block (docs written, unwrap/expect eliminated, long fns split).
+- **AWL0-REFAC-001d** emitter.rs (2043) → `emitter/`.
+- **AWL0-REFAC-001e** hygiene finale: ast.rs + printer.rs missing_docs
+  purge, the three test files' expect_used/unwrap_used/format_push_string
+  purge (tests return Result + `?`), wire `aion awl check` over every
+  committed .awl fixture in CI (closes the blind spot that hid the
+  bounded_cycle checker failures) — EXCEPT the two bounded_cycle fixtures,
+  knowingly red until AWL1-004 lands typed child contracts; list them
+  explicitly in an expected-failures note guarded against silent green,
+  with a comment pointing at AWL1-004 (a rejected-run salvage of this test
+  exists; see briefs/). The crate-wide zero-bypass gate goes green here
+  and stays a permanent gate from then on.
+
+001b..e are stamped out from 001a's template once the pilot lands clean.
 
 ### Wave 1+ — AWL-1 front end (task #241; sequential, one at a time)
 
@@ -181,8 +210,15 @@ cross-reference). Spec section named in each brief is the contract.
   `#[ignore]` bypasses, thiserror in libs, no unwrap/expect in library code,
   files ≤500 lines, mod.rs = re-exports only, no silent failures.
 - Gate argv (run EXACTLY, in order, before reporting):
-  `cargo fmt` → `cargo clippy --workspace --all-targets -- -D warnings` →
-  `cargo test -p aion-awl` → `cargo test --workspace`.
+  mechanical fraud/scope gates (no-bypasses grep, Cargo.toml lints-pinned,
+  scope fence) → `cargo fmt` →
+  `cargo clippy --workspace --all-targets -- -D warnings` →
+  `cargo test -p aion-awl` → `cargo test -p aion-cli`.
+  The full `cargo test --workspace` suite is NOT a workflow gate while
+  tasks #243/#244 (load-sensitive flakes in untouched crates) are open —
+  it burned the cycle budget of both AWL0-REFAC-001 dispatches on reds
+  that weren't the developer's (BRIEF-CRAFT entry 11). The operator runs
+  the workspace suite by hand at merge review, always.
 - Round-trip property is sacred: `parse ∘ print = id`,
   `print ∘ parse ∘ print = print`, byte-level, for every fixture including
   new ones.

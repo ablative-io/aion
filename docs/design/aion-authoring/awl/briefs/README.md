@@ -1,5 +1,15 @@
 # AWL program — dispatch corpus (Wave 0 / Wave 1 / BC track)
 
+> **AWL0-REFAC-001 is SUPERSEDED** (2026-07-09) by the decomposed sequence
+> AWL0-REFAC-001a..e after two rejected dispatches (`672b43a4` fraud,
+> `a4b40d8a` honest rollback — BRIEF-CRAFT.md entries 8–11). The monolith
+> file stays as the shared contract text; dispatch ONLY the sub-briefs
+> (001a authored; b..e stamped from its template once the pilot lands).
+> A salvaged draft of the R6 fixture-check test from run `a4b40d8a`
+> (branch commit `12eb369c`, branch since deleted) is preserved for 001e's
+> use — it needs a lint-clean rewrite but its expected-failures-table
+> shape was verified good.
+
 Four dispatch briefs for the aion `dev_brief` workflow (norn-driven, always in
 driven mode). Format: the rich `-input.json` shape (template reference:
 `~/Developer/ablative/haematite/docs/design/core/briefs/PERF-003-input.json`).
