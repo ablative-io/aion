@@ -1,3 +1,4 @@
+pub use crate::spanned::Spanned;
 use crate::{DurationUnit, Span};
 /// Parsed representation of a complete workflow document.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +92,8 @@ pub struct TypeDecl {
     pub trivia: Trivia,
     /// Load-bearing prose from contiguous `///` lines above the declaration.
     pub description: Option<String>,
+    /// Exact text following each source `///`, joined by newlines for reprinting.
+    pub description_source: Option<String>,
     /// Type name introduced by the declaration.
     pub name: String,
     /// Field declarations listed inside the record body.
@@ -101,8 +104,12 @@ pub struct TypeDecl {
 pub struct FieldDecl {
     /// Source span of the declaration line that contains this field.
     pub span: Span,
+    /// Ordinary comment trivia attached to this record field or action parameter.
+    pub trivia: Trivia,
     /// Load-bearing prose from contiguous `///` lines above a record field.
     pub description: Option<String>,
+    /// Exact text following each source `///`, joined by newlines for reprinting.
+    pub description_source: Option<String>,
     /// Field or parameter name introduced by the declaration.
     pub name: String,
     /// Type reference assigned to the field or parameter.
@@ -477,28 +484,6 @@ pub enum BinaryOp {
     /// String concatenation operator: `+` accepts only `String` operands
     /// and yields `String`.
     Add,
-}
-/// Provides the source span covered by a parsed syntax node.
-pub trait Spanned {
-    /// Return the source span occupied by this node.
-    fn span(&self) -> Span;
-}
-impl Spanned for Expr {
-    fn span(&self) -> Span {
-        match self {
-            Self::String { span, .. }
-            | Self::Int { span, .. }
-            | Self::Float { span, .. }
-            | Self::Bool { span, .. }
-            | Self::List { span, .. }
-            | Self::Ref { span, .. }
-            | Self::Field { span, .. }
-            | Self::Record { span, .. }
-            | Self::Not { span, .. }
-            | Self::Binary { span, .. } => *span,
-            Self::Duration(duration) => duration.span,
-        }
-    }
 }
 pub(crate) fn join_span(start: Span, end: Span) -> Span {
     Span {

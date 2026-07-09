@@ -98,7 +98,7 @@ impl Printer {
     }
     fn type_decl(&mut self, decl: &TypeDecl) {
         self.comments(0, &decl.trivia.leading);
-        self.description(0, decl.description.as_deref());
+        self.description(0, decl.description_source.as_deref());
         let fields = decl
             .fields
             .iter()
@@ -106,8 +106,12 @@ impl Printer {
             .collect::<Vec<_>>()
             .join(", ");
         let single_line = format!("type {} {{ {} }}", decl.name, fields);
-        let has_field_descriptions = decl.fields.iter().any(|field| field.description.is_some());
-        if single_line.chars().count() <= 100 && !has_field_descriptions {
+        let has_field_lines = decl.fields.iter().any(|field| {
+            field.description.is_some()
+                || !field.trivia.leading.is_empty()
+                || field.trivia.trailing.is_some()
+        });
+        if single_line.chars().count() <= 100 && !has_field_lines {
             self.line(0, &single_line, decl.trivia.trailing.as_ref());
         } else {
             self.line(
@@ -116,8 +120,13 @@ impl Printer {
                 decl.trivia.trailing.as_ref(),
             );
             for field in &decl.fields {
-                self.description(2, field.description.as_deref());
-                self.line(2, &format!("{}: {},", field.name, ty(&field.ty)), None);
+                self.comments(2, &field.trivia.leading);
+                self.description(2, field.description_source.as_deref());
+                self.line(
+                    2,
+                    &format!("{}: {},", field.name, ty(&field.ty)),
+                    field.trivia.trailing.as_ref(),
+                );
             }
             self.line(0, "}", None);
         }
@@ -125,11 +134,7 @@ impl Printer {
     fn description(&mut self, indent: usize, description: Option<&str>) {
         if let Some(description) = description {
             for line in description.split('\n') {
-                let text = if line.is_empty() {
-                    "///".to_owned()
-                } else {
-                    format!("/// {line}")
-                };
+                let text = format!("///{line}");
                 self.line(indent, &text, None);
             }
         }

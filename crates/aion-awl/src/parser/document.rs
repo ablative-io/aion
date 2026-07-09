@@ -306,7 +306,9 @@ impl LineParser {
                 .ok_or_else(|| ParseError::new(line.span, "action parameter needs `name: Type`"))?;
             params.push(FieldDecl {
                 span: line.span,
+                trivia: Trivia::default(),
                 description: None,
+                description_source: None,
                 name: param.trim().to_owned(),
                 ty: parse_type_at(&line, ty.trim())?,
             });
@@ -391,7 +393,11 @@ impl LineParser {
         }
     }
 
-    pub(super) fn take_description(&mut self, line: &SourceLine, indent: usize) -> Option<String> {
+    pub(super) fn take_description(
+        &mut self,
+        line: &SourceLine,
+        indent: usize,
+    ) -> Option<super::source::AttachedDescription> {
         let start = self.description_pos;
         while self.description_pos < self.descriptions.len()
             && self.descriptions[self.description_pos].span.start < line.span.start
@@ -401,18 +407,29 @@ impl LineParser {
         let preceding = &self.descriptions[start..self.description_pos];
         let mut expected_line = line.span.line;
         let mut lines = Vec::new();
+        let mut source_lines = Vec::new();
         for description in preceding.iter().rev() {
             if description.indent != indent || description.span.line + 1 != expected_line {
                 break;
             }
             lines.push(description.text.clone());
+            source_lines.push(description.source.clone());
             expected_line = description.span.line;
         }
         if lines.is_empty() {
             None
         } else {
             lines.reverse();
-            Some(lines.join("\n"))
+            self.own_comments.retain(|comment| {
+                !preceding
+                    .iter()
+                    .any(|description| description.span == comment.span)
+            });
+            source_lines.reverse();
+            Some(super::source::AttachedDescription {
+                text: lines.join("\n"),
+                source: source_lines.join("\n"),
+            })
         }
     }
 }

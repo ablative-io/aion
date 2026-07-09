@@ -1,4 +1,4 @@
-use crate::ast::{FieldDecl, TypeDecl, join_span};
+use crate::ast::{FieldDecl, Trivia, TypeDecl, join_span};
 
 use super::ParseError;
 use super::calls::comma_parts;
@@ -8,8 +8,10 @@ use super::types::parse_type_at;
 
 pub(super) fn parse_type_decl(parser: &mut LineParser) -> Result<TypeDecl, ParseError> {
     let header = parser.bump_required("missing type declaration after peek")?;
+    let attached = parser.take_description(&header, 0);
+    let description = attached.as_ref().map(|doc| doc.text.clone());
+    let description_source = attached.map(|doc| doc.source);
     let trivia = parser.take_trivia(&header);
-    let description = parser.take_description(&header, 0);
     let rest = keyword_rest(&header, "type", "type declaration needs record fields")?;
     let (name, body) = rest
         .split_once('{')
@@ -20,8 +22,9 @@ pub(super) fn parse_type_decl(parser: &mut LineParser) -> Result<TypeDecl, Parse
             span: header.span,
             trivia,
             description,
+            description_source,
             name: name.trim().to_owned(),
-            fields: parse_fields(&header, body, None)?,
+            fields: parse_fields(&header, body, &Trivia::default(), None, None)?,
         });
     }
     if !body.trim().is_empty() {
@@ -43,6 +46,7 @@ pub(super) fn parse_type_decl(parser: &mut LineParser) -> Result<TypeDecl, Parse
                 span: join_span(header.span, closing.span),
                 trivia,
                 description,
+                description_source,
                 name: name.trim().to_owned(),
                 fields,
             });
@@ -54,15 +58,19 @@ pub(super) fn parse_type_decl(parser: &mut LineParser) -> Result<TypeDecl, Parse
             ));
         }
         let field_line = parser.bump_required("missing type field after peek")?;
-        let _ = parser.take_trivia(&field_line);
-        let field_description = parser.take_description(&field_line, 2);
+        let attached = parser.take_description(&field_line, 2);
+        let field_description = attached.as_ref().map(|doc| doc.text.clone());
+        let field_description_source = attached.map(|doc| doc.source);
+        let field_trivia = parser.take_trivia(&field_line);
         fields.extend(parse_fields(
             &field_line,
             field_line
                 .code
                 .strip_suffix(',')
                 .unwrap_or(&field_line.code),
+            &field_trivia,
             field_description.as_deref(),
+            field_description_source.as_deref(),
         )?);
     }
 }
@@ -70,7 +78,9 @@ pub(super) fn parse_type_decl(parser: &mut LineParser) -> Result<TypeDecl, Parse
 fn parse_fields(
     line: &SourceLine,
     body: &str,
+    trivia: &Trivia,
     description: Option<&str>,
+    description_source: Option<&str>,
 ) -> Result<Vec<FieldDecl>, ParseError> {
     let mut fields = Vec::new();
     for part in comma_parts(body) {
@@ -82,7 +92,9 @@ fn parse_fields(
             .ok_or_else(|| ParseError::new(line.span, "type field needs `name: Type`"))?;
         fields.push(FieldDecl {
             span: line.span,
+            trivia: trivia.clone(),
             description: description.map(str::to_owned),
+            description_source: description_source.map(str::to_owned),
             name: field.trim().to_owned(),
             ty: parse_type_at(line, ty.trim())?,
         });

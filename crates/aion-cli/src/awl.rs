@@ -201,35 +201,11 @@ fn schema_source(
             .map(|error| diagnostic(file, error.span, &error.message))
             .collect());
     }
-    let type_name = requested_type
-        .map(str::to_owned)
-        .or_else(|| {
-            document
-                .output
-                .as_ref()
-                .and_then(|output| match &output.ty {
-                    aion_awl::TypeRef::Named { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
-        })
-        .or_else(|| {
-            if document.inputs.len() == 1 {
-                match &document.inputs[0].ty {
-                    aion_awl::TypeRef::Named { name, .. } => Some(name.clone()),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| {
-            vec![diagnostic(
-                file,
-                document.span,
-                "schema type is ambiguous; pass `--type Name`",
-            )]
-        })?;
-    let schema = aion_awl::schema_for_type(&document, &type_name)
+    let schema = requested_type
+        .map_or_else(
+            || aion_awl::schema_for_workflow(&document),
+            |name| aion_awl::schema_for_type(&document, name),
+        )
         .map_err(|error| vec![diagnostic(file, error.span(), &error.to_string())])?;
     serde_json::to_string_pretty(&schema)
         .map(|json| format!("{json}\n"))
@@ -394,6 +370,21 @@ mod tests {
         assert_eq!(
             schema,
             include_str!("../../aion-awl/tests/fixtures/brief.schema.golden.json")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn schema_source_without_type_emits_workflow_contracts() -> anyhow::Result<()> {
+        let source =
+            "workflow primitive\ninput note: Option(String)\noutput String\n\nfinish \"ok\"\n";
+        let schema = schema_source(Path::new("primitive.awl"), source, None)
+            .map_err(|diagnostics| anyhow::anyhow!("unexpected diagnostics: {diagnostics:?}"))?;
+        let value: serde_json::Value = serde_json::from_str(&schema)?;
+        assert_eq!(value["properties"]["output"]["type"], "string");
+        assert_eq!(
+            value["properties"]["input"]["properties"]["note"]["type"],
+            "string"
         );
         Ok(())
     }

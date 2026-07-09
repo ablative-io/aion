@@ -7,7 +7,13 @@ use super::ParseError;
 pub(super) struct DescriptionLine {
     pub(super) indent: usize,
     pub(super) text: String,
+    pub(super) source: String,
     pub(super) span: Span,
+}
+
+pub(super) struct AttachedDescription {
+    pub(super) text: String,
+    pub(super) source: String,
 }
 
 #[derive(Debug, Clone)]
@@ -72,14 +78,24 @@ impl SourceLines {
                 }
                 continue;
             }
-            if let Some(description_at) = rest.trim_start().strip_prefix("///") {
+            if let Some(description_at) = rest
+                .trim_start()
+                .strip_prefix("///")
+                .filter(|suffix| !suffix.starts_with('/'))
+            {
                 let skipped = rest.len() - rest.trim_start().len();
                 let start_col = indent + skipped + 1;
                 let start = offset + indent + skipped;
+                let description_span = span(start, offset + text.len(), line_no, start_col);
                 descriptions.push(DescriptionLine {
                     indent,
                     text: trim_comment(description_at).to_owned(),
-                    span: span(start, offset + text.len(), line_no, start_col),
+                    source: description_at.to_owned(),
+                    span: description_span,
+                });
+                comments.push(Comment {
+                    span: description_span,
+                    text: trim_comment(&rest.trim_start()[2..]).to_owned(),
                 });
                 offset += raw.len();
                 if had_newline {

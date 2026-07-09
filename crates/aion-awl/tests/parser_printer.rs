@@ -95,6 +95,24 @@ fn described_type_fields_are_load_bearing_data() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn type_comments_and_doc_spacing_round_trip_without_promotion() -> Result<(), Box<dyn Error>> {
+    let source = "//// banner\nworkflow w\noutput Box\n\n///Box docs.\ntype Box {\n  // field trivia\n  ///Value docs.\n  value: String\n}\n\naction make() -> Box\n\nstep make\n  do make()\n  as value\n\nfinish value\n";
+    let printed = print(&parse(source)?);
+    assert!(printed.contains("// // banner\nworkflow w"));
+    assert!(printed.contains("///Box docs.\ntype Box"));
+    assert!(printed.contains("  // field trivia\n  ///Value docs.\n  value: String,"));
+    let document = parse(&printed)?;
+    let declaration = document.types.first().ok_or("Box type")?;
+    assert_eq!(declaration.description.as_deref(), Some("Box docs."));
+    assert_eq!(
+        declaration.fields[0].description.as_deref(),
+        Some("Value docs.")
+    );
+    assert_eq!(declaration.fields[0].trivia.leading.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn type_printer_uses_the_inclusive_100_column_boundary() -> Result<(), Box<dyn Error>> {
     let at_limit = "a".repeat(81);
     let over_limit = "a".repeat(82);
