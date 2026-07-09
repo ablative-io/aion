@@ -212,25 +212,14 @@ fn serve_agent_role(candidates: &[String], identity: &str, norn_bin: &str, role:
 }
 
 /// Build the composed harness for one role: the inner [`NornHarness`] carries
-/// the driven-mode wiring (`--output-schema`, `{workflow_id}` session
-/// identity, `--resume-if-exists`, workspace root, env hygiene); the
-/// [`ProfiledNornHarness`] wrapper assembles {profile + context} into the
+/// the driven-mode wiring (`--output-schema`, the role's profile as its
+/// `--append-system-prompt` doctrine, `{workflow_id}` session identity,
+/// `--resume-if-exists`, workspace root, env hygiene); the
+/// [`ProfiledNornHarness`] wrapper assembles the per-turn context into the
 /// prompt. This is the ONE place a concrete adapter is named per role; the
 /// serve path drives it only through the erased [`DynAgentHarness`] trait.
 fn composed_agent_harness(norn_bin: &str, role: &Role) -> AgentHarnessConfig {
-    let session_id = format!("{{workflow_id}}-{}", role.session_suffix);
-    let inner = NornHarness::with_binary(norn_bin)
-        .with_arg("--output-schema")
-        .with_arg(role.output_schema.trim_start())
-        .with_arg("--session-id")
-        .with_arg(session_id)
-        .with_arg("--resume-if-exists")
-        .with_arg("--workspace-root")
-        .with_arg(role.workspace_root.clone())
-        // Force the ChatGPT OAuth login: a stray ambient API key would take
-        // precedence and fail. No secret is ever set here.
-        .without_env("OPENAI_API_KEY");
-    let harness = ProfiledNornHarness::new(inner, role.profile.clone(), role.assemble);
+    let harness = ProfiledNornHarness::new(inner_norn_harness(norn_bin, role), role.assemble);
     let harness = match role.post_run_commit {
         Some(PostRunCommit::DevWork) => harness.committing_dev_work(),
         None => harness,
@@ -245,6 +234,33 @@ fn composed_agent_harness(norn_bin: &str, role: &Role) -> AgentHarnessConfig {
             InterventionPrimitive::Cancel,
         ]),
     )
+}
+
+/// Build the inner [`NornHarness`] for one role: the driven-mode wiring plus
+/// the role's profile passed via `--append-system-prompt`, which APPENDS the
+/// doctrine to Norn's own system instructions (never `--system-prompt`, which
+/// would OVERWRITE them). The profile is a fixed argument value; it carries no
+/// `{workflow_id}`/`{activity_type}` placeholder, so the harness's `expand_arg`
+/// leaves it byte-identical. `--fast` / `--reasoning-effort high` are the
+/// operator's speed/effort settings.
+fn inner_norn_harness(norn_bin: &str, role: &Role) -> NornHarness {
+    let session_id = format!("{{workflow_id}}-{}", role.session_suffix);
+    NornHarness::with_binary(norn_bin)
+        .with_arg("--fast")
+        .with_arg("--reasoning-effort")
+        .with_arg("high")
+        .with_arg("--append-system-prompt")
+        .with_arg(role.profile.clone())
+        .with_arg("--output-schema")
+        .with_arg(role.output_schema.trim_start())
+        .with_arg("--session-id")
+        .with_arg(session_id)
+        .with_arg("--resume-if-exists")
+        .with_arg("--workspace-root")
+        .with_arg(role.workspace_root.clone())
+        // Force the ChatGPT OAuth login: a stray ambient API key would take
+        // precedence and fail. No secret is ever set here.
+        .without_env("OPENAI_API_KEY")
 }
 
 /// The three shell activities as a typed registry — the ONE definition of
@@ -391,8 +407,8 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        DEFAULT_ADDRESS, PostRunCommit, Profiles, SHELL_NODE, Shell, parse_args_from, roles,
-        shell_registry,
+        DEFAULT_ADDRESS, PostRunCommit, Profiles, Role, SHELL_NODE, Shell, inner_norn_harness,
+        parse_args_from, prompts, roles, shell_registry,
     };
 
     fn parse(args: &[&str]) -> anyhow::Result<super::Args> {
@@ -564,5 +580,34 @@ mod tests {
         assert_eq!(SHELL_NODE, "shell");
         let nodes: Vec<&str> = roles(profiles()).iter().map(|role| role.node).collect();
         assert_eq!(nodes, vec!["developer", "reviewer"]);
+    }
+
+    /// The role's profile doctrine reaches Norn as `--append-system-prompt`
+    /// (which APPENDS to Norn's own system prompt — never `--system-prompt`,
+    /// which would OVERWRITE it), and the profile text follows that flag
+    /// byte-identical. The "profile byte-identical in the prompt" contract
+    /// moved here from the per-turn prompt assembly.
+    #[test]
+    fn the_profile_rides_as_append_system_prompt_byte_identical() {
+        let role = Role {
+            activity_type: "developer",
+            node: "developer",
+            output_schema: "{}",
+            session_suffix: "developer",
+            workspace_root: "/tmp/ws".to_owned(),
+            profile: "MARKER_PROFILE_TEXT".to_owned(),
+            assemble: prompts::developer,
+            post_run_commit: Some(PostRunCommit::DevWork),
+        };
+        let debug = format!("{:?}", inner_norn_harness("norn", &role));
+        assert!(
+            debug.contains("\"--append-system-prompt\", \"MARKER_PROFILE_TEXT\""),
+            "the profile must ride as the value immediately after \
+             --append-system-prompt, byte-identical; args were:\n{debug}"
+        );
+        assert!(
+            !debug.contains("\"--system-prompt\""),
+            "the doctrine must APPEND, never OVERWRITE Norn's system prompt"
+        );
     }
 }

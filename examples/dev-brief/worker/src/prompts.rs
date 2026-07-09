@@ -1,10 +1,16 @@
-//! Per-role prompt assembly: {the role's profile markdown} + {the per-run
-//! context block carrying the activity's structured input JSON}.
+//! Per-role prompt assembly: the per-run CONTEXT block carrying the activity's
+//! structured input JSON. The role's profile markdown is NOT part of the
+//! prompt — it is the role's STATIC system prompt, passed to Norn once per run
+//! via `--append-system-prompt` (which APPENDS to Norn's own system
+//! instructions rather than overwriting them; see `composed_agent_harness` in
+//! `main.rs`). These functions therefore assemble context only; the doctrine
+//! reaches the agent out-of-band as system-prompt text, not folded into the
+//! per-turn user message.
 //!
 //! DELIBERATELY SEPARATED AND DUMB (the remediation-worker discipline, kept):
 //! each role has exactly one obvious function whose body IS the interface. No
-//! templating engine, no shared cleverness beyond the one two-section joiner
-//! they all read as.
+//! templating engine, no shared cleverness beyond the one context-section
+//! renderer they all read as.
 //!
 //! The context JSON is the workflow's activity input verbatim; nothing is
 //! parsed or re-projected here — a lossy re-rendering would be a second place
@@ -15,12 +21,13 @@
 //!    second time, prominently, in prose — additive, not a reprojection.
 //! 2. The developer's LOOP-BACK rendering (2026-07-09): the developer runs in
 //!    a RESUMED norn session (`--session-id {workflow_id}-developer` +
-//!    `--resume-if-exists`), so on every loop-back the role doctrine, the
+//!    `--resume-if-exists`), so on every loop-back the role doctrine (the
+//!    `--append-system-prompt` text, which persists for the session), the
 //!    full brief, and round 1's context are ALREADY in the conversation.
-//!    Re-injecting the profile plus the full context JSON each round buried
-//!    the one thing the round exists for — the new adverse evidence — under
-//!    kilobytes of repetition (observed on the AWL0-REFAC-001 dispatches,
-//!    runs `672b43a4`/`a4b40d8a`). A loop-back round (a prior gate outcome
+//!    Re-rendering the full context JSON each round buried the one thing the
+//!    round exists for — the new adverse evidence — under kilobytes of
+//!    repetition (observed on the AWL0-REFAC-001 dispatches, runs
+//!    `672b43a4`/`a4b40d8a`). A loop-back round (a prior gate outcome
 //!    and/or lens verdicts present in the context) therefore renders a
 //!    COMPACT prompt: what failed, formatted for reading, plus the standing
 //!    gate-discipline section. A loop-back-shaped context that fails to parse
@@ -44,19 +51,18 @@ use serde::Deserialize;
 use crate::types::GateCommand;
 
 /// The signature every role's assembly function shares:
-/// `(profile_markdown, context_json) -> full prompt`.
-pub type AssembleFn = fn(&str, &str) -> String;
+/// `(context_json) -> per-turn prompt`. The profile is NOT a parameter — it
+/// rides out-of-band as the session's `--append-system-prompt` text.
+pub type AssembleFn = fn(&str) -> String;
 
-/// The one joiner: profile first (the doctrine), then a titled run-context
-/// section carrying the input JSON in a fenced block.
-fn profile_then_context(profile: &str, context_title: &str, context_json: &str) -> String {
+/// The one renderer: a titled run-context section carrying the input JSON in a
+/// fenced block. The doctrine is the session's system prompt, not part of this
+/// text.
+fn context_section(context_title: &str, context_json: &str) -> String {
     format!(
-        "{}\n\n---\n\n## {}\n\nThe JSON below is this run's structured context. \
+        "## {context_title}\n\nThe JSON below is this run's structured context. \
          Work from these structured artifacts — never from a prose summary of \
-         them.\n\n```json\n{}\n```\n",
-        profile.trim_end(),
-        context_title,
-        context_json
+         them.\n\n```json\n{context_json}\n```\n"
     )
 }
 
@@ -328,19 +334,18 @@ fn fenced_text(text: &str) -> String {
 
 // --- the role assembly functions ------------------------------------------------
 
-/// The developer prompt. FIRST round: profile (the doctrine), then the full
-/// context JSON fenced verbatim, then the gate-discipline section (task
-/// #236). LOOP-BACK rounds (a prior gate outcome and/or verdicts in the
-/// context): the compact formatted rendering — the resumed session already
-/// holds the doctrine and the brief (module-doc exception 2); the discipline
-/// section still rides on every round.
+/// The developer prompt (context only — the doctrine is the session's
+/// `--append-system-prompt` text). FIRST round: the full context JSON fenced
+/// verbatim, then the gate-discipline section (task #236). LOOP-BACK rounds (a
+/// prior gate outcome and/or verdicts in the context): the compact formatted
+/// rendering — the resumed session already holds the doctrine and the brief
+/// (module-doc exception 2); the discipline section still rides on every round.
 #[must_use]
-pub fn developer(profile: &str, context_json: &str) -> String {
+pub fn developer(context_json: &str) -> String {
     if let Some(rendered) = loop_back_prompt(context_json) {
         return rendered;
     }
-    let prompt = profile_then_context(
-        profile,
+    let prompt = context_section(
         "Run context: brief (+ gate/verdict feedback when cycling)",
         context_json,
     );
@@ -348,12 +353,12 @@ pub fn developer(profile: &str, context_json: &str) -> String {
     format!("{prompt}\n{gate_discipline}")
 }
 
-/// The review-lens prompt: profile, then {lens charter + brief + diff + dev
-/// report + gate evidence}.
+/// The review-lens prompt (context only — the doctrine is the session's
+/// `--append-system-prompt` text): {lens charter + brief + diff + dev report +
+/// gate evidence}.
 #[must_use]
-pub fn review_lens(profile: &str, context_json: &str) -> String {
-    profile_then_context(
-        profile,
+pub fn review_lens(context_json: &str) -> String {
+    context_section(
         "Run context: lens charter + brief + diff + dev report + gate evidence",
         context_json,
     )
@@ -362,7 +367,6 @@ pub fn review_lens(profile: &str, context_json: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    const PROFILE: &str = "# Role\n\nDoctrine body.";
     const CONTEXT: &str = "{\"brief\":{\"id\":\"DB-1\"}}";
 
     /// A first-round developer context: no prior gate outcome (`"gate":
@@ -401,19 +405,18 @@ mod tests {
          \"workspace_path\":\"/tmp/ws\",\"gates\":[\
          {\"name\":\"clippy\",\"argv\":[\"cargo\",\"clippy\"]}]}";
 
-    // --- first-round assembly (unchanged contract) ---------------------------
+    // --- first-round assembly (context only — doctrine is out-of-band) -------
 
-    /// Every role: profile first, context JSON verbatim after, fenced —
-    /// first rounds and the review lens keep the original contract.
+    /// Every role renders the context JSON verbatim in a fenced block. The
+    /// profile is NOT in the prompt — it rides as the session's
+    /// `--append-system-prompt` text (see `composed_agent_harness`).
     #[test]
-    fn every_role_assembles_profile_then_context() {
+    fn every_role_renders_the_context_json_fenced() {
         for assemble in [super::developer, super::review_lens] {
-            let prompt = assemble(PROFILE, CONTEXT);
-            let profile_at = prompt.find("Doctrine body.").expect("profile present");
-            let context_at = prompt.find(CONTEXT).expect("context present verbatim");
+            let prompt = assemble(CONTEXT);
             assert!(
-                profile_at < context_at,
-                "the profile must precede the context"
+                prompt.contains(CONTEXT),
+                "context present verbatim; prompt was:\n{prompt}"
             );
             assert!(
                 prompt.contains("```json"),
@@ -427,40 +430,8 @@ mod tests {
         // A first-round context containing text that LOOKS like a field must
         // survive byte-for-byte: assembly is concatenation, not templating.
         let tricky = "{\"detail\":\"contains {workflow_id} and ```\"}";
-        let prompt = super::developer(PROFILE, tricky);
+        let prompt = super::developer(tricky);
         assert!(prompt.contains(tricky));
-    }
-
-    /// STANDING CONTRACT (kept from the remediation worker): the profile
-    /// markdown reaches first-round prompts byte-identical from disk — no
-    /// trimming, reflowing, or normalization beyond removing TRAILING
-    /// whitespace.
-    #[test]
-    fn profile_markdown_survives_byte_identical_up_to_trailing_trim() {
-        let odd_profile = "# Role   with   odd   spacing\n\
-                           \n\
-                           \t- a tab-indented bullet\n\
-                           line one  \n\
-                           line two\twith\ttabs\n\
-                           \n\
-                           ```rust\n\
-                           fn keep_me() {}   // trailing spaces inside fences  \n\
-                           ```\n\
-                           \n\
-                           em-dash — and «unicode» stay\n\n\n";
-        for assemble in [super::developer, super::review_lens] {
-            let prompt = assemble(odd_profile, "{}");
-            let expected = odd_profile.trim_end();
-            assert!(
-                prompt.starts_with(expected),
-                "the profile must open the prompt byte-identical (up to the \
-                 trailing-whitespace trim); prompt was:\n{prompt}"
-            );
-            assert!(
-                prompt[expected.len()..].starts_with("\n\n---\n\n"),
-                "the separator must follow the untouched profile"
-            );
-        }
     }
 
     // --- gate discipline (task #236) -----------------------------------------
@@ -471,7 +442,7 @@ mod tests {
     /// exact commands.
     #[test]
     fn developer_prompt_carries_gate_discipline_with_verbatim_argv() {
-        let prompt = super::developer(PROFILE, CONTEXT_FIRST_ROUND);
+        let prompt = super::developer(CONTEXT_FIRST_ROUND);
         assert!(
             prompt.contains("GATE DISCIPLINE"),
             "must carry a prominent gate-discipline heading; prompt was:\n{prompt}"
@@ -499,7 +470,7 @@ mod tests {
     /// what a pedantic clippy wall can deny that a diff read will not catch.
     #[test]
     fn developer_prompt_names_the_observed_pedantic_clippy_failure_modes() {
-        let prompt = super::developer(PROFILE, CONTEXT_FIRST_ROUND);
+        let prompt = super::developer(CONTEXT_FIRST_ROUND);
         for failure_mode in [
             "expect_used",
             "panic",
@@ -521,7 +492,7 @@ mod tests {
     #[test]
     fn gate_discipline_appears_on_first_round_and_loop_back() {
         for context in [CONTEXT_FIRST_ROUND, CONTEXT_LOOP_BACK] {
-            let prompt = super::developer(PROFILE, context);
+            let prompt = super::developer(context);
             assert!(
                 prompt.contains("GATE DISCIPLINE"),
                 "gate discipline must appear whether or not this is a loop-back; \
@@ -546,7 +517,7 @@ mod tests {
     fn empty_gate_battery_still_renders_a_discipline_section() {
         let context = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":null,\"verdicts\":[],\
              \"workspace_path\":\"/tmp/ws\",\"gates\":[]}";
-        let prompt = super::developer(PROFILE, context);
+        let prompt = super::developer(context);
         assert!(prompt.contains("GATE DISCIPLINE"));
         assert!(
             prompt.contains("vacuous pass"),
@@ -560,7 +531,7 @@ mod tests {
     /// composer must never panic over a rendering concern.
     #[test]
     fn missing_gates_key_degrades_to_an_empty_battery() {
-        let prompt = super::developer(PROFILE, CONTEXT);
+        let prompt = super::developer(CONTEXT);
         assert!(prompt.contains("GATE DISCIPLINE"));
         assert!(prompt.contains("vacuous pass"));
     }
@@ -570,7 +541,7 @@ mod tests {
     /// itself, so its prompt must not carry it.
     #[test]
     fn review_lens_prompt_has_no_gate_discipline_section() {
-        let prompt = super::review_lens(PROFILE, CONTEXT_FIRST_ROUND);
+        let prompt = super::review_lens(CONTEXT_FIRST_ROUND);
         assert!(
             !prompt.contains("GATE DISCIPLINE"),
             "the review lens does not run gates; it must not get this section"
@@ -579,17 +550,12 @@ mod tests {
 
     // --- loop-back rendering (module-doc exception 2) -------------------------
 
-    /// A loop-back round is COMPACT: no profile re-injection (the resumed
-    /// session already holds the doctrine) and no raw context JSON dump —
-    /// the adverse evidence is rendered, formatted, instead.
+    /// A loop-back round is COMPACT: no raw context JSON dump — the adverse
+    /// evidence is rendered, formatted, instead. (The doctrine never rode in
+    /// the prompt at all; it is the session's `--append-system-prompt` text.)
     #[test]
-    fn loop_back_omits_the_profile_and_the_raw_context_dump() {
-        let prompt = super::developer(PROFILE, CONTEXT_LOOP_BACK);
-        assert!(
-            !prompt.contains("Doctrine body."),
-            "the profile must not be re-injected into a resumed session; \
-             prompt was:\n{prompt}"
-        );
+    fn loop_back_omits_the_raw_context_dump() {
+        let prompt = super::developer(CONTEXT_LOOP_BACK);
         assert!(
             !prompt.contains("output_tail"),
             "the raw context JSON must not be dumped on loop-backs; \
@@ -606,7 +572,7 @@ mod tests {
     /// output is noise the round does not need.
     #[test]
     fn loop_back_renders_failing_gate_output_and_mutes_passing_output() {
-        let prompt = super::developer(PROFILE, CONTEXT_LOOP_BACK);
+        let prompt = super::developer(CONTEXT_LOOP_BACK);
         assert!(
             prompt.contains("1 of 2 command(s) FAILED"),
             "the battery headline must count the reds; prompt was:\n{prompt}"
@@ -635,7 +601,7 @@ mod tests {
     /// lenses to one line.
     #[test]
     fn review_loop_back_expands_adverse_verdicts_only() {
-        let prompt = super::developer(PROFILE, CONTEXT_REVIEW_LOOP_BACK);
+        let prompt = super::developer(CONTEXT_REVIEW_LOOP_BACK);
         assert!(
             prompt.contains("1 of 2 lens(es) adverse"),
             "the verdict headline must count the adverse; prompt was:\n{prompt}"
@@ -672,7 +638,7 @@ mod tests {
              \"runs\":[{\"name\":\"test\",\"exit_code\":1,\"passed\":false,\
              \"output_tail\":\"before\\n```\\ninjected\\n```\\nafter\"}],\
              \"diff\":\"\",\"diagnostics\":\"\"},\"verdicts\":[],\"gates\":[]}";
-        let prompt = super::developer(PROFILE, context);
+        let prompt = super::developer(context);
         assert!(
             prompt.contains("````text"),
             "the fence must outgrow the embedded backtick runs; \
@@ -688,14 +654,15 @@ mod tests {
     fn malformed_loop_back_context_falls_back_to_the_verbatim_render() {
         let malformed = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":\"bogus — not an object\",\
              \"verdicts\":[],\"gates\":[]}";
-        let prompt = super::developer(PROFILE, malformed);
-        assert!(
-            prompt.contains("Doctrine body."),
-            "the fallback must render the profile; prompt was:\n{prompt}"
-        );
+        let prompt = super::developer(malformed);
         assert!(
             prompt.contains(malformed),
             "the fallback must carry the context verbatim; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("GATE DISCIPLINE"),
+            "the full-render fallback still carries the gate-discipline \
+             section; prompt was:\n{prompt}"
         );
     }
 }

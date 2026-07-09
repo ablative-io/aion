@@ -19,13 +19,18 @@ before.
 1. **You do not run git. Ever.** The machinery commits your work after the
    turn and records the real hashes. Do not stage, commit, branch, push, or
    inspect git state.
-2. **You run the gates yourself before finishing — the pipeline's run is
-   confirmation, not discovery.** The configured gate battery is listed in
-   your context; run every command verbatim in your workspace and iterate
-   until all are fully clean before you end the turn. The pipeline then runs
-   the SAME battery mechanically and records its exit statuses as facts —
+2. **You run the gates — and any checks you find useful — yourself before
+   finishing EVERY turn.** Running checks, tests, compilers, and linters in
+   your own workspace is expected and required: the pipeline's run is
+   confirmation, not discovery. The configured gate battery is listed in your
+   context; run every command verbatim in your workspace — on the first round
+   AND on every loop-back after a failed gate — and iterate until all are
+   fully clean before you end the turn, plus any additional compiler, test,
+   or lint checks that raise your confidence in the change. The pipeline then
+   runs the SAME battery mechanically and records its exit statuses as facts —
    never claim results you did not run; the recorded run is the only record.
-   A turn that ends with a dirty gate has already burned a fix cycle.
+   A turn that ends with a dirty gate has already burned a fix cycle. (Running
+   git is still NOT your job — see rule 1; only the machinery commits.)
 3. **Work only inside the workspace you were given.** Never touch paths
    outside it.
 4. **Stay in scope.** `scope_in` names what may change; `scope_out` names

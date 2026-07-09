@@ -187,6 +187,27 @@ Format per entry: **Symptom → Accommodation → Evidence.**
 - **Evidence:** runs `672b43a4` fix cycles 2–3 and `a4b40d8a` fix cycles
   1–3.
 
+## 12. Audit role docs against the mechanical expectations every change
+
+- **Symptom:** the developer role profile FORBADE running the gates ("You
+  do not run the gates … If you want confidence, read the code harder")
+  while the prompt's own gate-discipline section MANDATED running the exact
+  configured battery before ending every turn. The two contradicted each
+  other and the profile won: the developer never self-checked, ended turns
+  dirty, and each round re-discovered lints the pipeline then had to catch —
+  burning fix cycles on the pedantic clippy wall.
+- **Accommodation:** role docs and the mechanical expectations the machinery
+  encodes (prompt sections, gate wiring, commit seam) must be audited
+  against each other every time EITHER changes — a doctrine line and a
+  pipeline instruction that disagree is a latent fix-cycle sink, and the
+  static doctrine usually wins. The developer profile's rule 2 now REQUIRES
+  running the configured gate battery plus any compiler/test/lint checks it
+  finds useful, in its own workspace, before ending every turn (first round
+  and every loop-back); running git stays machinery-owned (rule 1).
+- **Evidence:** run `a4b40d8a` — the developer's deviations list states,
+  verbatim, "The role-level developer instructions state not to run gates; I
+  relied on the supplied loop-back gate facts."
+
 ## Candidate accommodations (not yet evidence-backed)
 
 - Developer profile addition: "never add a lint-allow attribute; if a lint

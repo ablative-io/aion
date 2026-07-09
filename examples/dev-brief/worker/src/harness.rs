@@ -1,17 +1,20 @@
 //! [`ProfiledNornHarness`] — the thin harness wrapper that assembles the
 //! role prompt before delegating to the real [`NornHarness`].
 //!
-//! WHY A WRAPPER: the dev-brief prompt is {profile markdown, loaded at
-//! startup} + {the activity's per-run context JSON}. The profile cannot ride
-//! in the activity input (the workflow does not have it — it is a worker-side
-//! `--profiles-dir` concern), and `NornHarness` derives its prompt from the
-//! input payload alone. So the wrapper intercepts exactly one seam: it reads
-//! the spec's input payload (the context JSON the workflow encoded), runs the
-//! role's ONE assembly function (`crate::prompts`), and hands the inner
-//! harness the same spec with its input replaced by the assembled prompt as a
-//! JSON string — which `NornHarness` unwraps verbatim. Everything else
-//! (driven mode, jsonrpc, `--output-schema`, `{workflow_id}` session
-//! identity, env hygiene) stays the inner harness's, untouched.
+//! WHY A WRAPPER: the dev-brief per-turn prompt is the activity's per-run
+//! context JSON, rendered by the role's assembly function. The role's profile
+//! markdown is NOT part of that prompt — it is the role's static system
+//! prompt, carried on the inner `NornHarness` as an `--append-system-prompt`
+//! argument (composed in `main.rs`), so Norn APPENDS the doctrine to its own
+//! system instructions rather than the doctrine overwriting them. `NornHarness`
+//! derives its per-turn prompt from the input payload alone, so the wrapper
+//! intercepts exactly one seam: it reads the spec's input payload (the context
+//! JSON the workflow encoded), runs the role's ONE assembly function
+//! (`crate::prompts`), and hands the inner harness the same spec with its input
+//! replaced by the assembled context prompt as a JSON string — which
+//! `NornHarness` unwraps verbatim. Everything else (driven mode, jsonrpc,
+//! `--output-schema`, `--append-system-prompt` doctrine, `{workflow_id}`
+//! session identity, env hygiene) stays the inner harness's, untouched.
 //!
 //! THE MECHANICAL-GIT SEAM (doctrine: agents do not run git — the machinery
 //! does): the developer role is built with [`PostRunCommit::DevWork`] and
@@ -45,25 +48,24 @@ pub enum PostRunCommit {
     DevWork,
 }
 
-/// A per-role harness: the composed inner [`NornHarness`], the role's profile
-/// markdown (loaded once at startup), and the role's prompt assembly
-/// function.
+/// A per-role harness: the composed inner [`NornHarness`] (which already
+/// carries the role's profile as its `--append-system-prompt` doctrine) and
+/// the role's per-turn context-assembly function.
 #[derive(Clone, Debug)]
 pub struct ProfiledNornHarness {
     inner: NornHarness,
-    profile: String,
     assemble: AssembleFn,
     post_run_commit: Option<PostRunCommit>,
 }
 
 impl ProfiledNornHarness {
-    /// Wrap a composed inner harness with a role profile and its assembly
-    /// function.
+    /// Wrap a composed inner harness with the role's context-assembly
+    /// function. The profile doctrine is not held here — it rides on `inner`
+    /// as its `--append-system-prompt` argument.
     #[must_use]
-    pub fn new(inner: NornHarness, profile: String, assemble: AssembleFn) -> Self {
+    pub fn new(inner: NornHarness, assemble: AssembleFn) -> Self {
         Self {
             inner,
-            profile,
             assemble,
             post_run_commit: None,
         }
@@ -79,11 +81,13 @@ impl ProfiledNornHarness {
         self
     }
 
-    /// Assemble the prompt this harness would send for `context_json` —
-    /// exposed so tests exercise the exact production assembly path.
+    /// Assemble the per-turn context prompt this harness would send for
+    /// `context_json` — exposed so tests exercise the exact production
+    /// assembly path. The profile is not folded in here; it is the inner
+    /// harness's `--append-system-prompt` doctrine.
     #[must_use]
     pub fn assembled_prompt(&self, context_json: &str) -> String {
-        (self.assemble)(&self.profile, context_json)
+        (self.assemble)(context_json)
     }
 }
 
@@ -192,15 +196,13 @@ mod tests {
     use aion_integration_norn::NornHarness;
 
     #[test]
-    fn the_assembled_prompt_is_the_role_function_applied_to_the_loaded_profile() {
-        let harness = ProfiledNornHarness::new(
-            NornHarness::new(),
-            "# Reviewer\nrefute with evidence".to_owned(),
-            crate::prompts::review_lens,
-        );
+    fn the_assembled_prompt_is_the_role_function_applied_to_the_context() {
+        let harness = ProfiledNornHarness::new(NornHarness::new(), crate::prompts::review_lens);
         let prompt = harness.assembled_prompt("{\"diff\":\"...\"}");
-        assert!(prompt.starts_with("# Reviewer"));
-        assert!(prompt.contains("refute with evidence"));
+        // The per-turn prompt is context only — the profile doctrine is the
+        // inner harness's `--append-system-prompt` text, never folded in here.
+        assert!(!prompt.contains("# Reviewer"));
         assert!(prompt.contains("{\"diff\":\"...\"}"));
+        assert!(prompt.contains("```json"));
     }
 }
