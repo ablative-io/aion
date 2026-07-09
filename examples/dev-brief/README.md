@@ -14,24 +14,36 @@ operator's ChatGPT OAuth login (no API key is ever read or passed).
 ```
 dev_brief                              (workflow.define)
 │
-├── provision_workspace   (SHELL: isolated git worktree, branch dev/<id>)
+├── provision_workspace   (SHELL: isolated git worktree inside the repo at
+│                          .yggdrasil-worktrees/dev-brief/<id>, branch dev/<id>)
 │
 ├── the bounded fix cycle (cap = max_fix_cycles, default 3):
 │     ├── developer       (AGENT, driven; session {workflow_id}-developer
 │     │                    resumed across cycles; the WORKER commits the
 │     │                    round's work — agents run no git)
 │     ├── run_gates       (SHELL: the brief's CONFIGURED commands, exit
-│     │                    status = recorded data; + the reviewers' diff)
+│     │                    status = recorded data; {base_commit} token
+│     │                    substituted in argv; + the reviewers' diff)
 │     │                    red → loop back to the developer
-│     └── REVIEW FAN-OUT  (one `review_lens` CHILD WORKFLOW per lens,
-│                          spawned CONCURRENTLY — parallel agents inside
-│                          one brief, each its own workflow id + session)
-│                          any derived rejection → loop back with every
-│                          verdict attached; cap exhaustion is a terminal
-│                          DISPOSITION, never a silent success
+│     ├── REVIEW FAN-OUT  (one `review_lens` CHILD WORKFLOW per lens,
+│     │                    spawned CONCURRENTLY, each rooted READ-ONLY at
+│     │                    the run's worktree — file-write tools denied;
+│     │                    parallel agents inside one brief)
+│     │                    any derived rejection → loop back with every
+│     │                    verdict attached; cap exhaustion is a terminal
+│     │                    DISPOSITION, never a silent success
+│     └── reset_workspace (SHELL: after EVERY lens round, git clean -fd +
+│                          git checkout -- . re-establish the reviewed head;
+│                          any lens droppings recorded, never fatal)
+│
+├── verify_gates          (SHELL, on ACCEPT only, if config.verify_gates set:
+│                          assert clean tree, re-run the battery as recorded
+│                          evidence → result.verification; never loops back)
 │
 └── cleanup_workspace     (SHELL: remove the worktree; the branch and its
-                           commits remain; dirty worktrees are refused)
+                           commits remain; dirty worktrees are refused. Every
+                           destructive git op is guarded to the dev-brief
+                           worktree root — the repo itself is unreachable)
 ```
 
 Nothing pushes anywhere: the handoff is the branch plus the result's

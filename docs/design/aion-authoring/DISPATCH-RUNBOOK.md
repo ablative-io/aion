@@ -9,7 +9,10 @@ step is shaped this way — read its 12 generalised principles first).
 
 **Prime rule: NEVER trust the workflow's own green.** Every gate is re-run by
 the operator's hands before merge. Merges and pushes are operator actions
-only; no agent or workflow merges to main.
+only; no agent or workflow merges to main. The post-accept **verify stage**
+(below) re-runs a configured battery mechanically and records the result — it
+saves the operator retyping, it does NOT replace the operator hand-review in
+§7, which remains the real bar.
 
 ---
 
@@ -22,6 +25,12 @@ only; no agent or workflow merges to main.
   profile change in the repo is inert until synced to that directory and the
   worker restarted.** A stale deployed profile was the worst pipeline failure
   on record — check sync whenever behaviour looks profile-shaped.
+- **Worktree location.** Each run's worktree now lives INSIDE the target repo
+  at `<repo_root>/.yggdrasil-worktrees/dev-brief/<workflow-id>` (git-ignored),
+  not under `/tmp/aion-dev/ws`. It is still destroyed at completion (salvage
+  from the BRANCH). The review lenses are rooted at this SAME worktree,
+  read-only (their write/edit/apply_patch tools are denied), so the old manual
+  rsync-into-review-scratch ritual is gone (tasks #245/#246 — landed).
 - Norn runs in **driven mode only**. Developer sessions run with `--fast` and
   `--reasoning-effort high`. Profiles ride as `--append-system-prompt`
   (never `--system-prompt`).
@@ -87,8 +96,21 @@ agent must:
 - `notes` must carry: DISPATCH HISTORY verbatim (prior rejections and
   landings — it demonstrably buys honesty), TECHNIQUE, the MEASURED
   INVENTORY, SIZING judgment, and the GATES paragraph (green-on-base
-  evidence, red-by-design labels, the PINNED_SHA re-pin instruction, and the
-  #243/#244 flake-honesty protocol).
+  evidence, red-by-design labels, and the #243/#244 flake-honesty protocol).
+  The manual PINNED_SHA re-pin instruction is GONE — use the `{base_commit}`
+  token (below); the worker substitutes it with the provisioned base commit at
+  gate-run time and records the resolved argv in the gate run.
+- `config.verify_gates` (OPTIONAL, same shape as `gates`): the post-accept
+  verification battery. On an `accepted` run the worker re-runs it in the
+  clean worktree BEFORE cleanup, asserting a clean tree first (`git status
+  --porcelain` empty ⇒ the directory is the branch head ⇒ the gates test
+  exactly what merges), and attaches the outcome to the result's
+  `verification`. A red verify gate is EVIDENCE ONLY — it never loops back and
+  never changes the disposition. Full untruncated logs land at
+  `<repo_root>/.yggdrasil-worktrees/dev-brief/logs/<workflow-id>-verify.log`.
+  Stamp `verify_gates` with the expensive battery (fmt/clippy/tests) so the
+  accepted result carries a mechanical merge-readiness signal; omit it (or
+  leave it empty) to skip the stage entirely.
 - The workflow provisions its own worktree and branch `dev/<brief-id>`.
 
 ### Gate argv library (stamp these; adapt paths per brief)
@@ -115,11 +137,15 @@ grep -A1 '^\[lints\]$' crates/aion-awl/Cargo.toml | grep -q '^workspace = true'
 
 **scope-fence** (GREEN on base; the wander-killer):
 ```
-git diff --exit-code --no-ext-diff PINNED_SHA_AT_DISPATCH -- . \
+git diff --exit-code --no-ext-diff {base_commit} -- . \
   ':(exclude)crates/aion-awl/src/parser.rs' ':(exclude)crates/aion-awl/src/parser'
 ```
-Keep the literal `PINNED_SHA_AT_DISPATCH` in the committed file; the operator
-substitutes it at dispatch (§4). Excludes = exactly the owned paths.
+Keep the literal `{base_commit}` token in the committed file: the worker
+replaces it with the run's provisioned base commit at gate-run time (in every
+argv element, for both `gates` and `verify_gates`) and records the resolved
+argv in the gate run — no operator sed, no re-pin. Excludes = exactly the
+owned paths. (A brief with a literal SHA still works; there is just no token
+to substitute.)
 
 **split-complete** (RED ON BASE BY DESIGN — it IS the work; label it so):
 ```
@@ -162,17 +188,20 @@ Never dispatch on the authoring agent's word. Checklist:
 
 ## 4. Dispatch
 
+The manual re-pin sed is GONE: the `{base_commit}` token in a scope-fence (or
+any gate/verify_gates argv) is substituted by the worker at gate-run time with
+the run's OWN provisioned base commit, so the committed dispatch file is
+dispatched as-is.
+
 ```
-SHA=$(git rev-parse main)   # re-pin to FRESH main head
-sed "s/PINNED_SHA_AT_DISPATCH/$SHA/" docs/design/aion-authoring/awl/briefs/<ID>-dispatch.json \
-  > <scratch>/<ID>-dispatch-pinned.json
-python3 -c "import json; json.load(open('<scratch>/<ID>-dispatch-pinned.json'))"   # valid JSON
-aion start dev_brief --input-file <scratch>/<ID>-dispatch-pinned.json --pretty
+python3 -c "import json; json.load(open('docs/design/aion-authoring/awl/briefs/<ID>-dispatch.json'))"   # valid JSON
+aion start dev_brief --input-file docs/design/aion-authoring/awl/briefs/<ID>-dispatch.json --pretty
 ```
-Record the returned `run_id` / `workflow_id`. Re-verify gates 1–3 green +
-gate 4 red on the fresh SHA if main moved since §3. Note: if the placeholder
-also appears in the notes text, sed replaces it there too — harmless
-provenance.
+Record the returned `run_id` / `workflow_id`. Because the fence pins to
+`{base_commit}` (the run's provisioned base), the scope fence is correct no
+matter how far main has moved since authoring — no re-verification of a
+substituted SHA is needed. Still confirm on the fresh HEAD that gates 1–3 are
+green and gate 4 red-by-design (§3) if main moved since you last checked.
 
 **Arm the watcher** (poll every 30s; NOTE: `status` is a read-only zsh
 variable — use `st`):
@@ -192,23 +221,18 @@ done
 
 ## 5. Live operations during a run
 
-**Reviewer workspace mitigation (STANDING until tasks #245/#246 land).**
-Review lenses are confined to the static EMPTY dir
-`/private/tmp/aion-dev/review-scratch`, and the diff artifact in their prompt
-truncates on large diffs. Before/at every lens round:
-```
-rsync -a --delete --exclude target --exclude .git \
-  /private/tmp/aion-dev/ws/<workflow-id>/ /private/tmp/aion-dev/review-scratch/
-```
-**Re-run after EVERY developer round** (the tree changes between rounds; the
-run's worktree lives at `/private/tmp/aion-dev/ws/<workflow-id>` while alive).
-If a lens wedges on `confinement_refused` reads, inject via the console:
-
-> Operator note: your workspace confinement root is
-> `/private/tmp/aion-dev/review-scratch`. Reads under `/private/tmp/aion-dev/ws/...`
-> are refused — do not retry those paths. A copy of the exact checkout under
-> review is at your confinement root in repo-relative layout (no `target/`,
-> no `.git`). Continue using those paths.
+**Reviewer workspace — no mitigation needed (tasks #245/#246 landed).** Review
+lenses are now rooted read-only at the run's ACTUAL worktree
+(`<repo_root>/.yggdrasil-worktrees/dev-brief/<workflow-id>`), at the exact
+reviewed state — dev work and gate normalization committed, tree clean. A lens
+can grep the code and run `git diff <base_commit>` for the full change itself;
+its write/edit/apply_patch tools are denied, and the mechanical
+`reset_workspace` activity restores the tree after every lens round (recording
+any droppings a misbehaving lens left — normally none). The old manual
+rsync-into-review-scratch step and the `confinement_refused` console note are
+retired; do NOT rsync anything. The diff in the lens prompt is still clipped —
+when it shows a `bytes TRUNCATED` marker, the lens is told (in its profile and
+prompt) to run `git diff <base_commit>` for the whole change.
 
 **Cycle-cap tracking.** `max_fix_cycles` is shared between gate-red
 loop-backs, infra-caused rejections (evidence gaps), and real findings. Track
@@ -224,9 +248,16 @@ real bar regardless.
 ## 6. Outcome handling
 
 `aion describe <wf-id>` → final `WorkflowCompleted` result carries
-`disposition`, `branch`, `fix_cycles`, gate diagnostics, and the full diff.
+`disposition`, `branch`, `fix_cycles`, gate diagnostics, the full diff, and —
+on an accepted run that configured `verify_gates` — `verification` (the
+post-accept battery's `pass`/`pre_clean`/`post_clean`, per-command runs, and
+the log-file path). A green `verification` is a mechanical merge-readiness
+signal; it does NOT substitute for §7.
 
-- **Accepted (first_pass or after fix cycles)** → go to §7 hand review.
+- **Accepted (first_pass or after fix cycles)** → read `verification` if
+  present (the untruncated log is at
+  `<repo_root>/.yggdrasil-worktrees/dev-brief/logs/<workflow-id>-verify.log`),
+  then go to §7 hand review regardless.
 - **`cycle_cap_exhausted` or rejected** → SALVAGE, not discard, when gates
   are green and the findings are bounded. The branch `dev/<brief-id>`
   survives (the worktree does NOT — salvage from the BRANCH). Procedure:
@@ -316,8 +347,10 @@ Then the bookkeeping commit (explicit paths):
 - **Deployed profile copies go stale** (§0) — sync + restart worker on every
   profile change.
 - **Workflow worktrees are destroyed at completion** — salvage from the
-  branch, and copy anything you need from `/private/tmp/aion-dev/ws/<wf-id>`
-  while the run is still alive.
+  branch, and copy anything you need from
+  `<repo_root>/.yggdrasil-worktrees/dev-brief/<wf-id>` while the run is still
+  alive. (The verify-stage log under `.../dev-brief/logs/<wf-id>-verify.log`
+  is NOT in a worktree and survives cleanup.)
 - **Important inputs never live in /tmp only**: the durable brief pair is
   committed to the repo; the pinned copy in scratch is disposable.
 
