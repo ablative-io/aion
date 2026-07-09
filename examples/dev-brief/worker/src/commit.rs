@@ -8,12 +8,18 @@
 //!
 //! The developer commit stages EVERYTHING in the worktree (`git add -A`):
 //! unlike the remediation flow's narrow claims-based staging, a dev brief
-//! legitimately creates arbitrary new files, and the worktree is WHOLLY OWNED
-//! by this brief (nothing else writes there — the driven harness's
-//! `--workspace-root` is this exact directory). Honesty is preserved
-//! downstream, not at staging: the gate battery runs on the full tree and the
-//! adversarial lenses read the full diff, so smuggled junk is reviewable
-//! junk. The staged set is recorded in the commit body.
+//! legitimately creates arbitrary new files, and at every point a commit step
+//! can run the worktree is EXCLUSIVELY the developer's. That exclusivity is no
+//! longer a single-writer given — the review lenses are now rooted at this
+//! same worktree between the gate commit and the next developer round — so it
+//! is ENFORCED, not assumed: the lenses run read-only (their file-mutating
+//! Norn tools are denied), and after every lens round the mechanical
+//! `reset_workspace` activity (`git clean -fd` + `git checkout -- .`) restores
+//! the tree to the reviewed branch head before any loop-back developer round
+//! can stage again. So `git add -A` here still stages only this brief's work.
+//! Honesty is preserved downstream, not at staging: the gate battery runs on
+//! the full tree and the adversarial lenses read the full diff, so smuggled
+//! junk is reviewable junk. The staged set is recorded in the commit body.
 //!
 //! - the commit runs under a scoped machinery identity via `-c`, so it is
 //!   attributable to the machinery without touching the workspace's git
