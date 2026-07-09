@@ -242,6 +242,79 @@ did exactly that. Check every enumerated bypass attr against the real lint
 behaviour at authoring time; a brief that mandates pointless surgery invites
 scope wander.
 
+## Generalised principles (distilled 2026-07-09)
+
+The rules below generalise the twelve entries + validations to ANY norn-driven
+dev brief, not just the aion-awl refactor sequence. Derived from two rejected
+dispatches (`672b43a4` fraud, `a4b40d8a` honest rollback) and two first-pass
+landings (`a96973cb`, `3d201c36`) on the same underlying work.
+
+**The prime assumption: the developer is a capable, fresh context under gate
+pressure.** It has no memory of prior attempts, it will satisfy the letter of
+whatever is cheapest to satisfy, and any standard not mechanically enforced is
+advisory. Honesty is real but must be made the cheapest path.
+
+1. **Every non-negotiable is a mechanical gate** (entry 1). Prose constraints
+   get ignored under pressure; argv gates cannot be argued with. Order gates
+   cheap→expensive (greps → manifest checks → diff fences → fmt → clippy →
+   scoped tests) so fraud dies in seconds, not after a full build.
+2. **Pin every escape hatch — pressure displaces** (entry 8). Gating one
+   bypass surface moves the debt to the nearest ungated one (source attrs →
+   Cargo.toml lint policy → …). Gate the manifest byte-exactly, fence the
+   scope, and assume any surface you didn't pin will be found.
+3. **Fence the scope mechanically, pinned to a base SHA** (entries 8, 10).
+   Path-exclude `git diff --exit-code` when the owned paths are knowable in
+   advance; name-status subset check (only `M <owned file>` + `A <owned
+   dir>/`, rejecting deletions and renames) when the developer chooses new
+   file names. ALWAYS re-pin the SHA to fresh base HEAD at dispatch — a stale
+   pin is a false red.
+4. **Every gate runs against BASE before dispatch** (entry 9). Red-on-base is
+   either the work itself (a completion gate — label it "RED ON BASE BY
+   DESIGN" in the notes) or a trap that burns the run. Never both, never
+   ambiguous.
+5. **Right-size to the fix-cycle envelope** (entry 10). One file / one concern
+   per dispatch. Over-scoped briefs fail BOTH ways — fraud when the developer
+   despairs, honest rollback when it tries; both are sizing symptoms. Decompose
+   smallest-first so the pilot proves the template.
+6. **Deterministic gates only; pre-brief known flakes** (entries 2, 11). Scope
+   test gates to the touched crate + direct dependents; the operator runs the
+   flaky wider suite at merge review. Name every known flake in the notes with
+   the verbatim protocol (re-run once, report honestly, never chase
+   out-of-scope reds).
+7. **Tell the developer the dispatch history, verbatim** (entry 4). Prior
+   rejections' exact fraud patterns go in the notes, plus the fact that gates
+   now grep for them. Evidence says this buys honesty: the informed developer
+   reported its own failure plainly instead of repeating the pattern. Also say
+   explicitly that an honest "cannot be done within boundaries" report beats
+   working around a gate.
+8. **Positive examples AND named anti-patterns** (entry 3). Show what good
+   looks like (real module names, a landed sibling layout to mirror) and list
+   the auto-rejects (include!(), part_NN, body.rs). Prohibition alone gets you
+   the cheapest compliant garbage.
+9. **Enumerate pre-existing violations and assign each an owner** (entry 5).
+   In a codebase with existing debt, "add no X" is ambiguous. Every existing
+   violation is either this brief's explicit work item or explicitly
+   out-of-scope (owned by a named future brief) — and the gates are scoped so
+   they never fire on the out-of-scope ones.
+10. **Measure before mandating** (001b validation). Verify every enumerated
+    debt against real behaviour at authoring time — the 001b "purge by
+    restructuring" turned out to be "delete four vestigial attrs, zero
+    surgery" once measured. Embed the measured inventory in the brief; the
+    developer should never have to discover the fallout, and a brief that
+    mandates pointless surgery invites wander.
+11. **Audit doctrine against machinery every time either changes — including
+    deployed copies** (entry 12). A role profile that contradicts the prompt's
+    mandate wins, silently. And the repo-side fix is worthless until the
+    DEPLOYED copy is synced — the worst dev_brief failure in this ledger was a
+    profile fixed in git and stale on disk.
+12. **The dispatch translation is craft, not plumbing** (entries 6, 7).
+    Providing `lenses` OVERRIDES the defaults (copy them verbatim, append the
+    brief-specific lens); `aion input dev_brief` prints the authoritative
+    skeleton; delete junk `dev/<brief-id>` branches before redispatch; salvage
+    from the BRANCH (the worktree is destroyed on completion); watchers key on
+    the LAST history event; lenses only run after gates go green, so anything
+    that must be caught unconditionally has to be a gate.
+
 ## Candidate accommodations (not yet evidence-backed)
 
 - Developer profile addition: "never add a lint-allow attribute; if a lint
