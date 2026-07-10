@@ -2,7 +2,7 @@
 //! compose declares after both, so it is the join of the diamond.
 workflow diamond_report
   input topic: String
-  outcome reported: type Reported, route success
+  outcome reported:   type Reported,   route success
   outcome incomplete: type Incomplete, route failure
 
 type Sources    { urls: [String] }
@@ -30,5 +30,7 @@ step citations after gather
 step compose after claims, citations
   compose(facts: claim_set.facts, links: citation_set.links) -> report
 
-  outcome full: when report.complete, route reported(text: report.text)
-  outcome partial: otherwise, route incomplete(text: report.text)
+  outcome full: when report.complete,
+    route reported(text: report.text)
+  outcome partial: otherwise,
+    route incomplete(text: report.text)

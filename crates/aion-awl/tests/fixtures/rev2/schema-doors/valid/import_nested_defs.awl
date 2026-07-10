@@ -1,7 +1,7 @@
 //! Pack an order whose imported contract nests objects, arrays, an enum, and a $defs-local ref.
 workflow import_nested_defs
   input order: Order
-  outcome packed: type Packed, route success
+  outcome packed:   type Packed,  route success
   outcome no_lines: type NoLines, route failure
 
 type Order = schema("order.schema.json")

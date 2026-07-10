@@ -5,7 +5,7 @@ workflow analyze_snapshot
   input tries: Int
   input tags: [String]
   input note: String?
-  outcome passed: type Report, route success
+  outcome passed: type Report,  route success
   outcome failed: type Flagged, route failure
 
 type Report {
@@ -32,7 +32,8 @@ step analyze after probe
   analyze(dir: dir, cap: limit, tries: tries, tags: tags, note: note) -> report
 
   outcome clean: when report.clean, route stamp_and_pass
-  outcome dirty: otherwise, route failed(reason: "analysis flagged the snapshot")
+  outcome dirty: otherwise,
+    route failed(reason: "analysis flagged the snapshot")
 
 step stamp_and_pass
   report |> stamp |> route passed

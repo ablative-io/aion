@@ -4,7 +4,7 @@ workflow confirm_gate
   signal operator_reply: Reply
 
   outcome confirmed: type Confirmed, route success
-  outcome timed_out: type TimedOut, route failure
+  outcome timed_out: type TimedOut,  route failure
 
 type Reply     { message: String, approved: Bool }
 type Confirmed { message: String }
@@ -18,5 +18,7 @@ step ask
   announce(request: request)
   wait operator_reply timeout 30m -> reply
 
-  outcome answered: when reply is present, route confirmed(message: reply.message)
-  outcome silent: otherwise, route timed_out(reason: "no reply within 30m")
+  outcome answered: when reply is present,
+    route confirmed(message: reply.message)
+  outcome silent: otherwise,
+    route timed_out(reason: "no reply within 30m")

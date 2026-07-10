@@ -3,7 +3,7 @@ workflow drafting
   input topic: String
   input max_polish_rounds: Int
 
-  outcome published: type Published, route success
+  outcome published:       type Published, route success
   outcome exhausted_draft: type Exhausted, route failure
 
 type Draft     { body: String, ready: Bool }
@@ -24,7 +24,8 @@ step compose
     max max_polish_rounds
 
   outcome ready: when draft.ready, route check
-  outcome stuck: otherwise, route exhausted_draft(reason: "draft never stabilized")
+  outcome stuck: otherwise,
+    route exhausted_draft(reason: "draft never stabilized")
 
 step check
   review(draft: draft) -> verdict

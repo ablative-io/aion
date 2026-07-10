@@ -2,7 +2,7 @@
 workflow summarize
   input text: String
 
-  outcome summary: type Summary, route success
+  outcome summary:    type Summary,  route success
   outcome no_content: type EmptyDoc, route failure
 
 type Summary  { text: String, words: Int }
@@ -16,4 +16,5 @@ step summarize
   condense(text: text) -> summary
 
   outcome ok: when summary.words > 0, route summary
-  outcome none: otherwise, route no_content(reason: "no content to summarize")
+  outcome none: otherwise,
+    route no_content(reason: "no content to summarize")

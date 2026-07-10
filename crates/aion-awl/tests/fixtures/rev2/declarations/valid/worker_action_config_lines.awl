@@ -1,7 +1,7 @@
 //! Compile the project; on a red build, salvage the log tail before failing.
 workflow build_once
   input project_dir: String
-  outcome built: type BuildResult, route success
+  outcome built:  type BuildResult,  route success
   outcome broken: type BuildFailure, route failure
 
 type BuildResult  { artifact_path: String, ok: Bool }
@@ -16,7 +16,8 @@ worker builder
 step compile
   compile(project_dir: project_dir) -> result
 
-  outcome ok: when result.ok, route built(artifact_path: result.artifact_path, ok: result.ok)
+  outcome ok: when result.ok,
+    route built(artifact_path: result.artifact_path, ok: result.ok)
   outcome red: otherwise, route salvage
 
 step salvage

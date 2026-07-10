@@ -3,7 +3,7 @@ workflow poll_job
   input job_id: String
   input max_polls: Int
 
-  outcome finished: type Finished, route success
+  outcome finished:  type Finished, route success
   outcome timed_out: type TimedOut, route failure
 
 type Poll     { state: String, done: Bool }
@@ -20,5 +20,7 @@ step poll
     until status.done
     max max_polls
 
-  outcome done: when status.done, route finished(job_id: job_id, polls: polls)
-  outcome spent: otherwise, route timed_out(job_id: job_id, polls: polls)
+  outcome done: when status.done,
+    route finished(job_id: job_id, polls: polls)
+  outcome spent: otherwise,
+    route timed_out(job_id: job_id, polls: polls)

@@ -7,8 +7,8 @@ workflow release_notes
   input style_hint: String?
   signal approval: Approval
 
-  outcome published: type Published, route success
-  outcome rejected: type RejectedDraft, route failure
+  outcome published: type Published,     route success
+  outcome rejected:  type RejectedDraft, route failure
 
 type Stage = Drafted | Approved | Shipped
 
@@ -21,9 +21,9 @@ type Section {
 }
 
 // Trivia comment at declaration level: ignorable to the parser, lossless through the printer.
-type Draft { tag: String, sections: [Section], stage: Stage }
-type Approval { approve: Bool, reviewer: String, note: String? }
-type Published { tag: String, sections: [Section] }
+type Draft         { tag: String, sections: [Section], stage: Stage }
+type Approval      { approve: Bool, reviewer: String, note: String? }
+type Published     { tag: String, sections: [Section] }
 type RejectedDraft { tag: String, reviewer: String, reason: String }
 
 worker release

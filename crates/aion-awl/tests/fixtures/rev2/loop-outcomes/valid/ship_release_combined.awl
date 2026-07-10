@@ -4,9 +4,9 @@ workflow ship_release
   input max_build_rounds: Int
   signal canary_healthy: Confirmation
 
-  outcome shipped: type Shipped, route success
+  outcome shipped:   type Shipped,  route success
   outcome not_ready: type NotReady, route failure
-  outcome failed: type Failed, route failure
+  outcome failed:    type Failed,   route failure
 
 type Build          { artifact: String, green: Bool, log: String }
 type Confirmation   { operator: String }
@@ -54,10 +54,13 @@ step publish
 
   outcome verified_receipt: when receipt.verified,
     route shipped(artifact: candidate.artifact, build_rounds: rounds)
-  outcome unverified: otherwise, route failed(reason: "publish receipt failed verification")
+  outcome unverified: otherwise,
+    route failed(reason: "publish receipt failed verification")
 
 step cleanup
   remove_canary(artifact: candidate.artifact) -> swept
 
-  outcome removed: when swept.removed, route failed(reason: "publish failed; canary removed")
-  outcome lingering: otherwise, route failed(reason: "publish failed; canary still live")
+  outcome removed: when swept.removed,
+    route failed(reason: "publish failed; canary removed")
+  outcome lingering: otherwise,
+    route failed(reason: "publish failed; canary still live")

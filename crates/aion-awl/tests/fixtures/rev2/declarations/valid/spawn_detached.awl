@@ -2,7 +2,7 @@
 workflow process_order
   input order_id: String
   outcome shipped: type OrderResult, route success
-  outcome stuck: type OrderResult, route failure
+  outcome stuck:   type OrderResult, route failure
 
 type OrderResult { order_id: String, delivered: Bool }
 
@@ -18,4 +18,5 @@ step ship
 
   outcome done: when result.delivered,
     route shipped(order_id: result.order_id, delivered: result.delivered)
-  outcome held: otherwise, route stuck(order_id: result.order_id, delivered: result.delivered)
+  outcome held: otherwise,
+    route stuck(order_id: result.order_id, delivered: result.delivered)

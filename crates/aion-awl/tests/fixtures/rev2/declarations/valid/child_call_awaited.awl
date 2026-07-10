@@ -14,4 +14,5 @@ step delegate
 
   outcome above: when grade.score >= pass_mark,
     route passed(score: grade.score, feedback: grade.feedback)
-  outcome below: otherwise, route failed(score: grade.score, feedback: grade.feedback)
+  outcome below: otherwise,
+    route failed(score: grade.score, feedback: grade.feedback)

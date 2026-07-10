@@ -1,7 +1,7 @@
 //! Render a scene, pinning the call to the large GPU node with a stretched timeout.
 workflow render_scene
   input scene_path: String
-  outcome rendered: type Render, route success
+  outcome rendered:  type Render, route success
   outcome no_frames: type Render, route failure
 
 type Render { output_path: String, frames: Int }

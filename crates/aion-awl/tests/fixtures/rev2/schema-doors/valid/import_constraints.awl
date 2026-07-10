@@ -2,7 +2,7 @@
 workflow import_constraints
   input profile: Profile
   outcome registered: type Registered, route success
-  outcome refused: type Refused, route failure
+  outcome refused:    type Refused,    route failure
 
 type Profile = schema("profile.schema.json")
 
@@ -16,7 +16,8 @@ step gate
   profile |> .handle -> handle
 
   outcome adult: when profile.age >= 18, route enroll
-  outcome minor: otherwise, route refused(reason: "too young to register: " + handle)
+  outcome minor: otherwise,
+    route refused(reason: "too young to register: " + handle)
 
 step enroll
   profile |> register |> route registered

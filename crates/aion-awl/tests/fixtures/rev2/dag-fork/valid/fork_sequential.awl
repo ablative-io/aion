@@ -20,5 +20,7 @@ step apply_all
   receipts |> count -> attempted
   receipts |> filter(.ok) |> count -> succeeded
 
-  outcome complete: when succeeded == attempted, route applied(count: succeeded)
-  outcome partial: otherwise, route stalled(completed: succeeded)
+  outcome complete: when succeeded == attempted,
+    route applied(count: succeeded)
+  outcome partial: otherwise,
+    route stalled(completed: succeeded)

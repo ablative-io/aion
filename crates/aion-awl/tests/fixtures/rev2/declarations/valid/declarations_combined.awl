@@ -4,7 +4,7 @@ workflow release_pipeline
   input version: String
   input repo: String
   outcome released: type Release, route success
-  outcome aborted: type Abort, route failure
+  outcome aborted:  type Abort,   route failure
 
 type Build     { artifact: String, ok: Bool }
 type Changelog { text: String, entries: Int }
@@ -29,7 +29,8 @@ step build
   announce(text: "release build finished")
 
   outcome ok: when build_result.ok, route changelog
-  outcome bad: otherwise, route aborted(reason: "build failed")
+  outcome bad: otherwise,
+    route aborted(reason: "build failed")
 
 step changelog
   write_changelog(repo: repo, version: version) -> log
@@ -40,4 +41,5 @@ step changelog
 
   outcome done: when signed.ok,
     route released(version: version, artifact: signed.artifact, changelog: log.text)
-  outcome unsigned: otherwise, route aborted(reason: "signing failed")
+  outcome unsigned: otherwise,
+    route aborted(reason: "signing failed")

@@ -1,7 +1,7 @@
 //! Fan out one check per document; join verdicts in input order; flag any failures.
 workflow fork_collection_join
   input docs: [Doc]
-  outcome clean: type Clean, route success
+  outcome clean:   type Clean,   route success
   outcome flagged: type Flagged, route failure
 
 type Doc     { title: String, body: String }
@@ -20,5 +20,7 @@ step check_all
   verdicts |> count -> total
   verdicts |> filter(.failing) -> failures
 
-  outcome all_clean: when failures is empty, route clean(total: total)
-  outcome some_failed: otherwise, route flagged(failures: failures)
+  outcome all_clean: when failures is empty,
+    route clean(total: total)
+  outcome some_failed: otherwise,
+    route flagged(failures: failures)

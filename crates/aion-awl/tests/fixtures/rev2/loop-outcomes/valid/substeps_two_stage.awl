@@ -2,8 +2,8 @@
 workflow prepare_dataset
   input source: String
 
-  outcome prepared: type Prepared, route success
-  outcome hollow_source: type Hollow, route failure
+  outcome prepared:      type Prepared, route success
+  outcome hollow_source: type Hollow,   route failure
 
 type Batch    { rows: Int, path: String }
 type Prepared { path: String, rows: Int }
@@ -26,4 +26,5 @@ step prepare
 
   outcome done: when cleaned.rows > 0,
     route prepared(path: cleaned.path, rows: cleaned.rows)
-  outcome hollow: otherwise, route hollow_source(reason: "no rows survived")
+  outcome hollow: otherwise,
+    route hollow_source(reason: "no rows survived")

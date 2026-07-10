@@ -332,7 +332,19 @@ Invalid:
   unconditional bare `outcome name:` clauses (grammar shows only when/otherwise);
   gone-list keywords beyond the four representatives (`about`, `Option`, `List`, `=`-binder,
   plus `finish`) — one class, five witnesses.
-- Type-brace column alignment: spec goldens align `type Name   {`; fixtures outside flagship
-  use single spaces except where copied from spec text — the printer phase must decide the
-  canonical form and may need fixture updates (noncanonical_commas is already excluded from
-  byte-identity goldens).
+- Type-brace column alignment — RULED at the parser/printer phase (2026-07-10): group
+  alignment IS canonical. Within a maximal run of adjacent single-line type declarations of
+  the same form (`{ … }` bodies, or `= …` doors/enums; runs break on blank lines, comments,
+  doc lines, or a multi-line declaration), names pad to a common column; workflow-header
+  `outcome` runs align their `type` and `route` columns the same way. Alignment padding is
+  exempt from the 100-column rule (the single-line decision is made unpadded). All valid
+  fixtures were mechanically re-normalized through the printer to match; the flagship pair
+  needed (and received) no edits — `print(parse(dev_brief.awl))` is byte-identical.
+  (noncanonical_commas remains excluded from byte-identity goldens.)
+- Outcome-clause layout — RULED at the same phase: a payload-constructing route
+  (`route out(field: …)`) ALWAYS breaks after the guard comma onto its own line one level
+  deeper; a bare route stays on the guard line when the clause fits 100 columns. The spec's
+  printer-contract prose ("payload construction breaks … when over 100 columns") and its
+  worked examples (which break 90- and 99-column payload clauses) disagree; byte-identity
+  with the flagship pins the examples' reading. Valid fixtures were re-normalized to match
+  (splits/joins of outcome clauses only — audited via whitespace-insensitive diff).

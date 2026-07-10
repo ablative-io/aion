@@ -18,4 +18,5 @@ step triage
 
   outcome claimed: when assignee is present,
     route triaged(title: assigned.title, assignee: assignee)
-  outcome unclaimed: otherwise, route dropped(reason: "nobody claimed the ticket")
+  outcome unclaimed: otherwise,
+    route dropped(reason: "nobody claimed the ticket")

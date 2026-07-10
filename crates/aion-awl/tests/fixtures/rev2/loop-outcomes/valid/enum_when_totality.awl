@@ -15,6 +15,9 @@ worker triage
 step classify
   classify(ticket: ticket) -> result
 
-  outcome urgent: when result.category == Urgent, route dispatched(lane: "page")
-  outcome routine: when result.category == Routine, route dispatched(lane: "queue")
-  outcome spam: when result.category == Spam, route dispatched(lane: "discard")
+  outcome urgent: when result.category == Urgent,
+    route dispatched(lane: "page")
+  outcome routine: when result.category == Routine,
+    route dispatched(lane: "queue")
+  outcome spam: when result.category == Spam,
+    route dispatched(lane: "discard")

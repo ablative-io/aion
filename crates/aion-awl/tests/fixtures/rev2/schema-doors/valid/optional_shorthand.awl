@@ -25,5 +25,7 @@ step examine
   note |> polish -> polished
   polished |> .body -> body
 
-  outcome has_body: when body is present, route filed(title: polished.title, body: body)
-  outcome bodyless: otherwise, route filed(title: polished.title)
+  outcome has_body: when body is present,
+    route filed(title: polished.title, body: body)
+  outcome bodyless: otherwise,
+    route filed(title: polished.title)

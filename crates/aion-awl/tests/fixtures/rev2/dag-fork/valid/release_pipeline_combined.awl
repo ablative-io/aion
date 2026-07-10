@@ -4,9 +4,9 @@ workflow release_pipeline
   input version: String
   input targets: [Target]
 
-  outcome released: type Released, route success
+  outcome released: type Released,        route success
   outcome rejected: type RejectedRelease, route failure
-  outcome stalled: type StalledRelease, route failure
+  outcome stalled:  type StalledRelease,  route failure
 
 type Target      { name: String, platform: String }
 type Prepared    { tag: String }
@@ -50,7 +50,8 @@ step verify after build_all, notes
   results |> filter(.blocking) -> blockers
 
   outcome all_clear: when blockers is empty, route publish_all
-  outcome blocked: otherwise, route rejected(tag: prepared.tag, failures: blockers)
+  outcome blocked: otherwise,
+    route rejected(tag: prepared.tag, failures: blockers)
 
 step publish_all
   fork target in targets sequential
@@ -62,4 +63,5 @@ step publish_all
 
   outcome complete: when succeeded == attempted,
     route released(tag: prepared.tag, count: succeeded, notes: release_notes.text)
-  outcome partial: otherwise, route stalled(tag: prepared.tag, published: succeeded)
+  outcome partial: otherwise,
+    route stalled(tag: prepared.tag, published: succeeded)

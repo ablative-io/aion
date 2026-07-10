@@ -1,8 +1,8 @@
 //! Fetch a user's profile and history in parallel — heterogeneous named branches, bare join.
 workflow fork_named_branches
   input user_id: String
-  outcome assembled: type Dossier, route success
-  outcome unusable: type Unusable, route failure
+  outcome assembled: type Dossier,  route success
+  outcome unusable:  type Unusable, route failure
 
 type Profile  { name: String, email: String }
 type History  { events: [String] }
@@ -25,4 +25,5 @@ step build_dossier
 
   outcome full: when dossier.complete,
     route assembled(name: dossier.name, events: dossier.events, complete: dossier.complete)
-  outcome partial: otherwise, route unusable(reason: "profile or history incomplete")
+  outcome partial: otherwise,
+    route unusable(reason: "profile or history incomplete")

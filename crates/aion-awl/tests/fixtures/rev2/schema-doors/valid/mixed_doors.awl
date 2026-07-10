@@ -4,8 +4,8 @@ workflow mixed_doors
   input submission: Submission
   input config: IntakeConfig
 
-  outcome filed: type FiledRecord, route success
-  outcome bounced: type Bounced, route failure
+  outcome filed:   type FiledRecord, route success
+  outcome bounced: type Bounced,     route failure
 
 type Submission = schema("intake.schema.json")
 
@@ -45,4 +45,5 @@ step enrichment
 
   outcome reachable: when contact is present,
     route filed(reference: enriched.reference, contact: contact)
-  outcome anonymous: otherwise, route filed(reference: enriched.reference)
+  outcome anonymous: otherwise,
+    route filed(reference: enriched.reference)

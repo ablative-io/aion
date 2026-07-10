@@ -2,8 +2,8 @@
 workflow publish_assets
   input bundle: String
 
-  outcome published: type PublishedOk, route success
-  outcome failed: type PublishFailed, route failure
+  outcome published: type PublishedOk,   route success
+  outcome failed:    type PublishFailed, route failure
 
 type Assets        { urls: [String], count: Int }
 type PublishedOk   { count: Int }
@@ -27,5 +27,7 @@ step publish
     delete_assets(assets: assets)
     route failed(reason: "publish failed after compensation")
 
-  outcome done: when live.count > 0, route published(count: live.count)
-  outcome nothing: otherwise, route failed(reason: "nothing was published")
+  outcome done: when live.count > 0,
+    route published(count: live.count)
+  outcome nothing: otherwise,
+    route failed(reason: "nothing was published")

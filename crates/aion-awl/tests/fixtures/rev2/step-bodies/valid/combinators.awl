@@ -20,6 +20,7 @@ step tally
   blockers |> count -> blocker_count
   findings |> count -> total
 
-  outcome no_blockers: when blockers is empty, route clean(total: total)
+  outcome no_blockers: when blockers is empty,
+    route clean(total: total)
   outcome has_blockers: otherwise,
     route blocked(blocker_titles: blocker_titles, blocker_count: blocker_count)
