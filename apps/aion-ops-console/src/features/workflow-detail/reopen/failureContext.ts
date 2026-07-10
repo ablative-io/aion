@@ -46,12 +46,18 @@ type TerminalFailure =
   | Extract<Event, { type: 'WorkflowFailed' }>
   | Extract<Event, { type: 'WorkflowCancelled' }>;
 
-/** The last terminal Failed/Cancelled lifecycle event, or `null`. */
+/**
+ * The last terminal Failed/Cancelled lifecycle event, or `null`. A later
+ * `WorkflowReopened` SUPERSEDES the failure it re-drives (AD-012): the run is
+ * live again, so there is no failure to explain until a NEW terminal event lands.
+ */
 function findTerminal(history: readonly Event[]): TerminalFailure | null {
   let terminal: TerminalFailure | null = null;
   for (const event of history) {
     if (event.type === 'WorkflowFailed' || event.type === 'WorkflowCancelled') {
       terminal = event;
+    } else if (event.type === 'WorkflowReopened') {
+      terminal = null;
     }
   }
   return terminal;
@@ -68,6 +74,10 @@ function findFailedStep(history: readonly Event[]): string | null {
   for (const event of history) {
     if (event.type === 'ActivityFailed' && event.data.error.kind === 'Terminal') {
       failedActivityId = event.data.activity_id;
+    } else if (event.type === 'WorkflowReopened') {
+      // A reopen supersedes the failures it re-drives — blame only a failure
+      // recorded AFTER the reopen (the reopened run failing anew).
+      failedActivityId = null;
     }
   }
   if (failedActivityId === null) {

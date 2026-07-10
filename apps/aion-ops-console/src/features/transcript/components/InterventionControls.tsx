@@ -9,7 +9,42 @@ import type {
   WorkflowId,
 } from '@/types';
 
-import { useIntervene } from '../hooks/useIntervene';
+import { type InterveneSubmitState, useIntervene } from '../hooks/useIntervene';
+
+/**
+ * Capability-gated mid-run intervention controls (NOI-7), split into TWO slots
+ * that share ONE {@link useIntervene} instance (one honest submitState / outcome /
+ * error stream), owned by {@link useInterventionController}:
+ *
+ * - {@link InterventionActions} — the non-text primitives (Cancel / Pause /
+ *   Update budget / Respond to approval) as inline header buttons. The host places
+ *   these AWAY from the composer (the attempt navigator puts them in its section
+ *   header) so a destructive Cancel is never a slip of the hand from Send.
+ * - {@link InterventionComposer} — the full-width inject-message composer docked
+ *   beneath the transcript, plus the outcome/error notice (the operator looks
+ *   there after sending). An EMPTY advertised set renders the observability-only
+ *   note here, where the composer would be.
+ *
+ * Gating is unchanged: ONLY the primitives the target attempt's owning worker
+ * advertises (`capabilities.supported`) render — an UNadvertised primitive is
+ * NEVER rendered, so the operator can only issue commands the harness accepts.
+ * Each control POSTs to `/workflows/intervene` and the neutral
+ * {@link InterventionOutcome} ack is surfaced HONESTLY: `Applied`,
+ * `CapabilityNotSupported`, and `StaleTarget` are distinct visible outcomes (a
+ * gated/stale ack is NOT reported as success and a transport error is NOT
+ * swallowed).
+ */
+
+/** The non-text intervention primitives (everything but the inject composer). */
+type ActionPrimitive = Exclude<InterventionPrimitive['primitive'], 'InjectMessage'>;
+
+/** Human labels for the non-text primitives (header action button captions). */
+const PRIMITIVE_LABELS: Record<ActionPrimitive, string> = {
+  Cancel: 'Cancel run',
+  PauseResume: 'Pause',
+  UpdateBudget: 'Update budget',
+  RespondToApproval: 'Respond to approval',
+};
 
 /** Capability chips shown on the inject composer's docked pill (honest wire support). */
 const INJECT_CAPABILITIES = ['interrupt', 'queue'] as const;
@@ -29,52 +64,51 @@ export function injectKindFor(text: string, priority: ChatPriority): Interventio
 }
 
 /**
- * Capability-gated mid-run intervention controls (NOI-7).
- *
- * Renders ONLY the primitives the target attempt's owning worker advertises
- * (`capabilities.supported`) — an UNadvertised primitive is NEVER rendered, so the
- * operator can only issue commands the harness accepts. Each control POSTs to
- * `/workflows/intervene` and surfaces the neutral {@link InterventionOutcome} ack
- * HONESTLY: `Applied`, `CapabilityNotSupported`, and `StaleTarget` are all shown as
- * distinct visible outcomes (a gated/stale ack is NOT reported as success and a
- * transport error is NOT swallowed). An empty advertised set renders no controls —
- * an observability-only attempt.
+ * The shared intervention state both slots render from: ONE submit pipeline, so
+ * the header actions and the composer report through the same honest outcome
+ * stream (which {@link InterventionComposer} displays).
  */
+export type InterventionController = {
+  /** The live attempt under control (drives capability gating in both slots). */
+  attempt: AttemptCapabilities;
+  /**
+   * Per-target composer draft key: drafts persist across navigation but never leak
+   * between attempts (each `(workflow, activity, attempt)` keeps its own message).
+   */
+  draftKey: string;
+  /** Issue a command; the ack/error surfaces as controller state, never swallowed. */
+  run: (kind: InterventionKind) => void;
+  submitState: InterveneSubmitState;
+  /** The last neutral ack (applied / gated / stale), surfaced verbatim. */
+  lastOutcome: InterventionOutcome | null;
+  /** The last transport/authorization error (distinct from a first-class ack). */
+  error: Error | null;
+};
 
-export type InterventionControlsProps = {
+export type UseInterventionControllerOptions = {
   namespace: Namespace | null;
   workflowId: WorkflowId;
-  attempt: AttemptCapabilities;
+  /**
+   * The currently-live attempt matching the host's selection, or `null` when the
+   * selection is not live — intervention is read-only then and no slot renders.
+   */
+  attempt: AttemptCapabilities | null;
 };
 
-/** Human labels for each neutral primitive (control button captions). */
-const PRIMITIVE_LABELS: Record<InterventionPrimitive['primitive'], string> = {
-  InjectMessage: 'Inject message',
-  Cancel: 'Cancel run',
-  PauseResume: 'Pause',
-  UpdateBudget: 'Update budget',
-  RespondToApproval: 'Respond to approval',
-};
-
-/** The data-bound controls: owns the intervene submit for one attempt target. */
-export function InterventionControls({
-  namespace,
-  workflowId,
-  attempt,
-}: InterventionControlsProps) {
+/**
+ * Own the single {@link useIntervene} instance for one live attempt target and
+ * hand both slots ({@link InterventionActions}, {@link InterventionComposer}) the
+ * same {@link InterventionController}. Returns `null` when there is no live
+ * attempt to control (the host renders neither slot).
+ */
+export function useInterventionController(
+  options: UseInterventionControllerOptions
+): InterventionController | null {
+  const { namespace, workflowId, attempt } = options;
   const { submit, submitState, lastOutcome, error } = useIntervene({ namespace });
 
-  // Per-target draft key: drafts persist across navigation but never leak between
-  // attempts (each `(workflow, activity, attempt)` keeps its own composed message).
-  const draftKey = `intervene:${workflowId}:${attempt.activityId}:${attempt.attempt}`;
-
-  const supported = attempt.capabilities.supported;
-  if (supported.length === 0) {
-    return (
-      <p className="text-muted-foreground text-xs" data-testid="intervention-none">
-        This attempt is observability-only — its harness advertises no intervention controls.
-      </p>
-    );
+  if (attempt === null) {
+    return null;
   }
 
   const run = (kind: InterventionKind): void => {
@@ -89,87 +123,104 @@ export function InterventionControls({
     });
   };
 
-  return (
-    <section className="flex flex-col gap-2" data-testid="intervention-controls">
-      <h3 className="font-medium text-foreground text-xs">Intervene</h3>
-      <ul className="flex flex-col gap-2">
-        {supported.map((primitive) =>
-          primitive.primitive === 'InjectMessage' ? (
-            <li key={primitive.primitive}>
-              <InjectMessageControl draftKey={draftKey} onRun={run} />
-            </li>
-          ) : (
-            <li key={primitive.primitive}>
-              <PrimitiveControl
-                disabled={submitState === 'submitting'}
-                onRun={run}
-                primitive={primitive.primitive}
-              />
-            </li>
-          )
-        )}
-      </ul>
-      <OutcomeNotice error={error} outcome={lastOutcome} submitState={submitState} />
-    </section>
-  );
+  return {
+    attempt,
+    draftKey: `intervene:${workflowId}:${attempt.activityId}:${attempt.attempt}`,
+    run,
+    submitState,
+    lastOutcome,
+    error,
+  };
 }
 
-type InjectMessageControlProps = {
-  draftKey: string;
-  onRun: (kind: InterventionKind) => void;
+export type InterventionSlotProps = {
+  controller: InterventionController;
 };
 
 /**
- * The inject-message affordance: the kit composer ({@link ChatInputMorph}) docked as
- * a slim pill that expands into a textarea with a delivery-priority toggle. Submitting
- * issues an `InjectMessage` command whose priority is the operator's toggle (see
- * {@link injectKindFor}). No escalation machine is wired here — Cancel is a separate
- * gated control — and the composer is never bespoke-disabled: submission state is
- * surfaced by {@link OutcomeNotice}, exactly as the assistant page does it.
+ * The non-text primitive buttons (header slot). Renders ONLY the advertised
+ * non-inject primitives, inline, sized to sit next to the host's header actions
+ * (h-7 text-xs); `Cancel` keeps its destructive variant. Renders nothing when no
+ * non-inject primitive is advertised. Outcomes report in the composer slot — the
+ * shared controller carries them there.
  */
-function InjectMessageControl({ draftKey, onRun }: InjectMessageControlProps) {
+export function InterventionActions({ controller }: InterventionSlotProps) {
+  const actions = controller.attempt.capabilities.supported
+    .map((primitive) => primitive.primitive)
+    .filter((primitive): primitive is ActionPrimitive => primitive !== 'InjectMessage');
+  if (actions.length === 0) {
+    return null;
+  }
+
   return (
-    <ChatInputMorph
-      capabilities={INJECT_CAPABILITIES}
-      draftKey={draftKey}
-      onSubmit={(message, priority) => onRun(injectKindFor(message, priority))}
-      placeholder="Steer the agent…"
-      status="live"
-    />
+    <ul className="flex items-center gap-2" data-testid="intervention-actions">
+      {actions.map((primitive) => (
+        <li key={primitive}>
+          <Button
+            className="h-7 px-3 text-xs"
+            disabled={controller.submitState === 'submitting'}
+            onClick={() => controller.run(kindFor(primitive))}
+            type="button"
+            variant={primitive === 'Cancel' ? 'destructive' : 'outline'}
+          >
+            {PRIMITIVE_LABELS[primitive]}
+          </Button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
-type PrimitiveControlProps = {
-  primitive: Exclude<InterventionPrimitive['primitive'], 'InjectMessage'>;
-  disabled: boolean;
-  onRun: (kind: InterventionKind) => void;
-};
+/**
+ * The composer slot (docked full-width beneath the transcript). An advertised
+ * `InjectMessage` renders the kit composer ({@link ChatInputMorph}): the docked
+ * pill expands into a textarea with the delivery-priority toggle, and submitting
+ * issues an `InjectMessage` whose priority is the operator's toggle (see
+ * {@link injectKindFor}). The composer is never bespoke-disabled — submission
+ * state is surfaced by {@link OutcomeNotice}, which ALWAYS lives in this slot
+ * (full-width, directly beneath the composer) because this is where the operator
+ * looks after sending; commands issued from the header actions report here too.
+ * An EMPTY advertised set renders the observability-only note instead.
+ */
+export function InterventionComposer({ controller }: InterventionSlotProps) {
+  const supported = controller.attempt.capabilities.supported;
+  if (supported.length === 0) {
+    return (
+      <p className="text-muted-foreground text-xs" data-testid="intervention-none">
+        This attempt is observability-only — its harness advertises no intervention controls.
+      </p>
+    );
+  }
 
-/** One non-text primitive's control affordance (its submit button). */
-function PrimitiveControl({ primitive, disabled, onRun }: PrimitiveControlProps) {
+  const canInject = supported.some((primitive) => primitive.primitive === 'InjectMessage');
   return (
-    <Button
-      className="h-7 px-3 text-xs"
-      disabled={disabled}
-      onClick={() => onRun(kindFor(primitive))}
-      type="button"
-      variant={primitive === 'Cancel' ? 'destructive' : 'outline'}
-    >
-      {PRIMITIVE_LABELS[primitive]}
-    </Button>
+    <div className="flex w-full flex-col gap-2" data-testid="intervention-composer">
+      {canInject ? (
+        <ChatInputMorph
+          capabilities={INJECT_CAPABILITIES}
+          draftKey={controller.draftKey}
+          onSubmit={(message, priority) => controller.run(injectKindFor(message, priority))}
+          placeholder="Steer the agent…"
+          status="live"
+        />
+      ) : null}
+      <OutcomeNotice
+        error={controller.error}
+        outcome={controller.lastOutcome}
+        submitState={controller.submitState}
+      />
+    </div>
   );
 }
 
 /**
  * The neutral command payload for the non-text primitives. `InjectMessage` is
- * handled by its dedicated control (it needs the text input) and never reaches
- * here. `PauseResume` defaults to pausing and `RespondToApproval` is not issued
- * without a pending `call_id`, so both carry conservative defaults; they light up
- * only when the harness advertises them.
+ * handled by the composer slot (it needs the text input) and never reaches here.
+ * `PauseResume` defaults to pausing and `RespondToApproval` is not issued without
+ * a pending `call_id`, so both carry conservative defaults; they light up only
+ * when the harness advertises them.
  */
-function kindFor(
-  primitive: Exclude<InterventionPrimitive['primitive'], 'InjectMessage'>
-): InterventionKind {
+function kindFor(primitive: ActionPrimitive): InterventionKind {
   switch (primitive) {
     case 'Cancel':
       return { kind: 'Cancel', reason: 'operator cancelled from ops console' };
@@ -188,7 +239,7 @@ function kindFor(
 }
 
 type OutcomeNoticeProps = {
-  submitState: ReturnType<typeof useIntervene>['submitState'];
+  submitState: InterveneSubmitState;
   outcome: InterventionOutcome | null;
   error: Error | null;
 };

@@ -4,7 +4,13 @@ import { EmptyState } from '@/components/EmptyState';
 import type { KitStatus } from '@/components/kit';
 import { StatusDot } from '@/components/kit';
 import { Button } from '@/components/ui';
-import { InterventionControls, TranscriptPanel, useActivityAttempts } from '@/features/transcript';
+import {
+  InterventionActions,
+  InterventionComposer,
+  TranscriptPanel,
+  useActivityAttempts,
+  useInterventionController,
+} from '@/features/transcript';
 import type { AttemptCapabilities } from '@/lib/api';
 import type { TranscriptTarget } from '@/lib/api/transcript-stream';
 import { cn } from '@/lib/utils';
@@ -35,8 +41,16 @@ export type AttemptNavigatorProps = {
  * Selecting a row streams that attempt's transcript via {@link TranscriptPanel}
  * (the transcript stream serves the durable `O` tail first, so a FINISHED attempt
  * loads). The LIVE enumeration (`useActivityAttempts`) is retained ONLY to gate
- * {@link InterventionControls}: controls appear ONLY for a currently-live attempt
- * whose identity matches the selected row; a terminal run is read-only.
+ * intervention: the controls appear ONLY for a currently-live attempt whose
+ * identity matches the selected row; a terminal run is read-only.
+ *
+ * Layout is a single full-width vertical stack: header (title + the non-inject
+ * intervention actions + Refresh live) → attempt rows → the transcript → the
+ * inject composer docked directly beneath it (the assistant page's "chat pill
+ * beneath the transcript" pattern). The destructive actions live in the HEADER,
+ * maximally distant from the composer's Send, so Cancel is never a slip of the
+ * hand away. Both pieces share ONE {@link useInterventionController} instance —
+ * one honest submit/outcome/error stream, reported next to the composer.
  */
 export function AttemptNavigator({ workflowId, namespace, timeline }: AttemptNavigatorProps) {
   const rows = useMemo(() => deriveAttemptNavigator(timeline), [timeline]);
@@ -70,6 +84,10 @@ export function AttemptNavigator({ workflowId, namespace, timeline }: AttemptNav
     );
   }, [liveAttempts, selectedRow]);
 
+  // ONE shared intervene pipeline for both slots (header actions + composer);
+  // `null` when the selected row is not currently live — read-only then.
+  const intervention = useInterventionController({ namespace, workflowId, attempt: liveMatch });
+
   if (namespace === null) {
     return (
       <EmptyState
@@ -83,25 +101,16 @@ export function AttemptNavigator({ workflowId, namespace, timeline }: AttemptNav
     <section className="flex flex-col gap-3">
       <header className="flex items-center justify-between gap-2">
         <h2 className="font-semibold text-foreground text-sm">Agent attempts</h2>
-        <Button className="h-7 px-3 text-xs" onClick={refresh} type="button" variant="outline">
-          Refresh live
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {intervention === null ? null : <InterventionActions controller={intervention} />}
+          <Button className="h-7 px-3 text-xs" onClick={refresh} type="button" variant="outline">
+            Refresh live
+          </Button>
+        </div>
       </header>
       <AttemptRowList onSelect={setPickedKey} rows={rows} selectedKey={selectedRow?.key ?? null} />
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-        <div className="min-w-0 flex-1">
-          <TranscriptPanel target={target} />
-        </div>
-        {liveMatch === null ? null : (
-          <div className="w-full lg:w-72">
-            <InterventionControls
-              attempt={liveMatch}
-              namespace={namespace}
-              workflowId={workflowId}
-            />
-          </div>
-        )}
-      </div>
+      <TranscriptPanel target={target} />
+      {intervention === null ? null : <InterventionComposer controller={intervention} />}
     </section>
   );
 }

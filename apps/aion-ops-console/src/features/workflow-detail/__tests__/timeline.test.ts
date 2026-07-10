@@ -57,6 +57,18 @@ test('mergeEventsBySequence de-duplicates history/live overlap and exposes termi
   expect(projectTimeline(merged).at(-1)?.summary).toContain('Workflow completed');
 });
 
+test('a WorkflowReopened later than the failure supersedes it — the run is live again', () => {
+  const events = [workflowStarted(1), workflowFailed(2), workflowReopened(3)];
+
+  expect(terminalOutcomeForEvents(events)).toBeNull();
+});
+
+test('a NEW terminal event after the reopen reports terminal again', () => {
+  const events = [workflowStarted(1), workflowFailed(2), workflowReopened(3), workflowFailed(4)];
+
+  expect(terminalOutcomeForEvents(events)).toBe('failed');
+});
+
 test('projectTimeline records activity retry history and child workflow links', () => {
   const timeline = projectTimeline([
     activityScheduled(1),
@@ -110,6 +122,27 @@ function workflowCompleted(seq: number): Event {
   return {
     type: 'WorkflowCompleted',
     data: { envelope: envelope(seq), result: jsonPayload },
+  };
+}
+
+function workflowFailed(seq: number): Event {
+  return {
+    type: 'WorkflowFailed',
+    data: {
+      envelope: envelope(seq),
+      error: { message: `workflow ${seq} returned error`, details: null },
+    },
+  };
+}
+
+function workflowReopened(seq: number): Event {
+  return {
+    type: 'WorkflowReopened',
+    data: {
+      envelope: envelope(seq),
+      run_id: '00000000-0000-0000-0000-0000000000a1',
+      reopened: [7],
+    },
   };
 }
 

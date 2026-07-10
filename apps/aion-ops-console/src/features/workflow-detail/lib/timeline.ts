@@ -104,10 +104,26 @@ export function mergeEventsBySequence(history: readonly Event[], live: readonly 
 }
 
 export function terminalOutcomeForEvents(events: readonly Event[]): LifecycleOutcome | null {
-  const terminalEvent = mergeEventsBySequence(events, []).filter(isTerminalWorkflowEvent).at(-1);
+  // A later `WorkflowReopened` SUPERSEDES an earlier terminal event (AD-012): the
+  // run is live again, so the projection must not keep reporting it terminal —
+  // stale-terminal here freezes the status badge AND disables the live event
+  // subscription while the reopened run is actually executing.
+  const lifecycleEvent = mergeEventsBySequence(events, [])
+    .filter(
+      (event): event is TerminalOrReopenedEvent =>
+        isTerminalWorkflowEvent(event) || event.type === 'WorkflowReopened'
+    )
+    .at(-1);
 
-  return terminalEvent ? lifecycleOutcome(terminalEvent) : null;
+  if (lifecycleEvent === undefined || lifecycleEvent.type === 'WorkflowReopened') {
+    return null;
+  }
+  return lifecycleOutcome(lifecycleEvent);
 }
+
+type TerminalOrReopenedEvent =
+  | Extract<Event, { type: TerminalLifecycleType }>
+  | Extract<Event, { type: 'WorkflowReopened' }>;
 
 export function isTerminalWorkflowEvent(
   event: Event
