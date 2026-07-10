@@ -55,13 +55,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aion_core::{
-    ActivityEvent, ActivityId, ContentType, InterventionCapabilities, InterventionCommand,
-    InterventionOutcome, Payload, RunId, WorkflowId,
+    ActivityId, ContentType, InterventionCapabilities, InterventionCommand, InterventionOutcome,
+    Payload, RunId, WorkflowId,
 };
 use aion_integrations::contract::DynAgentHarness;
 use aion_integrations::spec::AgentRunSpec;
 use liminal::protocol::WorkerRegistration;
-use liminal_sdk::{OBSERVABILITY_CHANNEL, PushClient, PushWriter, PushedFrame};
+use liminal_sdk::{PushClient, PushWriter, PushedFrame};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -72,7 +72,8 @@ use crate::error::WorkerError;
 use crate::protocol::ActivityTask;
 use crate::runtime::agent::spawn_dyn_agent;
 use crate::runtime::intervention::{ControlRegistry, SessionKey};
-use crate::runtime::liminal_redial::ServeResult;
+use crate::runtime::liminal_drain::{DrainBinding, LiveWriter, spawn_event_drain};
+use crate::runtime::liminal_redial::{RedialBackoff, ServeResult};
 use crate::runtime::loop_::{ActivityDispatcher, DispatchOutcome};
 
 /// Wire request carrying one scheduled activity from the server to this worker.
@@ -280,6 +281,17 @@ pub struct LiminalActivityWorker {
     /// `with_intervention_capabilities`), because capabilities are needed to register
     /// the session in the [`ControlRegistry`] BEFORE the session starts.
     agent_capabilities: InterventionCapabilities,
+    /// The shared live-connection slot every observability drain publishes
+    /// through (#254). Seeded at connect with this connection's writer; the redial
+    /// driver ([`serve_with_redial`](crate::serve_with_redial)) REPLACES it with a
+    /// slot it refreshes on every reconnection (see [`Self::with_live_writer`]), so
+    /// a drain re-resolves the survivor after a server loss instead of publishing
+    /// to a dead socket forever.
+    live_writer: LiveWriter,
+    /// The bounded reconnect backoff the observability drain paces its re-probes
+    /// with during an outage, seeded from the worker's reconnect config so the
+    /// drain and the dispatch redial share one coherent schedule.
+    drain_backoff: RedialBackoff,
 }
 
 impl std::fmt::Debug for LiminalActivityWorker {
@@ -345,6 +357,16 @@ impl LiminalActivityWorker {
         }
         let client = PushClient::connect_with_registration(address, registration)
             .map_err(|error| transport_error(&error))?;
+        // Seed the drain slot with THIS connection's writer so a single-connection
+        // serve (the direct `serve_until` callers and tests) resolves a live writer
+        // immediately; the redial driver swaps in a shared, reconnect-refreshed slot
+        // via `with_live_writer`. The drain backoff mirrors the dispatch reconnect
+        // schedule, so both pace re-attempts identically.
+        let live_writer = LiveWriter::seeded(client.writer_handle());
+        let drain_backoff = RedialBackoff::new(
+            config.reconnect.initial_backoff,
+            config.reconnect.max_backoff,
+        );
         Ok(Self {
             client,
             registry,
@@ -352,6 +374,8 @@ impl LiminalActivityWorker {
             agent_harness: None,
             agent_activity_types: BTreeSet::new(),
             agent_capabilities: InterventionCapabilities::none(),
+            live_writer,
+            drain_backoff,
         })
     }
 
@@ -400,6 +424,23 @@ impl LiminalActivityWorker {
             ),
             None => self,
         }
+    }
+
+    /// Adopt `slot` as the SHARED live-connection drain slot and record this
+    /// connection's writer in it (#254).
+    ///
+    /// The redial driver ([`serve_with_redial`](crate::serve_with_redial)) owns one
+    /// slot across every reconnection and threads it into each freshly-connected
+    /// worker here, so every observability drain — including one spawned against a
+    /// now-dead earlier connection — re-resolves the SURVIVOR the driver most
+    /// recently installed. A worker served directly (without the redial driver)
+    /// keeps its own per-connection slot seeded at connect; there it simply
+    /// coalesces-and-drops on a loss, there being no survivor to migrate to.
+    #[must_use]
+    pub(crate) fn with_live_writer(mut self, slot: LiveWriter) -> Self {
+        slot.set(self.client.writer_handle());
+        self.live_writer = slot;
+        self
     }
 
     /// Whether `activity_type` is driven through the installed agent harness rather
@@ -593,6 +634,10 @@ impl LiminalActivityWorker {
         let control = self.control.clone();
         let capabilities = self.agent_capabilities.clone();
         let writer = self.client.writer_handle();
+        // The transcript drain publishes through the SHARED live-connection slot so
+        // it survives a redial, whereas the terminal reply + liveness pump stay on
+        // this connection's writer (a lost reply is re-driven by the outbox).
+        let drain = DrainBinding::new(self.live_writer.clone(), self.drain_backoff);
         // Run on a DEDICATED thread with its own current-thread runtime, not
         // `tokio::spawn`: the erased agent session drives a `?Send` future (the neutral
         // `AgentSession` is `Send` but not `Sync`), which `tokio::spawn` cannot accept.
@@ -613,6 +658,7 @@ impl LiminalActivityWorker {
                 control,
                 capabilities,
                 writer,
+                drain,
                 correlation_id,
                 request,
             ));
@@ -650,7 +696,10 @@ impl LiminalActivityWorker {
         // genuinely runs (a no-op for the window-less outbox path). The guard
         // aborts the pump on every exit path.
         let _liveness = spawn_liveness_pump(self.client.writer_handle(), request);
-        let (event_sender, drain) = spawn_event_drain(self.client.writer_handle());
+        let (event_sender, drain) = spawn_event_drain(DrainBinding::new(
+            self.live_writer.clone(),
+            self.drain_backoff,
+        ));
         let (context, cancellation) = ActivityContext::for_workflow_with_events(
             Some(request.workflow_id.clone()),
             activity_id,
@@ -700,6 +749,7 @@ async fn run_agent_dispatch(
     control: ControlRegistry,
     capabilities: InterventionCapabilities,
     writer: PushWriter,
+    drain: DrainBinding,
     correlation_id: u64,
     request: DispatchRequest,
 ) {
@@ -724,8 +774,9 @@ async fn run_agent_dispatch(
         request.activity_type.clone(),
         Payload::new(ContentType::Json, request.input.clone()),
     );
-    // Stream the transcript LIVE over the connection while the agent runs.
-    let (event_sender, drain) = spawn_event_drain(writer.clone());
+    // Stream the transcript LIVE while the agent runs, through the shared slot so
+    // it re-resolves the survivor after a redial rather than a dead socket (#254).
+    let (event_sender, drain) = spawn_event_drain(drain);
     let outcome = spawn_dyn_agent(harness.as_ref(), spec, event_sender, Some(control_rx)).await;
     drain.finish().await;
     // A harness fault is a retryable activity failure, mapped as the gRPC driver does.
@@ -803,62 +854,6 @@ struct LivenessPump {
 impl Drop for LivenessPump {
     fn drop(&mut self) {
         self.handle.abort();
-    }
-}
-
-/// Builds the LIVE observability event drain: an [`ActivityEvent`] sender handed to
-/// the [`ActivityContext`]/agent driver, and a background task that publishes every
-/// event to the server over `writer` (NOI-5b).
-///
-/// The drain task publishes each event to [`OBSERVABILITY_CHANNEL`] as it arrives — at
-/// every event boundary, MID-RUN, not batched at exit. The returned [`EventDrain`]
-/// guard's [`EventDrain::finish`] drops the sender and joins the task, so the drain is
-/// torn down cleanly when the activity completes.
-fn spawn_event_drain(writer: PushWriter) -> (mpsc::UnboundedSender<ActivityEvent>, EventDrain) {
-    let (event_sender, event_receiver) = mpsc::unbounded_channel::<ActivityEvent>();
-    let handle = tokio::spawn(drain_events(writer, event_receiver));
-    (event_sender, EventDrain { handle })
-}
-
-/// A running observability-drain task tied to one activity attempt.
-///
-/// Holding it keeps the drain alive; [`Self::finish`] drops the event sender (ending
-/// the drain's receive loop) and awaits the task, so no event is lost and no task is
-/// leaked across dispatches.
-struct EventDrain {
-    handle: tokio::task::JoinHandle<()>,
-}
-
-impl EventDrain {
-    /// Await the drain task to completion. The caller has already dropped its event
-    /// sender (it was moved into the context/driver), so the drain's receiver closes
-    /// and the task finishes after publishing every buffered event.
-    async fn finish(self) {
-        drop(self.handle.await);
-    }
-}
-
-/// Publishes each drained [`ActivityEvent`] to the server over the shared push
-/// connection until the sender is dropped (end of the activity).
-///
-/// Serializes the whole neutral envelope as the frame payload (the server
-/// deserializes it directly — no lossy mapping) and publishes to
-/// [`OBSERVABILITY_CHANNEL`], where the server's connection-notifier tap routes it to
-/// the transcript sequencer. A publish fault is logged and the drain continues: the
-/// transcript is best-effort live streaming (durability is the server's O-keyspace
-/// commit, not this transport), so one dropped event never fails the activity.
-async fn drain_events(writer: PushWriter, mut receiver: mpsc::UnboundedReceiver<ActivityEvent>) {
-    while let Some(event) = receiver.recv().await {
-        let payload = match serde_json::to_vec(&event) {
-            Ok(payload) => payload,
-            Err(error) => {
-                tracing::warn!(%error, "observability drain: failed to encode ActivityEvent");
-                continue;
-            }
-        };
-        if let Err(error) = writer.publish(OBSERVABILITY_CHANNEL, payload) {
-            tracing::warn!(%error, "observability drain: failed to publish transcript event");
-        }
     }
 }
 

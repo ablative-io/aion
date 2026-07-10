@@ -10,6 +10,12 @@ pub mod intervention;
 /// Liminal worker transport (LSUB-1): receive pushed dispatches, execute, reply.
 #[cfg(feature = "liminal-transport")]
 pub mod liminal;
+/// Reconnect-aware observability drain (#254): the shared live-writer slot and
+/// outage-coalescing drain the liminal worker streams a transcript through, so a
+/// server loss is survived by riding the dispatch path's redial instead of
+/// publishing to a dead socket forever.
+#[cfg(feature = "liminal-transport")]
+pub mod liminal_drain;
 /// Candidate-cycling redial driver for liminal worker reconnect-to-survivor
 /// (G-1, #112): the transport-free cursor + backoff + loop the liminal worker
 /// uses to migrate from a dead owner to a survivor's listener.
