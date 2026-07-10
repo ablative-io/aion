@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aion_store::{
     Event, EventStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
     RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
-    WritableEventStore, WriteToken, conformance::run_event_store_suite,
+    WritableEventStore, WriteToken,
+    conformance::{run_event_store_suite, run_outbox_settlement_suite},
 };
 use aion_store_haematite::HaematiteStore;
 use async_trait::async_trait;
@@ -24,6 +25,18 @@ async fn haematite_store_satisfies_event_store_conformance_suite() -> Result<(),
     run_event_store_suite(|| async {
         let store = HaematiteStore::create(unique_temp_dir("conformance"));
         Arc::new(StoreCreateResult::new(store)) as Arc<dyn EventStore>
+    })
+    .await
+}
+
+/// #253: the workflow-terminal outbox settlement contract (settle twin,
+/// unsettled enumeration, read-only stale probe, Cancelled-untouchable re-arm
+/// pins, reopen-re-arm resurrection, writer-seam settle) over the real
+/// haematite outbox keyspace.
+#[tokio::test(flavor = "multi_thread")]
+async fn haematite_store_satisfies_outbox_settlement_conformance_suite() -> Result<(), StoreError> {
+    run_outbox_settlement_suite(|| async {
+        HaematiteStore::create(unique_temp_dir("outbox-settlement"))
     })
     .await
 }

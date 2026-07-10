@@ -17,7 +17,15 @@ use crate::worker::LostWorkerReport;
 pub enum ShutdownOutcome {
     /// Drain completed before the configured timeout.
     Clean,
-    /// At least one in-flight activity exceeded the drain timeout.
+    /// In-flight activities outlived the drain timeout and were parked for
+    /// restart recovery (#207): nothing recorded, nothing delivered — the
+    /// recoverable-by-design state, so a fully-parked drain is a SUCCESS. A
+    /// long-running activity (an agent round runs hours) outliving any sane
+    /// drain window is the expected case, and a non-zero exit on every routine
+    /// deploy would train operators to ignore failures.
+    Parked,
+    /// The drain timed out AND the park itself failed (lock poison, sink
+    /// error): in-flight state could not be handed to restart recovery.
     TimedOut,
     /// A second termination signal requested immediate process exit.
     Forced,
@@ -28,7 +36,7 @@ impl ShutdownOutcome {
     #[must_use]
     pub fn exit_code(self) -> ExitCode {
         match self {
-            Self::Clean => ExitCode::SUCCESS,
+            Self::Clean | Self::Parked => ExitCode::SUCCESS,
             Self::TimedOut => ExitCode::FAILURE,
             Self::Forced => ExitCode::from(130),
         }
@@ -154,31 +162,52 @@ async fn wait_for_drain_or_timeout(
             Ok(ShutdownOutcome::Clean)
         }
         Err(_elapsed) => {
-            let reports = state
+            // #207 drain-timeout backstop: PARK the remaining in-flight
+            // dispatches for restart recovery instead of synthesizing
+            // retryable lost-worker failures. Nothing is recorded, so the
+            // durable log converges on the kill -9 shape and post-restart
+            // replay re-dispatches every parked ordinal. A park that itself
+            // fails leaves in-flight state unhanded — the one remaining
+            // FAILURE-worthy drain outcome.
+            match state
                 .heartbeat_tracker()
-                .fail_all_in_flight_workers(state.worker_registry(), state.pending_activities())?;
-            log_lost_workers(&reports);
-            Ok(ShutdownOutcome::TimedOut)
+                .park_all_in_flight_workers(state.worker_registry(), state.pending_activities())
+            {
+                Ok(reports) => {
+                    log_parked_workers(&reports);
+                    Ok(ShutdownOutcome::Parked)
+                }
+                Err(park_error) => {
+                    error!(
+                        %park_error,
+                        "activity drain timed out and parking the remaining in-flight \
+                         activities failed; exiting with the failure drain outcome"
+                    );
+                    Ok(ShutdownOutcome::TimedOut)
+                }
+            }
         }
     }
 }
 
-fn log_lost_workers(reports: &[LostWorkerReport]) {
-    let failed_tasks: usize = reports.iter().map(|report| report.tasks.len()).sum();
-    if failed_tasks == 0 {
-        info!("activity drain timed out with no tracked in-flight activity failures");
+fn log_parked_workers(reports: &[LostWorkerReport]) {
+    let parked_tasks: usize = reports.iter().map(|report| report.tasks.len()).sum();
+    if parked_tasks == 0 {
+        info!("activity drain timed out with no tracked in-flight activities to park");
     } else {
-        error!(
-            failed_workers = reports.len(),
-            failed_tasks,
-            "activity drain timed out; remaining activities surfaced as retryable lost-worker failures"
+        info!(
+            parked_workers = reports.len(),
+            parked_tasks,
+            "activity drain timed out; remaining activities parked for restart recovery"
         );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::DrainState;
+    use std::process::ExitCode;
+
+    use super::{DrainState, ShutdownOutcome};
 
     #[test]
     fn begin_is_idempotent_and_sets_draining() {
@@ -188,5 +217,30 @@ mod tests {
         assert!(drain.begin());
         assert!(drain.is_draining());
         assert!(!drain.begin());
+    }
+
+    /// #207 exit contract: a fully-parked drain is a SUCCESS (parked state is
+    /// recoverable by design); FAILURE is reserved for a park that itself
+    /// failed; a forced exit keeps 130. `ExitCode` carries no `PartialEq`, so
+    /// the mapping is asserted through its debug representation.
+    #[test]
+    fn exit_codes_map_parked_to_success_and_timed_out_to_failure() {
+        let debug = |code: ExitCode| format!("{code:?}");
+        assert_eq!(
+            debug(ShutdownOutcome::Clean.exit_code()),
+            debug(ExitCode::SUCCESS)
+        );
+        assert_eq!(
+            debug(ShutdownOutcome::Parked.exit_code()),
+            debug(ExitCode::SUCCESS)
+        );
+        assert_eq!(
+            debug(ShutdownOutcome::TimedOut.exit_code()),
+            debug(ExitCode::FAILURE)
+        );
+        assert_eq!(
+            debug(ShutdownOutcome::Forced.exit_code()),
+            debug(ExitCode::from(130))
+        );
     }
 }

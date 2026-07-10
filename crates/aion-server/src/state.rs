@@ -823,9 +823,18 @@ impl ServerState {
         // configured distribution name (already captured for the snapshot).
         let publisher = Arc::new(self.inner.cluster_publisher.clone());
         let self_node = self.inner.cluster_self_node.clone().unwrap_or_default();
+        // #253: adoption re-runs the terminal-workflow outbox settlement sweep
+        // over the widened owned-shard scope, so a dead peer's stranded row for
+        // a terminal workflow is settled — never re-armed — by its adopter.
+        // With no outbox commissioned there is nothing to settle and the
+        // adopter delegates straight to the engine.
+        let adopter = Arc::new(crate::cluster::OutboxSettlingAdopter::new(
+            engine,
+            self.inner.outbox_store.clone(),
+        ));
         let supervisor = crate::cluster::ClusterSupervisor::new(
             cluster_store,
-            engine,
+            adopter,
             self.inner.watched_peers.clone(),
             config,
         )

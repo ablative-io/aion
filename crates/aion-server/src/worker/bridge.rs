@@ -39,9 +39,16 @@
 //!   instead (the correlated-reply awaiter wakes the moment the connection
 //!   closes) and resolves the dispatch with the same retryable lost-worker
 //!   failure.
-//! - **Drain timeout at shutdown** — the shutdown coordinator fails all
+//! - **Graceful-drain park (#207)** — during a drain, a worker stream ending
+//!   (or the drain-timeout backstop) PARKS the worker's in-flight tasks
+//!   through [`ActivityCompletionSink::park_activity`]: the waiter resolves
+//!   with the ephemeral parked sentinel
+//!   ([`aion::PARKED_ACTIVITY_REASON`]), nothing is recorded or delivered,
+//!   and restart recovery re-dispatches the dangling ordinal — kill -9
+//!   convergence.
+//! - **Drain timeout at shutdown** — the shutdown coordinator parks all
 //!   remaining in-flight tasks through the sink
-//!   (`HeartbeatTracker::fail_all_in_flight_workers`).
+//!   (`HeartbeatTracker::park_all_in_flight_workers`).
 //! - **Channel teardown** — every sender for the pending entry is dropped
 //!   (a cleanup path removed the entry without completing it); surfaced as
 //!   a channel-closed dispatch error, never a hang.
@@ -168,6 +175,18 @@ impl PendingActivities {
         rx
     }
 
+    /// Test seam: register a pending waiter exactly as a live dispatch does,
+    /// so crate-internal tests outside this module (the stream-teardown
+    /// park-vs-fail pins) can observe how a sweep resolves it.
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(
+        &self,
+        workflow_id: WorkflowId,
+        activity_id: ActivityId,
+    ) -> SyncReceiver {
+        self.insert(workflow_id, activity_id)
+    }
+
     /// Install the unmatched-completion delivery callback (idempotent).
     ///
     /// Set once, after construction, when the durable outbox is enabled. A
@@ -235,6 +254,33 @@ impl PendingActivities {
 }
 
 impl ActivityCompletionSink for PendingActivities {
+    /// Park one in-flight dispatch for restart recovery (#207): resolve the
+    /// matched waiter with the ephemeral parked sentinel, and nothing else.
+    ///
+    /// This resolution is MANDATORY, not an optimization: the default
+    /// `ActivityDispatcher::dispatch_async` runs the dispatcher's blocking
+    /// `std::sync::mpsc::recv()` on tokio's blocking pool, and tokio `Runtime`
+    /// drop joins blocking threads — an unresolved waiter would wedge process
+    /// exit indefinitely. An unmatched dispatch (already resolved by another
+    /// path) is a no-op: a park is NEVER routed to the outbox delivery
+    /// callback, because it is not a failure and must never reach a workflow.
+    fn park_activity(
+        &self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<(), ServerError> {
+        let matched = self
+            .pending
+            .remove(&(workflow_id.clone(), activity_id.clone()));
+        if let Some((_, sender)) = matched {
+            // A send failure means the waiter side already dropped its
+            // receiver (the dispatch is being cleaned up concurrently) —
+            // benign: there is no thread left to unblock.
+            let _ = sender.send(Err(aion::PARKED_ACTIVITY_REASON.to_owned()));
+        }
+        Ok(())
+    }
+
     fn complete_activity(&self, completion: ActivityCompletion) -> Result<(), ServerError> {
         let result = match completion.outcome {
             ActivityCompletionOutcome::Succeeded(payload) => {
@@ -814,6 +860,24 @@ impl WorkerActivityDispatcher {
         self.pending
             .pending
             .remove(&(context.workflow_id.clone(), context.activity_id.clone()));
+        // A parked dispatch (#207) is not a failure: the server is draining and
+        // restart recovery re-dispatches the ordinal. Info, never error — a
+        // routine deploy must not emit an ActivityFailed log per in-flight
+        // dispatch (the incident's alarm noise).
+        if let Err(reason) = &result
+            && aion::is_parked_reason(reason)
+        {
+            tracing::info!(
+                operation = "activity_dispatch",
+                namespace = %self.namespace,
+                workflow_id = %context.workflow_id,
+                activity_id = %context.activity_id,
+                activity_type = context.activity_type,
+                worker_id = ?context.worker_id,
+                "activity parked for restart recovery"
+            );
+            return result;
+        }
         log_activity_completion(context, result.is_ok());
         result.inspect_err(|reason| {
             log_worker_error(
@@ -1261,6 +1325,57 @@ mod tests {
                 .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
                 .is_empty(),
             "a matched completion must deliver to its waiter, not the outbox callback"
+        );
+        Ok(())
+    }
+
+    /// #207: parking resolves the matched waiter with the ephemeral parked
+    /// sentinel — the exact string the engine's retry loop classifies as
+    /// `Parked` — and nothing else.
+    #[test]
+    fn park_activity_resolves_matched_waiter_with_the_parked_sentinel() -> Result<(), ServerError> {
+        let pending = PendingActivities::default();
+        let workflow_id = WorkflowId::new_v4();
+        let id = activity_id(11);
+        let rx = pending.insert(workflow_id.clone(), id.clone());
+
+        pending.park_activity(&workflow_id, &id)?;
+        let result = rx
+            .recv_timeout(Duration::from_millis(50))
+            .map_err(|e| ServerError::worker_dispatch("", "", format!("channel: {e}")))?;
+        assert_eq!(result, Err(aion::PARKED_ACTIVITY_REASON.to_owned()));
+        Ok(())
+    }
+
+    /// #207: an unmatched park is a no-op and is NEVER routed to the outbox
+    /// delivery callback — a park is not a failure and must never reach a
+    /// workflow.
+    #[test]
+    fn unmatched_park_is_a_noop_and_never_reaches_the_outbox_callback() -> Result<(), ServerError> {
+        let pending = PendingActivities::default();
+        let callback = Arc::new(RecordingOutboxCallback {
+            live: true,
+            ..RecordingOutboxCallback::default()
+        });
+        pending.set_outbox_delivery(callback.clone());
+
+        pending.park_activity(&WorkflowId::new_v4(), &activity_id(12))?;
+
+        assert!(
+            callback
+                .failures
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
+                .is_empty(),
+            "a park must never be delivered as an outbox failure"
+        );
+        assert!(
+            callback
+                .completions
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording outbox callback"))?
+                .is_empty(),
+            "a park must never be delivered as an outbox completion"
         );
         Ok(())
     }

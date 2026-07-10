@@ -329,12 +329,14 @@ impl Recorder {
         .await
     }
 
-    /// Records workflow completion.
+    /// Records workflow completion, then settles the workflow's live outbox
+    /// rows (#253).
     ///
     /// # Errors
     ///
     /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
-    /// tracker cannot advance after a successful append.
+    /// tracker cannot advance after a successful append. A settle failure never fails the
+    /// recorded terminal (see [`Self::settle_terminal_outbox_rows_nonfatal`]).
     pub async fn record_workflow_completed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -344,15 +346,19 @@ impl Recorder {
             envelope,
             result,
         })
-        .await
+        .await?;
+        self.settle_terminal_outbox_rows_nonfatal().await;
+        Ok(())
     }
 
-    /// Records terminal workflow failure.
+    /// Records terminal workflow failure, then settles the workflow's live
+    /// outbox rows (#253).
     ///
     /// # Errors
     ///
     /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
-    /// tracker cannot advance after a successful append.
+    /// tracker cannot advance after a successful append. A settle failure never fails the
+    /// recorded terminal (see [`Self::settle_terminal_outbox_rows_nonfatal`]).
     pub async fn record_workflow_failed(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -362,15 +368,19 @@ impl Recorder {
             envelope,
             error,
         })
-        .await
+        .await?;
+        self.settle_terminal_outbox_rows_nonfatal().await;
+        Ok(())
     }
 
-    /// Records workflow cancellation.
+    /// Records workflow cancellation, then settles the workflow's live outbox
+    /// rows (#253).
     ///
     /// # Errors
     ///
     /// Returns [`DurabilityError`] if the event store rejects the append or the sequence
-    /// tracker cannot advance after a successful append.
+    /// tracker cannot advance after a successful append. A settle failure never fails the
+    /// recorded terminal (see [`Self::settle_terminal_outbox_rows_nonfatal`]).
     pub async fn record_workflow_cancelled(
         &mut self,
         recorded_at: DateTime<Utc>,
@@ -380,7 +390,48 @@ impl Recorder {
             envelope,
             reason,
         })
-        .await
+        .await?;
+        self.settle_terminal_outbox_rows_nonfatal().await;
+        Ok(())
+    }
+
+    /// Settles the workflow's live (`Pending`/`Claimed`) outbox rows to
+    /// `Cancelled` after a durably recorded workflow terminal (#253).
+    ///
+    /// The Recorder is the single-writer choke point every workflow terminal
+    /// flows through, so this hook closes the live window in which a terminal
+    /// workflow's staged dispatches could still be claimed and redelivered (the
+    /// zombie-round incident). Deliberately NOT run for continue-as-new: the
+    /// workflow continues, and the old run's stragglers are already neutralized
+    /// by run-scoped completion threading (OBX-011).
+    ///
+    /// A settle failure is loud but non-fatal: the terminal append already
+    /// committed (the workflow genuinely ended), and the boot sweep plus the
+    /// stale-claim reconciler gate repair any rows this settle missed.
+    async fn settle_terminal_outbox_rows_nonfatal(&self) {
+        match self
+            .store
+            .settle_workflow_outbox_rows_cancelled(&self.workflow_id)
+            .await
+        {
+            Ok(settled) if settled.is_empty() => {}
+            Ok(settled) => {
+                tracing::info!(
+                    workflow_id = %self.workflow_id,
+                    settled = settled.len(),
+                    dispatch_keys = ?settled,
+                    "settled outbox rows for terminal workflow"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    workflow_id = %self.workflow_id,
+                    %error,
+                    "failed to settle outbox rows after recording a workflow terminal; \
+                     the boot sweep or stale-claim reconciler will repair them"
+                );
+            }
+        }
     }
 
     /// Records workflow continue-as-new as a terminal event for this run.
@@ -980,6 +1031,7 @@ fn terminal_recorded_at(history: &[Event]) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::future::Future;
     use std::io;
     use std::sync::{Arc, Mutex};
 
@@ -1690,6 +1742,141 @@ mod tests {
         }
         assert_eq!(recorder.current_head(), u64::MAX);
         assert!(store.read_history(&workflow_id).await?.is_empty());
+        Ok(())
+    }
+
+    /// #253 settle-at-terminal: every workflow terminal the Recorder records
+    /// (completed / failed / cancelled) settles the workflow's outbox rows
+    /// through the store seam, AND a settle failure never fails the recorded
+    /// terminal. The spy's `settle_workflow_outbox_rows_cancelled` returns an
+    /// `Err` sentinel, so each terminal here succeeding while the call is
+    /// recorded proves both halves at once.
+    #[tokio::test]
+    async fn workflow_terminals_settle_outbox_rows_and_settle_errors_are_nonfatal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion_store::testing::ShardSeamSpy;
+
+        type TerminalRecorder = fn(
+            &mut Recorder,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<(), DurabilityError>> + Send + '_>,
+        >;
+        let terminals: [(&str, TerminalRecorder); 3] = [
+            ("completed", |recorder| {
+                Box::pin(async move {
+                    recorder
+                        .record_workflow_completed(
+                            recorded_at(2),
+                            Payload::from_json(&json!({"label": "result"})).map_err(|error| {
+                                DurabilityError::HistoryShape {
+                                    reason: error.to_string(),
+                                }
+                            })?,
+                        )
+                        .await
+                })
+            }),
+            ("failed", |recorder| {
+                Box::pin(async move {
+                    recorder
+                        .record_workflow_failed(
+                            recorded_at(2),
+                            aion_core::WorkflowError {
+                                message: String::from("boom"),
+                                details: None,
+                            },
+                        )
+                        .await
+                })
+            }),
+            ("cancelled", |recorder| {
+                Box::pin(async move {
+                    recorder
+                        .record_workflow_cancelled(recorded_at(2), String::from("operator"))
+                        .await
+                })
+            }),
+        ];
+
+        for (label, record_terminal) in terminals {
+            let workflow_id = workflow_id(31);
+            let spy = Arc::new(ShardSeamSpy::new());
+            let store: Arc<dyn aion_store::EventStore> = Arc::clone(&spy) as _;
+            let mut recorder = Recorder::new(workflow_id.clone(), Arc::clone(&store));
+            recorder
+                .record_workflow_started(
+                    recorded_at(1),
+                    super::WorkflowStartRecord {
+                        workflow_type: String::from("checkout"),
+                        input: payload("input")?,
+                        run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                        parent_run_id: None,
+                        package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                    },
+                )
+                .await?;
+
+            record_terminal(&mut recorder).await.map_err(|error| {
+                format!("terminal `{label}` must record despite the settle Err sentinel: {error}")
+            })?;
+
+            let history = store.read_history(&workflow_id).await?;
+            assert_eq!(
+                history.len(),
+                2,
+                "terminal `{label}` must be durably recorded"
+            );
+            let calls = spy.calls();
+            assert!(
+                calls.contains(&format!(
+                    "settle_workflow_outbox_rows_cancelled:{workflow_id}"
+                )),
+                "terminal `{label}` must settle the workflow's outbox rows; saw {calls:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #253: continue-as-new is NOT a settle point — the workflow continues,
+    /// and the old run's stragglers are neutralized by run-scoped completion
+    /// threading (OBX-011), so its rows must stay live.
+    #[tokio::test]
+    async fn continue_as_new_does_not_settle_outbox_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use aion_store::testing::ShardSeamSpy;
+
+        let workflow_id = workflow_id(32);
+        let spy = Arc::new(ShardSeamSpy::new());
+        let store: Arc<dyn aion_store::EventStore> = Arc::clone(&spy) as _;
+        let mut recorder = Recorder::new(workflow_id.clone(), store);
+        recorder
+            .record_workflow_started(
+                recorded_at(1),
+                super::WorkflowStartRecord {
+                    workflow_type: String::from("checkout"),
+                    input: payload("input")?,
+                    run_id: aion_core::RunId::new(uuid::Uuid::from_u128(1)),
+                    parent_run_id: None,
+                    package_version: aion_core::PackageVersion::new("a".repeat(64)),
+                },
+            )
+            .await?;
+        recorder
+            .record_workflow_continued_as_new(
+                recorded_at(2),
+                payload("continued")?,
+                None,
+                aion_core::RunId::new(uuid::Uuid::from_u128(2)),
+            )
+            .await?;
+
+        let calls = spy.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.starts_with("settle_workflow_outbox_rows_cancelled:")),
+            "continue-as-new must never settle the workflow's outbox rows; saw {calls:?}"
+        );
         Ok(())
     }
 }

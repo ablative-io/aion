@@ -374,6 +374,35 @@ pub trait WritableEventStore: Send + Sync + 'static {
         let _ = dispatch_key;
         Ok(())
     }
+
+    /// Idempotently settles EVERY live ([`crate::OutboxStatus::Pending`] or
+    /// [`crate::OutboxStatus::Claimed`]) outbox row of `workflow_id` to
+    /// [`crate::OutboxStatus::Cancelled`], returning the settled `dispatch_key`s (#253).
+    ///
+    /// This is the workflow-terminal settle the Recorder runs after durably recording a workflow
+    /// terminal (`WorkflowCompleted`/`WorkflowFailed`/`WorkflowCancelled`): a terminal workflow's
+    /// staged dispatches must never be redelivered, so its live rows are retired to the terminal
+    /// `Cancelled` disposition that re-arm and claim contractually never touch. Rows already in
+    /// `Done`/`Failed`/`Cancelled` are left untouched, so the settle is idempotent. Reopen still
+    /// supersedes it: [`Self::rearm_outbox_pending`] forcibly returns any existing row — including a
+    /// `Cancelled` one — to `Pending`, so a reopened workflow's re-dispatches deliver again.
+    ///
+    /// The default is a no-op returning no settled keys, mirroring
+    /// [`Self::settle_outbox_row_cancelled`], so non-outbox test stores and legacy backends record
+    /// workflow terminals without requiring an outbox table. Outbox-aware backends override it and
+    /// share the implementation with [`crate::OutboxStore::cancel_outbox_rows_for_workflow`].
+    ///
+    /// # Errors
+    ///
+    /// Outbox-aware overrides return [`StoreError::Backend`] for backend boundary failures and
+    /// [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn settle_workflow_outbox_rows_cancelled(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        let _ = workflow_id;
+        Ok(Vec::new())
+    }
 }
 
 /// Convenience trait for concrete stores that support reads/timers, recorder

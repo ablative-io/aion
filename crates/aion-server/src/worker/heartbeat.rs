@@ -49,12 +49,15 @@ pub struct HeartbeatUpdate {
     pub liveness: TaskLiveness,
 }
 
-/// Tasks failed because a worker was declared lost.
+/// Tasks removed from tracking because a worker was declared lost.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LostWorkerReport {
     /// Lost worker removed from the connected-worker registry.
     pub worker_id: WorkerId,
-    /// In-flight activities surfaced to the engine as retryable failures.
+    /// In-flight activities swept off the tracker: surfaced to the engine as
+    /// retryable failures on the `fail_*` paths, or parked for restart
+    /// recovery (nothing recorded, nothing delivered) on the graceful-drain
+    /// `park_*` paths (#207).
     pub tasks: Vec<InFlightActivity>,
 }
 
@@ -341,6 +344,108 @@ impl HeartbeatTracker {
         Ok(reports)
     }
 
+    /// Park a drain-disconnected worker's in-flight tasks for restart recovery
+    /// (#207): deregister the worker, remove its tracked tasks, and resolve
+    /// each pending waiter through [`ActivityCompletionSink::park_activity`].
+    ///
+    /// The graceful-drain counterpart of [`Self::fail_disconnected_worker`]:
+    /// same deregister-before-collect ordering (same closed dispatch/disconnect
+    /// race), but NO completion is synthesized — the durable log keeps its
+    /// dangling scheduled/started trail, byte-equivalent to a kill -9, and
+    /// restart recovery re-dispatches it. Deregistered with the honest
+    /// [`WorkerDeathReason::Disconnect`](aion_core::WorkerDeathReason::Disconnect):
+    /// the transport genuinely dropped (the worker obeyed the drain request).
+    ///
+    /// # Errors
+    ///
+    /// Returns registry, tracker, or sink errors without retrying or rescheduling activities.
+    pub fn park_disconnected_worker(
+        &self,
+        worker_id: WorkerId,
+        registry: &ConnectedWorkerRegistry,
+        sink: &impl ActivityCompletionSink,
+    ) -> Result<LostWorkerReport, ServerError> {
+        self.park_lost_worker(
+            worker_id,
+            registry,
+            sink,
+            aion_core::WorkerDeathReason::Disconnect,
+        )
+    }
+
+    /// Park EVERY currently in-flight worker's tasks for restart recovery
+    /// (#207) — the drain-timeout backstop's bulk counterpart of
+    /// [`Self::fail_all_in_flight_workers`].
+    ///
+    /// Deregistered with the honest
+    /// [`WorkerDeathReason::Timeout`](aion_core::WorkerDeathReason::Timeout):
+    /// the drain window genuinely expired on these workers. Wakes drain waiters
+    /// after the sweep so `wait_for_empty` observes the emptied tracker.
+    ///
+    /// # Errors
+    ///
+    /// Returns registry, tracker, or sink errors without retrying or rescheduling activities.
+    pub fn park_all_in_flight_workers(
+        &self,
+        registry: &ConnectedWorkerRegistry,
+        sink: &impl ActivityCompletionSink,
+    ) -> Result<Vec<LostWorkerReport>, ServerError> {
+        let worker_ids = {
+            let state = self.state()?;
+            let mut worker_ids = state
+                .tasks
+                .values()
+                .map(|liveness| liveness.worker_id)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            worker_ids.sort_unstable();
+            worker_ids
+        };
+        let mut reports = Vec::new();
+        for worker_id in worker_ids {
+            let report = self.park_lost_worker(
+                worker_id,
+                registry,
+                sink,
+                aion_core::WorkerDeathReason::Timeout,
+            )?;
+            if !report.tasks.is_empty() {
+                reports.push(report);
+            }
+        }
+        self.empty.notify_waiters();
+        Ok(reports)
+    }
+
+    /// Shared park core (#207), structured exactly like [`Self::fail_lost_worker`]
+    /// — deregister BEFORE collecting tasks (see that method's race note) — but
+    /// resolving each waiter with the ephemeral parked sentinel instead of
+    /// synthesizing a lost-worker `ActivityFailed`. Idempotent for the same
+    /// reasons: `deregister_with_reason` no-ops on an already-removed worker and
+    /// each task is removed as it parks, so a second sweep (park or fail) sees
+    /// an empty report and resolves nothing.
+    fn park_lost_worker(
+        &self,
+        worker_id: WorkerId,
+        registry: &ConnectedWorkerRegistry,
+        sink: &impl ActivityCompletionSink,
+        reason: aion_core::WorkerDeathReason,
+    ) -> Result<LostWorkerReport, ServerError> {
+        registry.deregister_with_reason(worker_id, reason)?;
+        let tasks = self.remove_worker_tasks(worker_id)?;
+        for task in &tasks {
+            sink.park_activity(&task.workflow_id, &task.activity_id)?;
+            info!(
+                worker_id = ?worker_id,
+                workflow_id = %task.workflow_id,
+                activity_id = %task.activity_id,
+                "activity parked for restart recovery"
+            );
+        }
+        Ok(LostWorkerReport { worker_id, tasks })
+    }
+
     fn fail_lost_worker(
         &self,
         worker_id: WorkerId,
@@ -616,6 +721,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         completions: Mutex<Vec<ActivityCompletion>>,
+        parks: Mutex<Vec<(WorkflowId, ActivityId)>>,
     }
 
     impl ActivityCompletionSink for RecordingSink {
@@ -624,6 +730,18 @@ mod tests {
                 .lock()
                 .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
                 .push(completion);
+            Ok(())
+        }
+
+        fn park_activity(
+            &self,
+            workflow_id: &WorkflowId,
+            activity_id: &ActivityId,
+        ) -> Result<(), ServerError> {
+            self.parks
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
+                .push((workflow_id.clone(), activity_id.clone()));
             Ok(())
         }
     }
@@ -800,6 +918,133 @@ mod tests {
             ActivityCompletionOutcome::Failed(error)
                 if error.kind == ActivityErrorKind::Retryable && error.is_retryable()
         )));
+        Ok(())
+    }
+
+    /// #207: parking a drain-disconnected worker removes its tasks, deregisters
+    /// it, and PARKS each task through the sink — zero completions synthesized,
+    /// so the durable log stays byte-equivalent to a kill -9. A second park (or
+    /// a later fail sweep) finds nothing: the idempotent-deregister discipline
+    /// the fail path already proves holds for parks too.
+    #[test]
+    fn park_disconnected_worker_parks_tasks_without_synthesizing_completions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (registry, _registration, worker_id) = registry_with_worker()?;
+        let sink = RecordingSink::default();
+        let tracker = HeartbeatTracker::new(Duration::from_secs(5));
+        let workflow_id = workflow_id();
+        let start = Instant::now();
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id(60),
+            },
+            start,
+        )?;
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id(61),
+            },
+            start,
+        )?;
+
+        let report = tracker.park_disconnected_worker(worker_id, &registry, &sink)?;
+        assert_eq!(report.tasks.len(), 2);
+        assert_eq!(
+            tracker.in_flight_count()?,
+            0,
+            "parking must remove every tracked task so drain accounting reaches zero"
+        );
+        assert!(
+            registry
+                .workers_for("tenant-a", "default", "charge-card", None)?
+                .is_empty(),
+            "the parked worker must be deregistered from routing"
+        );
+        let parks = sink
+            .parks
+            .lock()
+            .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?;
+        assert_eq!(parks.len(), 2, "each task must be parked exactly once");
+        drop(parks);
+        assert!(
+            sink.completions
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
+                .is_empty(),
+            "parking must never synthesize an activity completion"
+        );
+
+        // Double-park and park-after-fail are no-ops: the idempotent core.
+        let second = tracker.park_disconnected_worker(worker_id, &registry, &sink)?;
+        assert!(second.tasks.is_empty());
+        let third = tracker.fail_disconnected_worker(worker_id, &registry, &sink)?;
+        assert!(third.tasks.is_empty());
+        assert_eq!(
+            sink.parks
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
+                .len(),
+            2,
+            "re-sweeping a parked worker must park nothing further"
+        );
+        assert!(
+            sink.completions
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
+                .is_empty(),
+            "a fail sweep after the park must fail nothing"
+        );
+        Ok(())
+    }
+
+    /// #207 drain-timeout backstop: the bulk park removes every worker's tasks,
+    /// parks each through the sink, and wakes drain waiters — never
+    /// synthesizing a completion.
+    #[tokio::test]
+    async fn park_all_in_flight_workers_parks_everything_and_wakes_drain_waiters()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (registry, _registration, worker_id) = registry_with_worker()?;
+        let sink = RecordingSink::default();
+        let tracker = HeartbeatTracker::new(Duration::from_secs(5));
+        let workflow_id = workflow_id();
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id(70),
+            },
+            Instant::now(),
+        )?;
+        // Arm a waiter on the tracker's empty notify BEFORE the bulk park.
+        let notified = tracker.empty.notified();
+        tokio::pin!(notified);
+
+        let reports = tracker.park_all_in_flight_workers(&registry, &sink)?;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].worker_id, worker_id);
+        assert_eq!(reports[0].tasks.len(), 1);
+        assert_eq!(tracker.in_flight_count()?, 0);
+        assert_eq!(
+            sink.parks
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
+                .len(),
+            1
+        );
+        assert!(
+            sink.completions
+                .lock()
+                .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
+                .is_empty(),
+            "the bulk park must never synthesize a completion"
+        );
+        tokio::time::timeout(Duration::from_millis(200), notified)
+            .await
+            .map_err(|_| "the bulk park must wake drain waiters")?;
         Ok(())
     }
 

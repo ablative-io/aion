@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{EventStore, RunSummary, StoreError, TimerEntry};
 
+mod outbox_settlement;
 mod package;
 mod range_read;
 
@@ -56,6 +57,36 @@ where
     package::put_package_route_repoints_without_touching_archives(make_store().await).await?;
     package::delete_package_removes_only_target_and_is_idempotent(make_store().await).await?;
     package::routes_list_in_workflow_type_order(make_store().await).await?;
+    Ok(())
+}
+
+/// Runs the workflow-terminal outbox settlement suite (#253) for a store that
+/// carries BOTH the [`crate::OutboxStore`] surface and the
+/// [`crate::WritableEventStore`] writer seam (the libSQL and haematite
+/// backends). Generic over the concrete store because no single trait object
+/// spans both surfaces.
+///
+/// The supplied factory is called once per scenario and must return a fresh,
+/// isolated store; a construction failure surfaces as the suite's error.
+///
+/// # Errors
+///
+/// Returns the first store-construction error, store error, or contract
+/// assertion failure encountered by the suite.
+pub async fn run_outbox_settlement_suite<MakeStore, MakeFuture, S>(
+    make_store: MakeStore,
+) -> Result<(), StoreError>
+where
+    MakeStore: Fn() -> MakeFuture,
+    MakeFuture: Future<Output = Result<S, StoreError>>,
+    S: crate::OutboxStore + crate::WritableEventStore,
+{
+    outbox_settlement::settle_flips_only_live_rows_and_is_idempotent(make_store().await?).await?;
+    outbox_settlement::stale_probe_is_readonly_and_matches_rearm_selection(make_store().await?)
+        .await?;
+    outbox_settlement::rearm_and_claim_never_touch_cancelled_rows(make_store().await?).await?;
+    outbox_settlement::reopen_rearm_resurrects_a_cancelled_row(make_store().await?).await?;
+    outbox_settlement::writer_seam_settle_matches_the_outbox_twin(make_store().await?).await?;
     Ok(())
 }
 

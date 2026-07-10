@@ -90,6 +90,73 @@ impl ShardAdopter for Engine {
     }
 }
 
+/// [`ShardAdopter`] over the live engine that, when the durable outbox is
+/// commissioned, re-runs the terminal-workflow outbox settlement sweep (#253)
+/// after each successful adoption.
+///
+/// The adoption fence has already widened this node's owned-shard scope by the
+/// time `Engine::adopt_shards` returns (mirroring the paused-runs `extend` the
+/// engine runs at the same point), so the sweep now enumerates the adopted
+/// shards' unsettled rows and settles those whose workflow is terminal —
+/// closing the failover half of the incident window: a dead node's stranded
+/// row for a terminal workflow must not be re-armed and redelivered by its
+/// adopter. A sweep failure is loud but never fails the adoption (the shards
+/// are durably adopted; the reconciler liveness gate remains the backstop).
+pub struct OutboxSettlingAdopter {
+    engine: Arc<Engine>,
+    outbox_store: Option<Arc<dyn aion_store::OutboxStore>>,
+}
+
+impl OutboxSettlingAdopter {
+    /// Build an adopter over the live engine; `outbox_store` is `Some` exactly
+    /// when the durable outbox is commissioned (there is nothing to settle
+    /// otherwise).
+    #[must_use]
+    pub fn new(
+        engine: Arc<Engine>,
+        outbox_store: Option<Arc<dyn aion_store::OutboxStore>>,
+    ) -> Self {
+        Self {
+            engine,
+            outbox_store,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ShardAdopter for OutboxSettlingAdopter {
+    async fn adopt_shards(&self, shards: &[usize]) -> Result<(), String> {
+        ShardAdopter::adopt_shards(self.engine.as_ref(), shards).await?;
+        let Some(outbox_store) = &self.outbox_store else {
+            return Ok(());
+        };
+        match crate::worker::settle_terminal_outbox_rows(
+            self.engine.store().as_ref(),
+            outbox_store.as_ref(),
+        )
+        .await
+        {
+            Ok(settled) if settled.is_empty() => {}
+            Ok(settled) => {
+                tracing::info!(
+                    ?shards,
+                    settled = settled.len(),
+                    "adoption sweep settled stranded outbox rows for terminal workflows"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    ?shards,
+                    %error,
+                    "adoption sweep failed to settle terminal workflows' outbox rows; \
+                     the reconciler liveness gate remains the backstop"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One peer the supervisor watches: its distribution name and the shards it owns
 /// (which this node will adopt if the peer dies).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -692,6 +759,101 @@ mod tests {
                 confirmations,
             },
         )
+    }
+
+    /// #253 adoption sweep: after a (single-node no-op) adoption, the
+    /// outbox-settling adopter runs the terminal-workflow settlement over the
+    /// widened scope — a terminal workflow's stranded Claimed row is settled
+    /// to Cancelled by the adoption itself, before any dispatcher can re-arm
+    /// or redeliver it on the adopting node.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn outbox_settling_adopter_settles_terminal_rows_after_adoption()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use aion::{EngineBuilder, RuntimeHandle, SignalRouter};
+        use aion_core::{Event, EventEnvelope};
+        use aion_store::{OutboxRow, OutboxStatus, OutboxStore, WritableEventStore, WriteToken};
+        use aion_store_libsql::LibSqlStore;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "aion-adopter-settle-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+
+        // Seed the incident state: a terminal (Failed) workflow owning one
+        // stranded Claimed outbox row.
+        let seeder = LibSqlStore::open(db_path.clone()).await?;
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        let envelope = |seq: u64| EventEnvelope {
+            seq,
+            recorded_at: chrono::Utc::now(),
+            workflow_id: workflow_id.clone(),
+        };
+        let events = vec![
+            Event::WorkflowStarted {
+                envelope: envelope(1),
+                workflow_type: String::from("dev_brief"),
+                input: aion_core::Payload::from_json(&serde_json::json!({}))?,
+                run_id: aion_core::RunId::new_v4(),
+                parent_run_id: None,
+                package_version: aion_core::PackageVersion::new("a".repeat(64)),
+            },
+            Event::WorkflowFailed {
+                envelope: envelope(2),
+                error: aion_core::WorkflowError {
+                    message: String::from("boom"),
+                    details: None,
+                },
+            },
+        ];
+        seeder
+            .append(WriteToken::recorder(), &workflow_id, &events, 0)
+            .await?;
+        let row = OutboxRow::pending(
+            workflow_id.clone(),
+            0,
+            String::from("norn_round"),
+            aion_core::Payload::from_json(&serde_json::json!({}))?,
+            chrono::Utc::now(),
+        );
+        let dispatch_key = row.dispatch_key.clone();
+        seeder
+            .append_outbox_batch(std::slice::from_ref(&row))
+            .await?;
+        assert_eq!(seeder.claim_outbox_rows(1).await?.len(), 1);
+
+        let engine = Arc::new(
+            EngineBuilder::new()
+                .store_arc(Arc::new(LibSqlStore::open(db_path.clone()).await?))
+                .in_memory_visibility()
+                .scheduler_threads(1)
+                .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
+                    Arc::new(aion::signal::ConcreteSignalRouter::new(runtime, handoff))
+                        as Arc<dyn SignalRouter>
+                })
+                .build()
+                .await?,
+        );
+        let outbox_store: Arc<dyn OutboxStore> =
+            Arc::new(LibSqlStore::open(db_path.clone()).await?);
+        let adopter =
+            OutboxSettlingAdopter::new(Arc::clone(&engine), Some(Arc::clone(&outbox_store)));
+
+        ShardAdopter::adopt_shards(&adopter, &[42])
+            .await
+            .map_err(|error| format!("adoption must succeed: {error}"))?;
+
+        let state = seeder
+            .outbox_row_state(&dispatch_key)
+            .await?
+            .ok_or("the stranded row must still exist")?;
+        assert_eq!(
+            state.status,
+            OutboxStatus::Cancelled,
+            "the adoption sweep must settle the terminal workflow's stranded row"
+        );
+        engine.shutdown()?;
+        Ok(())
     }
 
     #[tokio::test]

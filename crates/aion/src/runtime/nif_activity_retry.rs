@@ -30,6 +30,33 @@ use crate::runtime::nif_activity_dispatch::FIRST_DELIVERY_ATTEMPT;
 /// a typed `error.Retryable`).
 pub(super) const RETRYABLE_REASON_PREFIX: &str = "retryable:";
 
+/// Reason prefix of the ephemeral parked sentinel (#207). Never recorded to
+/// history, never delivered to workflow code, never crossing the SDK wire —
+/// it exists only to resolve a local pending waiter whose dispatch the server
+/// parked for restart recovery during a graceful drain.
+const PARKED_REASON_PREFIX: &str = "parked:";
+
+/// The parked-dispatch sentinel the server's graceful drain resolves an
+/// in-flight activity waiter with (#207).
+///
+/// Parking converges graceful shutdown onto the kill-9 recovery semantics: the
+/// durable log keeps its dangling `ActivityScheduled`/`ActivityStarted` trail
+/// (the proven re-dispatchable state the replay cursor exhausts into a live
+/// re-dispatch), and this sentinel only unblocks the local completion wait so
+/// process exit is never wedged on a blocking dispatcher thread. Defined here,
+/// next to the reason-classification the retry loop consumes, and re-used by
+/// `aion-server`'s drain path so both sides agree byte-for-byte.
+pub const PARKED_ACTIVITY_REASON: &str = "parked:server-draining";
+
+/// Whether a dispatcher failure reason is the parked-dispatch sentinel class
+/// (#207): the `parked:` prefix, mirroring [`is_retryable_reason`]'s prefix
+/// classification. Checked BEFORE the retry-policy filter — a parked dispatch
+/// must never consume retry budget nor be delivered as a failure.
+#[must_use]
+pub fn is_parked_reason(reason: &str) -> bool {
+    reason.starts_with(PARKED_REASON_PREFIX)
+}
+
 /// Whether a dispatcher failure reason is retryable-class.
 ///
 /// True exactly when the reason carries the `retryable:` prefix — the string
@@ -288,8 +315,9 @@ mod tests {
     };
 
     use super::{
-        Backoff, RetryPolicy, activity_settled, is_retryable_reason, latest_recorded_attempt,
-        next_delivery_attempt, retry_policy_from_config,
+        Backoff, PARKED_ACTIVITY_REASON, RetryPolicy, activity_settled, is_parked_reason,
+        is_retryable_reason, latest_recorded_attempt, next_delivery_attempt,
+        retry_policy_from_config,
     };
 
     fn config_with(retry: &str) -> String {
@@ -398,6 +426,19 @@ mod tests {
         assert!(!is_retryable_reason("timeout:deadline expired"));
         assert!(!is_retryable_reason("cancelled:operator"));
         assert!(!is_retryable_reason("unprefixed engine failure"));
+    }
+
+    /// The parked sentinel (#207) is its own class: never retryable-class (it
+    /// must not consume retry budget) and detected purely by the `parked:`
+    /// prefix, exactly like the retryable classification.
+    #[test]
+    fn parked_classification_is_prefix_scoped_and_disjoint_from_retryable() {
+        assert!(is_parked_reason(PARKED_ACTIVITY_REASON));
+        assert!(is_parked_reason("parked:other-drain-vocabulary"));
+        assert!(!is_parked_reason("retryable:worker lost"));
+        assert!(!is_parked_reason("terminal:boom"));
+        assert!(!is_parked_reason("unprefixed engine failure"));
+        assert!(!is_retryable_reason(PARKED_ACTIVITY_REASON));
     }
 
     fn envelope(seq: u64) -> EventEnvelope {

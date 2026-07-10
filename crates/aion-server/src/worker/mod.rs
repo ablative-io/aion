@@ -21,6 +21,8 @@ pub mod outbox_delivery;
 pub mod outbox_dispatcher;
 /// Live stale-claim outbox reconciler (dormant unless commissioned).
 pub mod outbox_reconciler;
+/// Terminal-workflow outbox settlement sweep for boot and shard adoption (#253).
+pub mod outbox_settle;
 /// Short-TTL per-namespace placement cache for the dispatcher (Control-Plane
 /// Phase 2, P2-P3).
 pub mod placement_cache;
@@ -55,6 +57,7 @@ pub use outbox_dispatcher::{
     OutboxDispatcher, OutboxDispatcherConfig, OutboxRowDispatch, WorkerOutboxDispatch,
 };
 pub use outbox_reconciler::{OutboxReconciler, OutboxReconcilerConfig};
+pub use outbox_settle::settle_terminal_outbox_rows;
 pub use placement_cache::{
     PlacementCache, WorkerSelection, preferred_node_order, worker_selection_for,
 };
