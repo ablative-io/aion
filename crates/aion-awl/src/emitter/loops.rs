@@ -147,9 +147,9 @@ fn loop_preflight<'l>(
     if let Some(span) = first_route_span(&looped.body) {
         return Err(EmitError::new(
             span,
-            "a `route` inside a `loop` body is not lowerable in the Gleam stopgap — the \
-             generated loop function has no early-exit channel; end the loop through `until` \
-             and route from the loop-carrying step's outcome clauses",
+            "a `route` inside a `loop` body is illegal (`check` refuses it) — a loop \
+             exits through `until`/`max`; route from the loop-carrying step's outcome \
+             clauses",
         ));
     }
     let mut max_refs = BTreeSet::new();
@@ -167,12 +167,11 @@ fn loop_preflight<'l>(
 }
 
 /// The span of the first `route` (statement or pipe terminator) anywhere in
-/// a loop body. The generated loop function appends the counter increment
-/// and the `until`/`max` exit after the lowered body, so a route can never
-/// reach tail position there: left in place it would be a discarded
-/// mid-function expression (a `route <outcome>` that never ends the run, a
-/// `route <step>` that runs the target region's actions and then keeps
-/// looping). The stopgap refuses the shape up front.
+/// a loop body. The checker owns this refusal as a language rule (ruled
+/// 2026-07-11: loops exit via `until`/`max`, routing belongs to the step's
+/// outcome clauses); this scan stays as the defensive backstop for `emit`
+/// called on an unchecked document, where an unrefused route would become a
+/// discarded mid-function expression in the generated loop function.
 fn first_route_span(statements: &[Statement]) -> Option<Span> {
     for statement in statements {
         match statement {

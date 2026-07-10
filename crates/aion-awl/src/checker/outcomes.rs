@@ -5,7 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinaryOp, Expr, Guard, PredicateKind, RouteTarget, Step};
+use crate::Span;
+use crate::ast::{BinaryOp, Expr, Guard, PredicateKind, RouteTarget, Statement, Step};
 use crate::spanned::Spanned;
 
 use super::exprs::{View, check_args, type_of};
@@ -243,6 +244,24 @@ pub(super) fn check_clauses(
     step: &Step,
     env: &Env<'_>,
 ) {
+    // Loop exhaustion must be explicitly named (ruled 2026-07-11): a step
+    // whose body contains a `loop` must declare conditional outcome clauses
+    // covering the exhausted case; with zero clauses, `max` running out with
+    // `until` still false would fall through indistinguishably from success.
+    if step.outcomes.is_empty()
+        && let Some(span) = first_loop_span(&step.body)
+    {
+        w.err(
+            span,
+            format!(
+                "step `{}` contains a `loop` but declares no outcome clauses — an \
+                 exhausted loop (`max` reached with `until` still false) would fall \
+                 through indistinguishably from success; add conditional outcomes \
+                 (`when`/`otherwise`) covering the exhausted case",
+                step.name
+            ),
+        );
+    }
     if let Some(first) = step.outcomes.first()
         && super::graph::body_ends_in_route(&step.body)
     {
@@ -290,6 +309,25 @@ pub(super) fn check_clauses(
         check_route(w, view, &clause.route, env, None);
     }
     check_exhaustiveness(w, scope, step);
+}
+
+/// The span of the first `loop` in a step body, looking through fork
+/// branches. Substeps are deliberately skipped: a substep owns its outcome
+/// clauses, so a loop inside one answers to the substep's own coverage duty
+/// (this function runs for substeps too, via their `check_clauses` call).
+fn first_loop_span(statements: &[Statement]) -> Option<Span> {
+    for statement in statements {
+        match statement {
+            Statement::Loop(looped) => return Some(looped.span),
+            Statement::Fork(fork) => {
+                if let Some(span) = first_loop_span(&fork.body) {
+                    return Some(span);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `when x is present` narrows `x` from `T?` to `T` within its arm.

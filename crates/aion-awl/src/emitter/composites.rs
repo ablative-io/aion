@@ -1,6 +1,9 @@
 //! Composite (list/option) and builtin leaf codecs. Options in non-field
-//! positions keep the SDK's nullable form — mirroring the checker's
-//! recorded `[T?]` note awaiting a spec ruling.
+//! positions keep the SDK's nullable form; since the 2026-07-11 ruling the
+//! checker refuses `[T?]` (element-position `?`), so a checked document
+//! only reaches this path with optional lists (`[T]?`) and other whole-value
+//! options — the nullable rendering survives as the defensive lowering for
+//! unchecked documents.
 
 use std::collections::BTreeMap;
 

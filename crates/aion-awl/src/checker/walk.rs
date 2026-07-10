@@ -136,6 +136,18 @@ pub(super) fn walk_statements(
     let mut last = None;
     let mut routed_away: Option<bool> = None;
     for statement in statements {
+        // `route` is illegal inside a `loop` body (ruled 2026-07-11): routes
+        // connect steps and outcomes; a loop exits only through `until`/`max`.
+        if !w.loops.is_empty()
+            && let Some(span) = route_span_in_loop(statement)
+        {
+            w.err(
+                span,
+                "a `route` inside a `loop` body is illegal — a loop exits through its \
+                 `until` condition (or the `max` ceiling), and routing happens in the \
+                 step's outcome clauses after the loop",
+            );
+        }
         if routed_away == Some(false) {
             routed_away = Some(true);
             w.err(
@@ -149,6 +161,21 @@ pub(super) fn walk_statements(
         last = walk_statement(w, scope, statement, statements, owner, env);
     }
     last
+}
+
+/// The span of a route this statement carries directly — a `route` line
+/// anchors on the statement, a pipe chain on its `route` terminator's
+/// target. Nested block statements return `None`: their inner statements
+/// pass through this same check as the walk descends into them.
+fn route_span_in_loop(statement: &Statement) -> Option<Span> {
+    match statement {
+        Statement::Route(route) => Some(route.span),
+        Statement::Pipe(pipe) => match &pipe.end {
+            PipeEnd::Route(target) => Some(target.span),
+            PipeEnd::Bind(_) => None,
+        },
+        _ => None,
+    }
 }
 
 /// Whether a statement unconditionally transfers control away (a `route`

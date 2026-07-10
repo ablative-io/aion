@@ -4,9 +4,9 @@
 //!
 //! Optional record fields honor D4 (absence, never null): encoding omits an
 //! absent field entirely; decoding uses `decode.optional_field`, so an
-//! explicit `null` fails to decode. Options in non-field positions (list
-//! elements) keep the SDK's nullable form — mirroring the checker's
-//! recorded `[T?]` note awaiting a spec ruling.
+//! explicit `null` fails to decode. Element-position `?` (`[T?]`) is refused
+//! by the checker (ruled 2026-07-11); the remaining non-field options
+//! (optional lists and other whole values) keep the SDK's nullable form.
 
 use crate::RouteDirection;
 

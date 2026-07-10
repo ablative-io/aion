@@ -94,6 +94,27 @@ impl<'a> Ctx<'a> {
                 }
             },
             TypeRef::List { inner, .. } => {
+                // `?` is illegal in list-element position (ruled 2026-07-11):
+                // a list has no holes, so `[T?]` names nothing — and schema
+                // derivation cannot express element optionality. The element
+                // resolves as plain `T` to suppress downstream cascades.
+                if let TypeRef::Optional {
+                    span,
+                    inner: element,
+                } = inner.as_ref()
+                {
+                    let element_ty = self.resolve_type_ref(element);
+                    self.error(
+                        *span,
+                        format!(
+                            "a list cannot have optional elements — an absent element is \
+                             simply not in the list, and schema derivation cannot express \
+                             element optionality; use [{element_ty}] (or [{element_ty}]? \
+                             if the whole list may be absent)"
+                        ),
+                    );
+                    return Ty::List(std::rc::Rc::new(element_ty));
+                }
                 let element = self.resolve_type_ref(inner);
                 Ty::List(std::rc::Rc::new(element))
             }
