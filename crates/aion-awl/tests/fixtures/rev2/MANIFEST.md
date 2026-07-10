@@ -341,6 +341,20 @@ Invalid:
   fixtures were mechanically re-normalized through the printer to match; the flagship pair
   needed (and received) no edits — `print(parse(dev_brief.awl))` is byte-identical.
   (noncanonical_commas remains excluded from byte-identity goldens.)
+- Checker-phase rulings (2026-07-11), recorded where the sidecars left the stage or rule open:
+  every CHECK-staged sidecar passed at its recorded stage — no re-staging was needed (the
+  `construct_null_payload` judgment note resolves to CHECK: `null` lexes as an identifier and
+  the checker refuses the reference everywhere with a targeted absence-is-omission diagnostic).
+  Bare `route <outcome>` pickup is BY NAME, as `bare_route_no_binding` anticipated. Optional
+  (`?`) parameters may be omitted at call sites, mirroring record construction (spec-silent;
+  one rule for both argument surfaces). Type compatibility is structural for record shapes so
+  a schema-projected record satisfies a declared record with the same fields (dev_brief's
+  `config.lenses` items vs the declared `Lens`); display names stay nominal in diagnostics.
+  Route-cycle boundedness accepts a `max`-bounded loop on any step of the control-flow SCC
+  (route edges + fall-through edges); the diagnostic anchors on the first backward or self
+  route edge and its wording carries both pinned substrings ("cycle", "bound"). The
+  route-cycle/exhaustiveness/`unbounded` trio all anchor exactly where the sidecars pinned:
+  backward-edge route line / step header / loop header line respectively.
 - Outcome-clause layout — RULED at the same phase: a payload-constructing route
   (`route out(field: …)`) ALWAYS breaks after the guard comma onto its own line one level
   deeper; a bare route stays on the guard line when the clause fits 100 columns. The spec's

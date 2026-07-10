@@ -267,3 +267,71 @@ step only
     assert_eq!(positions, sorted);
     Ok(())
 }
+
+#[test]
+fn route_targeted_earlier_step_reads_a_later_steps_binding() -> TestResult {
+    // Bindings flow along the GRAPH, not file order: `hand_back` is written
+    // before `produce` but is route-targeted by it, so `made` (bound in
+    // `produce`) is guaranteed on every path into `hand_back`.
+    let source = "\
+//! Bindings flow along routes, not file order.
+workflow backward_flow
+  input seed: String
+  outcome done: type Out, route success
+
+type Out { text: String }
+
+worker w
+  action start(seed: String) -> Out
+  action make(text: String) -> Out
+
+step kick_off
+  start(seed: seed) -> begun
+
+  outcome always: when begun.text == \"\", route produce
+  outcome fallback: otherwise, route produce
+
+step hand_back
+  made |> route done
+
+step produce
+  make(text: begun.text) -> made
+
+  outcome always: when made.text == made.text, route hand_back
+  outcome fallback: otherwise, route done(text: made.text)
+";
+    let document = parse(source)?;
+    let errors = check(&document);
+    assert_eq!(errors, Vec::new(), "must check clean");
+    Ok(())
+}
+
+#[test]
+fn duplicate_step_names_are_refused() -> TestResult {
+    let source = "\
+//! Two steps, one name.
+workflow twin_steps
+  input name: String
+  outcome done: type Out, route success
+
+type Out { text: String }
+
+worker w
+  action shout(text: String) -> Out
+
+step speak
+  shout(text: name) -> first_out
+
+step speak
+  first_out |> route done
+";
+    let document = parse(source)?;
+    let errors = check(&document);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("duplicate step `speak`")),
+        "missing duplicate-step error; got {errors:#?}"
+    );
+    Ok(())
+}
