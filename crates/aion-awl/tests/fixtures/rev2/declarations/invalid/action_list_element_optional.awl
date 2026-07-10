@@ -1,0 +1,13 @@
+//! An action signature tries to take a list of optional elements.
+workflow roster_check
+  input names: [String]
+  outcome checked: type Roster, route success
+
+type Roster { present: Int }
+
+worker roll_call
+  action tally(names: [String?]) -> Roster
+
+step tally_up
+  tally(names: names) -> roster
+  roster |> route checked

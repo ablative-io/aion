@@ -1,0 +1,13 @@
+//! A list tries to declare optional elements — a list has no holes.
+workflow tag_batch
+  input names: [String]
+  outcome tagged: type Batch, route success
+
+type Batch { tags: [String?] }
+
+worker tagger
+  action tag_all(names: [String]) -> Batch
+
+step tag
+  tag_all(names: names) -> batch
+  batch |> route tagged

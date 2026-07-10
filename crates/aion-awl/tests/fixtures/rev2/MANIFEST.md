@@ -73,6 +73,9 @@ Invalid (stage / substring / span line):
 - `type_name_not_title_case.awl` — CHECK "TitleCase" @7.
 - `field_name_not_snake_case.awl` — CHECK "snake_case" @6.
 - `enum_variant_not_title_case.awl` — CHECK "TitleCase" @7.
+- `list_element_optional.awl` — `[String?]` field type in a shorthand type declaration (ruled
+  2026-07-11: `?` illegal in list-element position) → CHECK "element" @6 (span on the element
+  type).
 
 ## schema-doors — inline `schema {…}`, file import, `?` optionality
 
@@ -162,6 +165,8 @@ Invalid:
   (inferred: "checked against the declaration" is ill-defined under duplicates).
 - `action_unknown_return_type.awl` — return type never declared → CHECK "Ack" @10 (downstream
   untyped-binding cascades possible; substring pins the primary).
+- `action_list_element_optional.awl` — `[String?]` action parameter (ruled 2026-07-11: `?`
+  illegal in list-element position, signature surface) → CHECK "element" @9.
 
 ## step-bodies — calls, bindings, pipes, combinators, wait/sleep, literals
 
@@ -305,6 +310,14 @@ Invalid:
 - `binding_not_on_all_paths.awl` — step reachable by two routes reads a binding made on only
   one of them (spec: "the checker rejects reads of bindings not guaranteed on every path into
   a step") → CHECK "trimmed" @31.
+- `loop_step_no_outcomes.awl` — loop-carrying step with ZERO outcome clauses (ruled 2026-07-11:
+  exhaustion must be explicitly named; the strong reading) → CHECK "exhaust" @16 (anchored on
+  the loop line — the sibling of `loop_exhaustion_uncovered`'s step-header anchor).
+- `route_in_loop_body.awl` — `route` statement inside a loop body (ruled 2026-07-11: loops exit
+  via `until`/`max`; routing is the step's outcomes' job) → CHECK "`loop` body" @17 (span on
+  the route).
+- `pipe_route_in_loop_body.awl` — pipe-chain `|> route` terminator inside a loop body (same
+  ruling, pipe surface) → CHECK "`loop` body" @17 (span on the route target).
 
 ## Corpus-wide conventions and recorded judgments
 
@@ -381,7 +394,24 @@ Invalid:
   (coinductive in-progress pair set; recursive types still terminate). Dead control flow is
   refused: statements behind an unconditional body route and outcome clauses behind a
   body-terminal route. Call-site config on CHILD calls is refused (the engine routes
-  children, not a queue). OPEN, flagged for spec reconciliation before ratification (recorded,
-  not enforced): a loop-carrying step with ZERO outcome clauses keeps the permissive reading
-  (exhaustion falls through as the implicit outcome); `[T?]` in list-element position remains
-  accepted by the checker while schema derivation drops the element `?` — needs a ruling.
+  children, not a queue).
+- Ratified rulings (Tom, 2026-07-11) — the two items previously OPEN here are RESOLVED, plus a
+  third moved up from the emitter stopgap:
+  - R1, loop exhaustion must be explicitly named: a step whose body contains a `loop` (fork
+    branches included; a substep answers for its own clauses) MUST declare conditional outcome
+    clauses covering the exhausted case — a loop-carrying step with zero outcome clauses is a
+    CHECK error anchored on the loop (`loop_step_no_outcomes`). The permissive fall-through
+    reading is dead.
+  - R2, `?` is illegal in list-element position: `[T?]` is refused at CHECK in every type
+    position (shorthand fields, inputs/signals/outcomes, action/child signatures — one rule at
+    type-reference resolution), `[T]?` stays legal, and the imported-schema projection cannot
+    manufacture the shape (only object properties wrap in `?`; a null-admitting `items` type
+    is already refused as a null union). Fixtures: `list_element_optional`,
+    `action_list_element_optional`; the remaining positions are pinned by
+    `tests/checker_rulings.rs`.
+  - R3, `route` is illegal inside a `loop` body: statement and pipe-chain `|> route`
+    terminator alike, refused at CHECK with the span on the route (`route_in_loop_body`,
+    `pipe_route_in_loop_body`). The emitter's emit-time refusal survives only as a defensive
+    backstop for unchecked documents. No sidecar re-staging was needed: every sidecar stage
+    was already PARSE/CHECK — the old route-in-loop refusal was pinned by an emitter unit
+    test, now reframed as the backstop pin.

@@ -1,0 +1,24 @@
+//! A pipe chain routes away from inside the loop instead of the step's outcomes.
+workflow drain_queue
+  input queue: String
+  input max_sweeps: Int
+
+  outcome drained: type Sweep, route success
+  outcome stalled: type Sweep, route failure
+
+type Sweep { remaining: Int, clean: Bool }
+
+worker sweeper
+  action sweep(queue: String, prior: Sweep) -> Sweep
+
+step drain
+  loop state = Sweep(remaining: 1, clean: false) counting sweeps
+    sweep(queue: queue, prior: state) -> state
+    state |> route stalled
+    until state.clean
+    max max_sweeps
+
+  outcome clean: when state.clean,
+    route drained(remaining: state.remaining, clean: state.clean)
+  outcome dirty: otherwise,
+    route stalled(remaining: state.remaining, clean: state.clean)
