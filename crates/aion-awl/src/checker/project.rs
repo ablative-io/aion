@@ -306,6 +306,11 @@ impl Projector<'_, '_, '_> {
         path: &mut Vec<String>,
         depth: usize,
     ) -> Ty {
+        // The projection can never manufacture `[T?]` (illegal since the
+        // 2026-07-11 ruling): only object properties absent from `required`
+        // wrap in Optional, and the one JSON spelling of an optional-ish
+        // element — a null-admitting `items` type — is already refused above
+        // as a null union. The element here is always a plain `T`.
         let element = match object.get("items") {
             Some(items) => {
                 path.push("items".to_owned());

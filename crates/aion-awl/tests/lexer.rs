@@ -55,11 +55,11 @@ fn entire_rev2_corpus_lexes_without_error() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rev2");
     let mut files = Vec::new();
     collect_awl_files(&root, &mut files)?;
-    // 158 .awl fixtures at the lexer fix round (157 from the fixtures phase
-    // + inline_verbatim_constraints.awl); a lower count means silent corpus
-    // loss, not a wrong root.
+    // 164 .awl fixtures after the 2026-07-11 ratified-rulings additions
+    // (159 post-integration + 5 ruling fixtures); a lower count means
+    // silent corpus loss, not a wrong root.
     assert!(
-        files.len() >= 158,
+        files.len() >= 164,
         "corpus walk found only {} fixtures — corpus lost files or wrong root?",
         files.len()
     );

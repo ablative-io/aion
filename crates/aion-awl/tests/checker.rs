@@ -142,7 +142,7 @@ fn every_check_staged_invalid_fixture_is_rejected_as_expected() -> TestResult {
             checked += 1;
         }
     }
-    assert!(checked >= 74, "only {checked} CHECK-staged fixtures ran");
+    assert!(checked >= 79, "only {checked} CHECK-staged fixtures ran");
     Ok(())
 }
 

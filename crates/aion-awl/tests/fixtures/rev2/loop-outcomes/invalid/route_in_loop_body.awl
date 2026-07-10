@@ -1,0 +1,24 @@
+//! A route tries to leave from inside the loop instead of the step's outcomes.
+workflow build_until_green
+  input target: String
+  input max_rounds: Int
+
+  outcome done:   type Round, route success
+  outcome bailed: type Round, route failure
+
+type Round { summary: String, gates_green: Bool }
+
+worker builder
+  action build_round(target: String, prior: Round) -> Round
+
+step build
+  loop round = Round(summary: "", gates_green: false) counting rounds
+    build_round(target: target, prior: round) -> round
+    route bailed(summary: round.summary, gates_green: round.gates_green)
+    until round.gates_green
+    max max_rounds
+
+  outcome green: when round.gates_green,
+    route done(summary: round.summary, gates_green: round.gates_green)
+  outcome spent: otherwise,
+    route bailed(summary: "spent", gates_green: false)
