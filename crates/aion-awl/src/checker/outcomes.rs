@@ -32,8 +32,10 @@ enum RouteKind {
     Step,
     /// A workflow outcome with its payload type.
     Outcome(String, Ty),
-    /// A sibling substep or a parent outcome arm.
-    Local,
+    /// A sibling substep.
+    Sibling,
+    /// A parent outcome arm.
+    ParentArm,
     /// A name that exists only outside the parent step.
     Escapes(String),
     /// No such target anywhere.
@@ -54,10 +56,10 @@ fn resolve_route(w: &Walker<'_, '_>, env: &Env<'_>, name: &str) -> RouteKind {
             }
         }
         Env::Substep { parent, siblings } => {
-            if siblings.iter().any(|sibling| sibling == name)
-                || parent.outcomes.iter().any(|clause| clause.name == name)
-            {
-                RouteKind::Local
+            if siblings.iter().any(|sibling| sibling == name) {
+                RouteKind::Sibling
+            } else if parent.outcomes.iter().any(|clause| clause.name == name) {
+                RouteKind::ParentArm
             } else if top_step || outcome.is_some() {
                 RouteKind::Escapes(parent.name.clone())
             } else {
@@ -77,13 +79,46 @@ pub(super) fn check_route(
     piped: Option<Ty>,
 ) {
     match resolve_route(w, env, &target.name) {
-        RouteKind::Step | RouteKind::Local => {
-            if target.payload.is_some() {
+        RouteKind::Step | RouteKind::Sibling => {
+            if piped.is_some() {
+                w.err(
+                    target.name_span,
+                    format!(
+                        "a piped route carries the piped value as the payload, but `{}` \
+                         is a step and steps receive bindings, not payloads — bind the \
+                         value (`-> name`) and `route {}` separately",
+                        target.name, target.name
+                    ),
+                );
+            } else if target.payload.is_some() {
                 w.err(
                     target.name_span,
                     format!(
                         "routing to step `{}` carries no payload — steps receive \
                          bindings, not payloads",
+                        target.name
+                    ),
+                );
+            }
+        }
+        RouteKind::ParentArm => {
+            if piped.is_some() {
+                w.err(
+                    target.name_span,
+                    format!(
+                        "a piped route carries the piped value as the payload, but `{}` \
+                         is a parent outcome arm — the parent's own outcome clause \
+                         carries the exit; bind the value (`-> name`) and `route {}` \
+                         separately",
+                        target.name, target.name
+                    ),
+                );
+            } else if target.payload.is_some() {
+                w.err(
+                    target.name_span,
+                    format!(
+                        "routing to the parent outcome arm `{}` carries no payload — \
+                         the parent's own outcome clause carries the exit",
                         target.name
                     ),
                 );
@@ -208,6 +243,18 @@ pub(super) fn check_clauses(
     step: &Step,
     env: &Env<'_>,
 ) {
+    if let Some(first) = step.outcomes.first()
+        && super::graph::body_ends_in_route(&step.body)
+    {
+        w.err(
+            first.name_span,
+            format!(
+                "the outcome clauses of step `{}` can never fire — its body always \
+                 routes away before outcomes are evaluated",
+                step.name
+            ),
+        );
+    }
     let count = step.outcomes.len();
     for (position, clause) in step.outcomes.iter().enumerate() {
         let mut narrow: Option<(String, Ty)> = None;

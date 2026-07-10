@@ -4,27 +4,30 @@
 //! file), the final pass emits diagnostics.
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use crate::Span;
-use crate::ast::{
-    CallStmt, ForkHeader, ForkStmt, LoopStmt, PipeEnd, PipeStmt, RetrySpec, SpawnStmt, Statement,
-    Step, WaitStmt,
-};
-use crate::spanned::Spanned;
+use crate::ast::{CallStmt, PipeEnd, PipeStmt, RetrySpec, SpawnStmt, Statement, Step, WaitStmt};
 
+use super::blocks::{walk_fork, walk_loop};
 use super::context::Ctx;
-use super::exprs::{View, check_args, type_of};
+use super::exprs::{View, check_args};
 use super::graph::StepGraph;
 use super::outcomes::{Env, check_clauses, check_route};
 use super::stages::walk_pipe;
-use super::types::{Ty, assignable, resolve};
+use super::types::{Ty, assignable};
 
 /// One active `loop`, for the sanctioned threaded-value rebinding.
 pub(super) struct LoopFrame {
-    var: String,
-    seed_ty: Ty,
-    rebound: bool,
+    /// The threaded name.
+    pub(super) var: String,
+    /// The seed's type; every rebind must stay assignable to it.
+    pub(super) seed_ty: Ty,
+    /// Whether the loop body rebound the threaded name at loop-body scope.
+    pub(super) rebound: bool,
+    /// The fork-branch nesting depth the loop was declared at: a bind made
+    /// deeper (inside a collection-fork branch, whose bindings never
+    /// escape) is not a rebind of the threaded value.
+    pub(super) fork_depth: usize,
 }
 
 /// The flow-walk state for one pass.
@@ -38,7 +41,9 @@ pub(super) struct Walker<'c, 'a> {
     /// Whether diagnostics are recorded (final pass only).
     pub(super) emit: bool,
     /// Stack of active loops.
-    loops: Vec<LoopFrame>,
+    pub(super) loops: Vec<LoopFrame>,
+    /// Current collection-fork branch nesting depth.
+    pub(super) fork_depth: usize,
 }
 
 impl Walker<'_, '_> {
@@ -69,6 +74,7 @@ pub(super) fn run(ctx: &mut Ctx<'_>, graph: &StepGraph) {
             next: BTreeMap::new(),
             emit: pass == 2,
             loops: Vec::new(),
+            fork_depth: 0,
         };
         let doc = walker.ctx.doc;
         for (position, step) in doc.steps.iter().enumerate() {
@@ -128,10 +134,45 @@ pub(super) fn walk_statements(
     env: &Env<'_>,
 ) -> Option<Ty> {
     let mut last = None;
+    let mut routed_away: Option<bool> = None;
     for statement in statements {
+        if routed_away == Some(false) {
+            routed_away = Some(true);
+            w.err(
+                statement_span(statement),
+                "unreachable statement — the `route` above always transfers control away",
+            );
+        }
+        if routed_away.is_none() && is_unconditional_route(statement) {
+            routed_away = Some(false);
+        }
         last = walk_statement(w, scope, statement, statements, owner, env);
     }
     last
+}
+
+/// Whether a statement unconditionally transfers control away (a `route`
+/// line or a pipe chain terminating in `route`).
+fn is_unconditional_route(statement: &Statement) -> bool {
+    match statement {
+        Statement::Route(_) => true,
+        Statement::Pipe(pipe) => matches!(pipe.end, PipeEnd::Route(_)),
+        _ => false,
+    }
+}
+
+fn statement_span(statement: &Statement) -> Span {
+    match statement {
+        Statement::Call(call) => call.span,
+        Statement::Spawn(spawn) => spawn.span,
+        Statement::Pipe(pipe) => pipe.span,
+        Statement::Wait(wait) => wait.span,
+        Statement::Sleep(sleep) => sleep.span,
+        Statement::Fork(fork) => fork.span,
+        Statement::Loop(looped) => looped.span,
+        Statement::Route(route) => route.span,
+        Statement::SubStep(sub) => sub.span,
+    }
 }
 
 fn walk_statement(
@@ -184,7 +225,16 @@ pub(super) fn insert_binding(
     ty: Ty,
     span: Span,
 ) {
-    if let Some(frame) = w.loops.iter_mut().rev().find(|frame| frame.var == name) {
+    // A bind inside a collection-fork branch never rebinds a loop's
+    // threaded value: branch bindings do not escape the branch, so the
+    // loop would still carry its old value into the next pass.
+    let fork_depth = w.fork_depth;
+    if let Some(frame) = w
+        .loops
+        .iter_mut()
+        .rev()
+        .find(|frame| frame.var == name && frame.fork_depth == fork_depth)
+    {
         frame.rebound = true;
         let seed = frame.seed_ty.clone();
         if !assignable(&ty, &seed, &w.ctx.types) {
@@ -255,17 +305,26 @@ fn walk_call(w: &mut Walker<'_, '_>, scope: &mut BTreeMap<String, Ty>, call: &Ca
             callable.returns
         }
     };
-    if let Some(config) = &call.config
-        && let Some(retry) = &config.retry
-    {
-        let span = match retry {
-            RetrySpec::Every { span, .. } | RetrySpec::Backoff { span, .. } => *span,
-        };
-        w.err(
-            span,
-            "a call site may pin `node` and `timeout` only — `retry` stays on the \
-             action declaration",
-        );
+    if let Some(config) = &call.config {
+        if w.ctx.children.contains_key(name) {
+            w.err(
+                config.span,
+                format!(
+                    "a child call carries no call-site config — `node`/`timeout` pins \
+                     apply to worker actions, and the engine routes children, not a \
+                     queue (`{name}` is a child)"
+                ),
+            );
+        } else if let Some(retry) = &config.retry {
+            let span = match retry {
+                RetrySpec::Every { span, .. } | RetrySpec::Backoff { span, .. } => *span,
+            };
+            w.err(
+                span,
+                "a call site may pin `node` and `timeout` only — `retry` stays on the \
+                 action declaration",
+            );
+        }
     }
     if let Some(bind) = &call.bind {
         insert_binding(w, scope, &bind.name, returns.clone(), bind.span);
@@ -342,129 +401,4 @@ fn walk_wait(w: &mut Walker<'_, '_>, scope: &mut BTreeMap<String, Ty>, wait: &Wa
     };
     insert_binding(w, scope, &wait.bind.name, bound.clone(), wait.bind.span);
     bound
-}
-
-fn walk_fork(
-    w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
-    fork: &ForkStmt,
-    owner: &Step,
-    env: &Env<'_>,
-) -> Option<Ty> {
-    match &fork.header {
-        ForkHeader::Collection {
-            var,
-            var_span,
-            collection,
-            ..
-        } => {
-            let view = View {
-                vars: scope,
-                narrow: None,
-            };
-            let collection_ty = type_of(w, view, collection);
-            let element = match resolve(&collection_ty, &w.ctx.types) {
-                Ty::List(inner) => (*inner).clone(),
-                Ty::Unknown => Ty::Unknown,
-                other => {
-                    w.err(
-                        collection.span(),
-                        format!("`fork … in` needs a list to fan out over, found {other}"),
-                    );
-                    Ty::Unknown
-                }
-            };
-            let mut branch = scope.clone();
-            insert_binding(w, &mut branch, var, element, *var_span);
-            let produced = walk_statements(w, &mut branch, &fork.body, owner, env);
-            if let Some(bind) = &fork.join.bind {
-                let joined = Ty::List(Rc::new(produced.unwrap_or(Ty::Unknown)));
-                insert_binding(w, scope, &bind.name, joined, bind.span);
-            }
-        }
-        ForkHeader::Named => {
-            walk_statements(w, scope, &fork.body, owner, env);
-            if let Some(bind) = &fork.join.bind {
-                insert_binding(w, scope, &bind.name, Ty::Unknown, bind.span);
-            }
-        }
-    }
-    None
-}
-
-fn walk_loop(
-    w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
-    looped: &LoopStmt,
-    owner: &Step,
-    env: &Env<'_>,
-) -> Option<Ty> {
-    let view = View {
-        vars: scope,
-        narrow: None,
-    };
-    let seed_ty = type_of(w, view, &looped.seed);
-    insert_binding(w, scope, &looped.var, seed_ty.clone(), looped.var_span);
-    w.loops.push(LoopFrame {
-        var: looped.var.clone(),
-        seed_ty,
-        rebound: false,
-    });
-    let mut body_scope = scope.clone();
-    walk_statements(w, &mut body_scope, &looped.body, owner, env);
-    let body_view = View {
-        vars: &body_scope,
-        narrow: None,
-    };
-    match &looped.until {
-        Some(tail) => {
-            let ty = type_of(w, body_view, &tail.expr);
-            if !matches!(resolve(&ty, &w.ctx.types), Ty::Bool | Ty::Unknown) {
-                w.err(
-                    tail.expr.span(),
-                    format!("`until` needs a Bool condition, found {ty}"),
-                );
-            }
-        }
-        None => {
-            w.err(
-                looped.span,
-                "a loop must declare an `until` condition — the body must be able to stop",
-            );
-        }
-    }
-    match &looped.max {
-        Some(tail) => {
-            let ty = type_of(w, body_view, &tail.expr);
-            if !matches!(resolve(&ty, &w.ctx.types), Ty::Int | Ty::Unknown) {
-                w.err(
-                    tail.expr.span(),
-                    format!("`max` needs an Int ceiling, found {ty}"),
-                );
-            }
-        }
-        None => {
-            w.err(
-                looped.span,
-                "this loop is unbounded — `max` is mandatory; unbounded \
-                 `loop … until` is illegal",
-            );
-        }
-    }
-    if let Some(frame) = w.loops.pop()
-        && !frame.rebound
-    {
-        w.err(
-            looped.span,
-            format!(
-                "the loop body never rebinds `{}` — the threaded value must be \
-                 rebound (`-> {}`) so the next pass sees it",
-                looped.var, looped.var
-            ),
-        );
-    }
-    if let Some(counter) = &looped.counter {
-        insert_binding(w, scope, &counter.name, Ty::Int, counter.span);
-    }
-    None
 }

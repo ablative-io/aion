@@ -39,6 +39,16 @@ pub(super) fn build(ctx: &mut Ctx<'_>) -> StepGraph {
         if index.insert(step.name.as_str(), position).is_some() {
             ctx.error(step.name_span, format!("duplicate step `{}`", step.name));
         }
+        if ctx.outcome_types.contains_key(&step.name) {
+            ctx.error(
+                step.name_span,
+                format!(
+                    "step `{}` shares its name with a workflow outcome — route targets \
+                     live in one namespace, so `route {}` would be ambiguous; rename one",
+                    step.name, step.name
+                ),
+            );
+        }
     }
 
     // Resolve `after` targets.
@@ -102,8 +112,8 @@ pub(super) fn build(ctx: &mut Ctx<'_>) -> StepGraph {
     }
 
     check_reachability(ctx, &after, &after_unknown, &routes, &fall_pred);
-    check_final_step(ctx, steps);
-    check_route_cycles(ctx, steps, &routes, &fall_pred);
+    check_successors(ctx, steps, &after, &fall_pred);
+    check_route_cycles(ctx, steps, &after, &routes, &fall_pred);
 
     let avail_in = availability(ctx, &after, &after_unknown, &routes, &fall_pred);
     StepGraph {
@@ -119,7 +129,9 @@ pub(super) fn falls_through(step: &Step) -> bool {
     step.outcomes.is_empty() && !body_ends_in_route(&step.body)
 }
 
-fn body_ends_in_route(body: &[Statement]) -> bool {
+/// Whether a statement list ends in an unconditional route (a `route` line
+/// or a pipe chain terminating in `route`).
+pub(super) fn body_ends_in_route(body: &[Statement]) -> bool {
     match body.last() {
         Some(Statement::Route(_)) => true,
         Some(Statement::Pipe(pipe)) => matches!(pipe.end, PipeEnd::Route(_)),
@@ -280,29 +292,61 @@ fn check_reachability(
     }
 }
 
-fn check_final_step(ctx: &mut Ctx<'_>, steps: &[Step]) {
-    let Some(last) = steps.last() else {
-        return;
-    };
-    if falls_through(last) {
-        ctx.error(
-            last.name_span,
-            format!(
-                "the final step `{}` never routes — a workflow may not end by running \
-                 out of file; route to a workflow outcome",
-                last.name
-            ),
-        );
+/// Every step must hand control somewhere: the final step must route
+/// explicitly (a workflow may not end by running out of file), and a
+/// non-final step that falls through needs a consumer — the next step
+/// taking the fall-through edge, or a step depending on it via `after`.
+fn check_successors(
+    ctx: &mut Ctx<'_>,
+    steps: &[Step],
+    after: &[Vec<usize>],
+    fall_pred: &[Option<usize>],
+) {
+    let count = steps.len();
+    let mut feeds_after = vec![false; count];
+    for dependencies in after {
+        for &dependency in dependencies {
+            feeds_after[dependency] = true;
+        }
+    }
+    for (position, step) in steps.iter().enumerate() {
+        if !falls_through(step) {
+            continue;
+        }
+        if position + 1 == count {
+            ctx.error(
+                step.name_span,
+                format!(
+                    "the final step `{}` never routes — a workflow may not end by running \
+                     out of file; route to a workflow outcome",
+                    step.name
+                ),
+            );
+        } else if fall_pred[position + 1] != Some(position) && !feeds_after[position] {
+            ctx.error(
+                step.name_span,
+                format!(
+                    "step `{}` completes into a dead end — the next step does not fall \
+                     through from it, no step declares `after {}`, and it never routes; \
+                     every non-terminal step needs a successor",
+                    step.name, step.name
+                ),
+            );
+        }
     }
 }
 
 fn check_route_cycles(
     ctx: &mut Ctx<'_>,
     steps: &[Step],
+    after: &[Vec<usize>],
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
 ) {
-    // Control-flow successors: route edges plus fall-through edges.
+    // Control-flow successors: route edges, fall-through edges, and `after`
+    // edges — a dependency's completion re-arms its dependents, so a
+    // backward route plus a forward `after` edge is as unbounded a cycle as
+    // two routes (decision log 2026-07-11).
     let count = steps.len();
     let mut successors: Vec<Vec<usize>> = vec![Vec::new(); count];
     for edge in routes {
@@ -311,6 +355,11 @@ fn check_route_cycles(
     for (position, pred) in fall_pred.iter().enumerate() {
         if let Some(&source) = pred.as_ref() {
             successors[source].push(position);
+        }
+    }
+    for (position, dependencies) in after.iter().enumerate() {
+        for &dependency in dependencies {
+            successors[dependency].push(position);
         }
     }
     let component = strongly_connected(&successors);
@@ -339,15 +388,24 @@ fn check_route_cycles(
         {
             continue;
         }
-        // Anchor on the first backward (or self) route edge inside the cycle.
+        // Anchor on the first backward (or self) route edge inside the
+        // cycle, falling back to any in-cycle route edge, then to the
+        // earliest member step (a cycle of fall-through and `after` edges
+        // alone).
+        let in_cycle = |edge: &&RouteEdge| -> bool {
+            component[edge.source] == id && component[edge.target] == id
+        };
         let anchor = routes
             .iter()
-            .filter(|edge| {
-                component[edge.source] == id
-                    && component[edge.target] == id
-                    && edge.target <= edge.source
-            })
-            .min_by_key(|edge| (edge.source, edge.span.start));
+            .filter(in_cycle)
+            .filter(|edge| edge.target <= edge.source)
+            .min_by_key(|edge| (edge.source, edge.span.start))
+            .or_else(|| {
+                routes
+                    .iter()
+                    .filter(in_cycle)
+                    .min_by_key(|edge| (edge.source, edge.span.start))
+            });
         if let Some(edge) = anchor {
             let target = &steps[edge.target].name;
             ctx.error(
@@ -355,6 +413,20 @@ fn check_route_cycles(
                 format!(
                     "routing to `{target}` forms a cycle with no bound: some step in the \
                      cycle must carry a `max`-bounded loop (unbounded cycles are unwritable)"
+                ),
+            );
+        } else if let Some(&first) = members.first() {
+            let names: Vec<&str> = members
+                .iter()
+                .map(|&member| steps[member].name.as_str())
+                .collect();
+            ctx.error(
+                steps[first].name_span,
+                format!(
+                    "steps {} re-arm each other (fall-through and `after` edges) in a \
+                     cycle with no bound: some step in the cycle must carry a \
+                     `max`-bounded loop (unbounded cycles are unwritable)",
+                    names.join(" -> ")
                 ),
             );
         }

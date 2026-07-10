@@ -108,26 +108,53 @@ pub(super) fn resolve(ty: &Ty, table: &TypeTable) -> Ty {
 /// declared record with the same field names, types, and optionality. A
 /// present `T` satisfies an expected `T?`; the reverse never holds.
 pub(super) fn assignable(actual: &Ty, expected: &Ty, table: &TypeTable) -> bool {
-    matches_ty(actual, expected, table, 0, true)
+    matches_ty(actual, expected, table, &mut Vec::new(), true)
 }
 
 /// Structural type equality with `Unknown` treated as compatible.
 pub(super) fn same_ty(a: &Ty, b: &Ty, table: &TypeTable) -> bool {
-    matches_ty(a, b, table, 0, false)
+    matches_ty(a, b, table, &mut Vec::new(), false)
 }
 
-fn matches_ty(actual: &Ty, expected: &Ty, table: &TypeTable, depth: usize, widen: bool) -> bool {
-    if depth > 24 {
-        return true;
-    }
+/// Named-pair comparisons currently in progress, for coinductive
+/// termination on recursive types: a pair already under comparison is
+/// assumed compatible (its structure is being proven right now), so
+/// recursion terminates without ever accepting a genuine mismatch.
+type Comparing = Vec<(String, String)>;
+
+fn matches_ty(
+    actual: &Ty,
+    expected: &Ty,
+    table: &TypeTable,
+    seen: &mut Comparing,
+    widen: bool,
+) -> bool {
     if matches!(actual, Ty::Unknown) || matches!(expected, Ty::Unknown) {
         return true;
     }
-    if let (Ty::Named(a), Ty::Named(b)) = (actual, expected)
-        && a == b
-    {
-        return true;
+    if let (Ty::Named(a), Ty::Named(b)) = (actual, expected) {
+        if a == b {
+            return true;
+        }
+        let key = (a.clone(), b.clone());
+        if seen.contains(&key) {
+            return true;
+        }
+        seen.push(key);
+        let compatible = matches_resolved(actual, expected, table, seen, widen);
+        seen.pop();
+        return compatible;
     }
+    matches_resolved(actual, expected, table, seen, widen)
+}
+
+fn matches_resolved(
+    actual: &Ty,
+    expected: &Ty,
+    table: &TypeTable,
+    seen: &mut Comparing,
+    widen: bool,
+) -> bool {
     let actual = resolve(actual, table);
     let expected = resolve(expected, table);
     if matches!(actual, Ty::Unknown) || matches!(expected, Ty::Unknown) {
@@ -135,16 +162,16 @@ fn matches_ty(actual: &Ty, expected: &Ty, table: &TypeTable, depth: usize, widen
     }
     match (&actual, &expected) {
         (Ty::Optional(a), Ty::Optional(e)) | (Ty::List(a), Ty::List(e)) => {
-            matches_ty(a, e, table, depth + 1, false)
+            matches_ty(a, e, table, seen, false)
         }
-        (a, Ty::Optional(e)) if widen => matches_ty(a, e, table, depth + 1, false),
+        (a, Ty::Optional(e)) if widen => matches_ty(a, e, table, seen, false),
         (Ty::Record(a), Ty::Record(e)) => {
             if a.fields.len() != e.fields.len() {
                 return false;
             }
             a.fields.iter().all(|field| {
                 e.field(&field.name)
-                    .is_some_and(|other| matches_ty(&field.ty, &other.ty, table, depth + 1, false))
+                    .is_some_and(|other| matches_ty(&field.ty, &other.ty, table, seen, false))
             })
         }
         (Ty::Enum(a), Ty::Enum(e)) => {

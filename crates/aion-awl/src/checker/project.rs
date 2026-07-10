@@ -47,13 +47,14 @@ struct DoorSource<'a> {
 
 impl DoorSource<'_> {
     /// Anchor a diagnostic: imports anchor at the declaration line; inline
-    /// doors anchor at the first line of the raw body mentioning `token`.
-    fn anchor(&self, token: &str) -> Span {
+    /// doors anchor at the `token` occurrence inside the value the failing
+    /// JSON `path` names (never at an earlier occurrence of the same token
+    /// elsewhere in the body).
+    fn anchor(&self, token: &str, path: &[String]) -> Span {
         let Some((body, body_span)) = self.inline else {
             return self.decl_span;
         };
-        let needle = format!("\"{token}\"");
-        let Some(offset) = body.find(&needle) else {
+        let Some((offset, len)) = super::anchor::locate(body, path, token) else {
             return body_span;
         };
         let prefix = &body[..offset];
@@ -64,7 +65,7 @@ impl DoorSource<'_> {
         };
         Span {
             start: body_span.start + offset,
-            end: body_span.start + offset + needle.len(),
+            end: body_span.start + offset + len,
             line: body_span.line + line_offset,
             column,
         }
@@ -172,7 +173,7 @@ impl Projector<'_, '_, '_> {
         } else {
             format!("`{}`", path.join("."))
         };
-        let span = self.source.anchor(token);
+        let span = self.source.anchor(token, path);
         let label = &self.source.label;
         self.ctx
             .error(span, format!("{label}: {detail} at {json_path}"));

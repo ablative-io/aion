@@ -351,10 +351,14 @@ Invalid:
   a schema-projected record satisfies a declared record with the same fields (dev_brief's
   `config.lenses` items vs the declared `Lens`); display names stay nominal in diagnostics.
   Route-cycle boundedness accepts a `max`-bounded loop on any step of the control-flow SCC
-  (route edges + fall-through edges); the diagnostic anchors on the first backward or self
-  route edge and its wording carries both pinned substrings ("cycle", "bound"). The
-  route-cycle/exhaustiveness/`unbounded` trio all anchor exactly where the sidecars pinned:
-  backward-edge route line / step header / loop header line respectively.
+  (route edges + fall-through edges + `after` edges — CORRECTED at the checker fix round,
+  2026-07-11: a dependency's completion re-arms its dependents, so a backward route plus a
+  forward `after` edge is as unbounded a cycle as two routes; the earlier narrower SCC
+  contradicted the spec's "unbounded cycles are unwritable"); the diagnostic anchors on the
+  first backward or self route edge (falling back to any in-cycle route edge, then the
+  earliest member's header) and its wording carries both pinned substrings ("cycle",
+  "bound"). The route-cycle/exhaustiveness/`unbounded` trio all anchor exactly where the
+  sidecars pinned: backward-edge route line / step header / loop header line respectively.
 - Outcome-clause layout — RULED at the same phase: a payload-constructing route
   (`route out(field: …)`) ALWAYS breaks after the guard comma onto its own line one level
   deeper; a bare route stays on the guard line when the clause fits 100 columns. The spec's
@@ -362,3 +366,22 @@ Invalid:
   worked examples (which break 90- and 99-column payload clauses) disagree; byte-identity
   with the flagship pins the examples' reading. Valid fixtures were re-normalized to match
   (splits/joins of outcome clauses only — audited via whitespace-insensitive diff).
+- Checker fix-round rulings (2026-07-11 adversarial panel; regression suites
+  `checker_regressions.rs` + `checker_hardening.rs` pin each one): named-branch fork branches
+  walk in isolated clones of the pre-fork scope and merge bindings at `join` (a sibling's
+  binding is unreadable mid-fork); `join -> name` on the named form is refused (spec shows
+  bindless `join`). Every non-terminal falling-through step must have its completion consumed
+  (the next step's fall-through edge or an `after` dependent) — the successor duty is no
+  longer final-step-only. A piped route must target a workflow outcome; step, sibling, and
+  parent-arm targets are refused (silent value loss). Steps and workflow outcomes share one
+  route-target namespace (collision is a declaration-time error anchored at the step). A bind
+  inside a collection-fork branch is NOT a loop rebind (branch bindings never escape).
+  Inline schema-door diagnostics anchor by walking the raw JSON to the failing path, never by
+  first token occurrence. Structural compatibility carries no acceptance depth cap
+  (coinductive in-progress pair set; recursive types still terminate). Dead control flow is
+  refused: statements behind an unconditional body route and outcome clauses behind a
+  body-terminal route. Call-site config on CHILD calls is refused (the engine routes
+  children, not a queue). OPEN, flagged for spec reconciliation before ratification (recorded,
+  not enforced): a loop-carrying step with ZERO outcome clauses keeps the permissive reading
+  (exhaustion falls through as the implicit outcome); `[T?]` in list-element position remains
+  accepted by the checker while schema derivation drops the element `?` — needs a ruling.

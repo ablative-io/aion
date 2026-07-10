@@ -2,7 +2,9 @@
 //! the graph, graph shape (targets, reachability, bounded cycles), outcome
 //! exhaustiveness, guard-dependent optionality, and schema projection.
 
+mod anchor;
 mod avail;
+mod blocks;
 mod context;
 mod decls;
 mod entry;
