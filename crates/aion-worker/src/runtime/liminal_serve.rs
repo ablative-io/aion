@@ -15,6 +15,7 @@ use crate::activity::ActivityRegistry;
 use crate::config::WorkerConfig;
 use crate::error::WorkerError;
 use crate::runtime::liminal::{AgentHarnessConfig, LiminalActivityWorker};
+use crate::runtime::liminal_drain::LiveWriter;
 use crate::runtime::liminal_redial::{
     CandidateCursor, RedialBackoff, RedialError, ServeResult, run_redial_loop,
 };
@@ -111,18 +112,27 @@ where
     let agent_types = agent
         .map(|config| config.agent_activity_types().clone())
         .unwrap_or_default();
+    // One drain slot spanning every reconnection: each connect refreshes it with the
+    // new connection's writer, so an observability drain spawned against an earlier
+    // (now-dead) connection re-resolves the survivor instead of a dead socket (#254).
+    let live_writer = LiveWriter::default();
     let connect = |address: &str| -> Result<LiminalActivityWorker, WorkerError> {
         // Install the composed harness on EVERY connection (including a redial), so
         // a worker that migrates to a survivor still drives its agent activities AND
         // re-advertises the agent types in that connection's registration; `None`
-        // leaves it on the plain typed-registry path, unchanged.
+        // leaves it on the plain typed-registry path, unchanged. The shared drain
+        // slot is adopted here so every connection's drains publish through it.
         LiminalActivityWorker::connect_advertising(
             address,
             config,
             Arc::clone(registry),
             &agent_types,
         )
-        .map(|worker| worker.with_agent_config(agent.cloned()))
+        .map(|worker| {
+            worker
+                .with_agent_config(agent.cloned())
+                .with_live_writer(live_writer.clone())
+        })
     };
     let serve = |worker: LiminalActivityWorker| -> ServeResult {
         if !announced_ready {
