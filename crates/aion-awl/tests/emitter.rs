@@ -344,10 +344,13 @@ fn sequential_layer_fallback_is_announced() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// A `route` inside a `loop` body can never reach tail position in the
-/// generated loop function, so the stopgap refuses it with a spanned error
-/// instead of emitting a discarded no-op route (2026-07-11 emitter panel,
-/// blocking finding).
+/// A `route` inside a `loop` body is a language-level check error since the
+/// 2026-07-11 ruling (loops exit via `until`/`max`; routing belongs to the
+/// step's outcome clauses) — the user-facing refusal lives in `check`. The
+/// emitter keeps this spanned refusal as the defensive backstop for `emit`
+/// called on an UNCHECKED document, where the route could never reach tail
+/// position in the generated loop function (originally a 2026-07-11 emitter
+/// panel blocking finding).
 #[test]
 fn route_inside_a_loop_body_is_refused() -> Result<(), Box<dyn Error>> {
     let source = "\
