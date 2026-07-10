@@ -79,7 +79,7 @@ use aion_server::worker::{
     ActivityDispatcher, ConnectedWorkerRegistry, OutboxDispatcher, OutboxDispatcherConfig,
     WorkerOutboxDispatch,
 };
-use aion_store::{OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore};
+use aion_store::{OutboxRow, OutboxStatus, OutboxStore, ReadableEventStore, WritableEventStore};
 use aion_store_libsql::LibSqlStore;
 use axum::body;
 use axum::http::{Request, StatusCode};
@@ -634,6 +634,297 @@ async fn outbox_cutover_completes_through_the_real_server_sink() -> Result<(), T
     tokio::time::timeout(Duration::from_secs(5), dispatcher_task)
         .await
         .map_err(|_| "outbox dispatcher did not stop after shutdown")??;
+    drop(worker);
+    grpc_server.abort();
+    state.shutdown()?;
+    Ok(())
+}
+
+// --- #253: terminal workflows' stranded rows settle, never redeliver ----------
+
+/// Seed the INCIDENT state into a fresh store: a workflow whose history ends
+/// `WorkflowFailed`, with a stranded `Claimed` outbox row for its ordinal 0 —
+/// exactly what the crashed server left behind before the zombie round.
+async fn seed_incident_state(
+    store: &LibSqlStore,
+) -> Result<(aion_core::WorkflowId, String), TestError> {
+    use aion_core::{Event, EventEnvelope};
+    use aion_store::WriteToken;
+
+    let workflow_id = aion_core::WorkflowId::new_v4();
+    let envelope = |seq: u64| EventEnvelope {
+        seq,
+        recorded_at: chrono::Utc::now(),
+        workflow_id: workflow_id.clone(),
+    };
+    let events = vec![
+        Event::WorkflowStarted {
+            envelope: envelope(1),
+            workflow_type: OUTBOX_MODULE.to_owned(),
+            input: aion_core::Payload::from_json(&json!({}))?,
+            run_id: aion_core::RunId::new_v4(),
+            parent_run_id: None,
+            package_version: aion_core::PackageVersion::new("a".repeat(64)),
+        },
+        Event::ActivityScheduled {
+            envelope: envelope(2),
+            activity_id: aion_core::ActivityId::from_sequence_position(0),
+            activity_type: FAN_ACTIVITY_TYPES[0].to_owned(),
+            input: aion_core::Payload::from_json(&json!("in"))?,
+            task_queue: TASK_QUEUE.to_owned(),
+            node: None,
+        },
+        Event::ActivityStarted {
+            envelope: envelope(3),
+            activity_id: aion_core::ActivityId::from_sequence_position(0),
+            attempt: 1,
+        },
+        Event::WorkflowFailed {
+            envelope: envelope(4),
+            error: aion_core::WorkflowError {
+                message: String::from("agent round exhausted"),
+                details: None,
+            },
+        },
+    ];
+    store
+        .append(WriteToken::recorder(), &workflow_id, &events, 0)
+        .await?;
+
+    // Stage the ordinal's outbox row and CLAIM it: the stranded Claimed row.
+    let row = OutboxRow::pending(
+        workflow_id.clone(),
+        0,
+        FAN_ACTIVITY_TYPES[0].to_owned(),
+        aion_core::Payload::from_json(&json!("in"))?,
+        chrono::Utc::now(),
+    );
+    let dispatch_key = row.dispatch_key.clone();
+    store
+        .append_outbox_batch(std::slice::from_ref(&row))
+        .await?;
+    let claimed = store.claim_outbox_rows(1).await?;
+    assert_eq!(claimed.len(), 1, "the seeded row must be claimable");
+    assert_eq!(claimed[0].dispatch_key, dispatch_key);
+    Ok((workflow_id, dispatch_key))
+}
+
+/// Assert the connected worker receives NO task within `window` — the
+/// zombie-round regression assertion (#253, and by construction #254/#251:
+/// with no round delivered there is no transcript drain and no resumed
+/// session to corrupt).
+async fn assert_no_task_delivered(
+    worker: &mut WorkerSession,
+    window: Duration,
+) -> Result<(), TestError> {
+    match tokio::time::timeout(window, worker.next_task()).await {
+        Err(_elapsed) => Ok(()),
+        Ok(Ok(task)) => Err(format!(
+            "a task for the terminal workflow was delivered — the zombie round: {task:?}"
+        )
+        .into()),
+        Ok(Err(error)) => {
+            Err(format!("worker stream failed while proving silence: {error}").into())
+        }
+    }
+}
+
+/// #253 incident replay: boot over a store holding a terminal workflow with a
+/// stranded Claimed row. The BOOT SWEEP settles the row to Cancelled BEFORE
+/// any dispatch, the dispatcher + reconciler then deliver NOTHING to the
+/// connected worker, and a reopen re-arm (`rearm_outbox_pending`) returns the
+/// row to Pending and it dispatches — reopen supersedes the settle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn boot_sweep_settles_terminal_workflow_rows_before_any_dispatch() -> Result<(), TestError> {
+    let dir = unique_temp_dir("boot-sweep")?;
+    let db_path = dir.path().join("aion.db");
+    let package_path = write_package_archive(dir.path())?;
+
+    // Seed the incident state before any server exists.
+    let seeder = LibSqlStore::open(db_path.clone()).await?;
+    let (workflow_id, dispatch_key) = seed_incident_state(&seeder).await?;
+
+    // Boot the server over the same store; the terminal workflow is excluded
+    // from recovery (list_active) exactly as in the incident.
+    let engine_store = LibSqlStore::open(db_path.clone()).await?;
+    let state = ServerState::build_with_store(engine_store, runtime_config(package_path)).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let grpc_address = listener.local_addr()?;
+    let grpc_server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(worker_service(state.clone()))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    let mut worker = WorkerSession::connect(grpc_address, state.worker_registry()).await?;
+
+    // The boot sweep, exactly as run.rs wires it: BEFORE the dispatcher spawns.
+    let outbox_store: Arc<dyn OutboxStore> = Arc::new(LibSqlStore::open(db_path.clone()).await?);
+    let engine = state.engine()?;
+    let settled = aion_server::worker::settle_terminal_outbox_rows(
+        engine.store().as_ref(),
+        outbox_store.as_ref(),
+    )
+    .await?;
+    assert_eq!(
+        settled,
+        vec![dispatch_key.clone()],
+        "the boot sweep must settle the terminal workflow's stranded row"
+    );
+    let reader = LibSqlStore::open(db_path.clone()).await?;
+    let row_state = reader
+        .outbox_row_state(&dispatch_key)
+        .await?
+        .ok_or("settled row must still exist")?;
+    assert_eq!(row_state.status, OutboxStatus::Cancelled);
+
+    // NOW commission the dispatcher + reconciler over the swept table: the
+    // production order. Nothing may reach the worker.
+    let push = ActivityDispatcher::new(state.worker_registry().clone())
+        .with_drain_state(state.drain_state().clone());
+    let row_dispatch = Arc::new(WorkerOutboxDispatch::new(push));
+    let dispatcher = OutboxDispatcher::new(
+        Arc::clone(&outbox_store),
+        row_dispatch,
+        outbox_dispatcher_config(),
+    );
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let dispatcher_task = tokio::spawn(dispatcher.run(shutdown_rx.clone()));
+    // Generous stale_after: this test's reconciler must only prove it never
+    // resurrects the Cancelled row; the re-armed row's own short live-claim
+    // window (claim → push → done) must not be treated as stranded.
+    let reconciler = aion_server::worker::OutboxReconciler::new(
+        Arc::clone(&outbox_store),
+        engine.store(),
+        aion_server::worker::OutboxReconcilerConfig {
+            interval: Duration::from_millis(50),
+            stale_after: Duration::from_secs(5),
+            batch_size: 16,
+        },
+    );
+    let reconciler_task = tokio::spawn(reconciler.run(shutdown_rx));
+
+    assert_no_task_delivered(&mut worker, Duration::from_millis(800)).await?;
+    let row_state = reader
+        .outbox_row_state(&dispatch_key)
+        .await?
+        .ok_or("settled row must still exist")?;
+    assert_eq!(
+        row_state.status,
+        OutboxStatus::Cancelled,
+        "the settled row must stay Cancelled under the running dispatcher + reconciler"
+    );
+
+    // Reopen interplay (#253-I9): the reopen/recovery re-stage forcibly
+    // returns the row to Pending, and the live dispatcher delivers it.
+    let rearm_row = OutboxRow::pending(
+        workflow_id.clone(),
+        0,
+        FAN_ACTIVITY_TYPES[0].to_owned(),
+        aion_core::Payload::from_json(&json!("in"))?,
+        chrono::Utc::now(),
+    );
+    reader
+        .rearm_outbox_pending(std::slice::from_ref(&rearm_row))
+        .await?;
+    let task = tokio::time::timeout(POLL_DEADLINE, worker.next_task())
+        .await
+        .map_err(|_| "the reopened row must dispatch to the worker")??;
+    assert_eq!(task.activity_type, FAN_ACTIVITY_TYPES[0]);
+
+    shutdown_tx.send(true).ok();
+    tokio::time::timeout(Duration::from_secs(5), dispatcher_task)
+        .await
+        .map_err(|_| "outbox dispatcher did not stop after shutdown")??;
+    tokio::time::timeout(Duration::from_secs(5), reconciler_task)
+        .await
+        .map_err(|_| "outbox reconciler did not stop after shutdown")??;
+    drop(worker);
+    grpc_server.abort();
+    state.shutdown()?;
+    Ok(())
+}
+
+/// #253 reconciler gate: with NO boot sweep, the reconciler's liveness gate
+/// alone settles the stranded Claimed row of the terminal workflow — it is
+/// never re-armed, and the running dispatcher never delivers it. This is the
+/// exact hole the incident's zombie round came through
+/// (`rearm_stale_claimed_outbox_rows` with no liveness check).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconciler_gate_settles_stranded_row_of_terminal_workflow() -> Result<(), TestError> {
+    let dir = unique_temp_dir("reconciler-gate")?;
+    let db_path = dir.path().join("aion.db");
+    let package_path = write_package_archive(dir.path())?;
+
+    let seeder = LibSqlStore::open(db_path.clone()).await?;
+    let (_workflow_id, dispatch_key) = seed_incident_state(&seeder).await?;
+
+    let engine_store = LibSqlStore::open(db_path.clone()).await?;
+    let state = ServerState::build_with_store(engine_store, runtime_config(package_path)).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let grpc_address = listener.local_addr()?;
+    let grpc_server = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(worker_service(state.clone()))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    let mut worker = WorkerSession::connect(grpc_address, state.worker_registry()).await?;
+
+    let outbox_store: Arc<dyn OutboxStore> = Arc::new(LibSqlStore::open(db_path.clone()).await?);
+    let push = ActivityDispatcher::new(state.worker_registry().clone())
+        .with_drain_state(state.drain_state().clone());
+    let row_dispatch = Arc::new(WorkerOutboxDispatch::new(push));
+    let dispatcher = OutboxDispatcher::new(
+        Arc::clone(&outbox_store),
+        row_dispatch,
+        outbox_dispatcher_config(),
+    );
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let dispatcher_task = tokio::spawn(dispatcher.run(shutdown_rx.clone()));
+    let reconciler = aion_server::worker::OutboxReconciler::new(
+        Arc::clone(&outbox_store),
+        state.engine()?.store(),
+        aion_server::worker::OutboxReconcilerConfig {
+            interval: Duration::from_millis(50),
+            stale_after: Duration::from_millis(100),
+            batch_size: 16,
+        },
+    );
+    let reconciler_task = tokio::spawn(reconciler.run(shutdown_rx));
+
+    // Within a few sweeps the claim goes stale, the gate projects the
+    // workflow terminal, and the row settles — never re-arms, never delivers.
+    let reader = LibSqlStore::open(db_path.clone()).await?;
+    let deadline = Instant::now() + POLL_DEADLINE;
+    loop {
+        let row_state = reader
+            .outbox_row_state(&dispatch_key)
+            .await?
+            .ok_or("stranded row must still exist")?;
+        if row_state.status == OutboxStatus::Cancelled {
+            break;
+        }
+        assert_ne!(
+            row_state.status,
+            OutboxStatus::Done,
+            "the stranded row must never be dispatched to completion"
+        );
+        if Instant::now() > deadline {
+            return Err(format!(
+                "reconciler gate never settled the stranded row; state {row_state:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_no_task_delivered(&mut worker, Duration::from_millis(500)).await?;
+
+    shutdown_tx.send(true).ok();
+    tokio::time::timeout(Duration::from_secs(5), dispatcher_task)
+        .await
+        .map_err(|_| "outbox dispatcher did not stop after shutdown")??;
+    tokio::time::timeout(Duration::from_secs(5), reconciler_task)
+        .await
+        .map_err(|_| "outbox reconciler did not stop after shutdown")??;
     drop(worker);
     grpc_server.abort();
     state.shutdown()?;

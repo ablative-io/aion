@@ -3,15 +3,15 @@
 //! [`ShardSeamSpy`] is a thin recording wrapper over [`InMemoryStore`]: every
 //! non-seam [`crate::EventStore`] method delegates to the inner store (so the spy is a
 //! correct, panic-free store), while every DEFAULT-BODIED seam method — the six
-//! per-shard owned-shard seams on [`ReadableEventStore`] AND the two outbox-recovery
-//! seams on [`WritableEventStore`] (`rearm_outbox_pending`, `settle_outbox_row_cancelled`)
-//! — is overridden to RECORD its call and return a DISTINCTIVE value. The singular
-//! failover seams (`acquire_owned_shard`, `is_current_owner`, `publish_shard_owner`)
-//! and `settle_outbox_row_cancelled` return sentinels that differ from the trait's
-//! silent no-op defaults, so a decorator that inherits a default instead of
-//! forwarding is unambiguously detectable by BOTH the returned value and the
-//! missing recorded call (this is exactly the #157-class hazard the spy exists to
-//! catch).
+//! per-shard owned-shard seams on [`ReadableEventStore`] AND the three outbox-recovery
+//! seams on [`WritableEventStore`] (`rearm_outbox_pending`, `settle_outbox_row_cancelled`,
+//! `settle_workflow_outbox_rows_cancelled`) — is overridden to RECORD its call and
+//! return a DISTINCTIVE value. The singular failover seams (`acquire_owned_shard`,
+//! `is_current_owner`, `publish_shard_owner`) and both settle seams return sentinels
+//! that differ from the trait's silent no-op defaults, so a decorator that inherits
+//! a default instead of forwarding is unambiguously detectable by BOTH the returned
+//! value and the missing recorded call (this is exactly the #157-class hazard the
+//! spy exists to catch).
 
 use std::sync::{Arc, Mutex};
 
@@ -196,6 +196,22 @@ impl WritableEventStore for ShardSeamSpy {
         self.record(format!("settle_outbox_row_cancelled:{dispatch_key}"));
         Err(StoreError::Backend(String::from(
             "ShardSeamSpy::settle_outbox_row_cancelled sentinel",
+        )))
+    }
+
+    /// Record + return an `Err` sentinel distinct from the trait's silent
+    /// empty-`Ok` default, so a decorator that drops the workflow-terminal
+    /// settle seam (#253) — leaving a terminal workflow's rows claimable — is
+    /// caught by BOTH the returned value and the missing recorded call.
+    async fn settle_workflow_outbox_rows_cancelled(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        self.record(format!(
+            "settle_workflow_outbox_rows_cancelled:{workflow_id}"
+        ));
+        Err(StoreError::Backend(String::from(
+            "ShardSeamSpy::settle_workflow_outbox_rows_cancelled sentinel",
         )))
     }
 }

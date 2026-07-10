@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aion_store::{
     Event, EventStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
     RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId, WorkflowSummary,
-    WritableEventStore, WriteToken, conformance::run_event_store_suite,
+    WritableEventStore, WriteToken,
+    conformance::{run_event_store_suite, run_outbox_settlement_suite},
 };
 use aion_store_libsql::LibSqlStore;
 use async_trait::async_trait;
@@ -21,6 +22,18 @@ async fn libsql_store_satisfies_event_store_conformance_suite() -> Result<(), St
     run_event_store_suite(|| async {
         let store = LibSqlStore::open(unique_temp_path("conformance")).await;
         Arc::new(StoreOpenResult::new(store)) as Arc<dyn EventStore>
+    })
+    .await
+}
+
+/// #253: the workflow-terminal outbox settlement contract (settle twin,
+/// unsettled enumeration, read-only stale probe, Cancelled-untouchable re-arm
+/// pins, reopen-re-arm resurrection, writer-seam settle) over the real libSQL
+/// outbox table.
+#[tokio::test]
+async fn libsql_store_satisfies_outbox_settlement_conformance_suite() -> Result<(), StoreError> {
+    run_outbox_settlement_suite(|| async {
+        LibSqlStore::open(unique_temp_path("outbox-settlement")).await
     })
     .await
 }

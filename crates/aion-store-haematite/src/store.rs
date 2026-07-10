@@ -1703,6 +1703,13 @@ impl WritableEventStore for HaematiteStore {
         })
         .await
     }
+
+    async fn settle_workflow_outbox_rows_cancelled(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        self.settle_workflow_outbox_rows(workflow_id).await
+    }
 }
 
 #[async_trait]
@@ -1945,6 +1952,79 @@ impl OutboxStore for HaematiteStore {
             Ok(claimed)
         })
         .await
+    }
+
+    async fn list_stale_claimed_outbox_rows(
+        &self,
+        older_than: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        // The read-only probe half of stale-claim reconciliation (#253): the EXACT
+        // selection the re-arm below would take — same claimed + durable-claimed_at
+        // predicate, same claimed_at/dispatch_key order, same truncation — with no
+        // transition, so the reconciler can project workflow liveness first.
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let scope = self.owned_shard_scope();
+        self.blocking(move |store| {
+            let mut stale: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?
+            .into_iter()
+            .filter(|row| {
+                row.status == OutboxStatus::Claimed
+                    && row
+                        .claimed_at
+                        .is_some_and(|claimed_at| claimed_at < older_than)
+            })
+            .collect();
+            stale.sort_by(|left, right| {
+                left.claimed_at
+                    .cmp(&right.claimed_at)
+                    .then_with(|| left.dispatch_key.cmp(&right.dispatch_key))
+            });
+            let take = usize::try_from(limit).map_or(usize::MAX, |value| value);
+            stale.truncate(take);
+            Ok(stale)
+        })
+        .await
+    }
+
+    async fn list_unsettled_outbox_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        // Distinct owners of any live (Pending|Claimed) row, owned-shard scoped
+        // like every other outbox enumeration — the boot/adoption sweep's
+        // candidate set for terminal-workflow settlement (#253). Read-only.
+        let scope = self.owned_shard_scope();
+        self.blocking(move |store| {
+            let rows: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?;
+            let mut workflow_ids: Vec<WorkflowId> = rows
+                .into_iter()
+                .filter(|row| is_inflight(row.status))
+                .map(|row| row.workflow_id)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            // Deterministic textual order, matching the libSQL enumeration.
+            workflow_ids.sort_by_key(ToString::to_string);
+            Ok(workflow_ids)
+        })
+        .await
+    }
+
+    async fn cancel_outbox_rows_for_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        self.settle_workflow_outbox_rows(workflow_id).await
     }
 
     async fn rearm_stale_claimed_outbox_rows(
@@ -2246,6 +2326,59 @@ impl HaematiteStore {
                 .map_err(|error| database_error(&error))?;
             database.commit().map_err(|error| database_error(&error))?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Idempotently settle every live (Pending|Claimed) row of `workflow_id` to
+    /// Cancelled, returning the settled `dispatch_key`s (#253).
+    ///
+    /// The single shared implementation behind BOTH the writer seam
+    /// (`WritableEventStore::settle_workflow_outbox_rows_cancelled`) and the
+    /// outbox-store twin (`OutboxStore::cancel_outbox_rows_for_workflow`), so the
+    /// Recorder's settle-at-terminal and the server's boot/reconciler sweeps
+    /// apply the identical transition table: only Pending|Claimed rows flip,
+    /// terminal rows (Done/Failed/Cancelled) are never touched. Rows are
+    /// co-located on the workflow's shard and rewritten in place, exactly like
+    /// the claim/rearm scans.
+    async fn settle_workflow_outbox_rows(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        let scope = self.owned_shard_scope();
+        let workflow_id = workflow_id.clone();
+        self.blocking(move |store| {
+            let mut live: Vec<OutboxRow> = scan_prefix_scoped(
+                store,
+                keyspace::OUTBOX_PREFIX,
+                scope.as_deref(),
+                |_, value| decode_outbox(value),
+            )?
+            .into_iter()
+            .filter(|row| row.workflow_id == workflow_id && is_inflight(row.status))
+            .collect();
+            live.sort_by(|left, right| left.dispatch_key.cmp(&right.dispatch_key));
+
+            let database = store.database();
+            let mut settled = Vec::with_capacity(live.len());
+            for row in live {
+                let updated = OutboxRow {
+                    status: OutboxStatus::Cancelled,
+                    claimed_at: None,
+                    ..row
+                };
+                let route_key = keyspace::event_stream_key(&updated.workflow_id);
+                database
+                    .put_routed(
+                        &route_key,
+                        keyspace::outbox_key(&updated.dispatch_key),
+                        encode_outbox(&updated)?,
+                    )
+                    .map_err(|error| database_error(&error))?;
+                settled.push(updated.dispatch_key);
+            }
+            database.commit().map_err(|error| database_error(&error))?;
+            Ok(settled)
         })
         .await
     }

@@ -192,8 +192,9 @@ fn spawn_write_forwarder(
     })
 }
 
-/// Drop guard that fails a torn-down worker stream's in-flight activities
-/// back to the engine.
+/// Drop guard that sweeps a torn-down worker stream's in-flight activities:
+/// failed back to the engine mid-run, or parked for restart recovery under a
+/// graceful drain (#207) — see [`teardown_worker_stream`].
 ///
 /// A guard rather than a call site so the sweep cannot be skipped by any
 /// exit from the stream task — including a panic unwinding the inbound
@@ -219,15 +220,25 @@ impl Drop for StreamTeardown<'_> {
     }
 }
 
-/// Fail a torn-down worker stream's in-flight activities back to the engine.
+/// Sweep a torn-down worker stream's in-flight activities.
 ///
-/// The stream is the worker's liveness. When it ends — process death,
-/// network disconnect, expired token — every activity still assigned to
-/// this worker must be failed back through the completion sink as a
-/// retryable lost-worker error. The activity dispatch wait is unbounded by
-/// design (the engine imposes no activity timeout), so this sweep is what
-/// unblocks dispatches whose worker died mid-activity; the engine's retry
-/// policy then decides re-dispatch.
+/// The stream is the worker's liveness. When it ends mid-run — process death,
+/// network disconnect, expired token — every activity still assigned to this
+/// worker must be failed back through the completion sink as a retryable
+/// lost-worker error. The activity dispatch wait is unbounded by design (the
+/// engine imposes no activity timeout), so this sweep is what unblocks
+/// dispatches whose worker died mid-activity; the engine's retry policy then
+/// decides re-dispatch.
+///
+/// Under a graceful drain (#207) the stream ending is the EXPECTED worker
+/// response to the drain request, not a death: the worker's in-flight tasks
+/// are PARKED for restart recovery instead — nothing is recorded, nothing is
+/// delivered, the durable log keeps its dangling scheduled/started trail
+/// exactly as a kill -9 would, and post-restart replay re-dispatches it. The
+/// park-vs-fail branch keys on
+/// [`DrainState::is_draining`](crate::shutdown::DrainState::is_draining): a
+/// worker lost while the server is NOT draining still fails-and-retries
+/// byte-identically to before.
 fn teardown_worker_stream(
     worker_id: WorkerId,
     heartbeat: &crate::worker::HeartbeatTracker,
@@ -235,22 +246,43 @@ fn teardown_worker_stream(
     pending: &PendingActivities,
     drain: &crate::shutdown::DrainState,
 ) {
-    match heartbeat.fail_disconnected_worker(worker_id, registry, pending) {
-        Ok(report) if report.tasks.is_empty() => {}
-        Ok(report) => {
-            tracing::warn!(
-                worker_id = ?worker_id,
-                failed_tasks = report.tasks.len(),
-                "worker disconnected with in-flight activities; \
-                 surfaced as retryable lost-worker failures"
-            );
+    if drain.is_draining() {
+        match heartbeat.park_disconnected_worker(worker_id, registry, pending) {
+            Ok(report) if report.tasks.is_empty() => {}
+            Ok(report) => {
+                tracing::info!(
+                    worker_id = ?worker_id,
+                    parked_tasks = report.tasks.len(),
+                    "worker stream ended during drain; in-flight activities \
+                     parked for restart recovery"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    worker_id = ?worker_id,
+                    %error,
+                    "failed to park draining worker's in-flight activities"
+                );
+            }
         }
-        Err(error) => {
-            tracing::error!(
-                worker_id = ?worker_id,
-                %error,
-                "failed to sweep disconnected worker's in-flight activities"
-            );
+    } else {
+        match heartbeat.fail_disconnected_worker(worker_id, registry, pending) {
+            Ok(report) if report.tasks.is_empty() => {}
+            Ok(report) => {
+                tracing::warn!(
+                    worker_id = ?worker_id,
+                    failed_tasks = report.tasks.len(),
+                    "worker disconnected with in-flight activities; \
+                     surfaced as retryable lost-worker failures"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    worker_id = ?worker_id,
+                    %error,
+                    "failed to sweep disconnected worker's in-flight activities"
+                );
+            }
         }
     }
     // In-flight accounting may have just reached zero; wake any drain
@@ -587,5 +619,135 @@ fn decode_outcome(
                 }),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use aion_core::{ActivityId, WorkflowId};
+
+    use crate::shutdown::DrainState;
+    use crate::worker::heartbeat::InFlightActivity;
+    use crate::worker::registry::ConnectedWorkerRegistry;
+    use crate::worker::{HeartbeatTracker, PendingActivities};
+
+    use super::teardown_worker_stream;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// One tracked in-flight dispatch with a live pending waiter, ready for a
+    /// stream teardown: the registered worker, the shared tracker/pending/drain
+    /// state, and the waiter's receiver.
+    struct TeardownFixture {
+        registry: ConnectedWorkerRegistry,
+        tracker: HeartbeatTracker,
+        pending: PendingActivities,
+        drain: DrainState,
+        worker_id: crate::worker::registry::WorkerId,
+        workflow_id: WorkflowId,
+        activity_id: ActivityId,
+        rx: std::sync::mpsc::Receiver<Result<String, String>>,
+        /// Held so the registered worker stays routable until the teardown
+        /// under test deregisters it (dropping the guard would race that).
+        _registration: crate::worker::registry::WorkerRegistration,
+    }
+
+    fn fixture() -> Result<TeardownFixture, TestError> {
+        let registry = ConnectedWorkerRegistry::default();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let activity_types = [String::from("greet")];
+        let registration = registry.register("default", activity_types.iter(), tx)?;
+        let worker_id = registration
+            .worker_id()
+            .ok_or("test worker registration missing id")?;
+        let tracker = HeartbeatTracker::new(Duration::from_secs(5));
+        let pending = PendingActivities::default();
+        let workflow_id = WorkflowId::new_v4();
+        let activity_id = ActivityId::from_sequence_position(0);
+        tracker.track_task(
+            worker_id,
+            InFlightActivity {
+                workflow_id: workflow_id.clone(),
+                activity_id: activity_id.clone(),
+            },
+            Instant::now(),
+        )?;
+        let rx = pending.insert_for_test(workflow_id.clone(), activity_id.clone());
+        Ok(TeardownFixture {
+            registry,
+            tracker,
+            pending,
+            drain: DrainState::default(),
+            worker_id,
+            workflow_id,
+            activity_id,
+            rx,
+            _registration: registration,
+        })
+    }
+
+    /// #207: with drain begun, a stream teardown PARKS the in-flight dispatch —
+    /// the waiter resolves with the ephemeral parked sentinel, no lost-worker
+    /// failure is synthesized, and the tracker empties for drain accounting.
+    #[test]
+    fn teardown_under_drain_parks_instead_of_failing() -> Result<(), TestError> {
+        let fixture = fixture()?;
+        assert!(fixture.drain.begin());
+
+        teardown_worker_stream(
+            fixture.worker_id,
+            &fixture.tracker,
+            &fixture.registry,
+            &fixture.pending,
+            &fixture.drain,
+        );
+
+        let resolved = fixture.rx.recv_timeout(Duration::from_millis(200))?;
+        assert_eq!(
+            resolved,
+            Err(aion::PARKED_ACTIVITY_REASON.to_owned()),
+            "a drain teardown must resolve the waiter with the parked sentinel"
+        );
+        assert_eq!(fixture.tracker.in_flight_count()?, 0);
+        assert!(
+            !fixture.tracker.is_tracked(
+                fixture.worker_id,
+                &fixture.workflow_id,
+                &fixture.activity_id
+            )?,
+            "parking must retire the tracked entry"
+        );
+        Ok(())
+    }
+
+    /// Regression pin: WITHOUT drain, the teardown path is byte-identical to
+    /// before #207 — the waiter resolves with the retryable lost-worker
+    /// failure, so the engine's retry policy still governs genuine worker death.
+    #[test]
+    fn teardown_without_drain_still_fails_with_retryable_lost_worker() -> Result<(), TestError> {
+        let fixture = fixture()?;
+
+        teardown_worker_stream(
+            fixture.worker_id,
+            &fixture.tracker,
+            &fixture.registry,
+            &fixture.pending,
+            &fixture.drain,
+        );
+
+        let resolved = fixture.rx.recv_timeout(Duration::from_millis(200))?;
+        let reason = resolved.err().ok_or("expected a lost-worker failure")?;
+        assert!(
+            reason.starts_with("retryable:"),
+            "a mid-run teardown must stay a retryable failure: {reason}"
+        );
+        assert!(
+            reason.contains("lost before reporting activity result"),
+            "the failure must name worker loss: {reason}"
+        );
+        assert_eq!(fixture.tracker.in_flight_count()?, 0);
+        Ok(())
     }
 }

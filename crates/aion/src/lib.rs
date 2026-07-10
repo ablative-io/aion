@@ -92,7 +92,10 @@ pub use registry::{
     CompletionNotifier, HandleResidency, Registry, Residency, TerminalOutcome, WorkflowHandle,
     WorkflowHandleParts,
 };
-pub use runtime::{Pid, RuntimeConfig, RuntimeHandle, RuntimeInput, SignalDeliveryConfig};
+pub use runtime::{
+    PARKED_ACTIVITY_REASON, Pid, RuntimeConfig, RuntimeHandle, RuntimeInput, SignalDeliveryConfig,
+    is_parked_reason,
+};
 pub use schedule::{ScheduleError, next_fire_time, parse_cron_expression};
 pub use supervision::{
     EngineSupervisorId, SupervisionTree, TypeSupervisorId, TypeSupervisorNode, WorkflowNode,

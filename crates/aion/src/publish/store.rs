@@ -163,6 +163,22 @@ impl WritableEventStore for PublishingEventStore {
     async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
         self.inner.settle_outbox_row_cancelled(dispatch_key).await
     }
+
+    /// Forward the workflow-terminal outbox settle (#253) to the wrapped store.
+    ///
+    /// MUST be forwarded: the trait default is a silent empty-`Ok` no-op, so
+    /// without this override a terminal workflow's live outbox rows are never
+    /// settled on an `outbox.enabled` server with event streaming on — they stay
+    /// claimable and the dispatcher redelivers a dead workflow's activities.
+    /// Settle writes no history events, so there is nothing to publish.
+    async fn settle_workflow_outbox_rows_cancelled(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        self.inner
+            .settle_workflow_outbox_rows_cancelled(workflow_id)
+            .await
+    }
 }
 
 #[async_trait]
@@ -543,6 +559,26 @@ mod tests {
         assert!(
             calls.contains(&"settle_outbox_row_cancelled:wf-7".to_owned()),
             "spy did not record settle_outbox_row_cancelled — the decorator swallowed it; saw {calls:?}"
+        );
+
+        // Same hazard for the workflow-terminal settle (#253): the default is a
+        // silent empty-Ok no-op, so a dropped forward would leave a terminal
+        // workflow's rows claimable.
+        let workflow_id = aion_core::WorkflowId::new_v4();
+        assert!(
+            store
+                .settle_workflow_outbox_rows_cancelled(&workflow_id)
+                .await
+                .is_err(),
+            "workflow settle must forward to the spy's Err sentinel, not the empty-Ok default"
+        );
+        let calls = spy.calls();
+        assert!(
+            calls.contains(&format!(
+                "settle_workflow_outbox_rows_cancelled:{workflow_id}"
+            )),
+            "spy did not record settle_workflow_outbox_rows_cancelled — the decorator swallowed \
+             it; saw {calls:?}"
         );
         Ok(())
     }

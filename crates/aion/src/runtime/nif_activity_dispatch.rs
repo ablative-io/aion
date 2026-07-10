@@ -357,6 +357,20 @@ pub(super) fn spawn_completion_task(
                     "activity retry loop stopped: the activity settled through another path"
                 );
             }
+            RetryLoopTerminal::Parked => {
+                // The server parked this dispatch for restart recovery
+                // (graceful drain, #207): record nothing, deliver nothing. The
+                // durable log ends at the dangling scheduled/started trail —
+                // byte-equivalent to a kill -9 — so post-restart replay
+                // re-dispatches the activity live (cursor Exhausted →
+                // ResumeLive), exactly the SettledElsewhere stand-down shape.
+                tracing::debug!(
+                    workflow_id = %request.workflow_id,
+                    activity_id = %request.activity_id,
+                    attempt,
+                    "activity dispatch parked for restart recovery; retry loop stood down"
+                );
+            }
         }
     };
     tokio_handle.spawn(future);
@@ -386,6 +400,32 @@ enum RetryLoopTerminal {
     /// A terminal for this ordinal/workflow was recorded by another path
     /// mid-loop; nothing may be delivered or recorded for it anymore.
     SettledElsewhere,
+    /// The server parked the dispatch for restart recovery during a graceful
+    /// drain (#207): nothing may be delivered or recorded — the workflow stays
+    /// suspended and post-restart replay re-dispatches the dangling ordinal.
+    Parked,
+}
+
+/// Classify a failed dispatch BEFORE any durable retry record: the parked
+/// sentinel stands the loop down (park beats retry, #207 — nothing recorded,
+/// nothing delivered, no budget consumed; restart recovery re-dispatches the
+/// dangling ordinal); a non-retryable class, an absent policy (`"retry":
+/// null`), or an exhausted budget fails with the reason verbatim. `None`
+/// means the loop retries under the policy.
+fn failure_stand_down(
+    policy: Option<&super::nif_activity_retry::RetryPolicy>,
+    reason: &str,
+    attempt: u32,
+) -> Option<RetryLoopTerminal> {
+    use super::nif_activity_retry::{is_parked_reason, is_retryable_reason};
+
+    if is_parked_reason(reason) {
+        return Some(RetryLoopTerminal::Parked);
+    }
+    match policy {
+        Some(policy) if is_retryable_reason(reason) && attempt < policy.max_attempts => None,
+        _ => Some(RetryLoopTerminal::Failed(reason.to_owned())),
+    }
 }
 
 /// Drive one activity dispatch to its final outcome under the SDK-declared
@@ -395,7 +435,7 @@ async fn dispatch_with_retries(
     seam: &RetryRecorderSeam,
     request: &ActivityDispatch,
 ) -> RetryLoopOutcome {
-    use super::nif_activity_retry::{is_retryable_reason, retry_policy_from_config};
+    use super::nif_activity_retry::retry_policy_from_config;
 
     let policy = retry_policy_from_config(&request.config);
     let mut attempt = request.attempt;
@@ -411,10 +451,13 @@ async fn dispatch_with_retries(
             }
             Err(reason) => reason,
         };
-        let Some(policy) = policy
-            .as_ref()
-            .filter(|policy| is_retryable_reason(&reason) && attempt < policy.max_attempts)
-        else {
+        if let Some(terminal) = failure_stand_down(policy.as_ref(), &reason, attempt) {
+            return RetryLoopOutcome { attempt, terminal };
+        }
+        // The stand-down above returns `Failed` whenever no policy is present,
+        // so a `None` here is structurally unreachable — kept as the honest
+        // failure terminal rather than an unwrap.
+        let Some(policy) = policy.as_ref() else {
             return RetryLoopOutcome {
                 attempt,
                 terminal: RetryLoopTerminal::Failed(reason),
@@ -1436,6 +1479,91 @@ mod tests {
         ));
         assert_eq!(dispatcher.seen_attempts(), vec![1]);
         assert_eq!(harness.history().await?.len(), 3);
+        Ok(())
+    }
+
+    /// #207 park-beats-retry: the parked sentinel stands the loop down BEFORE
+    /// the retry-policy filter, even with budget left — no retry record, no
+    /// delivered failure, no consumed budget. The durable log keeps only the
+    /// seeded scheduled/started trail, byte-equivalent to a kill -9.
+    #[tokio::test]
+    async fn parked_dispatch_stands_down_without_recording_even_with_retry_budget() -> TestResult {
+        let harness = RetryLoopHarness::seeded(FIXED_RETRY_CONFIG).await?;
+        let dispatcher = ScriptedRetryDispatcher::new(vec![Err(
+            crate::runtime::PARKED_ACTIVITY_REASON.to_owned(),
+        )]);
+        let outcome = super::dispatch_with_retries(
+            &(Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>),
+            &harness.seam,
+            &harness.request,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome.terminal, super::RetryLoopTerminal::Parked),
+            "a parked dispatch must stand down, never fail or retry"
+        );
+        assert_eq!(
+            dispatcher.seen_attempts(),
+            vec![1],
+            "parking must not re-dispatch: no retry budget is consumed"
+        );
+        assert_eq!(
+            harness.history().await?.len(),
+            3,
+            "nothing may be recorded for a parked dispatch — the durable log \
+             must end at the dangling scheduled/started trail"
+        );
+        Ok(())
+    }
+
+    /// #207 sentinel is ephemeral end-to-end at the completion-task seam: a
+    /// parked dispatch delivers NOTHING to the workflow process (no completion,
+    /// no failure) and records nothing, so the process stays suspended for
+    /// restart recovery.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parked_dispatch_delivers_nothing_to_the_workflow_process() -> TestResult {
+        let harness = RetryLoopHarness::seeded(r#"{"retry":null}"#).await?;
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+        let pid = runtime.spawn_test_process()?;
+        let dispatcher = ScriptedRetryDispatcher::new(vec![Err(
+            crate::runtime::PARKED_ACTIVITY_REASON.to_owned(),
+        )]);
+        spawn_completion_task(
+            &tokio::runtime::Handle::current(),
+            Arc::clone(&runtime),
+            Arc::clone(&dispatcher) as Arc<dyn ActivityDispatcher>,
+            super::RetryRecorderSeam {
+                recorder: Arc::clone(&harness.seam.recorder),
+                run_id: harness.seam.run_id.clone(),
+            },
+            pid,
+            super::correlation_id(0),
+            harness.request.clone(),
+        );
+        // Give the completion task ample time to run to its terminal; a parked
+        // dispatch must leave the runtime maps empty (nothing delivered).
+        for _ in 0_u32..40 {
+            if dispatcher.seen_attempts().len() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            runtime.take_activity_result(pid, 0).is_none(),
+            "a parked dispatch must never deliver a completion"
+        );
+        assert!(
+            runtime.take_activity_error(pid, 0).is_none(),
+            "the parked sentinel must never be delivered to workflow code"
+        );
+        assert_eq!(
+            harness.history().await?.len(),
+            3,
+            "the durable log must be untouched by a parked dispatch"
+        );
+        runtime.shutdown()?;
         Ok(())
     }
 

@@ -248,6 +248,14 @@ impl WritableEventStore for LibSqlStore {
     async fn settle_outbox_row_cancelled(&self, dispatch_key: &str) -> Result<(), StoreError> {
         crate::outbox::settle_outbox_row_cancelled(self.connection(), dispatch_key).await
     }
+
+    async fn settle_workflow_outbox_rows_cancelled(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::settle_workflow_outbox_rows_cancelled(self.connection(), workflow_id).await
+    }
 }
 
 #[async_trait]
@@ -305,6 +313,26 @@ impl OutboxStore for LibSqlStore {
             limit,
         )
         .await
+    }
+
+    async fn list_stale_claimed_outbox_rows(
+        &self,
+        older_than: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        crate::outbox::list_stale_claimed_outbox_rows(self.connection(), older_than, limit).await
+    }
+
+    async fn list_unsettled_outbox_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        crate::outbox::list_unsettled_outbox_workflow_ids(self.connection()).await
+    }
+
+    async fn cancel_outbox_rows_for_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        let _guard = self.transaction_lock.lock().await;
+        crate::outbox::settle_workflow_outbox_rows_cancelled(self.connection(), workflow_id).await
     }
 
     async fn complete_outbox_row(&self, dispatch_key: &str) -> Result<(), StoreError> {

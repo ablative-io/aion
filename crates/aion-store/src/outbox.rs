@@ -381,6 +381,93 @@ pub trait OutboxStore: Send + Sync + 'static {
         self.claim_outbox_rows_scoped(scope, limit).await
     }
 
+    /// Returns up to `limit` STALE claimed rows — `status` is [`OutboxStatus::Claimed`] and the
+    /// durable `claimed_at` is older than `older_than` — WITHOUT transitioning them (#253).
+    ///
+    /// This is the read-only probe half of stale-claim reconciliation: it selects exactly the rows
+    /// [`OutboxStore::rearm_stale_claimed_outbox_rows`] would re-arm (same status/`claimed_at`
+    /// predicate, same `claimed_at ASC, dispatch_key ASC` order, same `NULL claimed_at` exclusion)
+    /// so the reconciler can project each candidate workflow's liveness FIRST and settle rows whose
+    /// workflow is already terminal instead of re-arming a dispatch nobody may deliver (the
+    /// incident's zombie-round hole). Claims and mutates nothing.
+    ///
+    /// There is deliberately no silently-empty default: a store that cannot enumerate stale claims
+    /// cannot host the liveness-gated reconciler, and pretending "no stale rows" would re-open the
+    /// ungated re-arm. Outbox-bearing backends must implement it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures (including a store that has not
+    /// implemented this probe) and [`StoreError::Serialization`] when a stored row cannot be decoded.
+    async fn list_stale_claimed_outbox_rows(
+        &self,
+        older_than: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<OutboxRow>, StoreError> {
+        let _ = (older_than, limit);
+        Err(StoreError::Backend(String::from(
+            "this outbox store does not support the stale-claim liveness probe; \
+             refusing to report an empty stale set (override OutboxStore::list_stale_claimed_outbox_rows)",
+        )))
+    }
+
+    /// Returns the distinct workflow ids owning at least one UNSETTLED row — `status` is
+    /// [`OutboxStatus::Pending`] or [`OutboxStatus::Claimed`] — scoped to this node's owned shards
+    /// like every other outbox enumeration (#253).
+    ///
+    /// This is the boot/adoption sweep's enumeration primitive: after a restart (or a shard
+    /// adoption) the server projects each returned workflow's status once and settles the rows of
+    /// terminal workflows via [`OutboxStore::cancel_outbox_rows_for_workflow`], closing the window
+    /// where a workflow reached its terminal without its rows being settled (a settle-hook failure,
+    /// or a terminal recorded by a node that died before settling). Bounded by the number of
+    /// workflows with live rows; read-only.
+    ///
+    /// No silently-empty default, for the same reason as
+    /// [`OutboxStore::list_stale_claimed_outbox_rows`]: an empty answer from a store that never
+    /// looked would silently disable the boot repair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures (including a store that has not
+    /// implemented this enumeration) and [`StoreError::Serialization`] when a stored row cannot be
+    /// decoded.
+    async fn list_unsettled_outbox_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        Err(StoreError::Backend(String::from(
+            "this outbox store does not support unsettled-workflow enumeration; \
+             refusing to report an empty set (override OutboxStore::list_unsettled_outbox_workflow_ids)",
+        )))
+    }
+
+    /// Idempotently settles EVERY live ([`OutboxStatus::Pending`] or [`OutboxStatus::Claimed`]) row
+    /// of `workflow_id` to [`OutboxStatus::Cancelled`], returning the settled `dispatch_key`s
+    /// (#253).
+    ///
+    /// The [`OutboxStore`]-facing twin of
+    /// [`crate::WritableEventStore::settle_workflow_outbox_rows_cancelled`] (concrete stores share
+    /// one implementation), exposed here so the server-side boot sweep and the stale-claim
+    /// reconciler — which hold an outbox-store handle, not a writer — can settle a terminal
+    /// workflow's rows. Terminal rows (`Done`/`Failed`/`Cancelled`) are never touched, and
+    /// [`crate::WritableEventStore::rearm_outbox_pending`] still supersedes the settle on reopen.
+    ///
+    /// No silently-succeeding default: a store that cannot settle must refuse loudly rather than
+    /// leave a terminal workflow's rows claimable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Backend`] for backend boundary failures (including a store that has not
+    /// implemented the settle) and [`StoreError::Serialization`] when a stored row cannot be
+    /// decoded.
+    async fn cancel_outbox_rows_for_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        let _ = workflow_id;
+        Err(StoreError::Backend(String::from(
+            "this outbox store does not support workflow-terminal settlement; \
+             refusing to no-op a settle (override OutboxStore::cancel_outbox_rows_for_workflow)",
+        )))
+    }
+
     /// Re-arms stale claimed rows so a live dispatcher can claim them again without restart.
     ///
     /// Implementations atomically select up to `limit` rows whose `status` is

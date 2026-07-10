@@ -108,6 +108,25 @@ WHERE status = 'claimed' AND claimed_at IS NOT NULL AND claimed_at < ?1
 ORDER BY claimed_at ASC, dispatch_key ASC
 LIMIT ?2";
 
+// Workflow-terminal settle (#253): the live (pending|claimed) keys of one workflow, selected
+// inside the same IMMEDIATE transaction that flips them to 'cancelled', so the returned keys are
+// exactly the rows this settle retired. Terminal rows (done/failed/cancelled) are never touched.
+const SELECT_LIVE_KEYS_FOR_WORKFLOW_SQL: &str = "
+SELECT dispatch_key FROM outbox
+WHERE workflow_id = ?1 AND status IN ('pending', 'claimed')
+ORDER BY dispatch_key ASC";
+
+const SETTLE_WORKFLOW_LIVE_ROWS_SQL: &str = "
+UPDATE outbox SET status = 'cancelled', claimed_at = NULL
+WHERE workflow_id = ?1 AND status IN ('pending', 'claimed')";
+
+// Unsettled-workflow enumeration (#253): the distinct owners of any live (pending|claimed) row —
+// the boot/adoption sweep's candidate set for terminal-workflow settlement. Read-only.
+const SELECT_UNSETTLED_WORKFLOW_IDS_SQL: &str = "
+SELECT DISTINCT workflow_id FROM outbox
+WHERE status IN ('pending', 'claimed')
+ORDER BY workflow_id ASC";
+
 const REARM_STALE_CLAIMED_ROW_SQL: &str = "
 UPDATE outbox SET status = 'pending', visible_after = ?2, claimed_at = NULL
 WHERE dispatch_key = ?1 AND status = 'claimed'";
@@ -617,6 +636,134 @@ async fn select_and_rearm_stale_claimed(
     }
 
     Ok(rearmed)
+}
+
+/// Read up to `limit` stale claimed rows — the exact selection
+/// [`rearm_stale_claimed_outbox_rows`] would re-arm — WITHOUT transitioning them (#253).
+///
+/// Same predicate (claimed, durable `claimed_at` older than `older_than`, `NULL claimed_at`
+/// excluded) and the same `claimed_at ASC, dispatch_key ASC` order, so the reconciler's liveness
+/// probe sees precisely the re-arm candidates.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored row cannot be decoded.
+pub(crate) async fn list_stale_claimed_outbox_rows(
+    conn: &Connection,
+    older_than: DateTime<Utc>,
+    limit: u32,
+) -> Result<Vec<OutboxRow>, StoreError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut rows = conn
+        .query(
+            SELECT_STALE_CLAIMED_SQL,
+            params![encode_instant(older_than), i64::from(limit)],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let mut stale = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        stale.push(decode_row(&row)?);
+    }
+    Ok(stale)
+}
+
+/// Enumerate the distinct workflow ids owning any live (`pending`|`claimed`) row (#253). Read-only.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures and `StoreError::Serialization` when a
+/// stored workflow id cannot be decoded.
+pub(crate) async fn list_unsettled_outbox_workflow_ids(
+    conn: &Connection,
+) -> Result<Vec<WorkflowId>, StoreError> {
+    let mut rows = conn
+        .query(SELECT_UNSETTLED_WORKFLOW_IDS_SQL, ())
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let mut workflow_ids = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let workflow_id: String = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        workflow_ids.push(decode_workflow_id(&workflow_id)?);
+    }
+    Ok(workflow_ids)
+}
+
+/// Idempotently settle every live (`pending`|`claimed`) row of `workflow_id` to `cancelled`,
+/// returning the settled `dispatch_key`s (#253).
+///
+/// Select-then-update inside one `IMMEDIATE` transaction so the returned keys are exactly the rows
+/// this settle retired; terminal rows (`done`/`failed`/`cancelled`) are never touched, and a
+/// workflow with no live rows settles nothing and returns an empty set.
+///
+/// # Errors
+///
+/// Returns `StoreError::Backend` for libSQL boundary failures.
+pub(crate) async fn settle_workflow_outbox_rows_cancelled(
+    conn: &Connection,
+    workflow_id: &WorkflowId,
+) -> Result<Vec<String>, StoreError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let settled = match select_and_settle_workflow_rows(&tx, workflow_id).await {
+        Ok(settled) => settled,
+        Err(error) => {
+            rollback(tx).await?;
+            return Err(error);
+        }
+    };
+    tx.commit()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    Ok(settled)
+}
+
+async fn select_and_settle_workflow_rows(
+    tx: &Transaction,
+    workflow_id: &WorkflowId,
+) -> Result<Vec<String>, StoreError> {
+    let mut rows = tx
+        .query(
+            SELECT_LIVE_KEYS_FOR_WORKFLOW_SQL,
+            params![workflow_id.to_string()],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    let mut settled = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?
+    {
+        let dispatch_key: String = row
+            .get(0)
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        settled.push(dispatch_key);
+    }
+    if !settled.is_empty() {
+        tx.execute(
+            SETTLE_WORKFLOW_LIVE_ROWS_SQL,
+            params![workflow_id.to_string()],
+        )
+        .await
+        .map_err(|error| crate::error::libsql_error(&error))?;
+    }
+    Ok(settled)
 }
 
 /// Out-of-band snapshot of one outbox row's mutable lifecycle bookkeeping.

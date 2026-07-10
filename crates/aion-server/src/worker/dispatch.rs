@@ -472,6 +472,28 @@ pub trait ActivityCompletionSink {
     ///
     /// Returns [`ServerError`] when the engine rejects or cannot record the completion.
     fn complete_activity(&self, completion: ActivityCompletion) -> Result<(), ServerError>;
+
+    /// Park one in-flight dispatch for restart recovery during a graceful
+    /// drain (#207): resolve the LOCAL waiter with the ephemeral parked
+    /// sentinel and nothing else.
+    ///
+    /// Parking is the anti-completion — it writes nothing durable, delivers
+    /// nothing to workflow code, and never crosses the SDK wire. It exists so a
+    /// drain leaves the durable log at exactly the dangling
+    /// `ActivityScheduled`/`ActivityStarted` a kill -9 would leave (the proven
+    /// re-dispatchable state) while still unblocking the blocking dispatcher
+    /// thread, so process exit is never wedged on tokio's blocking pool. A
+    /// dispatch with no matching waiter (already resolved) is a no-op — a park
+    /// must never be routed as an outbox failure delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when sink state cannot be trusted.
+    fn park_activity(
+        &self,
+        workflow_id: &WorkflowId,
+        activity_id: &ActivityId,
+    ) -> Result<(), ServerError>;
 }
 
 /// Decode and hand a worker result to the engine-owned activity completion sink.
@@ -776,6 +798,18 @@ mod tests {
                 .map_err(|_| ServerError::lock_poisoned("recording completion sink"))?
                 .push(completion);
             Ok(())
+        }
+
+        fn park_activity(
+            &self,
+            _workflow_id: &WorkflowId,
+            _activity_id: &ActivityId,
+        ) -> Result<(), ServerError> {
+            Err(ServerError::worker_dispatch(
+                "",
+                "",
+                "result-handoff tests never park a dispatch",
+            ))
         }
     }
 

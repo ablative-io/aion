@@ -330,6 +330,27 @@ impl WritableEventStore for InstrumentedEventStore {
         self.observe_since("append", started);
         result
     }
+
+    /// Forward the workflow-terminal outbox settle (#253) to the inner store.
+    ///
+    /// MUST be forwarded for the same reason as
+    /// [`Self::settle_outbox_row_cancelled`]: the trait default is a silent
+    /// empty-`Ok` no-op, and the Recorder settles a terminal workflow's rows
+    /// through this decorator — inheriting the default would leave a dead
+    /// workflow's rows claimable and redeliverable. Timed under the shared
+    /// write bucket like the sibling settle.
+    async fn settle_workflow_outbox_rows_cancelled(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<String>, StoreError> {
+        let started = Instant::now();
+        let result = self
+            .inner
+            .settle_workflow_outbox_rows_cancelled(workflow_id)
+            .await;
+        self.observe_since("append", started);
+        result
+    }
 }
 
 #[async_trait]
@@ -702,6 +723,26 @@ mod tests {
         assert!(
             calls.contains(&"settle_outbox_row_cancelled:wf-7".to_owned()),
             "spy did not record settle_outbox_row_cancelled — the decorator swallowed it; saw {calls:?}"
+        );
+
+        // Same hazard for the workflow-terminal settle (#253): the Recorder
+        // settles a terminal workflow's rows through this decorator, and the
+        // trait default is a silent empty-Ok no-op.
+        let workflow_id = WorkflowId::new_v4();
+        assert!(
+            store
+                .settle_workflow_outbox_rows_cancelled(&workflow_id)
+                .await
+                .is_err(),
+            "workflow settle must forward to the spy's Err sentinel, not the empty-Ok default"
+        );
+        let calls = spy.calls();
+        assert!(
+            calls.contains(&format!(
+                "settle_workflow_outbox_rows_cancelled:{workflow_id}"
+            )),
+            "spy did not record settle_workflow_outbox_rows_cancelled — the decorator swallowed \
+             it; saw {calls:?}"
         );
         Ok(())
     }

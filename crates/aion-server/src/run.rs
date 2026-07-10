@@ -205,18 +205,9 @@ async fn run_server(cli: CliOverrides) -> Result<ExitCode, ServerError> {
     // Hold the liminal worker listener (if any) for the server's lifetime: it is
     // dropped at the end of `run_server`, after the serve `select!` completes, so
     // its accept worker stops cleanly on shutdown via the listener's own `Drop`.
-    // #204: rebuild the durable pause dispatch-hold from `list_paused` BEFORE the
-    // dispatcher's first claim, so a run paused before a restart keeps its outbox
-    // rows held (never claimed) after recovery. A run projecting `Paused` is
-    // excluded from `list_active` respawn for free; this repopulates the hold that
-    // would otherwise be empty in memory after a crash.
-    if outbox_config.enabled {
-        if let Ok(engine) = state.engine() {
-            if let Err(error) = engine.rebuild_paused_runs().await {
-                tracing::warn!(%error, "failed to rebuild paused-runs dispatch hold at startup");
-            }
-        }
-    }
+    // #204/#253: rebuild the pause dispatch-hold and settle terminal
+    // workflows' stranded outbox rows BEFORE the dispatcher's first claim.
+    rebuild_outbox_boot_state(&state, &outbox_config).await;
     let _outbox_worker_listener = maybe_spawn_outbox_dispatcher(
         &state,
         &outbox_config,
@@ -369,6 +360,55 @@ fn reject_auth_without_feature(config: &ServerConfig) -> Result<(), ServerError>
     Ok(())
 }
 
+/// Rebuild the outbox-related boot state BEFORE the dispatcher's first claim,
+/// when (and only when) the outbox is commissioned:
+///
+/// - #204: repopulate the durable pause dispatch-hold from `list_paused`, so a
+///   run paused before a restart keeps its outbox rows held (never claimed)
+///   after recovery. A run projecting `Paused` is excluded from `list_active`
+///   respawn for free; this repopulates the hold that would otherwise be empty
+///   in memory after a crash.
+/// - #253: settle terminal workflows' stranded outbox rows. A workflow that
+///   reached a durable terminal without its rows being settled (a settle-hook
+///   failure, or a crash between the terminal append and the settle) must not
+///   have those rows re-armed and redelivered after restart — that is the
+///   zombie-round incident. A sweep error is loud but non-fatal: the
+///   settle-at-terminal hook and the reconciler's liveness gate remain as
+///   repair paths, and the residual window is one bounded dispatch whose
+///   completion drops unmatched, never a re-arm loop.
+async fn rebuild_outbox_boot_state(state: &ServerState, outbox_config: &OutboxConfig) {
+    if !outbox_config.enabled {
+        return;
+    }
+    let Ok(engine) = state.engine() else {
+        return;
+    };
+    if let Err(error) = engine.rebuild_paused_runs().await {
+        warn!(%error, "failed to rebuild paused-runs dispatch hold at startup");
+    }
+    let Some(outbox_store) = state.outbox_store() else {
+        return;
+    };
+    match crate::worker::settle_terminal_outbox_rows(engine.store().as_ref(), outbox_store.as_ref())
+        .await
+    {
+        Ok(settled) if settled.is_empty() => {}
+        Ok(settled) => {
+            info!(
+                settled = settled.len(),
+                "boot sweep settled stranded outbox rows for terminal workflows"
+            );
+        }
+        Err(error) => {
+            error!(
+                %error,
+                "boot sweep failed to settle terminal workflows' outbox rows; \
+                 the reconciler liveness gate remains the backstop"
+            );
+        }
+    }
+}
+
 /// Spawn the durable-outbox fan-out dispatcher when, and only when, the
 /// operator commissioned it (`outbox.enabled = true`).
 ///
@@ -470,9 +510,13 @@ fn maybe_spawn_outbox_dispatcher(
     // history and re-arms via `rearm_outbox_pending`), NOT by `stale_after`. Warn
     // so the operator knows the backstop is absent.
     if let Some(reconciler_config) = resolve_outbox_reconciler_config(outbox_config)? {
-        let reconciler = OutboxReconciler::new(outbox_store, reconciler_config);
+        // #253: the reconciler's liveness gate projects each stale candidate's
+        // workflow status from the engine's event store before any re-arm, so
+        // a terminal workflow's stranded row settles instead of redelivering.
+        let event_store = state.engine()?.store();
+        let reconciler = OutboxReconciler::new(outbox_store, event_store, reconciler_config);
         tokio::spawn(reconciler.run(shutdown_rx.clone()));
-        info!("outbox reconciler commissioned");
+        info!("outbox reconciler commissioned (terminal-workflow liveness gate active)");
     } else if clustered {
         warn!(
             "outbox reconciler is UNCONFIGURED on a clustered boot (outbox.reconcile_interval_ms \
