@@ -98,17 +98,51 @@ impl Printer {
     }
     fn type_decl(&mut self, decl: &TypeDecl) {
         self.comments(0, &decl.trivia.leading);
+        self.description(0, decl.description_source.as_deref());
         let fields = decl
             .fields
             .iter()
             .map(|field| format!("{}: {}", field.name, ty(&field.ty)))
             .collect::<Vec<_>>()
             .join(", ");
-        self.line(
-            0,
-            &format!("type {} {{ {} }}", decl.name, fields),
-            decl.trivia.trailing.as_ref(),
-        );
+        let single_line = format!("type {} {{ {} }}", decl.name, fields);
+        // Field-level `///` docs and comment trivia have no home in the
+        // single-line form, so any field carrying them forces the multi-line
+        // rendering even when the declaration would fit in 100 columns —
+        // collapsing would silently discard load-bearing prose (operator
+        // ruling on AWL1-001).
+        let has_field_lines = decl.fields.iter().any(|field| {
+            field.description.is_some()
+                || !field.trivia.leading.is_empty()
+                || field.trivia.trailing.is_some()
+        });
+        if single_line.chars().count() <= 100 && !has_field_lines {
+            self.line(0, &single_line, decl.trivia.trailing.as_ref());
+        } else {
+            self.line(
+                0,
+                &format!("type {} {{", decl.name),
+                decl.trivia.trailing.as_ref(),
+            );
+            for field in &decl.fields {
+                self.comments(2, &field.trivia.leading);
+                self.description(2, field.description_source.as_deref());
+                self.line(
+                    2,
+                    &format!("{}: {},", field.name, ty(&field.ty)),
+                    field.trivia.trailing.as_ref(),
+                );
+            }
+            self.line(0, "}", None);
+        }
+    }
+    fn description(&mut self, indent: usize, description: Option<&str>) {
+        if let Some(description) = description {
+            for line in description.split('\n') {
+                let text = format!("///{line}");
+                self.line(indent, &text, None);
+            }
+        }
     }
     fn action(&mut self, decl: &ActionDecl) {
         self.comments(0, &decl.trivia.leading);
@@ -267,7 +301,16 @@ impl Printer {
     }
     fn comments(&mut self, indent: usize, comments: &[Comment]) {
         for comment in comments {
-            self.line(indent, &format!("// {}", comment.text), None);
+            // A doc comment reaches this trivia path only when its `///` line
+            // attached to no type or field; re-render it verbatim as `///{text}`
+            // so it round-trips as a well-formed doc line. An ordinary comment
+            // re-renders through the canonical `// {text}` form.
+            let rendered = if comment.doc {
+                format!("///{}", comment.text)
+            } else {
+                format!("// {}", comment.text)
+            };
+            self.line(indent, &rendered, None);
         }
     }
     fn line(&mut self, indent: usize, code: &str, trailing: Option<&Comment>) {

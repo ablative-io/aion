@@ -4,6 +4,19 @@ use crate::{LexError, Span, Token, lex};
 use super::ParseError;
 
 #[derive(Debug, Clone)]
+pub(super) struct DescriptionLine {
+    pub(super) indent: usize,
+    pub(super) text: String,
+    pub(super) source: String,
+    pub(super) span: Span,
+}
+
+pub(super) struct AttachedDescription {
+    pub(super) text: String,
+    pub(super) source: String,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct SourceLine {
     pub(super) indent: usize,
     pub(super) code: String,
@@ -36,6 +49,7 @@ impl SourceLine {
 pub(super) struct SourceLines {
     pub(super) lines: Vec<SourceLine>,
     pub(super) comments: Vec<Comment>,
+    pub(super) descriptions: Vec<DescriptionLine>,
 }
 
 impl SourceLines {
@@ -44,6 +58,7 @@ impl SourceLines {
         let mut line_no = 1;
         let mut lines = Vec::new();
         let mut comments = Vec::new();
+        let mut descriptions = Vec::new();
         for raw in source.split_inclusive('\n') {
             let had_newline = raw.ends_with('\n');
             let mut text = if had_newline {
@@ -63,6 +78,37 @@ impl SourceLines {
                 }
                 continue;
             }
+            if let Some(description_at) = rest
+                .trim_start()
+                .strip_prefix("///")
+                .filter(|suffix| !suffix.starts_with('/'))
+            {
+                let skipped = rest.len() - rest.trim_start().len();
+                let start_col = indent + skipped + 1;
+                let start = offset + indent + skipped;
+                let description_span = span(start, offset + text.len(), line_no, start_col);
+                descriptions.push(DescriptionLine {
+                    indent,
+                    text: trim_comment(description_at).to_owned(),
+                    source: description_at.to_owned(),
+                    span: description_span,
+                });
+                comments.push(Comment {
+                    span: description_span,
+                    // Store the verbatim slice after `///` (spacing intact),
+                    // matching `DescriptionLine::source`, so that if this doc
+                    // comment attaches to nothing it re-renders as `///{text}`
+                    // — a well-formed doc line — instead of being sliced apart
+                    // through the ordinary `// {text}` path.
+                    text: description_at.to_owned(),
+                    doc: true,
+                });
+                offset += raw.len();
+                if had_newline {
+                    line_no += 1;
+                }
+                continue;
+            }
             if let Some(comment_at) = rest.trim_start().strip_prefix("//") {
                 let skipped = rest.len() - rest.trim_start().len();
                 let start_col = indent + skipped + 1;
@@ -70,6 +116,7 @@ impl SourceLines {
                 comments.push(Comment {
                     span: span(start, offset + text.len(), line_no, start_col),
                     text: trim_comment(comment_at).to_owned(),
+                    doc: false,
                 });
                 offset += raw.len();
                 if had_newline {
@@ -97,7 +144,11 @@ impl SourceLines {
                 line_no += 1;
             }
         }
-        Ok(Self { lines, comments })
+        Ok(Self {
+            lines,
+            comments,
+            descriptions,
+        })
     }
 }
 
@@ -153,6 +204,7 @@ fn split_code_comment(
                 Some(Comment {
                     span: span(start, offset + line_len, line_no, indent + i + 1),
                     text,
+                    doc: false,
                 }),
             );
         }

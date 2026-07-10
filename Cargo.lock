@@ -56,6 +56,10 @@ dependencies = [
 [[package]]
 name = "aion-awl"
 version = "0.8.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "aion-cli"

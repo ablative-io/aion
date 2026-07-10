@@ -1,6 +1,6 @@
 use crate::ast::{
     AboutDecl, ActionDecl, ActionFieldTag, Comment, Document, Expr, FieldDecl, IoDecl, Spanned,
-    Trivia, TypeDecl, WorkflowDecl, join_span,
+    Trivia, WorkflowDecl, join_span,
 };
 
 use super::ParseError;
@@ -11,6 +11,7 @@ use super::step_fields::{
     parse_duration_field, parse_retry, parse_string_field, push_leading, push_trailing,
     reject_duplicate,
 };
+use super::type_decls::parse_type_decl;
 use super::types::parse_type_at;
 
 /// Parse an AWL source document into a spanned [`Document`].
@@ -82,8 +83,10 @@ impl DeclPhase {
 pub(super) struct LineParser {
     pub(super) lines: Vec<SourceLine>,
     pub(super) own_comments: Vec<Comment>,
+    pub(super) descriptions: Vec<super::source::DescriptionLine>,
     pub(super) pos: usize,
     pub(super) comment_pos: usize,
+    pub(super) description_pos: usize,
 }
 
 impl LineParser {
@@ -91,8 +94,10 @@ impl LineParser {
         Self {
             lines: source.lines,
             own_comments: source.comments,
+            descriptions: source.descriptions,
             pos: 0,
             comment_pos: 0,
+            description_pos: 0,
         }
     }
 
@@ -148,7 +153,7 @@ impl LineParser {
                     error = Some(self.parse_io("error")?);
                 }
                 "signal" => signals.push(self.parse_io("signal")?),
-                "type" => types.push(self.parse_type_decl()?),
+                "type" => types.push(parse_type_decl(&mut self)?),
                 "action" => actions.push(self.parse_action_decl()?),
                 "step" => steps.push(self.parse_step()?),
                 "finish" => {
@@ -277,38 +282,6 @@ impl LineParser {
         })
     }
 
-    fn parse_type_decl(&mut self) -> Result<TypeDecl, ParseError> {
-        let line = self.bump_required("missing type declaration after peek")?;
-        let trivia = self.take_trivia(&line);
-        let rest = keyword_rest(&line, "type", "type declaration needs record fields")?;
-        let (name, body) = rest
-            .split_once('{')
-            .ok_or_else(|| ParseError::new(line.span, "type declaration needs record fields"))?;
-        let body = body
-            .strip_suffix('}')
-            .ok_or_else(|| ParseError::new(line.span, "unterminated type record"))?;
-        let mut fields = Vec::new();
-        for part in comma_parts(body) {
-            if part.trim().is_empty() {
-                continue;
-            }
-            let (field, ty) = part
-                .split_once(':')
-                .ok_or_else(|| ParseError::new(line.span, "type field needs `name: Type`"))?;
-            fields.push(FieldDecl {
-                span: line.span,
-                name: field.trim().to_owned(),
-                ty: parse_type_at(&line, ty.trim())?,
-            });
-        }
-        Ok(TypeDecl {
-            span: line.span,
-            trivia,
-            name: name.trim().to_owned(),
-            fields,
-        })
-    }
-
     fn parse_action_decl(&mut self) -> Result<ActionDecl, ParseError> {
         let line = self.bump_required("missing action declaration after peek")?;
         let trivia = self.take_trivia(&line);
@@ -333,6 +306,9 @@ impl LineParser {
                 .ok_or_else(|| ParseError::new(line.span, "action parameter needs `name: Type`"))?;
             params.push(FieldDecl {
                 span: line.span,
+                trivia: Trivia::default(),
+                description: None,
+                description_source: None,
                 name: param.trim().to_owned(),
                 ty: parse_type_at(&line, ty.trim())?,
             });
@@ -415,6 +391,61 @@ impl LineParser {
             leading,
             trailing: line.trailing.clone(),
         }
+    }
+
+    pub(super) fn take_description(
+        &mut self,
+        line: &SourceLine,
+        indent: usize,
+    ) -> Option<super::source::AttachedDescription> {
+        let start = self.description_pos;
+        while self.description_pos < self.descriptions.len()
+            && self.descriptions[self.description_pos].span.start < line.span.start
+        {
+            self.description_pos += 1;
+        }
+        let preceding = &self.descriptions[start..self.description_pos];
+        let mut expected_line = line.span.line;
+        let mut lines = Vec::new();
+        let mut source_lines = Vec::new();
+        let mut attached_spans = Vec::new();
+        for description in preceding.iter().rev() {
+            if description.indent != indent || description.span.line + 1 != expected_line {
+                break;
+            }
+            lines.push(description.text.clone());
+            source_lines.push(description.source.clone());
+            attached_spans.push(description.span);
+            expected_line = description.span.line;
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        lines.reverse();
+        source_lines.reverse();
+        // Each `///` line is recorded twice at lex time: once as a description
+        // entry (consumed here) and once as a duplicate own-line comment in
+        // `own_comments`, so a doc comment that attaches to nothing still
+        // survives as trivia. Now that these lines DO attach, drop only their
+        // duplicate comment entries — matched by span against the contiguous
+        // run just collected, never the whole `preceding` slice, which may
+        // include earlier doc comments belonging to no declaration nor any
+        // ordinary `//` comment interleaved before them. Decrement
+        // `comment_pos` by however many removed entries sat before it, so the
+        // running trivia cursor stays aligned once `own_comments` shrinks.
+        let consumed_before = self
+            .own_comments
+            .iter()
+            .take(self.comment_pos)
+            .filter(|comment| attached_spans.contains(&comment.span))
+            .count();
+        self.own_comments
+            .retain(|comment| !attached_spans.contains(&comment.span));
+        self.comment_pos -= consumed_before;
+        Some(super::source::AttachedDescription {
+            text: lines.join("\n"),
+            source: source_lines.join("\n"),
+        })
     }
 }
 

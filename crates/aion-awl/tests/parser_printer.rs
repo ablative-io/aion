@@ -66,6 +66,147 @@ fn bounded_cycle_normalizes_to_golden_and_is_idempotent() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn typed_contract_normalizes_to_golden_and_is_idempotent() -> Result<(), Box<dyn Error>> {
+    let source = include_str!("fixtures/typed_contract.awl");
+    let canonical = include_str!("fixtures/typed_contract.canonical.awl");
+    assert_eq!(print(&parse(source)?), canonical);
+    assert_eq!(print(&parse(canonical)?), canonical);
+    assert_idempotent(source)
+}
+
+#[test]
+fn described_type_fields_are_load_bearing_data() -> Result<(), Box<dyn Error>> {
+    let document = parse(include_str!("fixtures/typed_contract.awl"))?;
+    let brief = document
+        .types
+        .iter()
+        .find(|ty| ty.name == "Brief")
+        .ok_or("Brief type")?;
+    assert_eq!(
+        brief.description.as_deref(),
+        Some("A development brief emitted as a model output contract.")
+    );
+    assert_eq!(
+        brief.fields[0].description.as_deref(),
+        Some("Stable identifier, for example AWL1-001.")
+    );
+    assert_eq!(brief.fields[2].description, None);
+    Ok(())
+}
+
+#[test]
+fn type_comments_and_doc_spacing_round_trip_without_promotion() -> Result<(), Box<dyn Error>> {
+    let source = "//// banner\nworkflow w\noutput Box\n\n///Box docs.\ntype Box {\n  // field trivia\n  ///Value docs.\n  value: String\n}\n\naction make() -> Box\n\nstep make\n  do make()\n  as value\n\nfinish value\n";
+    let printed = print(&parse(source)?);
+    assert!(printed.contains("// // banner\nworkflow w"));
+    assert!(printed.contains("///Box docs.\ntype Box"));
+    assert!(printed.contains("  // field trivia\n  ///Value docs.\n  value: String,"));
+    let document = parse(&printed)?;
+    let declaration = document.types.first().ok_or("Box type")?;
+    assert_eq!(declaration.description.as_deref(), Some("Box docs."));
+    assert_eq!(
+        declaration.fields[0].description.as_deref(),
+        Some("Value docs.")
+    );
+    assert_eq!(declaration.fields[0].trivia.leading.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn ordinary_comment_before_documented_type_survives_fmt() -> Result<(), Box<dyn Error>> {
+    // An ordinary `//` comment interleaved directly before a `///`-documented
+    // type must survive the round-trip byte-for-byte. The description machinery
+    // consumes the doc comment when attaching it to the type; it must not also
+    // drop the ordinary comment sitting just above it.
+    let source = "workflow w\n\noutput Box\n\n// ordinary before type\n/// Box docs.\ntype Box { value: String }\nfinish Box(value: \"x\")\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, source, "canonical form is not a fixed point");
+    assert!(
+        printed.contains("// ordinary before type\n/// Box docs.\ntype Box"),
+        "ordinary comment before the documented type was lost: {printed}"
+    );
+    let document = parse(source)?;
+    let declaration = document.types.first().ok_or("Box type")?;
+    assert_eq!(declaration.description.as_deref(), Some("Box docs."));
+    assert_idempotent(source)
+}
+
+#[test]
+fn orphan_doc_comment_before_workflow_round_trips_unmangled() -> Result<(), Box<dyn Error>> {
+    // A `///` doc comment that precedes a construct which cannot carry a
+    // description (here `workflow`) attaches to nothing and is preserved as
+    // trivia. It must re-render as a well-formed `///` line, never be sliced
+    // into a `// /` ordinary comment.
+    let source = "/// orphan before workflow\nworkflow w\n\noutput String\n\nfinish \"x\"\n";
+    let expected = "/// orphan before workflow\nworkflow w\n\noutput String\nfinish \"x\"\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, expected);
+    assert!(
+        printed.starts_with("/// orphan before workflow\n"),
+        "orphan doc comment was corrupted: {printed}"
+    );
+    assert!(
+        !printed.contains("// /"),
+        "doc comment was mangled through the ordinary-comment path: {printed}"
+    );
+    assert_idempotent(source)
+}
+
+#[test]
+fn probe_round_trips_without_comment_loss_or_mangling() -> Result<(), Box<dyn Error>> {
+    // The full corruption probe: an orphan `///` before `workflow`, and an
+    // ordinary `//` interleaved before a `///`-documented type. Neither
+    // comment may be dropped nor mangled, and the canonical form is stable.
+    let source = "/// orphan before workflow\nworkflow w\noutput Box\n\n// ordinary before type\n/// Box docs.\ntype Box { value: String }\n\nfinish Box(value: \"x\")\n";
+    let expected = "/// orphan before workflow\nworkflow w\n\noutput Box\n\n// ordinary before type\n/// Box docs.\ntype Box { value: String }\nfinish Box(value: \"x\")\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, expected);
+    assert!(printed.contains("/// orphan before workflow\n"));
+    assert!(printed.contains("// ordinary before type\n"));
+    assert!(!printed.contains("// /"), "mangled doc comment: {printed}");
+    assert_idempotent(source)
+}
+
+#[test]
+fn field_docs_force_multi_line_even_when_single_line_would_fit() -> Result<(), Box<dyn Error>> {
+    // Operator ruling on AWL1-001: the single-line form has nowhere to carry
+    // per-field `///` docs, so a documented field forces the multi-line
+    // rendering even for a declaration well under the 100-column boundary.
+    // Collapsing would silently discard the field's load-bearing prose.
+    let source = "workflow w\n\noutput Box\n\ntype Box {\n  /// Value docs.\n  value: String,\n}\nfinish Box(value: \"x\")\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, source, "documented field must not collapse");
+    assert!(
+        printed.contains("type Box {\n  /// Value docs.\n  value: String,\n}"),
+        "multi-line form with the field doc expected: {printed}"
+    );
+    assert_idempotent(source)
+}
+
+#[test]
+fn type_printer_uses_the_inclusive_100_column_boundary() -> Result<(), Box<dyn Error>> {
+    let at_limit = "a".repeat(81);
+    let over_limit = "a".repeat(82);
+    let source_at_limit = format!(
+        "workflow w\noutput String\n\ntype T {{ {at_limit}: String }}\n\nfinish \"done\"\n"
+    );
+    let source_over_limit = format!(
+        "workflow w\noutput String\n\ntype T {{ {over_limit}: String }}\n\nfinish \"done\"\n"
+    );
+    let printed_at_limit = print(&parse(&source_at_limit)?);
+    let type_line = printed_at_limit
+        .lines()
+        .find(|line| line.starts_with("type T"))
+        .ok_or("type line")?;
+    assert_eq!(type_line.chars().count(), 100);
+    assert!(type_line.ends_with(" }"));
+    let printed_over_limit = print(&parse(&source_over_limit)?);
+    assert!(printed_over_limit.contains("type T {\n  "));
+    assert!(printed_over_limit.contains(": String,\n}"));
+    Ok(())
+}
+
+#[test]
 fn differently_formatted_same_document_print_identically() -> Result<(), Box<dyn Error>> {
     let fixture = include_str!("fixtures/research_report.awl");
     let variant = fixture

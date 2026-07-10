@@ -1,3 +1,4 @@
+pub use crate::spanned::Spanned;
 use crate::{DurationUnit, Span};
 /// Parsed representation of a complete workflow document.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,8 +40,16 @@ pub struct Document {
 pub struct Comment {
     /// Source span covering the comment marker and text.
     pub span: Span,
-    /// Comment text with the leading marker and spacing removed.
+    /// Comment payload. For an ordinary `//` comment this is the text with
+    /// the `//` marker and one leading space removed, re-rendered as
+    /// `// {text}`. For a doc comment (`doc == true`) it is instead the
+    /// verbatim slice following the `///` marker — spacing preserved exactly —
+    /// re-rendered as `///{text}`, so an unattached `///` line round-trips as
+    /// a well-formed doc comment rather than a mangled `// /` line.
     pub text: String,
+    /// Whether this comment originated from a `///` doc-comment line that
+    /// attached to no type or field and is therefore preserved as trivia.
+    pub doc: bool,
 }
 /// Leading and trailing comment trivia attached to a declaration or field.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -89,6 +98,10 @@ pub struct TypeDecl {
     pub span: Span,
     /// Comments attached to the `type` declaration.
     pub trivia: Trivia,
+    /// Load-bearing prose from contiguous `///` lines above the declaration.
+    pub description: Option<String>,
+    /// Exact text following each source `///`, joined by newlines for reprinting.
+    pub description_source: Option<String>,
     /// Type name introduced by the declaration.
     pub name: String,
     /// Field declarations listed inside the record body.
@@ -99,6 +112,12 @@ pub struct TypeDecl {
 pub struct FieldDecl {
     /// Source span of the declaration line that contains this field.
     pub span: Span,
+    /// Ordinary comment trivia attached to this record field or action parameter.
+    pub trivia: Trivia,
+    /// Load-bearing prose from contiguous `///` lines above a record field.
+    pub description: Option<String>,
+    /// Exact text following each source `///`, joined by newlines for reprinting.
+    pub description_source: Option<String>,
     /// Field or parameter name introduced by the declaration.
     pub name: String,
     /// Type reference assigned to the field or parameter.
@@ -473,28 +492,6 @@ pub enum BinaryOp {
     /// String concatenation operator: `+` accepts only `String` operands
     /// and yields `String`.
     Add,
-}
-/// Provides the source span covered by a parsed syntax node.
-pub trait Spanned {
-    /// Return the source span occupied by this node.
-    fn span(&self) -> Span;
-}
-impl Spanned for Expr {
-    fn span(&self) -> Span {
-        match self {
-            Self::String { span, .. }
-            | Self::Int { span, .. }
-            | Self::Float { span, .. }
-            | Self::Bool { span, .. }
-            | Self::List { span, .. }
-            | Self::Ref { span, .. }
-            | Self::Field { span, .. }
-            | Self::Record { span, .. }
-            | Self::Not { span, .. }
-            | Self::Binary { span, .. } => *span,
-            Self::Duration(duration) => duration.span,
-        }
-    }
 }
 pub(crate) fn join_span(start: Span, end: Span) -> Span {
     Span {

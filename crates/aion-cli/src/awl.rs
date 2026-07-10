@@ -8,7 +8,8 @@
 //! `aion awl emit` lowers a document to Gleam source, but only past a clean
 //! typecheck — generated code quality depends on it, so a parse error, a
 //! typecheck error, and an emit error all report the same way and exit
-//! non-zero.
+//! non-zero. `aion awl schema` derives draft 2020-12 JSON Schema from the same
+//! checked document through the public `aion-awl` derivation.
 //!
 //! All three commands run entirely locally and own their own compiler-style
 //! reporting contract (diagnostics to stderr, a one-line summary to stdout)
@@ -58,6 +59,14 @@ pub(crate) enum AwlCommand {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Emit JSON Schema draft 2020-12 for a declared AWL type.
+    Schema {
+        /// Path to the `.awl` document.
+        file: PathBuf,
+        /// Declared type to derive; omitted, emits the combined workflow input/output contract schema.
+        #[arg(long)]
+        r#type: Option<String>,
+    },
 }
 
 /// Runs an `aion awl` subcommand.
@@ -66,6 +75,7 @@ pub(crate) fn run(command: &AwlCommand) -> ExitCode {
         AwlCommand::Check { file } => check_command(file),
         AwlCommand::Fmt { file } => fmt_command(file),
         AwlCommand::Emit { file, output } => emit_command(file, output.as_deref()),
+        AwlCommand::Schema { file, r#type } => schema_command(file, r#type.as_deref()),
     }
 }
 
@@ -121,6 +131,19 @@ fn emit_command(file: &Path, output: Option<&Path>) -> ExitCode {
     }
 }
 
+fn schema_command(file: &Path, type_name: Option<&str>) -> ExitCode {
+    let Some(source) = read_source(file) else {
+        return ExitCode::FAILURE;
+    };
+    match schema_source(file, &source, type_name) {
+        Ok(schema) => {
+            print!("{schema}");
+            ExitCode::SUCCESS
+        }
+        Err(diagnostics) => report(&diagnostics),
+    }
+}
+
 /// Parses and typechecks `source`, returning the workflow step count on a
 /// clean pass or the rendered diagnostic lines otherwise. A parse error
 /// yields the same diagnostic shape as a typecheck error.
@@ -162,6 +185,31 @@ fn emit_source(file: &Path, source: &str) -> Result<String, Vec<String>> {
             .collect());
     }
     aion_awl::emit(&document).map_err(|error| vec![diagnostic(file, error.span, &error.message)])
+}
+
+fn schema_source(
+    file: &Path,
+    source: &str,
+    requested_type: Option<&str>,
+) -> Result<String, Vec<String>> {
+    let document = aion_awl::parse(source)
+        .map_err(|error| vec![diagnostic(file, error.span, &error.message)])?;
+    let errors = aion_awl::check(&document);
+    if !errors.is_empty() {
+        return Err(errors
+            .iter()
+            .map(|error| diagnostic(file, error.span, &error.message))
+            .collect());
+    }
+    let schema = requested_type
+        .map_or_else(
+            || aion_awl::schema_for_workflow(&document),
+            |name| aion_awl::schema_for_type(&document, name),
+        )
+        .map_err(|error| vec![diagnostic(file, error.span(), &error.to_string())])?;
+    serde_json::to_string_pretty(&schema)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| vec![diagnostic(file, document.span, &error.to_string())])
 }
 
 /// Renders one compiler-style diagnostic line from a diagnostic's span.
@@ -311,6 +359,50 @@ mod tests {
             "unexpected diagnostic: {}",
             diagnostics[0]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn schema_source_matches_the_library_golden() -> anyhow::Result<()> {
+        let source = include_str!("../../aion-awl/tests/fixtures/typed_contract.awl");
+        let schema = schema_source(Path::new("typed_contract.awl"), source, Some("Brief"))
+            .map_err(|diagnostics| anyhow::anyhow!("unexpected diagnostics: {diagnostics:?}"))?;
+        assert_eq!(
+            schema,
+            include_str!("../../aion-awl/tests/fixtures/brief.schema.golden.json")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn schema_source_without_type_emits_workflow_contracts() -> anyhow::Result<()> {
+        let source =
+            "workflow primitive\ninput note: Option(String)\noutput String\n\nfinish \"ok\"\n";
+        let schema = schema_source(Path::new("primitive.awl"), source, None)
+            .map_err(|diagnostics| anyhow::anyhow!("unexpected diagnostics: {diagnostics:?}"))?;
+        let value: serde_json::Value = serde_json::from_str(&schema)?;
+        assert_eq!(value["properties"]["output"]["type"], "string");
+        assert_eq!(
+            value["properties"]["input"]["properties"]["note"]["type"],
+            "string"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn schema_source_is_gated_on_a_clean_typecheck() -> anyhow::Result<()> {
+        let source =
+            "workflow probe\noutput Brief\n\ntype Brief { value: Missing }\n\nfinish missing\n";
+        let Err(diagnostics) = schema_source(Path::new("probe.awl"), source, Some("Brief")) else {
+            anyhow::bail!("expected a typecheck diagnostic");
+        };
+        assert!(!diagnostics.is_empty());
+        for line in &diagnostics {
+            assert!(
+                line.starts_with("probe.awl:") && line.contains(": error: "),
+                "unexpected diagnostic: {line}"
+            );
+        }
         Ok(())
     }
 }
