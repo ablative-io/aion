@@ -228,6 +228,241 @@ fn run_gates_commits_normalization_a_mutating_command_leaves_behind() {
 }
 
 #[test]
+fn run_gates_reruns_after_normalization_and_records_a_flipped_red() {
+    // The normalization commit can flip a HEAD-sensitive gate red: a write-mode
+    // fmt reformats an out-of-scope file, and a scope fence that reads the diff
+    // since {base_commit} then sees the offending path. The developer's HEAD was
+    // green; the reviewed (post-normalization) HEAD is red, so the recorded pass
+    // must be FALSE — the pre-fix code recorded the stale green.
+    let (dir, root) = repo_with_initial_commit();
+    let workspace = worktree(&root, "ws");
+    let info = provision(&root, &workspace);
+    let shell = Shell::inherited();
+
+    let outcome = handlers::run_gates(
+        &shell,
+        GateInput {
+            workspace_path: workspace.clone(),
+            base_commit: info.base_commit.clone(),
+            gates: vec![
+                // A write-mode "formatter" that dirties a tracked file (exit 0).
+                GateCommand {
+                    name: "fmt".to_owned(),
+                    argv: vec![
+                        "sh".to_owned(),
+                        "-c".to_owned(),
+                        "printf 'normalized\\n' > lib.txt".to_owned(),
+                    ],
+                },
+                // A scope fence over the COMMITTED range base..HEAD (not the
+                // worktree): green on the developer's HEAD (dev committed
+                // nothing here, so the range is empty), red once fmt's change is
+                // committed as normalization (the range now carries lib.txt).
+                // fmt's change is uncommitted during the first battery, so this
+                // is green then — only the re-run against the normalization
+                // commit sees it. It fails when the range is non-empty.
+                GateCommand {
+                    name: "scope-fence".to_owned(),
+                    argv: vec![
+                        "sh".to_owned(),
+                        "-c".to_owned(),
+                        "test -z \"$(git diff --name-only {base_commit} HEAD)\"".to_owned(),
+                    ],
+                },
+            ],
+        },
+    )
+    .expect("run_gates returns recorded data");
+
+    assert!(
+        !outcome.pass,
+        "the scope fence is red at the reviewed (post-normalization) HEAD; \
+         recorded pass must be false, diagnostics were:\n{}",
+        outcome.diagnostics
+    );
+    assert!(
+        outcome
+            .runs
+            .iter()
+            .any(|r| r.name == "scope-fence" && !r.passed),
+        "the re-run's scope-fence status is recorded red; runs: {:?}",
+        outcome.runs
+    );
+    assert!(
+        outcome.diagnostics.contains("flipped a gate RED"),
+        "the loop-back feedback names the flip; diagnostics:\n{}",
+        outcome.diagnostics
+    );
+    let _ = dir;
+}
+
+#[test]
+fn run_gates_rerun_keeps_green_and_records_post_normalization_statuses() {
+    // A write-mode fmt that dirties the tree, plus a scope fence that stays
+    // green even after the commit (it only fails on an out-of-scope path, and
+    // lib.txt is in scope here — modelled as a fence that always passes). The
+    // re-run runs against the post-normalization HEAD and stays green, so the
+    // round proceeds with the re-run's statuses recorded.
+    let (dir, root) = repo_with_initial_commit();
+    let workspace = worktree(&root, "ws");
+    let info = provision(&root, &workspace);
+    let shell = Shell::inherited();
+
+    let outcome = handlers::run_gates(
+        &shell,
+        GateInput {
+            workspace_path: workspace.clone(),
+            base_commit: info.base_commit.clone(),
+            gates: vec![
+                GateCommand {
+                    name: "fmt".to_owned(),
+                    argv: vec![
+                        "sh".to_owned(),
+                        "-c".to_owned(),
+                        "printf 'normalized\\n' > lib.txt".to_owned(),
+                    ],
+                },
+                // A HEAD-sensitive gate that asserts lib.txt IS present in the
+                // committed range base..HEAD: RED on the first battery (the dev
+                // HEAD's range is empty; fmt's change is still uncommitted),
+                // GREEN only AFTER the normalization commit is in HEAD. That it
+                // is recorded green proves the status came from the re-run, not
+                // the pre-normalization run.
+                GateCommand {
+                    name: "sees-committed".to_owned(),
+                    argv: vec![
+                        "sh".to_owned(),
+                        "-c".to_owned(),
+                        "git diff --name-only {base_commit} HEAD | grep -q lib.txt".to_owned(),
+                    ],
+                },
+            ],
+        },
+    )
+    .expect("run_gates returns recorded data");
+
+    assert!(
+        outcome.pass,
+        "the re-run is green at the post-normalization HEAD; diagnostics:\n{}",
+        outcome.diagnostics
+    );
+    assert!(
+        outcome
+            .runs
+            .iter()
+            .any(|r| r.name == "sees-committed" && r.passed),
+        "the sees-committed gate is green only on the post-normalization re-run; \
+         runs: {:?}",
+        outcome.runs
+    );
+    assert!(
+        outcome.diagnostics.contains("normalized the tree"),
+        "the normalization commit is still recorded; diagnostics:\n{}",
+        outcome.diagnostics
+    );
+    // The tree is clean (idempotent re-run committed nothing new), so cleanup
+    // can remove it.
+    let cleaned = handlers::cleanup(
+        &shell,
+        CleanupInput {
+            repo_root: root,
+            workspace_path: workspace,
+        },
+    )
+    .expect("cleanup runs");
+    assert!(cleaned.removed, "detail: {}", cleaned.detail);
+    let _ = dir;
+}
+
+#[test]
+fn run_gates_re_dirty_on_the_rerun_is_a_recorded_failure() {
+    // A NON-IDEMPOTENT gate that mutates the tree every time it runs. The first
+    // run dirties the tree (committed as normalization); the bounded re-run
+    // dirties it AGAIN, leaving uncommitted changes the reviewed commit does not
+    // embody. That is a recorded failure (pass = false), not an unbounded
+    // normalize→re-run loop.
+    let (dir, root) = repo_with_initial_commit();
+    let workspace = worktree(&root, "ws");
+    let info = provision(&root, &workspace);
+    let shell = Shell::inherited();
+
+    let outcome = handlers::run_gates(
+        &shell,
+        GateInput {
+            workspace_path: workspace.clone(),
+            base_commit: info.base_commit.clone(),
+            gates: vec![GateCommand {
+                name: "churn".to_owned(),
+                // Appends a line every invocation — the file grows each run, so
+                // it never reaches a fixpoint and the re-run leaves the tree
+                // dirty (the first run's growth is committed as normalization).
+                argv: vec![
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    "echo churn >> lib.txt".to_owned(),
+                ],
+            }],
+        },
+    )
+    .expect("run_gates returns recorded data");
+
+    assert!(
+        !outcome.pass,
+        "a re-dirtying gate is a recorded failure; diagnostics:\n{}",
+        outcome.diagnostics
+    );
+    assert!(
+        outcome.diagnostics.contains("re-dirtied the worktree"),
+        "the re-dirty is named in diagnostics:\n{}",
+        outcome.diagnostics
+    );
+    let _ = dir;
+}
+
+#[test]
+fn run_gates_no_normalization_runs_the_battery_exactly_once() {
+    // No gate mutates the tree, so commit_gate_normalization skips and there is
+    // NO re-run: the reviewed HEAD equals the judged HEAD. A gate that counts
+    // its own invocations proves the battery ran exactly once.
+    let (dir, root) = repo_with_initial_commit();
+    let workspace = worktree(&root, "ws");
+    let info = provision(&root, &workspace);
+    let shell = Shell::inherited();
+
+    let counter = std::path::Path::new(&root).join("gate-invocations");
+    let counter_str = counter.display().to_string();
+
+    let outcome = handlers::run_gates(
+        &shell,
+        GateInput {
+            workspace_path: workspace.clone(),
+            base_commit: info.base_commit.clone(),
+            // Appends one line to an out-of-worktree counter file (so it never
+            // dirties the worktree) and exits green.
+            gates: vec![GateCommand {
+                name: "counted".to_owned(),
+                argv: vec![
+                    "sh".to_owned(),
+                    "-c".to_owned(),
+                    format!("echo x >> {counter_str}"),
+                ],
+            }],
+        },
+    )
+    .expect("run_gates returns recorded data");
+
+    assert!(outcome.pass, "diagnostics:\n{}", outcome.diagnostics);
+    let invocations = std::fs::read_to_string(&counter).expect("counter written");
+    assert_eq!(
+        invocations.lines().count(),
+        1,
+        "with no normalization the battery runs exactly once (no re-run); \
+         invocations recorded:\n{invocations}"
+    );
+    let _ = dir;
+}
+
+#[test]
 fn an_empty_gate_battery_is_a_recorded_vacuous_pass() {
     let (dir, root) = repo_with_initial_commit();
     let workspace = worktree(&root, "ws");

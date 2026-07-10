@@ -90,6 +90,20 @@ pub(super) fn run_gate_battery(
     Ok(raw)
 }
 
+/// Whether the workspace tree is clean (`git status --porcelain` empty). Used
+/// to bound the post-normalization re-run to a single pass: a gate that
+/// re-dirties the tree is a recorded failure, not a re-commit-and-re-run loop.
+fn worktree_clean(shell: &Shell, workspace: &str) -> Result<bool, ActivityFailure> {
+    let status = require_run(
+        shell,
+        "git",
+        &["-C", workspace, "status", "--porcelain"],
+        workspace,
+        "git status (post-normalization clean assertion)",
+    )?;
+    Ok(status.stdout.trim().is_empty())
+}
+
 /// `run_gates`: the brief's configured gate battery, FULLY MECHANICAL.
 ///
 /// 1. Every configured command runs in order in the workspace root; pass =
@@ -99,9 +113,15 @@ pub(super) fn run_gate_battery(
 ///    expected case) leaves normalization the developer never saw: it is
 ///    committed mechanically under the machinery identity so the branch stays
 ///    complete and cleanup can remove a clean worktree.
-/// 3. The reviewers' diff is captured as worktree-vs-`base_commit`, so
+/// 3. When that commit moved HEAD, the FULL battery is re-run against the
+///    post-normalization HEAD and THOSE statuses become the recorded verdict —
+///    the normalization commit can flip a scope fence (or any HEAD-sensitive
+///    gate) red, and the reviewed commit must never be recorded green on a
+///    verdict it never earned. The re-run is bounded to a single pass: a gate
+///    that re-dirties the tree is itself a recorded failure.
+/// 4. The reviewers' diff is captured as worktree-vs-`base_commit`, so
 ///    committed AND (any residual) uncommitted work are both visible.
-/// 4. An EMPTY battery is the operator's explicit choice: a recorded vacuous
+/// 5. An EMPTY battery is the operator's explicit choice: a recorded vacuous
 ///    pass, named in `diagnostics`, never silent.
 ///
 /// # Errors
@@ -116,7 +136,63 @@ pub fn run_gates(shell: &Shell, input: GateInput) -> Result<GateOutcome, Activit
     } = input;
     let workspace = &workspace_path;
 
+    // Judge the developer's HEAD.
     let raw = run_gate_battery(shell, workspace, &base_commit, &gates)?;
+
+    // Gate commands may normalize the tree (cargo fmt in write mode is the
+    // recommended first gate). That change belongs on the branch: commit it
+    // mechanically so the branch is complete and the final cleanup sees a
+    // clean worktree. Nothing dirty skips green.
+    let normalization =
+        commit::commit_gate_normalization(shell, workspace).map_err(ActivityFailure::terminal)?;
+
+    // The recorded verdict must be authoritative for the REVIEWED HEAD. The
+    // normalization commit moved HEAD to a commit the step-above battery never
+    // saw — a write-mode formatter can touch files OUTSIDE the brief's scope,
+    // flipping a scope fence pinned to `{base_commit}` red at the very commit
+    // the reviewers see. So when the normalization committed, re-run the FULL
+    // battery against the post-normalization HEAD and let THAT verdict stand:
+    // a green the reviewed commit never earned must never reach review. A
+    // Skipped normalization leaves the reviewed HEAD == the judged HEAD, so no
+    // re-run is owed and the fast path stays cheap.
+    let mut normalization_notes: Vec<String> = Vec::new();
+    let mut redirty_note: Option<String> = None;
+    let raw = match &normalization {
+        commit::FixCommitOutcome::Committed { commit, paths } => {
+            normalization_notes.push(format!(
+                "gate commands normalized the tree; committed mechanically as \
+                 {commit} ({} path(s))",
+                paths.len()
+            ));
+            let pre_green = raw.iter().all(RawGateRun::passed);
+            let rerun = run_gate_battery(shell, workspace, &base_commit, &gates)?;
+            // Mirror verify_gates' clean-tree assertion to bound this to a
+            // SINGLE re-run: a gate that re-dirties the tree on the re-run (a
+            // non-idempotent formatter) is a recorded failure, not an unbounded
+            // normalize→re-run loop — the reviewed commit does not embody those
+            // uncommitted changes, so the tree does not equal the branch head.
+            if !worktree_clean(shell, workspace)? {
+                redirty_note = Some(
+                    "a gate command re-dirtied the worktree on the post-normalization \
+                     re-run (a non-idempotent formatter): the reviewed commit does not \
+                     embody these changes — recorded as a gate failure, looping back to \
+                     the developer"
+                        .to_owned(),
+                );
+            }
+            if pre_green && !rerun.iter().all(RawGateRun::passed) {
+                normalization_notes.push(
+                    "the post-normalization re-run flipped a gate RED — the developer's \
+                     HEAD was green but the normalization commit is not; looping back to \
+                     the developer with the post-normalization statuses"
+                        .to_owned(),
+                );
+            }
+            rerun
+        }
+        commit::FixCommitOutcome::Skipped { .. } => raw,
+    };
+
     let mut runs: Vec<GateCommandRun> = Vec::with_capacity(raw.len());
     let mut diagnostics: Vec<String> = Vec::new();
     for record in &raw {
@@ -130,19 +206,9 @@ pub fn run_gates(shell: &Shell, input: GateInput) -> Result<GateOutcome, Activit
         }
         runs.push(record.clipped());
     }
-
-    // Gate commands may normalize the tree (cargo fmt in write mode is the
-    // recommended first gate). That change belongs on the branch: commit it
-    // mechanically so the branch is complete and the final cleanup sees a
-    // clean worktree. Nothing dirty skips green.
-    let normalization =
-        commit::commit_gate_normalization(shell, workspace).map_err(ActivityFailure::terminal)?;
-    if let commit::FixCommitOutcome::Committed { commit, paths } = &normalization {
-        diagnostics.push(format!(
-            "gate commands normalized the tree; committed mechanically as \
-             {commit} ({} path(s))",
-            paths.len()
-        ));
+    diagnostics.extend(normalization_notes);
+    if let Some(note) = &redirty_note {
+        diagnostics.push(note.clone());
     }
 
     // The developer's full change for the reviewers: worktree vs the base
@@ -157,7 +223,7 @@ pub fn run_gates(shell: &Shell, input: GateInput) -> Result<GateOutcome, Activit
         "git diff (reviewer evidence)",
     )?;
 
-    let pass = runs.iter().all(|run| run.passed);
+    let pass = redirty_note.is_none() && runs.iter().all(|run| run.passed);
     let ran = runs.len();
     Ok(GateOutcome {
         pass,
