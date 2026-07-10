@@ -1,0 +1,74 @@
+//! dev_brief: a development brief goes in; an adversarially reviewed branch comes out.
+//! Nothing is pushed — the handoff is the branch plus this run's evidence; the operator merges.
+workflow dev_brief
+  input brief: Brief
+  input config: RunConfig
+
+  outcome landed:    type Landed,    route success
+  outcome rejected:  type Rejected,  route failure
+  outcome exhausted: type Exhausted, route failure
+
+type Brief     = schema("schemas/brief.schema.json")
+type RunConfig = schema("schemas/run_config.schema.json")
+
+type Workspace   { path: String, branch: String, base_commit: String }
+type ScoutReport { summary: String, pointers: [String] }
+type BuildWarmth { warmed: Bool, detail: String }
+type Round       { summary: String, gates_green: Bool }
+type Lens        { name: String, charter: String }
+
+/// One adversarial reviewer's verdict.
+type LensVerdict {
+  lens: String,
+  blocking: Bool,
+  /// Present only when the verdict is blocking.
+  reject_reason: String?,
+}
+
+type Landed    { branch: String, fix_cycles: Int, first_pass: Bool, summary: String }
+type Rejected  { branch: String, verdicts: [LensVerdict] }
+type Exhausted { reason: String, cycles_spent: Int }
+
+worker dev_brief
+  action provision(repo_root: String, base_branch: String, brief: Brief) -> Workspace
+    node shell, timeout 5m, retry 2 every 30s
+  action scout(brief: Brief, workspace: Workspace) -> ScoutReport
+    node scout, timeout 15m
+  action warm_build(workspace: Workspace, gates: [String]) -> BuildWarmth
+    node shell, timeout 20m
+  action fix_round(brief: Brief, scout: ScoutReport, workspace: Workspace, prior: Round) -> Round
+    node developer, timeout 30m
+  action review_lens(lens: Lens, workspace: Workspace, round: Round) -> LensVerdict
+    node reviewer, timeout 20m
+
+step provision
+  provision(repo_root: config.repo_root, base_branch: config.base_branch, brief: brief) -> workspace
+
+step scout after provision
+  scout(brief: brief, workspace: workspace) -> scout_report
+
+step warm_build after provision
+  warm_build(workspace: workspace, gates: config.gate_commands)
+
+step fix_cycle after scout, warm_build
+  loop round = Round(summary: "", gates_green: false) counting cycles
+    fix_round(brief: brief, scout: scout_report, workspace: workspace, prior: round) -> round
+    until round.gates_green
+    max config.max_fix_cycles
+
+  outcome green: when round.gates_green, route review
+  outcome spent: otherwise,
+    route exhausted(reason: "gates never went green", cycles_spent: cycles)
+
+step review
+  fork lens in config.lenses
+    review_lens(lens: lens, workspace: workspace, round: round)
+  join -> verdicts
+
+  verdicts |> filter(.blocking) -> blocking
+
+  outcome accepted: when blocking is empty,
+    route landed(branch: workspace.branch, fix_cycles: cycles, first_pass: cycles == 1,
+      summary: round.summary)
+  outcome blocked: otherwise,
+    route rejected(branch: workspace.branch, verdicts: blocking)
