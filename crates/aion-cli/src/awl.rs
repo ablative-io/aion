@@ -63,7 +63,7 @@ pub(crate) enum AwlCommand {
     Schema {
         /// Path to the `.awl` document.
         file: PathBuf,
-        /// Declared type to derive; defaults to the named output or sole input type.
+        /// Declared type to derive; omitted, emits the combined workflow input/output contract schema.
         #[arg(long)]
         r#type: Option<String>,
     },

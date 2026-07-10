@@ -408,29 +408,44 @@ impl LineParser {
         let mut expected_line = line.span.line;
         let mut lines = Vec::new();
         let mut source_lines = Vec::new();
+        let mut attached_spans = Vec::new();
         for description in preceding.iter().rev() {
             if description.indent != indent || description.span.line + 1 != expected_line {
                 break;
             }
             lines.push(description.text.clone());
             source_lines.push(description.source.clone());
+            attached_spans.push(description.span);
             expected_line = description.span.line;
         }
         if lines.is_empty() {
-            None
-        } else {
-            lines.reverse();
-            self.own_comments.retain(|comment| {
-                !preceding
-                    .iter()
-                    .any(|description| description.span == comment.span)
-            });
-            source_lines.reverse();
-            Some(super::source::AttachedDescription {
-                text: lines.join("\n"),
-                source: source_lines.join("\n"),
-            })
+            return None;
         }
+        lines.reverse();
+        source_lines.reverse();
+        // Each `///` line is recorded twice at lex time: once as a description
+        // entry (consumed here) and once as a duplicate own-line comment in
+        // `own_comments`, so a doc comment that attaches to nothing still
+        // survives as trivia. Now that these lines DO attach, drop only their
+        // duplicate comment entries — matched by span against the contiguous
+        // run just collected, never the whole `preceding` slice, which may
+        // include earlier doc comments belonging to no declaration nor any
+        // ordinary `//` comment interleaved before them. Decrement
+        // `comment_pos` by however many removed entries sat before it, so the
+        // running trivia cursor stays aligned once `own_comments` shrinks.
+        let consumed_before = self
+            .own_comments
+            .iter()
+            .take(self.comment_pos)
+            .filter(|comment| attached_spans.contains(&comment.span))
+            .count();
+        self.own_comments
+            .retain(|comment| !attached_spans.contains(&comment.span));
+        self.comment_pos -= consumed_before;
+        Some(super::source::AttachedDescription {
+            text: lines.join("\n"),
+            source: source_lines.join("\n"),
+        })
     }
 }
 

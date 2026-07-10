@@ -106,6 +106,11 @@ impl Printer {
             .collect::<Vec<_>>()
             .join(", ");
         let single_line = format!("type {} {{ {} }}", decl.name, fields);
+        // Field-level `///` docs and comment trivia have no home in the
+        // single-line form, so any field carrying them forces the multi-line
+        // rendering even when the declaration would fit in 100 columns —
+        // collapsing would silently discard load-bearing prose (operator
+        // ruling on AWL1-001).
         let has_field_lines = decl.fields.iter().any(|field| {
             field.description.is_some()
                 || !field.trivia.leading.is_empty()
@@ -296,7 +301,16 @@ impl Printer {
     }
     fn comments(&mut self, indent: usize, comments: &[Comment]) {
         for comment in comments {
-            self.line(indent, &format!("// {}", comment.text), None);
+            // A doc comment reaches this trivia path only when its `///` line
+            // attached to no type or field; re-render it verbatim as `///{text}`
+            // so it round-trips as a well-formed doc line. An ordinary comment
+            // re-renders through the canonical `// {text}` form.
+            let rendered = if comment.doc {
+                format!("///{}", comment.text)
+            } else {
+                format!("// {}", comment.text)
+            };
+            self.line(indent, &rendered, None);
         }
     }
     fn line(&mut self, indent: usize, code: &str, trailing: Option<&Comment>) {

@@ -40,8 +40,16 @@ pub struct Document {
 pub struct Comment {
     /// Source span covering the comment marker and text.
     pub span: Span,
-    /// Comment text with the leading marker and spacing removed.
+    /// Comment payload. For an ordinary `//` comment this is the text with
+    /// the `//` marker and one leading space removed, re-rendered as
+    /// `// {text}`. For a doc comment (`doc == true`) it is instead the
+    /// verbatim slice following the `///` marker — spacing preserved exactly —
+    /// re-rendered as `///{text}`, so an unattached `///` line round-trips as
+    /// a well-formed doc comment rather than a mangled `// /` line.
     pub text: String,
+    /// Whether this comment originated from a `///` doc-comment line that
+    /// attached to no type or field and is therefore preserved as trivia.
+    pub doc: bool,
 }
 /// Leading and trailing comment trivia attached to a declaration or field.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

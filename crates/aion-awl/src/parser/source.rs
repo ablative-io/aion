@@ -95,7 +95,13 @@ impl SourceLines {
                 });
                 comments.push(Comment {
                     span: description_span,
-                    text: trim_comment(&rest.trim_start()[2..]).to_owned(),
+                    // Store the verbatim slice after `///` (spacing intact),
+                    // matching `DescriptionLine::source`, so that if this doc
+                    // comment attaches to nothing it re-renders as `///{text}`
+                    // — a well-formed doc line — instead of being sliced apart
+                    // through the ordinary `// {text}` path.
+                    text: description_at.to_owned(),
+                    doc: true,
                 });
                 offset += raw.len();
                 if had_newline {
@@ -110,6 +116,7 @@ impl SourceLines {
                 comments.push(Comment {
                     span: span(start, offset + text.len(), line_no, start_col),
                     text: trim_comment(comment_at).to_owned(),
+                    doc: false,
                 });
                 offset += raw.len();
                 if had_newline {
@@ -197,6 +204,7 @@ fn split_code_comment(
                 Some(Comment {
                     span: span(start, offset + line_len, line_no, indent + i + 1),
                     text,
+                    doc: false,
                 }),
             );
         }

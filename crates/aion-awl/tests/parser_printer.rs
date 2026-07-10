@@ -113,6 +113,77 @@ fn type_comments_and_doc_spacing_round_trip_without_promotion() -> Result<(), Bo
 }
 
 #[test]
+fn ordinary_comment_before_documented_type_survives_fmt() -> Result<(), Box<dyn Error>> {
+    // An ordinary `//` comment interleaved directly before a `///`-documented
+    // type must survive the round-trip byte-for-byte. The description machinery
+    // consumes the doc comment when attaching it to the type; it must not also
+    // drop the ordinary comment sitting just above it.
+    let source = "workflow w\n\noutput Box\n\n// ordinary before type\n/// Box docs.\ntype Box { value: String }\nfinish Box(value: \"x\")\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, source, "canonical form is not a fixed point");
+    assert!(
+        printed.contains("// ordinary before type\n/// Box docs.\ntype Box"),
+        "ordinary comment before the documented type was lost: {printed}"
+    );
+    let document = parse(source)?;
+    let declaration = document.types.first().ok_or("Box type")?;
+    assert_eq!(declaration.description.as_deref(), Some("Box docs."));
+    assert_idempotent(source)
+}
+
+#[test]
+fn orphan_doc_comment_before_workflow_round_trips_unmangled() -> Result<(), Box<dyn Error>> {
+    // A `///` doc comment that precedes a construct which cannot carry a
+    // description (here `workflow`) attaches to nothing and is preserved as
+    // trivia. It must re-render as a well-formed `///` line, never be sliced
+    // into a `// /` ordinary comment.
+    let source = "/// orphan before workflow\nworkflow w\n\noutput String\n\nfinish \"x\"\n";
+    let expected = "/// orphan before workflow\nworkflow w\n\noutput String\nfinish \"x\"\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, expected);
+    assert!(
+        printed.starts_with("/// orphan before workflow\n"),
+        "orphan doc comment was corrupted: {printed}"
+    );
+    assert!(
+        !printed.contains("// /"),
+        "doc comment was mangled through the ordinary-comment path: {printed}"
+    );
+    assert_idempotent(source)
+}
+
+#[test]
+fn probe_round_trips_without_comment_loss_or_mangling() -> Result<(), Box<dyn Error>> {
+    // The full corruption probe: an orphan `///` before `workflow`, and an
+    // ordinary `//` interleaved before a `///`-documented type. Neither
+    // comment may be dropped nor mangled, and the canonical form is stable.
+    let source = "/// orphan before workflow\nworkflow w\noutput Box\n\n// ordinary before type\n/// Box docs.\ntype Box { value: String }\n\nfinish Box(value: \"x\")\n";
+    let expected = "/// orphan before workflow\nworkflow w\n\noutput Box\n\n// ordinary before type\n/// Box docs.\ntype Box { value: String }\nfinish Box(value: \"x\")\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, expected);
+    assert!(printed.contains("/// orphan before workflow\n"));
+    assert!(printed.contains("// ordinary before type\n"));
+    assert!(!printed.contains("// /"), "mangled doc comment: {printed}");
+    assert_idempotent(source)
+}
+
+#[test]
+fn field_docs_force_multi_line_even_when_single_line_would_fit() -> Result<(), Box<dyn Error>> {
+    // Operator ruling on AWL1-001: the single-line form has nowhere to carry
+    // per-field `///` docs, so a documented field forces the multi-line
+    // rendering even for a declaration well under the 100-column boundary.
+    // Collapsing would silently discard the field's load-bearing prose.
+    let source = "workflow w\n\noutput Box\n\ntype Box {\n  /// Value docs.\n  value: String,\n}\nfinish Box(value: \"x\")\n";
+    let printed = print(&parse(source)?);
+    assert_eq!(printed, source, "documented field must not collapse");
+    assert!(
+        printed.contains("type Box {\n  /// Value docs.\n  value: String,\n}"),
+        "multi-line form with the field doc expected: {printed}"
+    );
+    assert_idempotent(source)
+}
+
+#[test]
 fn type_printer_uses_the_inclusive_100_column_boundary() -> Result<(), Box<dyn Error>> {
     let at_limit = "a".repeat(81);
     let over_limit = "a".repeat(82);
