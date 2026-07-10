@@ -1,7 +1,7 @@
-//! Lexer for the AWL workflow language.
+//! Front end for the AWL workflow language (rev-2 surface).
 //!
 //! The lexer is intentionally hand-written so the parser can rely on exact token
-//! spans, indentation tokens, and AWL's `about` prose mode.
+//! spans, indentation tokens, and AWL's doc-line data tokens (`//!`, `///`).
 
 mod ast;
 mod checker;

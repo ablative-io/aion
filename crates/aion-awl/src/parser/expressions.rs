@@ -83,13 +83,18 @@ impl ExprParser<'_> {
     }
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_primary()?;
-        while self.eat(&TokenKind::Dot) {
-            let token = self
-                .bump()
-                .ok_or_else(|| ParseError::new(self.context, "expected field name after `.`"))?;
-            let field = match &token.kind {
-                TokenKind::Identifier(name) => name.clone(),
-                _ => return Err(ParseError::new(token.span, "expected field name after `.`")),
+        while matches!(
+            self.tokens.get(self.pos).map(|t| &t.kind),
+            Some(TokenKind::FieldAccessor(_))
+        ) {
+            let Some(token) = self.bump() else {
+                return Err(ParseError::new(
+                    self.context,
+                    "expected field name after `.`",
+                ));
+            };
+            let TokenKind::FieldAccessor(field) = token.kind else {
+                return Err(ParseError::new(token.span, "expected field name after `.`"));
             };
             let span = join_span(expr.span(), token.span);
             expr = Expr::Field {

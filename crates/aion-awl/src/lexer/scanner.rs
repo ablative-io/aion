@@ -1,20 +1,45 @@
 use super::{DurationUnit, Keyword, LexError, Span, Token, TokenKind};
 
-/// Lex an AWL source document into tokens.
+/// Lex an AWL rev-2 source document into tokens.
 ///
-/// Blank lines and whole-line comments do not produce `Newline` or indentation
-/// changes. Non-blank lines do produce a trailing `Newline` token when the line
-/// has a physical line ending.
+/// Blank lines and whole-line `//` trivia comments do not produce `Newline`
+/// or indentation changes. Whole-line doc lines (`//!`, `///`) are data: they
+/// produce their doc token followed by a `Newline`, but never adjust the
+/// indentation stack (attachment by position is the parser's job). Non-blank
+/// code lines produce a trailing `Newline` token when the line has a physical
+/// line ending.
 ///
 /// # Errors
 ///
-/// Returns the first lexical error, including unterminated strings, unsupported
-/// string escapes, tabs in indentation, non-two-space indentation, and stray
-/// characters.
+/// Returns the first lexical error, including unterminated strings,
+/// unsupported string escapes, tabs in indentation, non-two-space
+/// indentation, a dot without a field name, and stray characters.
 pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer::new(source);
     lexer.lex()?;
     Ok(lexer.tokens)
+}
+
+/// The classification of a `//`-prefixed line or line tail.
+enum CommentKind {
+    /// `//!` workflow narration: data.
+    DocHeader,
+    /// `///` declaration doc (but not `////…`): data.
+    DocLine,
+    /// Plain `//` trivia.
+    Trivia,
+}
+
+/// Classify a comment starting at `text` (which begins with `//`) and return
+/// the marker length together with its kind.
+fn classify_comment(text: &str) -> (usize, CommentKind) {
+    if text.starts_with("//!") {
+        return (3, CommentKind::DocHeader);
+    }
+    if text.starts_with("///") && !text.starts_with("////") {
+        return (3, CommentKind::DocLine);
+    }
+    (2, CommentKind::Trivia)
 }
 
 struct Lexer<'src> {
@@ -72,18 +97,11 @@ impl<'src> Lexer<'src> {
         if after_indent.trim().is_empty() {
             return Ok(());
         }
-        if after_indent.trim_start().starts_with("//") {
-            let comment_start = content_start + after_indent.find("//").unwrap_or(0);
-            let comment_text = normalize_comment_text(&line_text[comment_start + 2..]);
-            self.tokens.push(Token::new(
-                TokenKind::Comment(comment_text.to_owned()),
-                Span::new(
-                    self.offset + comment_start,
-                    self.offset + line_text.len(),
-                    self.line,
-                    comment_start + 1,
-                ),
-            ));
+        if after_indent.starts_with("//") {
+            let is_data = self.push_comment_token(line_text, content_start);
+            if is_data && has_newline {
+                self.push_line_newline(line_text);
+            }
             return Ok(());
         }
         if content_start % 2 != 0 {
@@ -94,7 +112,6 @@ impl<'src> Lexer<'src> {
         self.adjust_indent(content_start)?;
 
         let mut cursor = Cursor::new(line_text, self.offset, self.line, content_start);
-        let mut just_emitted_about = false;
 
         while !cursor.is_at_end() {
             cursor.skip_inline_whitespace();
@@ -102,52 +119,57 @@ impl<'src> Lexer<'src> {
                 break;
             }
 
-            if just_emitted_about {
-                let prose_start = cursor.index;
-                let text = line_text[prose_start..].trim_start_matches(' ');
-                let trim_delta = line_text[prose_start..].len() - text.len();
-                let span_start = self.offset + prose_start + trim_delta;
-                let column = prose_start + trim_delta + 1;
-                self.tokens.push(Token::new(
-                    TokenKind::Prose(text.to_owned()),
-                    Span::new(span_start, self.offset + line_text.len(), self.line, column),
-                ));
-                break;
-            }
-
             if cursor.starts_with("//") {
-                let comment_start = cursor.index;
-                let comment_text = normalize_comment_text(&line_text[comment_start + 2..]);
-                self.tokens.push(Token::new(
-                    TokenKind::Comment(comment_text.to_owned()),
-                    Span::new(
-                        self.offset + comment_start,
-                        self.offset + line_text.len(),
-                        self.line,
-                        comment_start + 1,
-                    ),
-                ));
+                self.push_comment_token(line_text, cursor.index);
                 break;
             }
 
             let token = cursor.next_token()?;
-            just_emitted_about = matches!(token.kind, TokenKind::Keyword(Keyword::About));
             self.tokens.push(token);
         }
 
         if has_newline {
-            self.tokens.push(Token::new(
-                TokenKind::Newline,
-                Span::new(
-                    self.offset + line_text.len(),
-                    self.offset + line_text.len() + 1,
-                    self.line,
-                    line_text.len() + 1,
-                ),
-            ));
+            self.push_line_newline(line_text);
         }
 
         Ok(())
+    }
+
+    /// Push the token for a comment or doc line starting at `start` within
+    /// `line_text`, and report whether it was a data token (doc line).
+    fn push_comment_token(&mut self, line_text: &str, start: usize) -> bool {
+        let (marker_len, kind) = classify_comment(&line_text[start..]);
+        let text = &line_text[start + marker_len..];
+        let (kind, is_data) = match kind {
+            CommentKind::DocHeader => (TokenKind::DocHeader(text.to_owned()), true),
+            CommentKind::DocLine => (TokenKind::DocLine(text.to_owned()), true),
+            CommentKind::Trivia => (
+                TokenKind::Comment(normalize_comment_text(text).to_owned()),
+                false,
+            ),
+        };
+        self.tokens.push(Token::new(
+            kind,
+            Span::new(
+                self.offset + start,
+                self.offset + line_text.len(),
+                self.line,
+                start + 1,
+            ),
+        ));
+        is_data
+    }
+
+    fn push_line_newline(&mut self, line_text: &str) {
+        self.tokens.push(Token::new(
+            TokenKind::Newline,
+            Span::new(
+                self.offset + line_text.len(),
+                self.offset + line_text.len() + 1,
+                self.line,
+                line_text.len() + 1,
+            ),
+        ));
     }
 
     fn adjust_indent(&mut self, spaces: usize) -> Result<(), LexError> {
@@ -242,12 +264,16 @@ impl<'line> Cursor<'line> {
             ':' => Ok(self.simple(TokenKind::Colon, start)),
             ',' => Ok(self.simple(TokenKind::Comma, start)),
             '+' => Ok(self.simple(TokenKind::Plus, start)),
+            '?' => Ok(self.simple(TokenKind::Question, start)),
             '.' if self.consume_if('.') => Ok(self.spanned(TokenKind::DotDot, start, self.index)),
-            '.' => Ok(self.simple(TokenKind::Dot, start)),
+            '.' => self.field_accessor(start),
             '-' if self.consume_if('>') => Ok(self.spanned(TokenKind::Arrow, start, self.index)),
+            '|' if self.consume_if('>') => Ok(self.spanned(TokenKind::Pipe, start, self.index)),
+            '|' => Ok(self.simple(TokenKind::Bar, start)),
             '=' if self.consume_if('=') => {
                 Ok(self.spanned(TokenKind::EqualEqual, start, self.index))
             }
+            '=' => Ok(self.simple(TokenKind::Equal, start)),
             '!' if self.consume_if('=') => {
                 Ok(self.spanned(TokenKind::BangEqual, start, self.index))
             }
@@ -295,6 +321,22 @@ impl<'line> Cursor<'line> {
         } else {
             false
         }
+    }
+
+    /// Lex a `.field` accessor. The dot has already been consumed and sits at
+    /// `start`; the field name must follow immediately, `snake_case`.
+    fn field_accessor(&mut self, start: usize) -> Result<Token, LexError> {
+        if !self.current().is_some_and(|ch| ch.is_ascii_lowercase()) {
+            return Err(LexError::new(
+                self.span(start, self.index),
+                "expected a field name after `.`",
+            ));
+        }
+        while matches!(self.current(), Some(ch) if is_identifier_continue(ch)) {
+            self.advance_char();
+        }
+        let name = &self.line[start + 1..self.index];
+        Ok(self.spanned(TokenKind::FieldAccessor(name.to_owned()), start, self.index))
     }
 
     fn string(&mut self, start: usize) -> Result<Token, LexError> {
@@ -383,7 +425,7 @@ impl<'line> Cursor<'line> {
         }
         let text = &self.line[start..self.index];
         if !type_name {
-            if let Some(keyword) = keyword(text) {
+            if let Some(keyword) = Keyword::from_word(text) {
                 return self.spanned(TokenKind::Keyword(keyword), start, self.index);
             }
             return self.spanned(TokenKind::Identifier(text.to_owned()), start, self.index);
@@ -434,46 +476,4 @@ fn duration_unit(ch: char) -> Option<DurationUnit> {
 fn parse_u64(text: &str, span: Span) -> Result<u64, LexError> {
     text.parse::<u64>()
         .map_err(|_| LexError::new(span, "integer literal is too large"))
-}
-
-fn keyword(text: &str) -> Option<Keyword> {
-    match text {
-        "workflow" => Some(Keyword::Workflow),
-        "about" => Some(Keyword::About),
-        "input" => Some(Keyword::Input),
-        "output" => Some(Keyword::Output),
-        "error" => Some(Keyword::Error),
-        "signal" => Some(Keyword::Signal),
-        "type" => Some(Keyword::Type),
-        "action" => Some(Keyword::Action),
-        "step" => Some(Keyword::Step),
-        "finish" => Some(Keyword::Finish),
-        "when" => Some(Keyword::When),
-        "each" => Some(Keyword::Each),
-        "in" => Some(Keyword::In),
-        "do" => Some(Keyword::Do),
-        "child" => Some(Keyword::Child),
-        "wait" => Some(Keyword::Wait),
-        "sleep" => Some(Keyword::Sleep),
-        "repeat" => Some(Keyword::Repeat),
-        "up" => Some(Keyword::Up),
-        "to" => Some(Keyword::To),
-        "until" => Some(Keyword::Until),
-        "retry" => Some(Keyword::Retry),
-        "every" => Some(Keyword::Every),
-        "backoff" => Some(Keyword::Backoff),
-        "timeout" => Some(Keyword::Timeout),
-        "on" => Some(Keyword::On),
-        "failure" => Some(Keyword::Failure),
-        "as" => Some(Keyword::As),
-        "queue" => Some(Keyword::Queue),
-        "node" => Some(Keyword::Node),
-        "not" => Some(Keyword::Not),
-        "and" => Some(Keyword::And),
-        "or" => Some(Keyword::Or),
-        "true" => Some(Keyword::True),
-        "false" => Some(Keyword::False),
-        "fail" => Some(Keyword::Fail),
-        _ => None,
-    }
 }
