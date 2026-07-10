@@ -195,9 +195,10 @@ pub(super) fn render_expr(
         Expr::Binary {
             left, op, right, ..
         } => {
+            let symbol = operator_for(emitter, *op, left, right, scope);
             let left = render_parenthesized(emitter, left, scope, prelude)?;
             let right = render_parenthesized(emitter, right, scope, prelude)?;
-            Ok(format!("{left} {} {right}", binary_op(*op)))
+            Ok(format!("{left} {symbol} {right}"))
         }
         Expr::Predicate { subject, kind, .. } => {
             let subject = render_parenthesized(emitter, subject, scope, prelude)?;
@@ -228,17 +229,40 @@ fn render_parenthesized(
     }
 }
 
-fn binary_op(op: BinaryOp) -> &'static str {
-    match op {
-        BinaryOp::Or => "||",
-        BinaryOp::And => "&&",
-        BinaryOp::Eq => "==",
-        BinaryOp::Ne => "!=",
-        BinaryOp::Lt => "<",
-        BinaryOp::Le => "<=",
-        BinaryOp::Gt => ">",
-        BinaryOp::Ge => ">=",
-        BinaryOp::Concat => "<>",
+/// The Gleam operator for a binary op. Gleam's bare ordering operators are
+/// Int-only, so Float comparisons render the `.`-suffixed Float family (the
+/// checker admits ordering on Int/Int and Float/Float alone, so one Float
+/// operand settles the pair).
+fn operator_for(
+    emitter: &Emitter<'_>,
+    op: BinaryOp,
+    left: &Expr,
+    right: &Expr,
+    scope: &Scope,
+) -> &'static str {
+    let ordering = matches!(
+        op,
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+    );
+    let float_operands = ordering
+        && [left, right].into_iter().any(|side| {
+            expr_type(emitter, side, scope)
+                .is_ok_and(|ty| matches!(emitter.env.resolve(&ty), GType::Float))
+        });
+    match (op, float_operands) {
+        (BinaryOp::Lt, true) => "<.",
+        (BinaryOp::Le, true) => "<=.",
+        (BinaryOp::Gt, true) => ">.",
+        (BinaryOp::Ge, true) => ">=.",
+        (BinaryOp::Or, _) => "||",
+        (BinaryOp::And, _) => "&&",
+        (BinaryOp::Eq, _) => "==",
+        (BinaryOp::Ne, _) => "!=",
+        (BinaryOp::Lt, false) => "<",
+        (BinaryOp::Le, false) => "<=",
+        (BinaryOp::Gt, false) => ">",
+        (BinaryOp::Ge, false) => ">=",
+        (BinaryOp::Concat, _) => "<>",
     }
 }
 

@@ -282,6 +282,265 @@ fn enum_total_outcomes_lower_to_case() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A heterogeneous named-branch fork dispatches every branch on ONE
+/// `workflow.all` (spec: "bare `fork` is parallel"): the branches ride raw
+/// wire-unified activities and the join decodes each payload with its
+/// action's return codec (2026-07-11 emitter panel, blocking finding).
+#[test]
+fn heterogeneous_named_fork_dispatches_one_parallel_all() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("dag-fork/valid/fork_named_branches.awl")?;
+    let all_line = generated
+        .lines()
+        .find(|line| line.contains("workflow.all(["))
+        .ok_or("the fork must ride workflow.all")?;
+    assert!(
+        all_line.contains("fetch_profile_activity_raw(user_id)")
+            && all_line.contains("fetch_history_activity_raw(user_id)"),
+        "both branches must dispatch in the same workflow.all: {all_line}"
+    );
+    assert!(
+        generated.contains("use profile <- try(awl_decoded(profile_codec(), awl_raw_0,"),
+        "branch 1 must decode with its return codec: {generated}"
+    );
+    assert!(
+        generated.contains("use history <- try(awl_decoded(history_codec(), awl_raw_1,"),
+        "branch 2 must decode with its return codec: {generated}"
+    );
+    Ok(())
+}
+
+/// Steps sharing a dependency and not each other run in parallel (the
+/// flagship's `scout`/`warm_build` layer): a heterogeneous single-call layer is
+/// one `workflow.all`, never one-at-a-time dispatch (2026-07-11 emitter
+/// panel, blocking finding).
+#[test]
+fn flagship_scout_and_warm_build_share_one_parallel_all() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("flagship/valid/dev_brief.awl")?;
+    let all_line = generated
+        .lines()
+        .find(|line| line.contains("workflow.all([") && line.contains("scout_activity_raw("))
+        .ok_or("scout must dispatch through workflow.all")?;
+    assert!(
+        all_line.contains("warm_build_activity_raw("),
+        "warm_build must dispatch in the same workflow.all as scout: {all_line}"
+    );
+    assert!(
+        generated.contains("use scout_report <- try(awl_decoded(scout_report_codec(), awl_raw_0,"),
+        "the bound branch must decode with its return codec: {generated}"
+    );
+    Ok(())
+}
+
+/// A dependency layer whose members are more than single bare calls cannot
+/// dispatch concurrently in the stopgap; the sequential fallback announces
+/// itself in the generated module instead of degrading silently.
+#[test]
+fn sequential_layer_fallback_is_announced() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("dag-fork/valid/release_pipeline_combined.awl")?;
+    assert!(
+        generated.contains("// awl stopgap: these dependency-parallel steps run in written order"),
+        "the sequentialized layer must be named in the output: {generated}"
+    );
+    Ok(())
+}
+
+/// A `route` inside a `loop` body can never reach tail position in the
+/// generated loop function, so the stopgap refuses it with a spanned error
+/// instead of emitting a discarded no-op route (2026-07-11 emitter panel,
+/// blocking finding).
+#[test]
+fn route_inside_a_loop_body_is_refused() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Loop route stress.
+workflow loop_route
+  input target: String
+  outcome done: type Report, route success
+  outcome bailed: type Report, route failure
+
+type Round  { summary: String, gates_green: Bool }
+type Report { summary: String }
+
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false) counting cycles
+    work(prior: round) -> round
+    route bailed(summary: round.summary)
+    until round.gates_green
+    max 3
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("`route` inside a `loop` body"),
+        "unexpected message: {}",
+        error.message
+    );
+    let route_line = source
+        .lines()
+        .position(|line| line.contains("route bailed"))
+        .ok_or("missing route line")?
+        + 1;
+    assert_eq!(error.span.line, route_line, "span must anchor the route");
+    Ok(())
+}
+
+/// A loop `max` referencing the loop-threaded value renders at the call
+/// site, where no loop-local exists: the stopgap refuses instead of
+/// emitting Gleam that cannot compile (2026-07-11 emitter panel, blocking
+/// finding; the checker refuses the same shape in the pre-loop scope).
+#[test]
+fn loop_max_must_be_loop_invariant() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Loop ceiling stress.
+workflow loop_ceiling
+  input job: String
+  outcome done: type Report, route success
+
+type Round  { summary: String, gates_green: Bool, budget: Int }
+type Report { summary: String }
+
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false, budget: 3) counting cycles
+    work(prior: round) -> round
+    until round.gates_green
+    max round.budget
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("before the loop"),
+        "unexpected message: {}",
+        error.message
+    );
+    let max_line = source
+        .lines()
+        .position(|line| line.contains("max round.budget"))
+        .ok_or("missing max line")?
+        + 1;
+    assert_eq!(error.span.line, max_line, "span must anchor the ceiling");
+    Ok(())
+}
+
+/// One binding name bound with two different types in disjoint route
+/// branches is refused: a name-keyed first-wins map would annotate the
+/// other branch's region parameters wrongly and emit non-compiling Gleam
+/// (2026-07-11 emitter panel, blocking finding).
+#[test]
+fn conflicting_binding_types_across_branches_are_refused() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Branch type conflict stress.
+workflow branch_conflict
+  input essay: String
+  outcome done_a: type AOut, route success
+  outcome done_b: type BOut, route failure
+
+type Flag { which: Bool }
+type A    { left: String }
+type B    { right: Int }
+type AOut { value: String }
+type BOut { value: Int }
+
+worker shape
+  action probe(essay: String) -> Flag
+  action make_a() -> A
+  action make_b() -> B
+  action show_a(item: A) -> AOut
+  action show_b(item: B) -> BOut
+
+step decide
+  probe(essay: essay) -> flag
+
+  outcome go_a: when flag.which, route path_a
+  outcome go_b: otherwise, route path_b
+
+step path_a
+  make_a() -> item
+  route join_a
+
+step path_b
+  make_b() -> item
+  route join_b
+
+step join_a
+  show_a(item: item) -> out
+  route done_a(value: out.value)
+
+step join_b
+  show_b(item: item) -> outb
+  route done_b(value: outb.value)
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("one type per binding name"),
+        "unexpected message: {}",
+        error.message
+    );
+    let second_bind = source
+        .lines()
+        .position(|line| line.contains("make_b() -> item"))
+        .ok_or("missing conflicting bind")?
+        + 1;
+    assert_eq!(
+        error.span.line, second_bind,
+        "span must anchor the conflicting bind"
+    );
+    Ok(())
+}
+
+/// Float ordering comparisons render Gleam's Float operator family
+/// (`>.` etc.) — the bare operators are Int-only and fail `gleam build`
+/// (2026-07-11 emitter panel, blocking finding).
+#[test]
+fn float_orderings_render_float_operators() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/float_threshold_guard.awl")?;
+    assert!(
+        generated.contains("case verdict.score >. 0.5 {"),
+        "a Float guard must use the Float ordering operator: {generated}"
+    );
+    Ok(())
+}
+
+/// A piped route that also constructs a payload is a checker error; `emit()`
+/// on the unchecked document refuses instead of silently dropping the piped
+/// value (library callers get the documented `EmitError`).
+#[test]
+fn piped_route_with_payload_is_refused_at_emit() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Piped payload conflict.
+workflow piped_conflict
+  input name: String
+  outcome done: type Greeting, route success
+
+type Greeting { greeting: String }
+
+worker greeter
+  action greet(name: String) -> Greeting
+
+step greet
+  name |> greet |> route done(greeting: \"fixed\")
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("piped route"),
+        "unexpected message: {}",
+        error.message
+    );
+    Ok(())
+}
+
 /// A schema import without the document's directory refuses with a spanned
 /// error naming the path (defect-discipline: spans stay source-correct).
 #[test]
@@ -353,6 +612,10 @@ fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
             (
                 "combinators",
                 emitted_fixture("step-bodies/valid/combinators.awl")?,
+            ),
+            (
+                "float_guard",
+                emitted_fixture("loop-outcomes/valid/float_threshold_guard.awl")?,
             ),
             (
                 "step_bodies",

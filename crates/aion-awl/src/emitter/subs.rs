@@ -126,8 +126,6 @@ fn emit_sub_with_failure(
     Ok(())
 }
 
-/// A substep's tail: its own outcomes, an emitted terminal route, the next
-/// sibling, or the parent's outcome clauses at the chain end.
 /// Identity of one substep chain: which parent step and where its trailing
 /// substep block starts.
 #[derive(Clone, Copy)]
@@ -137,6 +135,8 @@ struct SubChain<'a> {
     split: usize,
 }
 
+/// A substep's tail: its own outcomes, an emitted terminal route, the next
+/// sibling, or the parent's outcome clauses at the chain end.
 fn emit_sub_tail(
     emitter: &mut Emitter<'_>,
     plan: &Plan,

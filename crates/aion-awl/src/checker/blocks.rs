@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::Span;
-use crate::ast::{ForkHeader, ForkStmt, LoopStmt, PipeEnd, Statement, Step};
+use crate::ast::{Expr, ForkHeader, ForkStmt, LoopStmt, PipeEnd, Statement, Step};
 use crate::spanned::Spanned;
 
 use super::exprs::{View, type_of};
@@ -152,6 +152,10 @@ pub(super) fn walk_loop(
         narrow: None,
     };
     let seed_ty = type_of(w, view, &looped.seed);
+    // `max` is a ceiling fixed before the first pass: an expression over
+    // inputs and prior bindings, typed in the pre-loop scope (the emitter
+    // renders it at the loop call site, where loop-locals do not exist).
+    let pre_loop = scope.clone();
     insert_binding(w, scope, &looped.var, seed_ty.clone(), looped.var_span);
     let fork_depth = w.fork_depth;
     w.loops.push(LoopFrame {
@@ -185,12 +189,27 @@ pub(super) fn walk_loop(
     }
     match &looped.max {
         Some(tail) => {
-            let ty = type_of(w, body_view, &tail.expr);
-            if !matches!(resolve(&ty, &w.ctx.types), Ty::Int | Ty::Unknown) {
+            if let Some((name, span)) = loop_local_ref(&tail.expr, looped) {
                 w.err(
-                    tail.expr.span(),
-                    format!("`max` needs an Int ceiling, found {ty}"),
+                    span,
+                    format!(
+                        "`max` is the loop's ceiling, fixed before the first pass — \
+                         `{name}` is loop-local; the bound must be an expression over \
+                         inputs and prior bindings"
+                    ),
                 );
+            } else {
+                let pre_view = View {
+                    vars: &pre_loop,
+                    narrow: None,
+                };
+                let ty = type_of(w, pre_view, &tail.expr);
+                if !matches!(resolve(&ty, &w.ctx.types), Ty::Int | Ty::Unknown) {
+                    w.err(
+                        tail.expr.span(),
+                        format!("`max` needs an Int ceiling, found {ty}"),
+                    );
+                }
             }
         }
         None => {
@@ -217,4 +236,36 @@ pub(super) fn walk_loop(
         insert_binding(w, scope, &counter.name, Ty::Int, counter.span);
     }
     None
+}
+
+/// The first reference to the loop's threaded value or counter inside an
+/// expression — `max` may not read either (the ceiling is loop-invariant).
+fn loop_local_ref(expr: &Expr, looped: &LoopStmt) -> Option<(String, Span)> {
+    let is_local = |name: &str| {
+        name == looped.var
+            || looped
+                .counter
+                .as_ref()
+                .is_some_and(|counter| counter.name == name)
+    };
+    match expr {
+        Expr::Ref { span, name } => is_local(name).then(|| (name.clone(), *span)),
+        Expr::String { .. }
+        | Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Bool { .. }
+        | Expr::Duration(_)
+        | Expr::Variant { .. }
+        | Expr::Accessor { .. } => None,
+        Expr::List { items, .. } => items.iter().find_map(|item| loop_local_ref(item, looped)),
+        Expr::Record { args, .. } => args
+            .iter()
+            .find_map(|arg| loop_local_ref(&arg.value, looped)),
+        Expr::Field { base, .. } | Expr::Index { base, .. } => loop_local_ref(base, looped),
+        Expr::Not { expr: inner, .. } => loop_local_ref(inner, looped),
+        Expr::Binary { left, right, .. } => {
+            loop_local_ref(left, looped).or_else(|| loop_local_ref(right, looped))
+        }
+        Expr::Predicate { subject, .. } => loop_local_ref(subject, looped),
+    }
 }

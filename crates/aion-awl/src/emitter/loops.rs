@@ -5,7 +5,8 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{ForkHeader, LoopStmt, Statement};
+use crate::ast::{ForkHeader, LoopStmt, PipeEnd, Statement};
+use crate::{Span, Spanned};
 
 use super::context::Emitter;
 use super::error::EmitError;
@@ -28,12 +29,7 @@ pub(super) fn lower_loop(
     scope: &mut Scope,
     lower_body: &mut LowerBody<'_>,
 ) -> Result<(), EmitError> {
-    let Some(max) = &looped.max else {
-        return Err(EmitError::new(
-            looped.span,
-            "an unbounded loop (no `max`) is illegal until implicit continue-as-new lands",
-        ));
-    };
+    let max = loop_preflight(looped, scope)?;
     let mut prelude = Vec::new();
     let seed = render_expr(emitter, &looped.seed, scope, &mut prelude)?;
     let seed_ty = expr_type(emitter, &looped.seed, scope)?;
@@ -132,6 +128,80 @@ pub(super) fn lower_loop(
         scope.insert(counter.name.clone(), GType::Int);
     }
     Ok(())
+}
+
+/// Refuse loop shapes the tail-recursive lowering cannot honor, returning
+/// the mandatory `max` tail: the loop must be bounded, its body may not
+/// route (no early-exit channel in the generated function), and the ceiling
+/// must be loop-invariant (it renders once, at the loop call site).
+fn loop_preflight<'l>(
+    looped: &'l LoopStmt,
+    scope: &Scope,
+) -> Result<&'l crate::ast::LoopTail, EmitError> {
+    let Some(max) = &looped.max else {
+        return Err(EmitError::new(
+            looped.span,
+            "an unbounded loop (no `max`) is illegal until implicit continue-as-new lands",
+        ));
+    };
+    if let Some(span) = first_route_span(&looped.body) {
+        return Err(EmitError::new(
+            span,
+            "a `route` inside a `loop` body is not lowerable in the Gleam stopgap — the \
+             generated loop function has no early-exit channel; end the loop through `until` \
+             and route from the loop-carrying step's outcome clauses",
+        ));
+    }
+    let mut max_refs = BTreeSet::new();
+    expr_refs(&max.expr, &mut max_refs);
+    if let Some(name) = max_refs.iter().find(|name| !scope.contains_key(*name)) {
+        return Err(EmitError::new(
+            max.expr.span(),
+            format!(
+                "`max` is evaluated once, before the loop runs — `{name}` is not bound before \
+                 the loop (the ceiling must be an expression over inputs and prior bindings)"
+            ),
+        ));
+    }
+    Ok(max)
+}
+
+/// The span of the first `route` (statement or pipe terminator) anywhere in
+/// a loop body. The generated loop function appends the counter increment
+/// and the `until`/`max` exit after the lowered body, so a route can never
+/// reach tail position there: left in place it would be a discarded
+/// mid-function expression (a `route <outcome>` that never ends the run, a
+/// `route <step>` that runs the target region's actions and then keeps
+/// looping). The stopgap refuses the shape up front.
+fn first_route_span(statements: &[Statement]) -> Option<Span> {
+    for statement in statements {
+        match statement {
+            Statement::Route(route) => return Some(route.span),
+            Statement::Pipe(pipe) => {
+                if matches!(pipe.end, PipeEnd::Route(_)) {
+                    return Some(pipe.span);
+                }
+            }
+            Statement::Fork(fork) => {
+                if let Some(span) = first_route_span(&fork.body) {
+                    return Some(span);
+                }
+            }
+            Statement::Loop(inner) => {
+                if let Some(span) = first_route_span(&inner.body) {
+                    return Some(span);
+                }
+            }
+            Statement::SubStep(sub) => {
+                if let Some(span) = first_route_span(&sub.body) {
+                    return Some(span);
+                }
+            }
+            Statement::Call(_) | Statement::Spawn(_) | Statement::Wait(_) | Statement::Sleep(_) => {
+            }
+        }
+    }
+    None
 }
 
 /// Free names a loop body and its `until` reference beyond the loop-locals:

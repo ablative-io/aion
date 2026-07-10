@@ -30,6 +30,10 @@ pub(super) struct Flags {
     pub(super) uses_list_module: bool,
     /// `gleam/<module>` comparator imports a `sort` stage needs.
     pub(super) compare_modules: std::collections::BTreeSet<&'static str>,
+    /// Actions dispatched from a heterogeneous parallel group: each needs a
+    /// raw (`Activity(String, String)`) wrapper twin so differently-typed
+    /// branches can share one `workflow.all` list.
+    pub(super) raw_actions: std::collections::BTreeSet<String>,
 }
 
 pub(super) struct Emitter<'a> {

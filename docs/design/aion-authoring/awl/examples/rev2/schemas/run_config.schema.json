@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "required": ["repo_root", "base_branch", "gate_commands", "max_fix_cycles", "lenses"],
+  "properties": {
+    "repo_root": {
+      "type": "string",
+      "description": "Absolute path to the repository the run works in."
+    },
+    "base_branch": {
+      "type": "string",
+      "description": "Branch the workspace branches from and the handoff diffs against."
+    },
+    "gate_commands": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Commands that must exit zero for a round to count as green."
+    },
+    "max_fix_cycles": {
+      "type": "integer",
+      "description": "Ceiling on fix rounds before the run reports itself exhausted."
+    },
+    "lenses": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Lens" },
+      "description": "Adversarial review lenses; one review runs per lens."
+    }
+  },
+  "$defs": {
+    "Lens": {
+      "type": "object",
+      "required": ["name", "charter"],
+      "properties": {
+        "name": { "type": "string" },
+        "charter": { "type": "string" }
+      }
+    }
+  }
+}

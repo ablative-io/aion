@@ -1,7 +1,10 @@
 //! Fork lowering: collection forks ride the SDK `map` (exactly-once per
 //! item, input order) or fold sequentially; named-branch forks ride the
-//! homogeneous `workflow.all` when every branch calls the same action and
-//! run in written order otherwise (a recorded mapping limit).
+//! typed `workflow.all` when every branch calls the same action and the raw
+//! wire-unified `workflow.all` otherwise (every branch dispatches as
+//! `Activity(String, String)` with byte-identical input, and the join
+//! decodes each payload with its action's return codec) — both genuinely
+//! parallel, per the spec's "bare `fork` is parallel".
 
 use crate::Spanned;
 use crate::ast::{CallStmt, Expr, ForkHeader, ForkStmt, Statement};
@@ -9,8 +12,8 @@ use crate::ast::{CallStmt, Expr, ForkHeader, ForkStmt, Statement};
 use super::context::Emitter;
 use super::error::EmitError;
 use super::exprs::{Scope, expr_type, render_expr};
-use super::names::ident;
-use super::stmts::{activity_value, flush_prelude, lower_call};
+use super::names::{ident, string_lit};
+use super::stmts::{activity_value, activity_value_raw, flush_prelude, lower_call};
 use super::types::{GType, type_ref_to_g};
 
 /// Lower a fork statement.
@@ -122,10 +125,9 @@ fn lower_collection_fork(
     Ok(())
 }
 
-/// Named-branch fork: `workflow.all` when every branch calls the same action
-/// (the SDK's parallel-all is homogeneous); written-order sequential
-/// execution otherwise (a recorded mapping limit — results are identical,
-/// wall-clock differs).
+/// Named-branch fork: the typed `workflow.all` when every branch calls the
+/// same action, the raw wire-unified `workflow.all` otherwise. Either way
+/// every branch dispatches before any branch is awaited.
 fn lower_named_fork(
     emitter: &mut Emitter<'_>,
     fork: &ForkStmt,
@@ -190,9 +192,68 @@ fn lower_named_fork(
                 scope.insert(bind.name.clone(), type_ref_to_g(&action.returns));
             }
         }
+    } else if branches.len() > 1 {
+        lower_hetero_parallel(emitter, &branches, scope)?;
     } else {
         for branch in &branches {
             lower_call(emitter, branch, scope)?;
+        }
+    }
+    Ok(())
+}
+
+/// Parallel dispatch for differently-typed action calls: the SDK's
+/// `workflow.all` is homogeneous in both type parameters, so every call
+/// rides its raw wrapper twin (`Activity(String, String)` — the input is
+/// pre-encoded with the action's own input codec, so the wire bytes match
+/// the typed path exactly) and the join decodes each branch's payload with
+/// its action's return codec.
+pub(super) fn lower_hetero_parallel(
+    emitter: &mut Emitter<'_>,
+    calls: &[&CallStmt],
+    scope: &mut Scope,
+) -> Result<(), EmitError> {
+    let mut values = Vec::new();
+    for call in calls {
+        let mut prelude = Vec::new();
+        let value = activity_value_raw(
+            emitter,
+            &call.call,
+            call.config.as_ref(),
+            scope,
+            &mut prelude,
+        )?;
+        flush_prelude(emitter, prelude);
+        values.push(value);
+    }
+    emitter.line(&format!(
+        "use awl_branches <- try(workflow.all([{}]) |> map_activity_error)",
+        values.join(", ")
+    ));
+    let patterns = calls
+        .iter()
+        .enumerate()
+        .map(|(position, call)| {
+            if call.bind.is_some() {
+                format!("awl_raw_{position}")
+            } else {
+                "_".to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    emitter.line(&format!("let assert [{patterns}] = awl_branches"));
+    for (position, call) in calls.iter().enumerate() {
+        if let Some(bind) = &call.bind {
+            let (_, action) = emitter.actions[call.call.name.as_str()];
+            let returns = type_ref_to_g(&action.returns);
+            let codec = emitter.env.codec_name(&returns);
+            emitter.line(&format!(
+                "use {} <- try(awl_decoded({codec}_codec(), awl_raw_{position}, {}))",
+                ident(&bind.name),
+                string_lit(&call.call.name)
+            ));
+            scope.insert(bind.name.clone(), returns);
         }
     }
     Ok(())

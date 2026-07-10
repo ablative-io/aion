@@ -342,3 +342,96 @@ step wrap
     find_error(&errors, "never rebinds `draft`", line)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------
+// 8. Loop `max` is typed in the pre-loop scope (2026-07-11 emitter panel:
+//    the ceiling renders at the loop call site, where loop-locals do not
+//    exist — a body-scoped `max` checked clean but could not compile)
+// ---------------------------------------------------------------------
+
+#[test]
+fn loop_max_may_not_read_loop_locals() -> TestResult {
+    let source = "\
+//! The ceiling is fixed before the first pass.
+workflow loop_ceiling
+  input job: String
+  outcome done: type Report, route success
+
+type Round  { summary: String, gates_green: Bool, budget: Int }
+type Report { summary: String }
+
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false, budget: 3) counting cycles
+    work(prior: round) -> round
+    until round.gates_green
+    max round.budget
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
+    let errors = check_source(source)?;
+    let line = line_of(source, "max round.budget")?;
+    find_error(&errors, "loop-local", line)?;
+    Ok(())
+}
+
+#[test]
+fn loop_max_may_not_read_the_counter() -> TestResult {
+    let source = "\
+//! The counter is no ceiling either.
+workflow loop_counter_ceiling
+  input job: String
+  outcome done: type Report, route success
+
+type Round  { summary: String, gates_green: Bool }
+type Report { summary: String }
+
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false) counting cycles
+    work(prior: round) -> round
+    until round.gates_green
+    max cycles
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
+    let errors = check_source(source)?;
+    let line = line_of(source, "max cycles")?;
+    find_error(&errors, "loop-local", line)?;
+    Ok(())
+}
+
+#[test]
+fn loop_max_over_inputs_stays_clean() -> TestResult {
+    let source = "\
+//! An input-derived ceiling is the sanctioned shape.
+workflow loop_input_ceiling
+  input job: String
+  input budget: Int
+  outcome done: type Report, route success
+
+type Round  { summary: String, gates_green: Bool }
+type Report { summary: String }
+
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false) counting cycles
+    work(prior: round) -> round
+    until round.gates_green
+    max budget
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
+    let errors = check_source(source)?;
+    assert!(errors.is_empty(), "expected clean, got {errors:#?}");
+    Ok(())
+}

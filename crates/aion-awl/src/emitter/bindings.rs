@@ -1,8 +1,12 @@
 //! Global binding→type pass. AWL bindings are single-assignment along the
-//! surface, so one workflow-wide map suffices; route-only steps may be
-//! written before the steps that define what they read, so the pass iterates
-//! to a fixed point instead of trusting written order.
+//! surface, so one workflow-wide map suffices — provided every use of a name
+//! agrees on its type. Route-only steps may be written before the steps that
+//! define what they read, so the pass iterates to a fixed point instead of
+//! trusting written order; a name bound with two different types in disjoint
+//! branches is refused with a spanned error (the map is keyed by name, so a
+//! first-wins entry would mis-annotate the other branch's parameters).
 
+use crate::Span;
 use crate::ast::{ForkHeader, Statement, Step};
 
 use super::context::Emitter;
@@ -22,15 +26,30 @@ pub(super) fn compute(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     // Each pass can only add bindings; the surface is finite.
     loop {
         let scope = emitter.bindings.clone();
-        let mut discovered: Vec<(String, GType)> = Vec::new();
+        let mut discovered: Vec<(String, GType, Span)> = Vec::new();
         for step in &emitter.document.steps {
             collect_step(emitter, step, &scope, &mut discovered);
         }
         let mut changed = false;
-        for (name, ty) in discovered {
-            if let std::collections::btree_map::Entry::Vacant(slot) = emitter.bindings.entry(name) {
-                slot.insert(ty);
-                changed = true;
+        for (name, ty, span) in discovered {
+            match emitter.bindings.get(&name) {
+                None => {
+                    emitter.bindings.insert(name, ty);
+                    changed = true;
+                }
+                Some(existing) if emitter.env.resolve(existing) != emitter.env.resolve(&ty) => {
+                    return Err(EmitError::new(
+                        span,
+                        format!(
+                            "`{name}` is bound as {} here but as {} elsewhere in the \
+                             workflow — the Gleam stopgap threads one type per binding \
+                             name across branches",
+                            emitter.env.gleam_type(&ty),
+                            emitter.env.gleam_type(existing),
+                        ),
+                    ));
+                }
+                Some(_) => {}
             }
         }
         if !changed {
@@ -43,10 +62,10 @@ fn collect_step(
     emitter: &Emitter<'_>,
     step: &Step,
     scope: &Scope,
-    discovered: &mut Vec<(String, GType)>,
+    discovered: &mut Vec<(String, GType, Span)>,
 ) {
     let mut local = scope.clone();
-    for (name, ty) in discovered.iter() {
+    for (name, ty, _) in discovered.iter() {
         local.entry(name.clone()).or_insert_with(|| ty.clone());
     }
     collect_statements(emitter, &step.body, &mut local, discovered);
@@ -56,11 +75,17 @@ fn collect_statements(
     emitter: &Emitter<'_>,
     statements: &[Statement],
     local: &mut Scope,
-    discovered: &mut Vec<(String, GType)>,
+    discovered: &mut Vec<(String, GType, Span)>,
 ) {
-    fn define(name: &str, ty: GType, local: &mut Scope, discovered: &mut Vec<(String, GType)>) {
+    fn define(
+        name: &str,
+        ty: GType,
+        span: Span,
+        local: &mut Scope,
+        discovered: &mut Vec<(String, GType, Span)>,
+    ) {
         local.entry(name.to_owned()).or_insert_with(|| ty.clone());
-        discovered.push((name.to_owned(), ty));
+        discovered.push((name.to_owned(), ty, span));
     }
     for statement in statements {
         match statement {
@@ -68,7 +93,7 @@ fn collect_statements(
                 if let Some(bind) = &call.bind
                     && let Some(returns) = action_return(emitter, &call.call.name)
                 {
-                    define(&bind.name, returns, local, discovered);
+                    define(&bind.name, returns, bind.span, local, discovered);
                 }
             }
             Statement::Wait(wait) => {
@@ -79,7 +104,7 @@ fn collect_statements(
                     } else {
                         payload
                     };
-                    define(&wait.bind.name, ty, local, discovered);
+                    define(&wait.bind.name, ty, wait.bind.span, local, discovered);
                 }
             }
             Statement::Pipe(pipe) => {
@@ -97,7 +122,7 @@ fn collect_statements(
                         }
                     }
                     if resolved {
-                        define(&binding.name, current, local, discovered);
+                        define(&binding.name, current, binding.span, local, discovered);
                     }
                 }
             }
@@ -128,6 +153,7 @@ fn collect_statements(
                             define(
                                 &bind.name,
                                 GType::List(Box::new(returns)),
+                                bind.span,
                                 local,
                                 discovered,
                             );
@@ -140,10 +166,10 @@ fn collect_statements(
             }
             Statement::Loop(looped) => {
                 if let Ok(seed) = expr_type(emitter, &looped.seed, local) {
-                    define(&looped.var, seed, local, discovered);
+                    define(&looped.var, seed, looped.var_span, local, discovered);
                 }
                 if let Some(counter) = &looped.counter {
-                    define(&counter.name, GType::Int, local, discovered);
+                    define(&counter.name, GType::Int, counter.span, local, discovered);
                 }
                 collect_statements(emitter, &looped.body, local, discovered);
             }

@@ -35,6 +35,30 @@ pub(super) fn activity_value(
     scope: &Scope,
     prelude: &mut Vec<String>,
 ) -> Result<String, EmitError> {
+    activity_value_form(emitter, call, site_config, scope, prelude, false)
+}
+
+/// [`activity_value`] over the raw wrapper twin (`Activity(String, String)`,
+/// wire bytes identical) that heterogeneous parallel groups share one
+/// `workflow.all` list through; registers the twin for generation.
+pub(super) fn activity_value_raw(
+    emitter: &mut Emitter<'_>,
+    call: &Call,
+    site_config: Option<&ConfigLine>,
+    scope: &Scope,
+    prelude: &mut Vec<String>,
+) -> Result<String, EmitError> {
+    activity_value_form(emitter, call, site_config, scope, prelude, true)
+}
+
+fn activity_value_form(
+    emitter: &mut Emitter<'_>,
+    call: &Call,
+    site_config: Option<&ConfigLine>,
+    scope: &Scope,
+    prelude: &mut Vec<String>,
+    raw: bool,
+) -> Result<String, EmitError> {
     let Some(&(queue, action)) = emitter.actions.get(call.name.as_str()) else {
         return Err(EmitError::new(
             call.name_span,
@@ -43,7 +67,12 @@ pub(super) fn activity_value(
     };
     let (queue, action) = (queue.to_owned(), action);
     let args = ordered_args(&call.args, &action.params, call.span, &call.name)?;
-    let mut value = format!("{}_activity(", snake(&call.name));
+    let mut value = if raw {
+        emitter.flags.raw_actions.insert(call.name.clone());
+        format!("{}_activity_raw(", snake(&call.name))
+    } else {
+        format!("{}_activity(", snake(&call.name))
+    };
     for (position, (arg, param_ty)) in args.iter().enumerate() {
         if position > 0 {
             value.push_str(", ");

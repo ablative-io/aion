@@ -10,10 +10,12 @@
 //! by a liveness fixed-point over the call graph (backward routes make it
 //! cyclic, so this is iterate-to-stable, not a single pass).
 //!
-//! Shapes the stopgap refuses (recorded as decision-log mapping limits):
-//! a route-targeted step with `after` dependencies, a routing step with
-//! `after`-dependents, regions with two entries, substep parents that fall
-//! through, and substeps outside a trailing block at nesting depth one.
+//! Shapes the stopgap refuses (recorded as decision-log mapping limits in
+//! AWL-2-BUILD-PLAN.md): a route-targeted step with `after` dependencies, a
+//! routing step with `after`-dependents, regions with two entries, substep
+//! parents that fall through, substeps outside a trailing block at nesting
+//! depth one, and a `route` inside a `loop` body (the generated loop
+//! function has no early-exit channel).
 
 use std::collections::{BTreeMap, BTreeSet};
 

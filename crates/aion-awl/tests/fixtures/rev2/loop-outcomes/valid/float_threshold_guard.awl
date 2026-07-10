@@ -1,0 +1,22 @@
+//! Grade an essay and gate the verdict on a Float threshold.
+workflow float_threshold_guard
+  input essay: String
+
+  outcome published: type Published, route success
+  outcome rejected:  type Rejected,  route failure
+
+type Verdict   { score: Float, summary: String }
+type Published { score: Float, summary: String }
+type Rejected  { summary: String }
+
+worker grading
+  action grade(essay: String) -> Verdict
+    node model, timeout 5m
+
+step grade
+  grade(essay: essay) -> verdict
+
+  outcome good: when verdict.score > 0.5,
+    route published(score: verdict.score, summary: verdict.summary)
+  outcome poor: otherwise,
+    route rejected(summary: verdict.summary)

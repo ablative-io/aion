@@ -117,6 +117,13 @@ fn emit_outcome_return(
     scope: &Scope,
     piped: Option<(String, GType)>,
 ) -> Result<(), EmitError> {
+    if piped.is_some() && target.payload.is_some() {
+        return Err(EmitError::new(
+            target.span,
+            "a piped route carries the piped value as its payload — payload construction is \
+             not allowed here (the document did not check cleanly)",
+        ));
+    }
     let info = emitter.outcomes[target.name.as_str()].clone();
     let mut prelude = Vec::new();
     let payload = if let Some(args) = &target.payload {

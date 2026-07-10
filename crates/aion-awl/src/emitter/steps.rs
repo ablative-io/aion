@@ -5,12 +5,12 @@
 //! variant of the same subject); `on failure` wraps the step body in an
 //! attempt closure whose error arm runs the compensation.
 
-use crate::ast::{PipeEnd, Statement, Step};
+use crate::ast::{CallStmt, PipeEnd, Statement, Step};
 
 use super::context::Emitter;
 use super::error::EmitError;
 use super::exprs::Scope;
-use super::forks::lower_fork;
+use super::forks::{lower_fork, lower_hetero_parallel};
 use super::graph::{Plan, body_ends_in_route, substep_split};
 use super::loops::{lower_loop, statement_defs};
 use super::names::{ident, snake};
@@ -166,8 +166,17 @@ fn emit_layers(
             "a step chain ends without routing — the document did not check cleanly",
         ));
     };
-    if member == 0 && current.len() > 1 && homogeneous_layer(emitter, current) {
-        return emit_parallel_layer(emitter, plan, layers, layer, scope);
+    if member == 0 && current.len() > 1 {
+        if let Some(calls) = layer_calls(emitter, current) {
+            return emit_parallel_layer(emitter, plan, layers, layer, &calls, scope);
+        }
+        // Dependency-parallel steps whose bodies are more than one bare
+        // action call cannot dispatch concurrently in the Gleam stopgap
+        // (the SDK parallelizes activities, not statement sequences) — a
+        // recorded mapping limit, and named in the generated module so the
+        // degradation is never silent.
+        emitter.line("// awl stopgap: these dependency-parallel steps run in written order (the");
+        emitter.line("// Gleam SDK has no heterogeneous task primitive for full step bodies).");
     }
     let Some(&step_index) = current.get(member) else {
         return emit_layers(emitter, plan, layers, layer + 1, 0, scope);
@@ -197,47 +206,50 @@ struct Continuation<'a> {
     member: usize,
 }
 
-/// Whether a multi-step layer can ride the SDK parallel-all: every member is
-/// a single call of the same action with no outcomes, handlers, or substeps
-/// (the SDK's `workflow.all` is homogeneous in input and output types).
-fn homogeneous_layer(emitter: &Emitter<'_>, members: &[usize]) -> bool {
-    let mut action = None;
-    members.iter().all(|&member| {
+/// The single bare action call of every member step in a multi-step layer,
+/// when the layer is parallelizable: each member must be one call of a
+/// declared action with no outcomes or handlers (dependency-parallel steps
+/// with fuller bodies fall back to written order — a recorded mapping
+/// limit).
+fn layer_calls<'a>(emitter: &Emitter<'a>, members: &[usize]) -> Option<Vec<&'a CallStmt>> {
+    let mut calls = Vec::new();
+    for &member in members {
         let step = &emitter.document.steps[member];
         if !step.outcomes.is_empty() || step.on_failure.is_some() {
-            return false;
+            return None;
         }
         let [Statement::Call(call)] = step.body.as_slice() else {
-            return false;
+            return None;
         };
         if !emitter.actions.contains_key(call.call.name.as_str()) {
-            return false;
+            return None;
         }
-        match action {
-            None => {
-                action = Some(call.call.name.as_str());
-                true
-            }
-            Some(name) => name == call.call.name,
-        }
-    })
+        calls.push(call);
+    }
+    Some(calls)
 }
 
+/// One dependency layer of single-call steps as one `workflow.all`: the
+/// typed form when every member calls the same action, the raw wire-unified
+/// form (see [`lower_hetero_parallel`]) otherwise.
 fn emit_parallel_layer(
     emitter: &mut Emitter<'_>,
     plan: &Plan,
     layers: &[Vec<usize>],
     layer: usize,
+    calls: &[&CallStmt],
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
-    let members = layers[layer].clone();
+    let homogeneous = calls
+        .iter()
+        .all(|call| call.call.name == calls[0].call.name);
+    if !homogeneous {
+        lower_hetero_parallel(emitter, calls, scope)?;
+        return emit_layers(emitter, plan, layers, layer + 1, 0, scope);
+    }
     let mut values = Vec::new();
     let mut patterns = Vec::new();
-    for &member in &members {
-        let step = &emitter.document.steps[member];
-        let [Statement::Call(call)] = step.body.as_slice() else {
-            continue;
-        };
+    for call in calls {
         let mut prelude = Vec::new();
         let value = super::stmts::activity_value(
             emitter,

@@ -83,8 +83,68 @@ pub(super) fn activity_wrappers(emitter: &mut Emitter<'_>) {
             });
             emitter.line("}");
             emitter.blank();
+
+            if emitter.flags.raw_actions.contains(&action_name) {
+                raw_wrapper(emitter, &action_name, &params, &input_name);
+            }
         }
     }
+}
+
+/// The raw twin of an action's activity wrapper: the same action name and
+/// the same wire bytes (the input record is encoded with the action's own
+/// input codec), but typed `Activity(String, String)` so differently-typed
+/// parallel branches can share one `workflow.all` list. The join decodes
+/// each branch's payload with its action's return codec (`awl_decoded`).
+fn raw_wrapper(
+    emitter: &mut Emitter<'_>,
+    action_name: &str,
+    params: &[(String, super::types::GType)],
+    input_name: &str,
+) {
+    let wrapper = format!("{}_activity_raw", snake(action_name));
+    if params.is_empty() {
+        emitter.line(&format!(
+            "fn {wrapper}() -> activity.Activity(String, String) {{"
+        ));
+    } else {
+        emitter.line(&format!("fn {wrapper}("));
+        emitter.indented(|this| {
+            for (name, ty) in params {
+                let rendered = this.env.gleam_type(ty);
+                this.line(&format!("{}: {rendered},", ident(name)));
+            }
+        });
+        emitter.line(") -> activity.Activity(String, String) {");
+    }
+    let input_codec = snake(input_name);
+    emitter.indented(|this| {
+        this.line(&format!("let awl_input_codec = {input_codec}_codec()"));
+        this.line("activity.new(");
+        this.indented(|this| {
+            this.line(&format!("\"{action_name}\","));
+            if params.is_empty() {
+                this.line(&format!("awl_input_codec.encode({input_name}),"));
+            } else {
+                this.line(&format!("awl_input_codec.encode({input_name}("));
+                this.indented(|this| {
+                    for (name, _) in params {
+                        let rendered = ident(name);
+                        this.line(&format!("{rendered}: {rendered},"));
+                    }
+                });
+                this.line(")),");
+            }
+            this.line("awl_raw_codec(),");
+            this.line("awl_raw_codec(),");
+            this.line(
+                "fn(_) { Error(error.terminal(\"activity body is provided by a worker\")) },",
+            );
+        });
+        this.line(")");
+    });
+    emitter.line("}");
+    emitter.blank();
 }
 
 pub(super) fn signal_refs(emitter: &mut Emitter<'_>) {
@@ -123,6 +183,34 @@ pub(super) fn helpers(emitter: &mut Emitter<'_>) {
     });
     emitter.line("}");
     emitter.blank();
+    if !emitter.flags.raw_actions.is_empty() {
+        emitter.line("/// Identity codec: heterogeneous parallel branches ride `workflow.all`");
+        emitter.line("/// as raw JSON payload strings, decoded per branch at the join.");
+        emitter.line("fn awl_raw_codec() -> Codec(String) {");
+        emitter.indented(|this| {
+            this.line(
+                "codec.Codec(encode: fn(payload) { payload }, decode: fn(payload) { \
+                 Ok(payload) })",
+            );
+        });
+        emitter.line("}");
+        emitter.blank();
+        emitter.line("/// Decode one parallel branch's payload with its action's return codec.");
+        emitter.line(
+            "fn awl_decoded(awl_codec: Codec(a), payload: String, action: String) -> Result(a, \
+             AwlError) {",
+        );
+        emitter.indented(|this| {
+            this.line("case awl_codec.decode(payload) {");
+            this.indented(|this| {
+                this.line("Ok(value) -> Ok(value)");
+                this.line("Error(_) -> Error(AwlActivityFailed(action))");
+            });
+            this.line("}");
+        });
+        emitter.line("}");
+        emitter.blank();
+    }
     if emitter.flags.uses_child {
         emitter.line("/// Encode-only codec for child workflow inputs: the parent assembles the");
         emitter.line("/// child's input record as JSON and never decodes it back.");
