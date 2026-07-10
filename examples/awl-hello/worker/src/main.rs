@@ -5,8 +5,9 @@
 //! node `hello` — the smallest instance of the routing model the dev-brief
 //! worker exercises in full: the server routes a pushed activity by
 //! (namespace, `task_queue`, node) ONLY, never by activity type, and this
-//! worker's one connection holds both handlers, so the one node id is all
-//! the workflow side must pin.
+//! worker's one connection holds both handlers. The rev-2 `awl_hello.awl`
+//! declares its actions with no `node` config, so its dispatches are
+//! node-unpinned and reach this worker by queue alone.
 //!
 //! No agents, no harness, no shelling out: the handler bodies are pure
 //! functions over their typed inputs, adapted onto the SDK's async handler
@@ -28,10 +29,12 @@ use awl_hello_worker::activities;
 const DEFAULT_ADDRESS: &str = "127.0.0.1:50061";
 /// The one task queue every awl-hello activity is dispatched on.
 const TASK_QUEUE: &str = "awl_hello";
-/// The node id this worker's single connection registers. This string MUST
-/// equal the node the workflow pins its activities to (`hello_node` in
-/// `../src/awl_hello.gleam`, and in the generated module that replaces it)
-/// — the server matches it blindly, and a drift on either side strands
+/// The node id this worker's single connection registers. The rev-2
+/// workflow's dispatches are node-unpinned (no `node` config on its
+/// actions), and an unpinned dispatch matches every worker on the queue —
+/// so this registration is locality metadata here. A workflow that DOES pin
+/// (`node hello` on an action's config line) must match this string exactly:
+/// the server matches it blindly, and a drift on either side strands
 /// activities on handlerless connections.
 const NODE: &str = "hello";
 const REDIAL_INITIAL_BACKOFF: Duration = Duration::from_millis(100);

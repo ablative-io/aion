@@ -88,13 +88,17 @@ enum Command {
     /// required (`--gleam-path`); there is no default. An optional
     /// `--debounce-ms` coalesces an editor's multi-event save into one rebuild.
     Dev(dev::DevArgs),
-    /// Author AWL workflow documents: check and format `.awl` files.
+    /// Author AWL workflow documents (rev-2 surface): check, format, emit
+    /// Gleam, and derive JSON Schema from `.awl` files.
     ///
     /// Runs entirely locally and never connects to a server. `check` parses
     /// and typechecks a document, printing compiler-style
     /// `<file>:<line>:<column>: error: <message>` diagnostics to stderr;
     /// `fmt` rewrites the document in place with the canonical printer (the
-    /// printer is the formatter — there is no check mode).
+    /// printer is the formatter — there is no check mode); `emit` lowers a
+    /// checked document to a Gleam workflow module (the stopgap execution
+    /// target); `schema` derives draft 2020-12 JSON Schema from the same
+    /// checked document.
     Awl {
         #[command(subcommand)]
         command: awl::AwlCommand,

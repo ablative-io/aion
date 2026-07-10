@@ -1,27 +1,14 @@
+//! Greet a name, then shout it — the first workflow written in AWL and run for real.
 workflow awl_hello
-about Greet a name, then shout it — the first workflow written in AWL and run for real.
-
-input name: String
-output Shouted
+  input name: String
+  outcome shouted: type Shouted, route success
 
 type Greeting { greeting: String }
 type Shouted  { text: String }
 
-action greet(name: String) -> Greeting
-  queue "awl_hello"
-  node "hello"
-action shout(text: String) -> Shouted
-  queue "awl_hello"
-  node "hello"
+worker awl_hello
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
 
-step greet
-  about One activity call: compose the greeting.
-  do greet(name)
-  as greeting
-
-step shout
-  about Shout it back.
-  do shout(greeting.greeting)
-  as shouted
-
-finish shouted
+step greet_and_shout
+  name |> greet |> .greeting |> shout |> route shouted

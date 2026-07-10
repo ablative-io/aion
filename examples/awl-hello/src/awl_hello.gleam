@@ -19,13 +19,9 @@ pub type AwlError {
   AwlChildFailed(String)
   AwlTimerFailed(String)
   AwlTimedOut(String)
+  AwlIndexOutOfRange(String)
+  AwlOutcomeFailure(outcome: String, payload: String)
   AwlFailed
-}
-
-pub type AwlHelloInput {
-  AwlHelloInput(
-    name: String,
-  )
 }
 
 pub type Greeting {
@@ -40,12 +36,22 @@ pub type Shouted {
   )
 }
 
+pub type AwlHelloInput {
+  AwlHelloInput(
+    name: String,
+  )
+}
+
+pub type AwlHelloOutcome {
+  ShoutedOutcome(Shouted)
+}
+
 /// Typed definition binding the codecs to the execute function.
-pub fn definition() -> workflow.WorkflowDefinition(AwlHelloInput, Shouted, AwlError) {
+pub fn definition() -> workflow.WorkflowDefinition(AwlHelloInput, AwlHelloOutcome, AwlError) {
   workflow.define(
     "awl_hello",
     awl_hello_input_codec(),
-    shouted_codec(),
+    awl_hello_outcome_codec(),
     awl_error_codec(),
     execute,
   )
@@ -58,7 +64,7 @@ pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {
       case awl_hello_input_codec().decode(raw_json) {
         Ok(input) ->
           case execute(input) {
-            Ok(result) -> Ok(shouted_codec().encode(result))
+            Ok(result) -> Ok(awl_hello_outcome_codec().encode(result))
             Error(workflow_error) -> Error(workflow_error)
           }
         Error(codec.DecodeError(reason: reason, path: _)) ->
@@ -69,18 +75,16 @@ pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {
 }
 
 /// Workflow body generated from the AWL steps.
-pub fn execute(input: AwlHelloInput) -> Result(Shouted, AwlError) {
+pub fn execute(input: AwlHelloInput) -> Result(AwlHelloOutcome, AwlError) {
   let name = input.name
+  step_greet_and_shout(name)
+}
 
-  // One activity call: compose the greeting.
-  let assert Ok(greeting) =
-    greet_activity(name) |> activity.task_queue("awl_hello") |> activity.node("hello") |> workflow.run |> map_activity_error
-
-  // Shout it back.
-  let assert Ok(shouted) =
-    shout_activity(greeting.greeting) |> activity.task_queue("awl_hello") |> activity.node("hello") |> workflow.run |> map_activity_error
-
-  Ok(shouted)
+fn step_greet_and_shout(name: String) -> Result(AwlHelloOutcome, AwlError) {
+  use awl_piped_0 <- try(greet_activity(name) |> activity.task_queue("awl_hello") |> workflow.run |> map_activity_error)
+  let awl_piped_1 = awl_piped_0.greeting
+  use awl_piped_2 <- try(shout_activity(awl_piped_1) |> activity.task_queue("awl_hello") |> workflow.run |> map_activity_error)
+  Ok(ShoutedOutcome(awl_piped_2))
 }
 
 pub type GreetInput {
@@ -135,6 +139,8 @@ fn awl_error_to_json(error_value: AwlError) -> json.Json {
     AwlChildFailed(message) -> json.object([#("tag", json.string("AwlChildFailed")), #("message", json.string(message))])
     AwlTimerFailed(message) -> json.object([#("tag", json.string("AwlTimerFailed")), #("message", json.string(message))])
     AwlTimedOut(message) -> json.object([#("tag", json.string("AwlTimedOut")), #("message", json.string(message))])
+    AwlIndexOutOfRange(message) -> json.object([#("tag", json.string("AwlIndexOutOfRange")), #("message", json.string(message))])
+    AwlOutcomeFailure(outcome, payload) -> json.object([#("tag", json.string("AwlOutcomeFailure")), #("outcome", json.string(outcome)), #("payload", json.string(payload))])
     AwlFailed -> json.object([#("tag", json.string("AwlFailed"))])
   }
 }
@@ -166,6 +172,15 @@ fn awl_error_decoder() -> decode.Decoder(AwlError) {
       use message <- decode.field("message", decode.string)
       decode.success(AwlTimedOut(message))
     }
+    "AwlIndexOutOfRange" -> {
+      use message <- decode.field("message", decode.string)
+      decode.success(AwlIndexOutOfRange(message))
+    }
+    "AwlOutcomeFailure" -> {
+      use outcome <- decode.field("outcome", decode.string)
+      use payload <- decode.field("payload", decode.string)
+      decode.success(AwlOutcomeFailure(outcome: outcome, payload: payload))
+    }
     "AwlFailed" -> decode.success(AwlFailed)
     _ -> decode.failure(AwlFailed, "AwlError")
   }
@@ -175,9 +190,9 @@ fn awl_hello_input_codec() -> Codec(AwlHelloInput) {
   codec.json_codec(awl_hello_input_to_json, awl_hello_input_decoder())
 }
 
-fn awl_hello_input_to_json(awl_hello_input: AwlHelloInput) -> json.Json {
+fn awl_hello_input_to_json(value: AwlHelloInput) -> json.Json {
   json.object([
-    #("name", string_to_json(awl_hello_input.name)),
+    #("name", string_to_json(value.name)),
   ])
 }
 
@@ -188,13 +203,34 @@ fn awl_hello_input_decoder() -> decode.Decoder(AwlHelloInput) {
   ))
 }
 
+fn awl_hello_outcome_codec() -> Codec(AwlHelloOutcome) {
+  codec.json_codec(awl_hello_outcome_to_json, awl_hello_outcome_decoder())
+}
+
+fn awl_hello_outcome_to_json(value: AwlHelloOutcome) -> json.Json {
+  case value {
+    ShoutedOutcome(payload) -> json.object([#("outcome", json.string("shouted")), #("payload", shouted_to_json(payload))])
+  }
+}
+
+fn awl_hello_outcome_decoder() -> decode.Decoder(AwlHelloOutcome) {
+  use outcome <- decode.field("outcome", decode.string)
+  case outcome {
+    "shouted" -> {
+      use payload <- decode.field("payload", shouted_decoder())
+      decode.success(ShoutedOutcome(payload))
+    }
+    _ -> decode.failure(ShoutedOutcome(Shouted(text: "")), "AwlHelloOutcome")
+  }
+}
+
 fn greeting_codec() -> Codec(Greeting) {
   codec.json_codec(greeting_to_json, greeting_decoder())
 }
 
-fn greeting_to_json(greeting: Greeting) -> json.Json {
+fn greeting_to_json(value: Greeting) -> json.Json {
   json.object([
-    #("greeting", string_to_json(greeting.greeting)),
+    #("greeting", string_to_json(value.greeting)),
   ])
 }
 
@@ -209,9 +245,9 @@ fn shouted_codec() -> Codec(Shouted) {
   codec.json_codec(shouted_to_json, shouted_decoder())
 }
 
-fn shouted_to_json(shouted: Shouted) -> json.Json {
+fn shouted_to_json(value: Shouted) -> json.Json {
   json.object([
-    #("text", string_to_json(shouted.text)),
+    #("text", string_to_json(value.text)),
   ])
 }
 
@@ -226,9 +262,9 @@ fn greet_input_codec() -> Codec(GreetInput) {
   codec.json_codec(greet_input_to_json, greet_input_decoder())
 }
 
-fn greet_input_to_json(greet_input: GreetInput) -> json.Json {
+fn greet_input_to_json(value: GreetInput) -> json.Json {
   json.object([
-    #("name", string_to_json(greet_input.name)),
+    #("name", string_to_json(value.name)),
   ])
 }
 
@@ -243,9 +279,9 @@ fn shout_input_codec() -> Codec(ShoutInput) {
   codec.json_codec(shout_input_to_json, shout_input_decoder())
 }
 
-fn shout_input_to_json(shout_input: ShoutInput) -> json.Json {
+fn shout_input_to_json(value: ShoutInput) -> json.Json {
   json.object([
-    #("text", string_to_json(shout_input.text)),
+    #("text", string_to_json(value.text)),
   ])
 }
 
@@ -274,11 +310,6 @@ fn float_decoder() -> decode.Decoder(Float) { decode.float }
 fn bool_decoder() -> decode.Decoder(Bool) { decode.bool }
 fn nil_decoder() -> decode.Decoder(Nil) { decode.success(Nil) }
 
-fn list_to_json(values: List(a), item_to_json: fn(a) -> json.Json) -> json.Json { json.array(values, item_to_json) }
-fn list_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(List(a)) { decode.list(item_decoder) }
-fn option_to_json(value: Option(a), item_to_json: fn(a) -> json.Json) -> json.Json { json.nullable(value, item_to_json) }
-fn option_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(Option(a)) { decode.optional(item_decoder) }
-
 fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Result(b, AwlError) {
   case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }
 }
@@ -295,7 +326,19 @@ fn map_child_error(result: Result(a, error.ChildError(AwlError))) -> Result(a, A
   case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlChildFailed("child workflow failed")) }
 }
 
+fn map_spawn_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {
+  case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlChildFailed("detached spawn failed")) }
+}
+
 fn map_timer_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {
   case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlTimerFailed("timer failed")) }
+}
+
+/// Literal-only list indexing; out of range is a step failure.
+fn awl_index(items: List(a), index: Int, label: String) -> Result(a, AwlError) {
+  case list.drop(items, index) |> list.first {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(AwlIndexOutOfRange(label))
+  }
 }
 

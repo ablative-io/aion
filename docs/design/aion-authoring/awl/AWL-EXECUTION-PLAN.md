@@ -1,5 +1,14 @@
 # AWL program — execution plan
 
+> **Supersession note (2026-07-11):** for the FRONT END (lexer, parser,
+> canonical printer, typechecker, schema derivation, Gleam-stopgap emitter,
+> `aion awl` CLI, example/fixture corpus) this plan's wave ladder is
+> superseded by [AWL-2-BUILD-PLAN.md](AWL-2-BUILD-PLAN.md) against
+> [AWL-2-SPEC.md](AWL-2-SPEC.md) (the rev-2 surface; the AWL-0/1 grammar is
+> gone, no compatibility parse). The back half here — AWL-BC bytecode
+> emission (#240) and the UX tail — still stands and consumes the rev-2
+> canonical model.
+
 Status: ACTIVE. Owner: Tom + Fable orchestration; execution via aion
 workflows (dev_brief) driving norn in **driven mode** (always — transcripts
 live in the ops console, messages injectable). Authored 2026-07-09.

@@ -1,4 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "string"
+  "description": "The awl_hello outcome envelope: which declared workflow outcome fired, with its payload.",
+  "type": "object",
+  "required": ["outcome", "payload"],
+  "properties": {
+    "outcome": { "const": "shouted" },
+    "payload": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" }
+      }
+    }
+  }
 }
