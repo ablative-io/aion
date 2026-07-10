@@ -4,6 +4,7 @@
 mod document;
 mod error;
 mod exprs;
+mod statements;
 mod steps;
 mod stream;
 mod types;
