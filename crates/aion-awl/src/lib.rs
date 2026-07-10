@@ -24,7 +24,7 @@ pub use ast::{
     SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
 };
 pub use checker::{CheckError, check, check_in};
-pub use emitter::{EmitError, emit};
+pub use emitter::{EmitError, emit, emit_in};
 pub use lexer::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 pub use parser::{ParseError, parse};
 pub use printer::print;
