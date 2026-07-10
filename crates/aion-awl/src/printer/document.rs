@@ -15,6 +15,14 @@ use super::steps::print_step;
 /// rendering.
 pub(super) const MAX_WIDTH: usize = 100;
 
+/// Render a parsed document in the canonical rev-2 format.
+#[must_use]
+pub fn print(document: &Document) -> String {
+    let mut printer = Printer { out: String::new() };
+    print_document(&mut printer, document);
+    printer.out
+}
+
 pub(super) struct Printer {
     pub(super) out: String,
 }
@@ -58,7 +66,7 @@ impl Printer {
     }
 }
 
-pub(super) fn print_document(printer: &mut Printer, document: &Document) {
+fn print_document(printer: &mut Printer, document: &Document) {
     for line in &document.narration {
         printer.line(0, &format!("//!{}", line.text), None);
     }
