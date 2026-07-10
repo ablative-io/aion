@@ -15,10 +15,14 @@ impl Spanned for Expr {
             | Self::Bool { span, .. }
             | Self::List { span, .. }
             | Self::Ref { span, .. }
-            | Self::Field { span, .. }
+            | Self::Variant { span, .. }
             | Self::Record { span, .. }
+            | Self::Field { span, .. }
+            | Self::Index { span, .. }
+            | Self::Accessor { span, .. }
             | Self::Not { span, .. }
-            | Self::Binary { span, .. } => *span,
+            | Self::Binary { span, .. }
+            | Self::Predicate { span, .. } => *span,
             Self::Duration(duration) => duration.span,
         }
     }

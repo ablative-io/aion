@@ -142,6 +142,58 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// The reserved word this keyword lexes from.
+    #[must_use]
+    pub const fn as_word(self) -> &'static str {
+        match self {
+            Self::Workflow => "workflow",
+            Self::Input => "input",
+            Self::Signal => "signal",
+            Self::Outcome => "outcome",
+            Self::Type => "type",
+            Self::Schema => "schema",
+            Self::Worker => "worker",
+            Self::Action => "action",
+            Self::Child => "child",
+            Self::Step => "step",
+            Self::After => "after",
+            Self::Fork => "fork",
+            Self::Join => "join",
+            Self::Loop => "loop",
+            Self::Counting => "counting",
+            Self::Until => "until",
+            Self::Max => "max",
+            Self::Sequential => "sequential",
+            Self::Spawn => "spawn",
+            Self::Wait => "wait",
+            Self::Sleep => "sleep",
+            Self::Timeout => "timeout",
+            Self::Retry => "retry",
+            Self::Every => "every",
+            Self::Backoff => "backoff",
+            Self::Node => "node",
+            Self::On => "on",
+            Self::Failure => "failure",
+            Self::When => "when",
+            Self::Otherwise => "otherwise",
+            Self::Route => "route",
+            Self::Success => "success",
+            Self::Filter => "filter",
+            Self::Map => "map",
+            Self::Sort => "sort",
+            Self::Count => "count",
+            Self::Is => "is",
+            Self::Empty => "empty",
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::Not => "not",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::True => "true",
+            Self::False => "false",
+        }
+    }
+
     /// Look up the keyword for a lexed `snake_case` word, if it is reserved.
     #[must_use]
     pub fn from_word(text: &str) -> Option<Self> {

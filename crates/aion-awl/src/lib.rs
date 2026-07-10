@@ -1,7 +1,10 @@
 //! Front end for the AWL workflow language (rev-2 surface).
 //!
-//! The lexer is intentionally hand-written so the parser can rely on exact token
-//! spans, indentation tokens, and AWL's doc-line data tokens (`//!`, `///`).
+//! The `.awl` document is the source of truth; the canonical workflow model
+//! is its lossless parse. The lexer is hand-written so the parser can rely
+//! on exact token spans, indentation tokens, and AWL's doc-line data tokens
+//! (`//!`, `///`); the parser and canonical printer are one property:
+//! `parse ∘ print = id`, `print ∘ parse ∘ print = print`.
 
 mod ast;
 mod checker;
@@ -13,10 +16,12 @@ mod schema;
 mod spanned;
 
 pub use ast::{
-    AboutDecl, ActionDecl, ActionFieldTag, BinaryOp, BindDecl, CallExpr, CallTarget, Comment,
-    Document, DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl,
-    RecordField, RetrySpec, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
-    WorkflowDecl,
+    ActionDecl, AfterRef, Arg, BinaryOp, Binding, Call, CallStmt, ChildDecl, CombinatorCall,
+    CombinatorKind, Comment, ConfigLine, ConfigValue, DocLine, Document, DurationLiteral,
+    EnumVariant, Expr, FieldDecl, ForkHeader, ForkStmt, Guard, InputDecl, JoinLine, Lead, LoopStmt,
+    LoopTail, OnFailure, OutcomeClause, OutcomeDecl, ParamDecl, PipeEnd, PipeStage, PipeStmt,
+    PredicateKind, RetrySpec, RouteDirection, RouteStmt, RouteTarget, SignalDecl, SleepStmt,
+    SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
 };
 pub use checker::{CheckError, check};
 pub use emitter::{EmitError, emit};
