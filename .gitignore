@@ -40,3 +40,4 @@ aion.db
 
 # Testing
 aion-data/
+.lifecycle-pass/

@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fix agent output",
+  "description": "The structured proposed fix a driven Norn agent returns for one finding. It proposes a concrete change; whether the change is applied/landed is a separate downstream step, so this stays a safe, reviewable artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "finding_id": { "type": "string", "description": "The finding id this fix addresses (as a string)." },
+    "addressed": {
+      "type": "boolean",
+      "description": "True if the agent produced a concrete fix. False if the finding could not be actioned (e.g. already fixed in current code, or the cited claim did not hold) — explain in rationale."
+    },
+    "summary": { "type": "string", "description": "One-to-two sentence statement of what the fix does." },
+    "files_touched": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repo-relative paths the patch changes. Empty when addressed=false."
+    },
+    "patch": {
+      "type": "string",
+      "description": "The proposed change as a unified diff (or, if a diff is impractical, an unambiguous edit description with before/after anchors). Empty when addressed=false."
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Why this change is correct and standards-compliant; for addressed=false, why no fix was made."
+    },
+    "risk_notes": {
+      "type": "string",
+      "description": "Blast radius, anything a reviewer should scrutinise, adjacent code that could be affected."
+    },
+    "residual": {
+      "type": "string",
+      "description": "What this fix deliberately does NOT cover — follow-ups the finding implies but this change leaves open."
+    }
+  },
+  "required": ["finding_id", "addressed", "summary", "files_touched", "patch", "rationale"]
+}

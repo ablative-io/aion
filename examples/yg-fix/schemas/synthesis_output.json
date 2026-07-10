@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fix-run synthesis output",
+  "description": "The final synthesizer's output over a completed fix run — the counterpart of the diagnosis workflow's REPORT_SCHEMA. Turns the per-fix results into an operator-facing report plus a machine-readable disposition table.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "report": {
+      "type": "string",
+      "description": "Full markdown report: what was fixed, what was rejected and why, what remains, grouped by severity/component, ready for the operator to act on."
+    },
+    "disposition_table": {
+      "type": "array",
+      "description": "One row per finding the run touched.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "finding_id": { "type": "string" },
+          "disposition": {
+            "type": "string",
+            "enum": ["fixed", "rejected", "unaddressed"],
+            "description": "fixed = a fix passed review; rejected = a fix was produced but failed review after the rework cap; unaddressed = the agent could not action the finding."
+          },
+          "note": { "type": "string", "description": "One-line justification for the disposition." }
+        },
+        "required": ["finding_id", "disposition", "note"]
+      }
+    }
+  },
+  "required": ["report", "disposition_table"]
+}

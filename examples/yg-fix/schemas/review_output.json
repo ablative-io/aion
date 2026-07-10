@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fix review output",
+  "description": "One independent adversarial reviewer's verdict on a proposed fix. Reviewers are told to try to REFUTE the fix: does it actually resolve the finding, is it correct, does it violate project standards, does it break anything adjacent. A blocker must carry concrete evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "finding_id": { "type": "string" },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "reject"],
+      "description": "pass = the fix correctly resolves the finding with zero blockers. reject = at least one blocker."
+    },
+    "assessment": { "type": "string", "description": "One-to-two sentence overall judgement." },
+    "blockers": {
+      "type": "array",
+      "description": "Concrete defects that make the fix unacceptable. Empty iff verdict=pass.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "issue": { "type": "string", "description": "What is wrong with the proposed fix, in one sentence." },
+          "evidence": { "type": "string", "description": "file:line reference and the concrete reason — the failure scenario or standards clause violated." }
+        },
+        "required": ["issue", "evidence"]
+      }
+    },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+  },
+  "required": ["finding_id", "verdict", "assessment", "blockers"]
+}
