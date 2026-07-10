@@ -164,40 +164,36 @@ fn print_pipe(printer: &mut Printer, indent: usize, pipe: &crate::ast::PipeStmt)
             let _ = write!(one_line, " |> route {}", route_target_text(target));
         }
     }
-    if indent * 2 + width(&one_line) <= MAX_WIDTH {
+    // A stage-less bind (`head -> name`) has no `|>` to break before — the
+    // break rule is "break before each `|>`" — so it stays on one line at
+    // any width; a wrapped `-> name` continuation would not re-parse.
+    let stageless_bind = stages.is_empty() && matches!(&pipe.end, PipeEnd::Bind(_));
+    if stageless_bind || indent * 2 + width(&one_line) <= MAX_WIDTH {
         printer.line(indent, &one_line, pipe.trailing.as_ref());
         return;
     }
     // A chain longer than the column limit breaks before each `|>` with one
-    // extra indent; a `-> name` binding stays on the last stage's line.
+    // extra indent; a `-> name` binding stays on the last stage's line and
+    // that line carries the chain's trailing comment.
     printer.line(indent, &head, None);
     let last = stages.len().saturating_sub(1);
     for (position, stage) in stages.iter().enumerate() {
         let mut text = format!("|> {stage}");
+        let mut trailing = None;
         if position == last {
             if let PipeEnd::Bind(bind) = &pipe.end {
                 let _ = write!(text, " -> {}", bind.name);
+                trailing = pipe.trailing.as_ref();
             }
         }
-        printer.line(indent + 1, &text, None);
+        printer.line(indent + 1, &text, trailing);
     }
-    match &pipe.end {
-        PipeEnd::Route(target) => {
-            printer.line(
-                indent + 1,
-                &format!("|> route {}", route_target_text(target)),
-                pipe.trailing.as_ref(),
-            );
-        }
-        PipeEnd::Bind(bind) => {
-            if stages.is_empty() {
-                printer.line(
-                    indent + 1,
-                    &format!("-> {}", bind.name),
-                    pipe.trailing.as_ref(),
-                );
-            }
-        }
+    if let PipeEnd::Route(target) = &pipe.end {
+        printer.line(
+            indent + 1,
+            &format!("|> route {}", route_target_text(target)),
+            pipe.trailing.as_ref(),
+        );
     }
 }
 

@@ -142,7 +142,13 @@ fn validate_inline_schema(body: &str, body_span: Span) -> Result<(), ParseError>
         .map(str::len)
         .sum();
     let line_text = body[line_start..].split('\n').next().unwrap_or_default();
-    let at = column_in_body.saturating_sub(1).min(line_text.len());
+    // serde_json's column counts BYTES; clamp to a char boundary for
+    // slicing, keep `start`/`end` byte-true, and report the crate's
+    // contract-mandated CHARACTER column.
+    let mut at = column_in_body.saturating_sub(1).min(line_text.len());
+    while at > 0 && !line_text.is_char_boundary(at) {
+        at -= 1;
+    }
     let lexeme: String = line_text[at..]
         .chars()
         .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
@@ -152,10 +158,11 @@ fn validate_inline_schema(body: &str, body_span: Span) -> Result<(), ParseError>
     } else {
         body_span.start + line_start + at
     };
+    let chars_before = line_text[..at].chars().count();
     let column = if line_in_body == 1 {
-        body_span.column + at
+        body_span.column + chars_before
     } else {
-        at + 1
+        chars_before + 1
     };
     let span = Span {
         start,

@@ -363,6 +363,44 @@ fn dead_header_keywords_get_targeted_fix_its() -> TestResult {
 // ---------------------------------------------------------------------
 
 #[test]
+fn inline_schema_error_column_after_multibyte_content_is_character_correct() -> TestResult {
+    // serde_json reports byte-based columns; the crate contract is
+    // character-based columns with byte-true `start`/`end`. The key carries
+    // multibyte characters (é, —) before the offending lexeme.
+    let source = "//! Schema probe.\n\
+         workflow probe\n\
+         \x20 input a: String\n\
+         \x20 outcome done: type Out, route success\n\
+         \n\
+         type Out { text: String }\n\
+         \n\
+         type Extra = schema {\n\
+         \x20 \"café—\": oops\n\
+         }\n\
+         \n\
+         worker w\n\
+         \x20 action make(a: String) -> Out\n\
+         \n\
+         step one\n\
+         \x20 make(a: a) -> out\n";
+    let Err(error) = parse(source) else {
+        return Err("invalid inline schema JSON should be rejected".into());
+    };
+
+    let anchor = source.find("oops").ok_or("lexeme present")?;
+    assert_eq!(error.span.start, anchor, "byte offset must be byte-true");
+    let expected_line = source[..anchor].matches('\n').count() + 1;
+    assert_eq!(error.span.line, expected_line);
+    let line_start = source[..anchor].rfind('\n').map_or(0, |at| at + 1);
+    let expected_column = source[line_start..anchor].chars().count() + 1;
+    assert_eq!(
+        error.span.column, expected_column,
+        "column must count characters, not bytes: {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn error_column_after_multibyte_prose_is_character_correct() -> TestResult {
     // The string literal carries multibyte characters (é, —, ï); the
     // defective `->` with no binding name sits after it on the same line.

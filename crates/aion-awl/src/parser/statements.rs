@@ -138,6 +138,15 @@ fn parse_value_statement(
     match stream.peek_second().map(|token| &token.kind) {
         Some(TokenKind::LeftParen) => {
             let call = parse_call(stream)?;
+            if stream.peek_is(|kind| matches!(kind, TokenKind::Pipe)) {
+                return Err(ParseError::new(
+                    stream.peek_span(),
+                    format!(
+                        "a call is not a pipe head: bind its result first — \
+                         `{name}(…) -> x` — then pipe the binding (`x |> …`)"
+                    ),
+                ));
+            }
             let bind = match stream.eat(|kind| matches!(kind, TokenKind::Arrow)) {
                 Some(arrow) => Some(parse_binding(stream, arrow.span)?),
                 None => None,

@@ -167,6 +167,70 @@ fn trailing_comments_survive_and_normalize() -> TestResult {
 }
 
 #[test]
+fn stageless_bind_over_the_width_limit_stays_on_one_line_and_reparses() -> TestResult {
+    // A stage-less bind has no `|>` to break before; wrapping it would put
+    // `-> name` on a continuation line the parser cannot rejoin. It must
+    // stay on one line at any width and the printed output must re-parse.
+    let source = concat!(
+        "//! Stage-less bind wrapping.\n",
+        "workflow wrap\n",
+        "  input name_bound_to_a_rather_long_identifier: Out\n",
+        "  outcome finished: type Out, route success\n",
+        "\n",
+        "type Out { text: String }\n",
+        "\n",
+        "worker w\n",
+        "  action noop(a: String) -> Out\n",
+        "\n",
+        "step run\n",
+        "  name_bound_to_a_rather_long_identifier.field_one_is_long.field_two_is_longer",
+        ".field_three_longest -> bound // keep me\n",
+        "  bound |> route finished\n",
+    );
+    let printed = print(&parse(source)?);
+    assert!(
+        printed.contains(".field_three_longest -> bound // keep me\n"),
+        "stage-less bind wrapped or lost its comment:\n{printed}"
+    );
+    let reparsed =
+        parse(&printed).map_err(|error| format!("canonical output failed to re-parse: {error}"))?;
+    assert_eq!(printed, print(&reparsed), "not idempotent");
+    Ok(())
+}
+
+#[test]
+fn wrapped_bind_chain_keeps_its_trailing_comment() -> TestResult {
+    // A >100-column chain that ends in `-> name` breaks before each `|>`;
+    // the `-> name` binding and the chain's trailing comment both live on
+    // the last stage's line — the comment must never be dropped.
+    let source = concat!(
+        "//! Wrapped bind chain trailing comment.\n",
+        "workflow wrap\n",
+        "  input name: String\n",
+        "  outcome finished: type Out, route success\n",
+        "\n",
+        "type Out { text: String }\n",
+        "\n",
+        "worker w\n",
+        "  action shout(text: String) -> Out\n",
+        "\n",
+        "step run\n",
+        "  name |> shout |> .text |> shout |> .text |> shout |> .text |> shout |> .text",
+        " |> shout |> .text |> shout -> very_long_result // keep me\n",
+        "  very_long_result |> route finished\n",
+    );
+    let printed = print(&parse(source)?);
+    assert!(
+        printed.contains("|> shout -> very_long_result // keep me\n"),
+        "wrapped bind chain dropped its trailing comment:\n{printed}"
+    );
+    let reparsed =
+        parse(&printed).map_err(|error| format!("canonical output failed to re-parse: {error}"))?;
+    assert_eq!(printed, print(&reparsed), "not idempotent");
+    Ok(())
+}
+
+#[test]
 fn long_pipe_chains_break_before_each_stage() -> TestResult {
     let source = concat!(
         "//! Long pipe chain wrapping.\n",

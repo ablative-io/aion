@@ -108,6 +108,12 @@ fn parse_step_block(
                 *on_failure = Some(parse_on_failure(stream, lead, token_span)?);
             }
             _ => {
+                if !outcomes.is_empty() {
+                    return Err(ParseError::new(
+                        token_span,
+                        "outcome clauses close the step: statements go above them",
+                    ));
+                }
                 body.push(parse_statement(stream, lead, docs)?);
             }
         }
@@ -164,6 +170,9 @@ pub(super) fn parse_loop(
             }
             match stream.peek().map(|token| (token.span, token.kind.clone())) {
                 Some((span, TokenKind::Keyword(Keyword::Until))) => {
+                    if until.is_some() {
+                        return Err(ParseError::new(span, "a loop declares `until` once"));
+                    }
                     stream.next();
                     let expr = parse_expr(stream)?;
                     let tail_trailing = stream.end_line()?;
@@ -175,6 +184,9 @@ pub(super) fn parse_loop(
                     });
                 }
                 Some((span, TokenKind::Keyword(Keyword::Max))) => {
+                    if max.is_some() {
+                        return Err(ParseError::new(span, "a loop declares `max` once"));
+                    }
                     stream.next();
                     let expr = parse_expr(stream)?;
                     let tail_trailing = stream.end_line()?;
