@@ -184,6 +184,10 @@ Rules (carried over from the 2026-07-09 decisions, unchanged in substance):
   instances, in record construction. Absent and `?` go together; null does
   not exist in the language. (Survey fix 2; also resolves the long-open
   null-vs-Option ruling. `Option(T)` is gone; `T?` replaces it.)
+  `?` is illegal in list-element position: `[T?]` is a check error in every
+  type position — a list has no holes (an absent element is simply not in
+  the list) and schema derivation cannot express element optionality; write
+  `[T]`, or `[T]?` when the whole list may be absent. (Ruled 2026-07-11.)
 - Builtins: `Bool`, `Int`, `Float`, `String`, `Nil`, `[T]` (list), `T?`
   (optional), `Dir` (content-addressed snapshot handle). `List(T)` is gone;
   `[T]` is the one list spelling, matching the JSON it describes.
@@ -197,6 +201,9 @@ Rules (carried over from the 2026-07-09 decisions, unchanged in substance):
 - Imported schemas: typing uses the record-shaped projection
   (`object`/`properties`/`required`, nested objects, arrays, string enums,
   `$defs`-local `$ref`); a property absent from `required` types as `T?`.
+  Array `items` always project as plain element types — element optionality
+  is inexpressible (its one JSON spelling, a null-admitting `items` type, is
+  refused as a null union), so a projection can never produce `[T?]`.
   Structural keywords the model can't honor (`oneOf`, `anyOf`,
   `patternProperties`, conditionals…) are check ERRORS naming the keyword
   and JSON path. Constraint keywords (`minLength`, `pattern`, bounds,
@@ -344,10 +351,17 @@ loop round = Round(summary: "", gates_green: false) counting cycles
   fix 1: a worker-maintained counter can silently rot; a language-owned
   one cannot. The whole bug class is unexpressible.)
 - After the loop, the threaded binding and the counter flow to the step's
-  outcomes. Exhaustion (ceiling hit with `until` still false) is not
-  implicit: the step's outcomes must cover it (`when`/`otherwise`), and the
-  checker verifies an exhausted loop cannot fall off the end of a step with
-  conditional outcomes uncovered.
+  outcomes. Exhaustion (ceiling hit with `until` still false) must be
+  explicitly named: a step whose body contains a `loop` declares conditional
+  outcome clauses (`when`/`otherwise`) covering the exhausted case, and a
+  loop-carrying step with zero outcome clauses is a check error anchored on
+  the loop — exhaustion never falls through silently, indistinguishable
+  from success. (Ruled 2026-07-11; the strong reading is law.)
+- `route` is illegal inside a `loop` body — statement and pipe-chain
+  `|> route` terminator alike: a loop exits only through `until`/`max`, and
+  routing is the step's outcome clauses' job. The checker refuses it with
+  the span on the route. (Ruled 2026-07-11; formerly an emit-time stopgap
+  refusal, now a language rule.)
 - Unbounded `loop … until` (no `max`) stays illegal until the engine's
   implicit continue-as-new lands (unchanged ruling; the threshold value
   still requires explicit discussion — no silent default ships).
