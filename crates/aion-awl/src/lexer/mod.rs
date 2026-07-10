@@ -1,3 +1,4 @@
+mod cursor;
 mod error;
 mod scanner;
 mod tokens;

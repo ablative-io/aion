@@ -112,6 +112,11 @@ workflow's implementation agents and consolidated at integration.
 
 | date | phase | decision | rationale |
 |---|---|---|---|
+| 2026-07-10 | lexer (fix round) | Inline `schema {` switches the lexer into raw capture: the brace-balanced body (string-aware counting, braces included) becomes ONE `SchemaBody` token, verbatim, exempt from all AWL lexical rules; JSON validation belongs to the parser | the spec's paste-verbatim door must accept legal JSON Schema the AWL token grammar cannot express (negative numbers, `1e-3`/`1E5` exponents, `\uXXXX`/`\/` escapes, foreign indentation), and raw bytes keep re-emit lossless |
+| 2026-07-10 | lexer (fix round) | The raw door is `schema {` on one line; a brace on the NEXT line lexes as an ordinary `LeftBrace` for the parser to refuse | canonical shape is same-line; a positional trigger keeps capture deterministic |
+| 2026-07-10 | lexer (fix round) | Doc-line classification is positional: `///` / `//!` trailing code lex as trivia `Comment`, never `DocLine`/`DocHeader` | the spec defines doc LINES; mid-line doc data would attach an author's trailing note to the NEXT declaration and break whole-line round-tripping |
+| 2026-07-10 | lexer (fix round) | `Span.column` is character-based (bytes stay byte-true in `start`/`end`); `Newline` spans cover the full physical terminator incl. a stripped `\r`; indentation jumping more than one level is a lexical error | compiler-quality diagnostics: editor-correct columns after multibyte prose, no off-by-one anchors on CRLF files, no phantom `Indent` structure the source doesn't contain |
+| 2026-07-10 | lexer (fix round) | Corpus size correction: the rev-2 corpus was 157 `.awl` fixtures at the lexer phase (not "214+"), 158 after `inline_verbatim_constraints.awl`; the corpus gate now asserts ≥158 | phase records must not overstate coverage; the tightened guard catches silent fixture loss |
 
 ## Risks
 

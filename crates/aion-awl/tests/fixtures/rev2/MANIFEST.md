@@ -90,6 +90,10 @@ Valid (schema files live beside the .awl that imports them):
   construction both providing and omitting an optional field.
 - `schema-doors/valid/mixed_doors.awl` (+ `intake.schema.json`) — all three doors in one
   document, inline schema with constraints, action config line, `count`, route-targeted step.
+- `schema-doors/valid/inline_verbatim_constraints.awl` — the paste-verbatim promise: inline
+  schema with a negative bound, `1e-3`/`1E5` exponent literals, `\uXXXX` and `\/` string
+  escapes, braces inside a `pattern` string, and three-space indentation — all raw-captured
+  by the lexer, preserved byte-for-byte on re-emit (constraints ignored for typing).
 
 Invalid:
 - `import_oneof.awl` (+ `oneof.schema.json`) — unsupported keyword → CHECK "oneOf" @6 (span at

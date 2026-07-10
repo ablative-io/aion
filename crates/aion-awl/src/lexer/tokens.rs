@@ -7,7 +7,9 @@ pub struct Span {
     pub end: usize,
     /// One-based source line where the span starts.
     pub line: usize,
-    /// One-based source column where the span starts.
+    /// One-based source column where the span starts, counted in characters
+    /// (not bytes), so diagnostics stay editor-correct after multibyte
+    /// content earlier on the same line.
     pub column: usize,
 }
 
@@ -288,6 +290,14 @@ pub enum TokenKind {
     DocLine(String),
     /// A `//` source comment without the marker or leading single space.
     Comment(String),
+    /// The verbatim body of an inline `schema { … }` type door, including the
+    /// enclosing braces. The lexer captures the brace-balanced region raw
+    /// (string-aware, so braces inside JSON strings do not count) and never
+    /// tokenizes it: legal JSON Schema — negative numbers, exponent literals,
+    /// `\uXXXX` and `\/` string escapes, any indentation — passes through
+    /// byte-for-byte for the parser to validate as JSON and the printer to
+    /// re-emit losslessly ("paste an existing JSON Schema verbatim").
+    SchemaBody(String),
     /// Increase in two-space indentation level.
     Indent,
     /// Decrease in two-space indentation level.

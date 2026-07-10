@@ -399,8 +399,10 @@ fn float_lexeme_is_preserved_verbatim() -> TestResult {
 
 #[test]
 fn inline_schema_json_tokens_lex() -> TestResult {
-    // Raw JSON Schema lines inside a `schema { … }` block must pass through
-    // the lexer: strings, colons, braces, brackets, and JSON booleans.
+    // Inline `schema { … }` bodies are raw-captured as a single SchemaBody
+    // token (see tests/schema_door.rs) — the lexer never tokenizes schema
+    // content. This test only pins that JSON-looking fragments OUTSIDE a
+    // schema door still lex as ordinary AWL tokens.
     let kinds = token_kinds(&lex("  \"required\": [\"summary\"],\n  \"flag\": true\n")?);
     assert_eq!(
         kinds,

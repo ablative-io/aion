@@ -55,9 +55,12 @@ fn entire_rev2_corpus_lexes_without_error() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rev2");
     let mut files = Vec::new();
     collect_awl_files(&root, &mut files)?;
+    // 158 .awl fixtures at the lexer fix round (157 from the fixtures phase
+    // + inline_verbatim_constraints.awl); a lower count means silent corpus
+    // loss, not a wrong root.
     assert!(
-        files.len() > 100,
-        "corpus walk found only {} fixtures — wrong root?",
+        files.len() >= 158,
+        "corpus walk found only {} fixtures — corpus lost files or wrong root?",
         files.len()
     );
 
@@ -330,6 +333,41 @@ fn trailing_comment_after_code_stays_trivia_before_newline() -> TestResult {
             TokenKind::Keyword(Keyword::Step),
             ident("ship"),
             TokenKind::Comment("fall-through".to_owned()),
+            TokenKind::Newline,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn trailing_triple_slash_after_code_is_trivia_not_doc_data() -> TestResult {
+    // Doc-line classification is whole-line only (the spec defines `///` doc
+    // LINES); a marker trailing code must not become a DocLine data token
+    // that would misattach to the NEXT declaration.
+    let kinds = token_kinds(&lex("step ship /// looks like a doc line\n")?);
+    assert_eq!(
+        kinds,
+        vec![
+            TokenKind::Keyword(Keyword::Step),
+            ident("ship"),
+            TokenKind::Comment("/ looks like a doc line".to_owned()),
+            TokenKind::Newline,
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn trailing_doc_header_marker_after_code_is_trivia_not_doc_data() -> TestResult {
+    // `//!` is workflow narration only as a whole line before the header; a
+    // trailing marker mid-file is an ordinary comment.
+    let kinds = token_kinds(&lex("step ship //! narration tail\n")?);
+    assert_eq!(
+        kinds,
+        vec![
+            TokenKind::Keyword(Keyword::Step),
+            ident("ship"),
+            TokenKind::Comment("! narration tail".to_owned()),
             TokenKind::Newline,
         ]
     );

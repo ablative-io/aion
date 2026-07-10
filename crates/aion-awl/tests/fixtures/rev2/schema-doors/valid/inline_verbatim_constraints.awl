@@ -1,0 +1,24 @@
+//! Verbatim-paste stress for the inline schema door: negative bounds, exponent
+//! literals, JSON string escapes, and non-two-space indentation all survive.
+workflow inline_verbatim_constraints
+  input reading: Reading
+  outcome filed: type Filed, route success
+
+type Reading = schema {
+   "type": "object",
+   "required": ["celsius"],
+   "properties": {
+      "celsius":    { "type": "number", "minimum": -273.15, "multipleOf": 1e-3 },
+      "scaled":     { "type": "integer", "maximum": 1E5 },
+      "label":      { "type": "string", "description": "caf\u00e9 thermom\u00e8tre, café a\/b" },
+      "pattern_id": { "type": "string", "pattern": "^{[0-9]+}$" }
+   }
+}
+
+type Filed { note: String }
+
+worker doors
+  action file_reading(reading: Reading) -> Filed
+
+step file
+  reading |> file_reading |> route filed

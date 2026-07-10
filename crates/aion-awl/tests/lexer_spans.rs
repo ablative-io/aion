@@ -188,6 +188,78 @@ fn lone_dot_without_field_name_reports_span() -> TestResult {
 }
 
 #[test]
+fn crlf_newline_spans_cover_the_full_terminator() -> TestResult {
+    // On tolerated CRLF input the Newline token spans `\r\n`, not just the
+    // stripped content boundary (which would point at the `\r` byte alone).
+    let source = "workflow x\r\nstep s\r\n";
+    let tokens = lex(source)?;
+    let newlines: Vec<_> = tokens
+        .iter()
+        .filter(|token| token.kind == TokenKind::Newline)
+        .collect();
+    assert_eq!(newlines.len(), 2);
+    assert_eq!(newlines[0].span.start, "workflow x".len());
+    assert_eq!(newlines[0].span.end, "workflow x\r\n".len());
+    assert_eq!(newlines[0].span.line, 1);
+    assert_eq!(newlines[0].span.column, "workflow x".len() + 1);
+    assert_eq!(newlines[1].span.start, "workflow x\r\nstep s".len());
+    assert_eq!(newlines[1].span.end, "workflow x\r\nstep s\r\n".len());
+    assert_eq!(newlines[1].span.line, 2);
+    Ok(())
+}
+
+#[test]
+fn lf_newline_span_is_the_single_terminator_byte() -> TestResult {
+    let tokens = lex("workflow x\n")?;
+    let newline = tokens
+        .iter()
+        .find(|token| token.kind == TokenKind::Newline)
+        .ok_or_else(|| io::Error::other("missing newline token"))?;
+    assert_eq!(newline.span.start, "workflow x".len());
+    assert_eq!(newline.span.end, "workflow x\n".len());
+    Ok(())
+}
+
+#[test]
+fn columns_after_multibyte_content_on_the_same_line_are_char_based() -> TestResult {
+    // `é` is two bytes; the stray `@` is the 20th character of the line, so
+    // the diagnostic must say column 20 (byte offsets stay byte-true).
+    let source = "note(text: \"café\") @\n";
+    let error = require_error(source)?;
+    assert_eq!(error.span.start, source.find('@').ok_or("@ present")?);
+    assert_eq!(error.span.line, 1);
+    assert_eq!(error.span.column, 20);
+
+    let tokens = lex("greet(name: \"café\") -> greeting\n")?;
+    let arrow = tokens
+        .iter()
+        .find(|token| token.kind == TokenKind::Arrow)
+        .ok_or_else(|| io::Error::other("missing arrow token"))?;
+    assert_eq!(arrow.span.start, "greet(name: \"café\") ".len());
+    // 20 characters precede the arrow (`é` counts once), so column 21.
+    assert_eq!(arrow.span.column, 21);
+    Ok(())
+}
+
+#[test]
+fn over_indentation_jump_reports_a_lexical_error() -> TestResult {
+    // No rev-2 construct opens two indentation levels at once; synthesizing
+    // phantom Indent tokens would hand the parser structure the source does
+    // not contain.
+    let error = require_error("step one\n    provision(a: b)\n")?;
+    assert_eq!(error.span.start, "step one\n".len());
+    assert_eq!(error.span.end, "step one\n    ".len());
+    assert_eq!(error.span.line, 2);
+    assert_eq!(error.span.column, 1);
+    assert!(
+        error.message.contains("more than one"),
+        "unexpected message: {}",
+        error.message
+    );
+    Ok(())
+}
+
+#[test]
 fn odd_indentation_reports_span() -> TestResult {
     let error = require_error("step one\n  sleep 30s\n   sleep 5m\n")?;
     assert_eq!(error.span.line, 3);
