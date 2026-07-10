@@ -1,0 +1,19 @@
+//! Deploy after the operator's go signal.
+workflow wait_missing_binding
+  input build_id: String
+  signal go: Approval
+  outcome deployed: type Deployed, route success
+
+type Approval { approver: String }
+type Deployed { build_id: String }
+
+worker deployer
+  action deploy(build_id: String) -> Deployed
+
+step hold
+  // defect: wait must bind its signal payload with `-> name`
+  wait go
+
+step deploy
+  deploy(build_id: build_id) -> result
+  result |> route deployed

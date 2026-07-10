@@ -1,0 +1,19 @@
+//! Negate a number.
+workflow not_non_bool
+  input candidate: Candidate
+  outcome shipped: type Shipped, route success
+  outcome held:    type Held,    route failure
+
+type Candidate { name: String, score: Int }
+type Shipped   { name: String }
+type Held      { name: String }
+
+worker gatekeeper
+  action stamp(name: String) -> Shipped
+
+step decide
+  stamp(name: candidate.name) -> stamped
+
+  // defect: `not` requires a Bool operand; `score` is an Int
+  outcome odd: when not candidate.score, route held(name: candidate.name)
+  outcome rest: otherwise, route shipped(name: stamped.name)

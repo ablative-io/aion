@@ -1,0 +1,25 @@
+//! Pack an order whose imported contract nests objects, arrays, an enum, and a $defs-local ref.
+workflow import_nested_defs
+  input order: Order
+  outcome packed:   type Packed,  route success
+  outcome no_lines: type NoLines, route failure
+
+type Order = schema("order.schema.json")
+
+type Packed  { manifest: String }
+type NoLines { reason: String, customer: String }
+
+worker doors
+  action pack(order: Order) -> Packed
+
+step tally
+  order |> .lines |> count -> line_count
+
+  outcome already_shipped: when order.status == "shipped",
+    route no_lines(reason: "order already shipped", customer: order.customer.name)
+  outcome empty_order: when line_count == 0,
+    route no_lines(reason: "no lines on the order", customer: order.customer.name)
+  outcome ready: otherwise, route pack_order
+
+step pack_order
+  order |> pack |> route packed

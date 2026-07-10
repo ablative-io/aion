@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "required": ["title", "statement"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "One-line name of the brief."
+    },
+    "statement": {
+      "type": "string",
+      "description": "What must be built, in the author's words."
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Present only when the author enumerated explicit acceptance checks."
+    }
+  }
+}

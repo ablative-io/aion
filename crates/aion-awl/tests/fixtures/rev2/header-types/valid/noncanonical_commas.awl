@@ -1,0 +1,17 @@
+//! Non-canonical commas: the parser tolerates them and fmt normalizes them.
+workflow comma_tolerance
+  input id: String
+  outcome recorded: type Receipt, route success
+
+type Ledger {
+  id: String
+  entries: [String]
+}
+
+type Receipt { id: String, ledger: Ledger, }
+
+worker bookkeeper
+  action record(id: String) -> Receipt
+
+step record
+  id |> record |> route recorded

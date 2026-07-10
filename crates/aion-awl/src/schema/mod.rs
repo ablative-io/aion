@@ -1,3 +1,10 @@
-mod derive;
+//! JSON Schema derivation for AWL contracts (the one pure public
+//! derivation), plus its error type.
 
-pub use derive::{SchemaError, schema_for_type, schema_for_workflow};
+mod derive;
+mod error;
+
+pub use derive::{
+    schema_for_type, schema_for_type_in, schema_for_workflow, schema_for_workflow_in,
+};
+pub use error::SchemaError;

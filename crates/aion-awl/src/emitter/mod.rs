@@ -1,11 +1,24 @@
-mod calls;
+mod bindings;
 mod codecs;
+mod composites;
 mod context;
+mod entry;
 mod error;
-mod helpers;
+mod exprs;
+mod forks;
+mod frame;
+mod graph;
+mod liveness;
 mod loops;
-mod module_frame;
+mod names;
+mod outcomes;
+mod pipes;
+mod project;
 mod steps;
+mod stmts;
+mod subs;
+mod types;
 mod wrappers;
 
-pub use error::{EmitError, emit};
+pub use entry::{emit, emit_in};
+pub use error::EmitError;

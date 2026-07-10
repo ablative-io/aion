@@ -1,0 +1,19 @@
+//! Add two numbers — arithmetic is not in the language.
+workflow arithmetic_plus
+  input candidate: Candidate
+  outcome shipped: type Shipped, route success
+  outcome held:    type Held,    route failure
+
+type Candidate { name: String, score: Int, bonus: Int }
+type Shipped   { name: String }
+type Held      { name: String }
+
+worker gatekeeper
+  action stamp(name: String) -> Shipped
+
+step decide
+  stamp(name: candidate.name) -> stamped
+
+  // defect: `+` is string concatenation only; Int operands are arithmetic
+  outcome strong: when candidate.score + candidate.bonus > 100, route shipped(name: stamped.name)
+  outcome weak: otherwise, route held(name: candidate.name)

@@ -1,0 +1,18 @@
+//! Spawn names a child that is never declared.
+workflow process_order
+  input order_id: String
+  outcome shipped: type OrderResult, route success
+  outcome stuck: type OrderResult, route failure
+
+type OrderResult { order_id: String, delivered: Bool }
+
+worker orders
+  action ship(order_id: String) -> OrderResult
+
+step ship
+  spawn audit_ghost(order_id: order_id)
+  ship(order_id: order_id) -> result
+
+  outcome done: when result.delivered,
+    route shipped(order_id: result.order_id, delivered: result.delivered)
+  outcome held: otherwise, route stuck(order_id: result.order_id, delivered: result.delivered)

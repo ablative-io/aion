@@ -1,0 +1,18 @@
+//! Ping localhost on a fixed address; a workflow with no inputs at all.
+workflow fixed_ping
+  outcome reachable:   type Ack,   route success
+  outcome unreachable: type Fault, route failure
+
+type Ack   { delivered: Bool }
+type Fault { reason: String }
+
+worker ping
+  action ping(host: String) -> Ack
+
+step ping_localhost
+  ping(host: "127.0.0.1") -> ack
+
+  outcome ok: when ack.delivered,
+    route reachable(delivered: ack.delivered)
+  outcome down: otherwise,
+    route unreachable(reason: "no reply from localhost")

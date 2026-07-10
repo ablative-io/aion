@@ -1,0 +1,26 @@
+//! The inline schema smuggles in a oneOf; the checker must refuse and name the keyword.
+workflow inline_oneof
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema {
+  "type": "object",
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string" },
+    "payload": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "integer" }
+      ]
+    }
+  }
+}
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

@@ -1,0 +1,66 @@
+//! Ship a release: build until green, canary it, publish; failed publishes are cleaned up.
+workflow ship_release
+  input target: String
+  input max_build_rounds: Int
+  signal canary_healthy: Confirmation
+
+  outcome shipped:   type Shipped,  route success
+  outcome not_ready: type NotReady, route failure
+  outcome failed:    type Failed,   route failure
+
+type Build          { artifact: String, green: Bool, log: String }
+type Confirmation   { operator: String }
+type PublishReceipt { url: String, verified: Bool }
+type Cleanup        { removed: Bool }
+type Shipped        { artifact: String, build_rounds: Int }
+type NotReady       { reason: String, rounds_spent: Int }
+type Failed         { reason: String }
+
+worker release
+  action build_round(target: String, prior: Build) -> Build
+    node builder, timeout 30m
+  action deploy_canary(artifact: String) -> Nil
+    node shell, timeout 10m, retry 2 every 30s
+  action publish_release(artifact: String) -> PublishReceipt
+    node shell, timeout 15m
+  action snapshot_logs(artifact: String) -> Nil
+    node shell, timeout 5m
+  action remove_canary(artifact: String) -> Cleanup
+    node shell, timeout 10m
+
+step build
+  loop candidate = Build(artifact: "", green: false, log: "") counting rounds
+    build_round(target: target, prior: candidate) -> candidate
+    until candidate.green
+    max max_build_rounds
+
+  outcome green: when candidate.green, route canary
+  outcome spent: otherwise,
+    route not_ready(reason: "build never went green", rounds_spent: rounds)
+
+step canary
+  deploy_canary(artifact: candidate.artifact)
+  wait canary_healthy timeout 2h -> confirmation
+
+  outcome healthy: when confirmation is present, route publish
+  outcome unconfirmed: otherwise, route build
+
+step publish
+  publish_release(artifact: candidate.artifact) -> receipt
+
+  on failure
+    snapshot_logs(artifact: candidate.artifact)
+    route cleanup
+
+  outcome verified_receipt: when receipt.verified,
+    route shipped(artifact: candidate.artifact, build_rounds: rounds)
+  outcome unverified: otherwise,
+    route failed(reason: "publish receipt failed verification")
+
+step cleanup
+  remove_canary(artifact: candidate.artifact) -> swept
+
+  outcome removed: when swept.removed,
+    route failed(reason: "publish failed; canary removed")
+  outcome lingering: otherwise,
+    route failed(reason: "publish failed; canary still live")

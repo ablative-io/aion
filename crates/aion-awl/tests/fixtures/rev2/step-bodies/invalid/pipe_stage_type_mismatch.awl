@@ -1,0 +1,18 @@
+//! Pipe a count into an action that wants text.
+workflow pipe_stage_type_mismatch
+  input source: String
+  outcome noted: type Note, route success
+
+type Finding { title: String, blocking: Bool }
+type Note    { body: String }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+  action write_note(body: String) -> Note
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step note
+  // defect: `write_note` takes a String; the piped value is an Int
+  findings |> count |> write_note |> route noted

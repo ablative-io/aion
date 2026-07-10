@@ -1,0 +1,20 @@
+//! Spawn is fire-and-forget; this one tries to bind the spawned child's result.
+workflow process_order
+  input order_id: String
+  outcome shipped: type OrderResult, route success
+  outcome stuck: type OrderResult, route failure
+
+type OrderResult { order_id: String, delivered: Bool }
+
+worker orders
+  action ship(order_id: String) -> OrderResult
+
+child audit_trail(order_id: String) -> Nil
+
+step ship
+  spawn audit_trail(order_id: order_id) -> handle
+  ship(order_id: order_id) -> result
+
+  outcome done: when result.delivered,
+    route shipped(order_id: result.order_id, delivered: result.delivered)
+  outcome held: otherwise, route stuck(order_id: result.order_id, delivered: result.delivered)

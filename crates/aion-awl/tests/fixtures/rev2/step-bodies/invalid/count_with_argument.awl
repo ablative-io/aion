@@ -1,0 +1,20 @@
+//! Count with a stray accessor argument.
+workflow count_with_argument
+  input source: String
+  outcome tallied: type Tally, route success
+
+type Finding { title: String, blocking: Bool }
+type Tally   { total: Int }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step tally
+  // defect: `count` takes no argument
+  findings |> count(.title) -> total
+
+  outcome done: when total >= 0, route tallied(total: total)
+  outcome impossible: otherwise, route tallied(total: total)

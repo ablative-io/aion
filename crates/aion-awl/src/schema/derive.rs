@@ -1,290 +1,263 @@
-use serde_json::{Map, Value};
-use thiserror::Error;
+//! JSON Schema (draft 2020-12) derivation from AWL type declarations — the
+//! one pure public derivation every consumer shares (start forms, worker
+//! contracts, model output contracts).
+//!
+//! Shorthand records and enums derive structurally; `///` doc lines flow to
+//! `description`s; `?` maps to "not in `required`". Schema-door types
+//! (inline `schema { … }` and `schema("file")`) re-emit their source JSON
+//! verbatim, so constraint keywords ride through untouched.
 
-use crate::{Document, Span, TypeDecl, TypeRef, check};
+use std::collections::BTreeSet;
+use std::path::Path;
 
-const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
+use serde_json::{Map, Value, json};
 
-/// Failure to derive a JSON Schema from an AWL contract.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum SchemaError {
-    /// The supplied document has a checker error and is not safe to derive.
-    #[error("document does not check cleanly: {message}")]
-    UncleanDocument {
-        /// Span of the first checker error.
-        span: Span,
-        /// Checker error message.
-        message: String,
-    },
-    /// The requested declaration does not exist.
-    #[error("unknown type `{name}`")]
-    UnknownType {
-        /// Document span used to anchor the diagnostic.
-        span: Span,
-        /// Requested type name.
-        name: String,
-    },
-    /// The workflow has no output contract to inspect.
-    #[error("workflow has no output contract")]
-    MissingOutput {
-        /// Document span used to anchor the diagnostic.
-        span: Span,
-    },
-}
+use crate::ast::{Document, TypeBody, TypeDecl, TypeRef, doc_text};
 
-impl SchemaError {
-    /// Span that anchors a compiler-style diagnostic.
-    #[must_use]
-    pub const fn span(&self) -> Span {
-        match self {
-            Self::UncleanDocument { span, .. }
-            | Self::UnknownType { span, .. }
-            | Self::MissingOutput { span } => *span,
-        }
-    }
-}
+use super::error::SchemaError;
 
-/// Derive JSON Schema draft 2020-12 for a checked AWL record declaration.
+/// Derive the JSON Schema for a named declared type, with schema imports
+/// unresolvable (no document directory). Prefer [`schema_for_type_in`] when
+/// the `.awl` file's directory is known.
 ///
 /// # Errors
 ///
-/// Returns [`SchemaError`] if the document is unclean or the type is unknown.
+/// Returns [`SchemaError`] when the type is undeclared, or when its schema
+/// door cannot be resolved or parsed.
 pub fn schema_for_type(document: &Document, name: &str) -> Result<Value, SchemaError> {
-    ensure_clean(document)?;
-    let declaration = find_type(document, name).ok_or_else(|| SchemaError::UnknownType {
-        span: document.span,
-        name: name.to_owned(),
-    })?;
-    let mut schema = record_schema(document, declaration, Some(name))?;
-    add_draft_and_defs(document, &mut schema, Some(name))?;
-    Ok(schema)
+    Deriver::new(document, None).type_schema(name)
 }
 
-/// Derive one inspection schema containing the workflow input and output contracts.
+/// Derive the JSON Schema for a named declared type, resolving schema
+/// imports relative to `root` (the document's directory).
 ///
 /// # Errors
 ///
-/// Returns [`SchemaError`] if the document is unclean or has no output.
+/// Returns [`SchemaError`] when the type is undeclared, or when its schema
+/// door cannot be resolved or parsed.
+pub fn schema_for_type_in(
+    document: &Document,
+    root: &Path,
+    name: &str,
+) -> Result<Value, SchemaError> {
+    Deriver::new(document, Some(root)).type_schema(name)
+}
+
+/// Derive the workflow's start contract: one object schema over its inputs,
+/// `?`-typed inputs omitted from `required`, narration as the description.
+///
+/// # Errors
+///
+/// Returns [`SchemaError`] when an input's schema door cannot be resolved
+/// or parsed.
 pub fn schema_for_workflow(document: &Document) -> Result<Value, SchemaError> {
-    ensure_clean(document)?;
-    let output = document.output.as_ref().ok_or(SchemaError::MissingOutput {
-        span: document.span,
-    })?;
-    let mut input_properties = Map::new();
-    let mut input_required = Vec::new();
-    for input in &document.inputs {
-        let (ty, optional) = unwrap_option(&input.ty);
-        input_properties.insert(input.name.clone(), type_schema(document, ty, None)?);
-        if !optional {
-            input_required.push(Value::String(input.name.clone()));
-        }
-    }
-    let mut input_schema = Map::new();
-    input_schema.insert("type".to_owned(), Value::String("object".to_owned()));
-    input_schema.insert("properties".to_owned(), Value::Object(input_properties));
-    input_schema.insert("required".to_owned(), Value::Array(input_required));
-
-    let mut properties = Map::new();
-    properties.insert("input".to_owned(), Value::Object(input_schema));
-    properties.insert(
-        "output".to_owned(),
-        type_schema(document, unwrap_option(&output.ty).0, None)?,
-    );
-    let mut schema = Map::new();
-    schema.insert("type".to_owned(), Value::String("object".to_owned()));
-    schema.insert("properties".to_owned(), Value::Object(properties));
-    schema.insert(
-        "required".to_owned(),
-        Value::Array(vec![
-            Value::String("input".to_owned()),
-            Value::String("output".to_owned()),
-        ]),
-    );
-    let mut value = Value::Object(schema);
-    add_draft_and_defs(document, &mut value, None)?;
-    Ok(value)
+    Deriver::new(document, None).workflow_schema()
 }
 
-fn ensure_clean(document: &Document) -> Result<(), SchemaError> {
-    if let Some(error) = check(document).into_iter().next() {
-        Err(SchemaError::UncleanDocument {
-            span: error.span,
-            message: error.message,
-        })
-    } else {
-        Ok(())
-    }
+/// Derive the workflow's start contract, resolving schema imports relative
+/// to `root` (the document's directory).
+///
+/// # Errors
+///
+/// Returns [`SchemaError`] when an input's schema door cannot be resolved
+/// or parsed.
+pub fn schema_for_workflow_in(document: &Document, root: &Path) -> Result<Value, SchemaError> {
+    Deriver::new(document, Some(root)).workflow_schema()
 }
 
-fn add_draft_and_defs(
-    document: &Document,
-    schema: &mut Value,
-    root: Option<&str>,
-) -> Result<(), SchemaError> {
-    let object = schema.as_object_mut().ok_or(SchemaError::UnknownType {
-        span: document.span,
-        name: root.unwrap_or("workflow").to_owned(),
-    })?;
-    object.insert(
-        "$schema".to_owned(),
-        Value::String(DRAFT_2020_12.to_owned()),
-    );
-    let names = reachable_types(document, root);
-    let mut definitions = Map::new();
-    for name in names {
-        let declaration = find_type(document, &name).ok_or_else(|| SchemaError::UnknownType {
-            span: document.span,
-            name: name.clone(),
-        })?;
-        definitions.insert(name, record_schema(document, declaration, root)?);
-    }
-    if !definitions.is_empty() {
-        object.insert("$defs".to_owned(), Value::Object(definitions));
-    }
-    Ok(())
+struct Deriver<'a> {
+    document: &'a Document,
+    root: Option<&'a Path>,
 }
 
-fn record_schema(
-    document: &Document,
-    declaration: &TypeDecl,
-    root: Option<&str>,
-) -> Result<Value, SchemaError> {
-    let mut schema = Map::new();
-    schema.insert("type".to_owned(), Value::String("object".to_owned()));
-    if let Some(description) = semantic_description(declaration.description.as_deref()) {
-        schema.insert("description".to_owned(), Value::String(description));
+impl<'a> Deriver<'a> {
+    const fn new(document: &'a Document, root: Option<&'a Path>) -> Self {
+        Self { document, root }
     }
-    let mut properties = Map::new();
-    let mut required = Vec::new();
-    for field in &declaration.fields {
-        let (field_type, optional) = unwrap_option(&field.ty);
-        let mut property = type_schema(document, field_type, root)?;
-        if let Some(description) = semantic_description(field.description.as_deref()) {
-            if let Some(object) = property.as_object_mut() {
-                object.insert("description".to_owned(), Value::String(description));
-            }
-        }
-        properties.insert(field.name.clone(), property);
-        if !optional {
-            required.push(Value::String(field.name.clone()));
-        }
-    }
-    schema.insert("properties".to_owned(), Value::Object(properties));
-    schema.insert("required".to_owned(), Value::Array(required));
-    Ok(Value::Object(schema))
-}
 
-fn type_schema(
-    document: &Document,
-    ty: &TypeRef,
-    root: Option<&str>,
-) -> Result<Value, SchemaError> {
-    match ty {
-        TypeRef::Named { name, span } => match name.as_str() {
-            "String" | "Dir" => Ok(primitive("string")),
-            "Bool" => Ok(primitive("boolean")),
-            "Int" => Ok(primitive("integer")),
-            "Float" => Ok(primitive("number")),
-            "Nil" => Ok(primitive("null")),
-            _ => {
-                if find_type(document, name).is_none() {
-                    return Err(SchemaError::UnknownType {
-                        span: *span,
-                        name: name.clone(),
-                    });
-                }
-                let reference = if root == Some(name.as_str()) {
-                    "#".to_owned()
-                } else {
-                    format!("#/$defs/{name}")
-                };
-                let mut schema = Map::new();
-                schema.insert("$ref".to_owned(), Value::String(reference));
-                Ok(Value::Object(schema))
-            }
-        },
-        TypeRef::List { inner, .. } => {
-            let mut schema = Map::new();
-            schema.insert("type".to_owned(), Value::String("array".to_owned()));
-            schema.insert("items".to_owned(), type_schema(document, inner, root)?);
-            Ok(Value::Object(schema))
-        }
-        TypeRef::Option { inner, .. } => type_schema(document, inner, root),
+    fn decl(&self, name: &str) -> Option<&'a TypeDecl> {
+        self.document.types.iter().find(|decl| decl.name == name)
     }
-}
 
-fn reachable_types(document: &Document, root: Option<&str>) -> Vec<String> {
-    let mut names = Vec::new();
-    if let Some(root_name) = root {
-        if let Some(declaration) = find_type(document, root_name) {
-            for field in &declaration.fields {
-                collect_type_names(&field.ty, root, &mut names);
-            }
+    fn type_schema(&self, name: &str) -> Result<Value, SchemaError> {
+        if let Some(schema) = builtin_schema(name) {
+            return Ok(schema);
         }
-    } else {
-        for input in &document.inputs {
-            collect_type_names(&input.ty, None, &mut names);
-        }
-        if let Some(output) = &document.output {
-            collect_type_names(&output.ty, None, &mut names);
-        }
-    }
-    let mut index = 0;
-    while index < names.len() {
-        if let Some(declaration) = find_type(document, &names[index]) {
-            for field in &declaration.fields {
-                collect_type_names(&field.ty, root, &mut names);
-            }
-        }
-        index += 1;
-    }
-    names
-}
-
-fn collect_type_names(ty: &TypeRef, root: Option<&str>, names: &mut Vec<String>) {
-    match ty {
-        TypeRef::Named { name, .. }
-            if !matches!(
-                name.as_str(),
-                "String" | "Dir" | "Bool" | "Int" | "Float" | "Nil"
-            ) && root != Some(name.as_str())
-                && !names.contains(name) =>
+        let Some(decl) = self.decl(name) else {
+            return Err(SchemaError::UnknownType {
+                name: name.to_owned(),
+                span: self.document.name_span,
+            });
+        };
+        let mut defs = Map::new();
+        let mut visited = BTreeSet::new();
+        visited.insert(name.to_owned());
+        let mut schema = self.decl_schema(decl, name, &mut defs, &mut visited)?;
+        if !defs.is_empty()
+            && let Some(object) = schema.as_object_mut()
         {
-            names.push(name.clone());
+            object.insert("$defs".to_owned(), Value::Object(defs));
         }
-        TypeRef::List { inner, .. } | TypeRef::Option { inner, .. } => {
-            collect_type_names(inner, root, names);
+        Ok(schema)
+    }
+
+    fn workflow_schema(&self) -> Result<Value, SchemaError> {
+        let mut defs = Map::new();
+        let mut properties = Map::new();
+        let mut required = Vec::new();
+        for input in &self.document.inputs {
+            let mut visited = BTreeSet::new();
+            let schema = self.type_ref_schema(&input.ty, "", &mut defs, &mut visited)?;
+            if !matches!(input.ty, TypeRef::Optional { .. }) {
+                required.push(Value::String(input.name.clone()));
+            }
+            properties.insert(input.name.clone(), schema);
         }
-        TypeRef::Named { .. } => {}
+        let mut object = Map::new();
+        object.insert("type".to_owned(), json!("object"));
+        let narration = doc_text(&self.document.narration);
+        if !narration.is_empty() {
+            object.insert("description".to_owned(), Value::String(narration));
+        }
+        object.insert("properties".to_owned(), Value::Object(properties));
+        object.insert("required".to_owned(), Value::Array(required));
+        if !defs.is_empty() {
+            object.insert("$defs".to_owned(), Value::Object(defs));
+        }
+        Ok(Value::Object(object))
+    }
+
+    /// The schema of one declaration's body, with `root_name` the type the
+    /// emitted document is rooted at (self-references become `"#"`).
+    fn decl_schema(
+        &self,
+        decl: &TypeDecl,
+        root_name: &str,
+        defs: &mut Map<String, Value>,
+        visited: &mut BTreeSet<String>,
+    ) -> Result<Value, SchemaError> {
+        match &decl.body {
+            TypeBody::Record { fields } => {
+                let mut properties = Map::new();
+                let mut required = Vec::new();
+                for field in fields {
+                    let mut schema = self.type_ref_schema(&field.ty, root_name, defs, visited)?;
+                    let docs = doc_text(&field.docs);
+                    if !docs.is_empty()
+                        && let Some(object) = schema.as_object_mut()
+                    {
+                        object.insert("description".to_owned(), Value::String(docs));
+                    }
+                    if !matches!(field.ty, TypeRef::Optional { .. }) {
+                        required.push(Value::String(field.name.clone()));
+                    }
+                    properties.insert(field.name.clone(), schema);
+                }
+                let mut object = Map::new();
+                object.insert("type".to_owned(), json!("object"));
+                let docs = doc_text(&decl.docs);
+                if !docs.is_empty() {
+                    object.insert("description".to_owned(), Value::String(docs));
+                }
+                object.insert("properties".to_owned(), Value::Object(properties));
+                object.insert("required".to_owned(), Value::Array(required));
+                Ok(Value::Object(object))
+            }
+            TypeBody::Enum { variants } => {
+                let mut object = Map::new();
+                object.insert("type".to_owned(), json!("string"));
+                let docs = doc_text(&decl.docs);
+                if !docs.is_empty() {
+                    object.insert("description".to_owned(), Value::String(docs));
+                }
+                object.insert(
+                    "enum".to_owned(),
+                    Value::Array(
+                        variants
+                            .iter()
+                            .map(|variant| Value::String(variant.name.clone()))
+                            .collect(),
+                    ),
+                );
+                Ok(Value::Object(object))
+            }
+            TypeBody::SchemaInline { body, .. } => {
+                serde_json::from_str(body).map_err(|error| SchemaError::InvalidJson {
+                    name: decl.name.clone(),
+                    detail: error.to_string(),
+                    span: decl.name_span,
+                })
+            }
+            TypeBody::SchemaImport { path, path_span } => {
+                let Some(root) = self.root else {
+                    return Err(SchemaError::ImportUnresolved {
+                        path: path.clone(),
+                        span: *path_span,
+                    });
+                };
+                let text = std::fs::read_to_string(root.join(path)).map_err(|error| {
+                    SchemaError::ImportUnreadable {
+                        path: path.clone(),
+                        detail: error.to_string(),
+                        span: *path_span,
+                    }
+                })?;
+                serde_json::from_str(&text).map_err(|error| SchemaError::InvalidJson {
+                    name: decl.name.clone(),
+                    detail: error.to_string(),
+                    span: *path_span,
+                })
+            }
+        }
+    }
+
+    fn type_ref_schema(
+        &self,
+        type_ref: &TypeRef,
+        root_name: &str,
+        defs: &mut Map<String, Value>,
+        visited: &mut BTreeSet<String>,
+    ) -> Result<Value, SchemaError> {
+        match type_ref {
+            TypeRef::Named { name, span } => {
+                if let Some(schema) = builtin_schema(name) {
+                    return Ok(schema);
+                }
+                if name == root_name {
+                    return Ok(json!({ "$ref": "#" }));
+                }
+                let Some(decl) = self.decl(name) else {
+                    return Err(SchemaError::UnknownType {
+                        name: name.clone(),
+                        span: *span,
+                    });
+                };
+                if visited.insert(name.clone()) {
+                    let schema = self.decl_schema(decl, root_name, defs, visited)?;
+                    defs.insert(name.clone(), schema);
+                }
+                Ok(json!({ "$ref": format!("#/$defs/{name}") }))
+            }
+            TypeRef::List { inner, .. } => {
+                let items = self.type_ref_schema(inner, root_name, defs, visited)?;
+                Ok(json!({ "type": "array", "items": items }))
+            }
+            TypeRef::Optional { inner, .. } => {
+                // Optionality is the field's membership in `required`; the
+                // value schema is the inner type's — never nullable.
+                self.type_ref_schema(inner, root_name, defs, visited)
+            }
+        }
     }
 }
 
-fn unwrap_option(ty: &TypeRef) -> (&TypeRef, bool) {
-    match ty {
-        TypeRef::Option { inner, .. } => (inner, true),
-        other => (other, false),
+fn builtin_schema(name: &str) -> Option<Value> {
+    match name {
+        "Bool" => Some(json!({ "type": "boolean" })),
+        "Int" => Some(json!({ "type": "integer" })),
+        "Float" => Some(json!({ "type": "number" })),
+        "String" | "Dir" => Some(json!({ "type": "string" })),
+        "Nil" => Some(json!({ "type": "null" })),
+        _ => None,
     }
-}
-
-fn semantic_description(source: Option<&str>) -> Option<String> {
-    source.map(|description| {
-        description
-            .split('\n')
-            .map(|line| line.strip_prefix(' ').unwrap_or(line))
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
-}
-
-fn primitive(name: &str) -> Value {
-    let mut schema = Map::new();
-    schema.insert("type".to_owned(), Value::String(name.to_owned()));
-    Value::Object(schema)
-}
-
-fn find_type<'a>(document: &'a Document, name: &str) -> Option<&'a TypeDecl> {
-    document
-        .types
-        .iter()
-        .find(|declaration| declaration.name == name)
 }

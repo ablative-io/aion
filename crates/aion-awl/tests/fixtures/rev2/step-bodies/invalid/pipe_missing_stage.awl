@@ -1,0 +1,19 @@
+//! Greet a name and shout the greeting.
+workflow pipe_missing_stage
+  input name: String
+  outcome shouted: type Shouted, route success
+
+type Greeting { greeting: String }
+type Shouted  { text: String }
+
+worker voice
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
+
+step greet
+  // defect: a pipe needs a stage between `|>` and the terminator
+  name |> -> plain
+
+step shout
+  shout(text: plain) -> loud
+  loud |> route shouted

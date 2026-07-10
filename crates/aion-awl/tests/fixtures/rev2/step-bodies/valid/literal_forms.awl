@@ -1,0 +1,20 @@
+//! Broadcast a deploy notice, exercising list, float, boolean, and escaped-string literals.
+workflow literal_forms
+  outcome notified: type Receipt, route success
+  outcome muted:    type Muted,   route failure
+
+type Receipt { delivered: Int, weight: Float }
+type Muted   { reason: String }
+
+worker mailer
+  /// Deliver one message to every listed recipient.
+  action broadcast(recipients: [String], body: String, urgent: Bool) -> Receipt
+
+/// Page the standing crew with the quoted go signal.
+step announce
+  broadcast(recipients: ["ops", "oncall"], body: "go \"now\"\n\t\\", urgent: true) -> receipt
+
+  outcome heavy: when receipt.weight >= 0.5,
+    route notified(delivered: receipt.delivered, weight: receipt.weight)
+  outcome light: otherwise,
+    route muted(reason: "message carried no weight")

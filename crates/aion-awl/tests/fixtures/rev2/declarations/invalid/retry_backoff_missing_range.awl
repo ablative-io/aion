@@ -1,0 +1,13 @@
+//! Backoff needs a min..max duration range; this one stops at the minimum.
+workflow notify_once
+  input message: String
+  outcome sent: type Receipt, route success
+
+type Receipt { id: String, accepted: Bool }
+
+worker notifier
+  action send_message(message: String) -> Receipt
+    node chat, timeout 30s, retry 3 backoff 10s
+
+step send
+  message |> send_message |> route sent

@@ -1,0 +1,17 @@
+//! One dependency in the after list exists; the second does not.
+workflow unknown_after_second_target
+  input url: String
+  outcome summarized: type Summary, route success
+
+type Document { body: String }
+type Summary  { text: String }
+
+worker docs
+  action fetch(url: String) -> Document
+  action summarize(body: String) -> Summary
+
+step fetch_doc
+  fetch(url: url) -> doc
+
+step summarize_doc after fetch_doc, phantom
+  doc |> .body |> summarize |> route summarized

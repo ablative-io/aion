@@ -1,0 +1,49 @@
+//! Intake: gate a submission against the shared contract, enrich it, and file the result.
+//! All three type doors appear here on purpose — file import, inline schema, and shorthand.
+workflow mixed_doors
+  input submission: Submission
+  input config: IntakeConfig
+
+  outcome filed:   type FiledRecord, route success
+  outcome bounced: type Bounced,     route failure
+
+type Submission = schema("intake.schema.json")
+
+type IntakeConfig = schema {
+  "type": "object",
+  "required": ["max_attachments"],
+  "properties": {
+    "max_attachments": { "type": "integer", "minimum": 0 },
+    "archive_dir":     { "type": "string" }
+  }
+}
+
+/// The record kept once intake succeeds.
+type FiledRecord {
+  reference: String,
+  /// Present only when the submitter left a contact address.
+  contact: String?,
+}
+
+type Bounced  { reason: String }
+type Enriched { reference: String, contact: String? }
+
+worker intake
+  action enrich_submission(submission: Submission) -> Enriched
+    node shell, timeout 5m, retry 2 every 30s
+
+step size_gate
+  submission |> .attachments |> count -> attachment_count
+
+  outcome oversized: when attachment_count > config.max_attachments,
+    route bounced(reason: "too many attachments")
+  outcome sized: otherwise, route enrichment
+
+step enrichment
+  submission |> enrich_submission -> enriched
+  enriched |> .contact -> contact
+
+  outcome reachable: when contact is present,
+    route filed(reference: enriched.reference, contact: contact)
+  outcome anonymous: otherwise,
+    route filed(reference: enriched.reference)

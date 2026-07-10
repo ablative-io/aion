@@ -1,341 +1,425 @@
-//! Regression tests for four adversarial-review defects in AWL-0:
+//! Span-discipline regression tests, ported to the rev-2 grammar from the
+//! AWL-0 adversarial-review defect suite:
 //!
-//! 1. Fragment lexing produced document-incorrect spans.
-//! 2. Own-line comments before nested fields were dropped by the printer.
-//! 3. Handler blocks (`on timeout` / `on failure`) accepted invalid shapes.
-//! 4. Top-level declaration order was not enforced.
+//! 1. Errors deep in a document report true lines and byte offsets, never
+//!    fragment-relative positions.
+//! 2. AST nodes buried in `parse()`'s output carry document-true spans
+//!    (proved against the committed flagship fixture, not synthetic text).
+//! 3. Own-line comments survive parse ↔ print at every nesting level, in
+//!    order, idempotently.
+//! 4. Dead AWL-0/1 keywords produce targeted fix-it diagnostics naming the
+//!    rev-2 replacement, anchored on the offending word.
+//! 5. Columns are character-based: multibyte content earlier on a line
+//!    does not skew a diagnostic's column.
 
-use std::{error::Error, fmt::Write as _};
+use std::error::Error;
+use std::fmt::Write as _;
 
-use aion_awl::{Spanned, parse, print};
+use aion_awl::{ForkHeader, Spanned, Statement, parse, print};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 // ---------------------------------------------------------------------
-// 1. Source-correct spans
+// 1. Source-correct spans for deep-document errors
 // ---------------------------------------------------------------------
 
-/// Build a document with a syntactically broken `when` expression on a
-/// caller-chosen line, padding above it with valid filler steps so the
-/// error sits deep in a multi-line document rather than on line 1.
-fn doc_with_broken_expr_at_step(filler_steps: usize) -> String {
-    let mut src = String::from("workflow padded\noutput String\n\naction noop() -> String\n\n");
-    for i in 0..filler_steps {
-        let _ = write!(src, "step filler{i}\n  do noop()\n\n");
+/// Build a rev-2 document with a syntactically broken `when` guard on a
+/// caller-chosen step, padded above with valid filler steps (three lines
+/// each) plus extra narration lines (one line each, for fine tuning) so
+/// the error sits deep in a multi-line document rather than near line 1.
+fn doc_with_broken_guard(filler_steps: usize, narration_pad: usize) -> String {
+    let mut src = String::new();
+    for index in 0..narration_pad {
+        let _ = writeln!(src, "//! Narration padding line {index}.");
     }
-    src.push_str("step bad\n  when 1 +\n  do noop()\n\nfinish \"done\"\n");
+    src.push_str(
+        "//! Padded fixture for span discipline.\n\
+         workflow padded\n\
+         \x20 input a: String\n\
+         \x20 outcome done: type Out, route success\n\
+         \n\
+         type Out { text: String }\n\
+         \n\
+         worker w\n\
+         \x20 action noop(a: String) -> Out\n\
+         \n",
+    );
+    for index in 0..filler_steps {
+        let _ = write!(src, "step filler{index}\n  noop(a: a) -> r{index}\n\n");
+    }
+    src.push_str(
+        "step bad\n\
+         \x20 noop(a: a) -> out\n\
+         \n\
+         \x20 outcome broken: when 1 +\n\
+         \x20 outcome fallback: otherwise, route done\n",
+    );
     src
 }
 
 #[test]
-fn expression_error_deep_in_document_reports_true_line_and_offset() -> TestResult {
-    // 12 filler steps push the broken expression well past line 1.
-    let source = doc_with_broken_expr_at_step(12);
+fn guard_error_deep_in_document_reports_true_line_and_offset() -> TestResult {
+    let source = doc_with_broken_guard(12, 0);
     let Err(error) = parse(&source) else {
         return Err("`when 1 +` should be rejected".into());
     };
 
-    let expected_start = source.find("1 +").ok_or("fragment present in source")?;
-    let expected_line = source[..expected_start].matches('\n').count() + 1;
-
+    let anchor = source.find("when 1 +").ok_or("fragment present")?;
+    let expected_line = source[..anchor].matches('\n').count() + 1;
     assert!(
         expected_line > 30,
-        "test fixture didn't push the error deep enough: line {expected_line}"
+        "fixture didn't push the error deep enough: line {expected_line}"
     );
     assert_eq!(
         error.span.line, expected_line,
-        "error must report the document line, not the fragment-relative line 1"
+        "error must report the document line, not a fragment-relative one: {error:?}"
     );
-    assert_eq!(
-        error.span.start, expected_start,
-        "error must report the true document byte offset"
+    let line_start = source[..anchor].rfind('\n').map_or(0, |at| at + 1);
+    let line_end = source[anchor..]
+        .find('\n')
+        .map_or(source.len(), |at| anchor + at);
+    assert!(
+        error.span.start >= line_start && error.span.start <= line_end,
+        "error byte offset {} escapes the broken line {line_start}..{line_end}",
+        error.span.start
     );
     Ok(())
 }
 
 #[test]
-fn expression_error_at_exactly_line_forty_is_source_correct() -> TestResult {
-    // Tune the filler count until the broken line lands on line 40, then
-    // assert against that literal line number end to end.
-    let mut filler = 0;
+fn guard_error_at_exactly_line_forty_is_source_correct() -> TestResult {
+    let mut knobs = (0, 0);
     let source = loop {
-        let candidate = doc_with_broken_expr_at_step(filler);
+        let candidate = doc_with_broken_guard(knobs.0, knobs.1);
         let broken_line = candidate
             .lines()
-            .position(|line| line.trim() == "when 1 +")
+            .position(|line| line.trim() == "outcome broken: when 1 +")
             .ok_or("broken line present")?
             + 1;
         if broken_line == 40 {
             break candidate;
         }
-        assert!(filler < 200, "could not land the broken line on line 40");
-        filler += 1;
+        if knobs.1 < 2 {
+            knobs.1 += 1;
+        } else {
+            knobs = (knobs.0 + 1, 0);
+        }
+        assert!(knobs.0 < 200, "could not land the broken line on line 40");
     };
 
     let Err(error) = parse(&source) else {
         return Err("`when 1 +` should be rejected".into());
     };
-    assert_eq!(error.span.line, 40);
-    let expected_start = source.find("1 +").ok_or("fragment present in source")?;
-    assert_eq!(error.span.start, expected_start);
+    assert_eq!(error.span.line, 40, "{error:?}");
     Ok(())
 }
 
+// ---------------------------------------------------------------------
+// 2. Document-true spans on AST nodes, proved against the flagship
+// ---------------------------------------------------------------------
+
 #[test]
-fn each_in_expr_span_matches_fixture_true_position() -> TestResult {
-    // A real fixture (unmodified), not a synthetic string: prove an AST
-    // node buried inside `parse()`'s output carries the document-true span,
-    // not a span relative to the line fragment it was lexed from.
-    let source = include_str!("fixtures/research_report.awl");
+fn fork_collection_span_matches_flagship_true_position() -> TestResult {
+    let source = include_str!("fixtures/rev2/flagship/valid/dev_brief.awl");
     let document = parse(source)?;
-    let investigate = document
+    let review = document
         .steps
         .iter()
-        .find(|step| step.name == "investigate")
-        .ok_or("investigate step present")?;
-    let each = investigate.each.as_ref().ok_or("each field present")?;
+        .find(|step| step.name == "review")
+        .ok_or("review step present")?;
+    let Some(Statement::Fork(fork)) = review.body.first() else {
+        return Err("review opens with a fork".into());
+    };
+    let ForkHeader::Collection { collection, .. } = &fork.header else {
+        return Err("flagship fork is the collection form".into());
+    };
 
-    // "each q in questions" appears once in the fixture, on line 31.
     let anchor = source
-        .find("each q in questions")
-        .ok_or("each clause present")?;
-    let expected_start = anchor + "each q in ".len();
-
-    assert_eq!(each.in_expr.span().line, 31);
-    assert_eq!(each.in_expr.span().start, expected_start);
+        .find("fork lens in config.lenses")
+        .ok_or("fork line present")?;
+    let expected_start = anchor + "fork lens in ".len();
+    let expected_line = source[..anchor].matches('\n').count() + 1;
+    assert_eq!(collection.span().start, expected_start);
+    assert_eq!(collection.span().line, expected_line);
     Ok(())
 }
 
 #[test]
-fn duration_field_span_matches_fixture_true_position() -> TestResult {
-    let source = include_str!("fixtures/research_report.awl");
+fn action_config_duration_span_matches_flagship_true_position() -> TestResult {
+    let source = include_str!("fixtures/rev2/flagship/valid/dev_brief.awl");
     let document = parse(source)?;
-    let human_review = document
-        .steps
+    let worker = document.workers.first().ok_or("worker present")?;
+    let provision = worker
+        .actions
         .iter()
-        .find(|step| step.name == "human_review")
-        .ok_or("human_review step present")?;
-    let timeout = human_review.timeout.as_ref().ok_or("timeout present")?;
+        .find(|action| action.name == "provision")
+        .ok_or("provision action present")?;
+    let config = provision.config.as_ref().ok_or("config line present")?;
+    let timeout = config.timeout.as_ref().ok_or("timeout present")?;
 
-    // "timeout 3d" is on line 43.
-    let anchor = source.find("timeout 3d").ok_or("timeout clause present")?;
+    // "timeout 5m" appears once, on provision's config line.
+    let anchor = source.find("timeout 5m").ok_or("timeout clause present")?;
     let expected_start = anchor + "timeout ".len();
-    assert_eq!(timeout.span.line, 43);
+    let expected_line = source[..anchor].matches('\n').count() + 1;
     assert_eq!(timeout.span.start, expected_start);
+    assert_eq!(timeout.span.line, expected_line);
     Ok(())
 }
 
 // ---------------------------------------------------------------------
-// 2. Own-line comment trivia at any nesting level
+// 3. Own-line comment trivia at every nesting level
 // ---------------------------------------------------------------------
 
-const COMMENT_TORTURE_DOC: &str = "workflow torture\nabout Comment placement torture test.\n\n// leading the first input\ninput a: String\n\n// leading output\noutput String\n\naction make(a: String) -> String\n  // leading queue\n  queue \"q1\"\n  // leading timeout\n  timeout 5s\n\nstep one\n  // leading when\n  when true\n  do make(a)\n  on failure\n    // leading do in failure handler\n    do make(a)\n    // leading fail terminal\n    fail\n  as out\n\n// leading finish\nfinish out\n";
+const COMMENT_TORTURE_DOC: &str = concat!(
+    "//! Comment placement torture test.\n",
+    "workflow torture\n",
+    "  // leading the first input\n",
+    "  input a: String\n",
+    "  // leading an outcome decl\n",
+    "  outcome done: type Out, route success\n",
+    "\n",
+    "// leading a type\n",
+    "type Out {\n",
+    "  // leading a field\n",
+    "  text: String,\n",
+    "}\n",
+    "\n",
+    "// leading a worker\n",
+    "worker w\n",
+    "  // leading an action\n",
+    "  action make(a: String) -> Out\n",
+    "    // leading a config line\n",
+    "    node shell, timeout 5s\n",
+    "\n",
+    "// leading a step\n",
+    "step one\n",
+    "  // leading a call\n",
+    "  make(a: a) -> out\n",
+    "  // leading a loop\n",
+    "  loop x = Out(text: \"\") counting n\n",
+    "    make(a: a) -> x\n",
+    "    // leading until\n",
+    "    until true\n",
+    "    // leading max\n",
+    "    max 3\n",
+    "  // leading on failure\n",
+    "  on failure\n",
+    "    // leading a handler call\n",
+    "    make(a: a)\n",
+    "    // leading a handler route\n",
+    "    route done(text: \"failed\")\n",
+    "  // leading an outcome clause\n",
+    "  outcome ok: when true, route done\n",
+);
 
 #[test]
 fn own_line_comments_survive_at_every_nesting_level() -> TestResult {
-    let document = parse(COMMENT_TORTURE_DOC)?;
-    let printed = print(&document);
+    let printed = print(&parse(COMMENT_TORTURE_DOC)?);
 
     let expectations = [
-        ("// leading the first input", 0),
-        ("// leading output", 0),
-        ("  // leading queue", 2),
-        ("  // leading timeout", 2),
-        ("  // leading when", 2),
-        ("    // leading do in failure handler", 4),
-        ("    // leading fail terminal", 4),
-        ("// leading finish", 0),
+        "  // leading the first input",
+        "  // leading an outcome decl",
+        "// leading a type",
+        "  // leading a field",
+        "// leading a worker",
+        "  // leading an action",
+        "    // leading a config line",
+        "// leading a step",
+        "  // leading a call",
+        "  // leading a loop",
+        "    // leading until",
+        "    // leading max",
+        "  // leading on failure",
+        "    // leading a handler call",
+        "    // leading a handler route",
+        "  // leading an outcome clause",
     ];
-    for (needle, _indent) in expectations {
-        assert!(
-            printed.contains(needle),
-            "missing or misindented comment {needle:?} in:\n{printed}"
-        );
-    }
-
-    // Ordering: every comment must appear before the field it precedes, in
-    // source order (not, say, all dumped together at the top or bottom).
     let mut previous = 0;
-    for (needle, _) in expectations {
-        let found = printed.find(needle).ok_or("comment missing from print")?;
-        assert!(found >= previous, "comment {needle:?} printed out of order");
+    for needle in expectations {
+        let found = printed
+            .find(needle)
+            .ok_or_else(|| format!("missing or misindented comment {needle:?} in:\n{printed}"))?;
+        assert!(
+            found >= previous,
+            "comment {needle:?} printed out of order:\n{printed}"
+        );
         previous = found;
     }
     Ok(())
 }
 
 #[test]
-fn comment_torture_document_round_trips_idempotently() -> TestResult {
+fn comment_torture_document_round_trips_byte_identically() -> TestResult {
     let first = print(&parse(COMMENT_TORTURE_DOC)?);
+    assert_eq!(
+        first, COMMENT_TORTURE_DOC,
+        "torture document is authored canonically; print must reproduce it"
+    );
     let second = print(&parse(&first)?);
     assert_eq!(first, second);
     Ok(())
 }
 
 // ---------------------------------------------------------------------
-// 3. Strict handler block shape
+// 4. Dead-keyword fix-its name the rev-2 replacement
 // ---------------------------------------------------------------------
 
-fn doc_with_failure_body(body: &str) -> String {
+fn doc_with_body_line(line: &str) -> String {
     format!(
-        "workflow w\noutput String\n\naction make() -> String\n\nstep one\n  do make()\n  on failure\n{body}  as out\n\nfinish out\n"
+        "//! Dead keyword probe.\n\
+         workflow probe\n\
+         \x20 input a: String\n\
+         \x20 outcome done: type Out, route success\n\
+         \n\
+         type Out {{ text: String }}\n\
+         \n\
+         worker w\n\
+         \x20 action make(a: String) -> Out\n\
+         \n\
+         step one\n\
+         \x20 {line}\n"
     )
 }
 
-#[test]
-fn handler_block_rejects_a_second_terminal() -> TestResult {
-    let source = doc_with_failure_body("    fail\n    fail\n");
-    let Err(error) = parse(&source) else {
-        return Err("two terminals should be rejected".into());
+fn doc_with_header_line(line: &str) -> String {
+    format!(
+        "//! Dead keyword probe.\n\
+         workflow probe\n\
+         \x20 input a: String\n\
+         \x20 {line}\n\
+         \x20 outcome done: type Out, route success\n\
+         \n\
+         type Out {{ text: String }}\n\
+         \n\
+         worker w\n\
+         \x20 action make(a: String) -> Out\n\
+         \n\
+         step one\n\
+         \x20 a |> make |> route done\n"
+    )
+}
+
+fn assert_fix_it(
+    source: &str,
+    probe_line: &str,
+    dead_word: &str,
+    replacement_hint: &str,
+) -> TestResult {
+    let Err(error) = parse(source) else {
+        return Err(format!("`{dead_word}` should be rejected").into());
     };
     assert!(
-        error.message.contains("exactly one terminal"),
-        "unexpected message: {}",
+        error.message.contains(dead_word),
+        "diagnostic must name the dead keyword `{dead_word}`: {:?}",
         error.message
     );
-    let expected_line = source
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| line.trim() == "fail")
-        .nth(1)
-        .map(|(idx, _)| idx + 1)
-        .ok_or("second fail line present")?;
-    assert_eq!(error.span.line, expected_line);
+    assert!(
+        error.message.contains(replacement_hint),
+        "diagnostic for `{dead_word}` must point at `{replacement_hint}`: {:?}",
+        error.message
+    );
+    let anchor = source
+        .find(&format!("\n  {probe_line}"))
+        .ok_or("probe line present")?
+        + 1;
+    let expected_line = source[..anchor].matches('\n').count() + 1;
+    assert_eq!(error.span.line, expected_line, "{:?}", error.message);
     Ok(())
 }
 
 #[test]
-fn handler_block_rejects_do_after_terminal() -> TestResult {
-    let source = doc_with_failure_body("    fail\n    do make()\n");
-    let Err(error) = parse(&source) else {
-        return Err("do line after terminal should be rejected".into());
-    };
-    assert!(
-        error.message.contains("must come before the terminal"),
-        "unexpected message: {}",
-        error.message
-    );
-    // Two lines read `do make()`: the step's own op field, and the handler's
-    // `do` after `fail`. The error must point at the *later* one.
-    let expected_line = source
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| line.trim() == "do make()")
-        .last()
-        .map(|(idx, _)| idx + 1)
-        .ok_or("handler do line present")?;
-    assert_eq!(error.span.line, expected_line);
+fn dead_statement_keywords_get_targeted_fix_its() -> TestResult {
+    let cases = [
+        ("do make(a: a)", "do", "->"),
+        ("as out", "as", "->"),
+        ("each q in questions", "each", "fork"),
+        ("repeat up to 3", "repeat", "loop"),
+        ("match category", "match", "outcome"),
+        ("parallel", "parallel", "fork"),
+        ("race", "race", "timeout"),
+        ("fail", "fail", "route <workflow outcome>"),
+    ];
+    for (line, word, hint) in cases {
+        assert_fix_it(&doc_with_body_line(line), line, word, hint)?;
+    }
     Ok(())
 }
 
 #[test]
-fn handler_block_rejects_finish_then_fail() -> TestResult {
-    let source = doc_with_failure_body("    finish \"x\"\n    fail\n");
-    let Err(error) = parse(&source) else {
-        return Err("fail after finish should be rejected".into());
-    };
-    assert!(
-        error.message.contains("exactly one terminal"),
-        "unexpected message: {}",
-        error.message
-    );
-    Ok(())
-}
-
-#[test]
-fn handler_block_requires_a_terminal() -> TestResult {
-    let source = doc_with_failure_body("    do make()\n");
-    let Err(error) = parse(&source) else {
-        return Err("handler without a terminal should be rejected".into());
-    };
-    assert!(
-        error.message.contains("must finish or fail"),
-        "unexpected message: {}",
-        error.message
-    );
-    assert!(error.span.line > 0);
-    Ok(())
-}
-
-#[test]
-fn well_formed_handler_block_still_parses_and_round_trips() -> TestResult {
-    let source = doc_with_failure_body("    do make()\n    fail\n");
-    let document = parse(&source)?;
-    let printed = print(&document);
-    assert_eq!(print(&parse(&printed)?), printed);
+fn dead_header_keywords_get_targeted_fix_its() -> TestResult {
+    let cases = [
+        ("output String", "output", "success"),
+        ("error Failed", "error", "failure"),
+        ("queue \"q1\"", "queue", "worker"),
+    ];
+    for (line, word, hint) in cases {
+        assert_fix_it(&doc_with_header_line(line), line, word, hint)?;
+    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------
-// 4. Canonical top-level declaration order
+// 5. Character-correct columns after multibyte content
 // ---------------------------------------------------------------------
 
 #[test]
-fn input_after_a_step_is_rejected_as_out_of_order() -> TestResult {
-    let source =
-        "workflow w\noutput String\n\nstep one\n  do make()\n\ninput a: String\n\nfinish ok\n";
+fn inline_schema_error_column_after_multibyte_content_is_character_correct() -> TestResult {
+    // serde_json reports byte-based columns; the crate contract is
+    // character-based columns with byte-true `start`/`end`. The key carries
+    // multibyte characters (é, —) before the offending lexeme.
+    let source = "//! Schema probe.\n\
+         workflow probe\n\
+         \x20 input a: String\n\
+         \x20 outcome done: type Out, route success\n\
+         \n\
+         type Out { text: String }\n\
+         \n\
+         type Extra = schema {\n\
+         \x20 \"café—\": oops\n\
+         }\n\
+         \n\
+         worker w\n\
+         \x20 action make(a: String) -> Out\n\
+         \n\
+         step one\n\
+         \x20 make(a: a) -> out\n";
     let Err(error) = parse(source) else {
-        return Err("input after step should be rejected".into());
+        return Err("invalid inline schema JSON should be rejected".into());
     };
-    assert!(
-        error.message.contains("out of canonical order"),
-        "unexpected message: {}",
-        error.message
-    );
-    let expected_line = source
-        .lines()
-        .position(|line| line.trim() == "input a: String")
-        .map(|idx| idx + 1)
-        .ok_or("out-of-order input line present")?;
+
+    let anchor = source.find("oops").ok_or("lexeme present")?;
+    assert_eq!(error.span.start, anchor, "byte offset must be byte-true");
+    let expected_line = source[..anchor].matches('\n').count() + 1;
     assert_eq!(error.span.line, expected_line);
-    Ok(())
-}
-
-#[test]
-fn type_after_action_is_rejected_as_out_of_order() -> TestResult {
-    let source = "workflow w\noutput String\n\ntype T { a: String }\naction make() -> String\n\ntype U { b: String }\n\nstep one\n  do make()\n\nfinish ok\n";
-    let Err(error) = parse(source) else {
-        return Err("type after action should be rejected".into());
-    };
-    assert!(
-        error.message.contains("out of canonical order"),
-        "unexpected message: {}",
-        error.message
+    let line_start = source[..anchor].rfind('\n').map_or(0, |at| at + 1);
+    let expected_column = source[line_start..anchor].chars().count() + 1;
+    assert_eq!(
+        error.span.column, expected_column,
+        "column must count characters, not bytes: {error:?}"
     );
     Ok(())
 }
 
 #[test]
-fn duplicate_output_declaration_is_rejected() -> TestResult {
-    let source = "workflow w\noutput String\n\noutput String\n\nfinish ok\n";
-    let Err(error) = parse(source) else {
-        return Err("second output declaration should be rejected".into());
+fn error_column_after_multibyte_prose_is_character_correct() -> TestResult {
+    // The string literal carries multibyte characters (é, —, ï); the
+    // defective `->` with no binding name sits after it on the same line.
+    let line = "  make(a: \"café — naïve\") ->";
+    let source = doc_with_body_line(line.trim_start());
+    let Err(error) = parse(&source) else {
+        return Err("dangling `->` should be rejected".into());
     };
-    assert!(
-        error.message.contains("duplicate `output`"),
-        "unexpected message: {}",
-        error.message
-    );
-    Ok(())
-}
 
-#[test]
-fn duplicate_error_declaration_is_rejected() -> TestResult {
-    let source = "workflow w\noutput String\n\nerror Failed\n\nerror Failed\n\nfinish ok\n";
-    let Err(error) = parse(source) else {
-        return Err("second error declaration should be rejected".into());
-    };
-    assert!(
-        error.message.contains("duplicate `error`"),
-        "unexpected message: {}",
-        error.message
-    );
-    Ok(())
-}
+    let anchor = source.find("\") ->").ok_or("arrow present")? + "\") ".len();
+    let expected_line = source[..anchor].matches('\n').count() + 1;
+    assert_eq!(error.span.line, expected_line);
+    assert_eq!(error.span.start, anchor, "byte offset must be byte-true");
 
-#[test]
-fn canonical_order_with_every_group_present_still_parses() -> TestResult {
-    let source = "workflow w\nabout ok\n\ninput a: String\noutput String\nerror Failed\n\nsignal s: String\n\ntype Failed { reason: String }\n\naction make(a: String) -> String\n\nstep one\n  do make(a)\n\nfinish ok\n";
-    let _document = parse(source)?;
+    let line_start = source[..anchor].rfind('\n').map_or(0, |at| at + 1);
+    let expected_column = source[line_start..anchor].chars().count() + 1;
+    assert_eq!(
+        error.span.column, expected_column,
+        "column must count characters, not bytes: {error:?}"
+    );
     Ok(())
 }

@@ -1,0 +1,13 @@
+//! The same action name declared twice on one worker.
+workflow notify_once
+  input message: String
+  outcome sent: type Receipt, route success
+
+type Receipt { id: String, accepted: Bool }
+
+worker notifier
+  action send_message(message: String) -> Receipt
+  action send_message(message: String) -> Receipt
+
+step send
+  message |> send_message |> route sent

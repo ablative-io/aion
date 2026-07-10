@@ -1,0 +1,20 @@
+//! Call sites may override node and timeout only; this one overrides retry.
+workflow render_scene
+  input scene_path: String
+  outcome rendered: type Render, route success
+  outcome no_frames: type Render, route failure
+
+type Render { output_path: String, frames: Int }
+
+worker renderer
+  action render(scene_path: String) -> Render
+    node gpu_small, timeout 30m
+
+step render
+  render(scene_path: scene_path) -> result
+    retry 3 every 1m
+
+  outcome done: when result.frames > 0,
+    route rendered(output_path: result.output_path, frames: result.frames)
+  outcome blank: otherwise,
+    route no_frames(output_path: result.output_path, frames: result.frames)

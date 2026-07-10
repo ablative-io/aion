@@ -1,0 +1,47 @@
+//! release_notes: a tag goes in; curated, operator-approved release notes come out.
+//! The draft is generated, an operator rules on it over a signal, and approved notes ship.
+workflow release_notes
+  input tag: String
+  input workspace: Dir
+  input sections: [String]
+  input style_hint: String?
+  signal approval: Approval
+
+  outcome published: type Published,     route success
+  outcome rejected:  type RejectedDraft, route failure
+
+type Stage = Drafted | Approved | Shipped
+
+/// One curated section of the notes.
+type Section {
+  title: String,
+  body: String,
+  /// Present only when the section was trimmed for length.
+  trimmed_note: String?,
+}
+
+// Trivia comment at declaration level: ignorable to the parser, lossless through the printer.
+type Draft         { tag: String, sections: [Section], stage: Stage }
+type Approval      { approve: Bool, reviewer: String, note: String? }
+type Published     { tag: String, sections: [Section] }
+type RejectedDraft { tag: String, reviewer: String, reason: String }
+
+worker release
+  action draft_notes(tag: String, workspace: Dir, sections: [String], hint: String?) -> Draft
+    node writer, timeout 10m
+  action publish(draft: Draft) -> Published
+    node shell, timeout 5m, retry 2 every 30s
+
+step compose
+  draft_notes(tag: tag, workspace: workspace, sections: sections, hint: style_hint) -> draft
+
+step await_approval
+  wait approval -> decision
+
+  outcome approved: when decision.approve, route ship
+  outcome denied: otherwise,
+    route rejected(tag: tag, reviewer: decision.reviewer, reason: "operator rejected the draft")
+
+step ship
+  // Trivia comment at statement level inside a step body.
+  draft |> publish |> route published

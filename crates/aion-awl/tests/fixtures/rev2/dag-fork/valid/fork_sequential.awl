@@ -1,0 +1,26 @@
+//! Apply migrations strictly one at a time in input order — a sequential fork.
+workflow sequential_migrations
+  input migrations: [Migration]
+  outcome applied: type Applied, route success
+  outcome stalled: type Stalled, route failure
+
+type Migration { name: String, sql: String }
+type Receipt   { name: String, ok: Bool }
+type Applied   { count: Int }
+type Stalled   { completed: Int }
+
+worker db
+  action apply_one(migration: Migration) -> Receipt
+
+step apply_all
+  fork migration in migrations sequential
+    apply_one(migration: migration)
+  join -> receipts
+
+  receipts |> count -> attempted
+  receipts |> filter(.ok) |> count -> succeeded
+
+  outcome complete: when succeeded == attempted,
+    route applied(count: succeeded)
+  outcome partial: otherwise,
+    route stalled(completed: succeeded)

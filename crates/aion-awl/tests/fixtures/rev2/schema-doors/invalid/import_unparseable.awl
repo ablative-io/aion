@@ -1,0 +1,14 @@
+//! The imported schema file is not valid JSON; an unparseable import is a check error.
+workflow import_unparseable
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema("broken.schema.json")
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

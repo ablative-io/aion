@@ -1,0 +1,14 @@
+//! Provision from a piped repo root.
+workflow pipe_multi_arg_action
+  input repo_root: String
+  outcome ready: type Workspace, route success
+
+type Workspace { path: String, branch: String }
+
+worker infra
+  action provision(repo_root: String, base_branch: String) -> Workspace
+
+step provision
+  // defect: a pipe stage action must take exactly one argument
+  repo_root |> provision -> workspace
+  workspace |> route ready

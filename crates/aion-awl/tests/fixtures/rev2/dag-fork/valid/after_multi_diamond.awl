@@ -1,0 +1,36 @@
+//! Diamond graph: claims and citations both follow gather and run in parallel;
+//! compose declares after both, so it is the join of the diamond.
+workflow diamond_report
+  input topic: String
+  outcome reported:   type Reported,   route success
+  outcome incomplete: type Incomplete, route failure
+
+type Sources    { urls: [String] }
+type Claims     { facts: [String] }
+type Citations  { links: [String] }
+type Report     { text: String, complete: Bool }
+type Reported   { text: String }
+type Incomplete { text: String }
+
+worker research
+  action gather(topic: String) -> Sources
+  action extract_claims(urls: [String]) -> Claims
+  action collect_citations(urls: [String]) -> Citations
+  action compose(facts: [String], links: [String]) -> Report
+
+step gather
+  gather(topic: topic) -> sources
+
+step claims after gather
+  extract_claims(urls: sources.urls) -> claim_set
+
+step citations after gather
+  collect_citations(urls: sources.urls) -> citation_set
+
+step compose after claims, citations
+  compose(facts: claim_set.facts, links: citation_set.links) -> report
+
+  outcome full: when report.complete,
+    route reported(text: report.text)
+  outcome partial: otherwise,
+    route incomplete(text: report.text)

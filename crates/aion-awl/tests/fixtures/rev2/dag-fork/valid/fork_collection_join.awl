@@ -1,0 +1,26 @@
+//! Fan out one check per document; join verdicts in input order; flag any failures.
+workflow fork_collection_join
+  input docs: [Doc]
+  outcome clean:   type Clean,   route success
+  outcome flagged: type Flagged, route failure
+
+type Doc     { title: String, body: String }
+type Verdict { title: String, failing: Bool }
+type Clean   { total: Int }
+type Flagged { failures: [Verdict] }
+
+worker review
+  action check_doc(doc: Doc) -> Verdict
+
+step check_all
+  fork doc in docs
+    check_doc(doc: doc)
+  join -> verdicts
+
+  verdicts |> count -> total
+  verdicts |> filter(.failing) -> failures
+
+  outcome all_clean: when failures is empty,
+    route clean(total: total)
+  outcome some_failed: otherwise,
+    route flagged(failures: failures)

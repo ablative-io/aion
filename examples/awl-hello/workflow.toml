@@ -2,9 +2,9 @@
 # Reference: docs/packaging.md.
 #
 # ONE entry — the awl_hello workflow. The entry module is the GENERATED
-# module the AWL emitter drops into src/ (the checked-in placeholder has the
-# same module name and contract, so packaging works before and after
-# generation).
+# module the AWL emitter writes to src/awl_hello.gleam from awl_hello.awl
+# (rev-2 surface); it is committed so packaging works without running the
+# toolchain, and regenerated — never hand-edited — after any .awl change.
 
 [[workflow]]
 entry_module = "awl_hello"

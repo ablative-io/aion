@@ -1,0 +1,12 @@
+//! A step lists itself as its own dependency.
+workflow after_self_cycle
+  input name: String
+  outcome done: type Done, route success
+
+type Done { text: String }
+
+worker greeter
+  action ping(name: String) -> Done
+
+step settle after settle
+  name |> ping |> route done

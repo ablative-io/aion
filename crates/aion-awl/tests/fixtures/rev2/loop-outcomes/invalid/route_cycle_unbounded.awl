@@ -1,0 +1,24 @@
+//! Review volleys back to compose forever — no bound anywhere in the cycle.
+workflow ping_pong
+  input topic: String
+
+  outcome settled: type Settled, route success
+
+type Draft   { body: String, ready: Bool }
+type Verdict { approved: Bool }
+type Settled { body: String }
+
+worker writing
+  action polish(topic: String) -> Draft
+    node writer, timeout 10m
+  action review(draft: Draft) -> Verdict
+    node reviewer, timeout 10m
+
+step compose
+  polish(topic: topic) -> draft
+
+step check
+  review(draft: draft) -> verdict
+
+  outcome approved: when verdict.approved, route settled(body: draft.body)
+  outcome rework: otherwise, route compose

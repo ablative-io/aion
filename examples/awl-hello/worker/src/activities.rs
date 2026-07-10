@@ -1,10 +1,10 @@
 //! The two pure computational activity bodies the awl-hello worker serves:
 //! `greet` and `shout`.
 //!
-//! Every type here serializes/deserializes byte-compatibly with the Gleam
-//! codecs in `../../src/awl_hello.gleam` (and, later, with the codecs the
-//! AWL emitter generates) — those codecs are the authoritative contract
-//! (field names in `snake_case`).
+//! Every type here serializes/deserializes byte-compatibly with the codecs
+//! the AWL emitter generates into `../../src/awl_hello.gleam` from the
+//! `action` declarations in `../../awl_hello.awl` — those declarations are
+//! the authoritative contract (field names in `snake_case`).
 //!
 //! The bodies are plain synchronous `Input -> Result<Output, _>` so the unit
 //! tests drive them directly; `main.rs` adapts them onto the worker's async

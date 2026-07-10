@@ -1,0 +1,20 @@
+//! Tally findings and misuse `is empty` on the count.
+workflow is_empty_non_list
+  input source: String
+  outcome tallied: type Tally, route success
+
+type Finding { title: String, blocking: Bool }
+type Tally   { total: Int }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step tally
+  findings |> count -> total
+
+  // defect: `is empty` applies to lists; `total` is an Int
+  outcome none: when total is empty, route tallied(total: total)
+  outcome some: otherwise, route tallied(total: total)

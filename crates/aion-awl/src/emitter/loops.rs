@@ -1,232 +1,340 @@
-use crate::{CallTarget, HandlerTerminal, RetrySpec, StepDecl, StepOp};
+//! Bounded-loop lowering: a top-level tail-recursive Gleam function per
+//! loop, threading the one sanctioned rebinding and a language-owned
+//! counter (survey fix 1 / D3 — workers never carry the counter), plus the
+//! statement refs/defs collectors the liveness analysis shares.
+
+use std::collections::BTreeSet;
+
+use crate::ast::{ForkHeader, LoopStmt, PipeEnd, Statement};
+use crate::{Span, Spanned};
 
 use super::context::Emitter;
 use super::error::EmitError;
-use super::helpers::{collect_expr_refs, duration_ms, expr, ident};
+use super::exprs::{Scope, expr_type, render_expr};
+use super::graph::expr_refs;
+use super::names::{ident, snake};
+use super::stmts::flush_prelude;
+use super::types::GType;
 
-impl Emitter<'_> {
-    /// Emit the call to a bounded `repeat` loop and render the loop function
-    /// itself (a top-level tail-recursive function emitted after `execute`).
-    pub(super) fn emit_repeat_call(&mut self, step: &StepDecl, cap: &str) -> Result<(), EmitError> {
-        let loop_name = format!("{}_loop", ident(&step.name));
-        let as_name = step.bind_as.as_ref().map(|bind| bind.name.clone());
-        let threads_binding = as_name
-            .as_ref()
-            .is_some_and(|name| self.bindings.contains_key(name));
-        let free = Self::loop_free_names(step, as_name.as_deref());
-        let counter = loop_counter_name(as_name.as_deref(), &free);
+/// The statement-list lowering callback a loop body recurses through.
+pub(super) type LowerBody<'c> =
+    dyn FnMut(&mut Emitter<'_>, &[Statement], &mut Scope) -> Result<(), EmitError> + 'c;
 
-        let mut call_args = vec![cap.to_owned()];
-        let mut params = vec![counter.clone()];
-        if threads_binding {
-            if let Some(name) = &as_name {
-                call_args.push(ident(name));
-                params.push(ident(name));
-            }
-        }
-        for name in &free {
-            call_args.push(ident(name));
-            params.push(ident(name));
-        }
-        self.line(&format!("{loop_name}({})", call_args.join(", ")));
+/// Lower a bounded loop to a top-level tail-recursive function with a
+/// language-owned counter (survey fix 1: workers never carry the counter).
+pub(super) fn lower_loop(
+    emitter: &mut Emitter<'_>,
+    ctx_step: &str,
+    looped: &LoopStmt,
+    scope: &mut Scope,
+    lower_body: &mut LowerBody<'_>,
+) -> Result<(), EmitError> {
+    let max = loop_preflight(looped, scope)?;
+    let mut prelude = Vec::new();
+    let seed = render_expr(emitter, &looped.seed, scope, &mut prelude)?;
+    let seed_ty = expr_type(emitter, &looped.seed, scope)?;
+    let max_rendered = render_expr(emitter, &max.expr, scope, &mut prelude)?;
+    flush_prelude(emitter, prelude);
 
-        if self.loop_fn_names.insert(loop_name.clone()) {
-            let rendered = self.render_loop_fn(step, &loop_name, &params, &counter)?;
-            self.loop_fns.push(rendered);
-        }
-        Ok(())
+    let free = loop_free_names(looped, scope);
+    let loop_fn = format!("{}_loop_{}", snake(ctx_step), emitter.loop_counter);
+    emitter.loop_counter += 1;
+
+    let var = ident(&looped.var);
+    let counter_named = looped.counter.is_some();
+    let result_ty = if counter_named {
+        format!("#({}, Int)", emitter.env.gleam_type(&seed_ty))
+    } else {
+        emitter.env.gleam_type(&seed_ty)
+    };
+    let (comma_free, comma_annotated_free) = loop_param_lists(emitter, &free, scope);
+
+    // Call site.
+    let binder = if counter_named {
+        format!(
+            "#({var}, {})",
+            ident(
+                &looped
+                    .counter
+                    .as_ref()
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default()
+            )
+        )
+    } else {
+        var.clone()
+    };
+    emitter.line(&format!(
+        "use {binder} <- try({loop_fn}({seed}, 0, {max_rendered}{comma_free}))"
+    ));
+
+    // Loop function body.
+    let mut loop_scope = scope.clone();
+    loop_scope.insert(looped.var.clone(), seed_ty.clone());
+    if let Some(counter) = &looped.counter {
+        loop_scope.insert(counter.name.clone(), GType::Int);
     }
-
-    pub(super) fn render_loop_fn(
-        &mut self,
-        step: &StepDecl,
-        loop_name: &str,
-        params: &[String],
-        counter: &str,
-    ) -> Result<String, EmitError> {
-        let as_name = step.bind_as.as_ref().map(|bind| ident(&bind.name));
-        let threads_binding = step
-            .bind_as
-            .as_ref()
-            .is_some_and(|bind| self.bindings.contains_key(&bind.name));
-        let recurse = {
-            let mut args = vec![format!("{counter} - 1")];
-            args.extend_from_slice(&params[1..]);
-            format!("{loop_name}({})", args.join(", "))
-        };
-        if let Some(until) = &step.until {
-            self.check_no_opaque_refs(until)?;
-        }
-        let until = step.until.as_ref().map(expr);
-        self.capture(|this| {
-            this.line(&format!(
-                "/// Bounded `repeat` loop for step `{}`: runs the step body up to the",
-                step.name
-            ));
-            this.line("/// cap, threading the `as` binding through iterations and exiting early");
-            this.line("/// when the `until` condition holds.");
-            this.line(&format!("fn {loop_name}({}) {{", params.join(", ")));
-            this.indented_try(|this| {
-                if threads_binding {
-                    let bound = as_name.clone().unwrap_or_default();
-                    this.line(&format!("case {counter} <= 0 {{"));
-                    this.indented_try(|this| {
-                        this.line(&format!("True -> Ok({bound})"));
-                        this.line("False -> {");
-                        this.indented_try(|this| {
-                            this.emit_loop_round(step, &bound, until.as_deref(), &recurse)
-                        })?;
-                        this.line("}");
-                        Ok(())
-                    })?;
-                    this.line("}");
-                    Ok(())
-                } else {
-                    let pattern = as_name.clone().unwrap_or_else(|| "_".to_owned());
-                    let exit = as_name.clone().unwrap_or_else(|| "Nil".to_owned());
-                    this.line("let attempt =");
-                    this.indented_try(|t| t.emit_attempt(step))?;
-                    this.line("case attempt {");
-                    this.indented_try(|this| {
-                        this.line(&format!("Ok({pattern}) ->"));
-                        this.indented_try(|this| {
-                            let cap_case = format!("case {counter} <= 1 {{");
-                            if let Some(until) = &until {
-                                this.line(&format!("case {until} {{"));
-                                this.indented_try(|this| {
-                                    this.line(&format!("True -> Ok({exit})"));
-                                    this.line("False ->");
-                                    this.indented(|this| {
-                                        this.line(&cap_case);
-                                        this.indented(|this| {
-                                            this.line(&format!("True -> Ok({exit})"));
-                                            this.line(&format!("False -> {recurse}"));
-                                        });
-                                        this.line("}");
-                                    });
-                                    Ok(())
-                                })?;
-                                this.line("}");
-                            } else {
-                                this.line(&cap_case);
-                                this.indented(|this| {
-                                    this.line(&format!("True -> Ok({exit})"));
-                                    this.line(&format!("False -> {recurse}"));
-                                });
-                                this.line("}");
-                            }
-                            Ok(())
-                        })?;
-                        this.line("Error(awl_error) -> Error(awl_error)");
-                        Ok(())
-                    })?;
-                    this.line("}");
-                    Ok(())
-                }
-            })?;
-            this.line("}");
-            Ok(())
-        })
-    }
-
-    /// One round of a binding-threading loop: run the attempt, rebind, check
-    /// `until`, and recurse or exit with the current binding.
-    pub(super) fn emit_loop_round(
-        &mut self,
-        step: &StepDecl,
-        bound: &str,
-        until: Option<&str>,
-        recurse: &str,
-    ) -> Result<(), EmitError> {
-        self.line("let attempt =");
-        self.indented_try(|this| this.emit_attempt(step))?;
-        self.line("case attempt {");
-        self.indented_try(|this| {
-            if let Some(until) = until {
-                this.line(&format!("Ok({bound}) ->"));
+    let until = looped.until.as_ref().map(|tail| tail.expr.clone());
+    let body = looped.body.clone();
+    let rendered = emitter.capture(|this| {
+        let var_annotation = this.env.gleam_type(&seed_ty);
+        this.line(&format!(
+            "fn {loop_fn}({var}: {var_annotation}, awl_count: Int, awl_max: \
+             Int{comma_annotated_free}) -> Result({result_ty}, AwlError) {{"
+        ));
+        this.indented_try(|this| {
+            let mut inner_scope = loop_scope.clone();
+            lower_body(this, &body, &mut inner_scope)?;
+            this.line("let awl_count = awl_count + 1");
+            let exit = if counter_named {
+                format!("Ok(#({var}, awl_count))")
+            } else {
+                format!("Ok({var})")
+            };
+            let recurse = format!("{loop_fn}({var}, awl_count, awl_max{comma_free})");
+            let bound_check = |this: &mut Emitter<'_>| {
+                this.line("case awl_count >= awl_max {");
                 this.indented(|this| {
-                    this.line(&format!("case {until} {{"));
+                    this.line(&format!("True -> {exit}"));
+                    this.line(&format!("False -> {recurse}"));
+                });
+                this.line("}");
+            };
+            match &until {
+                Some(condition) => {
+                    let mut condition_prelude = Vec::new();
+                    let rendered_condition =
+                        render_expr(this, condition, &inner_scope, &mut condition_prelude)?;
+                    flush_prelude(this, condition_prelude);
+                    this.line(&format!("case {rendered_condition} {{"));
                     this.indented(|this| {
-                        this.line(&format!("True -> Ok({bound})"));
-                        this.line(&format!("False -> {recurse}"));
+                        this.line(&format!("True -> {exit}"));
+                        this.line("False ->");
+                        this.indented(bound_check);
                     });
                     this.line("}");
-                });
-            } else {
-                this.line(&format!("Ok({bound}) -> {recurse}"));
+                }
+                None => bound_check(this),
             }
-            this.line("Error(awl_error) -> Error(awl_error)");
             Ok(())
         })?;
-        self.line("}");
+        this.line("}");
         Ok(())
-    }
+    })?;
+    emitter.loop_fns.push(rendered);
 
-    /// Names (beyond the loop counter and the `as` binding) that the loop
-    /// body references and therefore must receive as parameters.
-    ///
-    /// The `as` name is never a free name: the loop body binds it on every
-    /// iteration (threaded through parameters when a prior binding exists,
-    /// or bound fresh by the `Ok(pattern) ->` arm otherwise), so any
-    /// reference to it inside the loop (e.g. from `until`) resolves locally.
-    pub(super) fn loop_free_names(step: &StepDecl, as_name: Option<&str>) -> Vec<String> {
-        let mut refs = Vec::new();
-        match &step.op {
-            StepOp::Do(CallTarget::Action(call)) => {
-                for arg in &call.args {
-                    collect_expr_refs(arg, &mut refs);
+    scope.insert(looped.var.clone(), seed_ty);
+    if let Some(counter) = &looped.counter {
+        scope.insert(counter.name.clone(), GType::Int);
+    }
+    Ok(())
+}
+
+/// Refuse loop shapes the tail-recursive lowering cannot honor, returning
+/// the mandatory `max` tail: the loop must be bounded, its body may not
+/// route (no early-exit channel in the generated function), and the ceiling
+/// must be loop-invariant (it renders once, at the loop call site).
+fn loop_preflight<'l>(
+    looped: &'l LoopStmt,
+    scope: &Scope,
+) -> Result<&'l crate::ast::LoopTail, EmitError> {
+    let Some(max) = &looped.max else {
+        return Err(EmitError::new(
+            looped.span,
+            "an unbounded loop (no `max`) is illegal until implicit continue-as-new lands",
+        ));
+    };
+    if let Some(span) = first_route_span(&looped.body) {
+        return Err(EmitError::new(
+            span,
+            "a `route` inside a `loop` body is not lowerable in the Gleam stopgap — the \
+             generated loop function has no early-exit channel; end the loop through `until` \
+             and route from the loop-carrying step's outcome clauses",
+        ));
+    }
+    let mut max_refs = BTreeSet::new();
+    expr_refs(&max.expr, &mut max_refs);
+    if let Some(name) = max_refs.iter().find(|name| !scope.contains_key(*name)) {
+        return Err(EmitError::new(
+            max.expr.span(),
+            format!(
+                "`max` is evaluated once, before the loop runs — `{name}` is not bound before \
+                 the loop (the ceiling must be an expression over inputs and prior bindings)"
+            ),
+        ));
+    }
+    Ok(max)
+}
+
+/// The span of the first `route` (statement or pipe terminator) anywhere in
+/// a loop body. The generated loop function appends the counter increment
+/// and the `until`/`max` exit after the lowered body, so a route can never
+/// reach tail position there: left in place it would be a discarded
+/// mid-function expression (a `route <outcome>` that never ends the run, a
+/// `route <step>` that runs the target region's actions and then keeps
+/// looping). The stopgap refuses the shape up front.
+fn first_route_span(statements: &[Statement]) -> Option<Span> {
+    for statement in statements {
+        match statement {
+            Statement::Route(route) => return Some(route.span),
+            Statement::Pipe(pipe) => {
+                if matches!(pipe.end, PipeEnd::Route(_)) {
+                    return Some(pipe.span);
                 }
             }
-            StepOp::Do(CallTarget::Child { args, .. }) => {
-                for arg in args {
-                    collect_expr_refs(arg, &mut refs);
+            Statement::Fork(fork) => {
+                if let Some(span) = first_route_span(&fork.body) {
+                    return Some(span);
                 }
             }
-            StepOp::Wait { .. } | StepOp::Sleep(_) => {}
-        }
-        if let Some(until) = &step.until {
-            collect_expr_refs(until, &mut refs);
-        }
-        for handler in [&step.on_timeout, &step.on_failure].into_iter().flatten() {
-            for action in &handler.actions {
-                let args = match action {
-                    CallTarget::Action(call) => &call.args,
-                    CallTarget::Child { args, .. } => args,
-                };
-                for arg in args {
-                    collect_expr_refs(arg, &mut refs);
+            Statement::Loop(inner) => {
+                if let Some(span) = first_route_span(&inner.body) {
+                    return Some(span);
                 }
             }
-            if let HandlerTerminal::Finish(value) = &handler.terminal {
-                collect_expr_refs(value, &mut refs);
+            Statement::SubStep(sub) => {
+                if let Some(span) = first_route_span(&sub.body) {
+                    return Some(span);
+                }
+            }
+            Statement::Call(_) | Statement::Spawn(_) | Statement::Wait(_) | Statement::Sleep(_) => {
             }
         }
-        refs.retain(|name| as_name != Some(name.as_str()));
-        refs
+    }
+    None
+}
+
+/// Free names a loop body and its `until` reference beyond the loop-locals:
+/// these thread into the generated loop function as parameters.
+fn loop_free_names(looped: &LoopStmt, scope: &Scope) -> Vec<String> {
+    let mut refs = BTreeSet::new();
+    statements_expr_refs(&looped.body, &mut refs);
+    if let Some(until) = &looped.until {
+        expr_refs(&until.expr, &mut refs);
+    }
+    let mut defs = BTreeSet::new();
+    statement_defs(&looped.body, &mut defs);
+    refs.remove(&looped.var);
+    if let Some(counter) = &looped.counter {
+        refs.remove(&counter.name);
+    }
+    refs.into_iter()
+        .filter(|name| !defs.contains(name) && scope.contains_key(name))
+        .collect()
+}
+
+/// The `, a, b` call-argument tail and its `, a: A, b: B` annotated twin.
+fn loop_param_lists(emitter: &Emitter<'_>, free: &[String], scope: &Scope) -> (String, String) {
+    if free.is_empty() {
+        return (String::new(), String::new());
+    }
+    let args = free
+        .iter()
+        .map(|name| ident(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let annotated = free
+        .iter()
+        .map(|name| {
+            let annotation = scope
+                .get(name)
+                .map_or_else(|| "Nil".to_owned(), |ty| emitter.env.gleam_type(ty));
+            format!("{}: {annotation}", ident(name))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    (format!(", {args}"), format!(", {annotated}"))
+}
+
+/// Names referenced anywhere in a statement list's expressions.
+pub(super) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet<String>) {
+    for statement in statements {
+        match statement {
+            Statement::Call(call) => {
+                for arg in &call.call.args {
+                    expr_refs(&arg.value, refs);
+                }
+            }
+            Statement::Spawn(spawn) => {
+                for arg in &spawn.call.args {
+                    expr_refs(&arg.value, refs);
+                }
+            }
+            Statement::Pipe(pipe) => {
+                expr_refs(&pipe.head, refs);
+                if let crate::ast::PipeEnd::Route(target) = &pipe.end
+                    && let Some(payload) = &target.payload
+                {
+                    for arg in payload {
+                        expr_refs(&arg.value, refs);
+                    }
+                }
+            }
+            Statement::Wait(_) | Statement::Sleep(_) => {}
+            Statement::Fork(fork) => {
+                if let ForkHeader::Collection { collection, .. } = &fork.header {
+                    expr_refs(collection, refs);
+                }
+                statements_expr_refs(&fork.body, refs);
+            }
+            Statement::Loop(looped) => {
+                expr_refs(&looped.seed, refs);
+                if let Some(max) = &looped.max {
+                    expr_refs(&max.expr, refs);
+                }
+                if let Some(until) = &looped.until {
+                    expr_refs(&until.expr, refs);
+                }
+                statements_expr_refs(&looped.body, refs);
+            }
+            Statement::Route(route) => {
+                if let Some(payload) = &route.target.payload {
+                    for arg in payload {
+                        expr_refs(&arg.value, refs);
+                    }
+                }
+            }
+            Statement::SubStep(sub) => {
+                statements_expr_refs(&sub.body, refs);
+            }
+        }
     }
 }
 
-/// Pick a loop-counter name that cannot shadow a name the loop body needs.
-fn loop_counter_name(as_name: Option<&str>, free: &[String]) -> String {
-    let mut counter = "remaining".to_owned();
-    let taken =
-        |candidate: &str| as_name == Some(candidate) || free.iter().any(|name| name == candidate);
-    while taken(&counter) {
-        counter.push('_');
-    }
-    counter
-}
-
-/// `retry` parameters for the generated `awl_retry` child helper:
-/// `(attempts, initial delay ms, multiplier, max delay ms)`.
-pub(super) fn child_retry_params(retry: &RetrySpec) -> (u64, u64, u64, u64) {
-    match retry {
-        RetrySpec::Every { count, every, .. } => {
-            let delay = duration_ms(every);
-            (*count, delay, 1, delay)
+/// Names a statement list defines (loop-var/counter escapes included, fork
+/// collection-branch locals excluded).
+pub(super) fn statement_defs(statements: &[Statement], defs: &mut BTreeSet<String>) {
+    for statement in statements {
+        match statement {
+            Statement::Call(call) => {
+                if let Some(bind) = &call.bind {
+                    defs.insert(bind.name.clone());
+                }
+            }
+            Statement::Pipe(pipe) => {
+                if let crate::ast::PipeEnd::Bind(binding) = &pipe.end {
+                    defs.insert(binding.name.clone());
+                }
+            }
+            Statement::Wait(wait) => {
+                defs.insert(wait.bind.name.clone());
+            }
+            Statement::Fork(fork) => {
+                if matches!(fork.header, ForkHeader::Named) {
+                    statement_defs(&fork.body, defs);
+                }
+                if let Some(bind) = &fork.join.bind {
+                    defs.insert(bind.name.clone());
+                }
+            }
+            Statement::Loop(looped) => {
+                defs.insert(looped.var.clone());
+                if let Some(counter) = &looped.counter {
+                    defs.insert(counter.name.clone());
+                }
+            }
+            Statement::SubStep(sub) => statement_defs(&sub.body, defs),
+            Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
         }
-        RetrySpec::Backoff {
-            count, min, max, ..
-        } => (*count, duration_ms(min), 2, duration_ms(max)),
     }
 }

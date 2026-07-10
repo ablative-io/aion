@@ -1,0 +1,30 @@
+//! Prepare a dataset in two inner stages, then hand the cleaned batch on.
+workflow prepare_dataset
+  input source: String
+
+  outcome prepared:      type Prepared, route success
+  outcome hollow_source: type Hollow,   route failure
+
+type Batch    { rows: Int, path: String }
+type Prepared { path: String, rows: Int }
+type Hollow   { reason: String }
+
+worker data
+  action fetch(source: String) -> Batch
+    node shell, timeout 10m
+  action clean(path: String) -> Batch
+    node shell, timeout 10m
+
+step prepare
+  step fetch_batch
+    fetch(source: source) -> raw
+    outcome full: when raw.rows > 0, route scrub
+    outcome nothing: otherwise, route hollow
+
+  step scrub
+    clean(path: raw.path) -> cleaned
+
+  outcome done: when cleaned.rows > 0,
+    route prepared(path: cleaned.path, rows: cleaned.rows)
+  outcome hollow: otherwise,
+    route hollow_source(reason: "no rows survived")

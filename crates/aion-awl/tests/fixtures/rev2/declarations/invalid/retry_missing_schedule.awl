@@ -1,0 +1,13 @@
+//! Retry declares a count but no schedule — every or backoff must follow.
+workflow notify_once
+  input message: String
+  outcome sent: type Receipt, route success
+
+type Receipt { id: String, accepted: Bool }
+
+worker notifier
+  action send_message(message: String) -> Receipt
+    node chat, timeout 30s, retry 2
+
+step send
+  message |> send_message |> route sent

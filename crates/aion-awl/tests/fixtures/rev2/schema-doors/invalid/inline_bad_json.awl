@@ -1,0 +1,20 @@
+//! The inline schema is not JSON at all; the parser must refuse at the bad token.
+workflow inline_bad_json
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema {
+  "type": "object",
+  "required": wibble,
+  "properties": {
+    "id": { "type": "string" }
+  }
+}
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

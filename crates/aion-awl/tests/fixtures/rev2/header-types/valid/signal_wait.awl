@@ -1,0 +1,27 @@
+//! Escalate a finding to a reviewer and wait for their ruling.
+//! The ruling decides which way the run ends.
+workflow escalate_finding
+  input finding: Finding
+  input reviewer: String
+  signal ruling: Ruling
+  outcome accepted:  type Ruling,    route success
+  outcome dismissed: type Dismissal, route failure
+
+type Finding   { summary: String, severity: Int }
+type Ruling    { accept: Bool, note: String }
+type Dismissal { reviewer: String, note: String }
+type Ack       { delivered: Bool }
+
+worker escalation
+  action notify(finding: Finding, reviewer: String) -> Ack
+
+step notify_reviewer
+  notify(finding: finding, reviewer: reviewer)
+
+step await_ruling
+  wait ruling -> decision
+
+  outcome approved: when decision.accept,
+    route accepted(accept: decision.accept, note: decision.note)
+  outcome denied: otherwise,
+    route dismissed(reviewer: reviewer, note: decision.note)

@@ -1,0 +1,22 @@
+//! Triage a ticket whose contract lives in a schema file beside this one.
+workflow import_ticket
+  input ticket: Ticket
+  outcome triaged: type Triaged, route success
+  outcome dropped: type Dropped, route failure
+
+type Ticket = schema("ticket.schema.json")
+
+type Triaged { title: String, assignee: String }
+type Dropped { reason: String }
+
+worker doors
+  action assign(ticket: Ticket) -> Triaged
+
+step triage
+  assign(ticket: ticket) -> assigned
+  ticket |> .assignee -> assignee
+
+  outcome claimed: when assignee is present,
+    route triaged(title: assigned.title, assignee: assignee)
+  outcome unclaimed: otherwise,
+    route dropped(reason: "nobody claimed the ticket")

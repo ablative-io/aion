@@ -1,0 +1,19 @@
+//! Triage misses a lane — Spam is never handled and there is no otherwise.
+workflow triage_ticket
+  input ticket: String
+
+  outcome dispatched: type Dispatched, route success
+
+type Category = Urgent | Routine | Spam
+type Triage     { category: Category, note: String }
+type Dispatched { lane: String }
+
+worker triage
+  action classify(ticket: String) -> Triage
+    node model, timeout 5m
+
+step classify
+  classify(ticket: ticket) -> result
+
+  outcome urgent: when result.category == Urgent, route dispatched(lane: "page")
+  outcome routine: when result.category == Routine, route dispatched(lane: "queue")

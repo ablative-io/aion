@@ -1,0 +1,17 @@
+//! Cool down before deploying.
+workflow sleep_non_duration
+  input build_id: String
+  outcome deployed: type Deployed, route success
+
+type Deployed { build_id: String }
+
+worker deployer
+  action deploy(build_id: String) -> Deployed
+
+step cooldown
+  // defect: sleep takes a duration literal, not a bare integer
+  sleep 5
+
+step deploy
+  deploy(build_id: build_id) -> result
+  result |> route deployed

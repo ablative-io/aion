@@ -1,7 +1,10 @@
-//! Lexer for the AWL workflow language.
+//! Front end for the AWL workflow language (rev-2 surface).
 //!
-//! The lexer is intentionally hand-written so the parser can rely on exact token
-//! spans, indentation tokens, and AWL's `about` prose mode.
+//! The `.awl` document is the source of truth; the canonical workflow model
+//! is its lossless parse. The lexer is hand-written so the parser can rely
+//! on exact token spans, indentation tokens, and AWL's doc-line data tokens
+//! (`//!`, `///`); the parser and canonical printer are one property:
+//! `parse ∘ print = id`, `print ∘ parse ∘ print = print`.
 
 mod ast;
 mod checker;
@@ -13,15 +16,19 @@ mod schema;
 mod spanned;
 
 pub use ast::{
-    AboutDecl, ActionDecl, ActionFieldTag, BinaryOp, BindDecl, CallExpr, CallTarget, Comment,
-    Document, DurationLiteral, EachSpec, Expr, FieldDecl, HandlerBlock, HandlerTerminal, IoDecl,
-    RecordField, RetrySpec, StepDecl, StepFieldTag, StepOp, Trivia, TypeDecl, TypeRef,
-    WorkflowDecl,
+    ActionDecl, AfterRef, Arg, BinaryOp, Binding, Call, CallStmt, ChildDecl, CombinatorCall,
+    CombinatorKind, Comment, ConfigLine, ConfigValue, DocLine, Document, DurationLiteral,
+    EnumVariant, Expr, FieldDecl, ForkHeader, ForkStmt, Guard, InputDecl, JoinLine, Lead, LoopStmt,
+    LoopTail, OnFailure, OutcomeClause, OutcomeDecl, ParamDecl, PipeEnd, PipeStage, PipeStmt,
+    PredicateKind, RetrySpec, RouteDirection, RouteStmt, RouteTarget, SignalDecl, SleepStmt,
+    SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
 };
-pub use checker::{CheckError, check};
-pub use emitter::{EmitError, emit};
+pub use checker::{CheckError, check, check_in};
+pub use emitter::{EmitError, emit, emit_in};
 pub use lexer::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 pub use parser::{ParseError, parse};
 pub use printer::print;
-pub use schema::{SchemaError, schema_for_type, schema_for_workflow};
+pub use schema::{
+    SchemaError, schema_for_type, schema_for_type_in, schema_for_workflow, schema_for_workflow_in,
+};
 pub use spanned::Spanned;

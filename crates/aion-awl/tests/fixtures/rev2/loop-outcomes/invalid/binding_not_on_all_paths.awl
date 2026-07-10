@@ -1,0 +1,31 @@
+//! Publish a note, shortening it first only when the draft runs long.
+workflow publish_note
+  input title: String
+
+  outcome published: type Published, route success
+
+type Note      { title: String, body: String, wordy: Bool }
+type Published { title: String }
+
+worker publisher
+  action draft(title: String) -> Note
+    node writer, timeout 5m
+  action trim(note: Note) -> Note
+    node writer, timeout 5m
+  action publish(note: Note) -> Published
+    node shell, timeout 2m
+
+step compose
+  draft(title: title) -> note
+
+  outcome long: when note.wordy, route shorten
+  outcome fine: otherwise, route finalize
+
+step shorten
+  trim(note: note) -> trimmed
+
+  outcome still_long: when trimmed.wordy, route finalize
+  outcome tight: otherwise, route finalize
+
+step finalize
+  trimmed |> publish |> route published

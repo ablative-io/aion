@@ -1,26 +1,64 @@
-use super::{DurationUnit, Keyword, LexError, Span, Token, TokenKind};
+use super::cursor::{Cursor, column_at};
+use super::{Keyword, LexError, Span, Token, TokenKind};
 
-/// Lex an AWL source document into tokens.
+/// Lex an AWL rev-2 source document into tokens.
 ///
-/// Blank lines and whole-line comments do not produce `Newline` or indentation
-/// changes. Non-blank lines do produce a trailing `Newline` token when the line
-/// has a physical line ending.
+/// Blank lines and whole-line `//` trivia comments do not produce `Newline`
+/// or indentation changes. Whole-line doc lines (`//!`, `///`) are data: they
+/// produce their doc token followed by a `Newline`, but never adjust the
+/// indentation stack (attachment by position is the parser's job). Doc-line
+/// classification is whole-line only: `///` or `//!` AFTER code on a line is
+/// an ordinary trivia comment, never doc data. Non-blank code lines produce a
+/// trailing `Newline` token when the line has a physical line ending.
+///
+/// An inline `schema {` type door switches the lexer into raw capture: the
+/// brace-balanced body (braces included) becomes a single
+/// [`TokenKind::SchemaBody`] token, verbatim, however many physical lines it
+/// spans — no `Newline`, `Indent`, or `Dedent` tokens are produced inside it,
+/// and its content is exempt from every AWL lexical rule. One `Newline` is
+/// emitted for the closing-brace line.
 ///
 /// # Errors
 ///
-/// Returns the first lexical error, including unterminated strings, unsupported
-/// string escapes, tabs in indentation, non-two-space indentation, and stray
-/// characters.
+/// Returns the first lexical error, including unterminated strings and inline
+/// schema bodies, unsupported string escapes, tabs in indentation,
+/// non-two-space indentation, indentation jumping more than one level, a dot
+/// without a field name, and stray characters.
 pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
     let mut lexer = Lexer::new(source);
     lexer.lex()?;
     Ok(lexer.tokens)
 }
 
+/// The classification of a whole-line `//`-prefixed comment.
+enum CommentKind {
+    /// `//!` workflow narration: data.
+    DocHeader,
+    /// `///` declaration doc (but not `////…`): data.
+    DocLine,
+    /// Plain `//` trivia.
+    Trivia,
+}
+
+/// Classify a whole-line comment starting at `text` (which begins with `//`)
+/// and return the marker length together with its kind. Only the whole-line
+/// path may use this: the spec defines `//!`/`///` doc lines as whole LINES,
+/// so a marker trailing code never classifies as data.
+fn classify_comment(text: &str) -> (usize, CommentKind) {
+    if text.starts_with("//!") {
+        return (3, CommentKind::DocHeader);
+    }
+    if text.starts_with("///") && !text.starts_with("////") {
+        return (3, CommentKind::DocLine);
+    }
+    (2, CommentKind::Trivia)
+}
+
 struct Lexer<'src> {
     source: &'src str,
     tokens: Vec<Token>,
     indents: Vec<usize>,
+    /// Byte offset of the start of the line currently being lexed.
     offset: usize,
     line: usize,
 }
@@ -37,12 +75,8 @@ impl<'src> Lexer<'src> {
     }
 
     fn lex(&mut self) -> Result<(), LexError> {
-        for raw_line in self.source.split_inclusive('\n') {
-            self.lex_line(raw_line)?;
-            self.offset += raw_line.len();
-            if raw_line.ends_with('\n') {
-                self.line += 1;
-            }
+        while self.offset < self.source.len() {
+            self.lex_line()?;
         }
 
         while self.indents.len() > 1 {
@@ -56,125 +90,183 @@ impl<'src> Lexer<'src> {
         Ok(())
     }
 
-    fn lex_line(&mut self, raw_line: &str) -> Result<(), LexError> {
-        let has_newline = raw_line.ends_with('\n');
-        let mut line_text = if has_newline {
-            &raw_line[..raw_line.len() - 1]
-        } else {
-            raw_line
-        };
-        if let Some(stripped) = line_text.strip_suffix('\r') {
-            line_text = stripped;
-        }
+    fn lex_line(&mut self) -> Result<(), LexError> {
+        let source = self.source;
+        let mut line_start = self.offset;
+        let (mut line_text, mut terminator_len, mut has_line_feed) = split_line(source, line_start);
 
-        let content_start = count_leading_spaces(line_text, self.offset, self.line)?;
+        let content_start = count_leading_spaces(line_text, line_start, self.line)?;
         let after_indent = &line_text[content_start..];
         if after_indent.trim().is_empty() {
+            self.finish_line(line_start, line_text, terminator_len, has_line_feed, false);
             return Ok(());
         }
-        if after_indent.trim_start().starts_with("//") {
-            let comment_start = content_start + after_indent.find("//").unwrap_or(0);
-            let comment_text = normalize_comment_text(&line_text[comment_start + 2..]);
-            self.tokens.push(Token::new(
-                TokenKind::Comment(comment_text.to_owned()),
-                Span::new(
-                    self.offset + comment_start,
-                    self.offset + line_text.len(),
-                    self.line,
-                    comment_start + 1,
-                ),
-            ));
+        if after_indent.starts_with("//") {
+            let is_data = self.push_line_comment(line_start, line_text, content_start);
+            self.finish_line(
+                line_start,
+                line_text,
+                terminator_len,
+                has_line_feed,
+                is_data,
+            );
             return Ok(());
         }
         if content_start % 2 != 0 {
-            let span = Span::new(self.offset, self.offset + content_start, self.line, 1);
+            let span = Span::new(line_start, line_start + content_start, self.line, 1);
             return Err(LexError::new(span, "indentation must use two-space levels"));
         }
 
-        self.adjust_indent(content_start)?;
+        self.adjust_indent(line_start, content_start)?;
 
-        let mut cursor = Cursor::new(line_text, self.offset, self.line, content_start);
-        let mut just_emitted_about = false;
+        let mut cursor = Cursor::new(line_text, line_start, self.line, content_start);
 
-        while !cursor.is_at_end() {
+        loop {
             cursor.skip_inline_whitespace();
             if cursor.is_at_end() {
                 break;
             }
 
-            if just_emitted_about {
-                let prose_start = cursor.index;
-                let text = line_text[prose_start..].trim_start_matches(' ');
-                let trim_delta = line_text[prose_start..].len() - text.len();
-                let span_start = self.offset + prose_start + trim_delta;
-                let column = prose_start + trim_delta + 1;
-                self.tokens.push(Token::new(
-                    TokenKind::Prose(text.to_owned()),
-                    Span::new(span_start, self.offset + line_text.len(), self.line, column),
-                ));
+            if cursor.starts_with("//") {
+                self.push_trailing_comment(&cursor);
                 break;
             }
 
-            if cursor.starts_with("//") {
-                let comment_start = cursor.index;
-                let comment_text = normalize_comment_text(&line_text[comment_start + 2..]);
+            if cursor.starts_with("{") && self.last_token_is_schema_keyword() {
+                let open = cursor.base + cursor.index;
+                let open_span = cursor.span(cursor.index, cursor.index + 1);
+                let (end, newlines) = scan_schema_body(source, open, open_span)?;
                 self.tokens.push(Token::new(
-                    TokenKind::Comment(comment_text.to_owned()),
-                    Span::new(
-                        self.offset + comment_start,
-                        self.offset + line_text.len(),
-                        self.line,
-                        comment_start + 1,
-                    ),
+                    TokenKind::SchemaBody(source[open..end].to_owned()),
+                    Span::new(open, end, open_span.line, open_span.column),
                 ));
-                break;
+                if newlines == 0 {
+                    cursor.index = end - cursor.base;
+                } else {
+                    self.line += newlines;
+                    let close_start = source[..end].rfind('\n').map_or(0, |at| at + 1);
+                    (line_text, terminator_len, has_line_feed) = split_line(source, close_start);
+                    line_start = close_start;
+                    cursor = Cursor::new(line_text, close_start, self.line, end - close_start);
+                }
+                continue;
             }
 
             let token = cursor.next_token()?;
-            just_emitted_about = matches!(token.kind, TokenKind::Keyword(Keyword::About));
             self.tokens.push(token);
         }
 
-        if has_newline {
-            self.tokens.push(Token::new(
-                TokenKind::Newline,
-                Span::new(
-                    self.offset + line_text.len(),
-                    self.offset + line_text.len() + 1,
-                    self.line,
-                    line_text.len() + 1,
-                ),
-            ));
-        }
-
+        self.finish_line(line_start, line_text, terminator_len, has_line_feed, true);
         Ok(())
     }
 
-    fn adjust_indent(&mut self, spaces: usize) -> Result<(), LexError> {
-        let current = *self.indents.last().unwrap_or(&0);
+    /// Close out the physical line starting at `line_start`: emit its
+    /// `Newline` token (when asked and the line has a line feed), advance the
+    /// line counter, and move `offset` past the terminator.
+    fn finish_line(
+        &mut self,
+        line_start: usize,
+        line_text: &str,
+        terminator_len: usize,
+        has_line_feed: bool,
+        emit_newline: bool,
+    ) {
+        if emit_newline && has_line_feed {
+            let newline_start = line_start + line_text.len();
+            self.tokens.push(Token::new(
+                TokenKind::Newline,
+                Span::new(
+                    newline_start,
+                    newline_start + terminator_len,
+                    self.line,
+                    column_at(line_text, line_text.len()),
+                ),
+            ));
+        }
+        if has_line_feed {
+            self.line += 1;
+        }
+        self.offset = line_start + line_text.len() + terminator_len;
+    }
+
+    fn last_token_is_schema_keyword(&self) -> bool {
+        matches!(
+            self.tokens.last(),
+            Some(token) if token.kind == TokenKind::Keyword(Keyword::Schema)
+        )
+    }
+
+    /// Push the token for a whole-line comment or doc line starting at
+    /// `start` within `line_text`, and report whether it was a data token
+    /// (doc line).
+    fn push_line_comment(&mut self, line_start: usize, line_text: &str, start: usize) -> bool {
+        let (marker_len, kind) = classify_comment(&line_text[start..]);
+        let text = &line_text[start + marker_len..];
+        let (kind, is_data) = match kind {
+            CommentKind::DocHeader => (TokenKind::DocHeader(text.to_owned()), true),
+            CommentKind::DocLine => (TokenKind::DocLine(text.to_owned()), true),
+            CommentKind::Trivia => (
+                TokenKind::Comment(normalize_comment_text(text).to_owned()),
+                false,
+            ),
+        };
+        self.tokens.push(Token::new(
+            kind,
+            Span::new(
+                line_start + start,
+                line_start + line_text.len(),
+                self.line,
+                column_at(line_text, start),
+            ),
+        ));
+        is_data
+    }
+
+    /// Push a `//…` tail after code on a line as a trivia comment. Doc
+    /// markers (`///`, `//!`) trailing code are NOT doc data — the spec
+    /// defines doc lines as whole lines, so classification is positional: a
+    /// trailing marker is an ordinary comment whose text keeps the extra
+    /// marker characters.
+    fn push_trailing_comment(&mut self, cursor: &Cursor<'_>) {
+        let text = &cursor.line[cursor.index + 2..];
+        self.tokens.push(Token::new(
+            TokenKind::Comment(normalize_comment_text(text).to_owned()),
+            Span::new(
+                cursor.base + cursor.index,
+                cursor.base + cursor.line.len(),
+                cursor.line_no,
+                column_at(cursor.line, cursor.index),
+            ),
+        ));
+    }
+
+    fn adjust_indent(&mut self, line_start: usize, spaces: usize) -> Result<(), LexError> {
+        let current = self.indents.last().copied().unwrap_or(0);
         match spaces.cmp(&current) {
             std::cmp::Ordering::Greater => {
-                let mut level = current + 2;
-                while level <= spaces {
-                    self.indents.push(level);
-                    self.tokens.push(Token::new(
-                        TokenKind::Indent,
-                        Span::new(self.offset, self.offset + spaces, self.line, 1),
+                if spaces > current + 2 {
+                    return Err(LexError::new(
+                        Span::new(line_start, line_start + spaces, self.line, 1),
+                        "indentation increases by more than one two-space level",
                     ));
-                    level += 2;
                 }
+                self.indents.push(spaces);
+                self.tokens.push(Token::new(
+                    TokenKind::Indent,
+                    Span::new(line_start, line_start + spaces, self.line, 1),
+                ));
             }
             std::cmp::Ordering::Less => {
                 while self.indents.last().copied().unwrap_or(0) > spaces {
                     self.indents.pop();
                     self.tokens.push(Token::new(
                         TokenKind::Dedent,
-                        Span::new(self.offset, self.offset, self.line, 1),
+                        Span::new(line_start, line_start, self.line, 1),
                     ));
                 }
                 if self.indents.last().copied().unwrap_or(0) != spaces {
                     return Err(LexError::new(
-                        Span::new(self.offset, self.offset + spaces, self.line, 1),
+                        Span::new(line_start, line_start + spaces, self.line, 1),
                         "dedent does not match a previous indentation level",
                     ));
                 }
@@ -185,215 +277,77 @@ impl<'src> Lexer<'src> {
     }
 }
 
-struct Cursor<'line> {
-    line: &'line str,
-    base: usize,
-    line_no: usize,
-    index: usize,
+/// Split the physical line starting at `start`: the content (without its
+/// terminator), the terminator's byte length (`\n` → 1, `\r\n` → 2, a bare
+/// trailing `\r` at end of input → 1, end of input → 0), and whether the
+/// terminator includes a line feed.
+fn split_line(source: &str, start: usize) -> (&str, usize, bool) {
+    let rest = &source[start..];
+    match rest.find('\n') {
+        Some(at) => {
+            let raw = &rest[..at];
+            match raw.strip_suffix('\r') {
+                Some(content) => (content, 2, true),
+                None => (raw, 1, true),
+            }
+        }
+        None => match rest.strip_suffix('\r') {
+            Some(content) => (content, 1, false),
+            None => (rest, 0, false),
+        },
+    }
 }
 
-impl<'line> Cursor<'line> {
-    const fn new(line: &'line str, base: usize, line_no: usize, index: usize) -> Self {
-        Self {
-            line,
-            base,
-            line_no,
-            index,
-        }
-    }
-
-    fn is_at_end(&self) -> bool {
-        self.index >= self.line.len()
-    }
-
-    fn starts_with(&self, needle: &str) -> bool {
-        self.line[self.index..].starts_with(needle)
-    }
-
-    fn skip_inline_whitespace(&mut self) {
-        while matches!(self.current(), Some(' ')) {
-            self.advance_char();
-        }
-    }
-
-    fn current(&self) -> Option<char> {
-        self.line[self.index..].chars().next()
-    }
-
-    fn peek_after_current(&self) -> Option<char> {
-        let mut chars = self.line[self.index..].chars();
-        chars.next()?;
-        chars.next()
-    }
-
-    fn next_token(&mut self) -> Result<Token, LexError> {
-        let start = self.index;
-        let ch = self.advance_char().ok_or_else(|| {
-            LexError::new(self.span(start, start), "unexpected end of source line")
-        })?;
-
+/// Scan the brace-balanced inline `schema { … }` body whose `{` sits at byte
+/// `open` in `source`. Braces inside JSON strings do not count; string
+/// escapes are skipped blind (which covers `\"`, `\\`, `\uXXXX`, `\/`, and
+/// every other JSON escape for balancing purposes); an unclosed quote ends at
+/// its line so a typo cannot swallow the rest of the document. Returns the
+/// byte offset just past the matching `}` and the number of line feeds
+/// crossed.
+///
+/// # Errors
+///
+/// Returns an error spanning the opening `{` when the document ends before
+/// the matching `}`.
+fn scan_schema_body(
+    source: &str,
+    open: usize,
+    open_span: Span,
+) -> Result<(usize, usize), LexError> {
+    let mut depth = 0usize;
+    let mut newlines = 0usize;
+    let mut in_string = false;
+    let mut chars = source[open..].char_indices();
+    while let Some((at, ch)) = chars.next() {
         match ch {
-            '(' => Ok(self.simple(TokenKind::LeftParen, start)),
-            ')' => Ok(self.simple(TokenKind::RightParen, start)),
-            '{' => Ok(self.simple(TokenKind::LeftBrace, start)),
-            '}' => Ok(self.simple(TokenKind::RightBrace, start)),
-            '[' => Ok(self.simple(TokenKind::LeftBracket, start)),
-            ']' => Ok(self.simple(TokenKind::RightBracket, start)),
-            ':' => Ok(self.simple(TokenKind::Colon, start)),
-            ',' => Ok(self.simple(TokenKind::Comma, start)),
-            '+' => Ok(self.simple(TokenKind::Plus, start)),
-            '.' if self.consume_if('.') => Ok(self.spanned(TokenKind::DotDot, start, self.index)),
-            '.' => Ok(self.simple(TokenKind::Dot, start)),
-            '-' if self.consume_if('>') => Ok(self.spanned(TokenKind::Arrow, start, self.index)),
-            '=' if self.consume_if('=') => {
-                Ok(self.spanned(TokenKind::EqualEqual, start, self.index))
+            '\n' => {
+                newlines += 1;
+                in_string = false;
             }
-            '!' if self.consume_if('=') => {
-                Ok(self.spanned(TokenKind::BangEqual, start, self.index))
-            }
-            '<' if self.consume_if('=') => {
-                Ok(self.spanned(TokenKind::LessEqual, start, self.index))
-            }
-            '<' => Ok(self.simple(TokenKind::Less, start)),
-            '>' if self.consume_if('=') => {
-                Ok(self.spanned(TokenKind::GreaterEqual, start, self.index))
-            }
-            '>' => Ok(self.simple(TokenKind::Greater, start)),
-            '"' => self.string(start),
-            ch if ch.is_ascii_digit() => self.number(start),
-            ch if ch.is_ascii_lowercase() => Ok(self.word(start, false)),
-            ch if ch.is_ascii_uppercase() => Ok(self.word(start, true)),
-            _ => Err(LexError::new(
-                self.span(start, self.index),
-                format!("stray character `{ch}`"),
-            )),
-        }
-    }
-
-    fn simple(&self, kind: TokenKind, start: usize) -> Token {
-        self.spanned(kind, start, self.index)
-    }
-
-    fn spanned(&self, kind: TokenKind, start: usize, end: usize) -> Token {
-        Token::new(kind, self.span(start, end))
-    }
-
-    fn span(&self, start: usize, end: usize) -> Span {
-        Span::new(self.base + start, self.base + end, self.line_no, start + 1)
-    }
-
-    fn advance_char(&mut self) -> Option<char> {
-        let ch = self.current()?;
-        self.index += ch.len_utf8();
-        Some(ch)
-    }
-
-    fn consume_if(&mut self, expected: char) -> bool {
-        if self.current() == Some(expected) {
-            self.advance_char();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn string(&mut self, start: usize) -> Result<Token, LexError> {
-        let mut value = String::new();
-        while let Some(ch) = self.advance_char() {
-            match ch {
-                '"' => return Ok(self.spanned(TokenKind::String(value), start, self.index)),
-                '\\' => {
-                    let escape_start = self.index - 1;
-                    let escaped = self.advance_char().ok_or_else(|| {
-                        LexError::new(self.span(start, self.index), "unterminated string literal")
-                    })?;
-                    match escaped {
-                        '"' => value.push('"'),
-                        '\\' => value.push('\\'),
-                        'n' => value.push('\n'),
-                        't' => value.push('\t'),
-                        _ => {
-                            return Err(LexError::new(
-                                self.span(escape_start, self.index),
-                                format!("unsupported string escape `\\{escaped}`"),
-                            ));
-                        }
+            '\\' if in_string => {
+                if let Some((_, escaped)) = chars.next() {
+                    if escaped == '\n' {
+                        newlines += 1;
+                        in_string = false;
                     }
                 }
-                _ => value.push(ch),
             }
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Ok((open + at + 1, newlines));
+                }
+            }
+            _ => {}
         }
-
-        Err(LexError::new(
-            self.span(start, self.index),
-            "unterminated string literal",
-        ))
     }
-
-    fn number(&mut self, start: usize) -> Result<Token, LexError> {
-        while matches!(self.current(), Some(ch) if ch.is_ascii_digit()) {
-            self.advance_char();
-        }
-
-        let number_end = self.index;
-        if let Some(unit) = self.current().and_then(duration_unit) {
-            let after_unit = self.index + 1;
-            if !self.line[after_unit..]
-                .chars()
-                .next()
-                .is_some_and(is_identifier_continue)
-            {
-                self.advance_char();
-                let magnitude =
-                    parse_u64(&self.line[start..number_end], self.span(start, number_end))?;
-                return Ok(self.spanned(
-                    TokenKind::Duration { magnitude, unit },
-                    start,
-                    self.index,
-                ));
-            }
-        }
-
-        if self.current() == Some('.')
-            && self
-                .peek_after_current()
-                .is_some_and(|ch| ch.is_ascii_digit())
-        {
-            self.advance_char();
-            while matches!(self.current(), Some(ch) if ch.is_ascii_digit()) {
-                self.advance_char();
-            }
-            let lexeme = &self.line[start..self.index];
-            if lexeme.parse::<f64>().is_err() {
-                return Err(LexError::new(
-                    self.span(start, self.index),
-                    "invalid float literal",
-                ));
-            }
-            return Ok(self.spanned(TokenKind::Float(lexeme.to_owned()), start, self.index));
-        }
-
-        let value = parse_u64(&self.line[start..number_end], self.span(start, number_end))?;
-        Ok(self.spanned(TokenKind::Integer(value), start, number_end))
-    }
-
-    fn word(&mut self, start: usize, type_name: bool) -> Token {
-        while matches!(self.current(), Some(ch) if is_identifier_continue(ch)) {
-            self.advance_char();
-        }
-        let text = &self.line[start..self.index];
-        if !type_name {
-            if let Some(keyword) = keyword(text) {
-                return self.spanned(TokenKind::Keyword(keyword), start, self.index);
-            }
-            return self.spanned(TokenKind::Identifier(text.to_owned()), start, self.index);
-        }
-        self.spanned(
-            TokenKind::TypeIdentifier(text.to_owned()),
-            start,
-            self.index,
-        )
-    }
+    Err(LexError::new(
+        open_span,
+        "unterminated inline `schema { … }` body",
+    ))
 }
 
 fn count_leading_spaces(line: &str, base: usize, line_no: usize) -> Result<usize, LexError> {
@@ -413,67 +367,6 @@ fn count_leading_spaces(line: &str, base: usize, line_no: usize) -> Result<usize
     Ok(count)
 }
 
-fn is_identifier_continue(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
-}
-
 fn normalize_comment_text(text: &str) -> &str {
     text.strip_prefix(' ').unwrap_or(text)
-}
-
-fn duration_unit(ch: char) -> Option<DurationUnit> {
-    match ch {
-        's' => Some(DurationUnit::Seconds),
-        'm' => Some(DurationUnit::Minutes),
-        'h' => Some(DurationUnit::Hours),
-        'd' => Some(DurationUnit::Days),
-        _ => None,
-    }
-}
-
-fn parse_u64(text: &str, span: Span) -> Result<u64, LexError> {
-    text.parse::<u64>()
-        .map_err(|_| LexError::new(span, "integer literal is too large"))
-}
-
-fn keyword(text: &str) -> Option<Keyword> {
-    match text {
-        "workflow" => Some(Keyword::Workflow),
-        "about" => Some(Keyword::About),
-        "input" => Some(Keyword::Input),
-        "output" => Some(Keyword::Output),
-        "error" => Some(Keyword::Error),
-        "signal" => Some(Keyword::Signal),
-        "type" => Some(Keyword::Type),
-        "action" => Some(Keyword::Action),
-        "step" => Some(Keyword::Step),
-        "finish" => Some(Keyword::Finish),
-        "when" => Some(Keyword::When),
-        "each" => Some(Keyword::Each),
-        "in" => Some(Keyword::In),
-        "do" => Some(Keyword::Do),
-        "child" => Some(Keyword::Child),
-        "wait" => Some(Keyword::Wait),
-        "sleep" => Some(Keyword::Sleep),
-        "repeat" => Some(Keyword::Repeat),
-        "up" => Some(Keyword::Up),
-        "to" => Some(Keyword::To),
-        "until" => Some(Keyword::Until),
-        "retry" => Some(Keyword::Retry),
-        "every" => Some(Keyword::Every),
-        "backoff" => Some(Keyword::Backoff),
-        "timeout" => Some(Keyword::Timeout),
-        "on" => Some(Keyword::On),
-        "failure" => Some(Keyword::Failure),
-        "as" => Some(Keyword::As),
-        "queue" => Some(Keyword::Queue),
-        "node" => Some(Keyword::Node),
-        "not" => Some(Keyword::Not),
-        "and" => Some(Keyword::And),
-        "or" => Some(Keyword::Or),
-        "true" => Some(Keyword::True),
-        "false" => Some(Keyword::False),
-        "fail" => Some(Keyword::Fail),
-        _ => None,
-    }
 }

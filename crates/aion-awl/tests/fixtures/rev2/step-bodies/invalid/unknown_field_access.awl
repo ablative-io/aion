@@ -1,0 +1,20 @@
+//! Greet a name, shout it, then reach for a field that is not there.
+workflow unknown_field_access
+  input name: String
+  outcome shouted: type Shouted, route success
+
+type Greeting { greeting: String }
+type Shouted  { text: String }
+
+worker voice
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
+
+step greet
+  name |> greet |> .greeting -> plain
+
+step shout
+  plain |> shout -> loud
+  // defect: `Shouted` has no field `volume`
+  loud |> .volume -> text_volume
+  loud |> route shouted

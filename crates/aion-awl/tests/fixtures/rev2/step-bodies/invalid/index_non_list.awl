@@ -1,0 +1,14 @@
+//! Index into a plain string.
+workflow index_non_list
+  input topic: String
+  outcome sent: type Receipt, route success
+
+type Receipt { to: String, body: String }
+
+worker mailer
+  action send(to: String, body: String) -> Receipt
+
+step send_kickoff
+  // defect: only lists can be indexed; `topic` is a String
+  send(to: topic[0], body: "kickoff") -> receipt
+  receipt |> route sent

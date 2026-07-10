@@ -1,6 +1,6 @@
 use crate::Span;
 
-/// A typechecker diagnostic with a source span.
+/// A typechecker diagnostic with a source-correct span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckError {
     /// The source span for the offending expression or name.

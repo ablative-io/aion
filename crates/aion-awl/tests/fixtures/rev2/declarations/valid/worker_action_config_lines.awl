@@ -1,0 +1,24 @@
+//! Compile the project; on a red build, salvage the log tail before failing.
+workflow build_once
+  input project_dir: String
+  outcome built:  type BuildResult,  route success
+  outcome broken: type BuildFailure, route failure
+
+type BuildResult  { artifact_path: String, ok: Bool }
+type BuildFailure { log_tail: String }
+
+worker builder
+  action compile(project_dir: String) -> BuildResult
+    node shell, timeout 20m, retry 3 every 45s
+  action collect_log(project_dir: String) -> BuildFailure
+    node shell, timeout 90s
+
+step compile
+  compile(project_dir: project_dir) -> result
+
+  outcome ok: when result.ok,
+    route built(artifact_path: result.artifact_path, ok: result.ok)
+  outcome red: otherwise, route salvage
+
+step salvage
+  project_dir |> collect_log |> route broken

@@ -1,13 +1,14 @@
-mod calls;
+//! The rev-2 parser: token stream in, canonical workflow model out, with
+//! compiler-quality diagnostics on source-correct spans.
+
 mod document;
 mod error;
-mod expressions;
-mod source;
-mod step_fields;
+mod exprs;
+mod statements;
 mod steps;
-mod type_decls;
+mod stream;
 mod types;
+mod workers;
 
 pub use document::parse;
 pub use error::ParseError;
-pub(crate) use expressions::duration_text;

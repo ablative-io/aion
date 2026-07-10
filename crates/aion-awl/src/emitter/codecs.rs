@@ -1,309 +1,376 @@
-use crate::TypeRef;
+//! Generated codecs: the error codec, the workflow input record, the
+//! outcome union, every declared/projected record and enum, action input
+//! records, composite (list/option) codecs, and the builtin leaf codecs.
+//!
+//! Optional record fields honor D4 (absence, never null): encoding omits an
+//! absent field entirely; decoding uses `decode.optional_field`, so an
+//! explicit `null` fails to decode. Options in non-field positions (list
+//! elements) keep the SDK's nullable form — mirroring the checker's
+//! recorded `[T?]` note awaiting a spec ruling.
+
+use crate::RouteDirection;
 
 use super::context::Emitter;
-use super::helpers::{
-    codec_name, collect_composite_type, constructor, gleam_type, ident, pascal, snake,
-};
+use super::error::EmitError;
+use super::names::{ident, snake, string_lit};
+use super::types::{GType, NamedDef, type_ref_to_g};
 
-impl Emitter<'_> {
-    pub(super) fn codecs(&mut self) {
-        self.line("fn awl_error_codec() -> Codec(AwlError) {");
-        self.indented(|this| {
-            this.line("codec.json_codec(awl_error_to_json, awl_error_decoder())");
-        });
-        self.line("}");
-        self.blank();
-        self.line("fn awl_error_to_json(error_value: AwlError) -> json.Json {");
-        self.indented(|this| {
-            this.line("case error_value {");
-            this.indented(|this| {
-                for variant in ["AwlDecodeInputFailed", "AwlActivityFailed", "AwlSignalFailed", "AwlChildFailed", "AwlTimerFailed", "AwlTimedOut"] {
-                    this.line(&format!("{variant}(message) -> json.object([#(\"tag\", json.string(\"{variant}\")), #(\"message\", json.string(message))])"));
-                }
-                this.line("AwlFailed -> json.object([#(\"tag\", json.string(\"AwlFailed\"))])");
-            });
-            this.line("}");
-        });
-        self.line("}");
-        self.blank();
-        self.line("fn awl_error_decoder() -> decode.Decoder(AwlError) {");
-        self.indented(|this| {
-            this.line("use tag <- decode.field(\"tag\", decode.string)");
-            this.line("case tag {");
-            this.indented(|this| {
-                for variant in [
-                    "AwlDecodeInputFailed",
-                    "AwlActivityFailed",
-                    "AwlSignalFailed",
-                    "AwlChildFailed",
-                    "AwlTimerFailed",
-                    "AwlTimedOut",
-                ] {
-                    this.line(&format!("\"{variant}\" -> {{"));
-                    this.indented(|this| {
-                        this.line("use message <- decode.field(\"message\", decode.string)");
-                        this.line(&format!("decode.success({variant}(message))"));
-                    });
-                    this.line("}");
-                }
-                this.line("\"AwlFailed\" -> decode.success(AwlFailed)");
-                this.line("_ -> decode.failure(AwlFailed, \"AwlError\")");
-            });
-            this.line("}");
-        });
-        self.line("}");
-        self.blank();
+pub(super) fn emit_codecs(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
+    awl_error_codec(emitter);
 
-        for name in self.external_named_types() {
-            self.emit_external_codec(&name);
+    // Workflow input record.
+    let input_fields: Vec<(String, GType)> = emitter
+        .document
+        .inputs
+        .iter()
+        .map(|input| (input.name.clone(), type_ref_to_g(&input.ty)))
+        .collect();
+    let input_type = emitter.input_type.clone();
+    record_codec(emitter, &input_type, &input_fields);
+
+    // Outcome union.
+    union_codec(emitter)?;
+
+    // Declared and projected named types.
+    for name in emitter.env.order.clone() {
+        match emitter.env.get(&name).cloned() {
+            Some(NamedDef::Record(record)) => {
+                let fields: Vec<(String, GType)> = record
+                    .fields
+                    .iter()
+                    .map(|field| (field.awl_name.clone(), field.ty.clone()))
+                    .collect();
+                record_codec(emitter, &name, &fields);
+            }
+            Some(NamedDef::Enum(variants)) => enum_codec(emitter, &name, &variants),
+            Some(NamedDef::Alias(_)) | None => {}
         }
-        self.emit_codec(
-            &self.input_type_name(),
-            self.document
-                .inputs
+    }
+
+    // Action input records.
+    let document = emitter.document;
+    for worker in &document.workers {
+        for action in &worker.actions {
+            let fields: Vec<(String, GType)> = action
+                .params
                 .iter()
-                .map(|field| (field.name.as_str(), &field.ty)),
-        );
-        for decl in &self.document.types {
-            self.emit_codec(
-                &decl.name,
-                decl.fields
-                    .iter()
-                    .map(|field| (field.name.as_str(), &field.ty)),
-            );
+                .map(|param| (param.name.clone(), type_ref_to_g(&param.ty)))
+                .collect();
+            let Some(input_name) = emitter.action_inputs.get(&action.name).cloned() else {
+                continue;
+            };
+            record_codec(emitter, &input_name, &fields);
         }
-        for action in &self.document.actions {
-            let action_type_name = pascal(&action.name);
-            self.emit_codec(
-                &format!("{action_type_name}Input"),
-                action
-                    .params
-                    .iter()
-                    .map(|field| (field.name.as_str(), &field.ty)),
-            );
-        }
-        let mut composite_types = Vec::new();
-        self.collect_composite_types(&mut composite_types);
-        for ty in composite_types {
-            self.emit_composite_codec(&ty);
-        }
-        self.builtin_codecs();
-        self.error_mappers();
-        self.child_helpers();
     }
 
-    fn emit_external_codec(&mut self, name: &str) {
-        let codec_fn = snake(name);
-        let constructor_name = constructor(name);
-        self.line(&format!("fn {codec_fn}_codec() -> Codec({name}) {{"));
-        self.indented(|this| {
-            this.line(&format!(
-                "codec.json_codec({codec_fn}_to_json, {codec_fn}_decoder())"
-            ));
-        });
-        self.line("}");
-        self.line(&format!(
-            "fn {codec_fn}_to_json(value: {name}) -> json.Json {{"
-        ));
-        self.indented(|this| {
-            this.line("json.string(value.value)");
-        });
-        self.line("}");
-        self.line(&format!(
-            "fn {codec_fn}_decoder() -> decode.Decoder({name}) {{"
-        ));
-        self.indented(|this| {
-            this.line("use value <- decode.then(decode.string)");
-            this.line(&format!("decode.success({constructor_name}(value: value))"));
-        });
-        self.line("}");
-        self.blank();
-    }
+    super::composites::composite_codecs(emitter);
+    super::composites::builtin_codecs(emitter);
+    Ok(())
+}
 
-    fn emit_codec<'b, I>(&mut self, name: &str, fields: I)
-    where
-        I: IntoIterator<Item = (&'b str, &'b TypeRef)>,
-    {
-        let fields = fields.into_iter().collect::<Vec<_>>();
-        let codec_fn = snake(name);
-        let value_var = ident(&snake(name));
-        self.line(&format!("fn {codec_fn}_codec() -> Codec({name}) {{"));
-        self.indented(|this| {
+fn awl_error_codec(emitter: &mut Emitter<'_>) {
+    const MESSAGE_VARIANTS: [&str; 7] = [
+        "AwlDecodeInputFailed",
+        "AwlActivityFailed",
+        "AwlSignalFailed",
+        "AwlChildFailed",
+        "AwlTimerFailed",
+        "AwlTimedOut",
+        "AwlIndexOutOfRange",
+    ];
+    emitter.line("fn awl_error_codec() -> Codec(AwlError) {");
+    emitter.indented(|this| {
+        this.line("codec.json_codec(awl_error_to_json, awl_error_decoder())");
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line("fn awl_error_to_json(error_value: AwlError) -> json.Json {");
+    emitter.indented(|this| {
+        this.line("case error_value {");
+        this.indented(|this| {
+            for variant in MESSAGE_VARIANTS {
+                this.line(&format!(
+                    "{variant}(message) -> json.object([#(\"tag\", json.string(\"{variant}\")), \
+                     #(\"message\", json.string(message))])"
+                ));
+            }
+            this.line(
+                "AwlOutcomeFailure(outcome, payload) -> json.object([#(\"tag\", \
+                 json.string(\"AwlOutcomeFailure\")), #(\"outcome\", json.string(outcome)), \
+                 #(\"payload\", json.string(payload))])",
+            );
+            this.line("AwlFailed -> json.object([#(\"tag\", json.string(\"AwlFailed\"))])");
+        });
+        this.line("}");
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line("fn awl_error_decoder() -> decode.Decoder(AwlError) {");
+    emitter.indented(|this| {
+        this.line("use tag <- decode.field(\"tag\", decode.string)");
+        this.line("case tag {");
+        this.indented(|this| {
+            for variant in MESSAGE_VARIANTS {
+                this.line(&format!("\"{variant}\" -> {{"));
+                this.indented(|this| {
+                    this.line("use message <- decode.field(\"message\", decode.string)");
+                    this.line(&format!("decode.success({variant}(message))"));
+                });
+                this.line("}");
+            }
+            this.line("\"AwlOutcomeFailure\" -> {");
+            this.indented(|this| {
+                this.line("use outcome <- decode.field(\"outcome\", decode.string)");
+                this.line("use payload <- decode.field(\"payload\", decode.string)");
+                this.line("decode.success(AwlOutcomeFailure(outcome: outcome, payload: payload))");
+            });
+            this.line("}");
+            this.line("\"AwlFailed\" -> decode.success(AwlFailed)");
+            this.line("_ -> decode.failure(AwlFailed, \"AwlError\")");
+        });
+        this.line("}");
+    });
+    emitter.line("}");
+    emitter.blank();
+}
+
+fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
+    let Some(union_type) = emitter.union_type.clone() else {
+        return Ok(());
+    };
+    let stem = snake(&union_type);
+    let successes: Vec<(String, String, GType, String)> = emitter
+        .document
+        .outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome.direction, RouteDirection::Success))
+        .filter_map(|outcome| {
+            let info = emitter.outcomes.get(outcome.name.as_str())?;
+            let constructor = info.constructor.clone()?;
+            Some((
+                outcome.name.clone(),
+                constructor,
+                info.ty.clone(),
+                emitter.env.codec_name(&info.ty),
+            ))
+        })
+        .collect();
+
+    emitter.line(&format!("fn {stem}_codec() -> Codec({union_type}) {{"));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "codec.json_codec({stem}_to_json, {stem}_decoder())"
+        ));
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line(&format!(
+        "fn {stem}_to_json(value: {union_type}) -> json.Json {{"
+    ));
+    emitter.indented(|this| {
+        this.line("case value {");
+        this.indented(|this| {
+            for (name, constructor, _, codec) in &successes {
+                this.line(&format!(
+                    "{constructor}(payload) -> json.object([#(\"outcome\", \
+                     json.string({})), #(\"payload\", {codec}_to_json(payload))])",
+                    string_lit(name)
+                ));
+            }
+        });
+        this.line("}");
+    });
+    emitter.line("}");
+    emitter.blank();
+
+    let Some((_, first_constructor, first_ty, _)) = successes.first().cloned() else {
+        return Ok(());
+    };
+    let zero = emitter.env.zero_expr(&first_ty, emitter.document.span)?;
+    emitter.line(&format!(
+        "fn {stem}_decoder() -> decode.Decoder({union_type}) {{"
+    ));
+    emitter.indented(|this| {
+        this.line("use outcome <- decode.field(\"outcome\", decode.string)");
+        this.line("case outcome {");
+        this.indented(|this| {
+            for (name, constructor, _, codec) in &successes {
+                this.line(&format!("{} -> {{", string_lit(name)));
+                this.indented(|this| {
+                    this.line(&format!(
+                        "use payload <- decode.field(\"payload\", {codec}_decoder())"
+                    ));
+                    this.line(&format!("decode.success({constructor}(payload))"));
+                });
+                this.line("}");
+            }
             this.line(&format!(
-                "codec.json_codec({codec_fn}_to_json, {codec_fn}_decoder())"
+                "_ -> decode.failure({first_constructor}({zero}), \"{union_type}\")"
             ));
         });
-        self.line("}");
-        self.blank();
-        if fields.is_empty() {
-            self.line(&format!("fn {codec_fn}_to_json(_: {name}) -> json.Json {{"));
-        } else {
-            self.line(&format!(
-                "fn {codec_fn}_to_json({value_var}: {name}) -> json.Json {{"
-            ));
-        }
-        self.indented(|this| {
+        this.line("}");
+    });
+    emitter.line("}");
+    emitter.blank();
+    Ok(())
+}
+
+/// One record's codec trio, with optional fields omitted when absent.
+fn record_codec(emitter: &mut Emitter<'_>, name: &str, fields: &[(String, GType)]) {
+    let stem = snake(name);
+    let has_optional = fields
+        .iter()
+        .any(|(_, ty)| matches!(emitter.env.resolve(ty), GType::Option(_)));
+    if has_optional {
+        emitter.flags.uses_list_module = true;
+    }
+    emitter.line(&format!("fn {stem}_codec() -> Codec({name}) {{"));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "codec.json_codec({stem}_to_json, {stem}_decoder())"
+        ));
+    });
+    emitter.line("}");
+    emitter.blank();
+    record_to_json(emitter, name, &stem, fields, has_optional);
+    record_decoder(emitter, name, &stem, fields);
+}
+
+fn record_to_json(
+    emitter: &mut Emitter<'_>,
+    name: &str,
+    stem: &str,
+    fields: &[(String, GType)],
+    has_optional: bool,
+) {
+    if fields.is_empty() {
+        emitter.line(&format!("fn {stem}_to_json(_: {name}) -> json.Json {{"));
+        emitter.indented(|this| this.line("json.object([])"));
+        emitter.line("}");
+    } else if has_optional {
+        emitter.line(&format!("fn {stem}_to_json(value: {name}) -> json.Json {{"));
+        emitter.indented(|this| {
+            this.line("json.object(list.flatten([");
+            this.indented(|this| {
+                for (field_name, field_ty) in fields {
+                    let access = ident(field_name);
+                    if let GType::Option(inner) = this.env.resolve(field_ty) {
+                        let codec = this.env.codec_name(&inner);
+                        this.line(&format!("case value.{access} {{"));
+                        this.indented(|this| {
+                            this.line(&format!(
+                                "Some(inner) -> [#({}, {codec}_to_json(inner))]",
+                                string_lit(field_name)
+                            ));
+                            this.line("None -> []");
+                        });
+                        this.line("},");
+                    } else {
+                        let codec = this.env.codec_name(field_ty);
+                        this.line(&format!(
+                            "[#({}, {codec}_to_json(value.{access}))],",
+                            string_lit(field_name)
+                        ));
+                    }
+                }
+            });
+            this.line("]))");
+        });
+        emitter.line("}");
+    } else {
+        emitter.line(&format!("fn {stem}_to_json(value: {name}) -> json.Json {{"));
+        emitter.indented(|this| {
             this.line("json.object([");
             this.indented(|this| {
-                for (field_name, field_type) in &fields {
-                    let codec = codec_name(field_type);
+                for (field_name, field_ty) in fields {
+                    let codec = this.env.codec_name(field_ty);
                     let access = ident(field_name);
                     this.line(&format!(
-                        "#(\"{field_name}\", {codec}_to_json({value_var}.{access})),"
+                        "#({}, {codec}_to_json(value.{access})),",
+                        string_lit(field_name)
                     ));
                 }
             });
             this.line("])");
         });
-        self.line("}");
-        self.blank();
-        self.line(&format!(
-            "fn {codec_fn}_decoder() -> decode.Decoder({name}) {{"
-        ));
-        self.indented(|this| {
-            for (field_name, field_type) in &fields {
-                let codec = codec_name(field_type);
-                let binding = ident(field_name);
+        emitter.line("}");
+    }
+    emitter.blank();
+}
+
+fn record_decoder(emitter: &mut Emitter<'_>, name: &str, stem: &str, fields: &[(String, GType)]) {
+    emitter.line(&format!("fn {stem}_decoder() -> decode.Decoder({name}) {{"));
+    emitter.indented(|this| {
+        for (field_name, field_ty) in fields {
+            let binding = ident(field_name);
+            if let GType::Option(inner) = this.env.resolve(field_ty) {
+                let codec = this.env.codec_name(&inner);
                 this.line(&format!(
-                    "use {binding} <- decode.field(\"{field_name}\", {codec}_decoder())"
+                    "use {binding} <- decode.optional_field({}, None, \
+                     decode.map({codec}_decoder(), Some))",
+                    string_lit(field_name)
+                ));
+            } else {
+                let codec = this.env.codec_name(field_ty);
+                this.line(&format!(
+                    "use {binding} <- decode.field({}, {codec}_decoder())",
+                    string_lit(field_name)
                 ));
             }
-            let ctor = constructor(name);
-            if fields.is_empty() {
-                this.line(&format!("decode.success({ctor})"));
-            } else {
-                this.line(&format!("decode.success({ctor}("));
-                this.indented(|this| {
-                    for (field_name, _) in &fields {
-                        let binding = ident(field_name);
-                        this.line(&format!("{binding}: {binding},"));
-                    }
-                });
-                this.line("))");
+        }
+        if fields.is_empty() {
+            this.line(&format!("decode.success({name})"));
+        } else {
+            this.line(&format!("decode.success({name}("));
+            this.indented(|this| {
+                for (field_name, _) in fields {
+                    let binding = ident(field_name);
+                    this.line(&format!("{binding}: {binding},"));
+                }
+            });
+            this.line("))");
+        }
+    });
+    emitter.line("}");
+    emitter.blank();
+}
+
+fn enum_codec(emitter: &mut Emitter<'_>, name: &str, variants: &[String]) {
+    let stem = snake(name);
+    emitter.line(&format!("fn {stem}_codec() -> Codec({name}) {{"));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "codec.json_codec({stem}_to_json, {stem}_decoder())"
+        ));
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line(&format!("fn {stem}_to_json(value: {name}) -> json.Json {{"));
+    emitter.indented(|this| {
+        this.line("case value {");
+        this.indented(|this| {
+            for variant in variants {
+                this.line(&format!("{variant} -> json.string(\"{variant}\")"));
             }
         });
-        self.line("}");
-        self.blank();
-    }
-
-    fn collect_composite_types(&self, types: &mut Vec<TypeRef>) {
-        for input in &self.document.inputs {
-            collect_composite_type(&input.ty, types);
-        }
-        if let Some(output) = &self.document.output {
-            collect_composite_type(&output.ty, types);
-        }
-        for signal_decl in &self.document.signals {
-            collect_composite_type(&signal_decl.ty, types);
-        }
-        for decl in &self.document.types {
-            for field in &decl.fields {
-                collect_composite_type(&field.ty, types);
+        this.line("}");
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line(&format!("fn {stem}_decoder() -> decode.Decoder({name}) {{"));
+    emitter.indented(|this| {
+        this.line("use value <- decode.then(decode.string)");
+        this.line("case value {");
+        this.indented(|this| {
+            for variant in variants {
+                this.line(&format!("\"{variant}\" -> decode.success({variant})"));
             }
-        }
-        for action in &self.document.actions {
-            for param in &action.params {
-                collect_composite_type(&param.ty, types);
+            if let Some(first) = variants.first() {
+                this.line(&format!("_ -> decode.failure({first}, \"{name}\")"));
             }
-            collect_composite_type(&action.returns, types);
-        }
-    }
-
-    fn emit_composite_codec(&mut self, ty: &TypeRef) {
-        match ty {
-            TypeRef::Named { .. } => {}
-            TypeRef::List { inner, .. } => {
-                let name = codec_name(ty);
-                let inner_name = codec_name(inner);
-                self.line(&format!(
-                    "fn {name}_codec() -> Codec({}) {{",
-                    gleam_type(ty)
-                ));
-                self.indented(|this| {
-                    this.line(&format!(
-                        "codec.json_codec({name}_to_json, {name}_decoder())"
-                    ));
-                });
-                self.line("}");
-                self.line(&format!(
-                    "fn {name}_to_json(values: {}) -> json.Json {{",
-                    gleam_type(ty)
-                ));
-                self.indented(|this| {
-                    this.line(&format!("list_to_json(values, {inner_name}_to_json)"));
-                });
-                self.line("}");
-                self.line(&format!(
-                    "fn {name}_decoder() -> decode.Decoder({}) {{",
-                    gleam_type(ty)
-                ));
-                self.indented(|this| {
-                    this.line(&format!("list_decoder({inner_name}_decoder())"));
-                });
-                self.line("}");
-                self.blank();
-            }
-            TypeRef::Option { inner, .. } => {
-                let name = codec_name(ty);
-                let inner_name = codec_name(inner);
-                self.line(&format!(
-                    "fn {name}_codec() -> Codec({}) {{",
-                    gleam_type(ty)
-                ));
-                self.indented(|this| {
-                    this.line(&format!(
-                        "codec.json_codec({name}_to_json, {name}_decoder())"
-                    ));
-                });
-                self.line("}");
-                self.line(&format!(
-                    "fn {name}_to_json(value: {}) -> json.Json {{",
-                    gleam_type(ty)
-                ));
-                self.indented(|this| {
-                    this.line(&format!("option_to_json(value, {inner_name}_to_json)"));
-                });
-                self.line("}");
-                self.line(&format!(
-                    "fn {name}_decoder() -> decode.Decoder({}) {{",
-                    gleam_type(ty)
-                ));
-                self.indented(|this| {
-                    this.line(&format!("option_decoder({inner_name}_decoder())"));
-                });
-                self.line("}");
-                self.blank();
-            }
-        }
-    }
-
-    pub(super) fn builtin_codecs(&mut self) {
-        self.line(
-            "fn string_codec() -> Codec(String) { codec.json_codec(json.string, decode.string) }",
-        );
-        self.line("fn int_codec() -> Codec(Int) { codec.json_codec(json.int, decode.int) }");
-        self.line(
-            "fn float_codec() -> Codec(Float) { codec.json_codec(json.float, decode.float) }",
-        );
-        self.line("fn bool_codec() -> Codec(Bool) { codec.json_codec(json.bool, decode.bool) }");
-        self.line("fn nil_codec() -> Codec(Nil) { codec.json_codec(fn(_) { json.object([]) }, decode.success(Nil)) }");
-        self.blank();
-        self.line("fn string_to_json(value: String) -> json.Json { json.string(value) }");
-        self.line("fn int_to_json(value: Int) -> json.Json { json.int(value) }");
-        self.line("fn float_to_json(value: Float) -> json.Json { json.float(value) }");
-        self.line("fn bool_to_json(value: Bool) -> json.Json { json.bool(value) }");
-        self.line("fn nil_to_json(_: Nil) -> json.Json { json.object([]) }");
-        self.blank();
-        self.line("fn string_decoder() -> decode.Decoder(String) { decode.string }");
-        self.line("fn int_decoder() -> decode.Decoder(Int) { decode.int }");
-        self.line("fn float_decoder() -> decode.Decoder(Float) { decode.float }");
-        self.line("fn bool_decoder() -> decode.Decoder(Bool) { decode.bool }");
-        self.line("fn nil_decoder() -> decode.Decoder(Nil) { decode.success(Nil) }");
-        self.blank();
-        self.line("fn list_to_json(values: List(a), item_to_json: fn(a) -> json.Json) -> json.Json { json.array(values, item_to_json) }");
-        self.line("fn list_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(List(a)) { decode.list(item_decoder) }");
-        self.line("fn option_to_json(value: Option(a), item_to_json: fn(a) -> json.Json) -> json.Json { json.nullable(value, item_to_json) }");
-        self.line("fn option_decoder(item_decoder: decode.Decoder(a)) -> decode.Decoder(Option(a)) { decode.optional(item_decoder) }");
-        self.blank();
-    }
+        });
+        this.line("}");
+    });
+    emitter.line("}");
+    emitter.blank();
 }

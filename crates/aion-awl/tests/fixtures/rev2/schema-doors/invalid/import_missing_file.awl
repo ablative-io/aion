@@ -1,0 +1,14 @@
+//! The imported schema file does not exist; a missing import is a check error.
+workflow import_missing_file
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema("nowhere.schema.json")
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

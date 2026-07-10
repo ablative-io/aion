@@ -1,0 +1,30 @@
+//! Compensation that swallows the failure — the block never routes anywhere.
+workflow publish_assets
+  input bundle: String
+
+  outcome published: type PublishedOk, route success
+  outcome failed: type PublishFailed, route failure
+
+type Assets        { urls: [String], count: Int }
+type PublishedOk   { count: Int }
+type PublishFailed { reason: String }
+
+worker publishing
+  action render(bundle: String) -> Assets
+    node shell, timeout 15m
+  action push_live(assets: Assets) -> Assets
+    node shell, timeout 5m
+  action delete_assets(assets: Assets) -> Nil
+    node shell, timeout 5m
+
+step render
+  render(bundle: bundle) -> assets
+
+step publish
+  push_live(assets: assets) -> live
+
+  on failure
+    delete_assets(assets: assets)
+
+  outcome done: when live.count > 0, route published(count: live.count)
+  outcome nothing: otherwise, route failed(reason: "nothing was published")

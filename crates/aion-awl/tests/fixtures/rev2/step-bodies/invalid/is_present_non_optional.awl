@@ -1,0 +1,19 @@
+//! Gate on a note that is not optional.
+workflow is_present_non_optional
+  input candidate: Candidate
+  outcome shipped: type Shipped, route success
+  outcome held:    type Held,    route failure
+
+type Candidate { name: String, note: String }
+type Shipped   { name: String }
+type Held      { name: String }
+
+worker gatekeeper
+  action stamp(name: String) -> Shipped
+
+step decide
+  stamp(name: candidate.name) -> stamped
+
+  // defect: `is present` applies to optional values; `note` is a plain String
+  outcome noted: when candidate.note is present, route held(name: candidate.name)
+  outcome clear: otherwise, route shipped(name: stamped.name)

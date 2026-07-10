@@ -1,132 +1,163 @@
-use std::collections::{HashMap, HashSet};
+//! The emitter context: declaration indexes, generated-name assignments, the
+//! output buffer with indentation helpers, and the feature flags that decide
+//! which imports and helpers the assembled module needs.
+
+use std::collections::BTreeMap;
 use std::mem;
 
-use crate::{ActionDecl, CallExpr, Document, HandlerBlock, TypeRef};
+use crate::ast::{ActionDecl, ChildDecl, Document, RouteDirection, SignalDecl};
 
 use super::error::EmitError;
-use super::helpers::{collect_named_ref, gleam_type, is_builtin_type, pascal};
+use super::names::pascal;
+use super::types::{GType, TypeEnv};
 
-/// The type the emitter knows for a value binding while walking the steps.
+/// Everything a lowering pass needs to know about one workflow outcome.
 #[derive(Debug, Clone)]
-pub(super) enum Binding {
-    /// The binding has a statically-known AWL type.
-    Typed(TypeRef),
-    /// The binding is a child-workflow result with no contract in this
-    /// revision (the checker's opaque-child rule).
-    Opaque,
+pub(super) struct OutcomeInfo {
+    /// Payload type.
+    pub(super) ty: GType,
+    /// Engine terminal direction.
+    pub(super) direction: RouteDirection,
+    /// Union constructor name (success outcomes only).
+    pub(super) constructor: Option<String>,
 }
 
-/// A step handler whose terminal is `finish`, which must terminate the whole
-/// workflow with that value (continuation nesting).
-pub(super) enum TerminatingHandler<'a> {
-    Timeout(&'a HandlerBlock),
-    Failure(&'a HandlerBlock),
+/// Feature flags the lowering passes set; the assembled header and helper
+/// sections read them afterwards.
+#[derive(Debug, Default, Clone)]
+pub(super) struct Flags {
+    pub(super) uses_child: bool,
+    pub(super) uses_list_module: bool,
+    /// `gleam/<module>` comparator imports a `sort` stage needs.
+    pub(super) compare_modules: std::collections::BTreeSet<&'static str>,
+    /// Actions dispatched from a heterogeneous parallel group: each needs a
+    /// raw (`Activity(String, String)`) wrapper twin so differently-typed
+    /// branches can share one `workflow.all` list.
+    pub(super) raw_actions: std::collections::BTreeSet<String>,
 }
 
 pub(super) struct Emitter<'a> {
     pub(super) document: &'a Document,
+    pub(super) env: TypeEnv,
+    /// Action name → (worker/task-queue name, declaration).
+    pub(super) actions: BTreeMap<&'a str, (&'a str, &'a ActionDecl)>,
+    pub(super) children: BTreeMap<&'a str, &'a ChildDecl>,
+    pub(super) signals: BTreeMap<&'a str, &'a SignalDecl>,
+    pub(super) outcomes: BTreeMap<&'a str, OutcomeInfo>,
+    /// Global binding name → type (single-assignment surface).
+    pub(super) bindings: BTreeMap<String, GType>,
+    /// Generated input record name (`<Workflow>Input`).
+    pub(super) input_type: String,
+    /// Generated outcome union name, `None` when no success outcome exists
+    /// (the output type is then `Nil`).
+    pub(super) union_type: Option<String>,
+    /// Action name → generated `<Action>Input` record name.
+    pub(super) action_inputs: BTreeMap<String, String>,
+    pub(super) flags: Flags,
+    /// Rendered loop functions, appended after the step functions.
+    pub(super) loop_fns: Vec<String>,
+    /// Monotonic counter for generated loop-function names.
+    pub(super) loop_counter: usize,
     pub(super) out: String,
     pub(super) indent: usize,
-    /// Value bindings in scope, keyed by their original AWL names.
-    pub(super) bindings: HashMap<String, Binding>,
-    /// Rendered `repeat` loop functions, emitted after `execute`.
-    pub(super) loop_fns: Vec<String>,
-    /// Names of already-rendered loop functions (guarded steps emit their
-    /// continuation twice, which would otherwise duplicate the loop).
-    pub(super) loop_fn_names: HashSet<String>,
-    /// Emit the encode-only JSON codec used for child workflow inputs.
-    pub(super) uses_child_calls: bool,
-    /// Emit the bounded retry-with-backoff helper for child workflow calls.
-    pub(super) uses_child_retry: bool,
 }
 
 impl<'a> Emitter<'a> {
-    pub(super) fn new(document: &'a Document) -> Self {
-        Self {
+    pub(super) fn new(document: &'a Document, env: TypeEnv) -> Result<Self, EmitError> {
+        let mut env = env;
+        let mut actions: BTreeMap<&str, (&str, &ActionDecl)> = BTreeMap::new();
+        for worker in &document.workers {
+            for action in &worker.actions {
+                if actions
+                    .insert(action.name.as_str(), (worker.name.as_str(), action))
+                    .is_some()
+                {
+                    return Err(EmitError::new(
+                        action.name_span,
+                        format!(
+                            "action `{}` is declared on more than one worker — generated \
+                             wrapper names collide",
+                            action.name
+                        ),
+                    ));
+                }
+            }
+        }
+        let mut children = BTreeMap::new();
+        for child in &document.children {
+            if children.insert(child.name.as_str(), child).is_some() {
+                return Err(EmitError::new(
+                    child.name_span,
+                    format!("child `{}` is declared more than once", child.name),
+                ));
+            }
+        }
+        let mut signals = BTreeMap::new();
+        for signal in &document.signals {
+            if signals.insert(signal.name.as_str(), signal).is_some() {
+                return Err(EmitError::new(
+                    signal.name_span,
+                    format!("signal `{}` is declared more than once", signal.name),
+                ));
+            }
+        }
+
+        let workflow_pascal = pascal(&document.name);
+        let input_type = env.names.fresh(&format!("{workflow_pascal}Input"));
+        let has_success = document
+            .outcomes
+            .iter()
+            .any(|outcome| matches!(outcome.direction, RouteDirection::Success));
+        let union_type = has_success.then(|| env.names.fresh(&format!("{workflow_pascal}Outcome")));
+
+        let mut outcomes = BTreeMap::new();
+        for outcome in &document.outcomes {
+            let constructor = matches!(outcome.direction, RouteDirection::Success).then(|| {
+                env.names
+                    .fresh(&format!("{}Outcome", pascal(&outcome.name)))
+            });
+            let info = OutcomeInfo {
+                ty: super::types::type_ref_to_g(&outcome.ty),
+                direction: outcome.direction,
+                constructor,
+            };
+            if outcomes.insert(outcome.name.as_str(), info).is_some() {
+                return Err(EmitError::new(
+                    outcome.name_span,
+                    format!("outcome `{}` is declared more than once", outcome.name),
+                ));
+            }
+        }
+
+        let mut action_inputs = BTreeMap::new();
+        for (name, _) in actions.values().map(|(queue, action)| (action, queue)) {
+            let record = env.names.fresh(&format!("{}Input", pascal(&name.name)));
+            action_inputs.insert(name.name.clone(), record);
+        }
+
+        Ok(Self {
             document,
+            env,
+            actions,
+            children,
+            signals,
+            outcomes,
+            bindings: BTreeMap::new(),
+            input_type,
+            union_type,
+            action_inputs,
+            flags: Flags::default(),
+            loop_fns: Vec::new(),
+            loop_counter: 0,
             out: String::new(),
             indent: 0,
-            bindings: HashMap::new(),
-            loop_fns: Vec::new(),
-            loop_fn_names: HashSet::new(),
-            uses_child_calls: false,
-            uses_child_retry: false,
-        }
+        })
     }
 
-    pub(super) fn emit(mut self) -> Result<String, EmitError> {
-        self.header();
-        self.types();
-        self.definition();
-        self.run();
-        self.execute()?;
-        let loop_fns = mem::take(&mut self.loop_fns);
-        for loop_fn in loop_fns {
-            self.out.push_str(&loop_fn);
-            self.blank();
-        }
-        self.activity_wrappers();
-        self.signal_refs();
-        self.codecs();
-        Ok(self.out)
-    }
-
-    pub(super) fn external_named_types(&self) -> Vec<String> {
-        let declared = self
-            .document
-            .types
-            .iter()
-            .map(|decl| decl.name.as_str())
-            .collect::<Vec<_>>();
-        let mut names = Vec::new();
-        self.collect_named_refs(&mut names);
-        names
-            .into_iter()
-            .filter(|name| !is_builtin_type(name))
-            .filter(|name| !declared.iter().any(|declared_name| declared_name == name))
-            .collect()
-    }
-
-    pub(super) fn collect_named_refs(&self, names: &mut Vec<String>) {
-        for input in &self.document.inputs {
-            collect_named_ref(&input.ty, names);
-        }
-        if let Some(output) = &self.document.output {
-            collect_named_ref(&output.ty, names);
-        }
-        for signal_decl in &self.document.signals {
-            collect_named_ref(&signal_decl.ty, names);
-        }
-        for decl in &self.document.types {
-            for field in &decl.fields {
-                collect_named_ref(&field.ty, names);
-            }
-        }
-        for action in &self.document.actions {
-            for param in &action.params {
-                collect_named_ref(&param.ty, names);
-            }
-            collect_named_ref(&action.returns, names);
-        }
-    }
-
-    pub(super) fn action(&self, call: &CallExpr) -> Option<&ActionDecl> {
-        self.document
-            .actions
-            .iter()
-            .find(|action| action.name == call.name)
-    }
-
-    pub(super) fn input_type_name(&self) -> String {
-        let workflow_type_name = pascal(&self.document.workflow.name);
-        format!("{workflow_type_name}Input")
-    }
-
-    pub(super) fn output_type_name(&self) -> String {
-        self.document
-            .output
-            .as_ref()
-            .map_or_else(|| "Nil".to_owned(), |decl| gleam_type(&decl.ty))
+    /// The Gleam output type of `execute` (the outcome union, or `Nil` when
+    /// the workflow declares no success outcome).
+    pub(super) fn output_type(&self) -> String {
+        self.union_type.clone().unwrap_or_else(|| "Nil".to_owned())
     }
 
     pub(super) fn line(&mut self, text: &str) {

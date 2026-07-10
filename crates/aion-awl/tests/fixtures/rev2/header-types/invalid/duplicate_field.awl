@@ -1,0 +1,12 @@
+//! Ping a host and report its status.
+workflow ping_host
+  input host: String
+  outcome reported: type Status, route success
+
+type Status { host: String, host: String }
+
+worker ping
+  action check(host: String) -> Status
+
+step check_host
+  host |> check |> route reported

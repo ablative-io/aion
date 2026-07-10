@@ -1,4 +1,11 @@
-//! Integration tests for AWL-to-Gleam emission.
+//! Integration tests for rev-2 AWL-to-Gleam emission.
+//!
+//! Three layers: a corpus-wide sweep (every valid rev-2 fixture must emit),
+//! structural regressions carried over from the panel-hardened AWL-0 emitter
+//! (keyword sanitization, string-name child spawn, language-owned loop
+//! counters, determinism denylist), and real `gleam build` compile proofs
+//! over the flagship and the loop/fork-heavy fixtures (#248 provenance
+//! protocol applies to those under parallel load).
 
 use std::error::Error;
 use std::fs;
@@ -6,454 +13,651 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aion_awl::{emit, parse};
+use aion_awl::{check_in, emit, emit_in, parse};
+
+fn rev2_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rev2")
+}
+
+fn emitted_fixture(relative: &str) -> Result<String, Box<dyn Error>> {
+    let path = rev2_root().join(relative);
+    let source = fs::read_to_string(&path)?;
+    let document = parse(&source)?;
+    let dir = path
+        .parent()
+        .ok_or("fixture path has no parent directory")?;
+    Ok(emit_in(&document, dir)?)
+}
 
 fn emitted(source: &str) -> Result<String, Box<dyn Error>> {
     Ok(emit(&parse(source)?)?)
 }
 
-fn assert_golden(source: &str, golden: &str) -> Result<(), Box<dyn Error>> {
-    assert_eq!(emitted(source)?, golden);
+/// Every valid rev-2 fixture parses, checks, and emits: the corpus is the
+/// phase gate, and the emitter refuses nothing the checker accepts.
+#[test]
+fn every_valid_fixture_emits() -> Result<(), Box<dyn Error>> {
+    let mut swept = 0;
+    for family in fs::read_dir(rev2_root())? {
+        let family = family?.path();
+        let valid = family.join("valid");
+        if !valid.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&valid)? {
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("awl") {
+                continue;
+            }
+            let source = fs::read_to_string(&path)?;
+            let document =
+                parse(&source).map_err(|error| format!("{}: parse: {error}", path.display()))?;
+            let errors = check_in(&document, &valid);
+            assert!(
+                errors.is_empty(),
+                "{}: check errors: {:?}",
+                path.display(),
+                errors
+                    .iter()
+                    .map(|error| error.message.clone())
+                    .collect::<Vec<_>>()
+            );
+            emit_in(&document, &valid)
+                .map_err(|error| format!("{}: emit: {error}", path.display()))?;
+            swept += 1;
+        }
+    }
+    assert!(swept >= 45, "expected the full corpus, swept {swept}");
     Ok(())
 }
 
+/// AWL identifiers that are Gleam reserved words gain a trailing underscore
+/// at every emission site, while wire-format JSON keys keep the AWL name
+/// (panel-hardened AWL-0 behavior, carried over).
 #[test]
-fn emits_research_report_golden() -> Result<(), Box<dyn Error>> {
-    assert_golden(
-        include_str!("fixtures/research_report.awl"),
-        include_str!("fixtures/research_report.gleam.golden"),
-    )
+fn gleam_keywords_are_sanitized_everywhere() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Keyword stress.
+workflow keywords
+  input let: String
+  outcome done: type Shout, route success
+
+type Shout { use: String }
+
+worker keywords
+  action greet(fn: String) -> Shout
+
+step greet
+  greet(fn: let) -> use
+
+  outcome ok: otherwise, route done(use: use.use)
+";
+    let generated = emitted(source)?;
+    assert!(
+        generated.contains("let let_ = input.let_"),
+        "input binding and field access must sanitize: {generated}"
+    );
+    assert!(generated.contains("let_: String,"), "input record field");
+    assert!(
+        generated.contains("use let_ <- decode.field(\"let\", string_decoder())"),
+        "decoder binding keeps the AWL wire name"
+    );
+    assert!(generated.contains("fn_: String,"), "action param field");
+    assert!(
+        generated.contains("use use_ <- try(greet_activity(let_)"),
+        "sanitized binding and reference at the call site: {generated}"
+    );
+    assert!(
+        generated.contains("#(\"use\", string_to_json(inner))")
+            || generated.contains("#(\"use\", string_to_json(value.use_))"),
+        "JSON key keeps the AWL name: {generated}"
+    );
+    Ok(())
 }
 
+/// The loop counter is language-owned: maintained in generated code, never
+/// threaded through worker results (survey fix 1 / D3).
 #[test]
-fn emits_hello_golden() -> Result<(), Box<dyn Error>> {
-    assert_golden(
-        include_str!("fixtures/hello.awl"),
-        include_str!("fixtures/hello.gleam.golden"),
-    )
+fn loop_counter_is_language_owned() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/loop_counting_until_max.awl")?;
+    assert!(
+        generated.contains("let awl_count = awl_count + 1"),
+        "the generated loop must increment its own counter: {generated}"
+    );
+    assert!(
+        generated.contains("use #(status, polls) <- try(poll_loop_0("),
+        "the loop must return the threaded value and the counter: {generated}"
+    );
+    assert!(
+        generated.contains("case awl_count >= awl_max {"),
+        "the ceiling must gate recursion: {generated}"
+    );
+    assert!(
+        generated.contains("poll_activity(job_id, status)"),
+        "the worker dispatch must carry only the declared params, never the counter: {generated}"
+    );
+    // The counter reaches the outcome payloads from the loop's return alone.
+    assert!(generated.contains("Finished(job_id: job_id, polls: polls)"));
+    Ok(())
 }
 
+/// Child calls keep the string-name spawn discipline: registration-name
+/// spawn, JSON-object input, a witness fn the SDK never calls, and no
+/// phantom child module references.
 #[test]
-fn emits_bounded_cycle_golden() -> Result<(), Box<dyn Error>> {
-    assert_golden(
-        include_str!("fixtures/bounded_cycle.awl"),
-        include_str!("fixtures/bounded_cycle.gleam.golden"),
-    )
+fn child_call_lowers_to_string_name_spawn() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("declarations/valid/child_call_awaited.awl")?;
+    assert!(generated.contains("workflow.spawn_and_wait(\"score_essay\""));
+    assert!(
+        generated.contains("json.object([#(\"essay\", string_to_json(essay))])"),
+        "named child args must encode as one JSON object: {generated}"
+    );
+    assert!(generated.contains(
+        "fn(_: json.Json) { Error(AwlChildFailed(\"child workflow body runs in its own \
+         execution\")) }"
+    ));
+    assert!(!generated.contains("score_essay.execute"));
+    assert!(!generated.contains("score_essay.input_codec"));
+    Ok(())
 }
 
+/// `spawn` is detached: the SDK spawn is used, the handle is discarded, and
+/// the workflow continues.
 #[test]
-fn emitted_sources_do_not_call_direct_nondeterministic_runtime_apis() -> Result<(), Box<dyn Error>>
-{
-    let emitted_sources = [
-        emitted(include_str!("fixtures/hello.awl"))?,
-        emitted(include_str!("fixtures/research_report.awl"))?,
-        emitted(include_str!("fixtures/bounded_cycle.awl"))?,
-    ];
-    let denylist = ["erlang/", "os.", "io.", "random.", "calendar."];
-    for source in emitted_sources {
-        for denied in denylist {
+fn spawn_lowers_detached() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("declarations/valid/spawn_detached.awl")?;
+    assert!(
+        generated.contains("use _ <- try(workflow.spawn(\"audit_trail\""),
+        "spawn must be detached and unbound: {generated}"
+    );
+    assert!(
+        generated.contains("map_spawn_error"),
+        "a failed detached spawn is a step failure: {generated}"
+    );
+    assert!(!generated.contains("spawn_and_wait(\"audit_trail\""));
+    Ok(())
+}
+
+/// Emitted modules never call the SDK's nondeterministic surface — time and
+/// randomness are engine-mediated through the constructs the language has.
+#[test]
+fn emitted_sources_avoid_nondeterministic_apis() -> Result<(), Box<dyn Error>> {
+    for fixture in [
+        "flagship/valid/dev_brief.awl",
+        "loop-outcomes/valid/ship_release_combined.awl",
+        "dag-fork/valid/release_pipeline_combined.awl",
+    ] {
+        let generated = emitted_fixture(fixture)?;
+        for denied in ["workflow.now", "workflow.random", "erlang/", "os."] {
             assert!(
-                !source.contains(denied),
-                "generated source contains forbidden direct runtime API {denied}"
+                !generated.contains(denied),
+                "{fixture}: generated source contains forbidden API {denied}"
             );
         }
     }
     Ok(())
 }
 
-/// `on timeout / finish e` must TERMINATE the workflow with `e`: the timed-out
-/// arm returns the workflow output directly and none of the subsequent steps
-/// run in that arm (they are nested inside the success arm instead).
+/// The `on failure` compensation runs only in the error arm, ends in its
+/// route, and the step's outcomes stay on the success path.
 #[test]
-fn on_timeout_finish_terminates_workflow() -> Result<(), Box<dyn Error>> {
-    let source = emitted(include_str!("fixtures/research_report.awl"))?;
-    let arm = "Error(error.TimedOutError(_)) -> Ok(Published(report: draft, url: \"\"))";
-    let arm_index = source
-        .find(arm)
-        .ok_or("timed-out arm must return the workflow output directly")?;
-    // Every subsequent step call site is nested inside the success arm, i.e.
-    // BEFORE the timeout arm; nothing step-like appears after it in execute.
-    for call in [
-        "synthesize_activity(findings, approval.notes) |> workflow.run",
-        "upload_assets_activity(draft) |> workflow.run",
-        "publish_activity(draft, assets) |> workflow.run",
-        "delete_assets_activity(assets) |> workflow.run",
-        "Ok(Published(report: draft, url: url))",
-    ] {
-        let call_index = source.find(call).ok_or("expected call site missing")?;
+fn on_failure_compensates_then_routes() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/on_failure_compensation.awl")?;
+    let error_arm = generated
+        .find("Error(_) -> {")
+        .ok_or("compensation arm missing")?;
+    let after = &generated[error_arm..];
+    assert!(
+        after.contains("delete_assets_activity(assets)"),
+        "compensation must run in the error arm: {generated}"
+    );
+    assert!(
+        after.contains("Error(AwlOutcomeFailure(\"failed\""),
+        "compensation must end in its declared failure route: {generated}"
+    );
+    let success_outcome = generated
+        .find(
+            "Error(AwlOutcomeFailure(\"failed\", json.to_string(publish_failed_to_json(\
+                PublishFailed(reason: \"nothing was published\")))))",
+        )
+        .ok_or("the step's own failure outcome must remain reachable")?;
+    let _ = success_outcome;
+    Ok(())
+}
+
+/// Fork over a collection keeps SDK `map` semantics (exactly-once per item,
+/// input order); the `sequential` form is an ordered fold.
+#[test]
+fn fork_forms_map_and_fold() -> Result<(), Box<dyn Error>> {
+    let parallel = emitted_fixture("dag-fork/valid/fork_collection_join.awl")?;
+    assert!(
+        parallel.contains("use verdicts <- try(workflow.map(docs, fn(doc) {"),
+        "collection fork must ride workflow.map: {parallel}"
+    );
+    let sequential = emitted_fixture("dag-fork/valid/fork_sequential.awl")?;
+    assert!(
+        sequential.contains("list.try_fold(migrations, [], fn(awl_acc, migration)"),
+        "sequential fork must fold in input order: {sequential}"
+    );
+    assert!(
+        sequential.contains("let receipts = list.reverse(awl_folded)"),
+        "fold results must join in input order: {sequential}"
+    );
+    Ok(())
+}
+
+/// A `wait … timeout` binding is optional: expiry yields `None`, arrival
+/// yields `Some`, and the outcome guard unwraps under `is present`.
+#[test]
+fn wait_timeout_binds_optionally() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/guard_optional_wait.awl")?;
+    assert!(generated.contains("Ok(value) -> Ok(Some(value))"));
+    assert!(generated.contains("Error(error.TimedOutError(_)) -> Ok(None)"));
+    assert!(
+        generated.contains("case option.is_some(reply) {"),
+        "the guard must test presence: {generated}"
+    );
+    assert!(
+        generated.contains("let assert Some(reply) = reply"),
+        "the arm must unwrap the guarded optional: {generated}"
+    );
+    Ok(())
+}
+
+/// Enum-total outcome clauses lower to one exhaustive Gleam `case` over the
+/// subject instead of a guard cascade.
+#[test]
+fn enum_total_outcomes_lower_to_case() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/enum_when_totality.awl")?;
+    assert!(
+        generated.contains("case result.category {"),
+        "the subject must scrutinize directly: {generated}"
+    );
+    for variant in ["Urgent -> {", "Routine -> {", "Spam -> {"] {
         assert!(
-            call_index < arm_index,
-            "step code `{call}` must be nested in the success arm, before the timeout arm"
-        );
-        assert!(
-            !source[arm_index..].contains(call),
-            "step code `{call}` must not appear after the timeout arm"
+            generated.contains(variant),
+            "missing arm {variant}: {generated}"
         );
     }
     Ok(())
 }
 
-/// `on failure / finish e` must also terminate the workflow: the failure arm
-/// runs the compensation `do` lines then returns the workflow output, and the
-/// following steps are nested inside the success arm.
+/// A heterogeneous named-branch fork dispatches every branch on ONE
+/// `workflow.all` (spec: "bare `fork` is parallel"): the branches ride raw
+/// wire-unified activities and the join decodes each payload with its
+/// action's return codec (2026-07-11 emitter panel, blocking finding).
 #[test]
-fn on_failure_finish_terminates_workflow() -> Result<(), Box<dyn Error>> {
-    let source = emitted(
-        "workflow compensated\n\
-         about Failure handler that finishes the workflow.\n\
-         \n\
-         input token: String\n\
-         output Outcome\n\
-         \n\
-         type Outcome { done: Bool, detail: String }\n\
-         \n\
-         action risky(token: String) -> Outcome\n\
-         action cleanup(token: String) -> Nil\n\
-         action extra(token: String) -> Nil\n\
-         \n\
-         step risky\n\
-         \x20 do risky(token)\n\
-         \x20 on failure\n\
-         \x20   do cleanup(token)\n\
-         \x20   finish Outcome(done: false, detail: \"compensated\")\n\
-         \x20 as outcome\n\
-         \n\
-         step extra\n\
-         \x20 do extra(token)\n\
-         \n\
-         finish outcome\n",
-    )?;
-    let arm_index = source.find("Error(_) -> {").ok_or("failure arm missing")?;
-    let arm_close = source[arm_index..]
-        .find("Ok(Outcome(done: False, detail: \"compensated\"))")
-        .ok_or("failure arm must return the workflow output")?;
-    let arm_slice = &source[arm_index..arm_index + arm_close];
+fn heterogeneous_named_fork_dispatches_one_parallel_all() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("dag-fork/valid/fork_named_branches.awl")?;
+    let all_line = generated
+        .lines()
+        .find(|line| line.contains("workflow.all(["))
+        .ok_or("the fork must ride workflow.all")?;
     assert!(
-        arm_slice.contains("cleanup_activity(token) |> workflow.run"),
-        "failure arm must run the compensation do-lines first"
+        all_line.contains("fetch_profile_activity_raw(user_id)")
+            && all_line.contains("fetch_history_activity_raw(user_id)"),
+        "both branches must dispatch in the same workflow.all: {all_line}"
     );
     assert!(
-        !arm_slice.contains("extra_activity"),
-        "no subsequent step may run inside the failure arm"
-    );
-    // The subsequent step is nested inside the success arm, before the
-    // failure arm; it must not flow after the handler either.
-    let extra_index = source
-        .find("extra_activity(token) |> workflow.run")
-        .ok_or("subsequent step call missing")?;
-    assert!(
-        extra_index < arm_index,
-        "subsequent steps nest in the success arm"
-    );
-    assert!(!source[arm_index..].contains("extra_activity(token) |> workflow.run"));
-    Ok(())
-}
-
-/// `repeat up to <e> / until <c>` lowers to a bounded tail-recursive loop
-/// threading the rebound `as` value, exiting on the `until` condition or the
-/// cap.
-#[test]
-fn repeat_until_emits_bounded_loop() -> Result<(), Box<dyn Error>> {
-    let source = emitted(include_str!("fixtures/bounded_cycle.awl"))?;
-    assert!(
-        source.contains("fix_loop(3, state)"),
-        "execute must invoke the loop with the cap and the threaded binding"
-    );
-    assert!(source.contains("fn fix_loop(remaining, state) {"));
-    assert!(
-        source.contains("case remaining <= 0 {"),
-        "the loop must stop at the cap"
+        generated.contains("use profile <- try(awl_decoded(profile_codec(), awl_raw_0,"),
+        "branch 1 must decode with its return codec: {generated}"
     );
     assert!(
-        source.contains("case state.accepted {"),
-        "the loop must check the until condition after each round"
-    );
-    assert!(
-        source.contains("False -> fix_loop(remaining - 1, state)"),
-        "the loop must thread the rebound value into the next iteration"
+        generated.contains("use history <- try(awl_decoded(history_codec(), awl_raw_1,"),
+        "branch 2 must decode with its return codec: {generated}"
     );
     Ok(())
 }
 
-/// A `repeat`/`until` loop whose `as` binding is fresh (no prior binding of
-/// that name exists before the step) must not thread the `as` name as one
-/// of the loop's free-name call arguments: the loop body binds it itself on
-/// every iteration, so treating it as free produces a call site that
-/// references a name unbound at the call site.
+/// Steps sharing a dependency and not each other run in parallel (the
+/// flagship's `scout`/`warm_build` layer): a heterogeneous single-call layer is
+/// one `workflow.all`, never one-at-a-time dispatch (2026-07-11 emitter
+/// panel, blocking finding).
 #[test]
-fn fresh_repeat_binding_is_not_a_free_loop_param() -> Result<(), Box<dyn Error>> {
-    let source = "workflow fresh_repeat\n\
-         input token: String\n\
-         output Bool\n\
-         type Attempt { done: Bool }\n\
-         action work(token: String) -> Attempt\n\
-         step w\n\
-         \x20 repeat up to 3\n\
-         \x20 do work(token)\n\
-         \x20 as result\n\
-         \x20 until result.done\n\
-         finish result.done\n";
-    let emitted = emitted(source)?;
+fn flagship_scout_and_warm_build_share_one_parallel_all() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("flagship/valid/dev_brief.awl")?;
+    let all_line = generated
+        .lines()
+        .find(|line| line.contains("workflow.all([") && line.contains("scout_activity_raw("))
+        .ok_or("scout must dispatch through workflow.all")?;
     assert!(
-        emitted.contains("w_loop(3, token)"),
-        "the call site must not thread the fresh `as` binding as an argument: {emitted}"
+        all_line.contains("warm_build_activity_raw("),
+        "warm_build must dispatch in the same workflow.all as scout: {all_line}"
     );
     assert!(
-        !emitted.contains("w_loop(3, token, result)"),
-        "`result` must not leak into the loop's free-name parameters: {emitted}"
-    );
-    compile_generated_module("fresh_repeat", &emitted)
-}
-
-/// Child calls lower to the SDK's string-name spawn with a JSON-encoded
-/// argument record; no phantom child module is referenced, and step retry
-/// config reaches the child call path.
-#[test]
-fn child_call_lowers_to_string_name_spawn() -> Result<(), Box<dyn Error>> {
-    let source = emitted(include_str!("fixtures/bounded_cycle.awl"))?;
-    assert!(source.contains("workflow.spawn_and_wait(\"fix_round\""));
-    assert!(
-        source.contains("json.object([#(\"state\", review_state_to_json(state))])"),
-        "named child args must encode as one JSON object"
-    );
-    assert!(
-        source.contains("review_state_codec()"),
-        "a rebound child result decodes with the established binding codec"
-    );
-    assert!(
-        source.contains("awl_retry(2, 5000, 2, 60000, fn() {"),
-        "step retry config must thread into the child call"
-    );
-    assert!(!source.contains("fix_round.execute"));
-    assert!(!source.contains("fix_round.input_codec"));
-    Ok(())
-}
-
-/// Step-level queue/node routing and exponential backoff reach the emitted
-/// activity configuration.
-#[test]
-fn queue_node_and_backoff_reach_activity_config() -> Result<(), Box<dyn Error>> {
-    let source = emitted(
-        "workflow routed\n\
-         input token: String\n\
-         output String\n\
-         action work(token: String) -> String\n\
-         step work\n\
-         \x20 do work(token)\n\
-         \x20 retry 4 backoff 2s..1m\n\
-         \x20 queue \"gpu\"\n\
-         \x20 node \"sydney\"\n\
-         \x20 as result\n\
-         finish result\n",
-    )?;
-    assert!(source.contains(
-        "activity.retry(activity.RetryPolicy(max_attempts: 4, backoff: activity.Exponential(initial: duration.milliseconds(2000), multiplier: 2.0, max: duration.milliseconds(60000))))"
-    ));
-    assert!(source.contains("activity.task_queue(\"gpu\")"));
-    assert!(source.contains("activity.node(\"sydney\")"));
-    Ok(())
-}
-
-/// AWL identifiers that are Gleam reserved words gain a trailing underscore
-/// at every emission site, while wire-format JSON keys keep the AWL name.
-#[test]
-fn gleam_keywords_are_sanitized_everywhere() -> Result<(), Box<dyn Error>> {
-    let source = emitted(
-        "workflow keywords\n\
-         input let: String\n\
-         output String\n\
-         action greet(fn: String) -> String\n\
-         step greet\n\
-         \x20 do greet(let)\n\
-         \x20 as use\n\
-         finish use\n",
-    )?;
-    assert!(
-        source.contains("let let_ = input.let_"),
-        "input binding and field access"
-    );
-    assert!(source.contains("let_: String,"), "input record field");
-    assert!(
-        source.contains("#(\"let\", string_to_json(keywords_input.let_)),"),
-        "JSON key keeps the AWL name"
-    );
-    assert!(
-        source.contains("use let_ <- decode.field(\"let\", string_decoder())"),
-        "decoder binding"
-    );
-    assert!(source.contains("fn_: String,"), "action param field");
-    assert!(
-        source.contains("greet_activity(let_)"),
-        "sanitized reference at the call site"
-    );
-    assert!(
-        source.contains("let assert Ok(use_) ="),
-        "sanitized as-binding"
-    );
-    assert!(source.contains("Ok(use_)"), "sanitized finish reference");
-    assert!(
-        !source.contains("input.let\n"),
-        "no unsanitized field access"
+        generated.contains("use scout_report <- try(awl_decoded(scout_report_codec(), awl_raw_0,"),
+        "the bound branch must decode with its return codec: {generated}"
     );
     Ok(())
 }
 
-/// `each` on a non-action step is an emit-time error rather than emitted
-/// non-compiling or failing code.
+/// A dependency layer whose members are more than single bare calls cannot
+/// dispatch concurrently in the stopgap; the sequential fallback announces
+/// itself in the generated module instead of degrading silently.
 #[test]
-fn each_on_non_action_step_is_an_emit_error() -> Result<(), Box<dyn Error>> {
-    let document = parse(
-        "workflow bad_each\n\
-         input names: List(String)\n\
-         output Bool\n\
-         signal go: Bool\n\
-         step bad\n\
-         \x20 each name in names\n\
-         \x20 wait go\n\
-         \x20 as flag\n\
-         finish flag\n",
-    )?;
-    let error = emit(&document).err().ok_or("emit must fail")?;
+fn sequential_layer_fallback_is_announced() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("dag-fork/valid/release_pipeline_combined.awl")?;
     assert!(
-        error
-            .message
-            .contains("`each` is only supported for action calls"),
-        "unexpected message: {}",
-        error.message
+        generated.contains("// awl stopgap: these dependency-parallel steps run in written order"),
+        "the sequentialized layer must be named in the output: {generated}"
     );
     Ok(())
 }
 
-/// A `when`-guarded rebind of a name with no prior binding is an emit-time
-/// error (the false arm would reference an unbound name).
+/// A `route` inside a `loop` body can never reach tail position in the
+/// generated loop function, so the stopgap refuses it with a spanned error
+/// instead of emitting a discarded no-op route (2026-07-11 emitter panel,
+/// blocking finding).
 #[test]
-fn when_guarded_fresh_binding_is_an_emit_error() -> Result<(), Box<dyn Error>> {
-    let document = parse(
-        "workflow bad_guard\n\
-         input flag: Bool\n\
-         output String\n\
-         action make() -> String\n\
-         step guarded\n\
-         \x20 when flag\n\
-         \x20 do make()\n\
-         \x20 as fresh\n\
-         finish fresh\n",
-    )?;
-    let error = emit(&document).err().ok_or("emit must fail")?;
-    assert!(
-        error.message.contains("no prior binding"),
-        "unexpected message: {}",
-        error.message
-    );
-    Ok(())
-}
+fn route_inside_a_loop_body_is_refused() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Loop route stress.
+workflow loop_route
+  input target: String
+  outcome done: type Report, route success
+  outcome bailed: type Report, route failure
 
-/// Queue/node routing on a child call cannot be honored by the SDK spawn API
-/// and must be an emit-time error instead of being silently dropped.
-#[test]
-fn queue_on_child_call_is_an_emit_error() -> Result<(), Box<dyn Error>> {
-    let document = parse(
-        "workflow routed_child\n\
-         input token: String\n\
-         output String\n\
-         step call\n\
-         \x20 do child worker(token)\n\
-         \x20 queue \"gpu\"\n\
-         \x20 as token\n\
-         finish token\n",
-    )?;
-    let error = emit(&document).err().ok_or("emit must fail")?;
-    assert!(
-        error
-            .message
-            .contains("not supported on child workflow calls"),
-        "unexpected message: {}",
-        error.message
-    );
-    Ok(())
-}
+type Round  { summary: String, gates_green: Bool }
+type Report { summary: String }
 
-/// A child-workflow result bound fresh (`as fresh_result` with no prior
-/// binding of that name) is opaque: the checker has no contract for it in
-/// this revision. Referencing it in a later expression — here, as an
-/// activity-call argument — must be a spanned emit-time error rather than
-/// emitted Gleam that fails to typecheck (the opaque value decodes as
-/// `Nil`, mismatching whatever type the site expects).
-#[test]
-fn opaque_child_result_in_expression_is_an_emit_error() -> Result<(), Box<dyn Error>> {
-    let source = "workflow opaque_leak\n\
-         input token: String\n\
-         output String\n\
-         action consume(value: String) -> String\n\
-         step spawn\n\
-         \x20 do child worker(token)\n\
-         \x20 as fresh_result\n\
-         step consume\n\
-         \x20 do consume(fresh_result)\n\
-         \x20 as result\n\
-         finish result\n";
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false) counting cycles
+    work(prior: round) -> round
+    route bailed(summary: round.summary)
+    until round.gates_green
+    max 3
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
     let document = parse(source)?;
-    let error = emit(&document).err().ok_or("emit must fail")?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
     assert!(
-        error.message.contains("fresh_result")
-            && error.message.contains("untyped in this revision")
-            && error.message.contains("cannot be used in expressions"),
+        error.message.contains("`route` inside a `loop` body"),
         "unexpected message: {}",
         error.message
     );
-    let call_site = source
-        .find("do consume(fresh_result)")
-        .ok_or("expected call site missing")?;
-    let expected_start = call_site + "do consume(".len();
-    assert_eq!(
-        error.span.start, expected_start,
-        "span must point at the offending reference in the later expression, \
-         not the call keyword or the earlier `as fresh_result` binding site"
-    );
-    assert_eq!(&source[error.span.start..error.span.end], "fresh_result");
+    let route_line = source
+        .lines()
+        .position(|line| line.contains("route bailed"))
+        .ok_or("missing route line")?
+        + 1;
+    assert_eq!(error.span.line, route_line, "span must anchor the route");
     Ok(())
 }
 
+/// A loop `max` referencing the loop-threaded value renders at the call
+/// site, where no loop-local exists: the stopgap refuses instead of
+/// emitting Gleam that cannot compile (2026-07-11 emitter panel, blocking
+/// finding; the checker refuses the same shape in the pre-loop scope).
 #[test]
-fn emitted_hello_compiles_against_local_aion_flow() -> Result<(), Box<dyn Error>> {
-    compile_generated_module("hello", &emitted(include_str!("fixtures/hello.awl"))?)
+fn loop_max_must_be_loop_invariant() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Loop ceiling stress.
+workflow loop_ceiling
+  input job: String
+  outcome done: type Report, route success
+
+type Round  { summary: String, gates_green: Bool, budget: Int }
+type Report { summary: String }
+
+worker builder
+  action work(prior: Round) -> Round
+
+step build
+  loop round = Round(summary: \"\", gates_green: false, budget: 3) counting cycles
+    work(prior: round) -> round
+    until round.gates_green
+    max round.budget
+
+  outcome green: when round.gates_green, route done(summary: round.summary)
+  outcome spent: otherwise, route done(summary: \"spent\")
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("before the loop"),
+        "unexpected message: {}",
+        error.message
+    );
+    let max_line = source
+        .lines()
+        .position(|line| line.contains("max round.budget"))
+        .ok_or("missing max line")?
+        + 1;
+    assert_eq!(error.span.line, max_line, "span must anchor the ceiling");
+    Ok(())
 }
 
+/// One binding name bound with two different types in disjoint route
+/// branches is refused: a name-keyed first-wins map would annotate the
+/// other branch's region parameters wrongly and emit non-compiling Gleam
+/// (2026-07-11 emitter panel, blocking finding).
 #[test]
-fn emitted_research_report_compiles_against_local_aion_flow() -> Result<(), Box<dyn Error>> {
-    compile_generated_module(
-        "research_report",
-        &emitted(include_str!("fixtures/research_report.awl"))?,
+fn conflicting_binding_types_across_branches_are_refused() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Branch type conflict stress.
+workflow branch_conflict
+  input essay: String
+  outcome done_a: type AOut, route success
+  outcome done_b: type BOut, route failure
+
+type Flag { which: Bool }
+type A    { left: String }
+type B    { right: Int }
+type AOut { value: String }
+type BOut { value: Int }
+
+worker shape
+  action probe(essay: String) -> Flag
+  action make_a() -> A
+  action make_b() -> B
+  action show_a(item: A) -> AOut
+  action show_b(item: B) -> BOut
+
+step decide
+  probe(essay: essay) -> flag
+
+  outcome go_a: when flag.which, route path_a
+  outcome go_b: otherwise, route path_b
+
+step path_a
+  make_a() -> item
+  route join_a
+
+step path_b
+  make_b() -> item
+  route join_b
+
+step join_a
+  show_a(item: item) -> out
+  route done_a(value: out.value)
+
+step join_b
+  show_b(item: item) -> outb
+  route done_b(value: outb.value)
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("one type per binding name"),
+        "unexpected message: {}",
+        error.message
+    );
+    let second_bind = source
+        .lines()
+        .position(|line| line.contains("make_b() -> item"))
+        .ok_or("missing conflicting bind")?
+        + 1;
+    assert_eq!(
+        error.span.line, second_bind,
+        "span must anchor the conflicting bind"
+    );
+    Ok(())
+}
+
+/// Float ordering comparisons render Gleam's Float operator family
+/// (`>.` etc.) — the bare operators are Int-only and fail `gleam build`
+/// (2026-07-11 emitter panel, blocking finding).
+#[test]
+fn float_orderings_render_float_operators() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/float_threshold_guard.awl")?;
+    assert!(
+        generated.contains("case verdict.score >. 0.5 {"),
+        "a Float guard must use the Float ordering operator: {generated}"
+    );
+    Ok(())
+}
+
+/// A piped route that also constructs a payload is a checker error; `emit()`
+/// on the unchecked document refuses instead of silently dropping the piped
+/// value (library callers get the documented `EmitError`).
+#[test]
+fn piped_route_with_payload_is_refused_at_emit() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Piped payload conflict.
+workflow piped_conflict
+  input name: String
+  outcome done: type Greeting, route success
+
+type Greeting { greeting: String }
+
+worker greeter
+  action greet(name: String) -> Greeting
+
+step greet
+  name |> greet |> route done(greeting: \"fixed\")
+";
+    let document = parse(source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("piped route"),
+        "unexpected message: {}",
+        error.message
+    );
+    Ok(())
+}
+
+/// A schema import without the document's directory refuses with a spanned
+/// error naming the path (defect-discipline: spans stay source-correct).
+#[test]
+fn schema_import_without_root_is_a_spanned_emit_error() -> Result<(), Box<dyn Error>> {
+    let source = fs::read_to_string(rev2_root().join("flagship/valid/dev_brief.awl"))?;
+    let document = parse(&source)?;
+    let error = emit(&document).err().ok_or("emit must refuse")?;
+    assert!(
+        error.message.contains("schemas/brief.schema.json"),
+        "unexpected message: {}",
+        error.message
+    );
+    let quoted = &source[error.span.start..error.span.end];
+    assert!(
+        quoted.contains("schemas/brief.schema.json"),
+        "span must anchor the import path, got `{quoted}`"
+    );
+    Ok(())
+}
+
+/// Flagship compile proof: `awl_hello` and `dev_brief` build under real
+/// `gleam build` against the local SDK (#248: if this fails under parallel
+/// load, re-run isolated once before treating it as red).
+#[test]
+fn flagship_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
+    compile_generated_modules(
+        "flagship",
+        &[
+            (
+                "awl_hello",
+                emitted_fixture("flagship/valid/awl_hello.awl")?,
+            ),
+            (
+                "dev_brief",
+                emitted_fixture("flagship/valid/dev_brief.awl")?,
+            ),
+        ],
     )
 }
 
+/// Loop/fork-heavy compile proof: the combined fixtures exercising loops,
+/// counters, forks in all three forms, waits, routes, and compensation all
+/// build under real `gleam build`.
 #[test]
-fn emitted_bounded_cycle_compiles_against_local_aion_flow() -> Result<(), Box<dyn Error>> {
-    compile_generated_module(
-        "bounded_cycle",
-        &emitted(include_str!("fixtures/bounded_cycle.awl"))?,
+fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
+    compile_generated_modules(
+        "loop_fork",
+        &[
+            (
+                "ship_release",
+                emitted_fixture("loop-outcomes/valid/ship_release_combined.awl")?,
+            ),
+            (
+                "release_pipeline",
+                emitted_fixture("dag-fork/valid/release_pipeline_combined.awl")?,
+            ),
+            (
+                "fork_named",
+                emitted_fixture("dag-fork/valid/fork_named_branches.awl")?,
+            ),
+            (
+                "backward_route",
+                emitted_fixture("loop-outcomes/valid/backward_route_bounded_cycle.awl")?,
+            ),
+            (
+                "substeps",
+                emitted_fixture("loop-outcomes/valid/substeps_two_stage.awl")?,
+            ),
+            (
+                "combinators",
+                emitted_fixture("step-bodies/valid/combinators.awl")?,
+            ),
+            (
+                "float_guard",
+                emitted_fixture("loop-outcomes/valid/float_threshold_guard.awl")?,
+            ),
+            (
+                "step_bodies",
+                emitted_fixture("step-bodies/valid/step_bodies_combined.awl")?,
+            ),
+            (
+                "mixed_doors",
+                emitted_fixture("schema-doors/valid/mixed_doors.awl")?,
+            ),
+            (
+                "declarations",
+                emitted_fixture("declarations/valid/declarations_combined.awl")?,
+            ),
+        ],
     )
 }
 
-fn compile_generated_module(module_name: &str, module_source: &str) -> Result<(), Box<dyn Error>> {
+fn compile_generated_modules(
+    project_name: &str,
+    modules: &[(&str, String)],
+) -> Result<(), Box<dyn Error>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = root.parent().and_then(Path::parent).ok_or_else(|| {
         io::Error::other("failed to resolve repository root from CARGO_MANIFEST_DIR")
     })?;
-    let project = unique_temp_project(module_name);
+    let project = unique_temp_project(project_name);
     fs::create_dir_all(project.join("src"))?;
     fs::write(
         project.join("gleam.toml"),
         format!(
-            "name = \"awl_{module_name}_compile_proof\"\nversion = \"0.1.0\"\ntarget = \"erlang\"\n\n[dependencies]\naion_flow = {{ path = \"{}\" }}\ngleam_stdlib = \">= 0.34.0 and < 2.0.0\"\ngleam_json = \">= 2.0.0 and < 4.0.0\"\n",
+            "name = \"awl_{project_name}_compile_proof\"\nversion = \"0.1.0\"\ntarget = \
+             \"erlang\"\n\n[dependencies]\naion_flow = {{ path = \"{}\" }}\ngleam_stdlib = \
+             \">= 0.34.0 and < 2.0.0\"\ngleam_json = \">= 2.0.0 and < 4.0.0\"\n",
             repo_root.join("gleam/aion_flow").display()
         ),
     )?;
-    fs::write(
-        project.join("src").join(format!("{module_name}.gleam")),
-        module_source,
-    )?;
-
+    for (module_name, module_source) in modules {
+        fs::write(
+            project.join("src").join(format!("{module_name}.gleam")),
+            module_source,
+        )?;
+    }
     let output = Command::new("gleam")
         .arg("build")
         .current_dir(&project)
@@ -474,10 +678,10 @@ fn compile_generated_module(module_name: &str, module_source: &str) -> Result<()
     Ok(())
 }
 
-fn unique_temp_project(module_name: &str) -> PathBuf {
+fn unique_temp_project(project_name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "aion_awl_{module_name}_{}_{}",
+        "aion_awl_{project_name}_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
