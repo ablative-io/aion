@@ -493,3 +493,32 @@ that reproduced the old `.unwrap()` panic at parser.rs:474 on the NBSP input.
     `cargo test --workspace` through `grep`, which masked a red exit — the
     invm_demo #248 load flake surfaced only because the output was read,
     not the exit code. Run cargo bare; let the command's own status speak.
+
+23. **A scope fence that forbids the root Cargo.lock while mandating new
+    dependencies is self-contradictory — and the mechanical normalization
+    commit can smuggle the breach past a green gate.** AWL1-001 (run
+    `7fdf5c07`, 2026-07-10, cycle_cap_exhausted with all 10 gates green →
+    salvaged and merged as `06c1fb61`). The brief required
+    `schema_for_type -> serde_json::Value` (serde_json) and `SchemaError`
+    (thiserror); adding either to aion-awl necessarily updates the ROOT
+    Cargo.lock, which the fence excluded. Two lenses correctly flagged the
+    fence red at HEAD even though the recorded gate run was green: the
+    "chore(gates): mechanical normalization" commit landed AFTER the gate
+    battery ran and was never re-checked — a real pipeline gap (the
+    normalization commit must re-run the battery, or at minimum the fence).
+    Rules: (a) when a brief mandates new dependencies, whitelist the root
+    lockfile in the fence explicitly; (b) treat post-gate mechanical
+    commits as unverified until the pipeline re-gates them. Also from this
+    run: cycle-cap salvage worked as designed — the residual lens findings
+    split cleanly into one REAL defect (formatter comment round-trip
+    corruption: `//` before a documented type deleted; orphan `///` mangled
+    to `// /` — fixed post-run with byte-exact regression tests) and two
+    judgment calls the operator ruled on (fence, and field-docs forcing the
+    multi-line type form, which is correct and is now pinned by test).
+    Lenses cannot rule; cap-exhaustion-with-green-gates is the signal that
+    remaining findings need an operator, not more cycles. Operationally:
+    the run survived a mid-flight server restart via ops-console Reopen —
+    the developer norn session resumed (`--resume-if-exists`) with its
+    worktree intact and lost only the in-flight turn; the one hazard is a
+    killed turn leaving a dangling tool call that 400s on resume (task
+    #251, with #250 for the stale detail-page status after reopen).

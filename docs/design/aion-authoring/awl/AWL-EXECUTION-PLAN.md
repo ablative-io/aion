@@ -160,6 +160,18 @@ cross-reference). Spec section named in each brief is the contract.
   CLI is a thin wrapper over it — AWL1-015 and every other consumer reuse
   the same derivation, never a reimplementation. Highest value: unblocks
   model output contracts. FIRST after refactor.
+  **LANDED 2026-07-10** (merge `06c1fb61`, dev_brief run `7fdf5c07`, 3 fix
+  cycles → `cycle_cap_exhausted` with all 10 gates green → salvaged per the
+  pre-agreed path). Salvage review: Cargo.lock fence breach ruled a
+  brief-authoring error (the mandated serde_json/thiserror deps necessarily
+  touch the root lockfile); formatter comment round-trip corruption found by
+  the correctness lens, reproduced, fixed post-run (`b789ac3a`) with
+  byte-exact regression tests; field-docs-force-multi-line printer behavior
+  ruled CORRECT and pinned by test + code comment. Full battery re-run by
+  hand at merge (10/10 gates + workspace suite exit 0; #248 flake
+  isolated-green). The run also survived a mid-flight server restart via
+  ops-console Reopen (developer session resumed with `--resume-if-exists`).
+  See BRIEF-CRAFT entry 23.
 - **AWL1-002 enums + match**: `type X = A | B | C` (payload-less),
   exhaustive `match`/`case` step construct (one-call arms, same-name/type
   bindings across arms), `case Some as x`/`case None` for Option. Schema
