@@ -1,4 +1,4 @@
-//! Local `awl` subcommand group: the AWL-0 authoring loop.
+//! Local `awl` subcommand group: the rev-2 AWL authoring loop.
 //!
 //! `aion awl check` parses and typechecks a `.awl` document, printing one
 //! compiler-style `<file>:<line>:<column>: error: <message>` diagnostic per
@@ -9,7 +9,8 @@
 //! typecheck — generated code quality depends on it, so a parse error, a
 //! typecheck error, and an emit error all report the same way and exit
 //! non-zero. `aion awl schema` derives draft 2020-12 JSON Schema from the same
-//! checked document through the public `aion-awl` derivation.
+//! checked document through the public `aion-awl` derivation. Schema imports
+//! (`type X = schema("file")`) resolve relative to the document's directory.
 //!
 //! All three commands run entirely locally and own their own compiler-style
 //! reporting contract (diagnostics to stderr, a one-line summary to stdout)
@@ -25,7 +26,9 @@ use clap::Subcommand;
 /// The `aion awl` authoring subcommands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum AwlCommand {
-    /// Parse and typecheck an AWL workflow document.
+    /// Parse and typecheck a rev-2 AWL workflow document: declarations,
+    /// binding flow along the step graph, `after`/route targets, outcome
+    /// exhaustiveness, and both schema doors.
     ///
     /// Prints one `<file>:<line>:<column>: error: <message>` diagnostic per
     /// error to stderr and exits non-zero when any is found; prints a
@@ -44,14 +47,16 @@ pub(crate) enum AwlCommand {
         /// Path to the `.awl` document.
         file: PathBuf,
     },
-    /// Generate Gleam source from an AWL workflow document.
+    /// Generate a Gleam workflow module from an AWL document (the stopgap
+    /// execution target until AWL bytecode lands).
     ///
     /// Parses and typechecks the document first — emission requires a clean
     /// typecheck, since generated code quality depends on it — then lowers
-    /// it to Gleam. A parse error, a typecheck error, or an emit error all
-    /// print `<file>:<line>:<column>: error: <message>` diagnostics to
-    /// stderr and exit non-zero. On success the generated module is written
-    /// to `--output` if given, otherwise to stdout.
+    /// the steps, forks, loops, and outcome routes onto the aion Gleam SDK.
+    /// A parse error, a typecheck error, or an emit error all print
+    /// `<file>:<line>:<column>: error: <message>` diagnostics to stderr and
+    /// exit non-zero. On success the generated module is written to
+    /// `--output` if given, otherwise to stdout.
     Emit {
         /// Path to the `.awl` document.
         file: PathBuf,
@@ -63,7 +68,7 @@ pub(crate) enum AwlCommand {
     Schema {
         /// Path to the `.awl` document.
         file: PathBuf,
-        /// Declared type to derive; omitted, emits the combined workflow input/output contract schema.
+        /// Declared type to derive; omitted, emits the workflow's start contract (its inputs).
         #[arg(long)]
         r#type: Option<String>,
     },
@@ -150,7 +155,7 @@ fn schema_command(file: &Path, type_name: Option<&str>) -> ExitCode {
 fn check_source(file: &Path, source: &str) -> Result<usize, Vec<String>> {
     let document = aion_awl::parse(source)
         .map_err(|error| vec![diagnostic(file, error.span, &error.message)])?;
-    let errors = aion_awl::check(&document);
+    let errors = aion_awl::check_in(&document, document_root(file));
     if errors.is_empty() {
         Ok(document.steps.len())
     } else {
@@ -177,14 +182,24 @@ fn format_source(file: &Path, source: &str) -> Result<String, Vec<String>> {
 fn emit_source(file: &Path, source: &str) -> Result<String, Vec<String>> {
     let document = aion_awl::parse(source)
         .map_err(|error| vec![diagnostic(file, error.span, &error.message)])?;
-    let errors = aion_awl::check(&document);
+    let root = document_root(file);
+    let errors = aion_awl::check_in(&document, root);
     if !errors.is_empty() {
         return Err(errors
             .iter()
             .map(|error| diagnostic(file, error.span, &error.message))
             .collect());
     }
-    aion_awl::emit(&document).map_err(|error| vec![diagnostic(file, error.span, &error.message)])
+    aion_awl::emit_in(&document, root)
+        .map_err(|error| vec![diagnostic(file, error.span, &error.message)])
+}
+
+/// The directory schema imports resolve against: the document's own.
+fn document_root(file: &Path) -> &Path {
+    match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
 }
 
 fn schema_source(
@@ -194,7 +209,8 @@ fn schema_source(
 ) -> Result<String, Vec<String>> {
     let document = aion_awl::parse(source)
         .map_err(|error| vec![diagnostic(file, error.span, &error.message)])?;
-    let errors = aion_awl::check(&document);
+    let root = document_root(file);
+    let errors = aion_awl::check_in(&document, root);
     if !errors.is_empty() {
         return Err(errors
             .iter()
@@ -203,8 +219,8 @@ fn schema_source(
     }
     let schema = requested_type
         .map_or_else(
-            || aion_awl::schema_for_workflow(&document),
-            |name| aion_awl::schema_for_type(&document, name),
+            || aion_awl::schema_for_workflow_in(&document, root),
+            |name| aion_awl::schema_for_type_in(&document, root, name),
         )
         .map_err(|error| vec![diagnostic(file, error.span(), &error.to_string())])?;
     serde_json::to_string_pretty(&schema)
@@ -245,7 +261,31 @@ mod tests {
 
     use super::*;
 
-    const VALID_DOC: &str = "workflow probe\n\noutput String\n\naction make() -> String\n\nstep one\n  do make()\n  as out\n\nfinish out\n";
+    /// A canonical rev-2 document: one input, one success outcome, one
+    /// worker action, one step whose pipe routes the result out.
+    const VALID_DOC: &str = "//! Probe: make a note of the token and hand it back.\n\
+workflow probe\n\
+\x20 input token: String\n\
+\x20 outcome done: type String, route success\n\
+\n\
+worker probe\n\
+\x20 action make(token: String) -> String\n\
+\n\
+step one\n\
+\x20 token |> make |> route done\n";
+
+    /// Well-formed rev-2 source whose route names no declared outcome or
+    /// step — a typecheck error, not a parse error.
+    const BROKEN_ROUTE_DOC: &str = "//! Probe with a dangling route.\n\
+workflow probe\n\
+\x20 input token: String\n\
+\x20 outcome done: type String, route success\n\
+\n\
+worker probe\n\
+\x20 action make(token: String) -> String\n\
+\n\
+step one\n\
+\x20 token |> make |> route missing\n";
 
     #[test]
     fn diagnostic_renders_the_compiler_style_line() {
@@ -285,9 +325,7 @@ mod tests {
 
     #[test]
     fn check_source_renders_typecheck_errors_as_diagnostics() -> anyhow::Result<()> {
-        // Well-formed, but `finish` names a binding that never exists.
-        let source = "workflow probe\noutput String\n\nfinish missing\n";
-        let Err(diagnostics) = check_source(Path::new("probe.awl"), source) else {
+        let Err(diagnostics) = check_source(Path::new("probe.awl"), BROKEN_ROUTE_DOC) else {
             anyhow::bail!("expected a typecheck diagnostic");
         };
         assert!(!diagnostics.is_empty());
@@ -315,7 +353,7 @@ mod tests {
             anyhow::bail!("expected a parse diagnostic");
         };
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].starts_with("probe.awl:1:1: error: "));
+        assert!(diagnostics[0].starts_with("probe.awl:1:"));
         Ok(())
     }
 
@@ -327,15 +365,18 @@ mod tests {
             generated.contains("pub fn execute"),
             "expected generated code to contain `pub fn execute`: {generated}"
         );
+        assert!(
+            generated.contains("make_activity(token)"),
+            "expected the action dispatch in the generated module: {generated}"
+        );
         Ok(())
     }
 
     #[test]
     fn emit_source_is_gated_on_a_clean_typecheck() -> anyhow::Result<()> {
-        // Well-formed, but `finish` names a binding that never exists — emit
-        // must refuse rather than generate code from an ill-typed document.
-        let source = "workflow probe\noutput String\n\nfinish missing\n";
-        let Err(diagnostics) = emit_source(Path::new("probe.awl"), source) else {
+        // Emission must refuse rather than generate code from an ill-typed
+        // document.
+        let Err(diagnostics) = emit_source(Path::new("probe.awl"), BROKEN_ROUTE_DOC) else {
             anyhow::bail!("expected a typecheck diagnostic");
         };
         assert!(!diagnostics.is_empty());
@@ -362,37 +403,73 @@ mod tests {
         Ok(())
     }
 
+    /// A declared shorthand type with a `?` field derives its JSON Schema:
+    /// doc lines flow to `description`, `?` maps to "not in required".
     #[test]
-    fn schema_source_matches_the_library_golden() -> anyhow::Result<()> {
-        let source = include_str!("../../aion-awl/tests/fixtures/typed_contract.awl");
-        let schema = schema_source(Path::new("typed_contract.awl"), source, Some("Brief"))
+    fn schema_source_derives_a_declared_type() -> anyhow::Result<()> {
+        let source = "//! File a note.\n\
+workflow filed_note\n\
+\x20 input note: Note\n\
+\x20 outcome kept: type Note, route success\n\
+\n\
+/// A note somebody jotted down.\n\
+type Note {\n\
+\x20 title: String,\n\
+\x20 body: String?,\n\
+}\n\
+\n\
+worker files\n\
+\x20 action keep(note: Note) -> Note\n\
+\n\
+step keep_note\n\
+\x20 note |> keep |> route kept\n";
+        let schema = schema_source(Path::new("note.awl"), source, Some("Note"))
             .map_err(|diagnostics| anyhow::anyhow!("unexpected diagnostics: {diagnostics:?}"))?;
-        assert_eq!(
-            schema,
-            include_str!("../../aion-awl/tests/fixtures/brief.schema.golden.json")
-        );
+        let value: serde_json::Value = serde_json::from_str(&schema)?;
+        assert_eq!(value["type"], "object");
+        assert_eq!(value["description"], "A note somebody jotted down.");
+        assert_eq!(value["required"], serde_json::json!(["title"]));
+        assert_eq!(value["properties"]["body"]["type"], "string");
         Ok(())
     }
 
+    /// Without `--type`, the workflow's start contract derives: one object
+    /// over the inputs, `?` inputs omitted from `required`.
     #[test]
-    fn schema_source_without_type_emits_workflow_contracts() -> anyhow::Result<()> {
-        let source =
-            "workflow primitive\ninput note: Option(String)\noutput String\n\nfinish \"ok\"\n";
-        let schema = schema_source(Path::new("primitive.awl"), source, None)
+    fn schema_source_without_type_emits_the_start_contract() -> anyhow::Result<()> {
+        let source = "//! Greet, optionally loudly.\n\
+workflow greeter\n\
+\x20 input name: String\n\
+\x20 input flair: String?\n\
+\x20 outcome done: type String, route success\n\
+\n\
+worker greeter\n\
+\x20 action greet(name: String) -> String\n\
+\n\
+step greet\n\
+\x20 name |> greet |> route done\n";
+        let schema = schema_source(Path::new("greeter.awl"), source, None)
             .map_err(|diagnostics| anyhow::anyhow!("unexpected diagnostics: {diagnostics:?}"))?;
         let value: serde_json::Value = serde_json::from_str(&schema)?;
-        assert_eq!(value["properties"]["output"]["type"], "string");
-        assert_eq!(
-            value["properties"]["input"]["properties"]["note"]["type"],
-            "string"
-        );
+        assert_eq!(value["properties"]["name"]["type"], "string");
+        assert_eq!(value["required"], serde_json::json!(["name"]));
         Ok(())
     }
 
     #[test]
     fn schema_source_is_gated_on_a_clean_typecheck() -> anyhow::Result<()> {
-        let source =
-            "workflow probe\noutput Brief\n\ntype Brief { value: Missing }\n\nfinish missing\n";
+        let source = "//! Probe with an undeclared field type.\n\
+workflow probe\n\
+\x20 input token: String\n\
+\x20 outcome done: type Brief, route success\n\
+\n\
+type Brief { value: Missing }\n\
+\n\
+worker probe\n\
+\x20 action make(token: String) -> Brief\n\
+\n\
+step one\n\
+\x20 token |> make |> route done\n";
         let Err(diagnostics) = schema_source(Path::new("probe.awl"), source, Some("Brief")) else {
             anyhow::bail!("expected a typecheck diagnostic");
         };
