@@ -1,0 +1,14 @@
+//! The imported contract hides a oneOf; the checker must refuse and name the keyword.
+workflow import_oneof
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema("oneof.schema.json")
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

@@ -1,0 +1,21 @@
+//! The inline schema declares a null-typed property; null does not exist in the language.
+workflow inline_null_type
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema {
+  "type": "object",
+  "required": ["id"],
+  "properties": {
+    "id": { "type": "string" },
+    "deleted_at": { "type": "null" }
+  }
+}
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

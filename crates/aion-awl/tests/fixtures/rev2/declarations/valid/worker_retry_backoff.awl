@@ -1,0 +1,13 @@
+//! Fetch a flaky upstream, backing off exponentially between retries.
+workflow fetch_upstream
+  input url: String
+  outcome fetched: type Payload, route success
+
+type Payload { body: String, status: Int }
+
+worker fetcher
+  action fetch(url: String) -> Payload
+    node network, timeout 2m, retry 5 backoff 10s..5m
+
+step fetch
+  url |> fetch |> route fetched

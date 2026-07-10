@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["id", "owner"],
+  "properties": {
+    "id": { "type": "string" },
+    "owner": { "$ref": "person.schema.json#/$defs/Person" }
+  }
+}

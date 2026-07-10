@@ -1,0 +1,22 @@
+//! Three stages with no after and no route until the final pipe — pure fall-through order.
+workflow fall_through_chain
+  input raw: String
+  outcome published: type Published, route success
+
+type Cleaned   { text: String }
+type Rendered  { html: String }
+type Published { url: String }
+
+worker pipeline
+  action clean(raw: String) -> Cleaned
+  action render(text: String) -> Rendered
+  action publish(html: String) -> Published
+
+step clean_input
+  clean(raw: raw) -> cleaned
+
+step render_page
+  cleaned |> .text |> render -> rendered
+
+step publish_page
+  rendered |> .html |> publish |> route published

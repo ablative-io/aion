@@ -1,0 +1,20 @@
+//! Provision a workspace, announce it as a pure side effect, then hand it back.
+workflow calls_and_side_effects
+  input repo_root: String
+  outcome ready: type Workspace, route success
+
+type Workspace { path: String, branch: String }
+type Ack       { delivered: Bool }
+
+worker infra
+  action provision(repo_root: String) -> Workspace
+  action announce(message: String) -> Ack
+
+step provision
+  provision(repo_root: repo_root) -> workspace
+
+step announce
+  announce(message: "workspace provisioned")
+
+step handoff
+  workspace |> route ready

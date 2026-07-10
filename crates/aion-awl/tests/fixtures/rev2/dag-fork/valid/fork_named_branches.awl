@@ -1,0 +1,28 @@
+//! Fetch a user's profile and history in parallel — heterogeneous named branches, bare join.
+workflow fork_named_branches
+  input user_id: String
+  outcome assembled: type Dossier, route success
+  outcome unusable: type Unusable, route failure
+
+type Profile  { name: String, email: String }
+type History  { events: [String] }
+type Dossier  { name: String, events: [String], complete: Bool }
+type Unusable { reason: String }
+
+worker directory
+  action fetch_profile(id: String) -> Profile
+  action fetch_history(id: String) -> History
+  action assemble(name: String, events: [String]) -> Dossier
+
+step gather
+  fork
+    fetch_profile(id: user_id) -> profile
+    fetch_history(id: user_id) -> history
+  join
+
+step build_dossier
+  assemble(name: profile.name, events: history.events) -> dossier
+
+  outcome full: when dossier.complete,
+    route assembled(name: dossier.name, events: dossier.events, complete: dossier.complete)
+  outcome partial: otherwise, route unusable(reason: "profile or history incomplete")

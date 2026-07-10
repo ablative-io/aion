@@ -1,0 +1,19 @@
+//! Greet a name and shout the greeting.
+workflow equals_statement_binder
+  input name: String
+  outcome shouted: type Shouted, route success
+
+type Greeting { greeting: String }
+type Shouted  { text: String }
+
+worker voice
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
+
+step greet
+  // defect: `=` is not a statement binder; results bind with `->`
+  greeting = greet(name: name)
+
+step shout
+  shout(text: greeting.greeting) -> loud
+  loud |> route shouted

@@ -1,0 +1,28 @@
+//! Two steps route to each other with no max-bounded loop anywhere in the cycle.
+workflow route_cycle_two_steps_unbounded
+  input job: String
+  outcome done: type Done, route success
+
+type Attempt { ok: Bool }
+type Fix     { applied: Bool }
+type Done    { text: String }
+
+worker runner
+  action try_job(job: String) -> Attempt
+  action repair(job: String) -> Fix
+  action report(job: String) -> Done
+
+step attempt
+  try_job(job: job) -> result
+
+  outcome finished: when result.ok, route wrap_up
+  outcome broken: otherwise, route repair_step
+
+step repair_step
+  repair(job: job) -> fix
+
+  outcome retry: when fix.applied, route attempt
+  outcome give_up: otherwise, route wrap_up
+
+step wrap_up
+  job |> report |> route done

@@ -1,0 +1,21 @@
+//! Cool down, hold for the operator's go signal, then deploy the build.
+workflow wait_and_sleep
+  input build_id: String
+  signal go: Approval
+  outcome deployed: type Deployed, route success
+
+type Approval { approver: String }
+type Deployed { build_id: String, approver: String }
+
+worker deployer
+  action deploy(build_id: String, approver: String) -> Deployed
+
+step cooldown
+  sleep 30s
+
+step hold
+  wait go -> approval
+
+step deploy
+  deploy(build_id: build_id, approver: approval.approver) -> result
+  result |> route deployed

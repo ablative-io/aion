@@ -1,0 +1,14 @@
+//! Address the kickoff message to the roster lead.
+workflow index_and_concat
+  input reviewers: [String]
+  input topic: String
+  outcome sent: type Receipt, route success
+
+type Receipt { to: String, body: String }
+
+worker mailer
+  action send(to: String, body: String) -> Receipt
+
+step send_kickoff
+  send(to: reviewers[0], body: "kickoff: " + topic) -> receipt
+  receipt |> route sent

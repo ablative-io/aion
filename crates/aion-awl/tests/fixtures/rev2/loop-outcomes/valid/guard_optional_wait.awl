@@ -1,0 +1,22 @@
+//! Announce a request, then wait for the operator; act on a reply, bail on silence.
+workflow confirm_gate
+  input request: String
+  signal operator_reply: Reply
+
+  outcome confirmed: type Confirmed, route success
+  outcome timed_out: type TimedOut, route failure
+
+type Reply     { message: String, approved: Bool }
+type Confirmed { message: String }
+type TimedOut  { reason: String }
+
+worker gate
+  action announce(request: String) -> Nil
+    node shell, timeout 1m
+
+step ask
+  announce(request: request)
+  wait operator_reply timeout 30m -> reply
+
+  outcome answered: when reply is present, route confirmed(message: reply.message)
+  outcome silent: otherwise, route timed_out(reason: "no reply within 30m")

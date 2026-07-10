@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "required": ["handle", "age"],
+  "properties": {
+    "handle": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "age": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 150
+    },
+    "email": {
+      "type": "string",
+      "format": "email"
+    },
+    "bio": {
+      "type": "string",
+      "maxLength": 280
+    }
+  }
+}

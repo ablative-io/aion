@@ -1,0 +1,26 @@
+//! Fetch a document and summarize it with documented contracts end to end.
+workflow summarize_document
+  input url: String
+  outcome summarized: type Summary, route success
+
+/// A fetched document, exactly as retrieved.
+/// The body is raw bytes decoded as UTF-8.
+type Document {
+  /// Where the document was fetched from.
+  url: String,
+  body: String,
+}
+
+/// The distilled result the run hands back.
+type Summary {
+  /// One paragraph, in the author's words.
+  text: String,
+  word_count: Int,
+}
+
+worker summarizer
+  action fetch(url: String) -> Document
+  action summarize(document: Document) -> Summary
+
+step fetch_and_summarize
+  url |> fetch |> summarize |> route summarized

@@ -1,0 +1,20 @@
+//! Greet a name and shout the greeting.
+workflow bare_field_statement
+  input name: String
+  outcome shouted: type Shouted, route success
+
+type Greeting { greeting: String }
+type Shouted  { text: String }
+
+worker voice
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
+
+step greet
+  greet(name: name) -> greeting
+  // defect: a bare field accessor is only a pipe stage or combinator argument, not a statement
+  .greeting -> plain
+
+step shout
+  shout(text: plain) -> loud
+  loud |> route shouted

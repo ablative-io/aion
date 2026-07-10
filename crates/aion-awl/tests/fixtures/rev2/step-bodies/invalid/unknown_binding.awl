@@ -1,0 +1,19 @@
+//! Greet a name and shout the greeting.
+workflow unknown_binding
+  input name: String
+  outcome shouted: type Shouted, route success
+
+type Greeting { greeting: String }
+type Shouted  { text: String }
+
+worker voice
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
+
+step greet
+  greet(name: name)
+
+step shout
+  // defect: `greeting` is never bound on any path into this step
+  shout(text: greeting.greeting) -> loud
+  loud |> route shouted

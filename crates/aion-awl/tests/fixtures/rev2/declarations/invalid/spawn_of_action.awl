@@ -1,0 +1,19 @@
+//! Spawn targets child workflows; this one spawns a worker action instead.
+workflow process_order
+  input order_id: String
+  outcome shipped: type OrderResult, route success
+  outcome stuck: type OrderResult, route failure
+
+type OrderResult { order_id: String, delivered: Bool }
+
+worker orders
+  action ship(order_id: String) -> OrderResult
+  action log_shipment(order_id: String) -> Nil
+
+step ship
+  spawn log_shipment(order_id: order_id)
+  ship(order_id: order_id) -> result
+
+  outcome done: when result.delivered,
+    route shipped(order_id: result.order_id, delivered: result.delivered)
+  outcome held: otherwise, route stuck(order_id: result.order_id, delivered: result.delivered)

@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "required": ["id", "status", "customer", "lines"],
+  "properties": {
+    "id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["open", "packed", "shipped"]
+    },
+    "customer": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" }
+      }
+    },
+    "lines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Line" }
+    }
+  },
+  "$defs": {
+    "Line": {
+      "type": "object",
+      "required": ["sku", "quantity"],
+      "properties": {
+        "sku": { "type": "string" },
+        "quantity": { "type": "integer" }
+      }
+    }
+  }
+}

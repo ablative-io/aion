@@ -1,0 +1,65 @@
+//! Release pipeline: prepare a tag, build every target and render notes in parallel,
+//! check each artifact in a fan-out, then publish one target at a time in order.
+workflow release_pipeline
+  input version: String
+  input targets: [Target]
+
+  outcome released: type Released, route success
+  outcome rejected: type RejectedRelease, route failure
+  outcome stalled: type StalledRelease, route failure
+
+type Target      { name: String, platform: String }
+type Prepared    { tag: String }
+type Artifact    { name: String, checksum: String }
+type Notes       { text: String }
+type CheckResult { name: String, blocking: Bool }
+type Receipt     { name: String, ok: Bool }
+
+type Released        { tag: String, count: Int, notes: String }
+type RejectedRelease { tag: String, failures: [CheckResult] }
+type StalledRelease  { tag: String, published: Int }
+
+worker release
+  action prepare(version: String) -> Prepared
+    node shell, timeout 5m
+  action build_target(target: Target, tag: String) -> Artifact
+    node builder, timeout 30m, retry 2 every 1m
+  action render_notes(tag: String) -> Notes
+    node writer, timeout 10m
+  action check_artifact(artifact: Artifact) -> CheckResult
+    node reviewer, timeout 15m
+  action publish_target(target: Target, tag: String) -> Receipt
+    node shell, timeout 10m
+
+step prepare
+  prepare(version: version) -> prepared
+
+step build_all after prepare
+  fork target in targets
+    build_target(target: target, tag: prepared.tag)
+  join -> artifacts
+
+step notes after prepare
+  render_notes(tag: prepared.tag) -> release_notes
+
+step verify after build_all, notes
+  fork artifact in artifacts
+    check_artifact(artifact: artifact)
+  join -> results
+
+  results |> filter(.blocking) -> blockers
+
+  outcome all_clear: when blockers is empty, route publish_all
+  outcome blocked: otherwise, route rejected(tag: prepared.tag, failures: blockers)
+
+step publish_all
+  fork target in targets sequential
+    publish_target(target: target, tag: prepared.tag)
+  join -> receipts
+
+  receipts |> count -> attempted
+  receipts |> filter(.ok) |> count -> succeeded
+
+  outcome complete: when succeeded == attempted,
+    route released(tag: prepared.tag, count: succeeded, notes: release_notes.text)
+  outcome partial: otherwise, route stalled(tag: prepared.tag, published: succeeded)

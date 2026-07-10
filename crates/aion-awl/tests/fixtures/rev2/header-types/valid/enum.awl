@@ -1,0 +1,13 @@
+//! Classify a message into a category; the verdict carries the category home.
+workflow triage_message
+  input message: String
+  outcome triaged: type Verdict, route success
+
+type Category = Urgent | Routine | Spam
+type Verdict { category: Category, note: String }
+
+worker triage
+  action classify(message: String) -> Verdict
+
+step classify
+  message |> classify |> route triaged

@@ -1,0 +1,24 @@
+//! The outcome payload leaves out a field its type requires.
+workflow poll_job
+  input job_id: String
+  input max_polls: Int
+
+  outcome finished: type Finished, route success
+  outcome timed_out: type TimedOut, route failure
+
+type Poll     { state: String, done: Bool }
+type Finished { job_id: String, polls: Int }
+type TimedOut { job_id: String, polls: Int }
+
+worker poller
+  action poll(job_id: String, prior: Poll) -> Poll
+    node shell, timeout 1m
+
+step poll
+  loop status = Poll(state: "pending", done: false) counting polls
+    poll(job_id: job_id, prior: status) -> status
+    until status.done
+    max max_polls
+
+  outcome done: when status.done, route finished(job_id: job_id)
+  outcome spent: otherwise, route timed_out(job_id: job_id, polls: polls)

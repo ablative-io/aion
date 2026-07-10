@@ -1,0 +1,17 @@
+//! Delegate essay scoring to a child workflow and grade against the pass mark.
+workflow grade_essay
+  input essay: String
+  input pass_mark: Int
+  outcome passed: type Grade, route success
+  outcome failed: type Grade, route failure
+
+type Grade { score: Int, feedback: String }
+
+child score_essay(essay: String) -> Grade
+
+step delegate
+  score_essay(essay: essay) -> grade
+
+  outcome above: when grade.score >= pass_mark,
+    route passed(score: grade.score, feedback: grade.feedback)
+  outcome below: otherwise, route failed(score: grade.score, feedback: grade.feedback)

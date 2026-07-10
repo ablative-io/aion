@@ -1,0 +1,20 @@
+//! Keep the blocking findings.
+workflow filter_non_bool
+  input source: String
+  outcome tallied: type Tally, route success
+
+type Finding { title: String, blocking: Bool }
+type Tally   { blocker_count: Int }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step tally
+  // defect: filter needs a Bool accessor; `title` is a String
+  findings |> filter(.title) -> blockers
+
+  outcome clean: when blockers is empty, route tallied(blocker_count: 0)
+  outcome dirty: otherwise, route tallied(blocker_count: 1)

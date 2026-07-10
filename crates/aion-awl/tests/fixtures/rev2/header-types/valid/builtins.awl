@@ -1,0 +1,38 @@
+//! Analyze a workspace snapshot and report on it, exercising every builtin type.
+workflow analyze_snapshot
+  input dir: Dir
+  input limit: Float
+  input tries: Int
+  input tags: [String]
+  input note: String?
+  outcome passed: type Report, route success
+  outcome failed: type Flagged, route failure
+
+type Report {
+  path: String,
+  score: Float,
+  attempts: Int,
+  clean: Bool,
+  labels: [String],
+  detail: String?,
+  extra_labels: [String]?,
+}
+
+type Flagged { reason: String }
+
+worker analyzer
+  action touch(path: String) -> Nil
+  action analyze(dir: Dir, cap: Float, tries: Int, tags: [String], note: String?) -> Report
+  action stamp(report: Report) -> Report
+
+step probe
+  touch(path: "probe.txt")
+
+step analyze after probe
+  analyze(dir: dir, cap: limit, tries: tries, tags: tags, note: note) -> report
+
+  outcome clean: when report.clean, route stamp_and_pass
+  outcome dirty: otherwise, route failed(reason: "analysis flagged the snapshot")
+
+step stamp_and_pass
+  report |> stamp |> route passed

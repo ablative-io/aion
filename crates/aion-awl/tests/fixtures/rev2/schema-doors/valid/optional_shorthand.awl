@@ -1,0 +1,29 @@
+//! File a note; optional fields are absent, never null, in both directions.
+workflow optional_shorthand
+  input note: Note
+  outcome filed: type Filed, route success
+
+/// A note somebody jotted down.
+type Note {
+  title: String,
+  /// Present only when somebody bothered to write a body.
+  body: String?,
+  tags: [String],
+}
+
+/// What the archive keeps.
+type Filed {
+  title: String,
+  /// Carried only when the note had one.
+  body: String?,
+}
+
+worker doors
+  action polish(note: Note) -> Note
+
+step examine
+  note |> polish -> polished
+  polished |> .body -> body
+
+  outcome has_body: when body is present, route filed(title: polished.title, body: body)
+  outcome bodyless: otherwise, route filed(title: polished.title)

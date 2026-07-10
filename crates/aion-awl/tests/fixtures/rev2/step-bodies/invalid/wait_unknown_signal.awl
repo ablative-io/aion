@@ -1,0 +1,17 @@
+//! Wait on a signal the workflow never declares.
+workflow wait_unknown_signal
+  input build_id: String
+  outcome deployed: type Deployed, route success
+
+type Deployed { build_id: String }
+
+worker deployer
+  action deploy(build_id: String) -> Deployed
+
+step hold
+  // defect: no signal `approval` is declared in the header
+  wait approval -> decision
+
+step deploy
+  deploy(build_id: build_id) -> result
+  result |> route deployed

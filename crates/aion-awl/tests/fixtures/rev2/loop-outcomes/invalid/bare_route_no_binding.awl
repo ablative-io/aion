@@ -1,0 +1,19 @@
+//! route by outcome name with nothing in scope to pick up as the payload.
+workflow summarize
+  input text: String
+
+  outcome summary: type Summary, route success
+  outcome no_content: type EmptyDoc, route failure
+
+type Summary  { text: String, words: Int }
+type EmptyDoc { reason: String }
+
+worker summarizer
+  action condense(text: String) -> Summary
+    node model, timeout 10m
+
+step summarize
+  condense(text: text) -> result
+
+  outcome ok: when result.words > 0, route summary
+  outcome none: otherwise, route no_content(reason: "no content to summarize")

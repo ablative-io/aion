@@ -1,0 +1,14 @@
+//! The imported contract $refs outside its own $defs; only $defs-local refs are supported.
+workflow import_external_ref
+  input thing: Thing
+  outcome done: type Done, route success
+
+type Thing = schema("extref.schema.json")
+
+type Done { note: String }
+
+worker doors
+  action wrap_up(thing: Thing) -> Done
+
+step wrap
+  thing |> wrap_up |> route done

@@ -1,0 +1,43 @@
+//! Cut a release build, announce it as a side effect, delegate the changelog to a
+//! child workflow, sign with a pinned override, and archive fire-and-forget.
+workflow release_pipeline
+  input version: String
+  input repo: String
+  outcome released: type Release, route success
+  outcome aborted: type Abort, route failure
+
+type Build     { artifact: String, ok: Bool }
+type Changelog { text: String, entries: Int }
+type Release   { version: String, artifact: String, changelog: String }
+type Abort     { reason: String }
+
+worker release
+  action cut_build(repo: String, version: String) -> Build
+    node shell, timeout 45m, retry 2 every 2m
+  action announce(text: String) -> Nil
+    node chat, timeout 30s, retry 4 backoff 5s..2m
+  action sign_artifact(artifact: String) -> Build
+    node signer
+  action tag_release(version: String) -> Nil
+    retry 3 every 20s
+
+child write_changelog(repo: String, version: String) -> Changelog
+child archive_run(version: String) -> Nil
+
+step build
+  cut_build(repo: repo, version: version) -> build_result
+  announce(text: "release build finished")
+
+  outcome ok: when build_result.ok, route changelog
+  outcome bad: otherwise, route aborted(reason: "build failed")
+
+step changelog
+  write_changelog(repo: repo, version: version) -> log
+  sign_artifact(artifact: build_result.artifact) -> signed
+    node signer_hsm, timeout 10m
+  tag_release(version: version)
+  spawn archive_run(version: version)
+
+  outcome done: when signed.ok,
+    route released(version: version, artifact: signed.artifact, changelog: log.text)
+  outcome unsigned: otherwise, route aborted(reason: "signing failed")

@@ -1,0 +1,21 @@
+//! A pipe chain that goes nowhere.
+workflow pipe_chain_unterminated
+  input source: String
+  outcome tallied: type Tally, route success
+
+type Finding { title: String, blocking: Bool }
+type Tally   { total: Int }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step tally
+  // defect: a pipe chain must end in `-> name` or a `route`
+  findings |> filter(.blocking)
+  findings |> count -> total
+
+  outcome done: when total >= 0, route tallied(total: total)
+  outcome impossible: otherwise, route tallied(total: total)

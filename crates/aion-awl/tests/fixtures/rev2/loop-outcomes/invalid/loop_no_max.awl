@@ -1,0 +1,20 @@
+//! Poll a job until it finishes — but nobody bounded the loop.
+workflow poll_forever
+  input job_id: String
+
+  outcome finished: type Finished, route success
+
+type Poll     { state: String, done: Bool }
+type Finished { job_id: String, polls: Int }
+
+worker poller
+  action poll(job_id: String, prior: Poll) -> Poll
+    node shell, timeout 1m
+
+step poll
+  loop status = Poll(state: "pending", done: false) counting polls
+    poll(job_id: job_id, prior: status) -> status
+    until status.done
+
+  outcome done: when status.done, route finished(job_id: job_id, polls: polls)
+  outcome spent: otherwise, route finished(job_id: job_id, polls: polls)

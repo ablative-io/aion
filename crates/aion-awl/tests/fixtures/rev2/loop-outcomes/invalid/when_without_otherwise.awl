@@ -1,0 +1,17 @@
+//! One when arm, no otherwise — the false case falls into nothing.
+workflow summarize
+  input text: String
+
+  outcome done: type Summary, route success
+
+type Summary { text: String, words: Int }
+
+worker summarizer
+  action condense(text: String) -> Summary
+    node model, timeout 10m
+
+step summarize
+  condense(text: text) -> result
+
+  outcome ok: when result.words > 0,
+    route done(text: result.text, words: result.words)

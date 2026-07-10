@@ -1,0 +1,15 @@
+//! Two steps declare after edges on each other — a dependency cycle with no loop bound.
+workflow after_cycle_pair
+  input name: String
+  outcome done: type Done, route success
+
+type Done { text: String }
+
+worker greeter
+  action ping(name: String) -> Done
+
+step first after second
+  ping(name: name) -> first_result
+
+step second after first
+  name |> ping |> route done

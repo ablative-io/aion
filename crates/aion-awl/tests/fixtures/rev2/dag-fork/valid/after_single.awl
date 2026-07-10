@@ -1,0 +1,17 @@
+//! Fetch a document, then summarize it — one explicit after edge between two steps.
+workflow after_single
+  input url: String
+  outcome summarized: type Summary, route success
+
+type Document { body: String }
+type Summary  { text: String }
+
+worker docs
+  action fetch(url: String) -> Document
+  action summarize(body: String) -> Summary
+
+step fetch_doc
+  fetch(url: url) -> doc
+
+step summarize_doc after fetch_doc
+  doc |> .body |> summarize |> route summarized

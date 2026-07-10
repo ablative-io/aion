@@ -1,0 +1,25 @@
+//! Fetch findings, keep the blockers, rank them, and report the tallies.
+workflow combinators
+  input source: String
+  outcome clean:   type Clean,   route success
+  outcome blocked: type Blocked, route failure
+
+type Finding { title: String, blocking: Bool, severity: Int }
+type Clean   { total: Int }
+type Blocked { blocker_titles: [String], blocker_count: Int }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step tally
+  findings |> filter(.blocking) -> blockers
+  blockers |> sort(.severity) |> map(.title) -> blocker_titles
+  blockers |> count -> blocker_count
+  findings |> count -> total
+
+  outcome no_blockers: when blockers is empty, route clean(total: total)
+  outcome has_blockers: otherwise,
+    route blocked(blocker_titles: blocker_titles, blocker_count: blocker_count)

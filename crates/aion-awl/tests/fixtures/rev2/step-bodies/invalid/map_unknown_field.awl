@@ -1,0 +1,20 @@
+//! Project a field the findings do not have.
+workflow map_unknown_field
+  input source: String
+  outcome tallied: type Tally, route success
+
+type Finding { title: String, blocking: Bool }
+type Tally   { blocker_count: Int }
+
+worker registry
+  action fetch_findings(source: String) -> [Finding]
+
+step fetch
+  fetch_findings(source: source) -> findings
+
+step tally
+  // defect: `Finding` has no field `nope`
+  findings |> map(.nope) -> titles
+
+  outcome clean: when findings is empty, route tallied(blocker_count: 0)
+  outcome dirty: otherwise, route tallied(blocker_count: 1)

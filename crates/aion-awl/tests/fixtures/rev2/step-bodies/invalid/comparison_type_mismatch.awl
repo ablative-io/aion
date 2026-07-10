@@ -1,0 +1,19 @@
+//! Compare a score against a string.
+workflow comparison_type_mismatch
+  input candidate: Candidate
+  outcome shipped: type Shipped, route success
+  outcome held:    type Held,    route failure
+
+type Candidate { name: String, score: Int }
+type Shipped   { name: String }
+type Held      { name: String }
+
+worker gatekeeper
+  action stamp(name: String) -> Shipped
+
+step decide
+  stamp(name: candidate.name) -> stamped
+
+  // defect: comparison operands must share a type; Int vs String
+  outcome weak: when candidate.score < "high", route held(name: candidate.name)
+  outcome strong: otherwise, route shipped(name: stamped.name)

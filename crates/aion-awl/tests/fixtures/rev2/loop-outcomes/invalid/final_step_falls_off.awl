@@ -1,0 +1,14 @@
+//! The file just ends — the final step never routes anywhere.
+workflow summarize
+  input text: String
+
+  outcome summary: type Summary, route success
+
+type Summary { text: String, words: Int }
+
+worker summarizer
+  action condense(text: String) -> Summary
+    node model, timeout 10m
+
+step summarize
+  condense(text: text) -> summary

@@ -1,0 +1,26 @@
+//! Report on a build round whose contract is pasted verbatim as raw JSON Schema.
+workflow inline_schema_round
+  input round: Round
+  outcome reported: type Report, route success
+  outcome stuck: type Stuck, route failure
+
+type Round = schema {
+  "type": "object",
+  "required": ["summary", "gates_green"],
+  "properties": {
+    "summary":     { "type": "string" },
+    "gates_green": { "type": "boolean" }
+  }
+}
+
+type Report { summary: String }
+type Stuck  { reason: String }
+
+worker doors
+  action write_report(round: Round) -> Report
+
+step report
+  write_report(round: round) -> report
+
+  outcome green: when round.gates_green, route reported(summary: report.summary)
+  outcome red: otherwise, route stuck(reason: "gates were red")

@@ -1,0 +1,15 @@
+//! Page the lead responder.
+workflow computed_index
+  input responders: [String]
+  input lead: Int
+  outcome paged: type PageSent, route success
+
+type PageSent { pager_id: String }
+
+worker ops
+  action page(responder: String) -> PageSent
+
+step page_lead
+  // defect: indexing is literal-only; a computed index is not writable
+  page(responder: responders[lead]) -> sent
+  sent |> route paged

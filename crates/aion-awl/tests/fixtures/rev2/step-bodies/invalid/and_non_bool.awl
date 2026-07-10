@@ -1,0 +1,19 @@
+//! Use a raw score where a Bool belongs.
+workflow and_non_bool
+  input candidate: Candidate
+  outcome shipped: type Shipped, route success
+  outcome held:    type Held,    route failure
+
+type Candidate { name: String, score: Int, ready: Bool }
+type Shipped   { name: String }
+type Held      { name: String }
+
+worker gatekeeper
+  action stamp(name: String) -> Shipped
+
+step decide
+  stamp(name: candidate.name) -> stamped
+
+  // defect: `and` requires Bool operands; `score` is an Int
+  outcome odd: when candidate.score and candidate.ready, route shipped(name: stamped.name)
+  outcome rest: otherwise, route held(name: candidate.name)

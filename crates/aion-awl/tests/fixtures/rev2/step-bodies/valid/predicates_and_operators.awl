@@ -1,0 +1,35 @@
+//! Gate a release candidate on score, staleness, and an optional veto note.
+workflow predicates_and_operators
+  input candidate: Candidate
+  outcome shipped: type Shipped, route success
+  outcome held:    type Held,    route failure
+
+type Candidate {
+  name: String,
+  score: Int,
+  age_days: Int,
+  stale: Bool,
+  /// Present only when a reviewer vetoed the candidate.
+  veto_note: String?,
+}
+type Shipped { name: String }
+type Held    { name: String, reason: String }
+
+worker gatekeeper
+  action stamp(name: String) -> Shipped
+
+step decide
+  stamp(name: candidate.name) -> stamped
+
+  outcome vetoed: when candidate.veto_note is present,
+    route held(name: candidate.name, reason: "explicit veto")
+  outcome unnamed: when candidate.name == "",
+    route held(name: candidate.name, reason: "unnamed candidate")
+  outcome perfect: when candidate.score >= 100 and candidate.veto_note is absent,
+    route shipped(name: stamped.name)
+  outcome weak: when candidate.score < 80 or candidate.age_days > 30,
+    route held(name: candidate.name, reason: "weak or stale")
+  outcome fresh: when candidate.age_days <= 30 and not candidate.stale and candidate.score != 0,
+    route shipped(name: stamped.name)
+  outcome fallback: otherwise,
+    route held(name: candidate.name, reason: "did not qualify")

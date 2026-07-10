@@ -1,0 +1,20 @@
+//! An otherwise arm routes back to its own step with no max-bounded loop in the cycle.
+workflow route_cycle_self_unbounded
+  input job: String
+  outcome done: type Done, route success
+
+type Attempt { ok: Bool }
+type Done    { text: String }
+
+worker runner
+  action try_job(job: String) -> Attempt
+  action report(job: String) -> Done
+
+step attempt
+  try_job(job: job) -> result
+
+  outcome finished: when result.ok, route wrap_up
+  outcome again: otherwise, route attempt
+
+step wrap_up
+  job |> report |> route done

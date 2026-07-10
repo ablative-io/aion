@@ -1,0 +1,18 @@
+//! Absence is spelled by omission; this payload spells it null and must be refused.
+workflow construct_null_payload
+  input note: Note
+  outcome filed: type Filed, route success
+  outcome binned: type Binned, route failure
+
+type Note   { title: String, body: String? }
+type Filed  { title: String, body: String? }
+type Binned { reason: String }
+
+worker doors
+  action polish(note: Note) -> Note
+
+step examine
+  note |> polish -> polished
+
+  outcome kept: when polished.title == "keep", route filed(title: polished.title, body: null)
+  outcome tossed: otherwise, route binned(reason: "not a keeper")

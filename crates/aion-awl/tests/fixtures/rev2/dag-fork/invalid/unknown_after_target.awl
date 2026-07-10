@@ -1,0 +1,17 @@
+//! The second step names a dependency that is not declared anywhere.
+workflow unknown_after_target
+  input name: String
+  outcome done: type Done, route success
+
+type Greeting { greeting: String }
+type Done     { text: String }
+
+worker greeter
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Done
+
+step first
+  greet(name: name) -> greeting
+
+step second after missing_step
+  greeting |> .greeting |> shout |> route done

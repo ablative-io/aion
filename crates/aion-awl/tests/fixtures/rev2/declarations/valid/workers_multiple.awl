@@ -1,0 +1,21 @@
+//! Transcribe a recording on the audio worker, then summarize it on the language worker.
+workflow transcribe_and_summarize
+  input recording_path: String
+  outcome summarized: type Summary, route success
+
+type Transcript { text: String, minutes: Int }
+type Summary    { text: String }
+
+worker audio
+  action transcribe(recording_path: String) -> Transcript
+    node gpu, timeout 3h, retry 2 every 1m
+
+worker language
+  action summarize(text: String) -> Summary
+    node model, timeout 10m
+
+step transcribe
+  transcribe(recording_path: recording_path) -> transcript
+
+step summarize
+  transcript |> .text |> summarize |> route summarized

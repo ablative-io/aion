@@ -1,0 +1,21 @@
+//! Exercise the 100-column canonical split: one short single-line type, one wide multi-line one.
+workflow measure_widths
+  input request: String
+  outcome measured: type WideRecord, route success
+
+type ShortRecord { id: Int, label: String }
+
+type WideRecord {
+  request_identifier: String,
+  normalized_request_body: String,
+  response_status_code: Int,
+  response_elapsed_milliseconds: Float,
+  summary: ShortRecord,
+  retryable: Bool,
+}
+
+worker measurer
+  action measure(request: String) -> WideRecord
+
+step measure
+  request |> measure |> route measured

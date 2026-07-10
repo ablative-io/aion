@@ -1,0 +1,44 @@
+//! Triage an incident: gather diagnostics, page the on-call lead, and hold for their ack.
+workflow step_bodies_combined
+  input incident_id: String
+  input responders: [String]
+  signal ack: PageAck
+  outcome resolved:  type Resolved,  route success
+  outcome escalated: type Escalated, route failure
+
+type Reading     { name: String, severity: Int, anomalous: Bool }
+type Diagnostics { incident_id: String, readings: [Reading] }
+type PageAck     { responder: String }
+type PageSent    { pager_id: String }
+type Resolved    { incident_id: String, responder: String, anomaly_count: Int }
+type Escalated   { incident_id: String, reason: String }
+
+worker ops
+  action gather(incident_id: String) -> Diagnostics
+  action page(responder: String, message: String) -> PageSent
+
+step gather
+  gather(incident_id: incident_id) -> diagnostics
+
+step sift
+  diagnostics |> .readings |> filter(.anomalous) |> sort(.severity) -> anomalies
+  anomalies |> count -> anomaly_count
+
+  outcome quiet: when anomalies is empty,
+    route resolved(incident_id: incident_id, responder: "nobody", anomaly_count: anomaly_count)
+  outcome minor: when anomaly_count <= 2,
+    route resolved(incident_id: incident_id, responder: "nobody", anomaly_count: anomaly_count)
+  outcome noisy: otherwise, route page_lead
+
+step page_lead
+  page(responder: responders[0], message: "incident " + incident_id)
+  sleep 30s
+
+step hold_for_ack
+  wait ack timeout 5m -> reply
+
+  outcome taken: when reply is present,
+    route resolved(incident_id: incident_id, responder: reply.responder,
+      anomaly_count: anomaly_count)
+  outcome silent: otherwise,
+    route escalated(incident_id: incident_id, reason: "no ack from " + responders[0])

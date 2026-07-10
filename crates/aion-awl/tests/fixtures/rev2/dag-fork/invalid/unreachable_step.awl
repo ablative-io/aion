@@ -1,0 +1,16 @@
+//! The first step routes straight to the workflow outcome; the step below it is unreachable.
+workflow unreachable_step
+  input name: String
+  outcome done: type Done, route success
+
+type Done { text: String }
+
+worker greeter
+  action shout(name: String) -> Done
+  action log_visit(name: String) -> Done
+
+step shout_it
+  name |> shout |> route done
+
+step orphan
+  name |> log_visit |> route done

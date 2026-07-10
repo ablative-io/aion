@@ -1,0 +1,34 @@
+//! Compose a draft, have it reviewed, and rework on rejection — every path is bounded.
+workflow drafting
+  input topic: String
+  input max_polish_rounds: Int
+
+  outcome published: type Published, route success
+  outcome exhausted_draft: type Exhausted, route failure
+
+type Draft     { body: String, ready: Bool }
+type Verdict   { approved: Bool, notes: String }
+type Published { body: String, polish_rounds: Int }
+type Exhausted { reason: String }
+
+worker writing
+  action polish(topic: String, prior: Draft) -> Draft
+    node writer, timeout 10m
+  action review(draft: Draft) -> Verdict
+    node reviewer, timeout 10m
+
+step compose
+  loop draft = Draft(body: "", ready: false) counting polish_rounds
+    polish(topic: topic, prior: draft) -> draft
+    until draft.ready
+    max max_polish_rounds
+
+  outcome ready: when draft.ready, route check
+  outcome stuck: otherwise, route exhausted_draft(reason: "draft never stabilized")
+
+step check
+  review(draft: draft) -> verdict
+
+  outcome approved: when verdict.approved,
+    route published(body: draft.body, polish_rounds: polish_rounds)
+  outcome rework: otherwise, route compose

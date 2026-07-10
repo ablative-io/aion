@@ -1,0 +1,21 @@
+//! Ship an order, spawning a detached audit-trail child alongside the work.
+workflow process_order
+  input order_id: String
+  outcome shipped: type OrderResult, route success
+  outcome stuck: type OrderResult, route failure
+
+type OrderResult { order_id: String, delivered: Bool }
+
+worker orders
+  action ship(order_id: String) -> OrderResult
+    node warehouse, timeout 10m, retry 2 every 30s
+
+child audit_trail(order_id: String) -> Nil
+
+step ship
+  spawn audit_trail(order_id: order_id)
+  ship(order_id: order_id) -> result
+
+  outcome done: when result.delivered,
+    route shipped(order_id: result.order_id, delivered: result.delivered)
+  outcome held: otherwise, route stuck(order_id: result.order_id, delivered: result.delivered)

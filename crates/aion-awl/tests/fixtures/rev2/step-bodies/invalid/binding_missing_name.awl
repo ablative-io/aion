@@ -1,0 +1,19 @@
+//! Greet a name and shout it straight back.
+workflow binding_missing_name
+  input name: String
+  outcome shouted: type Shouted, route success
+
+type Greeting { greeting: String }
+type Shouted  { text: String }
+
+worker voice
+  action greet(name: String) -> Greeting
+  action shout(text: String) -> Shouted
+
+step greet
+  // defect: `->` must be followed by a binding name
+  greet(name: name) ->
+
+step shout
+  shout(text: name) -> loud
+  loud |> route shouted
