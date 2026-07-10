@@ -24,6 +24,19 @@ pub struct DocLine {
     pub text: String,
 }
 
+/// Join doc lines into description prose: the single leading space the
+/// marker convention leaves on each line is stripped, and lines join with
+/// one space so multi-line docs read as one paragraph.
+pub(crate) fn doc_text(lines: &[DocLine]) -> String {
+    lines
+        .iter()
+        .map(|line| line.text.strip_prefix(' ').unwrap_or(&line.text).trim_end())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_owned()
+}
+
 /// One unit of leading trivia before a printable item, in source order.
 ///
 /// Blank lines and own-line comments both belong to the item they precede;

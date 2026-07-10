@@ -17,4 +17,5 @@ pub use steps::{
     JoinLine, LoopStmt, LoopTail, OnFailure, OutcomeClause, PipeEnd, PipeStage, PipeStmt,
     RouteStmt, RouteTarget, SleepStmt, SpawnStmt, Statement, Step, WaitStmt,
 };
+pub(crate) use trivia::doc_text;
 pub use trivia::{Comment, DocLine, Lead};
