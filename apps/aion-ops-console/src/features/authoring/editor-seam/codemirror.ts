@@ -1,0 +1,271 @@
+import { history, historyKeymap } from '@codemirror/commands';
+import { EditorState, RangeSet, StateEffect, StateField } from '@codemirror/state';
+import {
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  GutterMarker,
+  gutter,
+  keymap,
+  ViewPlugin,
+  type ViewUpdate,
+} from '@codemirror/view';
+
+import type {
+  AuthoringEditor,
+  EditorChange,
+  EditorDecorations,
+  HighlightSpan,
+  LayoutMetrics,
+  MouseHover,
+  TextDelta,
+} from './types';
+
+const setHighlights = StateEffect.define<DecorationSet>();
+const setHostDecorations = StateEffect.define<DecorationSet>();
+const setGutters = StateEffect.define<RangeSet<GutterMarker>>();
+const remoteOrigin = StateEffect.define<boolean>();
+
+const highlightsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update: (value, transaction) => {
+    let next = value.map(transaction.changes);
+    for (const effect of transaction.effects) if (effect.is(setHighlights)) next = effect.value;
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+const hostDecorationsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update: (value, transaction) => {
+    let next = value.map(transaction.changes);
+    for (const effect of transaction.effects)
+      if (effect.is(setHostDecorations)) next = effect.value;
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+const guttersField = StateField.define<RangeSet<GutterMarker>>({
+  create: () => RangeSet.empty,
+  update: (value, transaction) => {
+    for (const effect of transaction.effects) if (effect.is(setGutters)) return effect.value;
+    return value.map(transaction.changes);
+  },
+});
+
+class TextMarker extends GutterMarker {
+  constructor(
+    readonly text: string,
+    readonly markerClass: string
+  ) {
+    super();
+  }
+  override toDOM() {
+    const element = document.createElement('span');
+    element.className = this.markerClass;
+    element.textContent = this.text;
+    return element;
+  }
+}
+
+/** The only CodeMirror-aware implementation of the editor seam. */
+export function createCodeMirrorEditor(
+  parent: HTMLElement,
+  initialContent: string
+): AuthoringEditor {
+  const changeListeners = new Set<(change: EditorChange) => void>();
+  const scrollListeners = new Set<(metrics: LayoutMetrics) => void>();
+  const hoverListeners = new Set<(hover: MouseHover | null) => void>();
+
+  const view = new EditorView({
+    parent,
+    state: EditorState.create({
+      doc: initialContent,
+      extensions: [
+        history(),
+        keymap.of(historyKeymap),
+        highlightsField,
+        hostDecorationsField,
+        guttersField,
+        gutter({
+          class: 'authoring-diagnostic-gutter',
+          markers: (editor) => editor.state.field(guttersField),
+        }),
+        EditorView.lineWrapping,
+        EditorView.theme({
+          '&': { height: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)' },
+          '.cm-content': { fontFamily: 'var(--font-mono)', caretColor: 'var(--foreground)' },
+          '.cm-cursor': { borderLeftColor: 'var(--foreground)' },
+          '.cm-gutters': {
+            backgroundColor: 'var(--muted)',
+            color: 'var(--muted-foreground)',
+            borderRightColor: 'var(--border)',
+          },
+          '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--accent)' },
+          '&.cm-focused .cm-selectionBackground, ::selection': {
+            backgroundColor: 'var(--secondary)',
+          },
+        }),
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          const origin = update.transactions.some((transaction) =>
+            transaction.effects.some((effect) => effect.is(remoteOrigin))
+          )
+            ? 'remote'
+            : 'local';
+          if (origin === 'local') {
+            const change: EditorChange = { content: update.state.doc.toString(), origin };
+            for (const listener of changeListeners) listener(change);
+          }
+        }),
+        EditorView.domEventHandlers({
+          mousemove(event, editor) {
+            const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+            const hover: MouseHover | null =
+              position === null
+                ? null
+                : { position, clientX: event.clientX, clientY: event.clientY };
+            for (const listener of hoverListeners) listener(hover);
+          },
+          mouseleave() {
+            for (const listener of hoverListeners) listener(null);
+          },
+        }),
+        ViewPlugin.fromClass(
+          class {
+            constructor(readonly editor: EditorView) {}
+            update(update: ViewUpdate) {
+              if (update.viewportChanged || update.geometryChanged) {
+                const metrics = readMetrics(update.view);
+                for (const listener of scrollListeners) listener(metrics);
+              }
+            }
+          }
+        ),
+      ],
+    }),
+  });
+
+  return {
+    getContent: () => view.state.doc.toString(),
+    applyTextDelta(ranges: readonly TextDelta[], origin = 'local') {
+      if (ranges.length === 0) return;
+      const scrollTop = view.scrollDOM.scrollTop;
+      const scrollLeft = view.scrollDOM.scrollLeft;
+      const effects = origin === 'remote' ? [remoteOrigin.of(true)] : [];
+      view.dispatch({
+        changes: ranges.map(({ from, to, insert }) => ({ from, to, insert })),
+        effects,
+        scrollIntoView: false,
+      });
+      view.scrollDOM.scrollTo({ top: scrollTop, left: scrollLeft });
+    },
+    onChange(listener) {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
+    },
+    positionToPixel(position) {
+      const coordinates = view.coordsAtPos(position);
+      const root = view.dom.getBoundingClientRect();
+      return coordinates === null
+        ? null
+        : {
+            left: coordinates.left - root.left,
+            top: coordinates.top - root.top,
+            bottom: coordinates.bottom - root.top,
+          };
+    },
+    getLayoutMetrics: () => readMetrics(view),
+    onScroll(listener) {
+      scrollListeners.add(listener);
+      return () => scrollListeners.delete(listener);
+    },
+    setHighlightSpans(spans) {
+      view.dispatch({ effects: setHighlights.of(highlightDecorations(view, spans)) });
+    },
+    setDecorations(decorations) {
+      view.dispatch({
+        effects: [
+          setHostDecorations.of(hostDecorationSet(view, decorations)),
+          setGutters.of(gutterMarkers(decorations, view)),
+        ],
+      });
+    },
+    onMouseHover(listener) {
+      hoverListeners.add(listener);
+      return () => hoverListeners.delete(listener);
+    },
+    focus: () => view.focus(),
+    destroy: () => view.destroy(),
+  };
+}
+
+function highlightDecorations(view: EditorView, spans: readonly HighlightSpan[]): DecorationSet {
+  const source = view.state.doc.toString();
+  const ranges = spans.flatMap((span) => {
+    const from = byteToCodeUnit(source, span.startByte);
+    const to = byteToCodeUnit(source, span.endByte);
+    return from < to
+      ? [Decoration.mark({ class: `awl-syntax-${captureClass(span.capture)}` }).range(from, to)]
+      : [];
+  });
+  return Decoration.set(ranges, true);
+}
+
+function hostDecorationSet(view: EditorView, decorations: EditorDecorations): DecorationSet {
+  const ranges = [];
+  for (const item of decorations.lineBackgrounds ?? []) {
+    const line = view.state.doc.line(Math.min(Math.max(item.line, 1), view.state.doc.lines));
+    ranges.push(Decoration.line({ class: item.className }).range(line.from));
+  }
+  for (const item of decorations.underlines ?? []) {
+    const from = Math.min(item.from, view.state.doc.length);
+    const to = Math.min(item.to, view.state.doc.length);
+    if (from < to)
+      ranges.push(
+        Decoration.mark({ class: item.className, attributes: { title: item.message ?? '' } }).range(
+          from,
+          to
+        )
+      );
+  }
+  return Decoration.set(ranges, true);
+}
+
+function gutterMarkers(decorations: EditorDecorations, view: EditorView): RangeSet<GutterMarker> {
+  const markers = [];
+  for (const item of decorations.gutterTexts ?? []) {
+    const line = view.state.doc.line(Math.min(Math.max(item.line, 1), view.state.doc.lines));
+    markers.push(new TextMarker(item.text, item.className).range(line.from));
+  }
+  return RangeSet.of(markers, true);
+}
+
+function readMetrics(view: EditorView): LayoutMetrics {
+  return {
+    lineHeight: view.defaultLineHeight,
+    characterWidth: view.defaultCharacterWidth,
+    contentWidth: view.contentDOM.scrollWidth,
+    contentHeight: view.contentDOM.scrollHeight,
+    scrollTop: view.scrollDOM.scrollTop,
+    scrollLeft: view.scrollDOM.scrollLeft,
+  };
+}
+
+function byteToCodeUnit(source: string, byte: number): number {
+  if (byte <= 0) return 0;
+  const encoder = new TextEncoder();
+  let codeUnit = 0;
+  let consumed = 0;
+  for (const character of source) {
+    const width = encoder.encode(character).length;
+    if (consumed + width > byte) break;
+    consumed += width;
+    codeUnit += character.length;
+  }
+  return codeUnit;
+}
+
+function captureClass(capture: string): string {
+  return capture.replaceAll('.', '-').replaceAll(/[^a-zA-Z0-9_-]/g, '');
+}
