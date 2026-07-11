@@ -7,7 +7,6 @@ import { FailoverFallback, FailoverView } from '@/features/failover';
 import { NamespaceRegistryPanel, useNamespace } from '@/features/namespace';
 import { WorkflowDetailView } from '@/features/workflow-detail';
 import { WorkflowList } from '@/features/workflow-list';
-import type { Namespace } from '@/types';
 
 import { AppShell } from './AppShell';
 import { NotFound } from './NotFound';
@@ -16,6 +15,7 @@ import {
   actionsPath,
   assistantPath,
   assistantSessionPath,
+  authoringPath,
   failoverPath,
   incidentsPath,
   kitPath,
@@ -35,6 +35,8 @@ export {
   assistantPath,
   assistantSessionHref,
   assistantSessionPath,
+  authoringHref,
+  authoringPath,
   failoverHref,
   failoverPath,
   incidentsHref,
@@ -67,6 +69,10 @@ const AssistantSessionView = lazyNamed(
   () => import('@/features/assistant'),
   (mod) => mod.AssistantSessionView
 );
+const AuthoringView = lazyNamed(
+  () => import('@/features/authoring'),
+  (mod) => mod.AuthoringView
+);
 const SearchView = lazyNamed(
   () => import('@/features/search'),
   (mod) => mod.SearchView
@@ -96,6 +102,7 @@ export const appRoutes: RouteObject[] = [
       { path: actionsPath, element: <ActionsRoute /> },
       { path: assistantPath, element: <AssistantRoute /> },
       { path: assistantSessionPath, element: <AssistantSessionRoute /> },
+      { path: authoringPath, element: <AuthoringRoute /> },
       { path: incidentsPath, element: <IncidentsRoute /> },
       { path: namespacesPath, element: <NamespaceRegistryPanel /> },
       { path: failoverPath, element: <FailoverRoute /> },
@@ -176,6 +183,14 @@ function AssistantSessionRoute() {
   );
 }
 
+function AuthoringRoute() {
+  return (
+    <Suspense fallback={<LoadingSkeleton />}>
+      <AuthoringView />
+    </Suspense>
+  );
+}
+
 function IncidentsRoute() {
   const { selectedNamespace } = useNamespace();
 
@@ -207,7 +222,7 @@ function FailoverRoute() {
 
 // React.lazy expects a default export; this adapts a named export so feature
 // modules keep their named-export convention (CO4) without a default re-export.
-function lazyNamed<TMod, TProps extends { namespace: Namespace | null }>(
+function lazyNamed<TMod, TProps extends object>(
   loader: () => Promise<TMod>,
   pick: (mod: TMod) => ComponentType<TProps>
 ) {

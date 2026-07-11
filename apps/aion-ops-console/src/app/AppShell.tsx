@@ -10,6 +10,7 @@ import { GlobalActions } from './GlobalActions';
 import {
   actionsPath,
   assistantPath,
+  authoringPath,
   failoverPath,
   incidentsPath,
   namespacesPath,
@@ -25,6 +26,7 @@ const NAV_ITEMS: readonly AppNavItem[] = [
   { href: searchPath, label: 'Search', activePrefix: searchPath },
   { href: actionsPath, label: 'Actions', activePrefix: actionsPath },
   { href: assistantPath, label: 'Assistant', activePrefix: assistantPath },
+  { href: authoringPath, label: 'Authoring', activePrefix: authoringPath },
   { href: incidentsPath, label: 'Incidents', activePrefix: incidentsPath },
   { href: failoverPath, label: 'Failover', activePrefix: failoverPath },
 ];
