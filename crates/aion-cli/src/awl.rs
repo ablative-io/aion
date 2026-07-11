@@ -72,6 +72,8 @@ pub(crate) enum AwlCommand {
         #[arg(long)]
         r#type: Option<String>,
     },
+    /// Run the AWL language server over stdio for editor integration.
+    Lsp,
 }
 
 /// Runs an `aion awl` subcommand.
@@ -81,6 +83,13 @@ pub(crate) fn run(command: &AwlCommand) -> ExitCode {
         AwlCommand::Fmt { file } => fmt_command(file),
         AwlCommand::Emit { file, output } => emit_command(file, output.as_deref()),
         AwlCommand::Schema { file, r#type } => schema_command(file, r#type.as_deref()),
+        AwlCommand::Lsp => match aion_awl_lsp::run_stdio() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: AWL language server failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 

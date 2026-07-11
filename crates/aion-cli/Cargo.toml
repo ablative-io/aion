@@ -29,6 +29,7 @@ aion = { package = "aion-rs", version = "0.8.0", path = "../aion" }
 # typechecker, and canonical printer. Local-only — the printer is the
 # formatter, one rendering, so `fmt` has no check mode.
 aion-awl = { version = "0.8.0", path = "../aion-awl" }
+aion-awl-lsp = { version = "0.8.0", path = "../aion-awl-lsp" }
 aion-client = { version = "0.8.0", path = "../aion-client" }
 aion-core = { version = "0.8.0", path = "../aion-core" }
 # The first-party Norn adapter, composed in at the binary root behind the

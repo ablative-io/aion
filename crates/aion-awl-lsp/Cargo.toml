@@ -1,0 +1,25 @@
+[package]
+name = "aion-awl-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Thin Language Server Protocol adapter for the Aion Workflow Language."
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-awl = { version = "0.8.0", path = "../aion-awl" }
+lsp-server = { workspace = true }
+lsp-types = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

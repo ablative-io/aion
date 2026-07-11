@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/aion-awl",
+    "crates/aion-awl-lsp",
     "crates/aion-core",
     "crates/aion-store",
     "crates/aion-store-libsql",
@@ -50,6 +51,7 @@ clap = "4"
 thiserror = "2.0"
 anyhow = "1.0"
 uuid = "1.23"
+url = "2"
 chrono = "0.4"
 async-trait = "0.1"
 tokio = "1.52"
@@ -91,6 +93,8 @@ rustls-pemfile = "2.2.0"
 webpki-roots = "1.0.7"
 http = "1.4.1"
 http-body-util = "0.1"
+lsp-server = "0.8.0"
+lsp-types = "0.97.0"
 tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8.11.0"
 prometheus = "0.14.0"
