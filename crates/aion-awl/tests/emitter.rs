@@ -115,6 +115,33 @@ step greet
     Ok(())
 }
 
+/// Nested boolean expressions use Gleam block grouping. Parentheses are not
+/// general-purpose grouping syntax in Gleam and make emitted modules fail to
+/// parse (the cargo-gates named-fork verdict exposed this).
+#[test]
+fn nested_boolean_expressions_use_gleam_block_grouping() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Grouped boolean expression regression.
+workflow grouped
+  input first: Bool
+  input second: Bool
+  input third: Bool
+  outcome done: type Done, route success
+
+type Done { accepted: Bool }
+
+step decide
+  outcome yes: when first and second and third,
+    route done(accepted: true)
+  outcome no: otherwise,
+    route done(accepted: false)
+";
+    let generated = emitted(source)?;
+    assert!(generated.contains("case { first && second } && third {"));
+    assert!(!generated.contains("case (first && second) && third {"));
+    Ok(())
+}
+
 /// The loop counter is language-owned: maintained in generated code, never
 /// threaded through worker results (survey fix 1 / D3).
 #[test]

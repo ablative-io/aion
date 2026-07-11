@@ -1,0 +1,12 @@
+{
+  "description": "cargo_gates: every gate, one run — check, clippy, tests, fmt fan out together against one workspace and come back as data. Real exit codes, never pass-claims: the verdict is computed from what actually ran, and a red gate names itself.",
+  "properties": {
+    "workspace_path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "workspace_path"
+  ],
+  "type": "object"
+}

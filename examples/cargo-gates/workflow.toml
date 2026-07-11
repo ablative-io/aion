@@ -1,0 +1,12 @@
+# Workflow packaging descriptor consumed by `aion package`.
+# `src/cargo_gates.gleam` is generated from the immutable exam AWL source and
+# committed so packaging does not require the AWL toolchain.
+
+[[workflow]]
+entry_module = "cargo_gates"
+entry_function = "run"
+timeout_seconds = 3600
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = ["run_check", "run_clippy", "run_tests", "run_fmt_check"]
+output = "cargo-gates.aion"
