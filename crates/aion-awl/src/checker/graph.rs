@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::Span;
 use crate::ast::{PipeEnd, Statement, Step};
 
-use super::avail::{availability, universe};
+use super::avail::{Origins, availability, universe};
 use super::context::Ctx;
 
 /// One `route` edge between top-level steps.
@@ -25,6 +25,8 @@ pub(super) struct RouteEdge {
 pub(super) struct StepGraph {
     /// Bindings guaranteed on every path into each step.
     pub(super) avail_in: Vec<BTreeSet<String>>,
+    /// Checker-resolved declaration origins for guaranteed bindings.
+    pub(super) origins_in: Vec<Origins>,
     /// Whether an `after` dependency cycle was found (flow walk is skipped).
     pub(super) after_cycle: bool,
 }
@@ -57,6 +59,8 @@ pub(super) fn build(ctx: &mut Ctx<'_>) -> StepGraph {
     for (position, step) in steps.iter().enumerate() {
         for dependency in &step.after {
             if let Some(&target) = index.get(dependency.name.as_str()) {
+                ctx.semantic
+                    .reference_to(dependency.span, Some(steps[target].name_span));
                 after[position].push(target);
             } else {
                 after_unknown[position] = true;
@@ -75,6 +79,7 @@ pub(super) fn build(ctx: &mut Ctx<'_>) -> StepGraph {
         report_after_cycle(ctx, steps, &cycle);
         return StepGraph {
             avail_in: vec![universe(ctx); count],
+            origins_in: vec![Origins::new(); count],
             after_cycle: true,
         };
     }
@@ -85,6 +90,8 @@ pub(super) fn build(ctx: &mut Ctx<'_>) -> StepGraph {
     for (position, step) in steps.iter().enumerate() {
         for (name, span) in collect_route_names(step) {
             if let Some(&target) = index.get(name) {
+                ctx.semantic
+                    .reference_to(span, Some(steps[target].name_span));
                 routes.push(RouteEdge {
                     source: position,
                     target,
@@ -115,9 +122,10 @@ pub(super) fn build(ctx: &mut Ctx<'_>) -> StepGraph {
     check_successors(ctx, steps, &after, &fall_pred);
     check_route_cycles(ctx, steps, &after, &routes, &fall_pred);
 
-    let avail_in = availability(ctx, &after, &after_unknown, &routes, &fall_pred);
+    let (avail_in, origins_in) = availability(ctx, &after, &after_unknown, &routes, &fall_pred);
     StepGraph {
         avail_in,
+        origins_in,
         after_cycle: false,
     }
 }

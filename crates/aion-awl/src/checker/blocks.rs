@@ -6,7 +6,6 @@
 //! sibling's binding — and every branch's bindings merge into the outer
 //! scope only after `join`.
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::Span;
@@ -16,11 +15,11 @@ use crate::spanned::Spanned;
 use super::exprs::{View, type_of};
 use super::outcomes::Env;
 use super::types::{Ty, resolve};
-use super::walk::{LoopFrame, Walker, insert_binding, walk_statements};
+use super::walk::{LoopFrame, Scope, Walker, insert_binding, walk_statements};
 
 pub(super) fn walk_fork(
     w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
+    scope: &mut Scope,
     fork: &ForkStmt,
     owner: &Step,
     env: &Env<'_>,
@@ -86,7 +85,7 @@ pub(super) fn walk_fork(
                         continue;
                     }
                     if let Some(ty) = branch_scope.get(&name) {
-                        merges.push((name, ty.clone(), span));
+                        merges.push((name, ty.ty.clone(), span));
                     }
                 }
             }
@@ -142,7 +141,7 @@ fn statement_binds(statement: &Statement, out: &mut Vec<(String, Span)>) {
 
 pub(super) fn walk_loop(
     w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
+    scope: &mut Scope,
     looped: &LoopStmt,
     owner: &Step,
     env: &Env<'_>,

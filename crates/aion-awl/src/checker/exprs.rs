@@ -2,21 +2,19 @@
 //! guard-dependent optionality rule), record construction, comparisons,
 //! boolean operators, string concatenation, indexing, and `is` predicates.
 
-use std::collections::BTreeMap;
-
 use crate::Span;
 use crate::ast::{BinaryOp, Expr, PredicateKind};
 use crate::spanned::Spanned;
 
 use super::types::{Ty, assignable, equality_comparable, resolve};
-use super::walk::Walker;
+use super::walk::{Scope, Walker};
 
 /// A read-only view of the bindings in scope, with at most one
 /// guard-narrowed name (`when x is present` makes `x` a `T` in its arm).
 #[derive(Clone, Copy)]
 pub(super) struct View<'s> {
     /// Bindings in scope: name → type.
-    pub(super) vars: &'s BTreeMap<String, Ty>,
+    pub(super) vars: &'s Scope,
     /// The one narrowed binding, if the surrounding arm narrows.
     pub(super) narrow: Option<&'s (String, Ty)>,
 }
@@ -28,12 +26,20 @@ impl View<'_> {
         {
             return Some(ty.clone());
         }
-        self.vars.get(name).cloned()
+        self.vars.get(name).map(|value| value.ty.clone())
     }
 }
 
 /// Type an expression, reporting every defect found inside it.
 pub(super) fn type_of(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
+    let ty = type_of_inner(w, view, expr);
+    if w.emit {
+        w.ctx.semantic.ty(expr.span(), &ty.to_string());
+    }
+    ty
+}
+
+fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
     match expr {
         Expr::String { .. } => Ty::Str,
         Expr::Int { .. } => Ty::Int,
@@ -139,6 +145,10 @@ fn type_ref(w: &mut Walker<'_, '_>, view: View<'_>, span: Span, name: &str) -> T
         return Ty::Unknown;
     }
     if let Some(ty) = view.get(name) {
+        if w.emit {
+            let declaration = view.vars.get(name).and_then(|value| value.declaration);
+            w.ctx.semantic.reference_to(span, declaration);
+        }
         return ty;
     }
     if w.prior.contains_key(name) {
@@ -169,6 +179,9 @@ fn type_record(
         w.err(name_span, format!("unknown type `{name}`"));
         return Ty::Unknown;
     };
+    w.ctx
+        .semantic
+        .reference(name_span, crate::semantic::DeclarationKind::Type, name);
     match resolve(&definition, &w.ctx.types) {
         Ty::Record(record) => {
             let params: Vec<(String, Ty)> = record
@@ -228,6 +241,8 @@ pub(super) fn field_access(
         }
         Ty::Record(record) => {
             if let Some(field) = record.field(name) {
+                w.ctx.semantic.reference_to(name_span, field.declaration);
+                w.ctx.semantic.ty(name_span, &field.ty.to_string());
                 field.ty.clone()
             } else {
                 let display = base_ty.to_string();

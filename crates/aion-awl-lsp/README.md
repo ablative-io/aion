@@ -10,11 +10,14 @@ The server provides:
 - parser and checker diagnostics on open and change, cleared on close;
 - canonical whole-document formatting;
 - document symbols for workflows, types, workers/actions, and steps/substeps;
-- AST-only definitions for type, action/child, `after`, and route references.
+- checker-resolved definitions for types, fields, actions/children, steps,
+  outcomes, signals, inputs, and scoped bindings;
+- Markdown hover with checker-computed types, declaration kinds, and attached
+  documentation.
 
-Hover is intentionally unavailable: the AWL front end does not expose a
-`type_at_position`-style query, and editor tooling must not grow a shadow type
-engine.
+Hover and definitions consume `aion_awl::semantic`, a read-only trace of the
+normal checker pipeline. The server does not infer types or reproduce checker
+scoping rules.
 
 ## Helix
 

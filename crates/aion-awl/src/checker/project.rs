@@ -294,6 +294,7 @@ impl Projector<'_, '_, '_> {
                 fields.push(FieldTy {
                     name: property.clone(),
                     ty,
+                    declaration: None,
                 });
             }
         }

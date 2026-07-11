@@ -13,6 +13,7 @@ mod lexer;
 mod parser;
 mod printer;
 mod schema;
+pub mod semantic;
 mod spanned;
 
 pub use ast::{

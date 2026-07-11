@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
+use crate::Span;
+
 /// One field of a record shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FieldTy {
@@ -13,6 +15,8 @@ pub(super) struct FieldTy {
     pub(super) name: String,
     /// Field type; optionality is carried by `Ty::Optional`.
     pub(super) ty: Ty,
+    /// Source declaration for authored fields; projected fields have none.
+    pub(super) declaration: Option<Span>,
 }
 
 /// A record shape, named when it came from a declaration or a `$defs` entry.
