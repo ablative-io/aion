@@ -1,0 +1,13 @@
+name = "AWL"
+grammar = "awl"
+path_suffixes = ["awl"]
+line_comments = ["// "]
+tab_size = 2
+hard_tabs = false
+autoclose_before = ";:.,=}])>"
+brackets = [
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+    { start = "(", end = ")", close = true, newline = true },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+]

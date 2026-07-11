@@ -1,0 +1,17 @@
+id = "awl"
+name = "AWL"
+description = "AWL workflow language support with Tree-sitter syntax highlighting and the Aion language server"
+version = "0.1.0"
+schema_version = 1
+authors = ["Ablative"]
+repository = "https://github.com/ablative-io/aion"
+
+[language_servers.awl]
+name = "AWL Language Server"
+languages = ["AWL"]
+language_ids = { AWL = "awl" }
+
+[grammars.awl]
+repository = "https://github.com/ablative-io/aion.git"
+rev = "77ddad39b850e4e092f6f0d113595a42079d979d"
+path = "tools/tree-sitter-awl"
