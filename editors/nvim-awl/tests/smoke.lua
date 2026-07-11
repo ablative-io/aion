@@ -30,7 +30,7 @@ local awl = require('awl')
 local current_configs = {}
 package.loaded['nvim-treesitter.parsers'] = current_configs
 assert(awl.register_parser(), 'current nvim-treesitter parser registration failed')
-assert(current_configs.awl.install_info.url == 'https://github.com/ablative-io/aion.git')
+assert(current_configs.awl.install_info.url == 'https://github.com/tomWhiting/tree-sitter-awl.git')
 
 local legacy_configs = {}
 package.loaded['nvim-treesitter.parsers'] = {

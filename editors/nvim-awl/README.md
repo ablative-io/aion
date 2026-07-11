@@ -96,8 +96,7 @@ The default setup registers this `install_info`:
 require('awl').setup({
   parser = {
     install_info = {
-      url = 'https://github.com/ablative-io/aion.git',
-      location = 'tools/tree-sitter-awl',
+      url = 'https://github.com/tomWhiting/tree-sitter-awl.git',
     },
   },
 })
@@ -232,8 +231,7 @@ require('awl').setup({
   format_timeout_ms = 1000,
   parser = {
     install_info = {
-      url = 'https://github.com/ablative-io/aion.git',
-      location = 'tools/tree-sitter-awl',
+      url = 'https://github.com/tomWhiting/tree-sitter-awl.git',
     },
   },
 })
