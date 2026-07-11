@@ -124,9 +124,13 @@ pub(crate) fn definition(source: &str, uri: &Uri, position: Position) -> Option<
     let reference = references
         .into_iter()
         .find(|site| contains(site.span, byte))?;
-    let declaration = declarations
+    let mut matching = declarations
         .into_iter()
-        .find(|site| site.kind == reference.kind && site.name == reference.name)?;
+        .filter(|site| site.kind == reference.kind && site.name == reference.name);
+    let declaration = matching.next()?;
+    if matching.next().is_some() {
+        return None;
+    }
     Some(Location::new(
         uri.clone(),
         range_for_span(source, declaration.span),
@@ -134,7 +138,7 @@ pub(crate) fn definition(source: &str, uri: &Uri, position: Position) -> Option<
 }
 
 fn contains(span: Span, byte: usize) -> bool {
-    span.start <= byte && byte <= span.end
+    span.start <= byte && byte < span.end
 }
 
 fn collect_document<'a>(
