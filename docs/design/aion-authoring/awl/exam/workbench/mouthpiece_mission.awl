@@ -1,0 +1,48 @@
+//! mouthpiece_mission: an agent's question rides to Tom through the relay under the
+//! outcome contract — delivered at the mission's politeness tier, answered within a
+//! day, and NEVER inferred: a dropped or silent ending is unconfirmed, not consent.
+workflow mouthpiece_mission
+  input mission: Mission
+  signal outcome_reply: OutcomeReply
+
+  outcome confirmed:   type Confirmed,   route success
+  outcome corrected:   type Corrected,   route success
+  outcome unconfirmed: type Unconfirmed, route failure
+
+type Mission      { mission_id: String, requested_by: String, asked: String, urgent: Bool }
+type Delivery     { conveyed: String }
+type OutcomeReply { state: String, corrected_outcome: String? }
+
+/// The relay's classification of the reply — computed worker-side because the VM
+/// cannot read fields of the timed-out-optional wait binding (F15's second exhibit).
+type Verdict { confirmed: Bool, corrected: Bool, corrected_outcome: String }
+
+type Confirmed   { mission_id: String, conveyed: String }
+type Corrected   { mission_id: String, corrected_outcome: String }
+type Unconfirmed { mission_id: String }
+
+worker mouthpiece
+  action deliver_mission(mission: Mission) -> Delivery
+    node relay, timeout 10m
+  action assess_reply(reply: OutcomeReply?) -> Verdict
+    node relay, timeout 1m
+
+step tier
+  outcome now: when mission.urgent, route deliver
+  outcome polite: otherwise, route respectful_pause
+
+step respectful_pause
+  sleep 4h
+  route deliver
+
+step deliver
+  deliver_mission(mission: mission) -> delivery
+  wait outcome_reply timeout 24h -> reply
+  assess_reply(reply: reply) -> verdict
+
+  outcome ok: when verdict.confirmed,
+    route confirmed(mission_id: mission.mission_id, conveyed: delivery.conveyed)
+  outcome fixed: when verdict.corrected,
+    route corrected(mission_id: mission.mission_id, corrected_outcome: verdict.corrected_outcome)
+  outcome silent: otherwise,
+    route unconfirmed(mission_id: mission.mission_id)

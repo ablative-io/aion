@@ -1,0 +1,18 @@
+//! Probe: spec §Worker blocks — "a step may override `node`/`timeout` at the call
+//! site when it must pin." No spelling is shown anywhere. Second guess: the action
+//! declaration's indented config line, transplanted under the call.
+workflow probe_callsite_override
+  input id: String
+  outcome done: type Done, route success
+
+type Done { got: String }
+type Thing { value: String }
+
+worker probe
+  action fetch(id: String) -> Thing
+    node shell, timeout 5m
+
+step pin_it
+  fetch(id: id) -> thing
+    timeout 30s
+  route done(got: thing.value)

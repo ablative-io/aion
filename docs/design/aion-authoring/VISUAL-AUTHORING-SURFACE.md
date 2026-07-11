@@ -128,7 +128,17 @@ New endpoints in `aion-server` (pattern already exists at
 `api/http/authoring.rs`): `POST /awl/check` (span diagnostics as JSON),
 `POST /awl/fmt` (canonical text), `POST /awl/semantic` (hover/definitions/
 provenance from `aion_awl::semantic`), `POST /awl/emit` (staged behind the
-same deploy capability gating as `/deploy/packages`). In-process crate calls
+same deploy capability gating as `/deploy/packages`).
+
+**Emit-subset diagnostics are part of check, not a later surprise** (workbench
+finding F26): three check-green shapes today refuse only at emit — the Gleam
+stopgap emits a SUBSET of the checked language. The facade's check response
+therefore carries TWO diagnostic classes: language errors (blocking, red) and
+emit-subset warnings ("checks, but the current backend cannot deploy this
+shape — <the stopgap's own message>", amber, span-anchored). On a canvas,
+check-green-but-undeployable is betrayal-shaped; the boundary must be visible
+while authoring. This class dissolves when #240 makes emission total for
+checked programs — the warning channel then simply goes quiet. In-process crate calls
 — no stdio-LSP-over-WebSocket contortion; the stdio LSP remains the
 editor-plugin surface (Zed/Neovim), the HTTP facade is the web surface, and
 both are thin over the ONE checker. One wall of errors, now reachable by the

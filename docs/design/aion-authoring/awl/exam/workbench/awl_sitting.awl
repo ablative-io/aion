@@ -1,0 +1,69 @@
+//! awl_sitting: one exam sitting, machine-invigilated — provision a scratch room,
+//! run the candidate, grade the paper, collect turn-2 feedback, hand back one row.
+//! A sitting never kills the suite: crashes become Never-class rows (exit-status-is-data).
+workflow awl_sitting
+  input spec: SittingSpec
+  input pack_revision: String
+
+  outcome row: type SittingRow, route success
+
+type SittingSpec { harness: String, model: String, effort: String }
+type Scratch     { path: String }
+type Submission  { file_path: String, transcript_path: String, said_done: Bool }
+
+/// first_try | after_fixes | never — the exam protocol's check-pass mark.
+type CheckClass = FirstTry | AfterFixes | Never
+
+type CheckResult {
+  class: CheckClass,
+  /// class == FirstTry, precomputed by the grader — the VM cannot compare enums
+  /// in `filter`, so selection bits must arrive as data (workbench finding F22).
+  first_try: Bool,
+  fix_rounds: Int,
+  /// Verbatim checker errors, in order of appearance.
+  errors: [String],
+}
+
+type SemanticMark { requirement: Int, passed: Bool, note: String? }
+type Feedback     { confidence: Float, confusions: [String], missing: [String] }
+
+type SittingRow {
+  spec: SittingSpec,
+  check: CheckResult,
+  marks: [SemanticMark],
+  feedback: Feedback,
+  crashed: Bool,
+  /// Hoisted copy of check.first_try — `filter` cannot reach nested fields, so any
+  /// bit the parent selects on must live at row top level (F22, third copy of one fact).
+  first_try: Bool,
+}
+
+worker awl_exam
+  action provision_scratch(spec: SittingSpec, pack_revision: String) -> Scratch
+    node shell, timeout 2m, retry 2 every 30s
+  action run_candidate(spec: SittingSpec, scratch: Scratch) -> Submission
+    node candidate, timeout 45m
+  action grade_check(submission: Submission, scratch: Scratch) -> CheckResult
+    node shell, timeout 10m
+  action grade_semantics(submission: Submission) -> [SemanticMark]
+    node grader, timeout 15m
+  action collect_feedback(spec: SittingSpec, submission: Submission, check: CheckResult) -> Feedback
+    node candidate, timeout 15m
+
+step provision
+  provision_scratch(spec: spec, pack_revision: pack_revision) -> scratch
+
+step sit
+  run_candidate(spec: spec, scratch: scratch) -> submission
+  on failure
+    route row(spec: spec, check: CheckResult(class: Never, first_try: false, fix_rounds: 0, errors: []), marks: [], feedback: Feedback(confidence: 0.0, confusions: [], missing: []), crashed: true, first_try: false)
+
+step grade
+  grade_check(submission: submission, scratch: scratch) -> check
+  grade_semantics(submission: submission) -> marks
+
+step turn_two
+  collect_feedback(spec: spec, submission: submission, check: check) -> feedback
+
+step assemble
+  route row(spec: spec, check: check, marks: marks, feedback: feedback, crashed: false, first_try: check.first_try)

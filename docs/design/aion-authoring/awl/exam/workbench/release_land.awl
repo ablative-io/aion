@@ -1,0 +1,52 @@
+//! release_land: the landing doctrine as a workflow — gates re-run on the FINAL
+//! state (never on anyone's pass-claim), the operator's word gates the land, and a
+//! failed land compensates loudly before it fails. Composes cargo_gates as a child.
+workflow release_land
+  input branch: String
+  input workspace_path: String
+  signal operator_go: OperatorGo
+
+  outcome landed:       type Landed,      route success
+  outcome gates_failed: type GatesFailed, route failure
+  outcome vetoed:       type Vetoed,      route failure
+  outcome land_failed:  type LandFailed,  route failure
+
+type OperatorGo  { approved: Bool, note: String? }
+type Clean       { gates_run: Int }
+type LandReceipt { commit: String, target: String }
+type Ack         { ok: Bool }
+
+type Landed      { branch: String, commit: String, gates_run: Int }
+type GatesFailed { branch: String }
+type Vetoed      { branch: String }
+type LandFailed  { branch: String, reason: String }
+
+worker release_land
+  action land_branch(branch: String, workspace_path: String) -> LandReceipt
+    node shell, timeout 10m, retry 2 backoff 30s..5m
+  action unlock_queue(branch: String) -> Ack
+    node shell, timeout 2m
+
+child run_gates(workspace_path: String) -> Clean
+
+step gates
+  run_gates(workspace_path: workspace_path) -> gate_report
+  on failure
+    unlock_queue(branch: branch)
+    route gates_failed(branch: branch)
+
+step operator_word
+  wait operator_go -> go
+
+  outcome approved: when go.approved, route land
+  outcome declined: otherwise,
+    route vetoed(branch: branch)
+
+step land
+  land_branch(branch: branch, workspace_path: workspace_path) -> receipt
+  on failure
+    unlock_queue(branch: branch)
+    route land_failed(branch: branch, reason: "land failed after compensation; queue unlocked")
+
+step announce
+  route landed(branch: branch, commit: receipt.commit, gates_run: gate_report.gates_run)

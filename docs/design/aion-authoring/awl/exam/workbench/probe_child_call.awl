@@ -1,0 +1,16 @@
+//! Probe: does an AWAITED child call in a plain step body emit? (spawn emitted fine
+//! in the playtest flagship; the exam parent's child-in-fork was refused at emit.)
+workflow probe_child_call
+  input n: Int
+  outcome done: type Done, route success
+
+type Done { got: Int }
+type Out { value: Int }
+
+child compute(n: Int) -> Out
+
+step call_it
+  compute(n: n) -> result
+
+step finish
+  route done(got: result.value)

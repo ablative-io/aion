@@ -1,0 +1,25 @@
+//! Probe: can a collection-fork branch hold a multi-statement pipeline (the only
+//! in-file alternative to child-in-fork, which is blocked at emit — F23)?
+workflow probe_fork_chain
+  input ids: [String]
+  outcome done: type Done, route success
+
+type Done { count: Int }
+type Fetched { path: String }
+type Graded { path: String, score: Int }
+
+worker probe
+  action fetch(id: String) -> Fetched
+    node shell, timeout 1m
+  action grade(item: Fetched) -> Graded
+    node shell, timeout 1m
+
+step per_item
+  fork id in ids
+    fetch(id: id) -> item
+    grade(item: item) -> graded
+  join -> results
+
+step finish
+  results |> count -> n
+  route done(count: n)

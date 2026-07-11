@@ -1,0 +1,64 @@
+//! awl_exam: the AWL exam as a standing regression suite — the sitting matrix fans
+//! out, every candidate is machine-invigilated in its own child run, and the ledger
+//! gets one appended row per sitting plus the first-try headline. Runs on every
+//! spec change; a language regression shows up as a falling headline, loudly.
+workflow awl_exam
+  input pack_revision: String
+  input sittings: [SittingSpec]
+
+  outcome reported: type ExamReport, route success
+  outcome aborted:  type Aborted,    route failure
+
+type SittingSpec { harness: String, model: String, effort: String }
+
+type CheckClass = FirstTry | AfterFixes | Never
+
+type CheckResult  { class: CheckClass, first_try: Bool, fix_rounds: Int, errors: [String] }
+type SemanticMark { requirement: Int, passed: Bool, note: String? }
+type Feedback     { confidence: Float, confusions: [String], missing: [String] }
+
+type SittingRow {
+  spec: SittingSpec,
+  check: CheckResult,
+  marks: [SemanticMark],
+  feedback: Feedback,
+  crashed: Bool,
+  first_try: Bool,
+}
+
+type LedgerCommit { commit: String }
+
+type ExamReport {
+  pack_revision: String,
+  rows: Int,
+  first_try_passes: Int,
+  crashes: Int,
+  ledger_commit: String,
+}
+type Aborted { reason: String }
+
+worker awl_exam
+  action append_ledger(pack_revision: String, rows: [SittingRow]) -> LedgerCommit
+    node shell, timeout 5m
+
+child sit_one(spec: SittingSpec, pack_revision: String) -> SittingRow
+
+step fan_out
+  fork spec in sittings
+    sit_one(spec: spec, pack_revision: pack_revision)
+  join -> rows
+
+step headline
+  rows |> filter(.first_try) -> first_try_rows
+  rows |> filter(.crashed) -> crash_rows
+  first_try_rows |> count -> first_try_count
+  crash_rows |> count -> crash_count
+  rows |> count -> row_count
+
+step ledger
+  append_ledger(pack_revision: pack_revision, rows: rows) -> committed
+  on failure
+    route aborted(reason: "ledger append failed — results must never be silently lost")
+
+step report
+  route reported(pack_revision: pack_revision, rows: row_count, first_try_passes: first_try_count, crashes: crash_count, ledger_commit: committed.commit)

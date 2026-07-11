@@ -1,0 +1,23 @@
+//! Probe: F22's second axis — enum comparison is banned in `filter`; does it work
+//! in a `when` guard on a non-optional binding? (Spec: enum-subject arms the checker
+//! can prove total; this also probes variant-coverage totality without `otherwise`.)
+workflow probe_enum_guard
+  input id: String
+  outcome hot:  type Hot,  route success
+  outcome cold: type Cold, route failure
+
+type Temp = Hot | Warm | Cold
+type Reading { temp: Temp }
+type Hot  { id: String }
+type Cold { id: String }
+
+worker probe
+  action read_temp(id: String) -> Reading
+    node shell, timeout 1m
+
+step classify
+  read_temp(id: id) -> reading
+
+  outcome a: when reading.temp == Hot, route hot(id: id)
+  outcome b: when reading.temp == Warm, route hot(id: id)
+  outcome c: when reading.temp == Cold, route cold(id: id)

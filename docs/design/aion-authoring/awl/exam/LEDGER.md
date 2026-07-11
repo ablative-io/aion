@@ -220,3 +220,61 @@ only. To the advisory backlog beside F2 and retry-exhaustion (F11).
 **Updated priority after the playtest: F15 ruling first among language items**
 (it re-opens the combinator-ruling wound), then F3 (pack), F2+F4, F18/F19
 diagnostics, F20 doc line, advisory backlog (F6/F7/F11/F12/F16/F17/F21).
+
+---
+
+## Workbench session 1 (fluent-author authoring seat, 2026-07-11) — pack at exam/workbench/
+
+Tom's authoring-seat commission: five real workflows (Tom's cargo-gates wish,
+the pair's landing doctrine, a mouthpiece mission, and the exam suite as a
+pair of workflows), four new probes, findings F22–F26. INVIGILATOR
+VERIFICATION by hand: all five check GREEN; cargo_gates/release_land/
+awl_sitting emit GREEN; awl_exam refuses at emit with exactly F23's misnamed
+diagnostic. The fan-out pattern matrix (Tom's N×M×P question, answered by
+construction) is in WORKBENCH-LOG.md: 6 patterns, one blocked cell —
+collection fork over CHILD calls — which is precisely the exam suite's right
+architecture. Ruling adopted: the fix is the emitter learning child-in-fork,
+NOT a design contortion; the exam suite waits for it rather than collapsing
+the sitting pipeline into one opaque action.
+
+### F22 — Language gap: combinator predicate poverty (now precisely shaped)
+`filter` accepts exactly a bare single-level Bool `.field` accessor; refuses
+comparisons and nested accessors. Predicate power lives in `when` guards
+(enum comparisons + totality proving work there). Real cost: the same fact
+hoisted three times to feed `filter`. Remedy direction (advisory): one
+accessor level + comparison in filter args, or spec wording fix (current
+prose over-promises). Canvas note: a projectional editor could hide hoist
+plumbing, but the language fix is upstream of the UI workaround.
+
+### F23 — Emitter gap + error-message bug: child calls inside fork branches
+Checks green; emit refuses with "`sit_one` names no declared action" — but it
+IS declared, as a child; plain-body child calls emit fine. Blocks
+child-per-item fan-out (the natural isolation + per-item observability
+architecture). Message must say what it means: "child calls are not yet
+lowerable inside fork branches". Emitter work item, priority raised by the
+exam-suite use case.
+
+### F24 — Language gap: list literals are argument-position-only
+`[a, b, c, d] -> gates` refused; named-fork results can never become a
+filterable list. F16's fixed-arity twin — one family: no list construction/
+merging in the VM.
+
+### F25 — Docs gap: call-site node/timeout override is real but unspelled
+Spec promises the override, shows no syntax; the natural inline guess dies
+with a generic parse error. Actual spelling: the config line indented under
+the call — VERIFIED live in emitted Gleam. One spec example fixes it.
+
+### F26 — UMBRELLA: the emit subset is systematic and silent until emit
+Three check-green shapes refuse only at emit: F19a (`on failure` +
+body-terminal route), F23 (child-in-fork), multi-statement collection-fork
+branches. The checker validates the LANGUAGE; the stopgap emits a SUBSET;
+nothing warns earlier. ADOPTED INTO VISUAL-AUTHORING-SURFACE.md D3: the HTTP
+facade must serve emit-subset diagnostics alongside check diagnostics — on a
+canvas, check-green-but-undeployable is betrayal-shaped. Longer-term this
+whole class dissolves when #240 makes emission total for checked programs;
+until then the boundary must be VISIBLE at authoring time.
+
+**Positives ledger** (in WORKBENCH-LOG.md): actions returning [T], enum
+totality proving, wait-without-timeout binding plain readable T (F15's
+contrast case), child composition, retry backoff form, two-step compensation
+— all first-try. F7 partially dissolved (no wrapper needed for lists).
