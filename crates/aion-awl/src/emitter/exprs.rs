@@ -221,8 +221,10 @@ fn render_parenthesized(
 ) -> Result<String, EmitError> {
     let rendered = render_expr(emitter, expr, scope, prelude)?;
     match expr {
+        // Gleam groups expressions with blocks. Parentheses are reserved for
+        // calls and tuple syntax, so `(a && b)` is not valid Gleam.
         Expr::Not { .. } | Expr::Binary { .. } | Expr::Predicate { .. } => {
-            Ok(format!("({rendered})"))
+            Ok(format!("{{ {rendered} }}"))
         }
         _ => Ok(rendered),
     }
