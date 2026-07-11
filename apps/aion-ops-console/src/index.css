@@ -349,3 +349,61 @@
   text-transform: uppercase;
   color: var(--text-muted);
 }
+
+/* Authoring editor colors remain semantic-token-only; grammar captures are pushed in. */
+.awl-syntax-comment,
+.awl-syntax-comment-documentation,
+.awl-syntax-comment-documentation-workflow {
+  color: var(--text-muted);
+}
+
+.awl-syntax-keyword,
+.awl-syntax-operator,
+.awl-syntax-label {
+  color: var(--status-special);
+}
+
+.awl-syntax-function,
+.awl-syntax-function-method,
+.awl-syntax-function-builtin,
+.awl-syntax-namespace {
+  color: var(--accent-primary);
+}
+
+.awl-syntax-string,
+.awl-syntax-number,
+.awl-syntax-number-float,
+.awl-syntax-constant-builtin {
+  color: var(--status-success);
+}
+
+.awl-syntax-type,
+.awl-syntax-type-builtin,
+.awl-syntax-type-definition,
+.awl-syntax-variable-parameter {
+  color: var(--accent-attention);
+}
+
+.awl-line-error {
+  background: color-mix(in srgb, var(--status-danger) 8%, transparent);
+}
+
+.awl-line-warning {
+  background: var(--status-warning-glow);
+}
+
+.awl-underline-error {
+  text-decoration: underline wavy var(--status-danger);
+}
+
+.awl-underline-warning {
+  text-decoration: underline wavy var(--status-warning);
+}
+
+.awl-gutter-error {
+  color: var(--status-danger);
+}
+
+.awl-gutter-warning {
+  color: var(--status-warning);
+}

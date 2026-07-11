@@ -16,6 +16,7 @@ export const ACTION_IDS = {
   goAssistant: 'go.assistant',
   focusSearch: 'search.focus',
   assistantFocusChat: 'assistant.focus-chat',
+  authoringSave: 'authoring.save',
 } as const;
 
 export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
@@ -77,6 +78,14 @@ export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
     scope: 'view',
     defaultBinding: 'mod+i',
     // ⌘I is meta-modified, so firing from a focused field never eats a keystroke.
+    allowInInputs: true,
+  },
+  {
+    id: ACTION_IDS.authoringSave,
+    title: 'Save authoring document',
+    scope: 'view',
+    defaultBinding: 'mod+s',
+    // Saving must work while the CodeMirror contenteditable owns focus.
     allowInInputs: true,
   },
 ];

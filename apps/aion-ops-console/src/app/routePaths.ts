@@ -11,6 +11,7 @@ export const incidentsPath = '/incidents';
 export const failoverPath = '/failover';
 export const actionsPath = '/actions';
 export const namespacesPath = '/registry';
+export const authoringPath = '/authoring';
 // The assistant panel: session list + per-session detail. `/assistant` is NOT
 // a reserved API path (assets.rs reserves only workflows/events), so the SPA
 // fallback serves index.html on a hard refresh of either route.
@@ -47,6 +48,10 @@ export function actionsHref() {
 
 export function namespacesHref() {
   return namespacesPath;
+}
+
+export function authoringHref() {
+  return authoringPath;
 }
 
 export function assistantHref() {
