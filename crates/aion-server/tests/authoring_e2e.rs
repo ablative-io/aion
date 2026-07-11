@@ -276,6 +276,7 @@ async fn authoring_compiles_loads_and_runs_a_corrected_workflow() -> Result<(), 
     let authoring = AuthoringConfig {
         gleam_path: Some(gleam),
         project_root: Some(project.path().to_path_buf()),
+        workspace_dir: None,
     };
     let (engine, router) = server_with(authoring).await?;
 
@@ -371,6 +372,7 @@ async fn concurrent_submissions_return_their_own_content_hash() -> Result<(), Te
     let authoring = AuthoringConfig {
         gleam_path: Some(gleam),
         project_root: Some(template_root.clone()),
+        workspace_dir: None,
     };
     let (engine, router) = server_with(authoring).await?;
 

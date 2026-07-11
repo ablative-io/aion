@@ -36,6 +36,9 @@ aion-package = { version = "0.8.0", path = "../aion-package" }
 # aion-server (CN7/C15). The authoring endpoints stay dark unless
 # `[authoring].gleam_path` is configured.
 aion-toolchain = { version = "0.8.0", path = "../aion-toolchain" }
+# In-process AWL checker, semantic index, canonical printer, and stopgap emitter
+# used by the browser authoring facade.
+aion-awl = { version = "0.8.0", path = "../aion-awl" }
 tokio = { workspace = true, features = ["full"] }
 axum = { workspace = true, features = ["ws"] }
 tonic = { workspace = true }
