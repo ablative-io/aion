@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, GotoDefinitionParams, OneOf, PositionEncodingKind,
-    PublishDiagnosticsParams, ServerCapabilities, TextDocumentPositionParams,
+    DocumentFormattingParams, GotoDefinitionParams, HoverParams, HoverProviderCapability, OneOf,
+    PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities, TextDocumentPositionParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextEdit, Uri,
 };
 use serde::de::DeserializeOwned;
@@ -94,6 +94,7 @@ fn capabilities() -> ServerCapabilities {
         document_formatting_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         definition_provider: Some(OneOf::Left(true)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -207,8 +208,27 @@ fn handle_request(
             } = params.text_document_position_params;
             let location = documents
                 .get(text_document.uri.as_str())
-                .and_then(|source| navigation::definition(source, &text_document.uri, position));
+                .and_then(|source| {
+                    let root = document_root(&text_document.uri);
+                    navigation::definition(source, &text_document.uri, position, root.as_deref())
+                });
             respond(connection, request.id, location)
+        }
+        "textDocument/hover" => {
+            let Some(params) = decode_request::<HoverParams>(connection, &request)? else {
+                return Ok(());
+            };
+            let TextDocumentPositionParams {
+                text_document,
+                position,
+            } = params.text_document_position_params;
+            let hover = documents
+                .get(text_document.uri.as_str())
+                .and_then(|source| {
+                    let root = document_root(&text_document.uri);
+                    navigation::hover(source, position, root.as_deref())
+                });
+            respond(connection, request.id, hover)
         }
         _ => {
             let response = Response::new_err(

@@ -1,5 +1,9 @@
-use aion_awl::{Document, Span, Statement, Step, TypeBody, TypeRef};
-use lsp_types::{Location, Position, Range, SymbolKind, Uri};
+use std::path::Path;
+
+use aion_awl::{Document, Span, Statement, Step};
+use lsp_types::{
+    Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, SymbolKind, Uri,
+};
 use serde::Serialize;
 
 use crate::analysis::{byte_offset_at, range_for_span};
@@ -102,189 +106,62 @@ fn step_symbol(source: &str, step: &Step) -> OutlineSymbol {
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NameKind {
-    Action,
-    Step,
-    Type,
-}
-
-struct NameSite<'a> {
-    name: &'a str,
-    span: Span,
-    kind: NameKind,
-}
-
-pub(crate) fn definition(source: &str, uri: &Uri, position: Position) -> Option<Location> {
+pub(crate) fn definition(
+    source: &str,
+    uri: &Uri,
+    position: Position,
+    root: Option<&Path>,
+) -> Option<Location> {
     let document = aion_awl::parse(source).ok()?;
+    let analysis = analyze(&document, root);
     let byte = byte_offset_at(source, position);
-    let mut declarations = Vec::new();
-    let mut references = Vec::new();
-    collect_document(&document, &mut declarations, &mut references);
-    let reference = references
-        .into_iter()
-        .find(|site| contains(site.span, byte))?;
-    let mut matching = declarations
-        .into_iter()
-        .filter(|site| site.kind == reference.kind && site.name == reference.name);
-    let declaration = matching.next()?;
-    if matching.next().is_some() {
-        return None;
-    }
+    let declaration = analysis.info_at(byte)?.declaration.as_ref()?;
     Some(Location::new(
         uri.clone(),
         range_for_span(source, declaration.span),
     ))
 }
 
-fn contains(span: Span, byte: usize) -> bool {
-    span.start <= byte && byte < span.end
-}
-
-fn collect_document<'a>(
-    document: &'a Document,
-    declarations: &mut Vec<NameSite<'a>>,
-    references: &mut Vec<NameSite<'a>>,
-) {
-    for declaration in &document.types {
-        declarations.push(NameSite {
-            name: &declaration.name,
-            span: declaration.name_span,
-            kind: NameKind::Type,
-        });
-        collect_type_body(&declaration.body, references);
-    }
-    for input in &document.inputs {
-        collect_type(&input.ty, references);
-    }
-    for signal in &document.signals {
-        collect_type(&signal.ty, references);
-    }
-    for outcome in &document.outcomes {
-        collect_type(&outcome.ty, references);
-    }
-    for worker in &document.workers {
-        for action in &worker.actions {
-            declarations.push(NameSite {
-                name: &action.name,
-                span: action.name_span,
-                kind: NameKind::Action,
-            });
-            for parameter in &action.params {
-                collect_type(&parameter.ty, references);
-            }
-            collect_type(&action.returns, references);
+pub(crate) fn hover(source: &str, position: Position, root: Option<&Path>) -> Option<Hover> {
+    let document = aion_awl::parse(source).ok()?;
+    let analysis = analyze(&document, root);
+    let byte = byte_offset_at(source, position);
+    let info = analysis.info_at(byte)?;
+    let declaration = info.declaration.as_ref();
+    let mut value = String::new();
+    if let Some(declaration) = declaration {
+        value.push_str("```awl\n");
+        value.push_str(declaration.kind.as_str());
+        value.push(' ');
+        value.push_str(&declaration.name);
+        if let Some(ty) = &info.ty {
+            value.push_str(": ");
+            value.push_str(ty);
         }
-    }
-    for child in &document.children {
-        declarations.push(NameSite {
-            name: &child.name,
-            span: child.name_span,
-            kind: NameKind::Action,
-        });
-        for parameter in &child.params {
-            collect_type(&parameter.ty, references);
+        value.push_str("\n```");
+        if let Some(documentation) = &declaration.documentation {
+            value.push_str("\n\n");
+            value.push_str(documentation);
         }
-        collect_type(&child.returns, references);
+    } else if let Some(ty) = &info.ty {
+        value.push_str("```awl\n");
+        value.push_str(ty);
+        value.push_str("\n```");
+    } else {
+        return None;
     }
-    for step in &document.steps {
-        collect_step(step, declarations, references);
-    }
-}
-
-fn collect_type_body<'a>(body: &'a TypeBody, references: &mut Vec<NameSite<'a>>) {
-    if let TypeBody::Record { fields } = body {
-        for field in fields {
-            collect_type(&field.ty, references);
-        }
-    }
-}
-
-fn collect_type<'a>(ty: &'a TypeRef, references: &mut Vec<NameSite<'a>>) {
-    match ty {
-        TypeRef::Named { span, name } => references.push(NameSite {
-            name,
-            span: *span,
-            kind: NameKind::Type,
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
         }),
-        TypeRef::List { inner, .. } | TypeRef::Optional { inner, .. } => {
-            collect_type(inner, references);
-        }
-    }
+        range: Some(range_for_span(source, info.span)),
+    })
 }
 
-fn collect_step<'a>(
-    step: &'a Step,
-    declarations: &mut Vec<NameSite<'a>>,
-    references: &mut Vec<NameSite<'a>>,
-) {
-    declarations.push(NameSite {
-        name: &step.name,
-        span: step.name_span,
-        kind: NameKind::Step,
-    });
-    references.extend(step.after.iter().map(|after| NameSite {
-        name: &after.name,
-        span: after.span,
-        kind: NameKind::Step,
-    }));
-    collect_statements(&step.body, declarations, references);
-    if let Some(on_failure) = &step.on_failure {
-        collect_statements(&on_failure.body, declarations, references);
-    }
-    references.extend(step.outcomes.iter().map(|outcome| NameSite {
-        name: &outcome.route.name,
-        span: outcome.route.name_span,
-        kind: NameKind::Step,
-    }));
-}
-
-fn collect_statements<'a>(
-    statements: &'a [Statement],
-    declarations: &mut Vec<NameSite<'a>>,
-    references: &mut Vec<NameSite<'a>>,
-) {
-    for statement in statements {
-        match statement {
-            Statement::Call(call) => references.push(NameSite {
-                name: &call.call.name,
-                span: call.call.name_span,
-                kind: NameKind::Action,
-            }),
-            Statement::Spawn(spawn) => references.push(NameSite {
-                name: &spawn.call.name,
-                span: spawn.call.name_span,
-                kind: NameKind::Action,
-            }),
-            Statement::Pipe(pipe) => {
-                for stage in &pipe.stages {
-                    if let aion_awl::PipeStage::Action { span, name } = stage {
-                        references.push(NameSite {
-                            name,
-                            span: *span,
-                            kind: NameKind::Action,
-                        });
-                    }
-                }
-                if let aion_awl::PipeEnd::Route(target) = &pipe.end {
-                    references.push(NameSite {
-                        name: &target.name,
-                        span: target.name_span,
-                        kind: NameKind::Step,
-                    });
-                }
-            }
-            Statement::Fork(fork) => collect_statements(&fork.body, declarations, references),
-            Statement::Loop(loop_statement) => {
-                collect_statements(&loop_statement.body, declarations, references);
-            }
-            Statement::Route(route) => references.push(NameSite {
-                name: &route.target.name,
-                span: route.target.name_span,
-                kind: NameKind::Step,
-            }),
-            Statement::SubStep(substep) => collect_step(substep, declarations, references),
-            Statement::Wait(_) | Statement::Sleep(_) => {}
-        }
-    }
+fn analyze(document: &Document, root: Option<&Path>) -> aion_awl::semantic::SemanticAnalysis {
+    root.map_or_else(
+        || aion_awl::semantic::analyze(document),
+        |root| aion_awl::semantic::analyze_in(document, root),
+    )
 }
