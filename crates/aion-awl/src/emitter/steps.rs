@@ -47,7 +47,7 @@ fn emit_execute(emitter: &mut Emitter<'_>, plan: &Plan) -> Result<(), EmitError>
     let input_type = emitter.input_type.clone();
     emitter.line("/// Workflow body generated from the AWL steps.");
     emitter.line(&format!(
-        "pub fn execute(input: {input_type}) -> Result({output}, AwlError) {{"
+        "pub fn execute(input: {input_type}) -> Result({output}, awl_error.AwlError) {{"
     ));
     let document = emitter.document;
     let Some(first_region) = plan.regions.iter().position(|region| region.entry == 0) else {
@@ -103,7 +103,7 @@ fn emit_region(
     let mut scope = scope_from_params(emitter, &params, entry)?;
     let rendered_params = annotated_params(emitter, &params, &scope);
     emitter.line(&format!(
-        "fn step_{}({rendered_params}) -> Result({output}, AwlError) {{",
+        "fn step_{}({rendered_params}) -> Result({output}, awl_error.AwlError) {{",
         snake(&entry.name)
     ));
     let layers = region.layers.clone();
@@ -274,7 +274,7 @@ fn emit_parallel_layer(
         }
     }
     emitter.line(&format!(
-        "use awl_layer <- try(workflow.all([{}]) |> map_activity_error)",
+        "use awl_layer <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
         values.join(", ")
     ));
     emitter.line(&format!("let assert [{}] = awl_layer", patterns.join(", ")));

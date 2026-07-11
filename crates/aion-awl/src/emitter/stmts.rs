@@ -15,8 +15,8 @@ use super::types::{GType, type_ref_to_g};
 
 /// The witness closure the SDK's string-name child spawn requires: a type
 /// anchor the engine never calls (panel-hardened AWL-0 discipline).
-pub(super) const CHILD_WITNESS: &str =
-    "fn(_: json.Json) { Error(AwlChildFailed(\"child workflow body runs in its own execution\")) }";
+pub(super) const CHILD_WITNESS: &str = "fn(_: json.Json) { Error(awl_error.AwlChildFailed(\"child workflow body runs in its own \
+     execution\")) }";
 
 /// Emit any pending prelude lines (fallible indexing) before a statement.
 pub(super) fn flush_prelude(emitter: &mut Emitter<'_>, prelude: Vec<String>) {
@@ -164,22 +164,21 @@ fn child_spawn_args(
     scope: &Scope,
     prelude: &mut Vec<String>,
 ) -> Result<String, EmitError> {
-    emitter.flags.uses_child = true;
     let args = ordered_args(&call.args, &child.params, call.span, &call.name)?;
     let mut fields = Vec::new();
     for (arg, param_ty) in args {
-        let codec = emitter.env.codec_name(&param_ty);
+        let to_json = emitter.to_json_fn(&param_ty);
         let rendered = render_arg_for(emitter, &arg.value, &param_ty, scope, prelude)?;
         fields.push(format!(
-            "#({}, {codec}_to_json({rendered}))",
+            "#({}, {to_json}({rendered}))",
             string_lit(&arg.name)
         ));
     }
     let input = format!("json.object([{}])", fields.join(", "));
-    let output_codec = emitter.env.codec_name(&type_ref_to_g(&child.returns));
+    let output_codec = emitter.codec_fn(&type_ref_to_g(&child.returns));
     Ok(format!(
-        "({}, {CHILD_WITNESS}, {input}, json_value_codec(), {output_codec}_codec(), \
-         awl_error_codec())",
+        "({}, {CHILD_WITNESS}, {input}, awlc.json_value(), {output_codec}(), \
+         awl_error.codec())",
         string_lit(&call.name)
     ))
 }
@@ -205,7 +204,7 @@ pub(super) fn lower_call(
         )?;
         flush_prelude(emitter, prelude);
         emitter.line(&format!(
-            "use {binder} <- try({value} |> workflow.run |> map_activity_error)"
+            "use {binder} <- result.try({value} |> workflow.run |> awl_error.map_activity_error)"
         ));
         if let Some(bind) = &call.bind {
             let (_, action) = emitter.actions[call.call.name.as_str()];
@@ -232,7 +231,7 @@ pub(super) fn lower_call(
     let spawn = child_spawn_args(emitter, child, &call.call, scope, &mut prelude)?;
     flush_prelude(emitter, prelude);
     emitter.line(&format!(
-        "use {binder} <- try(workflow.spawn_and_wait{spawn} |> map_child_error)"
+        "use {binder} <- result.try(workflow.spawn_and_wait{spawn} |> awl_error.map_child_error)"
     ));
     if let Some(bind) = &call.bind {
         scope.insert(bind.name.clone(), type_ref_to_g(&child.returns));
@@ -262,7 +261,7 @@ pub(super) fn lower_spawn(
     let args = child_spawn_args(emitter, child, &spawn.call, scope, &mut prelude)?;
     flush_prelude(emitter, prelude);
     emitter.line(&format!(
-        "use _ <- try(workflow.spawn{args} |> map_spawn_error)"
+        "use _ <- result.try(workflow.spawn{args} |> awl_error.map_spawn_error)"
     ));
     Ok(())
 }
@@ -282,17 +281,17 @@ pub(super) fn lower_wait(
     let payload_ty = type_ref_to_g(&signal.ty);
     let name = ident(&wait.bind.name);
     let receive = format!(
-        "workflow.receive({}_signal()) |> map_receive_error",
+        "workflow.receive({}_signal()) |> awl_error.map_receive_error",
         snake(&wait.signal)
     );
     match &wait.timeout {
         None => {
-            emitter.line(&format!("use {name} <- try({receive})"));
+            emitter.line(&format!("use {name} <- result.try({receive})"));
             scope.insert(wait.bind.name.clone(), payload_ty);
         }
         Some(timeout) => {
             let deadline = duration_expr(timeout);
-            emitter.line(&format!("use {name} <- try("));
+            emitter.line(&format!("use {name} <- result.try("));
             emitter.indented(|this| {
                 this.line(&format!(
                     "case workflow.with_timeout(fn() {{ {receive} }}, {deadline}) {{"
@@ -303,7 +302,7 @@ pub(super) fn lower_wait(
                     this.line("Error(error.InnerError(inner)) -> Error(inner)");
                     this.line(
                         "Error(error.TimeoutEngineFailure(message)) -> \
-                         Error(AwlTimerFailed(message))",
+                         Error(awl_error.AwlTimerFailed(message))",
                     );
                 });
                 this.line("},");
@@ -317,7 +316,7 @@ pub(super) fn lower_wait(
 
 pub(super) fn lower_sleep(emitter: &mut Emitter<'_>, sleep: &SleepStmt) {
     emitter.line(&format!(
-        "use _ <- try(workflow.sleep({}) |> map_timer_error)",
+        "use _ <- result.try(workflow.sleep({}) |> awl_error.map_timer_error)",
         duration_expr(&sleep.duration)
     ));
 }

@@ -92,13 +92,13 @@ fn lower_collection_fork(
         emitter.flags.uses_list_module = true;
         flush_prelude(emitter, prelude);
         emitter.line(&format!(
-            "use awl_folded <- try(list.try_fold({items}, [], fn(awl_acc, {}) {{",
+            "use awl_folded <- result.try(list.try_fold({items}, [], fn(awl_acc, {}) {{",
             ident(var)
         ));
         emitter.indented_try(|this| {
             flush_prelude(this, branch_prelude);
             this.line(&format!(
-                "use awl_item <- try({value} |> workflow.run |> map_activity_error)"
+                "use awl_item <- result.try({value} |> workflow.run |> awl_error.map_activity_error)"
             ));
             this.line("Ok([awl_item, ..awl_acc])");
             Ok(())
@@ -114,8 +114,8 @@ fn lower_collection_fork(
         }
         flush_prelude(emitter, prelude);
         emitter.line(&format!(
-            "use {binder} <- try(workflow.map({items}, fn({}) {{ {value} }}) |> \
-             map_activity_error)",
+            "use {binder} <- result.try(workflow.map({items}, fn({}) {{ {value} }}) |> \
+             awl_error.map_activity_error)",
             ident(var)
         ));
     }
@@ -172,7 +172,7 @@ fn lower_named_fork(
             values.push(value);
         }
         emitter.line(&format!(
-            "use awl_branches <- try(workflow.all([{}]) |> map_activity_error)",
+            "use awl_branches <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
             values.join(", ")
         ));
         let patterns = branches
@@ -227,7 +227,7 @@ pub(super) fn lower_hetero_parallel(
         values.push(value);
     }
     emitter.line(&format!(
-        "use awl_branches <- try(workflow.all([{}]) |> map_activity_error)",
+        "use awl_branches <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
         values.join(", ")
     ));
     let patterns = calls
@@ -247,9 +247,9 @@ pub(super) fn lower_hetero_parallel(
         if let Some(bind) = &call.bind {
             let (_, action) = emitter.actions[call.call.name.as_str()];
             let returns = type_ref_to_g(&action.returns);
-            let codec = emitter.env.codec_name(&returns);
+            let codec = emitter.codec_fn(&returns);
             emitter.line(&format!(
-                "use {} <- try(awl_decoded({codec}_codec(), awl_raw_{position}, {}))",
+                "use {} <- result.try(awlc.decoded({codec}(), awl_raw_{position}, {}))",
                 ident(&bind.name),
                 string_lit(&call.call.name)
             ));

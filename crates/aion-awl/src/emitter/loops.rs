@@ -65,7 +65,7 @@ pub(super) fn lower_loop(
         var.clone()
     };
     emitter.line(&format!(
-        "use {binder} <- try({loop_fn}({seed}, 0, {max_rendered}{comma_free}))"
+        "use {binder} <- result.try({loop_fn}({seed}, 0, {max_rendered}{comma_free}))"
     ));
 
     // Loop function body.
@@ -80,7 +80,7 @@ pub(super) fn lower_loop(
         let var_annotation = this.env.gleam_type(&seed_ty);
         this.line(&format!(
             "fn {loop_fn}({var}: {var_annotation}, awl_count: Int, awl_max: \
-             Int{comma_annotated_free}) -> Result({result_ty}, AwlError) {{"
+             Int{comma_annotated_free}) -> Result({result_ty}, awl_error.AwlError) {{"
         ));
         this.indented_try(|this| {
             let mut inner_scope = loop_scope.clone();

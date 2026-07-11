@@ -58,7 +58,6 @@ fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitEr
     let codec_section = emitter.capture(codecs::emit_codecs)?;
 
     frame::header(&mut emitter);
-    frame::error_type(&mut emitter);
     frame::type_decls(&mut emitter);
     frame::definition(&mut emitter);
     frame::run(&mut emitter);
@@ -70,6 +69,5 @@ fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitEr
     }
     emitter.out.push_str(&wrapper_section);
     emitter.out.push_str(&codec_section);
-    wrappers::helpers(&mut emitter);
     Ok(emitter.out)
 }

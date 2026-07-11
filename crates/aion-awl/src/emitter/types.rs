@@ -124,6 +124,15 @@ impl TypeEnv {
         }
     }
 
+    /// Whether a wire type is a builtin leaf (its codec lives in the SDK's
+    /// `aion/awl/codec` and is referenced qualified, not generated per module).
+    pub(super) fn is_leaf(&self, ty: &GType) -> bool {
+        matches!(
+            self.resolve(ty),
+            GType::Bool | GType::Int | GType::Float | GType::Str | GType::Nil | GType::Unknown
+        )
+    }
+
     /// The codec-function stem for a type (`x` in `x_codec`/`x_to_json`).
     pub(super) fn codec_name(&self, ty: &GType) -> String {
         match ty {

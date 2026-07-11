@@ -99,17 +99,17 @@ step greet
     );
     assert!(generated.contains("let_: String,"), "input record field");
     assert!(
-        generated.contains("use let_ <- decode.field(\"let\", string_decoder())"),
+        generated.contains("use let_ <- decode.field(\"let\", awlc.string_decoder())"),
         "decoder binding keeps the AWL wire name"
     );
     assert!(generated.contains("fn_: String,"), "action param field");
     assert!(
-        generated.contains("use use_ <- try(greet_activity(let_)"),
+        generated.contains("use use_ <- result.try(greet_activity(let_)"),
         "sanitized binding and reference at the call site: {generated}"
     );
     assert!(
-        generated.contains("#(\"use\", string_to_json(inner))")
-            || generated.contains("#(\"use\", string_to_json(value.use_))"),
+        generated.contains("#(\"use\", awlc.string_to_json(inner))")
+            || generated.contains("#(\"use\", awlc.string_to_json(value.use_))"),
         "JSON key keeps the AWL name: {generated}"
     );
     Ok(())
@@ -125,7 +125,7 @@ fn loop_counter_is_language_owned() -> Result<(), Box<dyn Error>> {
         "the generated loop must increment its own counter: {generated}"
     );
     assert!(
-        generated.contains("use #(status, polls) <- try(poll_loop_0("),
+        generated.contains("use #(status, polls) <- result.try(poll_loop_0("),
         "the loop must return the threaded value and the counter: {generated}"
     );
     assert!(
@@ -149,11 +149,11 @@ fn child_call_lowers_to_string_name_spawn() -> Result<(), Box<dyn Error>> {
     let generated = emitted_fixture("declarations/valid/child_call_awaited.awl")?;
     assert!(generated.contains("workflow.spawn_and_wait(\"score_essay\""));
     assert!(
-        generated.contains("json.object([#(\"essay\", string_to_json(essay))])"),
+        generated.contains("json.object([#(\"essay\", awlc.string_to_json(essay))])"),
         "named child args must encode as one JSON object: {generated}"
     );
     assert!(generated.contains(
-        "fn(_: json.Json) { Error(AwlChildFailed(\"child workflow body runs in its own \
+        "fn(_: json.Json) { Error(awl_error.AwlChildFailed(\"child workflow body runs in its own \
          execution\")) }"
     ));
     assert!(!generated.contains("score_essay.execute"));
@@ -167,7 +167,7 @@ fn child_call_lowers_to_string_name_spawn() -> Result<(), Box<dyn Error>> {
 fn spawn_lowers_detached() -> Result<(), Box<dyn Error>> {
     let generated = emitted_fixture("declarations/valid/spawn_detached.awl")?;
     assert!(
-        generated.contains("use _ <- try(workflow.spawn(\"audit_trail\""),
+        generated.contains("use _ <- result.try(workflow.spawn(\"audit_trail\""),
         "spawn must be detached and unbound: {generated}"
     );
     assert!(
@@ -212,12 +212,12 @@ fn on_failure_compensates_then_routes() -> Result<(), Box<dyn Error>> {
         "compensation must run in the error arm: {generated}"
     );
     assert!(
-        after.contains("Error(AwlOutcomeFailure(\"failed\""),
+        after.contains("Error(awl_error.AwlOutcomeFailure(\"failed\""),
         "compensation must end in its declared failure route: {generated}"
     );
     let success_outcome = generated
         .find(
-            "Error(AwlOutcomeFailure(\"failed\", json.to_string(publish_failed_to_json(\
+            "Error(awl_error.AwlOutcomeFailure(\"failed\", json.to_string(publish_failed_to_json(\
                 PublishFailed(reason: \"nothing was published\")))))",
         )
         .ok_or("the step's own failure outcome must remain reachable")?;
@@ -231,7 +231,7 @@ fn on_failure_compensates_then_routes() -> Result<(), Box<dyn Error>> {
 fn fork_forms_map_and_fold() -> Result<(), Box<dyn Error>> {
     let parallel = emitted_fixture("dag-fork/valid/fork_collection_join.awl")?;
     assert!(
-        parallel.contains("use verdicts <- try(workflow.map(docs, fn(doc) {"),
+        parallel.contains("use verdicts <- result.try(workflow.map(docs, fn(doc) {"),
         "collection fork must ride workflow.map: {parallel}"
     );
     let sequential = emitted_fixture("dag-fork/valid/fork_sequential.awl")?;
@@ -299,11 +299,11 @@ fn heterogeneous_named_fork_dispatches_one_parallel_all() -> Result<(), Box<dyn 
         "both branches must dispatch in the same workflow.all: {all_line}"
     );
     assert!(
-        generated.contains("use profile <- try(awl_decoded(profile_codec(), awl_raw_0,"),
+        generated.contains("use profile <- result.try(awlc.decoded(profile_codec(), awl_raw_0,"),
         "branch 1 must decode with its return codec: {generated}"
     );
     assert!(
-        generated.contains("use history <- try(awl_decoded(history_codec(), awl_raw_1,"),
+        generated.contains("use history <- result.try(awlc.decoded(history_codec(), awl_raw_1,"),
         "branch 2 must decode with its return codec: {generated}"
     );
     Ok(())
@@ -325,7 +325,9 @@ fn flagship_scout_and_warm_build_share_one_parallel_all() -> Result<(), Box<dyn 
         "warm_build must dispatch in the same workflow.all as scout: {all_line}"
     );
     assert!(
-        generated.contains("use scout_report <- try(awl_decoded(scout_report_codec(), awl_raw_0,"),
+        generated.contains(
+            "use scout_report <- result.try(awlc.decoded(scout_report_codec(), awl_raw_0,"
+        ),
         "the bound branch must decode with its return codec: {generated}"
     );
     Ok(())

@@ -198,9 +198,9 @@ fn emit_outcome_return(
             emitter.line(&format!("Ok({constructor}({payload}))"));
         }
         RouteDirection::Failure => {
-            let codec = emitter.env.codec_name(&info.ty);
+            let to_json = emitter.to_json_fn(&info.ty);
             emitter.line(&format!(
-                "Error(AwlOutcomeFailure({}, json.to_string({codec}_to_json({payload}))))",
+                "Error(awl_error.AwlOutcomeFailure({}, json.to_string({to_json}({payload}))))",
                 string_lit(&target.name)
             ));
         }

@@ -1,6 +1,7 @@
 //! Activity wrappers (one per declared action, task queue baked in at the
-//! call site), signal references, error mappers, and the child-spawn and
-//! indexing helpers.
+//! call site) and signal references. The error mappers, indexing, and the
+//! raw/decoded/child-input codecs are hoisted into the `aion/awl` SDK modules
+//! (AWL-BC-0) and referenced qualified from the generated call sites.
 
 use super::context::Emitter;
 use super::frame::emit_record_type;
@@ -71,9 +72,9 @@ pub(super) fn activity_wrappers(emitter: &mut Emitter<'_>) {
                         this.line("),");
                     }
                     let input_codec = snake(&input_name);
-                    let return_codec = this.env.codec_name(&returns);
+                    let return_codec = this.codec_fn(&returns);
                     this.line(&format!("{input_codec}_codec(),"));
-                    this.line(&format!("{return_codec}_codec(),"));
+                    this.line(&format!("{return_codec}(),"));
                     this.line(
                         "fn(_) { Error(error.terminal(\"activity body is provided by a \
                          worker\")) },",
@@ -135,8 +136,8 @@ fn raw_wrapper(
                 });
                 this.line(")),");
             }
-            this.line("awl_raw_codec(),");
-            this.line("awl_raw_codec(),");
+            this.line("awlc.raw(),");
+            this.line("awlc.raw(),");
             this.line(
                 "fn(_) { Error(error.terminal(\"activity body is provided by a worker\")) },",
             );
@@ -153,150 +154,15 @@ pub(super) fn signal_refs(emitter: &mut Emitter<'_>) {
         let signal_name = signal.name.clone();
         let payload = type_ref_to_g(&signal.ty);
         let signal_type = emitter.env.gleam_type(&payload);
-        let codec = emitter.env.codec_name(&payload);
+        let codec = emitter.codec_fn(&payload);
         emitter.line(&format!(
             "fn {}_signal() -> signal.SignalRef({signal_type}) {{",
             snake(&signal_name)
         ));
         emitter.indented(|this| {
-            this.line(&format!("signal.new(\"{signal_name}\", {codec}_codec())"));
+            this.line(&format!("signal.new(\"{signal_name}\", {codec}())"));
         });
         emitter.line("}");
         emitter.blank();
     }
-}
-
-/// The `try` chain helper, the error mappers, literal indexing, and the
-/// encode-only child-input codec.
-pub(super) fn helpers(emitter: &mut Emitter<'_>) {
-    error_mappers(emitter);
-    emitter.line("/// Literal-only list indexing; out of range is a step failure.");
-    emitter
-        .line("fn awl_index(items: List(a), index: Int, label: String) -> Result(a, AwlError) {");
-    emitter.indented(|this| {
-        this.line("case list.drop(items, index) |> list.first {");
-        this.indented(|this| {
-            this.line("Ok(value) -> Ok(value)");
-            this.line("Error(_) -> Error(AwlIndexOutOfRange(label))");
-        });
-        this.line("}");
-    });
-    emitter.line("}");
-    emitter.blank();
-    if !emitter.flags.raw_actions.is_empty() {
-        emitter.line("/// Identity codec: heterogeneous parallel branches ride `workflow.all`");
-        emitter.line("/// as raw JSON payload strings, decoded per branch at the join.");
-        emitter.line("fn awl_raw_codec() -> Codec(String) {");
-        emitter.indented(|this| {
-            this.line(
-                "codec.Codec(encode: fn(payload) { payload }, decode: fn(payload) { \
-                 Ok(payload) })",
-            );
-        });
-        emitter.line("}");
-        emitter.blank();
-        emitter.line("/// Decode one parallel branch's payload with its action's return codec.");
-        emitter.line(
-            "fn awl_decoded(awl_codec: Codec(a), payload: String, action: String) -> Result(a, \
-             AwlError) {",
-        );
-        emitter.indented(|this| {
-            this.line("case awl_codec.decode(payload) {");
-            this.indented(|this| {
-                this.line("Ok(value) -> Ok(value)");
-                this.line("Error(_) -> Error(AwlActivityFailed(action))");
-            });
-            this.line("}");
-        });
-        emitter.line("}");
-        emitter.blank();
-    }
-    if emitter.flags.uses_child {
-        emitter.line("/// Encode-only codec for child workflow inputs: the parent assembles the");
-        emitter.line("/// child's input record as JSON and never decodes it back.");
-        emitter.line("fn json_value_codec() -> Codec(json.Json) {");
-        emitter.indented(|this| {
-            this.line("codec.Codec(");
-            this.indented(|this| {
-                this.line("encode: json.to_string,");
-                this.line("decode: fn(_) {");
-                this.indented(|this| {
-                    this.line(
-                        "Error(codec.DecodeError(reason: \"child call input is encode-only\", \
-                         path: []))",
-                    );
-                });
-                this.line("},");
-            });
-            this.line(")");
-        });
-        emitter.line("}");
-        emitter.blank();
-    }
-}
-
-fn error_mappers(emitter: &mut Emitter<'_>) {
-    emitter.line(
-        "fn try(result: Result(a, AwlError), next: fn(a) -> Result(b, AwlError)) -> Result(b, \
-         AwlError) {",
-    );
-    emitter.indented(|this| {
-        this.line("case result { Ok(value) -> next(value) Error(awl_error) -> Error(awl_error) }");
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter.line(
-        "fn map_activity_error(result: Result(a, error.ActivityError)) -> Result(a, AwlError) {",
-    );
-    emitter.indented(|this| {
-        this.line(
-            "case result { Ok(value) -> Ok(value) Error(_) -> \
-             Error(AwlActivityFailed(\"activity failed\")) }",
-        );
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter.line(
-        "fn map_receive_error(result: Result(a, error.ReceiveError)) -> Result(a, AwlError) {",
-    );
-    emitter.indented(|this| {
-        this.line(
-            "case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlSignalFailed(\"signal \
-             receive failed\")) }",
-        );
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter.line(
-        "fn map_child_error(result: Result(a, error.ChildError(AwlError))) -> Result(a, \
-         AwlError) {",
-    );
-    emitter.indented(|this| {
-        this.line(
-            "case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlChildFailed(\"child \
-             workflow failed\")) }",
-        );
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter
-        .line("fn map_spawn_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {");
-    emitter.indented(|this| {
-        this.line(
-            "case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlChildFailed(\"detached \
-             spawn failed\")) }",
-        );
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter
-        .line("fn map_timer_error(result: Result(a, error.EngineError)) -> Result(a, AwlError) {");
-    emitter.indented(|this| {
-        this.line(
-            "case result { Ok(value) -> Ok(value) Error(_) -> Error(AwlTimerFailed(\"timer \
-             failed\")) }",
-        );
-    });
-    emitter.line("}");
-    emitter.blank();
 }

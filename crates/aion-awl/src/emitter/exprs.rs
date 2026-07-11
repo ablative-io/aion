@@ -175,10 +175,9 @@ pub(super) fn render_expr(
             span, base, index, ..
         } => {
             let base_rendered = render_expr(emitter, base, scope, prelude)?;
-            emitter.flags.uses_list_module = true;
             let fresh = format!("awl_index_{}", prelude.len());
             prelude.push(format!(
-                "use {fresh} <- try(awl_index({base_rendered}, {index}, \
+                "use {fresh} <- result.try(runtime.index({base_rendered}, {index}, \
                  \"index {index} out of range at line {}, column {}\"))",
                 span.line, span.column
             ));

@@ -18,6 +18,9 @@ pub(super) fn header(emitter: &mut Emitter<'_>) {
     }
     emitter.blank();
     emitter.line("import aion/activity");
+    emitter.line("import aion/awl/codec as awlc");
+    emitter.line("import aion/awl/error as awl_error");
+    emitter.line("import aion/awl/runtime");
     emitter.line("import aion/codec.{type Codec}");
     emitter.line("import aion/duration");
     emitter.line("import aion/error");
@@ -35,28 +38,14 @@ pub(super) fn header(emitter: &mut Emitter<'_>) {
         emitter.line("import gleam/int");
     }
     emitter.line("import gleam/json");
-    emitter.line("import gleam/list");
+    if emitter.flags.uses_list_module {
+        emitter.line("import gleam/list");
+    }
     emitter.line("import gleam/option.{type Option, None, Some}");
+    emitter.line("import gleam/result");
     if emitter.flags.compare_modules.contains("string") {
         emitter.line("import gleam/string");
     }
-    emitter.blank();
-}
-
-pub(super) fn error_type(emitter: &mut Emitter<'_>) {
-    emitter.line("pub type AwlError {");
-    emitter.indented(|this| {
-        this.line("AwlDecodeInputFailed(String)");
-        this.line("AwlActivityFailed(String)");
-        this.line("AwlSignalFailed(String)");
-        this.line("AwlChildFailed(String)");
-        this.line("AwlTimerFailed(String)");
-        this.line("AwlTimedOut(String)");
-        this.line("AwlIndexOutOfRange(String)");
-        this.line("AwlOutcomeFailure(outcome: String, payload: String)");
-        this.line("AwlFailed");
-    });
-    emitter.line("}");
     emitter.blank();
 }
 
@@ -160,17 +149,24 @@ pub(super) fn type_decls(emitter: &mut Emitter<'_>) {
     }
 }
 
+/// The output codec reference (without call parens): the generated outcome
+/// union codec, or the SDK's `Nil` codec when the workflow has no success
+/// outcome.
+fn output_codec_ref(emitter: &Emitter<'_>) -> String {
+    match &emitter.union_type {
+        Some(union_type) => format!("{}_codec", snake(union_type)),
+        None => "awlc.nil_codec".to_owned(),
+    }
+}
+
 pub(super) fn definition(emitter: &mut Emitter<'_>) {
     let input_type = emitter.input_type.clone();
     let output_type = emitter.output_type();
-    let output_codec = match &emitter.union_type {
-        Some(union_type) => format!("{}_codec", snake(union_type)),
-        None => "nil_codec".to_owned(),
-    };
+    let output_codec = output_codec_ref(emitter);
     emitter.line("/// Typed definition binding the codecs to the execute function.");
     emitter.line(&format!(
         "pub fn definition() -> workflow.WorkflowDefinition({input_type}, {output_type}, \
-         AwlError) {{"
+         awl_error.AwlError) {{"
     ));
     let workflow_name = emitter.document.name.clone();
     let input_codec = snake(&input_type);
@@ -180,7 +176,7 @@ pub(super) fn definition(emitter: &mut Emitter<'_>) {
             this.line(&format!("\"{workflow_name}\","));
             this.line(&format!("{input_codec}_codec(),"));
             this.line(&format!("{output_codec}(),"));
-            this.line("awl_error_codec(),");
+            this.line("awl_error.codec(),");
             this.line("execute,");
         });
         this.line(")");
@@ -191,46 +187,13 @@ pub(super) fn definition(emitter: &mut Emitter<'_>) {
 
 pub(super) fn run(emitter: &mut Emitter<'_>) {
     let input_codec = snake(&emitter.input_type);
-    let output_codec = match &emitter.union_type {
-        Some(union_type) => format!("{}_codec", snake(union_type)),
-        None => "nil_codec".to_owned(),
-    };
+    let output_codec = output_codec_ref(emitter);
     emitter.line("/// Engine entry point.");
-    emitter.line("pub fn run(raw_input: Dynamic) -> Result(String, AwlError) {");
+    emitter.line("pub fn run(raw_input: Dynamic) -> Result(String, awl_error.AwlError) {");
     emitter.indented(|this| {
-        this.line("case decode.run(raw_input, decode.string) {");
-        this.indented(|this| {
-            this.line("Ok(raw_json) ->");
-            this.indented(|this| {
-                this.line(&format!("case {input_codec}_codec().decode(raw_json) {{"));
-                this.indented(|this| {
-                    this.line("Ok(input) ->");
-                    this.indented(|this| {
-                        this.line("case execute(input) {");
-                        this.indented(|this| {
-                            this.line(&format!(
-                                "Ok(result) -> Ok({output_codec}().encode(result))"
-                            ));
-                            this.line("Error(workflow_error) -> Error(workflow_error)");
-                        });
-                        this.line("}");
-                    });
-                    this.line("Error(codec.DecodeError(reason: reason, path: _)) ->");
-                    this.indented(|this| {
-                        this.line(
-                            "Error(AwlDecodeInputFailed(\"failed to decode workflow input: \" \
-                             <> reason))",
-                        );
-                    });
-                });
-                this.line("}");
-            });
-            this.line(
-                "Error(_) -> Error(AwlDecodeInputFailed(\"workflow input payload was not a \
-                 string\"))",
-            );
-        });
-        this.line("}");
+        this.line(&format!(
+            "runtime.run(raw_input, {input_codec}_codec(), {output_codec}(), execute)"
+        ));
     });
     emitter.line("}");
     emitter.blank();

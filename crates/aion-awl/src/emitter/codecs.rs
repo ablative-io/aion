@@ -1,6 +1,8 @@
-//! Generated codecs: the error codec, the workflow input record, the
-//! outcome union, every declared/projected record and enum, action input
-//! records, composite (list/option) codecs, and the builtin leaf codecs.
+//! Generated codecs: the workflow input record, the outcome union, every
+//! declared/projected record and enum, action input records, and composite
+//! (list/option) codecs. The workflow-error codec and the builtin leaf codecs
+//! are hoisted into the `aion/awl` SDK (AWL-BC-0); leaf references here resolve
+//! to `awlc.<leaf>_…` via [`Emitter::to_json_fn`]/`decoder_fn`.
 //!
 //! Optional record fields honor D4 (absence, never null): encoding omits an
 //! absent field entirely; decoding uses `decode.optional_field`, so an
@@ -16,8 +18,6 @@ use super::names::{ident, snake, string_lit};
 use super::types::{GType, NamedDef, type_ref_to_g};
 
 pub(super) fn emit_codecs(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
-    awl_error_codec(emitter);
-
     // Workflow input record.
     let input_fields: Vec<(String, GType)> = emitter
         .document
@@ -64,74 +64,7 @@ pub(super) fn emit_codecs(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     }
 
     super::composites::composite_codecs(emitter);
-    super::composites::builtin_codecs(emitter);
     Ok(())
-}
-
-fn awl_error_codec(emitter: &mut Emitter<'_>) {
-    const MESSAGE_VARIANTS: [&str; 7] = [
-        "AwlDecodeInputFailed",
-        "AwlActivityFailed",
-        "AwlSignalFailed",
-        "AwlChildFailed",
-        "AwlTimerFailed",
-        "AwlTimedOut",
-        "AwlIndexOutOfRange",
-    ];
-    emitter.line("fn awl_error_codec() -> Codec(AwlError) {");
-    emitter.indented(|this| {
-        this.line("codec.json_codec(awl_error_to_json, awl_error_decoder())");
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter.line("fn awl_error_to_json(error_value: AwlError) -> json.Json {");
-    emitter.indented(|this| {
-        this.line("case error_value {");
-        this.indented(|this| {
-            for variant in MESSAGE_VARIANTS {
-                this.line(&format!(
-                    "{variant}(message) -> json.object([#(\"tag\", json.string(\"{variant}\")), \
-                     #(\"message\", json.string(message))])"
-                ));
-            }
-            this.line(
-                "AwlOutcomeFailure(outcome, payload) -> json.object([#(\"tag\", \
-                 json.string(\"AwlOutcomeFailure\")), #(\"outcome\", json.string(outcome)), \
-                 #(\"payload\", json.string(payload))])",
-            );
-            this.line("AwlFailed -> json.object([#(\"tag\", json.string(\"AwlFailed\"))])");
-        });
-        this.line("}");
-    });
-    emitter.line("}");
-    emitter.blank();
-    emitter.line("fn awl_error_decoder() -> decode.Decoder(AwlError) {");
-    emitter.indented(|this| {
-        this.line("use tag <- decode.field(\"tag\", decode.string)");
-        this.line("case tag {");
-        this.indented(|this| {
-            for variant in MESSAGE_VARIANTS {
-                this.line(&format!("\"{variant}\" -> {{"));
-                this.indented(|this| {
-                    this.line("use message <- decode.field(\"message\", decode.string)");
-                    this.line(&format!("decode.success({variant}(message))"));
-                });
-                this.line("}");
-            }
-            this.line("\"AwlOutcomeFailure\" -> {");
-            this.indented(|this| {
-                this.line("use outcome <- decode.field(\"outcome\", decode.string)");
-                this.line("use payload <- decode.field(\"payload\", decode.string)");
-                this.line("decode.success(AwlOutcomeFailure(outcome: outcome, payload: payload))");
-            });
-            this.line("}");
-            this.line("\"AwlFailed\" -> decode.success(AwlFailed)");
-            this.line("_ -> decode.failure(AwlFailed, \"AwlError\")");
-        });
-        this.line("}");
-    });
-    emitter.line("}");
-    emitter.blank();
 }
 
 fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
@@ -139,7 +72,7 @@ fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
         return Ok(());
     };
     let stem = snake(&union_type);
-    let successes: Vec<(String, String, GType, String)> = emitter
+    let successes: Vec<(String, String, GType)> = emitter
         .document
         .outcomes
         .iter()
@@ -147,12 +80,7 @@ fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
         .filter_map(|outcome| {
             let info = emitter.outcomes.get(outcome.name.as_str())?;
             let constructor = info.constructor.clone()?;
-            Some((
-                outcome.name.clone(),
-                constructor,
-                info.ty.clone(),
-                emitter.env.codec_name(&info.ty),
-            ))
+            Some((outcome.name.clone(), constructor, info.ty.clone()))
         })
         .collect();
 
@@ -170,10 +98,11 @@ fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     emitter.indented(|this| {
         this.line("case value {");
         this.indented(|this| {
-            for (name, constructor, _, codec) in &successes {
+            for (name, constructor, ty) in &successes {
+                let to_json = this.to_json_fn(ty);
                 this.line(&format!(
                     "{constructor}(payload) -> json.object([#(\"outcome\", \
-                     json.string({})), #(\"payload\", {codec}_to_json(payload))])",
+                     json.string({})), #(\"payload\", {to_json}(payload))])",
                     string_lit(name)
                 ));
             }
@@ -183,7 +112,7 @@ fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     emitter.line("}");
     emitter.blank();
 
-    let Some((_, first_constructor, first_ty, _)) = successes.first().cloned() else {
+    let Some((_, first_constructor, first_ty)) = successes.first().cloned() else {
         return Ok(());
     };
     let zero = emitter.env.zero_expr(&first_ty, emitter.document.span)?;
@@ -194,11 +123,12 @@ fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
         this.line("use outcome <- decode.field(\"outcome\", decode.string)");
         this.line("case outcome {");
         this.indented(|this| {
-            for (name, constructor, _, codec) in &successes {
+            for (name, constructor, ty) in &successes {
+                let decoder = this.decoder_fn(ty);
                 this.line(&format!("{} -> {{", string_lit(name)));
                 this.indented(|this| {
                     this.line(&format!(
-                        "use payload <- decode.field(\"payload\", {codec}_decoder())"
+                        "use payload <- decode.field(\"payload\", {decoder}())"
                     ));
                     this.line(&format!("decode.success({constructor}(payload))"));
                 });
@@ -255,20 +185,20 @@ fn record_to_json(
                 for (field_name, field_ty) in fields {
                     let access = ident(field_name);
                     if let GType::Option(inner) = this.env.resolve(field_ty) {
-                        let codec = this.env.codec_name(&inner);
+                        let to_json = this.to_json_fn(&inner);
                         this.line(&format!("case value.{access} {{"));
                         this.indented(|this| {
                             this.line(&format!(
-                                "Some(inner) -> [#({}, {codec}_to_json(inner))]",
+                                "Some(inner) -> [#({}, {to_json}(inner))]",
                                 string_lit(field_name)
                             ));
                             this.line("None -> []");
                         });
                         this.line("},");
                     } else {
-                        let codec = this.env.codec_name(field_ty);
+                        let to_json = this.to_json_fn(field_ty);
                         this.line(&format!(
-                            "[#({}, {codec}_to_json(value.{access}))],",
+                            "[#({}, {to_json}(value.{access}))],",
                             string_lit(field_name)
                         ));
                     }
@@ -283,10 +213,10 @@ fn record_to_json(
             this.line("json.object([");
             this.indented(|this| {
                 for (field_name, field_ty) in fields {
-                    let codec = this.env.codec_name(field_ty);
+                    let to_json = this.to_json_fn(field_ty);
                     let access = ident(field_name);
                     this.line(&format!(
-                        "#({}, {codec}_to_json(value.{access})),",
+                        "#({}, {to_json}(value.{access})),",
                         string_lit(field_name)
                     ));
                 }
@@ -304,16 +234,16 @@ fn record_decoder(emitter: &mut Emitter<'_>, name: &str, stem: &str, fields: &[(
         for (field_name, field_ty) in fields {
             let binding = ident(field_name);
             if let GType::Option(inner) = this.env.resolve(field_ty) {
-                let codec = this.env.codec_name(&inner);
+                let decoder = this.decoder_fn(&inner);
                 this.line(&format!(
                     "use {binding} <- decode.optional_field({}, None, \
-                     decode.map({codec}_decoder(), Some))",
+                     decode.map({decoder}(), Some))",
                     string_lit(field_name)
                 ));
             } else {
-                let codec = this.env.codec_name(field_ty);
+                let decoder = this.decoder_fn(field_ty);
                 this.line(&format!(
-                    "use {binding} <- decode.field({}, {codec}_decoder())",
+                    "use {binding} <- decode.field({}, {decoder}())",
                     string_lit(field_name)
                 ));
             }
