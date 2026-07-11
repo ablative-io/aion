@@ -1,0 +1,35 @@
+{
+  "name": "tree-sitter-awl",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Aion Workflow Language (AWL rev-2)",
+  "license": "Apache-2.0",
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "files": [
+    "grammar.js",
+    "queries",
+    "src/**",
+    "bindings/node/**",
+    "tree-sitter.json"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "test:corpus": "test/corpus-sweep.sh",
+    "test:highlights": "test/highlight-smoke.sh"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "0.26.10"
+  },
+  "peerDependencies": {
+    "tree-sitter": "^0.25.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.awl",
+      "file-types": ["awl"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^awl$"
+    }
+  ]
+}

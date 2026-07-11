@@ -1,0 +1,35 @@
+{
+  "grammars": [
+    {
+      "name": "awl",
+      "camelcase": "Awl",
+      "scope": "source.awl",
+      "path": ".",
+      "file-types": ["awl"],
+      "highlights": "queries/highlights.scm",
+      "folds": "queries/folds.scm",
+      "injections": null,
+      "locals": null,
+      "tags": null
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "description": "AWL rev-2 grammar",
+    "authors": [
+      { "name": "Aion contributors" }
+    ],
+    "links": {
+      "repository": "https://github.com/ablative/aion"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "node": true,
+    "python": false,
+    "rust": false,
+    "swift": false,
+    "zig": false
+  }
+}

@@ -1,0 +1,466 @@
+==================
+Workflow header
+==================
+
+//! narration
+workflow sample
+  input name: String
+  signal approval: Bool
+  outcome done: type Result, route success
+
+---
+
+(source_file
+  (newline)
+  (doc_comment)
+  (newline)
+  (workflow_declaration
+    (keyword)
+    (identifier))
+  (newline)
+  (input_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (builtin_type)
+  (newline)
+  (signal_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (builtin_type)
+  (newline)
+  (outcome_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (punctuation)
+  (route_statement
+    (keyword))
+  (keyword)
+  (newline))
+
+==================
+Types: shorthand, enum, inline schema, and import
+==================
+
+/// contracts
+type Item { name: String, tags: [String], note: String? }
+type State = Ready | Done
+type Raw = schema { "type": "object" }
+type Shared = schema("schemas/shared.json")
+
+---
+
+(source_file
+  (newline)
+  (doc_comment)
+  (newline)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (builtin_type)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (builtin_type)
+  (punctuation)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (builtin_type)
+  (optional_operator)
+  (punctuation)
+  (newline)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (punctuation)
+  (type_identifier)
+  (punctuation)
+  (type_identifier)
+  (newline)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (punctuation)
+  (keyword)
+  (punctuation)
+  (string)
+  (punctuation)
+  (string)
+  (punctuation)
+  (newline)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (punctuation)
+  (keyword)
+  (punctuation)
+  (string)
+  (punctuation)
+  (newline))
+
+==================
+Workers and action configuration
+==================
+
+worker jobs
+  action run(value: String) -> Result
+    node shell, timeout 5m, retry 2 backoff 1s..30s
+
+---
+
+(source_file
+  (newline)
+  (worker_declaration
+    (keyword)
+    (identifier))
+  (newline)
+  (action_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (builtin_type)
+  (punctuation)
+  (bind_operator)
+  (type_identifier)
+  (newline)
+  (configuration
+    (keyword))
+  (identifier)
+  (punctuation)
+  (configuration
+    (keyword))
+  (duration)
+  (punctuation)
+  (configuration
+    (keyword))
+  (integer)
+  (keyword)
+  (duration)
+  (comparison_operator)
+  (duration)
+  (newline))
+
+==================
+Child workflows
+==================
+
+child nested(value: String) -> Result
+spawn nested(value: value)
+nested(value: value) -> result
+
+---
+
+(source_file
+  (newline)
+  (child_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (builtin_type)
+  (punctuation)
+  (bind_operator)
+  (type_identifier)
+  (newline)
+  (spawn_statement
+    (keyword))
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (newline)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (bind_operator)
+  (identifier)
+  (newline))
+
+==================
+Steps, calls, pipes, and combinators
+==================
+
+step transform after prepare
+  load(name: name) -> items
+  items |> filter(.ready) |> map(.name) |> sort(.name) |> count -> total
+
+---
+
+(source_file
+  (newline)
+  (step_declaration
+    (keyword)
+    (identifier))
+  (keyword)
+  (identifier)
+  (newline)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (bind_operator)
+  (identifier)
+  (newline)
+  (identifier)
+  (pipe_operator)
+  (keyword)
+  (punctuation)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (pipe_operator)
+  (keyword)
+  (punctuation)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (pipe_operator)
+  (keyword)
+  (punctuation)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (pipe_operator)
+  (keyword)
+  (bind_operator)
+  (identifier)
+  (newline))
+
+==================
+Fork and join
+==================
+
+fork item in items sequential
+  inspect(item: item)
+join -> reports
+fork
+  left() -> a
+  right() -> b
+join
+
+---
+
+(source_file
+  (newline)
+  (fork_statement
+    (keyword))
+  (identifier)
+  (keyword)
+  (identifier)
+  (keyword)
+  (newline)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (newline)
+  (join_statement
+    (keyword))
+  (bind_operator)
+  (identifier)
+  (newline)
+  (fork_statement
+    (keyword))
+  (newline)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (bind_operator)
+  (identifier)
+  (newline)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (bind_operator)
+  (identifier)
+  (newline)
+  (join_statement
+    (keyword))
+  (newline))
+
+==================
+Bounded loop
+==================
+
+loop round = Round(done: false) counting cycles
+  work(prior: round) -> round
+  until round.done
+  max 3
+
+---
+
+(source_file
+  (newline)
+  (loop_statement
+    (keyword))
+  (identifier)
+  (punctuation)
+  (type_identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (boolean)
+  (punctuation)
+  (keyword)
+  (identifier)
+  (newline)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (bind_operator)
+  (identifier)
+  (newline)
+  (keyword)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (newline)
+  (keyword)
+  (integer)
+  (newline))
+
+==================
+Wait and sleep
+==================
+
+wait approval timeout 30s -> answer
+sleep 5m
+
+---
+
+(source_file
+  (newline)
+  (wait_statement
+    (keyword))
+  (identifier)
+  (configuration
+    (keyword))
+  (duration)
+  (bind_operator)
+  (identifier)
+  (newline)
+  (sleep_statement
+    (keyword))
+  (duration)
+  (newline))
+
+==================
+Conditional outcomes and failure compensation
+==================
+
+outcome accepted: when answer is present, route done(answer)
+outcome timed_out: otherwise, route failed(reason: "timeout")
+on failure
+  cleanup()
+  route failed
+
+---
+
+(source_file
+  (newline)
+  (outcome_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (keyword)
+  (identifier)
+  (keyword)
+  (keyword)
+  (punctuation)
+  (route_statement
+    (keyword))
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (newline)
+  (outcome_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (keyword)
+  (punctuation)
+  (route_statement
+    (keyword))
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (string)
+  (punctuation)
+  (newline)
+  (failure_handler
+    (keyword)
+    (keyword))
+  (newline)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (newline)
+  (route_statement
+    (keyword))
+  (identifier)
+  (newline))
+
+==================
+Literals, operators, indexing, and comments
+==================
+
+// ordinary comment
+/// declaration documentation
+items[0].name + "!" == "ready" and not false or true
+score >= 1.5
+
+---
+
+(source_file
+  (newline)
+  (comment)
+  (newline)
+  (doc_comment)
+  (newline)
+  (identifier)
+  (punctuation)
+  (integer)
+  (punctuation)
+  (punctuation)
+  (identifier)
+  (comparison_operator)
+  (string)
+  (comparison_operator)
+  (string)
+  (keyword)
+  (keyword)
+  (boolean)
+  (keyword)
+  (boolean)
+  (newline)
+  (identifier)
+  (comparison_operator)
+  (float)
+  (newline))
