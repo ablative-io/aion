@@ -1,11 +1,16 @@
-# Visual Workflow Authoring Surface — design of record (draft 1)
+# Visual Workflow Authoring Surface — design of record (draft 2)
 
-Status: DESIGN DRAFT for Tom's conversational review, 2026-07-11. Authors: the
-certifying pair (Vesper Lynd + Waffles the Terrible), per Tom's direction of
-2026-07-11 (~12:28Z): a visual workflow authoring surface, smooth not blocky,
-with live sharing, where defining an action in either view scaffolds the
-worker, through check → emit → package → deploy → run. Just the pair on this
-for now.
+Status: DESIGN DRAFT, PAIR-REVIEWED, awaiting Tom's conversational review.
+Authors: the certifying pair (Vesper Lynd + Waffles the Terrible), per Tom's
+direction of 2026-07-11 (~12:28Z): a visual workflow authoring surface, smooth
+not blocky, with live sharing, where defining an action in either view
+scaffolds the worker, through check → emit → package → deploy → run. Just the
+pair on this for now.
+
+Draft 2 folds the second half's review rounds R1–R3 (run-mode revision
+binding; the seam's collaboration contract; the seam's delta primitive) and
+conditions C1–C5. The D1 recommendation survived review intact WITH those
+contracts on paper.
 
 Subordinate to: [awl/AWL-UX.md](awl/AWL-UX.md) (the north star — especially
 anti-goal 2), [awl/AWL-2-SPEC.md](awl/AWL-2-SPEC.md) (the language),
@@ -95,11 +100,28 @@ overlays — which is exactly the contract Iridium offers (`positionToPixel`,
 So we define **the editor seam** as precisely that contract:
 
 - content get/set + change events
+- **apply-text-delta(ranges)** — the gesture-update primitive (review R3): a
+  canvas gesture's canonical re-print reaches the editor as minimal range
+  deltas (old and new text are both canonical, so the diff is well-defined
+  and small), with selection/scroll position mapped across the edit and the
+  whole gesture grouped as ONE undo unit. Full `setContent` per gesture is
+  forbidden — it destroys cursor, scroll, selection, and undo granularity,
+  and "smooth not blocky" dies at our own seam.
+- **collaboration contract** (review R2, spec'd now, built in P4): remote
+  deltas apply WITHOUT echoing through local change events (origin-tagged
+  application), undo is scoped to LOCAL edits only, and remote cursors/
+  selections render via decoration primitives. Both editors implement this
+  one contract: CM6 via y-codemirror.next; Iridium's bill explicitly includes
+  a Yjs-aware binding — its undo TREE must become origin-scoped or shared
+  mode kills its own differentiator. Without this contract on paper, P4's
+  two deliverables (sharing + the Iridium option) collide inside the seam
+  and the no-rewrite claim is false.
 - pixel metrics (`positionToPixel`, layout metrics, scroll events)
 - highlight spans pushed in (byte-range + capture name), never computed
   inside the editor from its own grammar
 - `applyCompletion`-class primitive edits
-- decoration primitives: line background, gutter marks/text, underline ranges
+- decoration primitives: line background, gutter marks/text, underline
+  ranges, remote-cursor/selection markers
 
 Everything AWL-aware (hover cards, diagnostics, completion, selection⇄node
 sync) lives in the host layer against the seam. **Ship on CM6** (mature,
@@ -126,9 +148,17 @@ this inside of Meridian") is a packaging exercise, not a rewrite.
 
 New endpoints in `aion-server` (pattern already exists at
 `api/http/authoring.rs`): `POST /awl/check` (span diagnostics as JSON),
-`POST /awl/fmt` (canonical text), `POST /awl/semantic` (hover/definitions/
-provenance from `aion_awl::semantic`), `POST /awl/emit` (staged behind the
+`POST /awl/fmt` (canonical text), `POST /awl/emit` (staged behind the
 same deploy capability gating as `/deploy/packages`).
+
+**Check returns the semantic snapshot, not just diagnostics** (review C1): a
+check response carries diagnostics PLUS the span-indexed semantic index
+(types, declaration sites, docs, provenance — the `aion_awl::semantic`
+analysis serialized). Hover, go-to-definition, and selection⇄node sync are
+then **client-side lookups against the last-good index — zero round-trips on
+mouse movement**. "The browser never runs a checker" stands: it runs a
+lookup. A separate `POST /awl/semantic` endpoint is unnecessary; the stdio
+LSP remains untouched as the editor-plugin surface.
 
 **Emit-subset diagnostics are part of check, not a later surprise** (workbench
 finding F26): three check-green shapes today refuse only at emit — the Gleam
@@ -138,7 +168,10 @@ emit-subset warnings ("checks, but the current backend cannot deploy this
 shape — <the stopgap's own message>", amber, span-anchored). On a canvas,
 check-green-but-undeployable is betrayal-shaped; the boundary must be visible
 while authoring. This class dissolves when #240 makes emission total for
-checked programs — the warning channel then simply goes quiet. In-process crate calls
+checked programs — the warning channel then simply goes quiet. The response
+also carries the roll-up (review C2): a per-document **deploys-green bit**
+(check-clean AND emit-subset-clean), which is the bit the P3 deploy flow and
+any document list render — never the check bit alone. In-process crate calls
 — no stdio-LSP-over-WebSocket contortion; the stdio LSP remains the
 editor-plugin surface (Zed/Neovim), the HTTP facade is the web surface, and
 both are thin over the ONE checker. One wall of errors, now reachable by the
@@ -155,8 +188,30 @@ markers). Edges = outcome routes (labeled `when`/`otherwise`), fall-through,
 `after` dependencies (visually distinct). Selection syncs both ways through
 spans (semantic API gives node↔span). Gestures in P2 (add step, draw route,
 edit prose, rename binding) apply AST edits → canonical print → text pane
-updates; anything not yet expressible as a gesture stays text-only — the
-canvas NEVER blocks the language.
+updates **as seam deltas** (D1); anything not yet expressible as a gesture
+stays text-only — the canvas NEVER blocks the language.
+
+Layout-sidecar keying (review C3): records key by step name, so the rename
+gesture **migrates the layout record atomically with the rename edit**;
+orphaned records (steps deleted or renamed outside the surface) are
+garbage-collected on load. Layout is **per-user** view state (awareness-
+style), decided now so P4 sharing doesn't reopen it — shared presence,
+private arrangements.
+
+Diagnostics on the canvas (review C4, workbench F18): one real defect can
+manufacture phantom errors on legal bindings today. The canvas renders
+**primary vs cascade distinctly** — the first error at a span paints its
+node red; same-document downstream errors whose steps are already marked
+unreachable render as muted/secondary, never four-alarm red. The checker
+learning cascade suppression (F18's fix) improves this; the canvas must not
+wait for it.
+
+Child calls (review C5 — the exam pair exists today): a `child` call
+projects as its own node type showing the DECLARED contract (name +
+signature). If the child's document is present in the workspace, the node
+links to open it; cross-document graph expansion (inlining the child's
+steps) is explicitly out of scope for P1–P3. A child whose document is
+absent renders the contract stub with no link — never an error.
 
 ### D5 — Scaffolding: an action signature is a worker contract; generate the worker.
 
@@ -165,9 +220,12 @@ generates a ready-to-run worker project for the chosen runtime — **Rust /
 Python / Zig templates** (extending `aion new`'s scaffold machinery) with the
 action's types projected into the target language and a TODO body per action.
 **Shell actions need no code at all**: a shell-command worker runs a declared
-command with typed args/env mapping — config, not source. The scaffold, like
-everything else, is generated FROM the `.awl` declarations (schemas fall out
-of the same declarations — AWL-UX §3.1).
+command with typed args/env mapping — config, not source. The shell manifest
+maps action name → command + arg/env projection ONLY; the contract (types,
+timeout, retry) lives in the `.awl` and nowhere else — the manifest is
+wiring, never a second source of truth. The scaffold, like everything else,
+is generated FROM the `.awl` declarations (schemas fall out of the same
+declarations — AWL-UX §3.1).
 
 ### D6 — Sharing: Yjs + awareness, the Meridian pattern, designed-in now, wired in P4.
 
@@ -177,13 +235,24 @@ awareness for presence/cursors on both text and canvas. Meridian's
 single-author; the seam (document store abstracted from the editor) is
 designed so Yjs slots in without rework.
 
-### D7 — The run loop closes in the same surface.
+### D7 — The run loop closes in the same surface — and run mode binds to the DEPLOYED revision, never the buffer.
 
 Check-clean → emit → package → deploy → start → watch, as one guided flow
 using endpoints that already exist (deploy/start/transcript/swimlane) plus
 D3's facade. This is #215's `aion run --watch` promise wearing a UI. Run mode
 of the canvas (live narration, prose labels, the swimlane substrate) is the
 same projection driven by the event stream instead of the cursor.
+
+**Revision binding (review R1 — correctness stakes).** If run mode projected
+the editor buffer while the engine runs the deployed package, one edit after
+deploy makes the narration a lie: nodes lighting up on a graph that no
+longer matches the running workflow. Therefore: the document store carries
+**content-hash identity** per revision; deploy records the deployed
+revision's hash; **run mode projects the DEPLOYED revision's text**, fetched
+by hash — never the live buffer. When the buffer has moved past the running
+revision, the surface shows an explicit **"editor has drifted from the
+running revision"** state (with a one-click diff). A stale artifact must
+never silently narrate as fresh — this is the F14 lesson wearing a UI.
 
 ## 4. Phases
 
@@ -194,9 +263,11 @@ same projection driven by the event stream instead of the cursor.
   dir). Exit bar: author `doc_certification.awl` from scratch in the browser
   with live diagnostics, never touching a terminal.
 - **P1 — canvas projection (read).** Graph view of the open document, prose
-  labels, selection sync text⇄node, layout sidecar. Exit bar: every corpus
-  file (166+) projects without error; clicking any node lands the cursor on
-  its step.
+  labels, selection sync text⇄node, layout sidecar, primary-vs-cascade
+  diagnostic rendering, child-node contract stubs (D4). Exit bar: every
+  corpus file (166+) projects without error **and re-prints byte-identically
+  after projection** (proves the projection reads losslessly); clicking any
+  node lands the cursor on its step.
 - **P2 — canvas editing (projectional).** Gesture set v1: add step, add
   action (with type editor), draw outcome route / fall-through, edit prose,
   rename binding (semantic-API-backed), delete step. Every gesture =
@@ -206,9 +277,12 @@ same projection driven by the event stream instead of the cursor.
   then Rust/Python/Zig); D7 guided deploy-and-run flow; run-mode canvas.
   Exit bar: Tom's demo — draw it, scaffold a shell worker, deploy, run,
   watch it narrate itself, without leaving the browser.
-- **P4 — sharing + Iridium option.** Yjs/awareness live sharing; Iridium
-  behind the seam if/when its web surface closes the gap (or as the
-  glass-composited "pro" mode where the editor floats over the canvas).
+- **P4 — sharing + Iridium option.** Yjs/awareness live sharing wired
+  against the seam's collaboration contract (spec'd since D1 — origin-tagged
+  deltas, local-scoped undo, remote-cursor decorations); Iridium behind the
+  seam if/when its web surface closes the gap, its bill now explicitly
+  including the Yjs-aware binding (or as the glass-composited "pro" mode
+  where the editor floats over the canvas).
 
 ## 5. Open questions for Tom (conversational)
 
