@@ -1,0 +1,45 @@
+//! cargo_gates: every gate, one run — check, clippy, tests, fmt fan out together
+//! against one workspace and come back as data. Real exit codes, never pass-claims:
+//! the verdict is computed from what actually ran, and a red gate names itself.
+workflow cargo_gates
+  input workspace_path: String
+
+  outcome clean:   type Clean,   route success
+  outcome failing: type Failing, route failure
+
+/// One gate's actual result — exit status is data, never a silent failure.
+type GateResult {
+  gate: String,
+  exit_code: Int,
+  passed: Bool,
+  /// Last lines of output, enough to read the failure without the full log.
+  output_tail: String,
+}
+
+type Clean { gates_run: Int }
+/// Carries ALL gate results, passed flags included — the VM cannot build a
+/// failed-only sublist from named-fork bindings (workbench finding, F16 family).
+type Failing { gates: [GateResult] }
+
+worker cargo_gates
+  action run_check(path: String) -> GateResult
+    node shell, timeout 15m
+  action run_clippy(path: String) -> GateResult
+    node shell, timeout 15m
+  action run_tests(path: String) -> GateResult
+    node shell, timeout 45m
+  action run_fmt_check(path: String) -> GateResult
+    node shell, timeout 5m
+
+step run_gates
+  fork
+    run_check(path: workspace_path) -> check_gate
+    run_clippy(path: workspace_path) -> clippy_gate
+    run_tests(path: workspace_path) -> test_gate
+    run_fmt_check(path: workspace_path) -> fmt_gate
+  join
+
+  outcome green: when check_gate.passed and clippy_gate.passed and test_gate.passed and fmt_gate.passed,
+    route clean(gates_run: 4)
+  outcome red: otherwise,
+    route failing(gates: [check_gate, clippy_gate, test_gate, fmt_gate])

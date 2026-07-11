@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The cargo_gates outcome envelope and its real gate results.",
+  "$defs": {
+    "gate_result": {
+      "type": "object",
+      "required": ["gate", "exit_code", "passed", "output_tail"],
+      "properties": {
+        "gate": { "type": "string" },
+        "exit_code": { "type": "integer" },
+        "passed": { "type": "boolean" },
+        "output_tail": { "type": "string" }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["outcome", "payload"],
+      "properties": {
+        "outcome": { "const": "clean" },
+        "payload": {
+          "type": "object",
+          "required": ["gates_run"],
+          "properties": { "gates_run": { "const": 4 } }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["outcome", "payload"],
+      "properties": {
+        "outcome": { "const": "failing" },
+        "payload": {
+          "type": "object",
+          "required": ["gates"],
+          "properties": {
+            "gates": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/gate_result" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
