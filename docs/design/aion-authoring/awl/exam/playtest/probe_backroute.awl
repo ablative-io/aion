@@ -1,0 +1,24 @@
+//! Probe: AWL-2-SPEC §Outcomes says routing backward to an earlier step is legal
+//! and is the second loop form (state machine style), provided the cycle carries a
+//! max-bounded loop. This is the minimal spec-conformant state machine.
+workflow probe_backroute
+  input attempts: Int
+  outcome done: type Done, route success
+  outcome gave_up: type GaveUp, route failure
+
+type Done { tries: Int }
+type GaveUp { tries: Int }
+type Try { ok: Bool }
+
+worker probe
+  action attempt(prior: Try) -> Try
+    node shell, timeout 1m
+
+step try_batch
+  loop t = Try(ok: false) counting tries
+    attempt(prior: t) -> t
+    until t.ok
+    max attempts
+
+  outcome ok: when t.ok, route done(tries: tries)
+  outcome again: otherwise, route try_batch

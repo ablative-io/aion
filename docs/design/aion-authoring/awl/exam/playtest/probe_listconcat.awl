@@ -1,0 +1,23 @@
+//! Probe: error-message quality when an author reaches for list concatenation —
+//! the natural first move when merging two fork branches' results (`+` is
+//! string-only per spec; what does the checker actually say?).
+workflow probe_listconcat
+  input id: String
+  outcome done: type Done, route success
+
+type Done { all: [String] }
+type Batch { items: [String] }
+
+worker probe
+  action fetch_a(id: String) -> Batch
+    node shell, timeout 1m
+  action fetch_b(id: String) -> Batch
+    node shell, timeout 1m
+
+step gather
+  fork
+    fetch_a(id: id) -> a
+    fetch_b(id: id) -> b
+  join
+
+  route done(all: a.items + b.items)

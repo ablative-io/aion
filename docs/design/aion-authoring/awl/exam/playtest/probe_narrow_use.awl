@@ -1,0 +1,22 @@
+//! Probe: what DOES the arm-local narrowing permit? Using the guarded optional as a
+//! whole value (payload field of type Go) inside the `is present` arm.
+workflow probe_narrow_use
+  input topic: String
+  signal go: Go
+  outcome yes: type Yes, route success
+  outcome no: type No, route failure
+
+type Go { approved: Bool }
+type Yes { ruling: Go }
+type No { note: String }
+
+worker probe
+  action announce(topic: String) -> Go
+    node shell, timeout 1m
+
+step gate
+  announce(topic: topic)
+  wait go timeout 1h -> g
+
+  outcome a: when g is present, route yes(ruling: g)
+  outcome b: otherwise, route no(note: "silent")

@@ -1,0 +1,42 @@
+--- doc_certification.awl	2026-07-11 21:13:30
++++ fmt_copy.awl	2026-07-11 21:15:15
+@@ -8,10 +8,10 @@
+   signal operator_ruling: Ruling
+ 
+   outcome certified: type Certified, route success
+-  outcome rejected: type Rejected, route failure
+-  outcome stalled: type Stalled, route failure
++  outcome rejected:  type Rejected,  route failure
++  outcome stalled:   type Stalled,   route failure
+ 
+-type DocRef { repo: String, path: String, revision: String }
++type DocRef     { repo: String, path: String, revision: String }
+ type CertConfig { halves: [String], max_revision_rounds: Int }
+ 
+ /// Severity taxonomy for display; must_fix is the merge-driving bit.
+@@ -28,18 +28,18 @@
+ }
+ 
+ type HalfReport { half: String, findings: [Finding], approve: Bool }
+-type Merged { all: [Finding] }
+-type Round { revision: String, summary: String, clean: Bool, remaining: [Finding] }
+-type Ruling { approved: Bool, note: String? }
++type Merged     { all: [Finding] }
++type Round      { revision: String, summary: String, clean: Bool, remaining: [Finding] }
++type Ruling     { approved: Bool, note: String? }
+ /// VM flow-typing cannot read a field of a `T?` binding (arm-local narrowing only),
+ /// so classifying the ruling costs a worker round-trip. See playtest log F16.
+-type Decision { signed: Bool, corrected: Bool }
++type Decision       { signed: Bool, corrected: Bool }
+ type PublishReceipt { location: String, revision: String }
+-type Ack { ok: Bool }
++type Ack            { ok: Bool }
+ 
+ type Certified { doc_path: String, revision: String, rounds: Int, evidence: [Finding] }
+-type Rejected { doc_path: String, blocking: [Finding] }
+-type Stalled { reason: String, rounds_spent: Int }
++type Rejected  { doc_path: String, blocking: [Finding] }
++type Stalled   { reason: String, rounds_spent: Int }
+ 
+ worker certification
+   action review_half(doc: DocRef, half: String) -> HalfReport

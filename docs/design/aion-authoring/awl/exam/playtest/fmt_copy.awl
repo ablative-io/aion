@@ -1,0 +1,96 @@
+//! doc_certification: a design doc goes in; a pair-certified verdict comes out.
+//! Two certifier halves review independently — agreement is only evidence when it
+//! wasn't coordinated. Findings merge, the author revises in bounded rounds, and the
+//! operator's signed ruling gates the finish. Evidence rides on every outcome.
+workflow doc_certification
+  input doc: DocRef
+  input config: CertConfig
+  signal operator_ruling: Ruling
+
+  outcome certified: type Certified, route success
+  outcome rejected:  type Rejected,  route failure
+  outcome stalled:   type Stalled,   route failure
+
+type DocRef     { repo: String, path: String, revision: String }
+type CertConfig { halves: [String], max_revision_rounds: Int }
+
+/// Severity taxonomy for display; must_fix is the merge-driving bit.
+type Severity = Blocking | Major | Minor
+
+/// One certifier finding.
+type Finding {
+  half: String,
+  severity: Severity,
+  must_fix: Bool,
+  summary: String,
+  /// Present only when the finding names a remedy the doc must ship with.
+  remedy: String?,
+}
+
+type HalfReport { half: String, findings: [Finding], approve: Bool }
+type Merged     { all: [Finding] }
+type Round      { revision: String, summary: String, clean: Bool, remaining: [Finding] }
+type Ruling     { approved: Bool, note: String? }
+/// VM flow-typing cannot read a field of a `T?` binding (arm-local narrowing only),
+/// so classifying the ruling costs a worker round-trip. See playtest log F16.
+type Decision       { signed: Bool, corrected: Bool }
+type PublishReceipt { location: String, revision: String }
+type Ack            { ok: Bool }
+
+type Certified { doc_path: String, revision: String, rounds: Int, evidence: [Finding] }
+type Rejected  { doc_path: String, blocking: [Finding] }
+type Stalled   { reason: String, rounds_spent: Int }
+
+worker certification
+  action review_half(doc: DocRef, half: String) -> HalfReport
+    node reviewer, timeout 30m, retry 1 every 1m
+  action merge_reports(reports: [HalfReport]) -> Merged
+    node shell, timeout 5m
+  action revise_round(doc: DocRef, findings: [Finding], prior: Round) -> Round
+    node developer, timeout 45m
+  action publish_certification(doc: DocRef, evidence: [Finding]) -> PublishReceipt
+    node shell, timeout 5m, retry 2 every 30s
+  action notify_operator(message: String) -> Ack
+    node shell, timeout 1m
+  action assess_ruling(ruling: Ruling?) -> Decision
+    node shell, timeout 1m
+
+child archive_certification(doc: DocRef, receipt: PublishReceipt) -> Ack
+
+step independent_reviews
+  fork half in config.halves
+    review_half(doc: doc, half: half)
+  join -> reports
+
+step merge after independent_reviews
+  merge_reports(reports: reports) -> merged
+  merged.all |> filter(.must_fix) -> blocking
+  merged.all |> sort(.half) -> evidence
+  route revision_rounds
+
+step revision_rounds
+  loop round = Round(revision: doc.revision, summary: "", clean: false, remaining: blocking) counting rounds
+    revise_round(doc: doc, findings: round.remaining, prior: round) -> round
+    until round.clean
+    max config.max_revision_rounds
+
+  outcome green: when round.clean, route ruling_gate
+  outcome spent: otherwise,
+    route rejected(doc_path: doc.path, blocking: round.remaining)
+
+step ruling_gate
+  wait operator_ruling timeout 48h -> ruling
+  assess_ruling(ruling: ruling) -> decision
+
+  outcome signed: when decision.signed, route finalize
+  outcome corrected: when decision.corrected, route revision_rounds
+  outcome silent: otherwise,
+    route stalled(reason: "operator ruling never arrived within 48h", rounds_spent: rounds)
+
+step finalize
+  publish_certification(doc: doc, evidence: evidence) -> receipt
+  spawn archive_certification(doc: doc, receipt: receipt)
+  route certified(doc_path: doc.path, revision: receipt.revision, rounds: rounds, evidence: evidence)
+  on failure
+    notify_operator(message: "certification publish failed for " + doc.path)
+    route stalled(reason: "publish failed after operator notify", rounds_spent: rounds)

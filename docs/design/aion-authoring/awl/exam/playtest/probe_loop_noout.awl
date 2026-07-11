@@ -1,0 +1,21 @@
+//! Probe: ruled 2026-07-11 — a loop-carrying step with ZERO outcome clauses is a
+//! check error anchored on the loop (exhaustion must never fall through silently).
+workflow probe_loop_noout
+  input max_tries: Int
+  outcome done: type Done, route success
+
+type Done { tries: Int }
+type Try { ok: Bool }
+
+worker probe
+  action attempt(prior: Try) -> Try
+    node shell, timeout 1m
+
+step spin
+  loop t = Try(ok: false) counting tries
+    attempt(prior: t) -> t
+    until t.ok
+    max max_tries
+
+step finish
+  route done(tries: tries)

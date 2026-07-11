@@ -1,0 +1,24 @@
+//! Probe: ruled 2026-07-11 — `route` is illegal inside a `loop` body, refused with
+//! the span on the route.
+workflow probe_loop_route
+  input max_tries: Int
+  outcome done: type Done, route success
+  outcome bailed: type Bailed, route failure
+
+type Done { tries: Int }
+type Bailed { note: String }
+type Try { ok: Bool, hopeless: Bool }
+
+worker probe
+  action attempt(prior: Try) -> Try
+    node shell, timeout 1m
+
+step spin
+  loop t = Try(ok: false, hopeless: false) counting tries
+    attempt(prior: t) -> t
+    route bailed(note: "gave up mid-loop")
+    until t.ok
+    max max_tries
+
+  outcome ok: when t.ok, route done(tries: tries)
+  outcome spent: otherwise, route bailed(note: "exhausted")

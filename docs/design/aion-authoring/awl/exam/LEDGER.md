@@ -157,3 +157,66 @@ record and the installed toolchain need a freshness guard (same class as the
 ops-console embed-by-default CI guard) — an author following the documented
 path must not be able to certify against a checker that silently disagrees
 with the spec. Both probe files preserved in the playtest pack.
+
+### Playtest marked (invigilator, 2026-07-11 ~11:45Z) — pack archived at exam/playtest/
+Flagship `doc_certification.awl` verified by the invigilator's own hands on the
+fresh binary: check GREEN (6 steps), emit GREEN, byte-canonical under fmt.
+Instrument honesty verified: 13 check-runs logged with verbatim errors and a
+hard stale/fresh line at the F14 swap; every probe verdict re-verified
+post-swap; self-caught confessions; can't-say list; confidence (0.9) stated
+before the verdict. The exam's headline SURVIVES a fluent author: the spine
+held everywhere it was spec'd (backward routing, forks, loops, arm-local
+narrowing); the friction concentrated in the same seams the blind candidates
+found, plus the deeper ones below. Two exam findings independently confirmed
+by a fluent author: F7 (wrapper-type invention) and F13 (node cargo-culting).
+
+### F15 — Language gap (HEADLINE): wait-with-deadline decisions cost a worker round-trip
+Flow-typing is arm-local AND single-predicate: `when x is present and
+x.approved` does not narrow, and no later step reads the field — so after
+`wait s timeout D -> x` the payload's fields are unreadable everywhere in the
+VM. The operator-approval-with-deadline pattern is expressible only via a `T?`
+action param round-trip to read one Bool — the exact absurdity the 2026-07-10
+combinator ruling was written to kill, reborn one construct over. F15b:
+diagnostic suggests adding the `is present` guard the arm already has (F1
+class). Remedy candidates (advisory backlog): narrowing distributes over `and`
+within the arm; or `when x is present as y` re-binding. INVIGILATOR: ruling
+required, same weight as the combinator ruling.
+
+### F16 — Language gap: fork results cannot be merged in the VM
+Two `[T]` fork bindings; no concat/flatten (`map(.findings)` would strand
+`[[T]]`). Merging reviewers' findings needs a worker action for a pure fold.
+The `+`-on-lists diagnostic itself is good.
+
+### F17 — Language gap: no zero-iteration loop
+Body runs at least once; skip-topology alternative correctly refused by the
+every-path binding rule, so authors pay a wasted dispatch.
+
+### F18 — Diagnostics: dead-end cascade manufactures phantom errors
+One real graph defect → 10 errors, 4 of them PHANTOM already-bound complaints
+on legal bindings (reproduced byte-for-byte at HEAD, `cascade_repro.awl`);
+the already-bound message appends its loop-rebinding hint even with no loop
+in sight. Action: suppress binding-flow analysis on steps already marked
+unreachable.
+
+### F19 — check-green ≠ emit-green; fmt alignment rule unstated
+(a) `on failure` + body-terminal route passes check, refused at emit (honest
+stopgap message) — a check-satisfied author ships an undeployable workflow.
+Either check carries stopgap-lowerability diagnostics or the split gets one
+doc sentence. (b) The printer's column-alignment rule lives in examples only,
+never in the printer-contract prose.
+
+### F20 — Docs gap: statement-position `route` is legal, load-bearing, unshown
+The only unconditional successor for a step whose fall-through target is
+route-targeted; spec shows route only as pipe terminator and in outcome
+clauses. One grammar line + one example.
+
+### F21 — Advisory: bounded-cycle rule accepts bounds that don't bound
+Route re-entry resets the loop, so a legal backward cycle is unbounded in the
+rule's spirit while satisfying its letter; single-assignment-under-re-entry
+semantics unstated. F2 + F20 + F21 are one family: the spec's control-flow
+story is written step-forward; route-graph corners live in checker behavior
+only. To the advisory backlog beside F2 and retry-exhaustion (F11).
+
+**Updated priority after the playtest: F15 ruling first among language items**
+(it re-opens the combinator-ruling wound), then F3 (pack), F2+F4, F18/F19
+diagnostics, F20 doc line, advisory backlog (F6/F7/F11/F12/F16/F17/F21).
