@@ -160,6 +160,32 @@ impl<'a> Emitter<'a> {
         self.union_type.clone().unwrap_or_else(|| "Nil".to_owned())
     }
 
+    /// A fully-qualified reference to a wire type's `_to_json` function: a
+    /// builtin leaf resolves to the SDK's `awlc.<leaf>_to_json`, a named or
+    /// composite type to the module-generated `<stem>_to_json`.
+    pub(super) fn to_json_fn(&self, ty: &GType) -> String {
+        self.codec_ref(ty, "to_json")
+    }
+
+    /// A fully-qualified reference to a wire type's `_decoder` function.
+    pub(super) fn decoder_fn(&self, ty: &GType) -> String {
+        self.codec_ref(ty, "decoder")
+    }
+
+    /// A fully-qualified reference to a wire type's `_codec` function.
+    pub(super) fn codec_fn(&self, ty: &GType) -> String {
+        self.codec_ref(ty, "codec")
+    }
+
+    fn codec_ref(&self, ty: &GType, suffix: &str) -> String {
+        let stem = self.env.codec_name(ty);
+        if self.env.is_leaf(ty) {
+            format!("awlc.{stem}_{suffix}")
+        } else {
+            format!("{stem}_{suffix}")
+        }
+    }
+
     pub(super) fn line(&mut self, text: &str) {
         for _ in 0..self.indent {
             self.out.push_str("  ");

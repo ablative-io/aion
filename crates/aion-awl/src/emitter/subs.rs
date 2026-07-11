@@ -38,7 +38,7 @@ pub(super) fn emit_sub_chain(
             sub: Some((parent_index, split)),
         };
         emitter.line(&format!(
-            "fn sub_{}_{}({rendered_params}) -> Result({output}, AwlError) {{",
+            "fn sub_{}_{}({rendered_params}) -> Result({output}, awl_error.AwlError) {{",
             snake(&parent.name),
             snake(&sub.name)
         ));

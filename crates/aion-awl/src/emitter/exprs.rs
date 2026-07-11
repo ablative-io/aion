@@ -178,7 +178,7 @@ pub(super) fn render_expr(
             emitter.flags.uses_list_module = true;
             let fresh = format!("awl_index_{}", prelude.len());
             prelude.push(format!(
-                "use {fresh} <- try(awl_index({base_rendered}, {index}, \
+                "use {fresh} <- result.try(runtime.index({base_rendered}, {index}, \
                  \"index {index} out of range at line {}, column {}\"))",
                 span.line, span.column
             ));

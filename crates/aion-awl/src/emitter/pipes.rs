@@ -216,7 +216,7 @@ fn pipe_action_stage(
             let _ = write!(value, " |> activity.node({})", string_lit(&node.name));
         }
         emitter.line(&format!(
-            "use {fresh} <- try({value} |> workflow.run |> map_activity_error)"
+            "use {fresh} <- result.try({value} |> workflow.run |> awl_error.map_activity_error)"
         ));
         return Ok(());
     }
@@ -232,17 +232,17 @@ fn pipe_action_stage(
         };
         emitter.flags.uses_child = true;
         let param_ty = type_ref_to_g(&param.ty);
-        let codec = emitter.env.codec_name(&param_ty);
+        let to_json = emitter.to_json_fn(&param_ty);
         let arg = wrap_optional(emitter, current.to_owned(), current_ty, &param_ty);
         let input = format!(
-            "json.object([#({}, {codec}_to_json({arg}))])",
+            "json.object([#({}, {to_json}({arg}))])",
             string_lit(&param.name)
         );
-        let output_codec = emitter.env.codec_name(&type_ref_to_g(&child.returns));
+        let output_codec = emitter.codec_fn(&type_ref_to_g(&child.returns));
         emitter.line(&format!(
-            "use {fresh} <- try(workflow.spawn_and_wait({}, {CHILD_WITNESS}, {input}, \
-             json_value_codec(), {output_codec}_codec(), awl_error_codec()) |> \
-             map_child_error)",
+            "use {fresh} <- result.try(workflow.spawn_and_wait({}, {CHILD_WITNESS}, {input}, \
+             awlc.json_value(), {output_codec}(), awl_error.codec()) |> \
+             awl_error.map_child_error)",
             string_lit(name)
         ));
         return Ok(());

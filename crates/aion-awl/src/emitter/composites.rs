@@ -1,4 +1,6 @@
-//! Composite (list/option) and builtin leaf codecs. Options in non-field
+//! Composite (list/option) codecs. Their inner leaf references resolve to the
+//! hoisted `awlc.<leaf>_…` SDK functions (AWL-BC-0); named inners stay
+//! module-generated. Options in non-field
 //! positions keep the SDK's nullable form; since the 2026-07-11 ruling the
 //! checker refuses `[T?]` (element-position `?`), so a checked document
 //! only reaches this path with optional lists (`[T]?`) and other whole-value
@@ -51,7 +53,8 @@ pub(super) fn composite_codecs(emitter: &mut Emitter<'_>) {
         match ty {
             GType::List(inner) => {
                 let stem = emitter.env.codec_name(ty);
-                let inner_stem = emitter.env.codec_name(inner);
+                let inner_to_json = emitter.to_json_fn(inner);
+                let inner_decoder = emitter.decoder_fn(inner);
                 let rendered = emitter.env.gleam_type(ty);
                 emitter.line(&format!("fn {stem}_codec() -> Codec({rendered}) {{"));
                 emitter.indented(|this| {
@@ -62,17 +65,18 @@ pub(super) fn composite_codecs(emitter: &mut Emitter<'_>) {
                 emitter.line("}");
                 emitter.line(&format!(
                     "fn {stem}_to_json(values: {rendered}) -> json.Json {{ \
-                     json.array(values, {inner_stem}_to_json) }}"
+                     json.array(values, {inner_to_json}) }}"
                 ));
                 emitter.line(&format!(
                     "fn {stem}_decoder() -> decode.Decoder({rendered}) {{ \
-                     decode.list({inner_stem}_decoder()) }}"
+                     decode.list({inner_decoder}()) }}"
                 ));
                 emitter.blank();
             }
             GType::Option(inner) => {
                 let stem = emitter.env.codec_name(ty);
-                let inner_stem = emitter.env.codec_name(inner);
+                let inner_to_json = emitter.to_json_fn(inner);
+                let inner_decoder = emitter.decoder_fn(inner);
                 let rendered = emitter.env.gleam_type(ty);
                 emitter.line(&format!("fn {stem}_codec() -> Codec({rendered}) {{"));
                 emitter.indented(|this| {
@@ -83,11 +87,11 @@ pub(super) fn composite_codecs(emitter: &mut Emitter<'_>) {
                 emitter.line("}");
                 emitter.line(&format!(
                     "fn {stem}_to_json(value: {rendered}) -> json.Json {{ \
-                     json.nullable(value, {inner_stem}_to_json) }}"
+                     json.nullable(value, {inner_to_json}) }}"
                 ));
                 emitter.line(&format!(
                     "fn {stem}_decoder() -> decode.Decoder({rendered}) {{ \
-                     decode.optional({inner_stem}_decoder()) }}"
+                     decode.optional({inner_decoder}()) }}"
                 ));
                 emitter.blank();
             }
@@ -112,30 +116,4 @@ fn collect_composites(emitter: &Emitter<'_>, ty: &GType, composites: &mut BTreeM
         }
         _ => {}
     }
-}
-
-pub(super) fn builtin_codecs(emitter: &mut Emitter<'_>) {
-    emitter.line(
-        "fn string_codec() -> Codec(String) { codec.json_codec(json.string, decode.string) }",
-    );
-    emitter.line("fn int_codec() -> Codec(Int) { codec.json_codec(json.int, decode.int) }");
-    emitter.line("fn float_codec() -> Codec(Float) { codec.json_codec(json.float, decode.float) }");
-    emitter.line("fn bool_codec() -> Codec(Bool) { codec.json_codec(json.bool, decode.bool) }");
-    emitter.line(
-        "fn nil_codec() -> Codec(Nil) { codec.json_codec(fn(_) { json.object([]) }, \
-         decode.success(Nil)) }",
-    );
-    emitter.blank();
-    emitter.line("fn string_to_json(value: String) -> json.Json { json.string(value) }");
-    emitter.line("fn int_to_json(value: Int) -> json.Json { json.int(value) }");
-    emitter.line("fn float_to_json(value: Float) -> json.Json { json.float(value) }");
-    emitter.line("fn bool_to_json(value: Bool) -> json.Json { json.bool(value) }");
-    emitter.line("fn nil_to_json(_: Nil) -> json.Json { json.object([]) }");
-    emitter.blank();
-    emitter.line("fn string_decoder() -> decode.Decoder(String) { decode.string }");
-    emitter.line("fn int_decoder() -> decode.Decoder(Int) { decode.int }");
-    emitter.line("fn float_decoder() -> decode.Decoder(Float) { decode.float }");
-    emitter.line("fn bool_decoder() -> decode.Decoder(Bool) { decode.bool }");
-    emitter.line("fn nil_decoder() -> decode.Decoder(Nil) { decode.success(Nil) }");
-    emitter.blank();
 }
