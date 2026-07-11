@@ -3,16 +3,15 @@
 //! path into each step (`after` dependencies contribute conjunctively,
 //! routing and fall-through predecessors disjunctively).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::Span;
 use crate::ast::{ForkHeader, PipeEnd, Statement, Step};
 
 use super::context::Ctx;
 use super::graph::RouteEdge;
 
-/// Every name a step's surface binds for later steps: call/pipe/wait binds,
-/// loop threaded values and counters, join binds, named-branch binds, and
-/// substep binds. `on failure` binds never escape.
+/// Every name a step's surface binds for later steps.
 pub(super) fn defined_names(step: &Step) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     defined_in_statements(&step.body, &mut names);
@@ -36,11 +35,8 @@ fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>)
                 names.insert(wait.bind.name.clone());
             }
             Statement::Fork(fork) => {
-                match &fork.header {
-                    ForkHeader::Collection { .. } => {}
-                    ForkHeader::Named => {
-                        defined_in_statements(&fork.body, names);
-                    }
+                if matches!(fork.header, ForkHeader::Named) {
+                    defined_in_statements(&fork.body, names);
                 }
                 if let Some(bind) = &fork.join.bind {
                     names.insert(bind.name.clone());
@@ -52,9 +48,7 @@ fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>)
                     names.insert(counter.name.clone());
                 }
             }
-            Statement::SubStep(sub) => {
-                defined_in_statements(&sub.body, names);
-            }
+            Statement::SubStep(sub) => defined_in_statements(&sub.body, names),
             Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
         }
     }
@@ -68,16 +62,70 @@ pub(super) fn universe(ctx: &Ctx<'_>) -> BTreeSet<String> {
     names
 }
 
-/// Descending Kleene iteration for the guaranteed-bindings dataflow:
-/// `after` dependencies contribute conjunctively (all complete), routing and
-/// fall-through predecessors contribute disjunctively (intersection).
+/// Unique declaration origins for names; `None` represents a merge of
+/// distinct declarations with the same name.
+pub(super) type Origins = BTreeMap<String, Option<Span>>;
+
+fn defined_origins(step: &Step) -> Origins {
+    let mut origins = Origins::new();
+    origins_in_statements(&step.body, &mut origins);
+    origins
+}
+
+fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
+    for statement in statements {
+        match statement {
+            Statement::Call(call) => {
+                if let Some(binding) = &call.bind {
+                    insert_origin(origins, &binding.name, binding.span);
+                }
+            }
+            Statement::Pipe(pipe) => {
+                if let PipeEnd::Bind(binding) = &pipe.end {
+                    insert_origin(origins, &binding.name, binding.span);
+                }
+            }
+            Statement::Wait(wait) => insert_origin(origins, &wait.bind.name, wait.bind.span),
+            Statement::Fork(fork) => {
+                if matches!(fork.header, ForkHeader::Named) {
+                    origins_in_statements(&fork.body, origins);
+                }
+                if let Some(binding) = &fork.join.bind {
+                    insert_origin(origins, &binding.name, binding.span);
+                }
+            }
+            Statement::Loop(looped) => {
+                insert_origin(origins, &looped.var, looped.var_span);
+                if let Some(counter) = &looped.counter {
+                    insert_origin(origins, &counter.name, counter.span);
+                }
+            }
+            Statement::SubStep(substep) => origins_in_statements(&substep.body, origins),
+            Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
+        }
+    }
+}
+
+fn insert_origin(origins: &mut Origins, name: &str, span: Span) {
+    match origins.get(name) {
+        Some(Some(existing)) if *existing == span => {}
+        Some(_) => {
+            origins.insert(name.to_owned(), None);
+        }
+        None => {
+            origins.insert(name.to_owned(), Some(span));
+        }
+    }
+}
+
+/// Descending Kleene iteration for the guaranteed-bindings dataflow.
 pub(super) fn availability(
     ctx: &Ctx<'_>,
     after: &[Vec<usize>],
     after_unknown: &[bool],
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
-) -> Vec<BTreeSet<String>> {
+) -> (Vec<BTreeSet<String>>, Vec<Origins>) {
     let steps = &ctx.doc.steps;
     let count = steps.len();
     let inputs: BTreeSet<String> = ctx.inputs.keys().cloned().collect();
@@ -126,5 +174,115 @@ pub(super) fn availability(
             }
         }
     }
-    avail_in
+    let origins = origin_availability(ctx, after, after_unknown, routes, fall_pred, &avail_in);
+    (avail_in, origins)
+}
+
+fn origin_availability(
+    ctx: &Ctx<'_>,
+    after: &[Vec<usize>],
+    after_unknown: &[bool],
+    routes: &[RouteEdge],
+    fall_pred: &[Option<usize>],
+    avail_in: &[BTreeSet<String>],
+) -> Vec<Origins> {
+    let count = ctx.doc.steps.len();
+    let mut inputs = Origins::new();
+    for input in &ctx.doc.inputs {
+        insert_origin(&mut inputs, &input.name, input.name_span);
+    }
+    let defined: Vec<Origins> = ctx.doc.steps.iter().map(defined_origins).collect();
+    let mut origins_in: Vec<Origins> = avail_in
+        .iter()
+        .map(|names| names.iter().map(|name| (name.clone(), None)).collect())
+        .collect();
+    let mut origins_out = origins_in.clone();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for position in 0..count {
+            let mut incoming = inputs.clone();
+            for &dependency in &after[position] {
+                merge_origins(&mut incoming, &origins_out[dependency]);
+            }
+            merge_disjunctive(
+                &mut incoming,
+                position,
+                routes,
+                fall_pred,
+                &inputs,
+                &origins_out,
+            );
+            incoming.retain(|name, _| avail_in[position].contains(name));
+            if after_unknown[position] {
+                incoming = avail_in[position]
+                    .iter()
+                    .map(|name| (name.clone(), None))
+                    .collect();
+            }
+            let mut outgoing = incoming.clone();
+            for (name, origin) in &defined[position] {
+                outgoing.insert(name.clone(), *origin);
+            }
+            if incoming != origins_in[position] {
+                origins_in[position] = incoming;
+                changed = true;
+            }
+            if outgoing != origins_out[position] {
+                origins_out[position] = outgoing;
+                changed = true;
+            }
+        }
+    }
+    origins_in
+}
+
+fn merge_disjunctive(
+    incoming: &mut Origins,
+    position: usize,
+    routes: &[RouteEdge],
+    fall_pred: &[Option<usize>],
+    inputs: &Origins,
+    origins_out: &[Origins],
+) {
+    let mut paths: Vec<&Origins> = Vec::new();
+    if position == 0 {
+        paths.push(inputs);
+    }
+    for edge in routes.iter().filter(|edge| edge.target == position) {
+        paths.push(&origins_out[edge.source]);
+    }
+    if let Some(predecessor) = fall_pred[position] {
+        paths.push(&origins_out[predecessor]);
+    }
+    let Some(first_path) = paths.first() else {
+        return;
+    };
+    for name in first_path.keys() {
+        if paths[1..].iter().all(|path| path.contains_key(name)) {
+            let first = first_path.get(name).copied().flatten();
+            let same = paths[1..]
+                .iter()
+                .all(|path| path.get(name).copied().flatten() == first);
+            merge_origin(incoming, name, if same { first } else { None });
+        }
+    }
+}
+
+fn merge_origins(target: &mut Origins, source: &Origins) {
+    for (name, origin) in source {
+        merge_origin(target, name, *origin);
+    }
+}
+
+fn merge_origin(target: &mut Origins, name: &str, origin: Option<Span>) {
+    match target.get(name) {
+        Some(existing) if *existing != origin => {
+            target.insert(name.to_owned(), None);
+        }
+        Some(_) => {}
+        None => {
+            target.insert(name.to_owned(), origin);
+        }
+    }
 }

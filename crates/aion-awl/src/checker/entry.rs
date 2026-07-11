@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use crate::ast::Document;
+use crate::semantic::SemanticAnalysis;
 
 use super::context::Ctx;
 use super::error::CheckError;
@@ -14,17 +15,22 @@ use super::{decls, graph, walk};
 /// Prefer [`check_in`] when the document's directory is known.
 #[must_use]
 pub fn check(document: &Document) -> Vec<CheckError> {
-    run(document, None)
+    run(document, None).0
 }
 
 /// Typecheck a parsed document, resolving schema imports relative to `root`
 /// (the directory containing the `.awl` file).
 #[must_use]
 pub fn check_in(document: &Document, root: &Path) -> Vec<CheckError> {
-    run(document, Some(root))
+    run(document, Some(root)).0
 }
 
-fn run(document: &Document, root: Option<&Path>) -> Vec<CheckError> {
+pub(crate) fn analyze(document: &Document, root: Option<&Path>) -> SemanticAnalysis {
+    let (diagnostics, builder) = run(document, root);
+    SemanticAnalysis::from_parts(diagnostics, builder)
+}
+
+fn run(document: &Document, root: Option<&Path>) -> (Vec<CheckError>, crate::semantic::Builder) {
     let mut ctx = Ctx::new(document, root);
     decls::run(&mut ctx);
     let step_graph = graph::build(&mut ctx);
@@ -39,5 +45,5 @@ fn run(document: &Document, root: Option<&Path>) -> Vec<CheckError> {
             .then_with(|| a.message.cmp(&b.message))
     });
     errors.dedup();
-    errors
+    (errors, ctx.semantic)
 }

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::Span;
 use crate::ast::{CallStmt, PipeEnd, PipeStmt, RetrySpec, SpawnStmt, Statement, Step, WaitStmt};
+use crate::semantic::DeclarationKind;
 
 use super::blocks::{walk_fork, walk_loop};
 use super::context::Ctx;
@@ -15,6 +16,16 @@ use super::graph::StepGraph;
 use super::outcomes::{Env, check_clauses, check_route};
 use super::stages::walk_pipe;
 use super::types::{Ty, assignable};
+
+/// A checker-scoped value and its uniquely resolved declaration.
+#[derive(Clone)]
+pub(super) struct ScopedTy {
+    pub(super) ty: Ty,
+    pub(super) declaration: Option<Span>,
+}
+
+/// The value environment used by the existing flow checker.
+pub(super) type Scope = BTreeMap<String, ScopedTy>;
 
 /// One active `loop`, for the sanctioned threaded-value rebinding.
 pub(super) struct LoopFrame {
@@ -34,10 +45,10 @@ pub(super) struct LoopFrame {
 pub(super) struct Walker<'c, 'a> {
     /// Shared checking context and tables.
     pub(super) ctx: &'c mut Ctx<'a>,
-    /// Binding types from the previous pass (name → type).
-    pub(super) prior: BTreeMap<String, Ty>,
-    /// Binding types collected this pass.
-    pub(super) next: BTreeMap<String, Ty>,
+    /// Bindings from the previous pass.
+    pub(super) prior: Scope,
+    /// Bindings collected this pass.
+    pub(super) next: Scope,
     /// Whether diagnostics are recorded (final pass only).
     pub(super) emit: bool,
     /// Stack of active loops.
@@ -66,12 +77,12 @@ impl Walker<'_, '_> {
 
 /// Run the flow walk over every step.
 pub(super) fn run(ctx: &mut Ctx<'_>, graph: &StepGraph) {
-    let mut prior: BTreeMap<String, Ty> = BTreeMap::new();
+    let mut prior = Scope::new();
     for pass in 0..3 {
         let mut walker = Walker {
             ctx,
             prior,
-            next: BTreeMap::new(),
+            next: Scope::new(),
             emit: pass == 2,
             loops: Vec::new(),
             fork_depth: 0,
@@ -85,17 +96,23 @@ pub(super) fn run(ctx: &mut Ctx<'_>, graph: &StepGraph) {
 }
 
 fn walk_step(w: &mut Walker<'_, '_>, graph: &StepGraph, position: usize, step: &Step) {
-    let mut base: BTreeMap<String, Ty> = BTreeMap::new();
+    let mut base = Scope::new();
     if let Some(avail) = graph.avail_in.get(position) {
         for name in avail {
             let ty = w
                 .ctx
                 .inputs
                 .get(name)
-                .or_else(|| w.prior.get(name))
                 .cloned()
+                .or_else(|| w.prior.get(name).map(|value| value.ty.clone()))
                 .unwrap_or(Ty::Unknown);
-            base.insert(name.clone(), ty);
+            let declaration = graph
+                .origins_in
+                .get(position)
+                .and_then(|origins| origins.get(name))
+                .copied()
+                .flatten();
+            base.insert(name.clone(), ScopedTy { ty, declaration });
         }
     }
     let mut scope = base.clone();
@@ -128,7 +145,7 @@ fn walk_step(w: &mut Walker<'_, '_>, graph: &StepGraph, position: usize, step: &
 /// produces (a fork branch's result).
 pub(super) fn walk_statements(
     w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
+    scope: &mut Scope,
     statements: &[Statement],
     owner: &Step,
     env: &Env<'_>,
@@ -204,7 +221,7 @@ fn statement_span(statement: &Statement) -> Span {
 
 fn walk_statement(
     w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
+    scope: &mut Scope,
     statement: &Statement,
     surrounding: &[Statement],
     owner: &Step,
@@ -247,11 +264,14 @@ fn walk_statement(
 
 pub(super) fn insert_binding(
     w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
+    scope: &mut Scope,
     name: &str,
     ty: Ty,
     span: Span,
 ) {
+    if w.emit {
+        w.ctx.semantic.binding(span, name, &ty.to_string());
+    }
     // A bind inside a collection-fork branch never rebinds a loop's
     // threaded value: branch bindings do not escape the branch, so the
     // loop would still carry its old value into the next pass.
@@ -272,7 +292,13 @@ pub(super) fn insert_binding(
                 ),
             );
         }
-        scope.insert(name.to_owned(), seed);
+        scope.insert(
+            name.to_owned(),
+            ScopedTy {
+                ty: seed,
+                declaration: Some(span),
+            },
+        );
         return;
     }
     if scope.contains_key(name) {
@@ -284,18 +310,28 @@ pub(super) fn insert_binding(
             ),
         );
     }
-    scope.insert(name.to_owned(), ty.clone());
+    let value = ScopedTy {
+        ty: ty.clone(),
+        declaration: Some(span),
+    };
+    scope.insert(name.to_owned(), value.clone());
     match w.next.get(name) {
-        Some(existing) if *existing != ty => {
-            w.next.insert(name.to_owned(), Ty::Unknown);
+        Some(existing) if existing.ty != ty || existing.declaration != Some(span) => {
+            w.next.insert(
+                name.to_owned(),
+                ScopedTy {
+                    ty: if existing.ty == ty { ty } else { Ty::Unknown },
+                    declaration: None,
+                },
+            );
         }
         _ => {
-            w.next.insert(name.to_owned(), ty);
+            w.next.insert(name.to_owned(), value);
         }
     }
 }
 
-fn walk_call(w: &mut Walker<'_, '_>, scope: &mut BTreeMap<String, Ty>, call: &CallStmt) -> Ty {
+fn walk_call(w: &mut Walker<'_, '_>, scope: &mut Scope, call: &CallStmt) -> Ty {
     let view = View {
         vars: scope,
         narrow: None,
@@ -310,11 +346,19 @@ fn walk_call(w: &mut Walker<'_, '_>, scope: &mut BTreeMap<String, Ty>, call: &Ca
             Ty::Unknown
         }
         Some(callable) => {
-            let kind = if w.ctx.actions.contains_key(name) {
-                "action"
+            let (kind, declaration_kind) = if w.ctx.actions.contains_key(name) {
+                ("action", DeclarationKind::Action)
             } else {
-                "child"
+                ("child", DeclarationKind::Child)
             };
+            if w.emit {
+                w.ctx
+                    .semantic
+                    .reference(call.call.name_span, declaration_kind, name);
+                w.ctx
+                    .semantic
+                    .ty(call.call.name_span, &callable.returns.to_string());
+            }
             let params: Vec<(String, Ty)> = callable
                 .params
                 .iter()
@@ -359,17 +403,21 @@ fn walk_call(w: &mut Walker<'_, '_>, scope: &mut BTreeMap<String, Ty>, call: &Ca
     returns
 }
 
-fn walk_spawn(
-    w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
-    spawn: &SpawnStmt,
-) -> Option<Ty> {
+fn walk_spawn(w: &mut Walker<'_, '_>, scope: &mut Scope, spawn: &SpawnStmt) -> Option<Ty> {
     let view = View {
         vars: scope,
         narrow: None,
     };
     let name = &spawn.call.name;
     if let Some(child) = w.ctx.children.get(name).cloned() {
+        if w.emit {
+            w.ctx
+                .semantic
+                .reference(spawn.call.name_span, DeclarationKind::Child, name);
+            w.ctx
+                .semantic
+                .ty(spawn.call.name_span, &child.returns.to_string());
+        }
         let params: Vec<(String, Ty)> = child
             .params
             .iter()
@@ -408,8 +456,14 @@ fn walk_spawn(
     None
 }
 
-fn walk_wait(w: &mut Walker<'_, '_>, scope: &mut BTreeMap<String, Ty>, wait: &WaitStmt) -> Ty {
+fn walk_wait(w: &mut Walker<'_, '_>, scope: &mut Scope, wait: &WaitStmt) -> Ty {
     let ty = if let Some(payload) = w.ctx.signals.get(&wait.signal).cloned() {
+        if w.emit {
+            w.ctx
+                .semantic
+                .reference(wait.signal_span, DeclarationKind::Signal, &wait.signal);
+            w.ctx.semantic.ty(wait.signal_span, &payload.to_string());
+        }
         payload
     } else {
         w.err(

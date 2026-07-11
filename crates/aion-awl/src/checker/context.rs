@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::Span;
 use crate::ast::{Document, TypeRef};
+use crate::semantic::{Builder, DeclarationKind};
 
 use super::error::CheckError;
 use super::types::{Ty, TypeTable};
@@ -48,6 +49,8 @@ pub(super) struct Ctx<'a> {
     pub(super) signals: BTreeMap<String, Ty>,
     /// Workflow outcomes: name → payload type.
     pub(super) outcome_types: BTreeMap<String, Ty>,
+    /// Semantic facts retained from checker computations.
+    pub(super) semantic: Builder,
     /// Accumulated diagnostics.
     pub(super) errors: Vec<CheckError>,
 }
@@ -67,6 +70,7 @@ impl<'a> Ctx<'a> {
             inputs: BTreeMap::new(),
             signals: BTreeMap::new(),
             outcome_types: BTreeMap::new(),
+            semantic: Builder::new(doc),
             errors: Vec::new(),
         }
     }
@@ -79,7 +83,7 @@ impl<'a> Ctx<'a> {
     /// Resolve a syntactic type reference to a semantic type, reporting
     /// unknown type names.
     pub(super) fn resolve_type_ref(&mut self, type_ref: &TypeRef) -> Ty {
-        match type_ref {
+        let ty = match type_ref {
             TypeRef::Named { span, name } => match name.as_str() {
                 "Bool" => Ty::Bool,
                 "Int" => Ty::Int,
@@ -87,17 +91,16 @@ impl<'a> Ctx<'a> {
                 "String" => Ty::Str,
                 "Nil" => Ty::Nil,
                 "Dir" => Ty::Dir,
-                other if self.type_names.contains(other) => Ty::Named(other.to_owned()),
+                other if self.type_names.contains(other) => {
+                    self.semantic.reference(*span, DeclarationKind::Type, other);
+                    Ty::Named(other.to_owned())
+                }
                 other => {
                     self.error(*span, format!("unknown type `{other}`"));
                     Ty::Unknown
                 }
             },
             TypeRef::List { inner, .. } => {
-                // `?` is illegal in list-element position (ruled 2026-07-11):
-                // a list has no holes, so `[T?]` names nothing — and schema
-                // derivation cannot express element optionality. The element
-                // resolves as plain `T` to suppress downstream cascades.
                 if let TypeRef::Optional {
                     span,
                     inner: element,
@@ -113,13 +116,21 @@ impl<'a> Ctx<'a> {
                              if the whole list may be absent)"
                         ),
                     );
-                    return Ty::List(std::rc::Rc::new(element_ty));
+                    Ty::List(std::rc::Rc::new(element_ty))
+                } else {
+                    let element = self.resolve_type_ref(inner);
+                    Ty::List(std::rc::Rc::new(element))
                 }
-                let element = self.resolve_type_ref(inner);
-                Ty::List(std::rc::Rc::new(element))
             }
             TypeRef::Optional { inner, .. } => self.resolve_type_ref(inner).optional(),
-        }
+        };
+        let span = match type_ref {
+            TypeRef::Named { span, .. }
+            | TypeRef::List { span, .. }
+            | TypeRef::Optional { span, .. } => *span,
+        };
+        self.semantic.ty(span, &ty.to_string());
+        ty
     }
 
     /// Look up a callable: worker actions first, then children.

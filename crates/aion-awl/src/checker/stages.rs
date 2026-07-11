@@ -2,22 +2,22 @@
 //! actions, `.field` projections, and the fixed combinator vocabulary
 //! (`filter`/`map`/`sort`/`count`).
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::ast::{CombinatorCall, CombinatorKind, Expr, PipeEnd, PipeStage, PipeStmt};
+use crate::semantic::DeclarationKind;
 use crate::spanned::Spanned;
 
 use super::exprs::{View, field_access, type_of};
 use super::outcomes::{Env, check_route};
 use super::types::{Ty, assignable, resolve};
-use super::walk::{Walker, insert_binding};
+use super::walk::{Scope, Walker, insert_binding};
 
 /// Walk one pipe statement: type the head, thread it through every stage,
 /// then bind or route the final value.
 pub(super) fn walk_pipe(
     w: &mut Walker<'_, '_>,
-    scope: &mut BTreeMap<String, Ty>,
+    scope: &mut Scope,
     pipe: &PipeStmt,
     env: &Env<'_>,
 ) -> Option<Ty> {
@@ -55,6 +55,15 @@ fn pipe_stage(w: &mut Walker<'_, '_>, incoming: Ty, stage: &PipeStage) -> Ty {
                 );
                 return Ty::Unknown;
             };
+            if w.emit {
+                let kind = if w.ctx.actions.contains_key(name) {
+                    DeclarationKind::Action
+                } else {
+                    DeclarationKind::Child
+                };
+                w.ctx.semantic.reference(*span, kind, name);
+                w.ctx.semantic.ty(*span, &callable.returns.to_string());
+            }
             if callable.params.len() != 1 {
                 w.err(
                     *span,

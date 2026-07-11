@@ -81,6 +81,7 @@ fn check_header(ctx: &mut Ctx<'_>) {
             );
         }
         let ty = ctx.resolve_type_ref(&input.ty);
+        ctx.semantic.ty(input.name_span, &ty.to_string());
         if ctx.inputs.insert(input.name.clone(), ty).is_some() {
             ctx.error(
                 input.name_span,
@@ -99,6 +100,7 @@ fn check_header(ctx: &mut Ctx<'_>) {
             );
         }
         let ty = ctx.resolve_type_ref(&signal.ty);
+        ctx.semantic.ty(signal.name_span, &ty.to_string());
         if ctx.signals.insert(signal.name.clone(), ty).is_some() {
             ctx.error(
                 signal.name_span,
@@ -117,6 +119,7 @@ fn check_header(ctx: &mut Ctx<'_>) {
             );
         }
         let ty = ctx.resolve_type_ref(&outcome.ty);
+        ctx.semantic.ty(outcome.name_span, &ty.to_string());
         if ctx.outcome_types.insert(outcome.name.clone(), ty).is_some() {
             ctx.error(
                 outcome.name_span,
@@ -136,6 +139,8 @@ fn resolve_type_bodies(ctx: &mut Ctx<'_>) {
                 project_door(ctx, decl)
             }
         };
+        ctx.semantic
+            .ty(decl.name_span, &Ty::Named(decl.name.clone()).to_string());
         // The first declaration wins under duplicates; the duplicate itself
         // is already reported at registration.
         ctx.types.entry(decl.name.clone()).or_insert(definition);
@@ -158,6 +163,7 @@ fn resolve_record(ctx: &mut Ctx<'_>, decl: &TypeDecl) -> Ty {
             );
         }
         let ty = ctx.resolve_type_ref(&field.ty);
+        ctx.semantic.ty(field.name_span, &ty.to_string());
         if resolved.iter().any(|existing| existing.name == field.name) {
             ctx.error(
                 field.name_span,
@@ -168,6 +174,7 @@ fn resolve_record(ctx: &mut Ctx<'_>, decl: &TypeDecl) -> Ty {
         resolved.push(FieldTy {
             name: field.name.clone(),
             ty,
+            declaration: Some(field.name_span),
         });
     }
     Ty::Record(Rc::new(RecordTy {
@@ -214,6 +221,8 @@ fn check_workers_and_children(ctx: &mut Ctx<'_>) {
     for worker in &doc.workers {
         for action in &worker.actions {
             let callable = resolve_callable(ctx, &action.params, &action.returns);
+            ctx.semantic
+                .ty(action.name_span, &callable.returns.to_string());
             if ctx.children.contains_key(&action.name) {
                 ctx.error(
                     action.name_span,
@@ -233,6 +242,8 @@ fn check_workers_and_children(ctx: &mut Ctx<'_>) {
     }
     for child in &doc.children {
         let callable = resolve_callable(ctx, &child.params, &child.returns);
+        ctx.semantic
+            .ty(child.name_span, &callable.returns.to_string());
         if ctx.actions.contains_key(&child.name) {
             ctx.error(
                 child.name_span,
@@ -252,6 +263,7 @@ fn resolve_callable(ctx: &mut Ctx<'_>, params: &[ParamDecl], returns: &TypeRef) 
     let mut resolved: Vec<Param> = Vec::new();
     for param in params {
         let ty = ctx.resolve_type_ref(&param.ty);
+        ctx.semantic.ty(param.name_span, &ty.to_string());
         if resolved.iter().any(|existing| existing.name == param.name) {
             ctx.error(
                 param.name_span,

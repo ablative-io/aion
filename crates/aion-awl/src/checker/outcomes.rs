@@ -3,15 +3,14 @@
 //! siblings, parent arms), payload contracts, `otherwise` placement, and
 //! exhaustiveness (including enum-subject totality).
 
-use std::collections::BTreeMap;
-
 use crate::Span;
 use crate::ast::{BinaryOp, Expr, Guard, PredicateKind, RouteTarget, Statement, Step};
+use crate::semantic::DeclarationKind;
 use crate::spanned::Spanned;
 
 use super::exprs::{View, check_args, type_of};
 use super::types::{Ty, assignable, resolve};
-use super::walk::Walker;
+use super::walk::{Scope, Walker};
 
 /// Where a route target resolves: the top level of the document, or inside
 /// a substep group (siblings and the parent's outcome arms).
@@ -70,6 +69,16 @@ fn resolve_route(w: &Walker<'_, '_>, env: &Env<'_>, name: &str) -> RouteKind {
     }
 }
 
+fn sibling_span(env: &Env<'_>, name: &str) -> Option<Span> {
+    let Env::Substep { parent, .. } = env else {
+        return None;
+    };
+    parent.body.iter().find_map(|statement| match statement {
+        Statement::SubStep(step) if step.name == name => Some(step.name_span),
+        _ => None,
+    })
+}
+
 /// Check one route: target existence per environment, payload contract
 /// (constructed, picked up by name, or piped).
 pub(super) fn check_route(
@@ -79,7 +88,27 @@ pub(super) fn check_route(
     env: &Env<'_>,
     piped: Option<Ty>,
 ) {
-    match resolve_route(w, env, &target.name) {
+    let route = resolve_route(w, env, &target.name);
+    match &route {
+        RouteKind::Step => {
+            w.ctx
+                .semantic
+                .reference(target.name_span, DeclarationKind::Step, &target.name);
+        }
+        RouteKind::Sibling => {
+            w.ctx
+                .semantic
+                .reference_to(target.name_span, sibling_span(env, &target.name));
+        }
+        RouteKind::Outcome(name, ty) => {
+            w.ctx
+                .semantic
+                .reference(target.name_span, DeclarationKind::Outcome, name);
+            w.ctx.semantic.ty(target.name_span, &ty.to_string());
+        }
+        RouteKind::ParentArm | RouteKind::Escapes(_) | RouteKind::Unknown => {}
+    }
+    match route {
         RouteKind::Step | RouteKind::Sibling => {
             if piped.is_some() {
                 w.err(
@@ -234,16 +263,11 @@ fn view_lookup(view: View<'_>, name: &str) -> Option<Ty> {
     {
         return Some(ty.clone());
     }
-    view.vars.get(name).cloned()
+    view.vars.get(name).map(|value| value.ty.clone())
 }
 
 /// Check a step's outcome clauses in written order.
-pub(super) fn check_clauses(
-    w: &mut Walker<'_, '_>,
-    scope: &BTreeMap<String, Ty>,
-    step: &Step,
-    env: &Env<'_>,
-) {
+pub(super) fn check_clauses(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step, env: &Env<'_>) {
     // Loop exhaustion must be explicitly named (ruled 2026-07-11): a step
     // whose body contains a `loop` must declare conditional outcome clauses
     // covering the exhausted case; with zero clauses, `max` running out with
@@ -331,7 +355,7 @@ fn first_loop_span(statements: &[Statement]) -> Option<Span> {
 }
 
 /// `when x is present` narrows `x` from `T?` to `T` within its arm.
-fn narrowed_binding(scope: &BTreeMap<String, Ty>, guard: &Expr) -> Option<(String, Ty)> {
+fn narrowed_binding(scope: &Scope, guard: &Expr) -> Option<(String, Ty)> {
     let Expr::Predicate {
         subject,
         kind: PredicateKind::Present,
@@ -343,13 +367,13 @@ fn narrowed_binding(scope: &BTreeMap<String, Ty>, guard: &Expr) -> Option<(Strin
     let Expr::Ref { name, .. } = subject.as_ref() else {
         return None;
     };
-    match scope.get(name) {
+    match scope.get(name).map(|value| &value.ty) {
         Some(Ty::Optional(inner)) => Some((name.clone(), (**inner).clone())),
         _ => None,
     }
 }
 
-fn check_exhaustiveness(w: &mut Walker<'_, '_>, scope: &BTreeMap<String, Ty>, step: &Step) {
+fn check_exhaustiveness(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step) {
     if step.outcomes.is_empty() {
         return;
     }
@@ -409,11 +433,7 @@ struct TotalityGap {
 /// Detect the enum-subject totality pattern: every arm compares the same
 /// subject expression against a bare variant. Returns `None` when the arms
 /// do not fit the pattern (the generic diagnostic applies).
-fn enum_totality_gap(
-    w: &mut Walker<'_, '_>,
-    scope: &BTreeMap<String, Ty>,
-    step: &Step,
-) -> Option<TotalityGap> {
+fn enum_totality_gap(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step) -> Option<TotalityGap> {
     let mut subject_key: Option<String> = None;
     let mut subject_expr: Option<&Expr> = None;
     let mut covered: Vec<String> = Vec::new();

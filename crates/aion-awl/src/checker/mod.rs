@@ -17,5 +17,6 @@ mod stages;
 mod types;
 mod walk;
 
+pub(crate) use entry::analyze;
 pub use entry::{check, check_in};
 pub use error::CheckError;
