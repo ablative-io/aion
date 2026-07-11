@@ -8,12 +8,26 @@ adversarial review (closed the Json-level encode gap with
 §7.4, plus three advisories: duration refusal placement, encode-side miss
 semantics, shim function count).
 
-**Decision: `descriptor-full`** — descriptors drive BOTH encode and decode,
-with a single identity-coerce boundary inside the SDK engine, implemented by
-a tiny Erlang shim source in `aion_flow` (precedent: the package already
-ships `src/aion_flow_query_pump.erl`). The pre-authorized fallback
-(hoist-only) remains live if the safety argument in §4 fails review; the
-encode-only middle option is evaluated and rejected in §9.
+**Decision: `hoist-only` SHIPPED as BC-0** — the §9(iii) pre-authorized
+fallback is what landed. It was invoked per D-BC2 after the descriptor-full
+design was contested twice in adversarial review: rather than fight Gleam's
+`Dynamic`→nominal coerce boundary (§3–§4) any further, BC-0 shipped the
+strict-subset hoist. The `descriptor-full` design below is retained in full
+as the fully-worked reference — descriptors drive BOTH encode and decode with
+a single identity-coerce boundary inside the SDK engine, backed by a tiny
+Erlang shim (precedent: `src/aion_flow_query_pump.erl`). It is NOT what
+shipped; it informs BC-2's MIR codec-template shapes and any post-BC revisit.
+The encode-only middle option is evaluated and rejected in §9.
+
+**What shipped (BC-0).** Three SDK modules hoisted into `aion_flow`:
+`aion/awl/error.gleam` (the `AwlError` type + its codec and mappers),
+`aion/awl/codec.gleam` (the builtin leaf codecs plus the raw/decoded/
+json_value helpers), and `aion/awl/runtime.gleam` (the `run` wrapper and
+`index` bounds-check). The emitter re-points at these and switches `try` →
+`result.try`. No descriptor engine, no `reflect`, no `.erl` shim. The per-type
+codec trios (`x_codec` / `x_to_json` / `x_decoder`) remain **generated per
+type** in each module, exactly as in rev-2; they become the ~4 MIR template
+shapes deferred to BC-2/BC-3.
 
 The rest of this document specifies: the descriptor value (§2), the engine
 (§3), the coerce boundary and its safety argument (§4), the D4/wire-parity
