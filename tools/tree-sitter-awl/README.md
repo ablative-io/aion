@@ -92,3 +92,21 @@ grammar = "awl"
 Link or copy `queries/highlights.scm`, `queries/folds.scm`, and
 `queries/indents.scm` into Helix's `runtime/queries/awl/` directory, then run
 `hx --grammar fetch && hx --grammar build`.
+
+## Publishing: this directory is authoritative; the standalone repo is a mirror
+
+Pair-ruled 2026-07-12. This directory is the AUTHORITATIVE home of the AWL
+grammar — it co-evolves with the parser, corpus, and checker in single
+commits. The public standalone repo
+(`https://github.com/tomWhiting/tree-sitter-awl`, transferring to
+`ablative-io` once the org repo can be public) is the **published mirror**
+that editor toolchains fetch anonymously (Zed grammar fetch,
+nvim-treesitter remote install, web-tree-sitter).
+
+**If you change this grammar, you own the mirror push.** And
+**publish-before-pin**: any extension `rev` (editors/zed-awl/extension.toml,
+nvim-awl's default `install_info`) may only name a sha VERIFIED PRESENT on
+the public mirror — one anonymous `git ls-remote` before the pin lands. A
+pin naming an unpushed sha works from an authenticated checkout and dies
+from an anonymous fetch. Mechanizing this check into the gates for any diff
+touching a grammar rev pin is sanctioned follow-on work.
