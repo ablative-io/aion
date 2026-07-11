@@ -1,0 +1,40 @@
+# Standalone Rust activity worker for the AWL-authored cargo-gates workflow.
+[package]
+name = "cargo-gates-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Aion worker that executes real Cargo quality gates and returns bounded results."
+
+[[bin]]
+name = "cargo-gates-worker"
+path = "src/main.rs"
+
+[lib]
+name = "cargo_gates_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
