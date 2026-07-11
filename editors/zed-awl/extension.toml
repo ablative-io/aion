@@ -12,6 +12,5 @@ languages = ["AWL"]
 language_ids = { AWL = "awl" }
 
 [grammars.awl]
-repository = "https://github.com/ablative-io/aion.git"
-rev = "77ddad39b850e4e092f6f0d113595a42079d979d"
-path = "tools/tree-sitter-awl"
+repository = "https://github.com/tomWhiting/tree-sitter-awl.git"
+rev = "fa1afb22c756175131d252380fb4ba9e4b68a321"
