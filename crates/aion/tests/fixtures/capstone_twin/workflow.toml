@@ -1,0 +1,10 @@
+# AWL BC-1 capstone fixture descriptor consumed by the from-source test gate.
+
+[[workflow]]
+entry_module = "capstone_twin"
+entry_function = "run"
+timeout_seconds = 30
+input_schema = "schemas/input.json"
+output_schema = "schemas/output.json"
+activities = []
+output = "capstone-twin.aion"

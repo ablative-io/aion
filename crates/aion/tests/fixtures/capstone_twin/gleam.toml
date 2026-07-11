@@ -1,0 +1,10 @@
+name = "capstone_twin"
+version = "0.1.0"
+target = "erlang"
+description = "AWL BC-1 capstone fixture: the Gleam-built twin of the hand-constructed bytecode module."
+licences = ["MIT"]
+
+[dependencies]
+aion_flow = { path = "../../../../../gleam/aion_flow" }
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_json = ">= 2.0.0 and < 4.0.0"
