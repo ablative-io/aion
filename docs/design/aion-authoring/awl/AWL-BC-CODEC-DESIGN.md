@@ -2,7 +2,11 @@
 
 Status: DESIGN for BC-0 implementation. Parent: `AWL-BC-BUILD-PLAN.md`
 (locked decision D-BC2, recon deltas 5/6) and `AWL-BC-DESIGN-DRAFT.md` §2.
-Authored 2026-07-11 on the `awl-bc0` worktree.
+Authored 2026-07-11 on the `awl-bc0` worktree; revised same day per
+adversarial review (closed the Json-level encode gap with
+`codec.encode_json` + the three missed `_to_json` call-site families in
+§7.4, plus three advisories: duration refusal placement, encode-side miss
+semantics, shim function count).
 
 **Decision: `descriptor-full`** — descriptors drive BOTH encode and decode,
 with a single identity-coerce boundary inside the SDK engine, implemented by
@@ -96,8 +100,11 @@ Notes pinned by the current emitter surface:
 - **`GType::Duration` never reaches a wire position.** No `duration_ms_codec`
   is emitted anywhere today (durations are call-site config literals,
   `duration.milliseconds(n)`); the descriptor set therefore has no duration
-  leaf. If the checker ever admits one, the engine refuses at `from` with an
-  explicit error rather than guessing a representation.
+  leaf — no duration descriptor can even be constructed, so the engine never
+  sees one. The refusal lives in the **emitter's `GType → Desc` renderer**
+  (§7.1): it has no rendering for `GType::Duration` and errors explicitly if
+  the checker ever admits one at a boundary, rather than guessing a
+  representation.
 - **Aliases are resolved at emission** (`TypeEnv::resolve`), exactly as
   `codec_name` does today; `DRef` targets are always records/enums/unions.
 - **Enums carry both spellings**: the JSON string is the PascalCase variant
@@ -115,7 +122,7 @@ plus inline root descriptors at each boundary call site (usually a bare
 
 ## 3. The engine (`aion/awl/codec`)
 
-One public entry point:
+Two public entry points:
 
 ```gleam
 /// Build a typed codec from a descriptor.
@@ -126,7 +133,22 @@ One public entry point:
 /// This function exists for generated code; hand-written workflows should
 /// use `aion/codec.json_codec` with real decoders.
 pub fn from(root: descriptor.Desc, defs: descriptor.Defs) -> codec.Codec(a)
+
+/// Encode-only entry: descriptor-driven encode of a typed value to a
+/// `json.Json` VALUE, for call sites that must COMPOSE the result into a
+/// larger JSON value (child-input object assembly, §7.4) or serialize it
+/// without ever needing a decoder (failure-route payloads, §7.4). Literally
+/// `encode_walk(reflect.to_dynamic(value), root, defs)` — it uses ONLY the
+/// safe coerce direction, so §4's safety argument is unchanged by its
+/// existence. Same descriptor contract as `from`.
+pub fn encode_json(value: a, root: descriptor.Desc, defs: descriptor.Defs) -> json.Json
 ```
+
+`encode_json` exists because `Codec.encode` returns a fully-serialized
+`String` and `gleam_json` has no raw-JSON injection: any site that nests an
+encoded value inside a parent `json.object` needs the `json.Json` value
+itself. For BC-3 it is the second (and last) codec-engine `call_ext` shape
+(§11 q3).
 
 The centerpiece design move: **the engine reuses `gleam/dynamic/decode` and
 `aion/codec.json_codec` rather than hand-rolling a JSON walk.** `from` is
@@ -177,9 +199,22 @@ shape-guaranteed by the descriptor's provenance:
     = the single constructor argument.
 
 A value/descriptor mismatch (impossible for generated modules, possible for
-a hand-mis-used `from`) fails loudly — `json.string` on a non-binary is a
-badarg crash, and `record_fields`/lookup misses surface as an explicit
-`panic`-free refusal (see §3.3) — never a silent wrong encoding.
+a hand-mis-used `from`/`encode_json`) fails loudly, and — precisely, because
+`encode_walk` returns `json.Json` and has **no error channel** — it fails by
+**crashing the calling process**, never by silent wrong encoding:
+
+- Leaf-shape mismatch: `json.string`/`json.int`/… on a wrong-shaped term is
+  a `badarg` crash inside `gleam_json`.
+- Defs-table miss on `DRef`, an enum value whose atom matches no variant
+  entry, or a union value whose constructor tag matches no arm: a deliberate
+  `panic` with a diagnostic message naming the missing def/variant/arm
+  (e.g. `"awl codec: unknown def " <> name`). Encode-side misses cannot be
+  turned into a decode-style explicit failure value (no `Result` in the
+  walk's type), so a diagnostic crash is the specified behavior — reachable
+  only through a violated §4 contract, i.e. hand-misuse.
+
+(Decode-side misses, by contrast, DO have an error channel and surface as
+explicit `decode.failure` values — §3.2.)
 
 ### 3.2 Decode: compose a `decode.Decoder(Dynamic)` from the descriptor
 
@@ -267,8 +302,20 @@ pub fn from_dynamic(value: Dynamic) -> a        // THE unsafe direction
 
 @external(erlang, "aion_flow_awl_ffi", "identity")
 pub fn coerce(value: Dynamic) -> b              // leaf reads inside encode_walk
-// + make_record / record_fields / record_tag / atom_text as above
+
+@external(erlang, "aion_flow_awl_ffi", "record_tag")
+pub fn atom_text(value: Dynamic) -> String      // ALIAS of record_tag: its
+                                                // is_atom clause IS
+                                                // atom_to_binary, which is all
+                                                // an enum value needs — no
+                                                // separate Erlang function
+// + make_record / record_fields / record_tag as above
 ```
+
+The shim is therefore **four** Erlang functions (`identity`, `make_record`,
+`record_fields`, `record_tag`) behind six Gleam external declarations
+(`identity` fronts three coerce signatures; `record_tag` fronts both
+`record_tag` and `atom_text`).
 
 `binary_to_atom` (not `binary_to_existing_atom`) is deliberate: a record
 that only ever crosses the codec boundary (never constructed or tag-matched
@@ -339,6 +386,15 @@ binding behaviors, each with a dedicated SDK test:
 | `Nil` | encodes `{}`; decoder accepts anything | `DNil` identical |
 | Decode error text | `codec.json_codec` mapping of `gleam/dynamic/decode` errors | **same code path** (§3) |
 | Encode bytes | `json.to_string` insertion order | identical (same construction order) |
+| Child-input object bytes | `json.object([#(param, {codec}_to_json(arg)), …])` (pipes.rs / stmts.rs) | same outer `json.object` composition, per-field values via `awlc.encode_json` — identical construction order, identical bytes |
+| `AwlOutcomeFailure` payload string | `json.to_string({codec}_to_json(payload))` (outcomes.rs) | `json.to_string(awlc.encode_json(payload, <desc>, awl_defs))` — byte-identical, since today's `Codec.encode` = `json.to_string ∘ to_json` |
+
+The last two rows are called out separately because those site families
+change **mechanism**, not just naming (§7.4); each gets a dedicated
+expected-bytes test (§8). The existing golden pinning the failure-payload
+spelling at `crates/aion-awl/tests/emitter.rs:220`
+(`json.to_string(publish_failed_to_json(...))`) is re-baselined to the
+`encode_json` spelling as part of the deliberate golden re-baseline below.
 
 Gate (from the build plan): goldens re-baselined deliberately; the
 committed `awl_hello` e2e trail unchanged; compile proofs green;
@@ -354,7 +410,7 @@ additive, no existing public API changes):
 |---|---|---|
 | `aion/awl/error.gleam` | `pub type AwlError` (all 9 variants, unchanged shape/atoms); `pub fn codec() -> Codec(AwlError)` (hand-written, NOT descriptor-driven — it is fixed glue with a heterogeneous 2-field variant; literal port of today's `awl_error_*` trio); the 5 mappers `map_activity_error`, `map_receive_error`, `map_child_error`, `map_spawn_error`, `map_timer_error` | `pub type AwlError` + `awl_error_codec/_to_json/_decoder` (~70 lines) + 5 mappers (~20 lines) |
 | `aion/awl/descriptor.gleam` | `Desc`, `Field`, `Def`, `Defs` (§2) | — (new) |
-| `aion/awl/codec.gleam` | `from(root, defs)` (§3); `raw() -> Codec(String)` (today's `awl_raw_codec`); `decoded(codec, payload, action) -> Result(a, AwlError)` (today's `awl_decoded`); `json_value() -> Codec(json.Json)` (encode-only child-input codec, refusal message preserved verbatim) | per-type codec trios (~105 lines in awl_hello), 15 builtin leaf fns, composite list/option trios, flag-gated raw/decoded/json_value helpers |
+| `aion/awl/codec.gleam` | `from(root, defs)` (§3); `encode_json(value, root, defs) -> json.Json` (§3 — the composition/serialize-only entry for child-input assembly and failure payloads); `raw() -> Codec(String)` (today's `awl_raw_codec`); `decoded(codec, payload, action) -> Result(a, AwlError)` (today's `awl_decoded`); `json_value() -> Codec(json.Json)` (encode-only child-input codec, refusal message preserved verbatim) | per-type codec trios (~105 lines in awl_hello) incl. every `_to_json` call site, 15 builtin leaf fns, composite list/option trios, flag-gated raw/decoded/json_value helpers |
 | `aion/awl/runtime.gleam` | `run(raw_input: Dynamic, input_codec, output_codec, execute) -> Result(String, AwlError)` — the generic run shell (decided: **hoist**, §6.1); `index(items, index, label) -> Result(a, AwlError)` (today's `awl_index`) | the `run()` body (~15 lines) + `awl_index` (~7 lines) |
 | `aion/awl/internal/reflect.gleam` | the `@external` declarations (§4.1), internal-only by convention | — (new) |
 | `src/aion_flow_awl_ffi.erl` | identity + record reflection, safety comments | — (new) |
@@ -408,7 +464,9 @@ SDK combinator, not blocking.
    `Field`, enums with `#(json_name, atom_text)` pairs, the outcome union as
    a `DUnion` def) and (b) a `GType → Desc` expression renderer replacing
    `codec_name` at call sites (leaves inline, named types as `DRef`,
-   aliases resolved first). One generated 1-line helper
+   aliases resolved first; NO arm for `GType::Duration` — the renderer
+   errors explicitly if one reaches a wire position, per §2). One generated
+   1-line helper
    `fn awl_codec(root) { awlc.from(root, awl_defs) }` keeps call sites
    short.
 2. **`frame.rs`.** `error_type()` deleted; header imports gain
@@ -422,7 +480,28 @@ SDK combinator, not blocking.
    wrappers/signal refs switch codec references to `awl_codec(...)` calls.
 4. **Call sites** (`steps.rs`, `pipes.rs`, `outcomes.rs`, `loops.rs`,
    `forks.rs`, `stmts.rs`): `try(` → `result.try(`, mapper names →
-   `awl_error.map_*`, `awl_index` → `runtime.index`.
+   `awl_error.map_*`, `awl_index` → `runtime.index`. Plus the three
+   `_to_json` call-site families, which are ENCODE sites and rewrite to
+   `encode_json` (they cannot go through `awl_codec(desc).encode`, which
+   returns a serialized `String`, where a `json.Json` value is needed —
+   and the failure route deliberately uses the same entry, below):
+   - `pipes.rs:235-240` (child pipe-stage input assembly) and
+     `stmts.rs:170-182` (`child_spawn_args`): the per-field
+     `#({name}, {codec}_to_json({arg}))` becomes
+     `#({name}, awlc.encode_json({arg}, <desc>, awl_defs))` inside the
+     UNCHANGED outer `json.object([...])` composition — the `gleam/json`
+     import stays for these sites, consistent with §7.2.
+   - `outcomes.rs:201-205` (failure routes): `Error(AwlOutcomeFailure({name},
+     json.to_string({codec}_to_json({payload}))))` becomes
+     `Error(AwlOutcomeFailure({name}, json.to_string(awlc.encode_json({payload},
+     <desc>, awl_defs))))`. Chosen over the equally byte-identical
+     `awl_codec(<desc>).encode({payload})` so that (a) encode-only sites
+     never construct an unused decoder and (b) all three families share one
+     mechanism — one `call_ext` shape for BC-3, not two. Both spellings are
+     byte-identical to today since `Codec.encode` = `json.to_string ∘
+     to_json`. (Re-baselines the golden at `tests/emitter.rs:220`, §5.)
+   In all three, `<desc>` comes from the §7.1 `GType → Desc` renderer at the
+   same point `codec_name` is called today.
 5. **`types.rs`.** `zero_expr` retained (§3.3). `codec_name` retires in
    favor of the descriptor renderer (keep the stem logic only if goldens
    still need stable helper naming).
@@ -446,20 +525,28 @@ SDK combinator, not blocking.
   capitals, digits) if the checker admits such type names.
 - **Byte-parity capture**: before deleting the old generators, capture
   current goldens' encoded outputs for representative values as expected-
-  bytes fixtures; the engine must reproduce them exactly.
+  bytes fixtures; the engine must reproduce them exactly. This capture MUST
+  include the two mechanism-changing site families from §5/§7.4: (a) a
+  child-input object assembled via `json.object` + `encode_json` against
+  today's `json.object` + `{codec}_to_json` bytes, and (b) an
+  `AwlOutcomeFailure` payload string via `json.to_string(encode_json(...))`
+  against today's `json.to_string({codec}_to_json(...))` — plus the
+  deliberate re-baseline of the `tests/emitter.rs:220` golden to the new
+  spelling.
 - **Existing gates**: full `aion-awl`/`aion-cli` suites; the three compile
   proofs; awl-hello e2e trail unchanged; ≥40% line-count drop assertion.
 
 ## 9. Options evaluated
 
 **(i) descriptor-full — CHOSEN.** Costs: one identity-coerce point (§4), a
-6-function `.erl` shim, atom-table writes bounded by document size, and an
-interpretive walk per boundary crossing (negligible against a durable-engine
-dispatch; every crossing already does JSON string I/O through the FFI).
-Buys: the entire codec surface leaves the emitted module; D4 has one
-implementation; BC-3 loses its gnarliest template family (decoder
+4-function `.erl` shim (§4.1), atom-table writes bounded by document size,
+and an interpretive walk per boundary crossing (negligible against a
+durable-engine dispatch; every crossing already does JSON string I/O through
+the FFI). Buys: the entire codec surface leaves the emitted module; D4 has
+one implementation; BC-3 loses its gnarliest template family (decoder
 `use`-chains with closures) — record/enum/union/composite decode AND encode
-all become "load literal, `call_ext`".
+all become "load literal, `call_ext`", with exactly two codec-engine call
+shapes to carry (`from` and `encode_json`, §3/§11 q3).
 
 **(ii) descriptor-encode-only.** Honest appeal: encode consumes typed values,
 so walking them needs only the safe coerce direction — no `from_dynamic`
@@ -477,8 +564,10 @@ shapes in BC-2/BC-3. Zero coerce risk, smallest BC-0, largest BC-3. This
 remains the live fallback if panel review rejects §4 or implementation
 fights Gleam beyond reasonable effort; the module map in §6 is deliberately
 structured so the fallback is a strict subset (drop `descriptor.gleam`,
-`codec.from`, `reflect`, the `.erl`; keep error/runtime/raw/decoded/
-json_value hoists and the `result.try` switch).
+`codec.from`, `codec.encode_json`, `reflect`, the `.erl`; keep error/
+runtime/raw/decoded/json_value hoists and the `result.try` switch — the
+`_to_json` call-site families of §7.4 then stay on their current generated
+per-type functions, unchanged).
 
 ## 10. Risks
 
@@ -518,10 +607,12 @@ json_value hoists and the `result.try` switch).
    restrict type-name shape instead (risk 2).
 2. `decode.recursive` vs the lazy-`then` form — pick during implementation
    based on the resolved stdlib version in `manifest.toml`.
-3. Whether `aion/awl/codec.from` should take `#(Desc, Defs)` as one value to
-   make the BC-3 literal a single `LitT` entry per boundary (cosmetic for
-   Gleam, one fewer operand for bytecode; lean yes — decide at MIR design,
-   BC-2).
+3. Whether `aion/awl/codec.from` and `aion/awl/codec.encode_json` should
+   take `#(Desc, Defs)` as one value to make the BC-3 literal a single
+   `LitT` entry per boundary (cosmetic for Gleam, one fewer operand for
+   bytecode; lean yes — decide at MIR design, BC-2). Whatever is decided,
+   both entries take the descriptor in the SAME shape — they are the only
+   two codec-engine `call_ext` shapes BC-3 carries (§3, §9).
 4. Ticket text for the post-BC removal of the `zero_expr` recursive-required
    refusal (capability widening, needs its own tests).
 5. Whether the retry loop later becomes an SDK combinator (out of BC-0
