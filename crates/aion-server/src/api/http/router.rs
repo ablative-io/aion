@@ -9,6 +9,7 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
+use super::awl::{check, format, get_document, list_documents, put_document};
 use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
 use super::dev_ui::{dev_register_mock, dev_replay_run, dev_trigger_run};
@@ -96,7 +97,7 @@ fn cors_layer(allowed_origins: &[String]) -> Result<Option<CorsLayer>, ServerErr
     }
     let layer = CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
         .allow_headers([
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
@@ -158,6 +159,22 @@ pub fn workflow_router(state: ServerState) -> Router {
     } else {
         Router::new().route("/authoring/{*rest}", any(authoring_disabled))
     };
+    let awl_documents = if state.runtime_config().authoring.workspace_dir.is_some() {
+        Router::new()
+            .route("/awl/documents", get(list_documents))
+            .route(
+                "/awl/documents/{*path}",
+                get(get_document).put(put_document),
+            )
+    } else {
+        Router::new()
+            .route("/awl/documents", any(authoring_disabled))
+            .route("/awl/documents/{*path}", any(authoring_disabled))
+    };
+    let awl = Router::new()
+        .route("/awl/check", post(check))
+        .route("/awl/fmt", post(format))
+        .merge(awl_documents);
     // The dev surface is dark by default, gated on `[dev].enabled`: when off the
     // routes are not mounted and every `/dev/*` path is a plain 404 (the
     // explicit catch-all keeps the ops-console SPA fallback from answering for
@@ -172,6 +189,7 @@ pub fn workflow_router(state: ServerState) -> Router {
     };
     deploy
         .merge(authoring)
+        .merge(awl)
         .merge(dev)
         .route("/whoami", get(whoami))
         .route("/namespaces", get(list_namespaces).post(post_namespace))

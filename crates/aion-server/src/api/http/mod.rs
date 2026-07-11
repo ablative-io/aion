@@ -16,6 +16,7 @@
 
 mod auth;
 mod authoring;
+mod awl;
 mod clean_dtos;
 mod cluster_command;
 mod deploy;

@@ -23,6 +23,8 @@ pub mod api;
 pub mod auth;
 /// Server-side Gleam authoring surface (compile, type-check, package, hot-load).
 pub mod authoring;
+/// In-process AWL checking, formatting, semantics, and workspace documents.
+pub(crate) mod awl;
 /// SS-5b automatic multi-node failover detection (cluster supervisor). Only
 /// meaningful for a distributed haematite boot, so gated behind the backend.
 #[cfg(feature = "haematite-backend")]

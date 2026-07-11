@@ -564,6 +564,10 @@ pub struct AuthoringConfig {
     /// `workflow.toml`, and `schemas/`, so the operator provisions and names
     /// the project root.
     pub project_root: Option<PathBuf>,
+    /// Root directory exposed by the `/awl/documents` workspace API. `None`
+    /// leaves document listing, reading, and writing unmounted while check and
+    /// formatting remain available.
+    pub workspace_dir: Option<PathBuf>,
 }
 
 impl Default for ServerSection {
