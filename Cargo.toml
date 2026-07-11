@@ -77,7 +77,9 @@ saffron = { version = "0.1", features = ["std"] }
 hostname = "0.4"
 # 0.13.0 carries the LIFO run-queue starvation fix (co-resident natives lost
 # dispatch pushes under load) on top of 0.12.0's `Scheduler::spawn_link_closure`.
-beamr = { version = "0.13.0", features = ["json"] }
+# `encode` is the BC-1 `.beam` writer feature; it is only meaningful under the
+# capstone-only [patch.crates-io] path override below (D-BC4/D-BC5).
+beamr = { version = "0.13.0", features = ["json", "encode"] }
 haematite = "0.4.1"
 liminal = { package = "liminal-rs", version = "0.2.3" }
 liminal-sdk = "0.2.3"
@@ -97,3 +99,10 @@ prometheus = "0.14.0"
 base64 = "0.22.1"
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+
+# ── AWL BC-1 CAPSTONE ONLY — NEVER MERGES (D-BC4 / D-BC5) ────────────────────
+# The capstone evidence gate path-deps beamr at the BC-1 encode worktree so the
+# `encode` feature (the `.beam` writer) is available to the capstone tests.
+# Path patches live in worktrees only; aion main moves to beamr 0.14.0 at BC-5.
+[patch.crates-io]
+beamr = { path = "/Users/tom/Developer/ablative/beamr/.yggdrasil-worktrees/awl-bc1-encode/crates/beamr" }
