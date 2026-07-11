@@ -278,3 +278,17 @@ until then the boundary must be VISIBLE at authoring time.
 totality proving, wait-without-timeout binding plain readable T (F15's
 contrast case), child composition, retry backoff form, two-step compensation
 — all first-try. F7 partially dissolved (no wrapper needed for lists).
+
+### F27 — Emitter bug (FIXED in discovery session): invalid Gleam grouping for nested boolean expressions
+Found building the cargo_gates worker: the emitter parenthesized nested
+boolean/predicate expressions as `(a && b)` — not valid Gleam (parens are
+call/tuple syntax; Gleam groups with blocks). cargo_gates' verdict expression
+produced `case ((...))` and failed gleam build. THE THIRD WALL: check-green →
+emit-green → GLEAM-BUILD-RED — the failure mode F26's amber channel cannot
+see, and exactly the "no diagnostic points at code the author didn't write"
+wound AWL-UX anti-goal 4 names. Fixed at the root (emitter/exprs.rs block
+grouping) + regression in the same session; committed module regenerated
+through the corrected emitter. Landed with the cargo-gates merge. Dissolves
+at #240 with the rest of the stopgap class; until then it argues for a
+gleam-build smoke in the facade's deploys-green path eventually (P3 material,
+noted, not committed).
