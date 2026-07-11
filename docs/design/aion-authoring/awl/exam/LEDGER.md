@@ -124,3 +124,36 @@ semantics-ruling-plus-enforcement unit, then F10/F13 pack edits, then the
 advisory-backlog items (F6 keyword, F7 discard, F11 retry-exhaustion, F12
 boolean composition).
 
+
+---
+
+## Fluent-author deep-surface playtest (Waffles the Terrible, 2026-07-11)
+
+NOT a blind sitting. The seventh candidate's blind sitting was voided by his
+own disclosure (he had read this ledger, the pack, and AWL-2-SPEC before the
+exam rules reached him — messages crossed; no fault). Replaced by agreement
+with a deep-surface playtest: a fluent author building a real certifying-pair
+doc-flow workflow across the surface the exam never touched (signals,
+wait/timeout flow-typing, forks, backward routing, enums, compensation,
+combinators), with honest instruments (check-run count, errors verbatim,
+confidence-before-verdict). Findings number F14+. Spec-vs-checker
+disagreements are flagged the moment they are confirmed, not reconciled by
+the author; classification is the invigilator's.
+
+### F14 — Installed CLI lagged main across the 2026-07-11 loop rulings (two spec-vs-checker flags, one root cause)
+Flagged mid-playtest per the disagreement boundary, before the DONE pack.
+Two probes passed the shipped checker where AWL-2-SPEC §loop requires
+refusal: (a) a loop-carrying step with zero outcome clauses checked "ok"
+(R1 — silent-exhaustion shape), (b) a bare `route` statement inside a loop
+body checked "ok" (R3). INVIGILATOR CLASSIFICATION: **toolchain-distribution
+gap** — a NEW finding class. Neither the spec nor the checker is wrong at
+source: enforcement (7d1fcc8b) and spec amendment (814f279d) landed together
+on main at 06:06–06:07 +1000; the installed ~/.cargo/bin/aion had been built
+at 05:48, eighteen minutes earlier, and nothing reinstalls the CLI when main
+moves. Verified: both probes REFUSED at HEAD with the ruled spans/messages
+(loop 15:3, route 19:5); fresh binary installed 2026-07-11 ~11:2xZ, both
+refusals reproduce against ~/.cargo/bin/aion. Residual action: the spec of
+record and the installed toolchain need a freshness guard (same class as the
+ops-console embed-by-default CI guard) — an author following the documented
+path must not be able to certify against a checker that silently disagrees
+with the spec. Both probe files preserved in the playtest pack.
