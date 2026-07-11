@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AWL exam turn-2 feedback",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "first_impression",
+    "confusions",
+    "missing_from_docs",
+    "missing_from_language",
+    "error_messages",
+    "would_change",
+    "confidence_before_check",
+    "summary"
+  ],
+  "properties": {
+    "first_impression": {
+      "type": "string",
+      "description": "One or two sentences: what the language felt like to write, before any grading context."
+    },
+    "confusions": {
+      "type": "array",
+      "description": "Every point where you were unsure what the language wanted. Empty array if none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "where", "resolved_how"],
+        "properties": {
+          "what": { "type": "string", "description": "What was confusing." },
+          "where": { "type": "string", "description": "Which construct or line of your file." },
+          "resolved_how": { "type": "string", "description": "How you decided what to write (guessed, inferred from example, pack sentence, gave up)." }
+        }
+      }
+    },
+    "missing_from_docs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Things you reached for in the candidate pack and did not find. Empty array if none."
+    },
+    "missing_from_language": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Things you wanted to express and the language seemed to have no way to say. Empty array if none."
+    },
+    "error_messages": {
+      "type": "array",
+      "description": "Each checker error you were shown, and whether it told you what to do. Empty array if the check passed first try.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["message_gist", "helpful", "what_would_have_helped"],
+        "properties": {
+          "message_gist": { "type": "string" },
+          "helpful": { "type": "boolean" },
+          "what_would_have_helped": { "type": "string", "description": "Empty string if it was already good." }
+        }
+      }
+    },
+    "would_change": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Concrete changes you would make to the language or docs, most important first. Empty array if none."
+    },
+    "confidence_before_check": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Before seeing the checker's verdict: how confident were you the file would pass?"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Three sentences max: overall experience."
+    }
+  }
+}
