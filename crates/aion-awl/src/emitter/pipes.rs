@@ -230,7 +230,6 @@ fn pipe_action_stage(
                 ),
             ));
         };
-        emitter.flags.uses_child = true;
         let param_ty = type_ref_to_g(&param.ty);
         let to_json = emitter.to_json_fn(&param_ty);
         let arg = wrap_optional(emitter, current.to_owned(), current_ty, &param_ty);

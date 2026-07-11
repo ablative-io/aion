@@ -26,7 +26,6 @@ pub(super) struct OutcomeInfo {
 /// sections read them afterwards.
 #[derive(Debug, Default, Clone)]
 pub(super) struct Flags {
-    pub(super) uses_child: bool,
     pub(super) uses_list_module: bool,
     /// `gleam/<module>` comparator imports a `sort` stage needs.
     pub(super) compare_modules: std::collections::BTreeSet<&'static str>,

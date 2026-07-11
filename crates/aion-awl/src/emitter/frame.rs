@@ -38,7 +38,9 @@ pub(super) fn header(emitter: &mut Emitter<'_>) {
         emitter.line("import gleam/int");
     }
     emitter.line("import gleam/json");
-    emitter.line("import gleam/list");
+    if emitter.flags.uses_list_module {
+        emitter.line("import gleam/list");
+    }
     emitter.line("import gleam/option.{type Option, None, Some}");
     emitter.line("import gleam/result");
     if emitter.flags.compare_modules.contains("string") {

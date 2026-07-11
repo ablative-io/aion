@@ -12,7 +12,6 @@ import aion/workflow
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 

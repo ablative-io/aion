@@ -164,7 +164,6 @@ fn child_spawn_args(
     scope: &Scope,
     prelude: &mut Vec<String>,
 ) -> Result<String, EmitError> {
-    emitter.flags.uses_child = true;
     let args = ordered_args(&call.args, &child.params, call.span, &call.name)?;
     let mut fields = Vec::new();
     for (arg, param_ty) in args {
