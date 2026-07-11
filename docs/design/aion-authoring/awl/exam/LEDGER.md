@@ -48,3 +48,79 @@ bug / model gap → issue or fix reference)
   Either reading makes one of the two declarations a lie. Action: language
   ruling (reject, or define precedence + warn) → AWL advisory backlog
   alongside the retry-semantics ruling.
+
+### Turn-2 synthesis (all six candidates, mined 2026-07-11)
+
+Confidence before check: opus 0.55, sonnet 0.60, haiku 0.40, sol-medium 0.82,
+sol-high 0.86, sol-xhigh 0.84. Recurring items across BOTH gene pools carry the
+strongest signal. Full synthesis + per-candidate envelopes retained in the
+sitting scratch; findings below numbered F3+ with INVIGILATOR ANNOTATIONS where
+the candidates' classification is corrected by knowledge of the real language.
+
+### F3 — Pack has only one worked example, and it is a single linear step
+Docs gap (pack). Signal: 6/6, unanimous, both pools. All six asked for a second
+example exercising branching + a routed-to step + a cross-step binding — the
+exact shape the task requires. Action: add a ~12-line second example (two+
+steps, conditional outcome, route-to-step, binding used in routed step). This
+one fix dissolves F4/F5/F6/F8/F9.
+
+### F4 — `after` vs `route <step>` relationship undocumented
+Docs gap, tied to F2. Signal: 5/6, both pools. Nobody could tell if `after` is
+required, redundant, or forbidden on a routed-to step — and per F2 the checker
+accepts both, so wrong guesses are never corrected. Action: decide the intended
+semantics (F2 ruling), then one doc sentence + checker enforcement together.
+
+### F5 — "visible in all later steps" ambiguous once steps form a routing graph
+Docs gap. Signal: 6/6. Candidates guessed whether "later" means text order or
+reachability. Action: restate binding scope in control-flow terms.
+
+### F6 — `outcome` keyword overloaded (terminal vs step-local branch labels)
+Language-surface gap. Signal: 4/6, both pools. Candidates paused over whether
+step-local `outcome x: when ...` labels are terminal outcomes or local labels.
+Action: one distinguishing doc sentence now; consider a distinct keyword
+(`branch`/`case`) as an AWL advisory-backlog item.
+
+### F7 — No documented way to discard an action result
+Language + docs gap. Signal: 3/6 (all norns); xhigh INVENTED wrapper record
+types solely to give side-effect actions a return. Action: document that unused
+bindings are legal; consider a discard/void form in the advisory backlog.
+
+### F8 — No compact grammar/syntax reference in the pack
+Docs gap. Signal: 5/6. Action: ~10-line syntax reference block within the
+one-page budget.
+
+### F9 — Pack shows no example checker diagnostic
+Docs gap. Signal: 4/6. Action: one failing snippet + its diagnostic + the fix,
+in the pack. (Sharper given F1.)
+
+### F10 — Intro promises "loop iteration" durability; no loop is shown
+INVIGILATOR CORRECTION: candidates classified this as a false promise / missing
+construct — AWL HAS loops (`loop ... until ... max`, see dev_brief.awl); the
+pack references a construct it never teaches. Reclassified: pack wording bug.
+Action: either drop "loop iteration" from the intro or add "(loops exist,
+out of scope for this task)".
+
+### F11 — What happens when retries are exhausted?
+Genuine language-semantics question (opus). Ties DIRECTLY to the pre-existing
+retry-semantics advisory ruling (retry N = N total attempts? backoff?) already
+in the AWL backlog. Action: fold into that ruling; document exhaustion
+behavior ("route failure? which outcome?") as part of it.
+
+### F12 — Conditions look limited to `== <literal>`
+INVIGILATOR CORRECTION: richer conditions exist in the corpus (`is empty`,
+`==` on expressions); the pack shows only one comparison. Part docs gap, part
+real question (no `and`/`or` shown anywhere — confirm what the grammar
+actually admits and document the boundary). Action: condition grammar line in
+the F8 reference block; boolean-composition question to the advisory backlog.
+
+### F13 — `node shell` unexplained; candidates cargo-culted it
+Docs gap. Signal: 2/6 reported it, 6/6 DID it (every candidate copied `node
+shell` onto actions that needed only timeout/retry). Action: one sentence on
+what `node` selects + that each config field is optional — or remove `node`
+from the pack's example config line entirely (minimal-canonical principle).
+
+**Priority: F3 first** (collapses five findings), then F2+F4 as one
+semantics-ruling-plus-enforcement unit, then F10/F13 pack edits, then the
+advisory-backlog items (F6 keyword, F7 discard, F11 retry-exhaustion, F12
+boolean composition).
+
