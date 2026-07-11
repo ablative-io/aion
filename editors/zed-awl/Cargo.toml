@@ -1,0 +1,15 @@
+[package]
+name = "zed-awl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+repository = "https://github.com/ablative-io/aion"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"
+
+[workspace]
