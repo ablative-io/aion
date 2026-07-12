@@ -1,0 +1,869 @@
+# AWL-BC-IR — the ratified MIR design (D-AOT2 contract document)
+
+Status: **RATIFIED** — BC-2 design of record, 2026-07-12. Produced by the
+plan's BC-2 method row (competing designs + judge panel): three competing MIR
+designs (`template-first`, `typed-flow-first`, `continuation-first`) were
+adjudicated by a three-judge panel. **`template-first` won (2 of 3 first-place
+rankings)** and is the base of this document; every judge-recommended graft is
+either applied or explicitly rejected with a reason in §1.
+
+Parent: `AWL-BC-BUILD-PLAN.md` (decisions 1–13 honored without exception:
+D-BC1 rev-2-only input, D-BC3 parity-first refusals, D-AOT1 sidecars,
+D-AOT2 this document, decision 9 hoist-only codec templates, decision 12 no
+`int_code_end` / no `module_info`). Worked codec reference:
+`AWL-BC-CODEC-DESIGN.md` (§2 `Desc` shape reused as pure lowering-time data).
+Evidence base: `AWL-BC-1-CAPSTONE-EVIDENCE.md` (observed entry ABI
+`run/1 → {ok, ResultBinary}`, obs. 8; instruction alphabet of Deliverable B;
+writer-contract observations 2–7).
+
+Operator amendment honored (2026-07-12): **beamr 0.14.0 IS PUBLISHED and
+includes `loader/encode`.** BC-3 consumes `beamr = "0.14.0"` with feature
+`encode` from crates.io — no path-dep anywhere; D-BC4's worktree-only patch
+discipline is satisfied vacuously, and the plan's BC-5 "beamr 0.14.0 release"
+step is already done.
+
+Maintenance rule (D-AOT2): any BC-3/BC-4/BC-5 change touching the node set
+(§2–§3), a lowering rule (§4), a capability entry (§6), a contract row (§7),
+or a decision-register entry (§8) lands **in the same commit** as the code
+change, enforced at panel review. MIR stays private to `aion-awl` (ratified
+decision 3).
+
+---
+
+## 1. Synthesis decisions
+
+The winning `template-first` design is amended as follows. "S" entries are
+applied grafts; "X" entries are judge-suggested elements deliberately
+rejected. Each cites its origin design.
+
+### Applied
+
+- **S1 — `verify(&MirModule)` pass** (from typed-flow-first; judges 1+2).
+  A verifier runs inside every MIR golden test: capability closure (every
+  callee is a `RuntimeFn` variant), local-call arity checks against the
+  function list, single-def variable discipline, tail-position invariants
+  (every `Block` ends in exactly one `Tail`; no statement follows a
+  terminator), and per-op result-type cross-checks against the rev-2
+  `TypeEnv` at the op's source span. Template-first as submitted had no
+  verifier — capability/arity errors would have surfaced only at BC-3.
+- **S2 — sidecar as a projection of the MIR** (from typed-flow-first; all
+  three judges). The `.gleam_types` bytes are `project_sidecar(&MirModule)`,
+  a pure fold over the finished function list — the `sidecar: Vec<SidecarSig>`
+  field is **removed** from `MirModule`. One source, one ratchet, two
+  artifacts: a sidecar regression is definitionally a MIR regression. The
+  `MirType→TypeDescriptor`-style mapping is **total** (every `TyDesc` arm
+  maps, §5), including `run/1`'s `Dynamic` parameter and type parameters on
+  `Custom` descriptors.
+- **S3 — float literals carry the source lexeme** (from typed-flow-first;
+  judges 1+2). `MirLiteral::Float(f64)` becomes `Float { lexeme: String }` —
+  the emitter already carries float literals as source lexemes
+  (`exprs.rs:151`, `Expr::Float { value } → value.clone()`), and byte-stable
+  `LitT` floats require pinning the parse. A BC-4 fixture row asserts the
+  emitted float bytes equal the reference's parse of the same lexeme.
+- **S4 — value-position booleans completed** (from typed-flow-first; judge 1
+  defect 1). The submitted sketch's prose/enum mismatch is closed: the `Stmt`
+  set gains `BoolOp { dst, op: And|Or, lhs, rhs }` and `Not { dst, src }`, so
+  `flag: !x` and `a && b` in argument/record-field position (the
+  `render_arg_for` path, `exprs.rs:190-267`) are expressible. Test-position
+  short-circuiting remains nested `If` tails; value-position `&&`/`||` lower
+  as a test + `move true/false` materialization burst (no new imports).
+- **S5 — union-decoder zero value is op-built, never a `LitT` claim** (from
+  typed-flow-first; judges 1+2 defect). The submitted "the zero is pure data
+  stored as `LitT`" claim was wrong for `zero_expr`'s
+  `duration.milliseconds(0)` arm (`types.rs:171` — not literal-expressible).
+  Ratified rule: the decoder-failure zero is built by **ordinary MIR ops**
+  inside the expanded decoder function's fallback arm (a `CallRt DurationMs`
+  for the duration arm, `RecordNew`/`Bind` for the rest). The
+  recursive-required refusal (`types.rs:174-183`) is preserved verbatim.
+  BC-3 may pool a fully-constant zero into `LitT` as an encoding choice; the
+  MIR never asserts poolability.
+- **S6 — `FnOrigin` provenance on every MIR function** (from
+  typed-flow-first; judges 1+3). Richer than name-scheme-only identity:
+  `Run | Definition | Execute | Region | SubStep | Loop | ActivityWrapper |
+  SignalRef | CodecTemplate{kind, params} | LiftedClosure{host, index} |
+  DeadBody | ChildWitness`. Feeds goldens, sidecar ordering, and BC-3 review.
+- **S7 — the `nil_codec` output-codec fallback stated as a rule** (from
+  typed-flow-first; judge 1 defect 4 / graft 6). When the workflow has no
+  success outcome, T-DEF/T-RUN reference `awlc.nil_codec` as the output codec
+  (`frame.rs:157-163`, verified). `CodecRef::SdkNil` existed in the sketch;
+  the rule is now explicit and is contract row IR-21. The T-DEF recipe is
+  also corrected: **3 codec calls + the workflow-name binary** (name, input
+  codec, output codec, error codec, execute — `frame.rs:176-186`), not "4
+  codec calls".
+- **S8 — codec trios expand into ordinary MIR functions at LOWER time**
+  (judge 2's decisive graft, from typed-flow-first; supported by judge 3 and
+  by continuation-first D6). The four `CodecTrio` template shapes remain
+  template *shapes* (decision 9 stands — the recipes of §3.6 are stamped from
+  `TypeEnv`), but they are stamped **during `lower`**, producing ordinary
+  `FlowFn`s carrying `FnOrigin::CodecTemplate { kind, params }` provenance —
+  where `params` retains the descriptor-style template parameters
+  (`WireDesc` field/arm specs per `AWL-BC-CODEC-DESIGN.md` §2), so a post-BC
+  descriptor-engine revisit swaps codec bodies without touching `lower`.
+  Consequences: every decoder-continuation lambda exists as a `Lifted` flow
+  function with an explicit capture list **before BC-3 runs**; the complete
+  FunT population and all capture chains are golden-visible; `select` never
+  synthesizes a function. This deletes template-first's one select-time
+  function-synthesis site (its worst defect under the selectability lens)
+  while keeping the recipes exactly as specified. The former
+  `--expand-templates` dump mode is the **default and only** golden form.
+  The **shells stay opaque template nodes** (T-DEF, T-RUN, T-EXEC, T-ACT,
+  T-ACTRAW, T-SIG, T-DEAD, T-WIT): they are name-substitution-only, mint at
+  most one 0-free `make_fun2`, and are safe to expand in `select` from fixed
+  recipes.
+- **S9 — closure sidecar arity = physical BEAM arity** (from
+  typed-flow-first risk 7; judges 1+3). Lifted-closure sidecar rows record
+  declared params + appended captures — the FunT arity the JIT actually sees;
+  the source arity is recoverable from the `Fn` descriptor at the
+  `MakeClosure` site. Promoted from a risk note to contract row IR-22.
+- **S10 — `Custom` descriptor module-string spellings pinned before goldens
+  freeze** (from typed-flow-first risk 2; judge 3). The exact module-string
+  vocabulary (`gleam/option`, `gleam/json`, `gleam/dynamic`, `aion/duration`,
+  SDK modules) is pinned against the `gleam-types` extractor's own output for
+  compiled `aion_flow` as a BC-2 action, and is contract row IR-23.
+- **S11 — effect-schedule-first golden printing** (from continuation-first;
+  judges 1+2). Every MIR golden prints, as its FIRST section, the park-point
+  schedule: the durable `CallRt` ops (`aion@workflow` define/run/all/map/
+  spawn/spawn_and_wait/receive/with_timeout/sleep) in order with their
+  wire-visible arguments. Trail-affecting diffs lead every review; the BC-4
+  oracle's spine is visible before instruction selection exists.
+- **S12 — the adjudicable-decision register** (from continuation-first;
+  judge 1). All deliberate deviations and their pre-authorized fallbacks live
+  in one table (§8): R1 flattened `TryBind` (fallback: `gleam@result:try/2` +
+  continuation), R2 `Concat` via `gleam@string:append/2` (fallback:
+  bs-op binary construction, only if corpus-proven), R3 `decode.string`
+  Decoder-constant materialization pinned by disassembling the
+  reference-compiled corpus during BC-3 — never guessed (all three designs
+  independently flagged this; ratified once here), R4 Line chunk from MIR
+  spans (cut without ceremony if it drags BC-3).
+- **S13 — `degraded_parallel` metadata marker** (from continuation-first;
+  judges 1+2). Regions containing a multi-statement dependency-parallel layer
+  lowered in written order (`steps.rs:169-180`) carry a
+  `degraded_parallel: true` marker, printed in goldens — the stopgap
+  degradation is visible in MIR, not only as a comment in the Gleam twin.
+- **S14 — `live_after` annotations, printed in goldens** (from
+  continuation-first; judges 1+2). BC-2 computes backward liveness per
+  function and annotates every `CallRt`/`CallLocal`/`CallClosure`/`TryBind`
+  op with the set of vars live across it — the y-spill contract handed to
+  BC-3 as data, not a computation. Printed in goldens, so regalloc-relevant
+  changes surface as visible MIR diffs instead of silent BC-3 behavior
+  shifts. Register allocation itself stays in BC-3.
+- **S15 — the "notably absent" negative-space section** (from
+  continuation-first; judge 3). The capability manifest (§6) enumerates what
+  can NEVER appear, not just what may.
+- **S16 — durable-operation classification as derived metadata** (from
+  continuation-first's EffectKind angle; judge 3 graft 5). The golden printer
+  (and an exported per-module summary for the beamr AOT track) classifies
+  `CallRt` ops into durable families — timers / activities / children /
+  signals used — giving a semantic capability manifest at park-point
+  granularity layered above the flat import list. This is **derived** from
+  the `RuntimeFn` callee, never a bespoke MIR node vocabulary (see X6).
+- **S17 — `If` and `SelectEnum` promoted from `Stmt` to `Tail`** (from
+  continuation-first's terminator discipline; judge 2 graft 6). In every
+  source shape these constructs are terminal (outcome cascades end in routes,
+  loop bound checks end in exit/recurse, enum-total cases end in routes), so
+  the type system now enforces that control constructs end blocks — the
+  unreachable-trailing-statement ambiguity is unrepresentable. No lowering
+  changes. `WaitTimeoutCase` and `Attempt` remain fused value-producing
+  statements: their interior arms merge back into the continuation by fixed
+  recipe, which is exactly the emitter's shape (`stmts.rs:292-313`,
+  `steps.rs:301-354`).
+- **S18 — ImpT determinism stated as a contract row** (template-first's own
+  rule, promoted per judge 3 graft 3): the emitted ImpT chunk is exactly the
+  used `RuntimeFn` subset, in **first-use order** (row IR-24).
+
+### Rejected
+
+- **X1 — continuation-first's sidecar "safe-by-omission" rule.** REJECTED
+  (all three judges concur). Omitting closures and dropping `run/1` entirely
+  is silent erasure in the one artifact whose reason to exist is no-erasure
+  (D-AOT1); `run/1`'s `Dynamic` parameter is representable
+  (`CustomType{gleam/dynamic, Dynamic}` — typed-flow-first proved the mapping
+  against the verified format). Every function gets a row (§5).
+- **X2 — typed-flow-first's basic-block CFG with typed block parameters
+  (SSA/phi).** REJECTED (judge 2 defect 2). The reference emitter only ever
+  produces continuation-nested trees; a general CFG admits join shapes the
+  reference never generates, forcing BC-3 to build a general linearizer with
+  no corpus twin — or assert tree-ness, in which case the generality bought
+  nothing. Control flow stays a **tree per function**; `jump`/label emission
+  is mechanical.
+- **X3 — typed-flow-first's full interior typing (TypeTable interning, a
+  `TypeId` on every value edge).** REJECTED as MIR representation. The
+  fidelity D-AOT1 needs is delivered without carrying per-edge type ids
+  through `lower`/print: function signatures carry total `TyDesc`s (the
+  sidecar projection source, S2), and `verify` cross-checks op result types
+  against the `TypeEnv` at source spans (S1). Full interior typing is real
+  machinery purchased for zero selectability benefit (judge 2 defect 3); if
+  `TypedRegister.type_index` emission is ever wanted, the signature layer +
+  `TypeEnv` still contain everything needed to add it additively.
+- **X4 — typed-flow-first's `Concat` = binary-construction (bs-op family)
+  as the primary choice.** REJECTED as unproven: no corpus evidence yet that
+  beamr's encoder/validator supports that family for our shape, and
+  `gleam@string:append/2` is trail-identical and trivially safe. Kept as the
+  registered fallback/alternative in R2 — a flip changes a marked row, never
+  introduces a surprise import.
+- **X5 — continuation-first's `OutcomeFail`-as-terminator.** REJECTED
+  (judge 2 defect 4). Folding `json.to_string(to_json(payload))` into a
+  terminator couples value evaluation into terminator selection. Failure
+  outcomes remain ordinary `CallRt` ops (`to_json`, `JToString`) followed by
+  `RecordNew` + `Return` — the one place continuation-first's own Op/
+  Terminator boundary bent.
+- **X6 — continuation-first's bespoke `EffectKind` node vocabulary** (12
+  variants with bespoke structs). REJECTED as MIR representation: the
+  largest bespoke surface of the three designs, with drift risk concentrated
+  where templates and Effects meet (judge 1 defect 4). Its genuinely valuable
+  semantic-capability angle is adopted as derived classification instead
+  (S16), and its `live_after` discipline as S14.
+- **X7 — typed-flow-first's `UnconsN` multi-result op.** REJECTED: "occupies
+  count consecutive ids" breaks one-op-one-def discipline (judge 2 defect 4);
+  `AssertList { binds, list }` already covers the join destructure as a
+  single pinned burst.
+
+---
+
+## 2. The MIR
+
+### 2.1 Position and central claim (ratified from template-first)
+
+The rev-2 Gleam emitter (`crates/aion-awl/src/emitter/`) is a closed template
+expander; the MIR is the catalog itself, reified:
+
+- **Template shells** (T-DEF, T-RUN, T-EXEC, T-ACT, T-ACTRAW, T-SIG, T-DEAD,
+  T-WIT) are single MIR nodes parameterized by names, atoms, and type shapes;
+  BC-3 expands each from a fixed recipe (name substitution only — no lambda
+  minting beyond a 0-free `make_fun2`).
+- **Codec trios** are template *shapes* stamped **at lower time** into
+  ordinary flow functions with `FnOrigin::CodecTemplate` provenance (S8).
+- **Flow functions** (execute, regions, substeps, loops, lifted closures,
+  expanded trio functions) have bodies drawn from a closed statement-op set
+  where each op is one known instruction burst with no interior
+  register-pressure decisions: single-def `Var`s, every op defines ≤1 fresh
+  var (mirroring the emitter's `awl_piped_N`/prelude discipline).
+- **No registers, no labels in MIR.** BC-3 owns x/y assignment,
+  `allocate`/`deallocate`/`trim` frames, y-spill across calls (seeded by the
+  S14 `live_after` sets), and label resolution.
+- **Control flow is a tree per function, never a CFG** (X2). Nested blocks
+  each end in a `Tail`.
+
+Selectability grounding: the BC-1 capstone's hand-built module proved the
+target instruction alphabet (`Label`/`FuncInfo`, `Allocate`, `Move`,
+`CallExt`, `IsTaggedTuple`, `Deallocate`, `Return`) loads through all five
+validation layers, survives the content-hash rename machinery, and produces a
+trail identical to its Gleam twin (`AWL-BC-1-CAPSTONE-EVIDENCE.md`,
+Deliverable B). Every other named instruction appears in beamr's typed
+`Instruction` set (`loader/decode/instruction.rs`) and in the 44-module
+corpus the capstone round-tripped without exclusions (Deliverable A), and is
+encodable per `loader/encode/opcodes.rs`.
+
+### 2.2 The one deliberate shape deviation: flattened `result.try` (R1)
+
+`use x <- result.try(...)` sites lower to first-class `TryBind`, selected as
+the flattened form:
+
+```
+call_ext <the fallible op>            ; then the error mapper call_ext
+is_tagged_tuple Lfail, x0, 2, 'ok'
+get_tuple_element x0, 1 -> <dst>
+... continue in the same frame ...
+Lfail:  ; x0 already holds {error, E}
+deallocate N; return
+```
+
+Exactly the capstone Deliverable B shape — proven loadable, validate-clean,
+engine-run, trail-identical. Error-propagation semantics are identical
+(`result.try` returns the `{error, E}` term unchanged; so does the fail
+branch). Buys: no closure explosion (a region with 8 statements emits 0
+lambdas instead of 8), no environment-tuple churn, mechanically verifiable
+frames. D-BC3 pins trails, not instruction bytes (capstone obs. 2: the
+writer's bytes are never erlc's bytes). Fallback registered as R1 (§8).
+
+### 2.3 Module
+
+`MirModule` = logical name (snake of the workflow name), source file name,
+export list (**exactly** `run/1`, `definition/0`, `execute/1`; no
+`module_info` — decision 12 / capstone obs. 4), interned atom table, literal
+pool (beamr `Literal` shapes only), the function list, and the `TypeShape`
+registry. **No sidecar field** — the sidecar is a projection (S2).
+
+Functions are `Templated(TemplateFn)` (shells only, post-S8) or
+`Flow(FlowFn)`.
+
+### 2.4 Template shells (BC-3-expanded; name substitution only)
+
+| Shape | Instantiates | Gleam reference | BC-3 recipe |
+|---|---|---|---|
+| **T-DEF** `definition/0` | workflow name, codec refs | `frame.rs:165-189` | `make_fun2`(execute, 0 free) + workflow-name binary + **3 codec calls** (input, output-or-`SdkNil`, `awl_error.codec`) + `call_ext_last aion@workflow:define/5` (S7 correction) |
+| **T-RUN** `run/1` | codec refs | `frame.rs:191-203` | `make_fun2`(execute) + 2 codec calls (input, output-or-`SdkNil`) + `call_ext_last aion@awl@runtime:run/4` |
+| **T-EXEC** `execute/1` | input field list, entry region + params | `steps.rs:45-83` | `get_tuple_element` per input (element i+1), `call_only step_<entry>/n` |
+| **T-ACT** `<action>_activity/n` | action name, input record, codec refs | `wrappers.rs:11-93` | `put_tuple2` input record (bare atom if zero-field), codec calls, `make_fun2`(T-DEAD), `call_ext_last aion@activity:new/5` |
+| **T-ACTRAW** `<action>_activity_raw/n` | same + pre-encode | `wrappers.rs:100-149` | as T-ACT plus: `call` input codec, `get_tuple_element` its `encode` field, `call_fun` on the record — the pinned `Codec(a)`-is-a-record-of-funs dependency (row IR-11) |
+| **T-SIG** `<signal>_signal/0` | signal name, payload codec | `wrappers.rs:151-168` | binary literal + codec call + `call_ext_last aion@signal:new/2` |
+| **T-DEAD** dead-body lambda | message literal | `wrappers.rs:79-81` | lifted fn: `call_ext aion@error:terminal/1`, `put_tuple2 {error,_}`, `return`; FunT entry, 0 free |
+| **T-WIT** child witness | fixed | `stmts.rs:18-19` | lifted fn: `put_tuple2 {awl_child_failed, <bin>}`, `put_tuple2 {error,_}`, `return`; FunT, 0 free |
+
+`CodecTrio` is **no longer a function node** — see §3.
+
+### 2.5 Flow functions and the statement-op set
+
+`FlowFn` = `FnOrigin` (S6), name, params (`Var`s from `Plan.params` — the
+liveness fixed-point output; or declared args + appended captures for
+`Lifted`), param/return `TyDesc`s (the sidecar projection source), body
+(`Block`), span, `degraded_parallel` marker (S13).
+
+The complete op set — each row one instruction burst, each grounded:
+
+| Op | Lowers (source) | Instruction burst |
+|---|---|---|
+| `Bind{dst,value}` | literals, refs, input prelude (`exprs.rs:142-214`) | `move` of var/literal/atom/int |
+| `FieldGet{dst,base,index}` | `.field` access (`pipes.rs:169`, `exprs.rs:170-173`) | `get_tuple_element base, index+1` |
+| `RecordNew{dst,tag,args}` | record construction (`exprs.rs:291-341`), Some-wrap (`pipes.rs:257-270`), outcome payloads (`outcomes.rs:114-208`) | `put_tuple2`; zero-field ⇒ `move` of the bare tag atom |
+| `ListNew{dst,items}` | list literals, `workflow.all` arg lists | `put_list` chain from nil, or `LitT` when fully constant |
+| `CallRt{dst,callee,args}` | every SDK/stdlib call (§6) | `call_ext` |
+| `CallLocal{dst,fn,args}` | wrapper/codec/loop-fn invocation | `call` |
+| `CallClosure{dst,fun,args}` | T-ACTRAW encode; attempt invocation | `call_fun` (`instruction.rs:228`) |
+| `MakeClosure{dst,lifted,captures}` | §2.6 sites only | `make_fun2`/`make_fun3` + FunT entry |
+| `TryBind{dst,result}` | every `use x <- result.try(...)` site | flattened form §2.2 (capstone-proven); fallback R1 |
+| `WaitTimeoutCase{dst,receive,captures,deadline_ms}` | `wait` + timeout (`stmts.rs:292-313`) | `make_fun2` + `call_ext with_timeout/2` + nested `is_tagged_tuple` over the 4 arms building `{ok,{some,V}}`/`{ok,none}`/errors |
+| `Cmp{dst,op,lhs,rhs}` | value-position comparisons (`exprs.rs:194-267`) | `gc_bif`/test + `move true/false`; Int/Float split preserved |
+| `BoolOp{dst,op,lhs,rhs}` (S4) | value-position `&&`/`||` | test + `move true/false` materialization |
+| `Not{dst,src}` (S4) | value-position `!x` | `is_eq_exact 'false'` test + materialize |
+| `Concat{dst,lhs,rhs}` | `<>` (`exprs.rs:266`) | `call_ext gleam@string:append/2` (R2) |
+| `Increment{dst,src}` | loop counter (`loops.rs:88`) | `gc_bif2 erlang:'+'` small-int |
+| `AssertList{binds,list}` | `let assert [a,b] = awl_layer` (`steps.rs:280`, `forks.rs:328,385`) | `get_list`/`get_hd`/`get_tl` + `is_nil`, fail → `badmatch` (unreachable by construction, emitted valid) |
+| `AssertSome{dst,option}` | `is present` rebind (`outcomes.rs:350-373`) | `is_tagged_tuple {some,1}` + extract, fail → `badmatch` |
+| `JsonObj{dst,pairs}` | child-input assembly (`stmts.rs:160-184`, `pipes.rs:236-239`) | per pair: to_json call + `put_tuple2` pair; `put_list` chain; `call_ext gleam@json:object/1` |
+| `IndexGuard{dst,base,index,msg}` | `items[i]` prelude (`exprs.rs:174-185`) | `call_ext aion@awl@runtime:index/3` + TryBind burst |
+| `Attempt{lifted,captures,defs,on_ok,on_err}` | `on failure` (`steps.rs:301-354`, `subs.rs:65-127`) | `make_fun2` attempt closure (body = Lifted fn ending `Ok(defs-tuple)`), `call_fun`, `is_tagged_tuple {ok,2}` → destructure into `on_ok`; else `on_err` (compensation, must end in a route — refusal preserved) |
+
+`CallRt`/`CallLocal`/`CallClosure`/`TryBind` ops carry the computed
+`live_after` set (S14). Every op carries a `Span` (→ Line chunk, R4).
+
+### 2.6 The closed closure inventory
+
+`MakeClosure` appears ONLY where an SDK/stdlib API takes a fun:
+
+1. `workflow.map` item body (`forks.rs:256-261`)
+2. `list.try_fold` folders — sequential/child forks (`forks.rs:154-246`)
+3. `with_timeout` receive body (`stmts.rs:296`)
+4. combinator accessors/comparators — `list.filter/map/sort` (`pipes.rs:93-147`)
+5. `on failure` attempt closure (`steps.rs:316`)
+6. T-DEAD dead body, T-WIT witness (0 free)
+7. `execute` passed as a value in T-DEF/T-RUN
+8. expanded-trio internals: the `json_codec` encode-fun ref and decoder
+   continuations — now ordinary `Lifted` FlowFns per S8
+
+Nothing else. This list is the FunT chunk's entire population, and post-S8
+it is fully golden-visible.
+
+### 2.7 Tails
+
+`Return(value)` | `TailLocal{fn,args}` (→ `call_last`/`call_only`: routes,
+region fall-through, loop recursion) | `TailRt{callee,args}` (→
+`call_ext_last`: shells) | **`If{test,then,else}`** and
+**`SelectEnum{subject,arms}`** (promoted per S17; each arm/branch is a
+`Block` ending in a `Tail`; enum-total `select_val` fail label points at a
+valid `badmatch` block). Outcome returns are `RecordNew` compositions then
+`Return`: success `{ok, {Ctor, payload}}`; failure `{error,
+{awl_outcome_failure, name_bin, json_string}}` with the
+`json.to_string(to_json(...))` calls as ordinary `CallRt` ops before it (X5).
+
+---
+
+## 3. Codec-trio template shapes — stamped at lower time (decision 9 + S8)
+
+The four shapes, their stamping recipes (grounded in `codecs.rs` /
+`composites.rs` and the generated reference `awl_hello.gleam:109-213`); all
+output is ordinary `FlowFn`s with `FnOrigin::CodecTemplate{kind, params}`:
+
+- **Record trio** (`codecs.rs:149-266`) — `<stem>_codec/0`:
+  `MakeClosure(<stem>_to_json ref, 0 free)` + `CallLocal <stem>_decoder/0` +
+  `TailRt aion@codec:json_codec/2`. `to_json/1`: per field `FieldGet` +
+  leaf/composite to_json + `RecordNew` pair + `ListNew`; optional fields
+  contribute `[pair]`/`[]` arms and the list flows through
+  `CallRt gleam@list:flatten/1` (`codecs.rs:180-209`) — D4 preserved
+  mechanism-for-mechanism, byte order = declaration order. `decoder/0`: the
+  decode API is genuinely continuation-taking, so n nested `Lifted` fns,
+  lambda k capturing fields 1..k-1, each `CallRt decode:field/3` (or
+  `optional_field/4` with `none` default + `decode.map(_, Some)` per
+  `codecs.rs:236-249`), terminal `decode.success(RecordNew)`. Bounded:
+  lambdas-per-module = Σ record fields + 2·unions + enums.
+- **Enum trio** (`codecs.rs:268-306`) — to_json: `SelectEnum` tail over
+  variant atoms → binary literals → `CallRt gleam@json:string/1`; decoder:
+  `decode.then(decode.string)` with a lifted fn doing an `is_eq_exact`
+  cascade against binary literals, arms `decode.success(atom)`, fallback
+  `decode.failure(first_variant, name_bin)`.
+- **Union trio** (`codecs.rs:70-146`) — to_json: `SelectEnum` on ctor atom →
+  `RecordNew` pairs + `json.object`; decoder: outer
+  `decode.field("outcome", decode.string)` continuation with string cascade,
+  per-arm `decode.field("payload", <payload_decoder>)` continuation,
+  fallback `decode.failure(<zero>, union_name)` — the zero built by ordinary
+  ops per S5 (covers the `duration.milliseconds(0)` arm of `zero_expr`);
+  recursive-required refusal preserved (codec design §3.3).
+- **Composite trio** (`composites.rs:16-101`) — list: `json.array/2` +
+  `decode.list/1`; option: `json.nullable/2` + `decode.optional/1`; inner
+  refs resolved exactly as `Emitter::to_json_fn`/`decoder_fn` do (leaves →
+  SDK `awlc.*`, named → module-local). Instantiation set = the same
+  wire-position reachability walk (`codecs.rs:20-68`, `composites.rs:16-51`).
+
+Template parameters reuse the `WireDesc` shape (`AWL-BC-CODEC-DESIGN.md` §2:
+leaves, list, nullable, ref) as pure Rust data — no descriptor engine ships.
+The `decode.string` Decoder-constant representation is pinned by R3, never
+guessed.
+
+---
+
+## 4. Per-§5-shape lowering rules (CheckedDocument → MIR)
+
+Lowering rule zero (D-BC1): `lower` consumes the SAME planning passes the
+Gleam emitter runs — `build_env` (`types.rs:243`), `bindings::compute`,
+`graph::plan` (union-find regions, single-entry validation, Kahn layering,
+liveness fixed-point params; `graph.rs:150-377`, `liveness.rs`). BC-2
+refactors these three passes out of `emitter/` into a shared crate-private
+`plan` module consumed by both backends — region/layer/param decisions and
+refusals CANNOT drift (the strongest parity lever; shared by both top-ranked
+designs). `lower` is total for checked documents modulo the recorded
+refusals (§4.1); any other failure is a bug, never a user-visible surface.
+
+| Canonical-model shape | MIR lowering |
+|---|---|
+| workflow + inputs | T-EXEC (input `FieldGet`s from `Plan` first-region params, incl. the non-input-param error `steps.rs:59-79`), T-DEF, T-RUN, record trio for the input record |
+| step region | one `FlowFn(Region)` per `Plan.regions[i]`, params = `Plan.region_params`, body = layers in order (`steps.rs:155-199` recursion → continuation nesting) |
+| dependency-parallel layer, all single bare same-action calls | `ListNew` of activity values + `CallRt workflow.all/1` + `TryBind` + `AssertList` (`steps.rs:235-282`) |
+| … heterogeneous single-call layer | T-ACTRAW raw twins + `workflow.all` + per-branch `CallRt awlc.decoded/3` + `TryBind` (`forks.rs:351-400`) |
+| … fuller bodies | written order (sequential), region marked `degraded_parallel` (S13); refusal-free degradation preserved (`steps.rs:169-180`) |
+| action call (`do`) | T-ACT instance + config `CallRt` pipes (`activity.retry/timeout/task_queue/node`, site > action config, task_queue always — `stmts.rs:84-104`) + `CallRt workflow.run/1` + `CallRt map_activity_error/1` + `TryBind` |
+| child call / `spawn` | `JsonObj` input + T-WIT + `CallRt spawn_and_wait/6` or `spawn/6` + `map_child_error`/`map_spawn_error` + `TryBind` (`stmts.rs:160-266`); child-config refusal preserved |
+| `wait` signal | T-SIG + `CallRt workflow.receive/1` + `map_receive_error` + `TryBind`; with timeout → `WaitTimeoutCase` (`stmts.rs:269-315`) |
+| `sleep` | `CallRt duration:milliseconds/1` + `CallRt workflow.sleep/1` + `map_timer_error` + `TryBind(_)` — the literal capstone module's body |
+| pipe chain | per stage a fresh `Var`: action stage (single-param, declaration config only), `.field` = `FieldGet`, combinator = `MakeClosure`(accessor/comparator) + `CallRt gleam@list:*` (`pipes.rs:152-179`); terminator bind/route belongs to the caller |
+| collection fork (parallel) | `MakeClosure`(item body) + `CallRt workflow.map/2` + `TryBind`; branch-prelude-indexing refusal preserved (`forks.rs:249-253`) |
+| collection fork (`sequential`) / child forks | `try_fold` folder closures + `list.reverse`; parallel children = spawn-fold then `child.await`-fold twin folds (`forks.rs:132-263`) |
+| named fork | homogeneous → typed `workflow.all`; hetero → raw twins; single → plain call; non-call branches refused (`forks.rs:269-343`) |
+| bounded loop | `FlowFn(Loop)` `<step>_loop_k`, params `(var, awl_count, awl_max, free…)` from `loop_free_names`; body then `Increment`, then `until`/bound checks as `If` **tails** (S17): exit `Return Ok(var)` or `Ok(#(var,count))`, recurse `TailLocal`; call site `CallLocal` + `TryBind` (+ tuple destructure) (`loops.rs:25-131`); unbounded/route-in-body/non-invariant-max refusals preserved |
+| substeps | `FlowFn(Sub)` per substep; sibling routes = `TailLocal`; parent-arm firing re-enters the parent frame's outcome lowering; chain end = parent outcomes inline (`subs.rs`); all `substep_split` refusals preserved (`graph.rs:73-116`) |
+| outcome clauses | enum-total → `SelectEnum` tail; else `If` cascade tail with `otherwise` terminal; guard-indexing refusal preserved; `is present` → `AssertSome` rebind (`outcomes.rs:215-373`) |
+| route | outcome return (`RecordNew`+`Return`), region tail (`TailLocal`), sibling substep tail, or parent-arm resolution — the full `emit_route` decision order (`outcomes.rs:25-110`) |
+| `on failure` | `Attempt` (defs-tuple protocol of `render_defs_tuple`, `steps.rs:360-372`); compensation route-tail requirement preserved |
+| declared/projected types | `TypeShape` entries (tag atoms via `names::snake`, arity) + one trio stamping (§3) per record/enum/union/composite reachable from a wire position |
+| keel expressions | `Bind`/`FieldGet`/`Cmp`/`BoolOp`/`Not`/`Concat`/`RecordNew`/`ListNew`/`IndexGuard` per `exprs.rs`; float lexemes retained (S3); Int/Float ordering split preserved (`exprs.rs:237-268`) |
+
+### 4.1 Refusals (D-BC3 parity, verbatim set)
+
+`lower` refuses exactly what the reference refuses, with the same spans and
+message families, via the shared `plan` module wherever the refusal lives
+there: route-targeted ∧ `after`-dependent step; routing step with
+`after`-dependents; two-entry regions; mid-chain route targets; route-away
+with outstanding parallel work; first-step-not-entry; substeps not a
+trailing block / nested substeps / substeps without parent outcomes;
+`on failure` with body-terminal route; unbounded loop; route in loop body;
+non-loop-invariant `max`; indexing in outcome guards and parallel fork
+branches; collection-fork bodies beyond one unbound call; named-fork
+branches beyond action calls; child config pinning; `zero_expr`
+required-field recursion (`graph.rs:203-346`, `steps.rs:73-116,301-311`,
+`loops.rs:137-167`, `subs.rs:77-86`, `outcomes.rs:226-231,325-331`,
+`forks.rs:48-295`, `pipes.rs:62-73`, `types.rs:174-183`). BC-4's oracle
+intersection is unchanged by construction.
+
+---
+
+## 5. `.gleam_types` sidecar strategy (D-AOT1)
+
+**The sidecar is `project_sidecar(&MirModule) -> Vec<u8>`** (S2): a pure fold
+over the finished function list through a **total** `TyDesc →
+gleam_types::TypeDescriptor` mapping, serialized by the published
+`gleam-types` crate (v0.4.3 on crates.io; magic `GLEAM_TYPES\0`, version 1,
+per-function `FunctionSignature { name, arity, param_types, return_type }` —
+`gleam-types/src/format.rs`). No document walk, no second traversal, no
+drift axis: sidecar goldens and MIR goldens share one source.
+
+- **Mapping (total — every arm maps, no erasure, X1 rejected):**
+  `Bool/Int/Float/Str/Nil` → 1:1 leaves; `List/Tuple/Result/Fn` structural;
+  `Option(t)` → `CustomType{gleam/option, Option, [t]}`; named
+  records/enums/unions → `CustomType{<this module>, Name}`; `Duration` →
+  `CustomType{aion/duration, Duration}`; `Json` →
+  `CustomType{gleam/json, Json}`; `Dynamic` →
+  `CustomType{gleam/dynamic, Dynamic}`; `Codec/Activity/SignalRef/
+  WorkflowDefinition/AwlError` → `CustomType` with their SDK module + type
+  params (the format supports parameters — `format.rs:33-37`);
+  `Unknown` → `List(Nil)` — `Unknown` arises only from empty list literals,
+  so the value IS a list; the reference's `gleam_type` renders it bare `Nil`
+  (`types.rs:116`), and the sidecar deliberately keeps the list shape (the
+  judge-adjudicated more-faithful projection; typed-flow-first's treatment).
+  Module-string spellings pinned per S10/IR-23.
+- **Coverage: every function** — exports first (export-table order), then
+  locals in canonical function order, then lifted closures (including all
+  expanded-trio functions and decoder continuations, which post-S8 are
+  ordinary functions with signatures). Example row: `run/1 :
+  (CustomType{gleam/dynamic, Dynamic}) -> Result(String,
+  CustomType{aion/awl/error, AwlError})` — the typed statement of the
+  observed entry ABI (capstone obs. 8).
+- **Closure rows use physical BEAM arity** (S9/IR-22): declared params +
+  appended captures, matching the FunT lambda the JIT sees.
+- **Determinism**: one canonical order, no timestamps, no absolute paths;
+  bytes golden-tested per fixture (a BC-2 acceptance ratchet).
+- **Handoff**: bytes land as `<module>.gleam_types` next to each `.beam`
+  (the JIT read path exists: `jit/aot.rs` reads
+  `beam_path.with_extension("gleam_types")`); archive entry +
+  `load_companion_into_cache` plumbing is BC-5; runtime JIT consumption is
+  post-BC (plan D-AOT1 verbatim). `TypedRegister.type_index` emission is
+  deliberately not in BC-3 v1; the signature layer keeps it additive (X3).
+
+---
+
+## 6. Runtime-capability set (= the tree-shake manifest, D-AOT2)
+
+The `RuntimeFn` enum is closed; `lower` can mint imports from this table
+only, and `verify` (S1) fails on anything else. `RuntimeFn → (module_atom,
+function_atom, arity)` is ONE static table; **the emitted ImpT chunk is
+exactly the used subset, in first-use order** (IR-24). Generated code
+imports no native/NIF module — `aion_flow_ffi` is reached only through
+`aion_flow` (plan recon 7), so beamr's capability policy on native imports
+is satisfied trivially.
+
+| Module (mangled atom) | Functions/arity |
+|---|---|
+| `aion@workflow` | `define/5, run/1, all/1, map/2, spawn/6, spawn_and_wait/6, receive/1, with_timeout/2, sleep/1` |
+| `aion@activity` | `new/5, task_queue/2, retry/2, timeout/2, node/2` |
+| `aion@awl@error` | `codec/0, map_activity_error/1, map_receive_error/1, map_child_error/1, map_spawn_error/1, map_timer_error/1` |
+| `aion@awl@codec` | leaf `{bool,int,float,string,nil}×{_codec/0,_to_json/1,_decoder/0}`, `nil_codec/0, raw/0, decoded/3, json_value/0` |
+| `aion@awl@runtime` | `run/4, index/3` |
+| `aion@codec` | `json_codec/2` |
+| `aion@duration` | `milliseconds/1` |
+| `aion@error` | `terminal/1` |
+| `aion@signal` | `new/2` |
+| `aion@child` | `await/1` |
+| `gleam@json` | `object/1, string/1, array/2, nullable/2, to_string/1` |
+| `gleam@dynamic@decode` | `field/3, optional_field/4, success/1, failure/2, then/2, map/2, list/1, optional/1`, `string` (representation per R3) |
+| `gleam@list` | `flatten/1, filter/2, map/2, sort/2, length/1, try_fold/3, reverse/1, is_empty/1` |
+| `gleam@option` | `is_some/1, is_none/1` (values `none`/`{some,V}` are terms, not calls) |
+| `gleam@int` / `gleam@float` / `gleam@string` / `gleam@bool` | `compare/2` each |
+| `gleam@string` | `append/2` (R2 primary) |
+| **fallback rows** (marked; unused unless a register entry flips) | `gleam@result:try/2` (R1 fallback ONLY) |
+| `erlang` (bif-position only, never ImpT) | `'+'/2`, comparison ops via `gc_bif`/test instructions |
+
+Retry/backoff config constructs SDK records (`RetryPolicy`,
+`Fixed`/`Exponential` — `stmts.rs:141-156`): `RecordNew` term shapes, not
+imports; exact atoms pinned by contract row IR-10 against compiled
+`aion_flow`.
+
+**Notably absent — can never appear** (S15): no process primitives, no
+receive loops, no `spawn`-family BIFs, no arithmetic beyond the loop-counter
+`'+'` and guard comparisons, no `gleam@result` (R1 folds it away; retained
+only as the marked fallback row), no `aion_flow_ffi` or any NIF module, no
+`erlang` ImpT entries, no dynamic `apply/3`.
+
+**Derived durable-operation summary** (S16): the golden printer and an
+exported per-module summary classify used `RuntimeFn`s into
+`timers | activities | children | signals` — the park-point-granularity
+capability manifest for the beamr AOT track, layered above this flat table.
+
+---
+
+## 7. The IR contract table (D-AOT2)
+
+Representation rows — each asserted by a BC-4 fixture test:
+
+| # | Gleam value / construct | Erlang term / binding statement | Grounding |
+|---|---|---|---|
+| IR-1 | `String` | UTF-8 binary | draft §4 |
+| IR-2 | `Int` / `Float` | integer / float; **float literal bytes must equal the reference's parse of the same source lexeme** (S3) | draft §4; `exprs.rs:151` |
+| IR-3 | `Bool` | `true` / `false` atoms | draft §4 |
+| IR-4 | `List(a)` | proper list | draft §4 |
+| IR-5 | `Option(a)` | `{some, V}` / `none` | draft §4 |
+| IR-6 | `Result(a, e)` | `{ok, V}` / `{error, E}` | draft §4; capstone B |
+| IR-7 | custom record | `{snake_tag_atom, F1, …, Fn}`; zero-field ⇒ bare atom | draft §4; codec design §4.1 |
+| IR-8 | enum variant | bare atom (Gleam constructor snake) | codec design §2 |
+| IR-9 | `fn(…) -> …` | fun (`make_fun2/3` + FunT) or export fun; funs minted ONLY at the §2.6 sites | draft §4 |
+| IR-10 | SDK constructor ABI | pinned tag atoms + arities used literally: `retry_policy`, `fixed`, `exponential`, `some/none`, `timed_out_error`, `inner_error`, `timeout_engine_failure`, all `AwlError` variants — pinned by test against compiled `aion_flow` | `stmts.rs:141-156, 296-309`; codec design §6 |
+| IR-11 | `Codec(a)` | record whose `encode`/`decode` fields are funs (T-ACTRAW's `call_fun` depends on this row; pinned by test) | `wrappers.rs:121-138` |
+| IR-12 | module reference | mangled atom (`aion@workflow`, `gleam@dynamic@decode`, …) | draft §4; capstone imports |
+| IR-13 | entry ABI | `run/1` receives the raw input payload term; returns `{ok, ResultBinary}` — bytes recorded verbatim as `WorkflowCompleted.result`; error path `{error, AwlErrorTerm}` | capstone obs. 8 |
+| IR-14 | calling convention | args `x0..x(n-1)`, result `x0`; y-registers live across calls under `allocate`/`deallocate`/`trim`; routes/loop recursion are tail calls | draft §4; capstone B; validator recon 4 |
+| IR-15 | export set | exactly `definition/0`, `run/1`, `execute/1`; no `module_info/0,1` | decision 12; capstone obs. 4 |
+| IR-16 | error propagation | `result.try` sites lower structurally as flattened `TryBind` (§2.2); trail-invariant; instruction streams intentionally differ from erlc's; fallback R1 | capstone B |
+| IR-17 | durations | constructed only via `aion@duration:milliseconds/1` from precomputed ms; no duration wire codec exists or can be constructed | codec design §2; `exprs.rs:23-34` |
+| IR-18 | capability closure | the `RuntimeFn` enum (§6) is the complete import surface; anything outside it is a `verify` failure (S1) | §6 |
+| IR-19 | sidecar | `.gleam_types` = `project_sidecar(&MirModule)`; **every** function has a descriptor signature (no omission); deterministic bytes; golden per fixture | §5; S2; X1 |
+| IR-20 | rename compatibility | emitted structures restricted to what erlc output uses (plain import tables, `LitT` tuples/atoms/binaries, FunT lambdas) so `register_module_with_renames` applies unchanged | plan recon 9; capstone obs. 6, Deliverable A (44/44) |
+| IR-21 | output-codec fallback | when the workflow has no success outcome, T-DEF/T-RUN reference `awlc.nil_codec` as output codec (`CodecRef::SdkNil`) | `frame.rs:157-163` (S7) |
+| IR-22 | closure sidecar arity | lifted-closure sidecar rows record physical BEAM arity (declared params + appended captures); source arity recoverable from the `Fn` descriptor at the `MakeClosure` site | S9 |
+| IR-23 | descriptor module spellings | `Custom` module-string vocabulary pinned against the `gleam-types` extractor's output for compiled `aion_flow` before goldens freeze | S10 |
+| IR-24 | import-table determinism | ImpT = exactly the used `RuntimeFn` subset, in first-use order | S18 |
+
+Writer-contract rows (evidence-grounded; the assembler's obligations):
+
+| Contract | Statement | Grounding |
+|---|---|---|
+| chunk set/order | `AtU8, Code, ImpT, ExpT, FunT, LitT, StrT, Line` in the canonical order of `encode/container.rs:64-88`; empty `Line`/`StrT`/`FunT` legal | capstone obs. 5 |
+| header counts | derived from the instruction stream, never hand-set | plan risk table |
+| no `int_code_end` | decoder stops at end-of-bytes; writer emits no terminator — beamr-loadable by proof, NOT OTP-loadable; resurfaces at BC-5 only if artifacts are ever advertised OTP-loadable | decision 12; capstone obs. 3 |
+| no `module_info/0,1` | not required by load/validate/execute or the catalog path | decision 12; capstone obs. 4 |
+| Line chunk | emitted from MIR spans, file 0 = the `.awl` source name — runtime stacktraces anchor to author lines; `StrT` empty | R4 |
+| rename bounds | emitted structures stay inside what the rename machinery handles: plain import tables, `LitT` tuples/atoms/binaries, FunT lambdas (`unique_id` recompute proven) | capstone obs. 6 |
+
+---
+
+## 8. Decision register (adjudicable deviations, with pre-authorized fallbacks — S12)
+
+| # | Decision | Chosen | Pre-authorized fallback | Status |
+|---|---|---|---|---|
+| R1 | `result.try` lowering | flattened `TryBind` (§2.2, capstone-proven, trail-invariant under D-BC3) | re-point one op's recipe at `gleam@result:try/2` + continuation closure; MIR unchanged; fallback ImpT row already marked in §6 | ratified |
+| R2 | `Concat` (`<>`) | `call_ext gleam@string:append/2` | erlc-style bs-op binary construction — only if the round-trip corpus proves the family beamr-supported for our shape (X4) | ratified; revisit only with corpus evidence |
+| R3 | `decode.string` Decoder-constant materialization (zero-arity call vs export-fun literal) | **pinned by disassembling the reference-compiled corpus during BC-3 — never guessed** (all three designs converged on this; ratified once here) | n/a — this IS the pin action | open until BC-3 golden authoring |
+| R4 | Line chunk from MIR spans | emit (spans exist on every op/AST node; loader accepts absence) | cut without ceremony if it drags BC-3 | ratified, droppable |
+
+---
+
+## 9. Determinism, goldens, verify
+
+- `lower` is a pure function of the CheckedDocument: var numbering, atom
+  interning, literal-pool ordering, capture ordering (liveness-ordered,
+  deterministic), and function ordering derive from document order +
+  `BTreeMap`/`BTreeSet` iteration (the `Plan` discipline). Same `.awl` ⇒
+  same MirModule ⇒ same sidecar bytes (#218 dissolves at the MIR boundary).
+- **MIR golden per fixture** (BC-2 acceptance ratchet #1): canonical text
+  dump — first section = the effect schedule (S11: durable `CallRt`s in
+  order with wire-visible arguments), then per-function bodies with
+  `live_after` annotations (S14) and `degraded_parallel` markers (S13);
+  expanded trio functions print in full (S8) with their
+  `FnOrigin::CodecTemplate` provenance headers.
+- **Sidecar golden per fixture** (ratchet #2): hex of `project_sidecar`.
+- **`verify(&MirModule)` runs inside every golden test** (S1).
+- BC-3 adds `validate_module`-over-every-fixture and per-shape unit tests
+  keyed to the §2.5 op table, one test per row.
+
+## 10. What BC-3 `select` consumes
+
+`select` receives a verified `MirModule` and owns exactly: shell-template
+expansion from the §2.4 fixed recipes; a single walk of each FlowFn body
+emitting each op's burst from the §2.5 table; register allocation — args in
+`x0..x(n-1)`, one linear-scan pass mapping the S14 `live_after` vars to
+y-slots, frame size = peak y-count, `allocate`/`deallocate` bracketing per
+validation layer 5; label resolution; literal pooling (LitT/AtU8); FunT
+`unique_id` assignment; ImpT construction per IR-24; assembly through
+`beamr::loader::encode::encode_module` (beamr **0.14.0 from crates.io,
+feature `encode`** — the operator amendment). There is no instruction
+*selection* problem left and no function synthesis left (S8): every choice
+was made in this document, and the only optimization-shaped pass (regalloc)
+arrives with its spill contract precomputed.
+
+---
+
+## Appendix A — type sketch (ratified; amendments applied)
+
+```rust
+// RATIFIED MIR — crate-private to aion-awl (decision 3). No registers, no
+// labels: BC-3 owns both. Single-assignment Vars. Files split per house
+// rules: mir/{module,template,flow,ops,lower,verify,sidecar,print}.rs,
+// mod.rs re-exports only.
+
+// ---------- identity ----------
+pub(crate) struct Var(u32);                 // single-def, per-function
+pub(crate) struct AtomRef(u32);
+pub(crate) struct LitRef(u32);
+pub(crate) struct FnRef(u32);
+pub(crate) struct Span { pub line: u32, pub column: u32 } // -> Line chunk (R4)
+
+// ---------- module ----------
+pub(crate) struct MirModule {
+    pub name: String,
+    pub source: String,                     // .awl file name (Line chunk file 0)
+    pub atoms: Vec<String>,
+    pub literals: Vec<MirLiteral>,
+    pub exports: Vec<FnRef>,                // exactly run/1, definition/0, execute/1
+    pub functions: Vec<MirFn>,
+    pub types: Vec<TypeShape>,
+    // NO sidecar field — the sidecar is project_sidecar(&MirModule) (S2).
+}
+
+pub(crate) enum MirLiteral {
+    Integer(i64),
+    Float { lexeme: String },               // S3: source lexeme retained
+    Atom(AtomRef), Binary(Vec<u8>),
+    Tuple(Vec<MirLiteral>), Nil, List(Vec<MirLiteral>),
+}
+
+pub(crate) enum TyDesc {                    // total sidecar projection source (S2)
+    Bool, Int, Float, String, Nil,
+    List(Box<TyDesc>), Option(Box<TyDesc>),
+    Result(Box<TyDesc>, Box<TyDesc>),
+    Tuple(Vec<TyDesc>),
+    Custom { module: String, name: String, params: Vec<TyDesc> }, // params! (S2)
+    Fn(Vec<TyDesc>, Box<TyDesc>),
+    Dynamic, Json, AwlError,
+    Decoder(Box<TyDesc>), Codec(Box<TyDesc>),
+    Activity(Box<TyDesc>, Box<TyDesc>),
+    SignalRef(Box<TyDesc>),
+    WorkflowDefinition(Box<TyDesc>, Box<TyDesc>, Box<TyDesc>),
+    Duration,
+    Unknown,                                // empty-list provenance; projects as List(Nil)
+                                            // (gleam_type renders bare Nil, types.rs:116 — §5)
+}
+
+pub(crate) enum TypeShape {
+    Record { name: String, tag: AtomRef, fields: Vec<FieldShape> },
+    Enum   { name: String, variants: Vec<(AtomRef, String)> },
+    Union  { name: String, arms: Vec<UnionArm> },
+}
+pub(crate) struct FieldShape { pub awl_name: String, pub desc: WireDesc, pub optional: bool }
+pub(crate) struct UnionArm { pub outcome: String, pub ctor: AtomRef, pub payload: WireDesc }
+
+/// AWL-BC-CODEC-DESIGN §2 Desc as pure lowering-time data (decision 9).
+pub(crate) enum WireDesc {
+    Bool, Int, Float, Str, Nil,
+    List(Box<WireDesc>), Nullable(Box<WireDesc>),
+    Ref(String),
+}
+
+// ---------- functions ----------
+pub(crate) enum MirFn {
+    Templated(TemplateFn),                  // SHELLS ONLY post-S8
+    Flow(FlowFn),
+}
+
+pub(crate) enum TemplateFn {
+    Definition { workflow_name: String, input_codec: FnRef, output_codec: CodecRef },
+    Run        { input_codec: FnRef, output_codec: CodecRef },
+    Execute    { input_fields: Vec<(String, TyDesc)>, entry: FnRef, entry_args: Vec<u16> },
+    ActivityWrapper { action: String, input: TypeShapeRef, params: Vec<TyDesc>,
+                      input_codec: FnRef, return_codec: CodecRef },
+    ActivityWrapperRaw { action: String, input: TypeShapeRef, params: Vec<TyDesc>,
+                         input_codec: FnRef },
+    SignalRef  { signal: String, payload_codec: CodecRef },
+    DeadBody,
+    ChildWitness,
+    // CodecTrio REMOVED: trios expand at lower time into FlowFns (S8).
+}
+pub(crate) struct TypeShapeRef(u16);
+pub(crate) enum CodecRef { Local(FnRef), SdkNil /* IR-21 */, SdkLeaf(Leaf) }
+pub(crate) enum Leaf { Bool, Int, Float, Str, Nil }
+
+pub(crate) enum FnOrigin {                  // S6 provenance, on every function
+    Run, Definition, Execute,
+    Region { entry_step: String },
+    SubStep { parent: String, sub: String },
+    Loop { step: String, index: u32 },
+    ActivityWrapper { action: String, raw: bool },
+    SignalRef { signal: String },
+    DeadBody, ChildWitness,
+    CodecTemplate { kind: CodecTemplateKind, subject: String, params: TrioParams },
+    LiftedClosure { host: FnRef, index: u32 },
+}
+pub(crate) enum CodecTemplateKind { RecordTrio, EnumTrio, UnionTrio, CompositeTrio }
+/// Descriptor-style template parameters retained for a post-BC descriptor
+/// revisit (S8 / continuation-first D6): field specs, arm specs, inner desc.
+pub(crate) enum TrioParams {
+    Record { shape: TypeShapeRef },
+    Enum { shape: TypeShapeRef },
+    Union { shape: TypeShapeRef },          // zero is OP-BUILT in the body (S5)
+    Composite { desc: WireDesc },
+}
+
+pub(crate) struct FlowFn {
+    pub origin: FnOrigin,
+    pub name: String,                       // step_x / sub_x_y / x_loop_k / awl_fun_k / <stem>_codec ...
+    pub params: Vec<Var>,                   // Plan liveness params (or args+captures for Lifted)
+    pub param_tys: Vec<TyDesc>,             // physical arity for Lifted (S9 / IR-22)
+    pub ret_ty: TyDesc,
+    pub body: Block,
+    pub span: Span,
+    pub degraded_parallel: bool,            // S13 marker (printed in goldens)
+}
+
+pub(crate) struct Block { pub stmts: Vec<Stmt>, pub tail: Tail }
+
+// ---------- values ----------
+pub(crate) enum Value {
+    Var(Var), Lit(LitRef), Atom(AtomRef), Int(i64), Nil,
+}
+
+// ---------- statement ops (closed; one instruction burst each) ----------
+pub(crate) struct LiveAfter(pub Vec<Var>);  // S14: printed in goldens
+
+pub(crate) enum Stmt {
+    Bind        { dst: Var, value: Value, span: Span },
+    FieldGet    { dst: Var, base: Value, index: u16, span: Span },
+    RecordNew   { dst: Var, tag: AtomRef, args: Vec<Value>, span: Span },
+    ListNew     { dst: Var, items: Vec<Value>, span: Span },
+    CallRt      { dst: Option<Var>, callee: RuntimeFn, args: Vec<Value>,
+                  live_after: LiveAfter, span: Span },
+    CallLocal   { dst: Option<Var>, callee: FnRef, args: Vec<Value>,
+                  live_after: LiveAfter, span: Span },
+    CallClosure { dst: Option<Var>, fun: Value, args: Vec<Value>,
+                  live_after: LiveAfter, span: Span },
+    MakeClosure { dst: Var, lifted: FnRef, captures: Vec<Value>, span: Span },
+    TryBind     { dst: Var, result: Var, live_after: LiveAfter, span: Span }, // §2.2 / R1
+    WaitTimeoutCase { dst: Var, receive: FnRef, captures: Vec<Value>,
+                      deadline_ms: u64, span: Span },
+    Cmp         { dst: Var, op: CmpOp, lhs: Value, rhs: Value, span: Span },
+    BoolOp      { dst: Var, op: BoolBin, lhs: Value, rhs: Value, span: Span }, // S4
+    Not         { dst: Var, src: Value, span: Span },                          // S4
+    Concat      { dst: Var, lhs: Value, rhs: Value, span: Span },              // R2
+    Increment   { dst: Var, src: Var, span: Span },
+    AssertList  { binds: Vec<Option<Var>>, list: Var, span: Span },
+    AssertSome  { dst: Var, option: Var, span: Span },
+    JsonObj     { dst: Var, pairs: Vec<(String, JsonVal)>, span: Span },
+    IndexGuard  { dst: Var, base: Var, index: u64, message: String, span: Span },
+    Attempt     { lifted: FnRef, captures: Vec<Value>, defs: Vec<Var>,
+                  on_ok: Block, on_err: Block, span: Span },
+    // If / SelectEnum are NOT statements — promoted to Tail (S17).
+}
+
+pub(crate) enum JsonVal { Encoded { value: Value, via: ToJsonRef } }
+pub(crate) enum ToJsonRef { SdkLeaf(Leaf), Local(FnRef) }
+
+pub(crate) enum Test {                      // test-position; short-circuit = nested If tails
+    IsTrue(Value),
+    Cmp { op: CmpOp, lhs: Value, rhs: Value },
+    IsTagged { value: Value, tag: AtomRef, arity: u16 },
+    Not(Box<Test>),
+}
+pub(crate) enum CmpOp { Eq, Ne, Lt, Le, Gt, Ge, FLt, FLe, FGt, FGe }
+pub(crate) enum BoolBin { And, Or }
+
+// ---------- tails (S17: control constructs end blocks, by type) ----------
+pub(crate) enum Tail {
+    Return(Value),
+    TailLocal { callee: FnRef, args: Vec<Value> },     // call_last / call_only
+    TailRt    { callee: RuntimeFn, args: Vec<Value> }, // call_ext_last (shells)
+    If        { test: Test, then_block: Box<Block>, else_block: Box<Block>, span: Span },
+    SelectEnum { subject: Value, arms: Vec<(AtomRef, Block)>, span: Span },
+}
+
+// ---------- the closed import surface (§6; = tree-shake manifest) ----------
+pub(crate) enum RuntimeFn {
+    // aion@workflow
+    WfDefine, WfRun, WfAll, WfMap, WfSpawn, WfSpawnAndWait, WfReceive, WfWithTimeout, WfSleep,
+    // aion@activity
+    ActNew, ActTaskQueue, ActRetry, ActTimeout, ActNode,
+    // aion@awl@error
+    ErrCodec, MapActivityError, MapReceiveError, MapChildError, MapSpawnError, MapTimerError,
+    // aion@awl@codec
+    LeafToJson(Leaf), LeafDecoder(Leaf), NilCodec, RawCodec, Decoded, JsonValueCodec,
+    // aion@awl@runtime
+    RtRun, RtIndex,
+    // aion@codec / aion@duration / aion@error / aion@signal / aion@child
+    JsonCodec, DurationMs, ErrorTerminal, SignalNew, ChildAwait,
+    // gleam@json
+    JObject, JString, JArray, JNullable, JToString,
+    // gleam@dynamic@decode
+    DField, DOptionalField, DSuccess, DFailure, DThen, DMap, DList, DOptional, DString,
+    // gleam@list
+    LFlatten, LFilter, LMap, LSort, LLength, LTryFold, LReverse, LIsEmpty,
+    // gleam@option / compares / string
+    OIsSome, OIsNone, CmpInt, CmpFloat, CmpString, CmpBool, StrAppend,
+    // R1 fallback ONLY (unused in the primary design; marked row in §6):
+    ResultTry,
+}
+
+// ---------- entry points ----------
+// lower: total for checked documents; Err == a D-BC3 refusal (span-anchored).
+// pub(crate) fn lower(input: &CheckedDocument<'_>) -> Result<MirModule, EmitError>;
+// verify: S1 — capability closure, arity, single-def, tail invariants,
+//         TypeEnv cross-checks at spans; runs under every golden.
+// pub(crate) fn verify(module: &MirModule) -> Result<(), VerifyError>;
+// project_sidecar: S2 — the D-AOT1 artifact is a fold over `functions`.
+// pub(crate) fn project_sidecar(module: &MirModule) -> Vec<u8>;
+// print_mir: §9 golden format — effect schedule first (S11), live_after (S14),
+//            degraded_parallel (S13), expanded trios in full (S8).
+// pub(crate) fn print_mir(module: &MirModule) -> String;
+```
