@@ -16,6 +16,34 @@ pub enum EditOperation {
         #[serde(default)]
         prose: String,
     },
+    AddType {
+        name: String,
+        fields: Vec<TypeField>,
+    },
+    AddTypeField {
+        type_name: String,
+        name: String,
+        field_type: String,
+    },
+    RemoveTypeField {
+        type_name: String,
+        name: String,
+    },
+    AddEnumType {
+        name: String,
+        variants: Vec<String>,
+    },
+    AddWorker {
+        name: String,
+        action: ActionDefinition,
+    },
+    RemoveWorker {
+        name: String,
+    },
+    RemoveAction {
+        worker: String,
+        name: String,
+    },
     AddAction {
         worker: String,
         name: String,
@@ -46,6 +74,20 @@ pub enum EditOperation {
     DeleteStep {
         step: String,
     },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TypeField {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActionDefinition {
+    pub name: String,
+    pub params: Vec<ActionParameter>,
+    pub return_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,10 +149,16 @@ pub enum RefusalCode {
     InvalidOperation,
     UnknownStep,
     UnknownWorker,
+    UnknownAction,
+    UnknownType,
+    UnknownField,
     UnknownBinding,
     NameCollision,
     InvalidRouteTarget,
     StepInUse,
+    TypeInUse,
+    ActionInUse,
+    LastAction,
     FallThroughUnavailable,
     CanonicalizationFailed,
 }

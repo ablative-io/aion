@@ -45,12 +45,36 @@ fn apply_operation(
 ) -> EditResult<Option<RenameMapping>> {
     match operation {
         EditOperation::AddStep { name, prose } => add_step(document, name, prose),
+        EditOperation::AddType { name, fields } => {
+            super::edit_studio::add_type(document, name, fields)
+        }
+        EditOperation::AddTypeField {
+            type_name,
+            name,
+            field_type,
+        } => super::edit_studio::add_type_field(document, type_name, name, field_type),
+        EditOperation::RemoveTypeField { type_name, name } => {
+            super::edit_studio::remove_type_field(document, type_name, name)
+        }
+        EditOperation::AddEnumType { name, variants } => {
+            super::edit_studio::add_enum_type(document, name, variants)
+        }
+        EditOperation::AddWorker { name, action } => {
+            super::edit_studio::add_worker(document, name, action)
+        }
+        EditOperation::RemoveWorker { name } => super::edit_studio::remove_worker(document, name),
+        EditOperation::RemoveAction { worker, name } => {
+            super::edit_studio::remove_action(document, worker, name)
+        }
         EditOperation::AddAction {
             worker,
             name,
             params,
             return_type,
-        } => add_action(document, worker, name, params, return_type),
+        } => {
+            super::edit_studio::validate_action_signature(document, params, return_type)?;
+            add_action(document, worker, name, params, return_type)
+        }
         EditOperation::AddOutcomeRoute {
             source,
             target,
@@ -355,7 +379,7 @@ fn rename_binding(
     }))
 }
 
-fn parse_fragment(body: &str) -> EditResult<Document> {
+pub(super) fn parse_fragment(body: &str) -> EditResult<Document> {
     let source = format!(
         "//! Projectional edit fragment.\nworkflow gesture_fragment\n  outcome done: type String, route success\n\n{body}"
     );
@@ -386,7 +410,7 @@ fn falls_through(step: &Step) -> bool {
         && !matches!(step.body.last(), Some(Statement::Pipe(pipe)) if matches!(pipe.end, PipeEnd::Route(_)))
 }
 
-fn refusal(code: RefusalCode, message: impl Into<String>) -> EditRefusal {
+pub(super) fn refusal(code: RefusalCode, message: impl Into<String>) -> EditRefusal {
     EditRefusal {
         code,
         message: message.into(),

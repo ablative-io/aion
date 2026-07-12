@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Serialize)]
 pub struct DocumentEntry {
@@ -16,6 +17,18 @@ pub struct DocumentResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateDocumentRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateDocumentResponse {
+    pub path: String,
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PutDocumentRequest {
     pub source: String,
 }
@@ -24,8 +37,14 @@ pub struct PutDocumentRequest {
 pub enum DocumentError {
     #[error("invalid AWL document path: {0}")]
     InvalidPath(String),
+    #[error("invalid AWL document name: {0}")]
+    InvalidName(String),
     #[error("AWL document was not found: {0}")]
     NotFound(String),
+    #[error("AWL document already exists: {0}")]
+    Exists(String),
+    #[error("AWL workspace is not configured")]
+    WorkspaceUnconfigured,
     #[error("AWL workspace I/O failed: {0}")]
     Io(#[from] io::Error),
 }
@@ -47,6 +66,42 @@ pub async fn read(root: &Path, requested: &str) -> Result<DocumentResponse, Docu
         }
     })?;
     Ok(DocumentResponse { source })
+}
+
+pub async fn create(
+    root: &Path,
+    request: CreateDocumentRequest,
+) -> Result<CreateDocumentResponse, DocumentError> {
+    validate_document_name(&request.name)?;
+    let source = new_document_source(&request.name)?;
+    tokio::fs::create_dir_all(root).await?;
+    let canonical_root = tokio::fs::canonicalize(root).await?;
+    let path = format!("{}.awl", request.name);
+    let destination = canonical_root.join(&path);
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = match options.open(&destination).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(DocumentError::Exists(path));
+        }
+        Err(error) => return Err(DocumentError::Io(error)),
+    };
+    if let Err(error) = file.write_all(source.as_bytes()).await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&destination).await;
+        return Err(DocumentError::Io(error));
+    }
+    if let Err(error) = file.sync_all().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&destination).await;
+        return Err(DocumentError::Io(error));
+    }
+    Ok(CreateDocumentResponse {
+        path,
+        name: request.name,
+        source,
+    })
 }
 
 pub async fn write(
@@ -197,6 +252,32 @@ async fn create_safe_parents(root: &Path, relative: &Path) -> Result<(), Documen
     Ok(())
 }
 
+fn validate_document_name(name: &str) -> Result<(), DocumentError> {
+    let mut characters = name.chars();
+    let starts_validly = characters
+        .next()
+        .is_some_and(|character| character.is_ascii_lowercase() || character == '_');
+    if !starts_validly
+        || !characters.all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return Err(DocumentError::InvalidName(
+            "use a lowercase AWL identifier (letters, digits, and underscores)".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn new_document_source(name: &str) -> Result<String, DocumentError> {
+    let source = format!(
+        "//! {name} workflow.\nworkflow {name}\n  outcome done: type Placeholder, route success\n\ntype Placeholder {{ value: String }}\n"
+    );
+    let document =
+        aion_awl::parse(&source).map_err(|error| DocumentError::InvalidName(error.message))?;
+    Ok(aion_awl::print(&document))
+}
+
 fn tempfile_path(parent: &Path, name: &OsStr) -> PathBuf {
     parent.join(format!(".{}.aion-awl.tmp", name.to_string_lossy()))
 }
@@ -236,6 +317,53 @@ mod tests {
         assert!(matches!(refusal, Err(DocumentError::InvalidPath(_))));
         let absolute = read(workspace.path(), "/tmp/outside.awl").await;
         assert!(matches!(absolute, Err(DocumentError::InvalidPath(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_is_atomic_typed_and_immediately_checks_green()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace = tempfile::tempdir()?;
+        let created = create(
+            workspace.path(),
+            CreateDocumentRequest {
+                name: "first_workflow".to_owned(),
+            },
+        )
+        .await?;
+        assert_eq!(created.path, "first_workflow.awl");
+        assert_eq!(
+            aion_awl::print(&aion_awl::parse(&created.source)?),
+            created.source
+        );
+        let checked = super::super::handlers::check_source(&super::super::handlers::CheckRequest {
+            source: created.source,
+            path: Some(
+                workspace
+                    .path()
+                    .join(&created.path)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        });
+        assert!(checked.ok, "diagnostics: {:?}", checked.diagnostics);
+
+        let duplicate = create(
+            workspace.path(),
+            CreateDocumentRequest {
+                name: "first_workflow".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(duplicate, Err(DocumentError::Exists(_))));
+        let invalid = create(
+            workspace.path(),
+            CreateDocumentRequest {
+                name: "../escape".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(invalid, Err(DocumentError::InvalidName(_))));
         Ok(())
     }
 }

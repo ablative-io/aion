@@ -10,8 +10,9 @@ use serde::Serialize;
 use super::auth::HttpCaller;
 use crate::ServerState;
 use crate::awl::{
-    self, CheckRequest, CheckResponse, Diagnostic, DocumentEntry, DocumentResponse, EditRequest,
-    EditResponse, FormatRequest, FormatResponse, PutDocumentRequest,
+    self, CheckRequest, CheckResponse, CreateDocumentRequest, CreateDocumentResponse, Diagnostic,
+    DocumentEntry, DocumentResponse, EditRequest, EditResponse, FormatRequest, FormatResponse,
+    PutDocumentRequest,
 };
 
 pub(crate) async fn check(Json(request): Json<CheckRequest>) -> Json<CheckResponse> {
@@ -37,6 +38,17 @@ pub(crate) async fn list_documents(
     awl::documents::list(&root)
         .await
         .map(Json)
+        .map_err(DocumentHttpError)
+}
+
+pub(crate) async fn create_document(
+    State(state): State<ServerState>,
+    Json(request): Json<CreateDocumentRequest>,
+) -> Result<(StatusCode, Json<CreateDocumentResponse>), DocumentHttpError> {
+    let root = workspace(&state)?;
+    awl::documents::create(&root, request)
+        .await
+        .map(|response| (StatusCode::CREATED, Json(response)))
         .map_err(DocumentHttpError)
 }
 
@@ -94,11 +106,9 @@ fn workspace(state: &ServerState) -> Result<std::path::PathBuf, DocumentHttpErro
         .authoring
         .workspace_dir
         .clone()
-        .ok_or_else(|| {
-            DocumentHttpError(awl::documents::DocumentError::NotFound(
-                "AWL workspace is not configured".to_owned(),
-            ))
-        })
+        .ok_or(DocumentHttpError(
+            awl::documents::DocumentError::WorkspaceUnconfigured,
+        ))
 }
 
 pub(crate) struct FormatHttpError {
@@ -163,9 +173,20 @@ impl IntoResponse for DocumentHttpError {
             awl::documents::DocumentError::InvalidPath(message) => {
                 (StatusCode::BAD_REQUEST, "InvalidDocumentPath", message)
             }
+            awl::documents::DocumentError::InvalidName(message) => {
+                (StatusCode::BAD_REQUEST, "InvalidDocumentName", message)
+            }
             awl::documents::DocumentError::NotFound(message) => {
                 (StatusCode::NOT_FOUND, "DocumentNotFound", message)
             }
+            awl::documents::DocumentError::Exists(message) => {
+                (StatusCode::CONFLICT, "DocumentExists", message)
+            }
+            awl::documents::DocumentError::WorkspaceUnconfigured => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "AuthoringWorkspaceUnconfigured",
+                "AWL workspace is not configured".to_owned(),
+            ),
             awl::documents::DocumentError::Io(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "DocumentIoError",
