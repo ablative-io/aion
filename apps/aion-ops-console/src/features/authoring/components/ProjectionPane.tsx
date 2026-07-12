@@ -2,7 +2,7 @@ import type { AwlDocument, CheckResult, EditResult, GestureOperation } from '../
 import type { SemanticIndex } from '../lib/projection-types';
 import { AuthoringCanvas } from './AuthoringCanvas';
 
-export type AuthoringViewMode = 'text' | 'canvas' | 'split';
+export type AuthoringViewMode = 'text' | 'canvas' | 'split' | 'studio';
 
 export function ProjectionPane({
   check,
@@ -25,7 +25,7 @@ export function ProjectionPane({
   semantic: SemanticIndex | null;
   viewMode: AuthoringViewMode;
 }) {
-  if (viewMode === 'text') return null;
+  if (viewMode === 'text' || viewMode === 'studio') return null;
   if (semantic === null) {
     return (
       <div className="flex flex-1 items-center justify-center bg-surface-elevated text-muted-foreground text-sm">

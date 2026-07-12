@@ -57,7 +57,29 @@ export type GraphProjection = {
   edges: ProjectionEdge[];
   childCalls: ProjectionChildCall[];
 };
-export type SemanticIndex = { entries: SemanticEntry[]; graph: GraphProjection };
+export type StudioField = { name: string; type: string };
+export type StudioType = {
+  name: string;
+  kind: 'record' | 'enum' | 'schema';
+  fields: StudioField[];
+  variants: string[];
+};
+export type StudioAction = {
+  name: string;
+  params: StudioField[];
+  returnType: string;
+};
+export type StudioWorker = { name: string; actions: StudioAction[] };
+export type StudioProjection = {
+  builtins: string[];
+  types: StudioType[];
+  workers: StudioWorker[];
+};
+export type SemanticIndex = {
+  entries: SemanticEntry[];
+  graph: GraphProjection;
+  studio: StudioProjection;
+};
 
 export type LayoutPosition = { x: number; y: number };
 export type LayoutRecord = { positions: Record<string, LayoutPosition> };

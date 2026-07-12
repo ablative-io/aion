@@ -20,6 +20,7 @@ export const ACTION_IDS = {
   authoringViewText: 'authoring.view-text',
   authoringViewCanvas: 'authoring.view-canvas',
   authoringViewSplit: 'authoring.view-split',
+  authoringViewStudio: 'authoring.view-studio',
   authoringAddStep: 'authoring.add-step',
   authoringAddAction: 'authoring.add-action',
   authoringAddRoute: 'authoring.add-route',
@@ -117,6 +118,13 @@ export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
     title: 'Show split authoring view',
     scope: 'view',
     defaultBinding: 'mod+3',
+    allowInInputs: true,
+  },
+  {
+    id: ACTION_IDS.authoringViewStudio,
+    title: 'Show authoring studio view',
+    scope: 'view',
+    defaultBinding: 'mod+4',
     allowInInputs: true,
   },
   {
