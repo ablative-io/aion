@@ -277,6 +277,34 @@ never silently narrate as fresh — this is the F14 lesson wearing a UI.
   then Rust/Python/Zig); D7 guided deploy-and-run flow; run-mode canvas.
   Exit bar: Tom's demo — draw it, scaffold a shell worker, deploy, run,
   watch it narrate itself, without leaving the browser.
+### P3 amendment — the studio ruling (Tom, 2026-07-12, post-P2 review)
+
+Operator verdict on P2: "definitely on the right track" — and the gap named
+precisely: today a visitor can see how it *might* work; P3 must let them see
+it *working, in the full flesh*. Four rulings, all binding on P3:
+
+1. **Studio sections.** The authoring surface grows dedicated panes —
+   **Types** (form-style editor: add field, pick type, for records/objects),
+   **Workers & Actions** (declare workers, declare actions with typed
+   parameter/return signatures), and **Steps** (compose steps, assign
+   actions, wire routes — the existing canvas). All three are structured
+   projections of the SAME `.awl` document under the unchanged law: every
+   edit is a server-side AST gesture → canonical print → one seam delta.
+   Sections are views, never capability gates (§6 holds).
+2. **Worker codegen is part of authoring.** From the declared actions, the
+   surface generates the runnable worker — a shell-script scaffold
+   (zero-code) AND a generated Rust worker you can run as-is. This settles
+   open question 4: **shell + Rust together first**; Python/Zig later.
+3. **New-workflow flow.** Create a fresh named document from the UI (minimal
+   valid skeleton, checks green immediately) — the surface must not assume
+   the document already exists.
+4. **Pack up, ship, try it.** The D7 guided flow is confirmed wanted:
+   package/export the workflow + scaffolded worker, deploy, run, watch it —
+   end to end from the browser. P3's exit bar is unchanged and is the
+   acceptance test for all of the above: a first-time visitor completes
+   draw → define types → declare worker/actions → scaffold → deploy → run
+   without leaving the browser or imagining any step.
+
 - **P4 — sharing + Iridium option.** Yjs/awareness live sharing wired
   against the seam's collaboration contract (spec'd since D1 — origin-tagged
   deltas, local-scoped undo, remote-cursor decorations); Iridium behind the
