@@ -149,6 +149,133 @@ fn minimal_module_has_the_expected_abi_structure() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// Operand-semantics guard for the T-RUN / T-EXEC shell var numbering: a fresh
+/// shell temp must NOT alias a shell parameter's Y home. Concretely, `run/1`'s
+/// raw-input payload (the parameter, spilled to `Y0` in the prologue) must reach
+/// `aion@awl@runtime:run/4` as arg 0 — the execute closure must live in a
+/// DIFFERENT Y slot and reach arg 3. The self-gate (`validate_module`) is blind
+/// to operand identity, so this decodes the emitted stream and checks it.
+#[test]
+fn run_shell_passes_raw_payload_not_the_closure() -> Result<(), Box<dyn std::error::Error>> {
+    let path = manifest_dir().join("tests/fixtures/rev2/header-types/valid/minimal.awl");
+    let source = fs::read_to_string(&path)?;
+    let document = crate::parse(&source)?;
+    let module = lower(&document, path.parent())?;
+    let (parsed, table) = gate(&module)?;
+
+    let run = function_slice(&parsed, &table, "run").ok_or("no run/1 in the emitted module")?;
+
+    // The execute closure (`make_fun2`) is stored into some Y slot; it must not
+    // be Y0 (the payload slot). Before the fix the closure clobbered Y0.
+    let make_fun = run
+        .iter()
+        .position(|i| matches!(i, Instruction::MakeFun { .. }))
+        .ok_or("run/1 has no make_fun2 for execute")?;
+    let closure_home = match run.get(make_fun + 1) {
+        Some(Instruction::Move {
+            source: beamr::loader::decode::Operand::X(0),
+            destination: beamr::loader::decode::Operand::Y(slot),
+        }) => *slot,
+        other => return Err(format!("make_fun2 not followed by a store: {other:?}").into()),
+    };
+    assert_ne!(
+        closure_home, 0,
+        "execute closure is homed in Y0, clobbering the raw-input payload (finding A)"
+    );
+
+    // Y0 (the payload) is written exactly once — the prologue param spill — and
+    // never re-stored; a second `move x0 -> y0` would be a clobber.
+    let y0_stores = run
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                Instruction::Move {
+                    source: beamr::loader::decode::Operand::X(0),
+                    destination: beamr::loader::decode::Operand::Y(0),
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        y0_stores, 1,
+        "the run/1 payload slot Y0 is written more than once (clobbered)"
+    );
+
+    // The run/4 tail marshals arg 0 from Y0 (the payload).
+    let call = run
+        .iter()
+        .position(|i| matches!(i, Instruction::CallExtLast { .. }))
+        .ok_or("run/1 has no call_ext_last run/4 tail")?;
+    let arg0_from_y0 = run[..call].iter().rev().any(|i| {
+        matches!(
+            i,
+            Instruction::Move {
+                source: beamr::loader::decode::Operand::Y(0),
+                destination: beamr::loader::decode::Operand::X(0),
+            }
+        )
+    });
+    assert!(
+        arg0_from_y0,
+        "run/4 arg 0 is not reloaded from the payload slot Y0"
+    );
+    Ok(())
+}
+
+/// The shared dead-body function (`awl$dead_body/1`, T-DEAD) is a real
+/// `module.functions` entry (S8), so it is `FunT`- and sidecar-visible rather
+/// than synthesized at assembly time. Its bytecode still emits + validates.
+#[test]
+fn dead_body_is_a_real_sidecar_visible_function() -> Result<(), Box<dyn std::error::Error>> {
+    let path = manifest_dir().join("tests/fixtures/rev2/header-types/valid/minimal.awl");
+    let source = fs::read_to_string(&path)?;
+    let document = crate::parse(&source)?;
+    let module = lower(&document, path.parent())?;
+
+    let dead = module
+        .functions
+        .iter()
+        .filter(|function| matches!(function.origin(), FnOrigin::DeadBody))
+        .count();
+    assert_eq!(dead, 1, "exactly one shared dead-body function in the MIR");
+
+    let (parsed, table) = gate(&module)?;
+    assert!(
+        function_slice(&parsed, &table, "awl$dead_body").is_some(),
+        "the dead-body function is absent from the emitted Code chunk"
+    );
+    assert!(
+        !parsed.lambdas.is_empty(),
+        "T-ACT's make_fun2 over the dead body populates FunT"
+    );
+    Ok(())
+}
+
+/// The flat instruction slice of a named function: from its `FuncInfo` to the
+/// next function header (the following `FuncInfo`, or end of stream).
+fn function_slice<'p>(
+    parsed: &'p ParsedModule,
+    table: &AtomTable,
+    name: &str,
+) -> Option<&'p [Instruction]> {
+    let is_func_info = |instruction: &Instruction| {
+        matches!(instruction, Instruction::FuncInfo { .. }).then_some(())
+    };
+    let start = parsed.instructions.iter().position(|instruction| {
+        matches!(
+            instruction,
+            Instruction::FuncInfo { function: beamr::loader::decode::Operand::Atom(Some(atom)), .. }
+                if name_of(table, *atom) == name
+        )
+    })?;
+    let end = parsed.instructions[start + 1..]
+        .iter()
+        .position(|instruction| is_func_info(instruction).is_some())
+        .map_or(parsed.instructions.len(), |offset| start + 1 + offset);
+    Some(&parsed.instructions[start..end])
+}
+
 // ---- per-shape unit tests (§11.4 rows, each in an isolated module) ----
 
 fn sp() -> Span {

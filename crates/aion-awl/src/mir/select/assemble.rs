@@ -13,19 +13,13 @@ use beamr::loader::{ExportEntry, load_beam_chunks};
 use beamr::module::ModuleRegistry;
 use beamr::native::{AllCapabilitiesPolicy, BifRegistry, NativeEntry};
 
-use crate::mir::runtime::RuntimeFn;
 use crate::mir::{FnRef, MirFn, MirModule};
 
 use super::builder::Builder;
 use super::emit::emit_body;
 use super::error::SelectError;
 use super::flow::lower_flow;
-use super::ir::{Body, Src, Step, TailKind};
 use super::shells::{find_execute, lower_shell};
-
-/// The message the dead activity body raises (matches the reference emitter's
-/// `wrappers.rs` `fn(_) { Error(error.terminal(...)) }`).
-const DEAD_MESSAGE: &[u8] = b"activity body is provided by a worker";
 
 /// Lower, emit, encode, and self-gate a MIR module into `.beam` bytes.
 pub(super) fn assemble(module: &MirModule) -> Result<Vec<u8>, SelectError> {
@@ -50,10 +44,6 @@ pub(super) fn assemble(module: &MirModule) -> Result<Vec<u8>, SelectError> {
             }
             MirFn::Flow(flow) => lower_flow(&mut builder, flow, reference)?,
         };
-        bodies.push(body);
-    }
-    if builder.dead_used() {
-        let body = dead_body(&mut builder)?;
         bodies.push(body);
     }
 
@@ -81,40 +71,6 @@ pub(super) fn assemble(module: &MirModule) -> Result<Vec<u8>, SelectError> {
     let bytes = encode_module(&parsed, &parts.atom_table)?;
     self_gate(&bytes, &parts.atom_table)?;
     Ok(bytes)
-}
-
-/// The shared dead-body lambda function (`fn(_) -> Error(error.terminal(msg))`,
-/// §2.4 T-DEAD): frameless — one non-tail `error:terminal/1`, an `{error, _}`
-/// tuple, return.
-fn dead_body(builder: &mut Builder<'_>) -> Result<Body, SelectError> {
-    let module_atom = builder.atom(&builder.module.name.clone());
-    let name = builder.dead_name();
-    let message = builder.binary_literal(DEAD_MESSAGE.to_vec());
-    let error_atom = builder.atom("error");
-    let terminal = builder.import(RuntimeFn::ErrorTerminal)?;
-    let labels = builder.dead_labels();
-    Ok(Body {
-        params: vec![crate::mir::Var(0)],
-        steps: vec![
-            Step::CallImport {
-                dst: Some(crate::mir::Var(1)),
-                import: terminal,
-                arity: 1,
-                args: vec![Src::Lit(message)],
-            },
-            Step::Record {
-                dst: crate::mir::Var(2),
-                tag: error_atom,
-                args: vec![Src::Var(crate::mir::Var(1))],
-            },
-        ],
-        tail: TailKind::Return(Src::Var(crate::mir::Var(2))),
-        name,
-        module: module_atom,
-        arity: 1,
-        entry_label: labels.entry,
-        code_label: labels.body,
-    })
 }
 
 /// The `ExpT` chunk: exactly the module's declared exports (`run/1`,

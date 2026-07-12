@@ -4,7 +4,8 @@
 //! first-use), and the module-wide symbolic-label allocator.
 //!
 //! Labels are assigned deterministically: function `i` owns `entry = 2i+1` and
-//! `body = 2i+2`; the shared dead-body lambda owns `2n+1 / 2n+2`; extra
+//! `body = 2i+2` (the shared dead-body function is an ordinary
+//! `module.functions` entry and draws its labels the same way); extra
 //! in-function labels (`Lexit`, `TryBind` fail) draw from a counter starting
 //! after those, so the whole numbering is a pure function of the `MirModule`.
 
@@ -17,10 +18,6 @@ use crate::mir::runtime::RuntimeFn;
 use crate::mir::{FnRef, MirLiteral, MirModule};
 
 use super::error::SelectError;
-
-/// The synthetic name atom of the shared dead-body lambda (`$` marks it as
-/// generated glue, never an author-facing name).
-const DEAD_NAME: &str = "awl$dead_body";
 
 /// The two labels bracketing a function: `entry` precedes `FuncInfo`, `body`
 /// follows it (the erlc two-label shape; calls and exports target `body`).
@@ -43,17 +40,11 @@ pub(super) struct Builder<'m> {
     /// the same function share one `FunT` entry.
     lambda_index: HashMap<u32, usize>,
     next_label: u32,
-    dead: FnLabels,
-    dead_used: bool,
 }
 
 impl<'m> Builder<'m> {
     pub(super) fn new(module: &'m MirModule) -> Self {
         let fn_count = u32::try_from(module.functions.len()).unwrap_or(u32::MAX);
-        let dead = FnLabels {
-            entry: 2 * fn_count + 1,
-            body: 2 * fn_count + 2,
-        };
         Self {
             module,
             atom_table: AtomTable::with_common_atoms(),
@@ -64,9 +55,9 @@ impl<'m> Builder<'m> {
             import_index: HashMap::new(),
             lambdas: Vec::new(),
             lambda_index: HashMap::new(),
-            next_label: 2 * fn_count + 3,
-            dead,
-            dead_used: false,
+            // First free label after every function's `2i+1 / 2i+2` pair
+            // (indices `0..fn_count`, whose max label is `2 * fn_count`).
+            next_label: 2 * fn_count + 1,
         }
     }
 
@@ -77,10 +68,6 @@ impl<'m> Builder<'m> {
             entry: 2 * reference.0 + 1,
             body: 2 * reference.0 + 2,
         }
-    }
-
-    pub(super) fn dead_labels(&self) -> FnLabels {
-        self.dead
     }
 
     pub(super) fn fresh_label(&mut self) -> u32 {
@@ -216,25 +203,6 @@ impl<'m> Builder<'m> {
         });
         self.lambda_index.insert(body_label, index);
         index
-    }
-
-    /// Intern (once) the shared dead-body `FunT` entry (`fn(_) -> Error(...)`,
-    /// arity 1, 0 free) that every T-ACT's `make_fun2` references (§2.4 T-DEAD),
-    /// flag that the dead body must be emitted, and return its lambda index.
-    pub(super) fn request_dead(&mut self) -> usize {
-        let name = self.atom(DEAD_NAME);
-        let body_label = self.dead.body;
-        let index = self.lambda(name, 1, body_label, 0);
-        self.dead_used = true;
-        index
-    }
-
-    pub(super) fn dead_used(&self) -> bool {
-        self.dead_used
-    }
-
-    pub(super) fn dead_name(&mut self) -> Atom {
-        self.atom(DEAD_NAME)
     }
 
     /// Consume the pools into the parts an assembled `ParsedModule` needs.

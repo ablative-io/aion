@@ -2,7 +2,9 @@
 //! selector"): each `TemplateFn` expands into a resolved [`Body`] in the same
 //! op vocabulary flow functions use, so a single emitter owns every function.
 //! Recipes are name-substitution-only and mint at most one closure (S8); T-ACT
-//! additionally references the shared dead-body lambda (T-DEAD), minted here.
+//! additionally references the shared dead-body lambda (T-DEAD), whose body is a
+//! real `TemplateFn::DeadBody` function in `module.functions` (golden- and
+//! sidecar-visible, S8 "select never synthesizes a function"), expanded here.
 
 use crate::mir::runtime::RuntimeFn;
 use crate::mir::{CodecRef, FnOrigin, FnRef, MirModule, Span, TemplateFn, TypeShape};
@@ -10,6 +12,16 @@ use crate::mir::{CodecRef, FnOrigin, FnRef, MirModule, Span, TemplateFn, TypeSha
 use super::builder::Builder;
 use super::error::SelectError;
 use super::ir::{Body, Src, Step, TailKind};
+
+/// The message the dead activity body raises (matches the reference emitter's
+/// `wrappers.rs` `fn(_) { Error(error.terminal(...)) }`).
+const DEAD_MESSAGE: &[u8] = b"activity body is provided by a worker";
+
+/// The synthetic name of the shared dead-body function (`$` marks generated
+/// glue); `lower` mints one `TemplateFn::DeadBody` under this name per module
+/// that has any activity, so T-ACT's `make_fun2` and the FunT/sidecar all refer
+/// to a real function.
+const DEAD_NAME: &str = "awl$dead_body";
 
 /// The `FnRef` of the module's `execute/1` (the value passed to `run/4` and
 /// `define/5`).
@@ -22,6 +34,18 @@ pub(super) fn find_execute(module: &MirModule) -> Result<FnRef, SelectError> {
         .ok_or_else(|| SelectError::invariant("module has no execute/1"))
 }
 
+/// The `FnRef` of the module's shared dead-body function (`TemplateFn::DeadBody`,
+/// minted by `lower` whenever the module has an activity). Every T-ACT wrapper
+/// closes over it.
+fn find_dead(module: &MirModule) -> Result<FnRef, SelectError> {
+    module
+        .functions
+        .iter()
+        .position(|function| matches!(function.origin(), FnOrigin::DeadBody))
+        .map(|index| FnRef(u32::try_from(index).unwrap_or(u32::MAX)))
+        .ok_or_else(|| SelectError::invariant("activity wrapper but no dead-body function"))
+}
+
 struct Shell<'b, 'm> {
     builder: &'b mut Builder<'m>,
     next_var: u32,
@@ -29,10 +53,15 @@ struct Shell<'b, 'm> {
 }
 
 impl<'b, 'm> Shell<'b, 'm> {
-    fn new(builder: &'b mut Builder<'m>) -> Self {
+    /// `param_count` seeds the fresh-var counter ABOVE the shell's parameters:
+    /// params are `Var(0..param_count)` (see [`Shell::finish`]) and share their
+    /// Y home with the same-numbered var (`FramePlan`), so a fresh temp that
+    /// aliased `Var(0)` would clobber the raw-input parameter (T-RUN payload,
+    /// T-EXEC input tuple). Fresh temps therefore start at `param_count`.
+    fn new(builder: &'b mut Builder<'m>, param_count: u32) -> Self {
         Self {
             builder,
-            next_var: 0,
+            next_var: param_count,
             steps: Vec::new(),
         }
     }
@@ -187,7 +216,7 @@ pub(super) fn lower_shell(
             Err(SelectError::unsupported("T-ACTRAW shell", Span::zero()))
         }
         TemplateFn::SignalRef { .. } => Err(SelectError::unsupported("T-SIG shell", Span::zero())),
-        TemplateFn::DeadBody => Err(SelectError::unsupported("standalone T-DEAD", Span::zero())),
+        TemplateFn::DeadBody => shell_dead(builder, &header),
         TemplateFn::ChildWitness => Err(SelectError::unsupported("T-WIT shell", Span::zero())),
     }
 }
@@ -200,7 +229,7 @@ fn shell_run(
     execute: FnRef,
     header: &Header,
 ) -> Result<Body, SelectError> {
-    let mut shell = Shell::new(builder);
+    let mut shell = Shell::new(builder, header.param_count);
     let executor = shell.make_execute(execute)?;
     let input = shell.local_codec(input_codec);
     let output = shell.codec(output_codec)?;
@@ -228,7 +257,7 @@ fn shell_definition(
     header: &Header,
 ) -> Result<Body, SelectError> {
     let name_lit = builder.binary_literal(workflow_name.as_bytes().to_vec());
-    let mut shell = Shell::new(builder);
+    let mut shell = Shell::new(builder, header.param_count);
     let executor = shell.make_execute(execute)?;
     let input = shell.local_codec(input_codec);
     let output = shell.codec(output_codec)?;
@@ -257,7 +286,7 @@ fn shell_execute(
     entry_args: &[u16],
     header: &Header,
 ) -> Result<Body, SelectError> {
-    let mut shell = Shell::new(builder);
+    let mut shell = Shell::new(builder, header.param_count);
     let mut fields = Vec::with_capacity(field_count);
     for index in 0..field_count {
         let dst = shell.fresh();
@@ -304,7 +333,8 @@ fn shell_activity(
     let name_lit = builder.binary_literal(action.as_bytes().to_vec());
     let tag = record_tag(builder.module, input)?;
     let tag_atom = builder.mir_atom(tag)?;
-    let mut shell = Shell::new(builder);
+    let dead_ref = find_dead(builder.module)?;
+    let mut shell = Shell::new(builder, header.param_count);
     let record = shell.fresh();
     let params = (0..header.param_count)
         .map(crate::mir::Var)
@@ -317,7 +347,9 @@ fn shell_activity(
     });
     let input_codec = shell.local_codec(input_codec);
     let return_codec = shell.codec(return_codec)?;
-    let dead = shell.builder.request_dead();
+    let dead_name = shell.builder.atom(DEAD_NAME);
+    let dead_label = Builder::fn_labels(dead_ref).body;
+    let dead = shell.builder.lambda(dead_name, 1, dead_label, 0);
     let dead_var = shell.fresh();
     shell.steps.push(Step::MakeClosure {
         dst: dead_var,
@@ -336,6 +368,30 @@ fn shell_activity(
         ],
     };
     Ok(shell.finish(tail, header))
+}
+
+/// T-DEAD: the shared dead-body function `fn(_) -> Error(error.terminal(msg))`
+/// (§2.4). One non-tail `error:terminal/1`, an `{error, _}` tuple, `return` — a
+/// real `module.functions` entry (S8) that every T-ACT closes over.
+fn shell_dead(builder: &mut Builder<'_>, header: &Header) -> Result<Body, SelectError> {
+    let message = builder.binary_literal(DEAD_MESSAGE.to_vec());
+    let error_atom = builder.atom("error");
+    let terminal = builder.import(RuntimeFn::ErrorTerminal)?;
+    let mut shell = Shell::new(builder, header.param_count);
+    let result = shell.fresh();
+    shell.steps.push(Step::CallImport {
+        dst: Some(result),
+        import: terminal,
+        arity: 1,
+        args: vec![Src::Lit(message)],
+    });
+    let tuple = shell.fresh();
+    shell.steps.push(Step::Record {
+        dst: tuple,
+        tag: error_atom,
+        args: vec![Src::Var(result)],
+    });
+    Ok(shell.finish(TailKind::Return(Src::Var(tuple)), header))
 }
 
 fn entry_target(module: &MirModule, entry: FnRef) -> Result<(u8, u32), SelectError> {

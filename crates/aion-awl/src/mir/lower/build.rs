@@ -482,6 +482,24 @@ fn signal_shell(ctx: &mut Ctx<'_>, plan: &FnPlan, signal: &str) -> MirFn {
     }
 }
 
+/// The shared dead-body function (`fn(_) -> Error(error.terminal(...))`, §2.4
+/// T-DEAD): a real `module.functions` entry (S8 — `select` never synthesizes a
+/// function) that every T-ACT wrapper closes over, so the `FunT` lambda and the
+/// `.gleam_types` sidecar both carry it. `lower` appends exactly one per module
+/// that has any activity. BC-3 expands the body from `TemplateFn::DeadBody`.
+pub(super) fn dead_shell() -> MirFn {
+    MirFn::Templated {
+        name: "awl$dead_body".to_owned(),
+        origin: FnOrigin::DeadBody,
+        template: TemplateFn::DeadBody,
+        sig: FnSig {
+            params: vec![TyDesc::Dynamic],
+            ret: TyDesc::Result(Box::new(TyDesc::Dynamic), Box::new(TyDesc::AwlError)),
+        },
+        span: zero_span(),
+    }
+}
+
 /// Resolve a wire type to an output-codec reference: SDK leaf, module-local
 /// trio, or the SDK nil codec.
 pub(super) fn codec_ref_for(ctx: &Ctx<'_>, plan: &FnPlan, ty: &GType) -> CodecRef {

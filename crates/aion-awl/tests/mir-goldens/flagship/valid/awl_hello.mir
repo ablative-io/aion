@@ -136,3 +136,6 @@ exports: run/1, definition/0, execute/1
   v12 = record(shouted_outcome, [v11])
   v13 = record(ok, [v12])
   return v13
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
