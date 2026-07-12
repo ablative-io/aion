@@ -10,8 +10,9 @@ use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
 use super::awl::{
-    check, create_document, edit, format, get_document, get_layout, list_documents, put_document,
-    put_layout, scaffold,
+    bind_run, check, create_document, deploy_authoring, edit, emit, format, get_document,
+    get_layout, get_revision, get_run_status, list_documents, put_document, put_layout, scaffold,
+    worker_availability,
 };
 use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
@@ -174,6 +175,12 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/awl/layout/{*path}", get(get_layout).put(put_layout));
     let awl = Router::new()
         .route("/awl/check", post(check))
+        .route("/awl/emit", post(emit))
+        .route("/awl/deploy", post(deploy_authoring))
+        .route("/awl/revisions/{hash}", get(get_revision))
+        .route("/awl/workers/availability", post(worker_availability))
+        .route("/awl/runs/{deployment_id}", get(get_run_status))
+        .route("/awl/runs/{deployment_id}/binding", post(bind_run))
         .route("/awl/edit", post(edit))
         .route("/awl/fmt", post(format))
         .route("/awl/scaffold", post(scaffold))

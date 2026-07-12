@@ -34,6 +34,7 @@ export type AuthoringCanvasProps = {
   onJumpToSpan: (byteOffset: number) => void;
   onOpenDocument: (path: string) => void;
   onGesture: (operation: GestureOperation) => Promise<EditResult>;
+  mode?: 'edit' | 'run';
 };
 
 export function AuthoringCanvas({
@@ -46,6 +47,7 @@ export function AuthoringCanvas({
   onJumpToSpan,
   onOpenDocument,
   onGesture,
+  mode = 'edit',
 }: AuthoringCanvasProps) {
   const [layout, setLayout] = useState<LayoutRecord>({ positions: {} });
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -101,7 +103,8 @@ export function AuthoringCanvas({
         onOpenDocument,
         proseEditingStep,
         setProseEditingStep,
-        performGesture
+        performGesture,
+        mode
       ),
     [
       diagnosticTones,
@@ -113,6 +116,7 @@ export function AuthoringCanvas({
       performGesture,
       proseEditingStep,
       selectedStep,
+      mode,
     ]
   );
   const [nodes, setNodes] = useState(projected.nodes);
@@ -141,6 +145,7 @@ export function AuthoringCanvas({
   }
 
   function persistNodePosition(node: Node<CanvasNodeData>) {
+    if (mode === 'run') return;
     if (node.type !== 'step') return;
     const positions = { ...layout.positions, [node.id]: node.position };
     const next = { positions };
@@ -178,7 +183,7 @@ export function AuthoringCanvas({
         fitViewOptions={{ padding: 0.2 }}
         nodeTypes={nodeTypes}
         nodes={nodes}
-        nodesConnectable={!gestureWorking}
+        nodesConnectable={mode === 'edit' && !gestureWorking}
         onConnect={connect}
         onNodeDragStop={(_event, node) => persistNodePosition(node)}
         onNodesChange={onNodesChange}
@@ -188,16 +193,22 @@ export function AuthoringCanvas({
         <Background color="var(--border)" gap={24} size={1} />
         <Controls showInteractive={false} />
       </ReactFlow>
-      <CanvasGestureControls
-        disabled={gestureWorking}
-        graph={graph}
-        onBeginProseEdit={setProseEditingStep}
-        onGesture={performGesture}
-        routeTargets={routeTargets}
-        selectedStep={selectedStep}
-      />
+      {mode === 'edit' && (
+        <CanvasGestureControls
+          disabled={gestureWorking}
+          graph={graph}
+          onBeginProseEdit={setProseEditingStep}
+          onGesture={performGesture}
+          routeTargets={routeTargets}
+          selectedStep={selectedStep}
+        />
+      )}
       <div className="pointer-events-none absolute right-3 bottom-3 rounded-lg border border-border bg-surface-base/95 px-3 py-2 text-muted-foreground text-xs shadow-sm">
-        <span>Tab through controls · connect handles to draw an otherwise route</span>
+        <span>
+          {mode === 'run'
+            ? 'Live run · nodes follow workflow events'
+            : 'Tab through controls · connect handles to draw an otherwise route'}
+        </span>
         {layoutError !== null && <span className="ml-2 text-destructive">{layoutError}</span>}
         {gestureError !== null && <span className="ml-2 text-destructive">{gestureError}</span>}
       </div>
@@ -215,7 +226,8 @@ function projectFlow(
   onOpenDocument: (path: string) => void,
   proseEditingStep: string | null,
   onBeginProseEdit: (step: string | null) => void,
-  onGesture: (operation: GestureOperation) => Promise<EditResult>
+  onGesture: (operation: GestureOperation) => Promise<EditResult>,
+  mode: 'edit' | 'run'
 ): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
   const dagreGraph = new dagre.graphlib.Graph()
     .setDefaultEdgeLabel(() => ({}))
@@ -240,7 +252,8 @@ function projectFlow(
       onJumpToSpan,
       proseEditingStep,
       onBeginProseEdit,
-      onGesture
+      onGesture,
+      mode
     )
   );
   for (const child of graph.childCalls) {
@@ -305,13 +318,15 @@ function stepNode(
   onJumpToSpan: (byteOffset: number) => void,
   proseEditingStep: string | null,
   onBeginProseEdit: (step: string | null) => void,
-  onGesture: (operation: GestureOperation) => Promise<EditResult>
+  onGesture: (operation: GestureOperation) => Promise<EditResult>,
+  mode: 'edit' | 'run'
 ): Node<CanvasNodeData> {
   return {
     id: step.name,
     type: 'step',
     position: layout.positions[step.name] ?? topLeft(auto),
     focusable: false,
+    draggable: mode === 'edit',
     selected: selectedStep === step.name,
     data: {
       kind: 'step',

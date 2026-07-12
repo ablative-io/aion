@@ -37,6 +37,7 @@ export type ProjectionStep = {
   documentation: string;
   span: SourceSpan;
   markers: StepMarkers;
+  activities: string[];
 };
 export type ProjectionEdge = {
   id: string;

@@ -8,6 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use super::auth::HttpCaller;
+use super::authoring::AuthoringHttpError;
 use crate::ServerState;
 use crate::awl::{
     self, CheckRequest, CheckResponse, CreateDocumentRequest, CreateDocumentResponse, Diagnostic,
@@ -104,6 +105,96 @@ pub(crate) async fn put_layout(
         .await
         .map(Json)
         .map_err(LayoutHttpError)
+}
+
+pub(crate) async fn emit(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<awl::run_loop::EmitRequest>,
+) -> Result<Json<awl::run_loop::EmitResponse>, RunLoopHttpError> {
+    awl::run_loop::emit(&state, &caller, &request)
+        .map(Json)
+        .map_err(RunLoopHttpError::RunLoop)
+}
+
+pub(crate) async fn deploy_authoring(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Json(request): Json<awl::run_loop::DeployAuthoringRequest>,
+) -> Result<Json<awl::run_loop::DeployAuthoringResponse>, RunLoopHttpError> {
+    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+    awl::run_loop::deploy(&state, &caller, &root, request)
+        .await
+        .map(Json)
+        .map_err(RunLoopHttpError::RunLoop)
+}
+
+pub(crate) async fn get_revision(
+    State(state): State<ServerState>,
+    Path(hash): Path<String>,
+) -> Result<Json<awl::revisions::Revision>, RunLoopHttpError> {
+    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+    awl::revisions::fetch(&root, &hash)
+        .await
+        .map(Json)
+        .map_err(|error| RunLoopHttpError::RunLoop(error.into()))
+}
+
+pub(crate) async fn get_run_status(
+    State(state): State<ServerState>,
+    Path(deployment_id): Path<String>,
+) -> Result<Json<awl::run_loop::RunStatusResponse>, RunLoopHttpError> {
+    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+    awl::run_loop::status(&root, &deployment_id)
+        .await
+        .map(Json)
+        .map_err(RunLoopHttpError::RunLoop)
+}
+
+pub(crate) async fn bind_run(
+    State(state): State<ServerState>,
+    Path(deployment_id): Path<String>,
+    Json(request): Json<awl::run_loop::BindRunRequest>,
+) -> Result<Json<awl::revisions::DeploymentRecord>, RunLoopHttpError> {
+    let root = workspace(&state).map_err(|error| RunLoopHttpError::Document(error.0))?;
+    awl::revisions::bind_run(&root, &deployment_id, request.workflow_id, request.run_id)
+        .await
+        .map(Json)
+        .map_err(|error| RunLoopHttpError::RunLoop(error.into()))
+}
+
+pub(crate) async fn worker_availability(
+    State(state): State<ServerState>,
+    Json(request): Json<awl::run_loop::WorkerAvailabilityRequest>,
+) -> Result<Json<awl::run_loop::WorkerAvailabilityResponse>, RunLoopHttpError> {
+    awl::run_loop::worker_availability(&state, request)
+        .map(Json)
+        .map_err(RunLoopHttpError::RunLoop)
+}
+
+pub(crate) enum RunLoopHttpError {
+    Document(awl::documents::DocumentError),
+    RunLoop(awl::run_loop::RunLoopError),
+}
+
+impl IntoResponse for RunLoopHttpError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Document(error) => DocumentHttpError(error).into_response(),
+            Self::RunLoop(awl::run_loop::RunLoopError::Authoring(error)) => {
+                AuthoringHttpError(error).into_response()
+            }
+            Self::RunLoop(error) => {
+                let status = match error {
+                    awl::run_loop::RunLoopError::WorkerRegistry(_) => {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                    _ => StatusCode::UNPROCESSABLE_ENTITY,
+                };
+                (status, Json(awl::run_loop::wire_error(&error))).into_response()
+            }
+        }
+    }
 }
 
 fn workspace(state: &ServerState) -> Result<std::path::PathBuf, DocumentHttpError> {

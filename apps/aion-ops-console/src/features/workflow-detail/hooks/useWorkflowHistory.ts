@@ -8,6 +8,7 @@ import type { Namespace, WorkflowId } from '@/types';
 
 export type WorkflowHistoryOptions = {
   apiClient?: Pick<ApiClient, 'getHistory'>;
+  enabled?: boolean;
   workflowId: WorkflowId;
 };
 
@@ -25,7 +26,11 @@ export function workflowHistoryRequestOptions(namespace: Namespace | null | unde
   return { namespace: requireWorkflowHistoryNamespace(namespace) };
 }
 
-export function useWorkflowHistory({ apiClient, workflowId }: WorkflowHistoryOptions) {
+export function useWorkflowHistory({
+  apiClient,
+  enabled = true,
+  workflowId,
+}: WorkflowHistoryOptions) {
   const { selectedNamespace } = useNamespace();
   const client = useMemo<Pick<ApiClient, 'getHistory'>>(
     () => apiClient ?? createConfiguredApiClient({ namespace: selectedNamespace }),
@@ -33,7 +38,7 @@ export function useWorkflowHistory({ apiClient, workflowId }: WorkflowHistoryOpt
   );
 
   return useQuery({
-    enabled: selectedNamespace !== null && selectedNamespace.trim().length > 0,
+    enabled: enabled && selectedNamespace !== null && selectedNamespace.trim().length > 0,
     queryKey: workflowHistoryQueryKey(selectedNamespace, workflowId),
     queryFn: () => client.getHistory(workflowId, workflowHistoryRequestOptions(selectedNamespace)),
   });

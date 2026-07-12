@@ -1,6 +1,19 @@
+import type { RenameMapping } from './facade-records';
+import { parseLayout, parseRenameMapping } from './facade-records';
+import { createGuidedFacade } from './guided-facade';
+
+export type { RenameMapping } from './facade-records';
+
+import {
+  expectArray,
+  expectBoolean,
+  expectNumber,
+  expectRecord,
+  expectString,
+  nullableString,
+} from './facade-values';
 import type {
   GraphProjection,
-  LayoutPosition,
   LayoutRecord,
   SemanticDeclaration,
   SemanticEntry,
@@ -8,6 +21,14 @@ import type {
   SourceSpan,
   StudioProjection,
 } from './projection-types';
+
+export type {
+  DeploymentRecord,
+  GuidedDeployResult,
+  GuidedStepResult,
+  RunStatus,
+  WorkerAvailability,
+} from './guided-facade';
 
 export type DiagnosticClass = 'error' | 'emit_subset';
 
@@ -29,6 +50,16 @@ export type CheckResult = {
 export type AwlDocument = { path: string; name: string };
 export type WorkerRuntime = 'shell' | 'rust';
 export type ScaffoldFiles = Record<string, string>;
+
+export class GuidedFlowRefusedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'GuidedFlowRefusedError';
+  }
+}
 
 export type ActionParameter = { name: string; type: string };
 export type RouteArgument = { name: string; expression: string };
@@ -65,7 +96,6 @@ export type GestureOperation =
   | { type: 'rename_binding'; kind: 'step' | 'binding'; from: string; to: string }
   | { type: 'delete_step'; step: string };
 
-export type RenameMapping = { kind: 'step' | 'binding'; from: string; to: string };
 export type EditResult = {
   source: string;
   diagnostics: AwlDiagnostic[];
@@ -112,7 +142,20 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
       throw new AuthoringWorkspaceNotConfiguredError();
     }
     if (!response.ok) {
-      throw new Error(`Authoring request failed (${response.status})`);
+      const failure: unknown = await response.json().catch(() => null);
+      if (failure !== null && typeof failure === 'object') {
+        const record = failure as Record<string, unknown>;
+        if (typeof record.message === 'string') {
+          throw new GuidedFlowRefusedError(
+            typeof record.error_type === 'string' ? record.error_type : 'AuthoringRefused',
+            record.message
+          );
+        }
+      }
+      throw new GuidedFlowRefusedError(
+        'AuthoringRefused',
+        `Authoring request failed (${response.status})`
+      );
     }
     return response.json();
   }
@@ -193,13 +236,17 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
       );
       return expectString(value.source, 'source');
     },
-    async saveDocument(path: string, source: string): Promise<void> {
-      await request(
-        `/awl/documents/${encodeURIComponent(path)}`,
-        jsonInit('PUT', { source }),
-        true
+    async saveDocument(path: string, source: string): Promise<string> {
+      const value = expectRecord(
+        await request(
+          `/awl/documents/${encodeURIComponent(path)}`,
+          jsonInit('PUT', { source }),
+          true
+        )
       );
+      return expectString(value.content_hash, 'content_hash');
     },
+    ...createGuidedFacade(request),
     async loadLayout(path: string): Promise<LayoutRecord> {
       return parseLayout(await request(`/awl/layout/${encodeURIComponent(path)}`, undefined, true));
     },
@@ -343,6 +390,9 @@ function parseGraph(value: unknown): GraphProjection {
       return {
         name: expectString(step.name, 'step.name'),
         documentation: expectString(step.documentation, 'step.documentation'),
+        activities: expectArray(step.activities, 'step.activities').map((activity) =>
+          expectString(activity, 'step.activity')
+        ),
         span: parseSpan(step.span),
         markers: {
           looped: expectBoolean(markers.looped, 'markers.looped'),
@@ -376,64 +426,4 @@ function parseGraph(value: unknown): GraphProjection {
       };
     }),
   };
-}
-
-function parseRenameMapping(value: unknown): RenameMapping {
-  const record = expectRecord(value);
-  const kind = expectString(record.kind, 'rename.kind');
-  if (kind !== 'step' && kind !== 'binding') {
-    throw new Error('Invalid authoring response: rename.kind');
-  }
-  return {
-    kind,
-    from: expectString(record.from, 'rename.from'),
-    to: expectString(record.to, 'rename.to'),
-  };
-}
-
-function parseLayout(value: unknown): LayoutRecord {
-  const record = expectRecord(value);
-  const positionsRecord = expectRecord(record.positions);
-  const positions: Record<string, LayoutPosition> = {};
-  for (const [name, rawPosition] of Object.entries(positionsRecord)) {
-    const position = expectRecord(rawPosition);
-    positions[name] = {
-      x: expectNumber(position.x, 'position.x'),
-      y: expectNumber(position.y, 'position.y'),
-    };
-  }
-  return { positions };
-}
-
-function nullableString(value: unknown, field: string): string | null {
-  return value === null ? null : expectString(value, field);
-}
-
-function expectRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('Invalid authoring response: expected object');
-  }
-  return value as Record<string, unknown>;
-}
-
-function expectArray(value: unknown, field: string): unknown[] {
-  if (!Array.isArray(value)) throw new Error(`Invalid authoring response: ${field}`);
-  return value;
-}
-
-function expectString(value: unknown, field: string): string {
-  if (typeof value !== 'string') throw new Error(`Invalid authoring response: ${field}`);
-  return value;
-}
-
-function expectNumber(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`Invalid authoring response: ${field}`);
-  }
-  return value;
-}
-
-function expectBoolean(value: unknown, field: string): boolean {
-  if (typeof value !== 'boolean') throw new Error(`Invalid authoring response: ${field}`);
-  return value;
 }
