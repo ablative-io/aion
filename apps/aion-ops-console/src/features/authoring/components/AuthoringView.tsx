@@ -137,7 +137,12 @@ export function AuthoringView() {
                   title="Document unavailable"
                 />
               ) : (
-                <EditorPane initialSource={documentQuery.data} path={selectedPath} />
+                <EditorPane
+                  documents={documents}
+                  initialSource={documentQuery.data}
+                  onOpenDocument={setSelectedPath}
+                  path={selectedPath}
+                />
               )}
             </motion.div>
           </AnimatePresence>

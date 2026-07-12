@@ -1,6 +1,6 @@
-import { AlignLeft, Check, LoaderCircle, Save } from 'lucide-react';
+import { AlignLeft, Check, Columns2, FileText, LoaderCircle, Save, Workflow } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { StatusDot } from '@/components/kit';
 import { Badge } from '@/components/ui';
@@ -12,15 +12,27 @@ import { cn } from '@/lib/utils';
 import { createCodeMirrorEditor } from '../editor-seam/codemirror';
 import type { AuthoringEditor, HighlightSpan } from '../editor-seam/types';
 import { mapDiagnostics, minimalTextDelta, statusForCheck } from '../lib/diagnostics';
-import { authoringFacade, type CheckResult } from '../lib/facade';
+import { type AwlDocument, authoringFacade, type CheckResult } from '../lib/facade';
+import { byteOffsetToUtf16, stepAtPosition } from '../lib/projection';
+import type { SemanticIndex } from '../lib/projection-types';
+import { AuthoringCanvas } from './AuthoringCanvas';
 
-export type EditorPaneProps = { path: string; initialSource: string };
+export type EditorPaneProps = {
+  path: string;
+  initialSource: string;
+  documents: readonly AwlDocument[];
+  onOpenDocument: (path: string) => void;
+};
+
+type ViewMode = 'text' | 'canvas' | 'split';
 
 type HighlightReply = { id: number; spans?: HighlightSpan[]; error?: string };
 
-export function EditorPane({ path, initialSource }: EditorPaneProps) {
+export function EditorPane({ path, initialSource, documents, onOpenDocument }: EditorPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<AuthoringEditor | null>(null);
+  const semanticRef = useRef<SemanticIndex | null>(null);
+  const cursorPositionRef = useRef(0);
   const highlightWorkerRef = useRef<Worker | null>(null);
   const sourceRef = useRef(initialSource);
   const savedSourceRef = useRef(initialSource);
@@ -28,6 +40,9 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
   const [source, setSource] = useState(initialSource);
   const [dirty, setDirty] = useState(false);
   const [check, setCheck] = useState<CheckResult | null>(null);
+  const [semantic, setSemantic] = useState<SemanticIndex | null>(null);
+  const [selectedStep, setSelectedStep] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('text');
   const [message, setMessage] = useState<string | null>(null);
   const [working, setWorking] = useState<'format' | 'save' | null>(null);
 
@@ -45,8 +60,18 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
       setSource(change.content);
       setDirty(change.content !== savedSourceRef.current);
     });
+    const unsubscribeCursor = editor.onCursorChange(({ position }) => {
+      cursorPositionRef.current = position;
+      const graph = semanticRef.current?.graph;
+      setSelectedStep(
+        graph === undefined
+          ? null
+          : (stepAtPosition(graph, sourceRef.current, position)?.name ?? null)
+      );
+    });
     return () => {
       unsubscribe();
+      unsubscribeCursor();
       editor.destroy();
       editorRef.current = null;
     };
@@ -81,6 +106,13 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
         .then((result) => {
           if (!active) return;
           setCheck(result);
+          if (result.semantic !== null) {
+            semanticRef.current = result.semantic;
+            setSemantic(result.semantic);
+            setSelectedStep(
+              stepAtPosition(result.semantic.graph, source, cursorPositionRef.current)?.name ?? null
+            );
+          }
           editorRef.current?.setDecorations(mapDiagnostics(source, result.diagnostics));
           setMessage(null);
         })
@@ -111,6 +143,16 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
   }
 
   useAction(ACTION_IDS.authoringSave, () => void save());
+  useAction(ACTION_IDS.authoringViewText, () => setViewMode('text'));
+  useAction(ACTION_IDS.authoringViewCanvas, () => setViewMode('canvas'));
+  useAction(ACTION_IDS.authoringViewSplit, () => setViewMode('split'));
+
+  const jumpToSpan = useCallback((byteOffset: number) => {
+    setViewMode((current) => (current === 'canvas' ? 'text' : current));
+    const editor = editorRef.current;
+    editor?.setCursor(byteOffsetToUtf16(sourceRef.current, byteOffset));
+    window.requestAnimationFrame(() => editor?.focus());
+  }, []);
 
   async function format() {
     if (working !== null) return;
@@ -147,6 +189,32 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <fieldset
+            className="flex rounded-lg border border-border bg-surface-elevated p-0.5"
+            aria-label="Authoring view"
+          >
+            <ViewButton
+              icon={<FileText className="size-3.5" />}
+              label="Text"
+              mode="text"
+              selected={viewMode}
+              onSelect={setViewMode}
+            />
+            <ViewButton
+              icon={<Workflow className="size-3.5" />}
+              label="Canvas"
+              mode="canvas"
+              selected={viewMode}
+              onSelect={setViewMode}
+            />
+            <ViewButton
+              icon={<Columns2 className="size-3.5" />}
+              label="Split"
+              mode="split"
+              selected={viewMode}
+              onSelect={setViewMode}
+            />
+          </fieldset>
           <Button
             disabled={working !== null}
             onClick={() => void format()}
@@ -162,7 +230,26 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
           </Button>
         </div>
       </header>
-      <div className="min-h-[32rem] flex-1 overflow-hidden" ref={hostRef} />
+      <div className="flex min-h-[32rem] min-w-0 flex-1 overflow-hidden">
+        <div
+          className={cn(
+            'min-h-[32rem] min-w-0 overflow-hidden',
+            viewMode === 'canvas' ? 'hidden' : 'flex-1',
+            viewMode === 'split' && 'border-border border-r'
+          )}
+          ref={hostRef}
+        />
+        <ProjectionPane
+          check={check}
+          documents={documents}
+          onJumpToSpan={jumpToSpan}
+          onOpenDocument={onOpenDocument}
+          path={path}
+          selectedStep={selectedStep}
+          semantic={semantic}
+          viewMode={viewMode}
+        />
+      </div>
       <div className="flex min-h-11 items-center justify-between gap-4 border-border border-t bg-surface-base px-4 py-2 text-xs">
         <span
           className={cn(
@@ -189,7 +276,79 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
   );
 }
 
+function ProjectionPane({
+  check,
+  documents,
+  onJumpToSpan,
+  onOpenDocument,
+  path,
+  selectedStep,
+  semantic,
+  viewMode,
+}: {
+  check: CheckResult | null;
+  documents: readonly AwlDocument[];
+  onJumpToSpan: (byteOffset: number) => void;
+  onOpenDocument: (path: string) => void;
+  path: string;
+  selectedStep: string | null;
+  semantic: SemanticIndex | null;
+  viewMode: ViewMode;
+}) {
+  if (viewMode === 'text') return null;
+  if (semantic === null) {
+    return (
+      <div className="flex flex-1 items-center justify-center bg-surface-elevated text-muted-foreground text-sm">
+        {check?.ok === false ? 'Fix source errors to create a projection' : 'Building projection…'}
+      </div>
+    );
+  }
+  return (
+    <AuthoringCanvas
+      diagnostics={check?.diagnostics ?? []}
+      documents={documents}
+      graph={semantic.graph}
+      onJumpToSpan={onJumpToSpan}
+      onOpenDocument={onOpenDocument}
+      path={path}
+      selectedStep={selectedStep}
+    />
+  );
+}
+
 type WorkingAction = 'format' | 'save' | null;
+
+function ViewButton({
+  icon,
+  label,
+  mode,
+  selected,
+  onSelect,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  mode: ViewMode;
+  selected: ViewMode;
+  onSelect: (mode: ViewMode) => void;
+}) {
+  return (
+    <button
+      aria-label={`${label} view`}
+      aria-pressed={selected === mode}
+      className={cn(
+        'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-accent-primary',
+        selected === mode
+          ? 'bg-accent text-foreground'
+          : 'text-muted-foreground hover:text-foreground'
+      )}
+      onClick={() => onSelect(mode)}
+      type="button"
+    >
+      {icon}
+      <span className="hidden lg:inline">{label}</span>
+    </button>
+  );
+}
 
 function ActionIcon({
   action,

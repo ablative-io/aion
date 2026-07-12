@@ -8,8 +8,14 @@ const fixtures = [
     deploys_green: true,
     steps: 3,
     diagnostics: [],
-    semantic: { spans: [] },
-    expected: { ok: true, deploysGreen: true, steps: 3, diagnostics: [], semantic: { spans: [] } },
+    semantic: { entries: [], graph: { steps: [], edges: [], child_calls: [] } },
+    expected: {
+      ok: true,
+      deploysGreen: true,
+      steps: 3,
+      diagnostics: [],
+      semantic: { entries: [], graph: { steps: [], edges: [], childCalls: [] } },
+    },
   },
   {
     ok: true,
@@ -28,13 +34,13 @@ const fixtures = [
   {
     ok: false,
     deploys_green: false,
-    steps: 0,
+    steps: null,
     diagnostics: [{ class: 'error', message: 'expected step', line: 1, column: 1 }],
     semantic: null,
     expected: {
       ok: false,
       deploysGreen: false,
-      steps: 0,
+      steps: null,
       diagnostics: [{ class: 'error', message: 'expected step', line: 1, column: 1 }],
       semantic: null,
     },

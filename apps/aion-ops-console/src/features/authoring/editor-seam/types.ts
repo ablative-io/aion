@@ -23,6 +23,7 @@ export type EditorDecorations = {
 };
 export type EditorChange = { content: string; origin: 'local' | 'remote' };
 export type MouseHover = { position: number; clientX: number; clientY: number };
+export type CursorChange = { position: number };
 
 /** Host-facing text editor contract. AWL-aware code depends only on this seam. */
 export interface AuthoringEditor {
@@ -36,6 +37,8 @@ export interface AuthoringEditor {
   setHighlightSpans(spans: readonly HighlightSpan[]): void;
   setDecorations(decorations: EditorDecorations): void;
   onMouseHover(listener: (hover: MouseHover | null) => void): () => void;
+  onCursorChange(listener: (change: CursorChange) => void): () => void;
+  setCursor(position: number): void;
   focus(): void;
   destroy(): void;
 }
