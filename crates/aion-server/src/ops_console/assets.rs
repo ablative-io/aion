@@ -180,6 +180,11 @@ fn content_type(path: &str) -> HeaderValue {
         HeaderValue::from_static("application/json")
     } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("svg")) {
         HeaderValue::from_static("image/svg+xml")
+    } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("wasm")) {
+        // `WebAssembly.instantiateStreaming` refuses any other content type,
+        // and the authoring page's tree-sitter worker loads its grammar wasm
+        // that way — octet-stream renders the editor unhighlighted.
+        HeaderValue::from_static("application/wasm")
     } else {
         HeaderValue::from_static("application/octet-stream")
     }
@@ -346,6 +351,38 @@ mod tests {
             content_type.starts_with("text/javascript"),
             "got {content_type}"
         );
+        Ok(())
+    }
+
+    /// Embedded `.wasm` assets serve as `application/wasm` — the type
+    /// `WebAssembly.instantiateStreaming` requires. Served as octet-stream, the
+    /// authoring page's tree-sitter worker dies and the editor renders
+    /// unhighlighted (found live, 2026-07-12).
+    #[tokio::test]
+    async fn embedded_source_serves_wasm_with_the_streaming_compile_content_type() -> TestResult {
+        let Some(wasm_path) = EmbeddedOpsConsole::iter().find(|path| path.ends_with(".wasm"))
+        else {
+            return Err("embedded bundle contains a wasm asset".into());
+        };
+        let config = OpsConsoleConfig {
+            source: OpsConsoleAssetSource::Embedded,
+        };
+        let router = ops_console_router(&config)?;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{wasm_path}"))
+                    .body(body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(content_type, "application/wasm", "got {content_type}");
         Ok(())
     }
 
