@@ -1,0 +1,97 @@
+module notify_once source=notify_once.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_send:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] receipt
+  [1] send_message_input
+  [2] notify_once_input
+  [3] sent_outcome
+  [4] ok
+== types ==
+  record Receipt tag=receipt
+    id: string
+    accepted: bool
+  record SendMessageInput tag=send_message_input
+    message: string
+  record NotifyOnceInput tag=notify_once_input
+    message: string
+  union NotifyOnceOutcome
+    sent -> sent_outcome(ref(Receipt))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=notify_once_input_codec output=notify_once_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(notify_once.NotifyOnceInput, notify_once.NotifyOnceOutcome, AwlError)
+  T-DEF name="notify_once" input=notify_once_input_codec output=notify_once_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (notify_once.NotifyOnceInput) -> Result(notify_once.NotifyOnceOutcome, AwlError)
+  T-EXEC fields=[message:String] entry=step_send args=[0]
+== fn receipt_codec/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: () -> Codec(notify_once.Receipt)
+  v0 = make_closure receipt_to_json captures=[]
+  v1 = call_local receipt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn receipt_to_json/1 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: (notify_once.Receipt) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"id": v1|>awlc.string_to_json, "accepted": v2|>awlc.bool_to_json}
+  return v3
+== fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: () -> Decoder(notify_once.Receipt)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn send_message_input_codec/0 origin=codec_template(RecordTrio, SendMessageInput, record#1) ==
+  sig: () -> Codec(notify_once.SendMessageInput)
+  v0 = make_closure send_message_input_to_json captures=[]
+  v1 = call_local send_message_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn send_message_input_to_json/1 origin=codec_template(RecordTrio, SendMessageInput, record#1) ==
+  sig: (notify_once.SendMessageInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"message": v1|>awlc.string_to_json}
+  return v2
+== fn send_message_input_decoder/0 origin=codec_template(RecordTrio, SendMessageInput, record#1) ==
+  sig: () -> Decoder(notify_once.SendMessageInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn notify_once_input_codec/0 origin=codec_template(RecordTrio, NotifyOnceInput, record#2) ==
+  sig: () -> Codec(notify_once.NotifyOnceInput)
+  v0 = make_closure notify_once_input_to_json captures=[]
+  v1 = call_local notify_once_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn notify_once_input_to_json/1 origin=codec_template(RecordTrio, NotifyOnceInput, record#2) ==
+  sig: (notify_once.NotifyOnceInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"message": v1|>awlc.string_to_json}
+  return v2
+== fn notify_once_input_decoder/0 origin=codec_template(RecordTrio, NotifyOnceInput, record#2) ==
+  sig: () -> Decoder(notify_once.NotifyOnceInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn notify_once_outcome_codec/0 origin=codec_template(UnionTrio, NotifyOnceOutcome, union#3) ==
+  sig: () -> Codec(notify_once.NotifyOnceOutcome)
+  v0 = make_closure notify_once_outcome_to_json captures=[]
+  v1 = call_local notify_once_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn notify_once_outcome_to_json/1 origin=codec_template(UnionTrio, NotifyOnceOutcome, union#3) ==
+  sig: (notify_once.NotifyOnceOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn notify_once_outcome_decoder/0 origin=codec_template(UnionTrio, NotifyOnceOutcome, union#3) ==
+  sig: () -> Decoder(notify_once.NotifyOnceOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn send_message_activity/1 origin=activity_wrapper(send_message, raw=false) ==
+  sig: (String) -> Activity(notify_once.SendMessageInput, notify_once.Receipt)
+  T-ACT action=send_message input_codec=send_message_input_codec return=receipt_codec
+== fn step_send/1 origin=region(send) ==
+  sig: (String) -> Result(notify_once.NotifyOnceOutcome, AwlError)
+  v1 = call_local send_message_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(sent_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
