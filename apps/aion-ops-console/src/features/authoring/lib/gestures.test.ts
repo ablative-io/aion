@@ -10,7 +10,7 @@ import type {
   TextDelta,
 } from '../editor-seam/types';
 import { createAuthoringFacade } from './facade';
-import { applyGestureThroughSeam } from './gestures';
+import { applyGestureThroughSeam, DocumentChangedDuringGestureError } from './gestures';
 
 test('gesture travels through facade boundary and one editor-seam delta', async () => {
   const before = '//! Demo.\nworkflow demo\n  outcome done: type String, route success\n';
@@ -32,6 +32,32 @@ test('gesture travels through facade boundary and one editor-seam delta', async 
   expect(applied[0]).toEqual([
     { from: before.length, to: before.length, insert: after.slice(before.length) },
   ]);
+});
+
+test('gesture refuses to apply when the document changed mid-flight', async () => {
+  const before = '//! Demo.\nworkflow demo\n  outcome done: type String, route success\n';
+  const after = `${before}\nstep collect\n`;
+  const facade = createAuthoringFacade(async () =>
+    Response.json({ ok: true, source: after, diagnostics: [], rename: undefined })
+  );
+  const applied: (readonly TextDelta[])[] = [];
+  const editor = fakeEditor(before, (ranges) => applied.push(ranges));
+  // Simulate a keystroke landing during the server round-trip: the second
+  // getContent read (the applying act) must see the drift and refuse.
+  let reads = 0;
+  editor.getContent = () => {
+    reads += 1;
+    return reads === 1 ? before : `${before} `;
+  };
+
+  await expect(
+    applyGestureThroughSeam(editor, facade, {
+      type: 'add_step',
+      name: 'collect',
+      prose: '',
+    } as const)
+  ).rejects.toBeInstanceOf(DocumentChangedDuringGestureError);
+  expect(applied).toHaveLength(0);
 });
 
 function fakeEditor(
