@@ -1,0 +1,164 @@
+module transcribe_and_summarize source=transcribe_and_summarize.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_transcribe:
+    aion@activity:retry/2 [activities] (v1, v4)
+    aion@activity:timeout/2 [activities] (v5, v6)
+    aion@activity:task_queue/2 [activities] (v7, lit#0)
+    aion@activity:node/2 [activities] (v8, lit#1)
+    aion@workflow:run/1 [activities] (v9)
+  step_summarize:
+    aion@activity:timeout/2 [activities] (v2, v3)
+    aion@activity:task_queue/2 [activities] (v4, lit#2)
+    aion@activity:node/2 [activities] (v5, lit#3)
+    aion@workflow:run/1 [activities] (v6)
+== durable families == activities
+== atoms ==
+  [0] transcript
+  [1] summary
+  [2] summarize_input
+  [3] transcribe_input
+  [4] transcribe_and_summarize_input
+  [5] summarized_outcome
+  [6] fixed
+  [7] retry_policy
+  [8] ok
+== types ==
+  record Transcript tag=transcript
+    text: string
+    minutes: int
+  record Summary tag=summary
+    text: string
+  record SummarizeInput tag=summarize_input
+    text: string
+  record TranscribeInput tag=transcribe_input
+    recording_path: string
+  record TranscribeAndSummarizeInput tag=transcribe_and_summarize_input
+    recording_path: string
+  union TranscribeAndSummarizeOutcome
+    summarized -> summarized_outcome(ref(Summary))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=transcribe_and_summarize_input_codec output=transcribe_and_summarize_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(transcribe_and_summarize.TranscribeAndSummarizeInput, transcribe_and_summarize.TranscribeAndSummarizeOutcome, AwlError)
+  T-DEF name="transcribe_and_summarize" input=transcribe_and_summarize_input_codec output=transcribe_and_summarize_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (transcribe_and_summarize.TranscribeAndSummarizeInput) -> Result(transcribe_and_summarize.TranscribeAndSummarizeOutcome, AwlError)
+  T-EXEC fields=[recording_path:String] entry=step_transcribe args=[0]
+== fn transcript_codec/0 origin=codec_template(RecordTrio, Transcript, record#0) ==
+  sig: () -> Codec(transcribe_and_summarize.Transcript)
+  v0 = make_closure transcript_to_json captures=[]
+  v1 = call_local transcript_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn transcript_to_json/1 origin=codec_template(RecordTrio, Transcript, record#0) ==
+  sig: (transcribe_and_summarize.Transcript) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"text": v1|>awlc.string_to_json, "minutes": v2|>awlc.int_to_json}
+  return v3
+== fn transcript_decoder/0 origin=codec_template(RecordTrio, Transcript, record#0) ==
+  sig: () -> Decoder(transcribe_and_summarize.Transcript)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summary_codec/0 origin=codec_template(RecordTrio, Summary, record#1) ==
+  sig: () -> Codec(transcribe_and_summarize.Summary)
+  v0 = make_closure summary_to_json captures=[]
+  v1 = call_local summary_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summary_to_json/1 origin=codec_template(RecordTrio, Summary, record#1) ==
+  sig: (transcribe_and_summarize.Summary) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn summary_decoder/0 origin=codec_template(RecordTrio, Summary, record#1) ==
+  sig: () -> Decoder(transcribe_and_summarize.Summary)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_input_codec/0 origin=codec_template(RecordTrio, SummarizeInput, record#2) ==
+  sig: () -> Codec(transcribe_and_summarize.SummarizeInput)
+  v0 = make_closure summarize_input_to_json captures=[]
+  v1 = call_local summarize_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summarize_input_to_json/1 origin=codec_template(RecordTrio, SummarizeInput, record#2) ==
+  sig: (transcribe_and_summarize.SummarizeInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn summarize_input_decoder/0 origin=codec_template(RecordTrio, SummarizeInput, record#2) ==
+  sig: () -> Decoder(transcribe_and_summarize.SummarizeInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn transcribe_input_codec/0 origin=codec_template(RecordTrio, TranscribeInput, record#3) ==
+  sig: () -> Codec(transcribe_and_summarize.TranscribeInput)
+  v0 = make_closure transcribe_input_to_json captures=[]
+  v1 = call_local transcribe_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn transcribe_input_to_json/1 origin=codec_template(RecordTrio, TranscribeInput, record#3) ==
+  sig: (transcribe_and_summarize.TranscribeInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"recording_path": v1|>awlc.string_to_json}
+  return v2
+== fn transcribe_input_decoder/0 origin=codec_template(RecordTrio, TranscribeInput, record#3) ==
+  sig: () -> Decoder(transcribe_and_summarize.TranscribeInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn transcribe_and_summarize_input_codec/0 origin=codec_template(RecordTrio, TranscribeAndSummarizeInput, record#4) ==
+  sig: () -> Codec(transcribe_and_summarize.TranscribeAndSummarizeInput)
+  v0 = make_closure transcribe_and_summarize_input_to_json captures=[]
+  v1 = call_local transcribe_and_summarize_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn transcribe_and_summarize_input_to_json/1 origin=codec_template(RecordTrio, TranscribeAndSummarizeInput, record#4) ==
+  sig: (transcribe_and_summarize.TranscribeAndSummarizeInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"recording_path": v1|>awlc.string_to_json}
+  return v2
+== fn transcribe_and_summarize_input_decoder/0 origin=codec_template(RecordTrio, TranscribeAndSummarizeInput, record#4) ==
+  sig: () -> Decoder(transcribe_and_summarize.TranscribeAndSummarizeInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn transcribe_and_summarize_outcome_codec/0 origin=codec_template(UnionTrio, TranscribeAndSummarizeOutcome, union#5) ==
+  sig: () -> Codec(transcribe_and_summarize.TranscribeAndSummarizeOutcome)
+  v0 = make_closure transcribe_and_summarize_outcome_to_json captures=[]
+  v1 = call_local transcribe_and_summarize_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn transcribe_and_summarize_outcome_to_json/1 origin=codec_template(UnionTrio, TranscribeAndSummarizeOutcome, union#5) ==
+  sig: (transcribe_and_summarize.TranscribeAndSummarizeOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn transcribe_and_summarize_outcome_decoder/0 origin=codec_template(UnionTrio, TranscribeAndSummarizeOutcome, union#5) ==
+  sig: () -> Decoder(transcribe_and_summarize.TranscribeAndSummarizeOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_activity/1 origin=activity_wrapper(summarize, raw=false) ==
+  sig: (String) -> Activity(transcribe_and_summarize.SummarizeInput, transcribe_and_summarize.Summary)
+  T-ACT action=summarize input_codec=summarize_input_codec return=summary_codec
+== fn transcribe_activity/1 origin=activity_wrapper(transcribe, raw=false) ==
+  sig: (String) -> Activity(transcribe_and_summarize.TranscribeInput, transcribe_and_summarize.Transcript)
+  T-ACT action=transcribe input_codec=transcribe_input_codec return=transcript_codec
+== fn step_transcribe/1 origin=region(transcribe) ==
+  sig: (String) -> Result(transcribe_and_summarize.TranscribeAndSummarizeOutcome, AwlError)
+  v1 = call_local transcribe_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(60000) live_after=[v1]
+  v3 = record(fixed, [v2])
+  v4 = record(retry_policy, [2, v3])
+  v5 = call_rt aion@activity:retry/2(v1, v4)
+  v6 = call_rt aion@duration:milliseconds/1(10800000) live_after=[v5]
+  v7 = call_rt aion@activity:timeout/2(v5, v6)
+  v8 = call_rt aion@activity:task_queue/2(v7, lit#0)
+  v9 = call_rt aion@activity:node/2(v8, lit#1)
+  v10 = call_rt aion@workflow:run/1(v9)
+  v11 = call_rt aion@awl@error:map_activity_error/1(v10)
+  v12 = try_bind v11
+  tail_local step_summarize(v12)
+== fn step_summarize/1 origin=chain_step(transcribe.summarize) ==
+  sig: (transcribe_and_summarize.Transcript) -> Result(transcribe_and_summarize.TranscribeAndSummarizeOutcome, AwlError)
+  v1 = field(v0, 1)
+  v2 = call_local summarize_activity(v1)
+  v3 = call_rt aion@duration:milliseconds/1(600000) live_after=[v2]
+  v4 = call_rt aion@activity:timeout/2(v2, v3)
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#2)
+  v6 = call_rt aion@activity:node/2(v5, lit#3)
+  v7 = call_rt aion@workflow:run/1(v6)
+  v8 = call_rt aion@awl@error:map_activity_error/1(v7)
+  v9 = try_bind v8
+  v10 = record(summarized_outcome, [v9])
+  v11 = record(ok, [v10])
+  return v11
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

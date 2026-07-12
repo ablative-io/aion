@@ -1,0 +1,145 @@
+module pipe_chain_stages source=pipe_chain_stages.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_greet:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+  step_shout:
+    aion@activity:task_queue/2 [activities] (v1, lit#1)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] greeting
+  [1] shouted
+  [2] greet_input
+  [3] shout_input
+  [4] pipe_chain_stages_input
+  [5] shouted_outcome
+  [6] ok
+== types ==
+  record Greeting tag=greeting
+    greeting: string
+  record Shouted tag=shouted
+    text: string
+  record GreetInput tag=greet_input
+    name: string
+  record ShoutInput tag=shout_input
+    text: string
+  record PipeChainStagesInput tag=pipe_chain_stages_input
+    name: string
+  union PipeChainStagesOutcome
+    shouted -> shouted_outcome(ref(Shouted))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=pipe_chain_stages_input_codec output=pipe_chain_stages_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(pipe_chain_stages.PipeChainStagesInput, pipe_chain_stages.PipeChainStagesOutcome, AwlError)
+  T-DEF name="pipe_chain_stages" input=pipe_chain_stages_input_codec output=pipe_chain_stages_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (pipe_chain_stages.PipeChainStagesInput) -> Result(pipe_chain_stages.PipeChainStagesOutcome, AwlError)
+  T-EXEC fields=[name:String] entry=step_greet args=[0]
+== fn greeting_codec/0 origin=codec_template(RecordTrio, Greeting, record#0) ==
+  sig: () -> Codec(pipe_chain_stages.Greeting)
+  v0 = make_closure greeting_to_json captures=[]
+  v1 = call_local greeting_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn greeting_to_json/1 origin=codec_template(RecordTrio, Greeting, record#0) ==
+  sig: (pipe_chain_stages.Greeting) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"greeting": v1|>awlc.string_to_json}
+  return v2
+== fn greeting_decoder/0 origin=codec_template(RecordTrio, Greeting, record#0) ==
+  sig: () -> Decoder(pipe_chain_stages.Greeting)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn shouted_codec/0 origin=codec_template(RecordTrio, Shouted, record#1) ==
+  sig: () -> Codec(pipe_chain_stages.Shouted)
+  v0 = make_closure shouted_to_json captures=[]
+  v1 = call_local shouted_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn shouted_to_json/1 origin=codec_template(RecordTrio, Shouted, record#1) ==
+  sig: (pipe_chain_stages.Shouted) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn shouted_decoder/0 origin=codec_template(RecordTrio, Shouted, record#1) ==
+  sig: () -> Decoder(pipe_chain_stages.Shouted)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn greet_input_codec/0 origin=codec_template(RecordTrio, GreetInput, record#2) ==
+  sig: () -> Codec(pipe_chain_stages.GreetInput)
+  v0 = make_closure greet_input_to_json captures=[]
+  v1 = call_local greet_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn greet_input_to_json/1 origin=codec_template(RecordTrio, GreetInput, record#2) ==
+  sig: (pipe_chain_stages.GreetInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn greet_input_decoder/0 origin=codec_template(RecordTrio, GreetInput, record#2) ==
+  sig: () -> Decoder(pipe_chain_stages.GreetInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn shout_input_codec/0 origin=codec_template(RecordTrio, ShoutInput, record#3) ==
+  sig: () -> Codec(pipe_chain_stages.ShoutInput)
+  v0 = make_closure shout_input_to_json captures=[]
+  v1 = call_local shout_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn shout_input_to_json/1 origin=codec_template(RecordTrio, ShoutInput, record#3) ==
+  sig: (pipe_chain_stages.ShoutInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn shout_input_decoder/0 origin=codec_template(RecordTrio, ShoutInput, record#3) ==
+  sig: () -> Decoder(pipe_chain_stages.ShoutInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn pipe_chain_stages_input_codec/0 origin=codec_template(RecordTrio, PipeChainStagesInput, record#4) ==
+  sig: () -> Codec(pipe_chain_stages.PipeChainStagesInput)
+  v0 = make_closure pipe_chain_stages_input_to_json captures=[]
+  v1 = call_local pipe_chain_stages_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn pipe_chain_stages_input_to_json/1 origin=codec_template(RecordTrio, PipeChainStagesInput, record#4) ==
+  sig: (pipe_chain_stages.PipeChainStagesInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn pipe_chain_stages_input_decoder/0 origin=codec_template(RecordTrio, PipeChainStagesInput, record#4) ==
+  sig: () -> Decoder(pipe_chain_stages.PipeChainStagesInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn pipe_chain_stages_outcome_codec/0 origin=codec_template(UnionTrio, PipeChainStagesOutcome, union#5) ==
+  sig: () -> Codec(pipe_chain_stages.PipeChainStagesOutcome)
+  v0 = make_closure pipe_chain_stages_outcome_to_json captures=[]
+  v1 = call_local pipe_chain_stages_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn pipe_chain_stages_outcome_to_json/1 origin=codec_template(UnionTrio, PipeChainStagesOutcome, union#5) ==
+  sig: (pipe_chain_stages.PipeChainStagesOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn pipe_chain_stages_outcome_decoder/0 origin=codec_template(UnionTrio, PipeChainStagesOutcome, union#5) ==
+  sig: () -> Decoder(pipe_chain_stages.PipeChainStagesOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn greet_activity/1 origin=activity_wrapper(greet, raw=false) ==
+  sig: (String) -> Activity(pipe_chain_stages.GreetInput, pipe_chain_stages.Greeting)
+  T-ACT action=greet input_codec=greet_input_codec return=greeting_codec
+== fn shout_activity/1 origin=activity_wrapper(shout, raw=false) ==
+  sig: (String) -> Activity(pipe_chain_stages.ShoutInput, pipe_chain_stages.Shouted)
+  T-ACT action=shout input_codec=shout_input_codec return=shouted_codec
+== fn step_greet/1 origin=region(greet) ==
+  sig: (String) -> Result(pipe_chain_stages.PipeChainStagesOutcome, AwlError)
+  v1 = call_local greet_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = field(v5, 1)
+  tail_local step_shout(v6)
+== fn step_shout/1 origin=chain_step(greet.shout) ==
+  sig: (String) -> Result(pipe_chain_stages.PipeChainStagesOutcome, AwlError)
+  v1 = call_local shout_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#1)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(shouted_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

@@ -29,6 +29,6 @@ pub use error::EmitError;
 // type environment rather than re-deriving them.
 pub(crate) use context::Emitter;
 pub(crate) use entry::prepare;
-pub(crate) use graph::Plan;
+pub(crate) use graph::{Plan, expr_refs};
 pub(crate) use names::snake;
 pub(crate) use types::{FieldDef, GType, NamedDef, RecordDef, type_ref_to_g};

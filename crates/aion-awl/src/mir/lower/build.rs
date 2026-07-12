@@ -35,8 +35,11 @@ pub(super) struct FnPlan {
     pub(super) codecs: BTreeMap<String, (FnRef, FnRef, FnRef)>,
     /// Action name to its activity-wrapper function ref.
     pub(super) activities: BTreeMap<String, FnRef>,
-    /// Region index to its step function ref.
+    /// Region index to its entry-step function ref.
     pub(super) regions: Vec<FnRef>,
+    /// Region index to the function refs of its chain steps, one per layer in
+    /// chain order; `chains[r][0] == regions[r]`.
+    pub(super) chains: Vec<Vec<FnRef>>,
 }
 
 /// The assembled module skeleton, ready for region-body filling.
@@ -251,9 +254,16 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
     // `wait` lowers (deferred), so only the slot count matters here.
     next += u32::try_from(signals.len()).unwrap_or(0);
     let mut regions = Vec::new();
-    for _ in 0..ctx.plan.regions.len() {
+    let mut chains = Vec::new();
+    for region in &ctx.plan.regions {
         regions.push(FnRef(next));
-        next += 1;
+        let slots = region.layers.len().max(1);
+        let mut chain = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            chain.push(FnRef(next));
+            next += 1;
+        }
+        chains.push(chain);
     }
 
     let plan = FnPlan {
@@ -263,6 +273,7 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         codecs,
         activities,
         regions,
+        chains,
     };
 
     // Build functions in slot order.

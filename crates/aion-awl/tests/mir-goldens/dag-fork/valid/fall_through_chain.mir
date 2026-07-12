@@ -1,0 +1,192 @@
+module fall_through_chain source=fall_through_chain.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_clean_input:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+  step_render_page:
+    aion@activity:task_queue/2 [activities] (v2, lit#1)
+    aion@workflow:run/1 [activities] (v3)
+  step_publish_page:
+    aion@activity:task_queue/2 [activities] (v2, lit#2)
+    aion@workflow:run/1 [activities] (v3)
+== durable families == activities
+== atoms ==
+  [0] cleaned
+  [1] rendered
+  [2] published
+  [3] clean_input
+  [4] publish_input
+  [5] render_input
+  [6] fall_through_chain_input
+  [7] published_outcome
+  [8] ok
+== types ==
+  record Cleaned tag=cleaned
+    text: string
+  record Rendered tag=rendered
+    html: string
+  record Published tag=published
+    url: string
+  record CleanInput tag=clean_input
+    raw: string
+  record PublishInput tag=publish_input
+    html: string
+  record RenderInput tag=render_input
+    text: string
+  record FallThroughChainInput tag=fall_through_chain_input
+    raw: string
+  union FallThroughChainOutcome
+    published -> published_outcome(ref(Published))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fall_through_chain_input_codec output=fall_through_chain_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fall_through_chain.FallThroughChainInput, fall_through_chain.FallThroughChainOutcome, AwlError)
+  T-DEF name="fall_through_chain" input=fall_through_chain_input_codec output=fall_through_chain_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fall_through_chain.FallThroughChainInput) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
+  T-EXEC fields=[raw:String] entry=step_clean_input args=[0]
+== fn cleaned_codec/0 origin=codec_template(RecordTrio, Cleaned, record#0) ==
+  sig: () -> Codec(fall_through_chain.Cleaned)
+  v0 = make_closure cleaned_to_json captures=[]
+  v1 = call_local cleaned_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn cleaned_to_json/1 origin=codec_template(RecordTrio, Cleaned, record#0) ==
+  sig: (fall_through_chain.Cleaned) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn cleaned_decoder/0 origin=codec_template(RecordTrio, Cleaned, record#0) ==
+  sig: () -> Decoder(fall_through_chain.Cleaned)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn rendered_codec/0 origin=codec_template(RecordTrio, Rendered, record#1) ==
+  sig: () -> Codec(fall_through_chain.Rendered)
+  v0 = make_closure rendered_to_json captures=[]
+  v1 = call_local rendered_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn rendered_to_json/1 origin=codec_template(RecordTrio, Rendered, record#1) ==
+  sig: (fall_through_chain.Rendered) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"html": v1|>awlc.string_to_json}
+  return v2
+== fn rendered_decoder/0 origin=codec_template(RecordTrio, Rendered, record#1) ==
+  sig: () -> Decoder(fall_through_chain.Rendered)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn published_codec/0 origin=codec_template(RecordTrio, Published, record#2) ==
+  sig: () -> Codec(fall_through_chain.Published)
+  v0 = make_closure published_to_json captures=[]
+  v1 = call_local published_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn published_to_json/1 origin=codec_template(RecordTrio, Published, record#2) ==
+  sig: (fall_through_chain.Published) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"url": v1|>awlc.string_to_json}
+  return v2
+== fn published_decoder/0 origin=codec_template(RecordTrio, Published, record#2) ==
+  sig: () -> Decoder(fall_through_chain.Published)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn clean_input_codec/0 origin=codec_template(RecordTrio, CleanInput, record#3) ==
+  sig: () -> Codec(fall_through_chain.CleanInput)
+  v0 = make_closure clean_input_to_json captures=[]
+  v1 = call_local clean_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn clean_input_to_json/1 origin=codec_template(RecordTrio, CleanInput, record#3) ==
+  sig: (fall_through_chain.CleanInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"raw": v1|>awlc.string_to_json}
+  return v2
+== fn clean_input_decoder/0 origin=codec_template(RecordTrio, CleanInput, record#3) ==
+  sig: () -> Decoder(fall_through_chain.CleanInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn publish_input_codec/0 origin=codec_template(RecordTrio, PublishInput, record#4) ==
+  sig: () -> Codec(fall_through_chain.PublishInput)
+  v0 = make_closure publish_input_to_json captures=[]
+  v1 = call_local publish_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn publish_input_to_json/1 origin=codec_template(RecordTrio, PublishInput, record#4) ==
+  sig: (fall_through_chain.PublishInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"html": v1|>awlc.string_to_json}
+  return v2
+== fn publish_input_decoder/0 origin=codec_template(RecordTrio, PublishInput, record#4) ==
+  sig: () -> Decoder(fall_through_chain.PublishInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn render_input_codec/0 origin=codec_template(RecordTrio, RenderInput, record#5) ==
+  sig: () -> Codec(fall_through_chain.RenderInput)
+  v0 = make_closure render_input_to_json captures=[]
+  v1 = call_local render_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn render_input_to_json/1 origin=codec_template(RecordTrio, RenderInput, record#5) ==
+  sig: (fall_through_chain.RenderInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn render_input_decoder/0 origin=codec_template(RecordTrio, RenderInput, record#5) ==
+  sig: () -> Decoder(fall_through_chain.RenderInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fall_through_chain_input_codec/0 origin=codec_template(RecordTrio, FallThroughChainInput, record#6) ==
+  sig: () -> Codec(fall_through_chain.FallThroughChainInput)
+  v0 = make_closure fall_through_chain_input_to_json captures=[]
+  v1 = call_local fall_through_chain_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fall_through_chain_input_to_json/1 origin=codec_template(RecordTrio, FallThroughChainInput, record#6) ==
+  sig: (fall_through_chain.FallThroughChainInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"raw": v1|>awlc.string_to_json}
+  return v2
+== fn fall_through_chain_input_decoder/0 origin=codec_template(RecordTrio, FallThroughChainInput, record#6) ==
+  sig: () -> Decoder(fall_through_chain.FallThroughChainInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fall_through_chain_outcome_codec/0 origin=codec_template(UnionTrio, FallThroughChainOutcome, union#7) ==
+  sig: () -> Codec(fall_through_chain.FallThroughChainOutcome)
+  v0 = make_closure fall_through_chain_outcome_to_json captures=[]
+  v1 = call_local fall_through_chain_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fall_through_chain_outcome_to_json/1 origin=codec_template(UnionTrio, FallThroughChainOutcome, union#7) ==
+  sig: (fall_through_chain.FallThroughChainOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fall_through_chain_outcome_decoder/0 origin=codec_template(UnionTrio, FallThroughChainOutcome, union#7) ==
+  sig: () -> Decoder(fall_through_chain.FallThroughChainOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn clean_activity/1 origin=activity_wrapper(clean, raw=false) ==
+  sig: (String) -> Activity(fall_through_chain.CleanInput, fall_through_chain.Cleaned)
+  T-ACT action=clean input_codec=clean_input_codec return=cleaned_codec
+== fn publish_activity/1 origin=activity_wrapper(publish, raw=false) ==
+  sig: (String) -> Activity(fall_through_chain.PublishInput, fall_through_chain.Published)
+  T-ACT action=publish input_codec=publish_input_codec return=published_codec
+== fn render_activity/1 origin=activity_wrapper(render, raw=false) ==
+  sig: (String) -> Activity(fall_through_chain.RenderInput, fall_through_chain.Rendered)
+  T-ACT action=render input_codec=render_input_codec return=rendered_codec
+== fn step_clean_input/1 origin=region(clean_input) ==
+  sig: (String) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
+  v1 = call_local clean_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  tail_local step_render_page(v5)
+== fn step_render_page/1 origin=chain_step(clean_input.render_page) ==
+  sig: (fall_through_chain.Cleaned) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
+  v1 = field(v0, 1)
+  v2 = call_local render_activity(v1)
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#1)
+  v4 = call_rt aion@workflow:run/1(v3)
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4)
+  v6 = try_bind v5
+  tail_local step_publish_page(v6)
+== fn step_publish_page/1 origin=chain_step(clean_input.publish_page) ==
+  sig: (fall_through_chain.Rendered) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
+  v1 = field(v0, 1)
+  v2 = call_local publish_activity(v1)
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#2)
+  v4 = call_rt aion@workflow:run/1(v3)
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4)
+  v6 = try_bind v5
+  v7 = record(published_outcome, [v6])
+  v8 = record(ok, [v7])
+  return v8
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

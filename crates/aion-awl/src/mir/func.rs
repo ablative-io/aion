@@ -97,6 +97,12 @@ pub enum FnOrigin {
     Region {
         entry_step: String,
     },
+    /// A non-entry step of a sequential region chain: its own `FlowFn`,
+    /// reached only by the preceding step's tail call (IR-14).
+    ChainStep {
+        entry_step: String,
+        step: String,
+    },
     SubStep {
         parent: String,
         sub: String,

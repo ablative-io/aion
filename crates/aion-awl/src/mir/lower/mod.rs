@@ -2,6 +2,7 @@
 
 mod activity;
 mod build;
+mod chain;
 mod codec;
 mod ctx;
 mod driver;

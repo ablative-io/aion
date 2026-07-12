@@ -65,8 +65,11 @@ fn hex(bytes: &[u8]) -> String {
 /// ratchet instead of being silently absorbed by the deferred bucket. Paths
 /// are relative to `tests/fixtures/rev2`, without the `.awl` extension.
 const COVERED: &[&str] = &[
+    "dag-fork/valid/after_single",
+    "dag-fork/valid/fall_through_chain",
     "declarations/valid/worker_retry_backoff",
     "declarations/valid/worker_single_action",
+    "declarations/valid/workers_multiple",
     "flagship/valid/awl_hello",
     "header-types/valid/doc_comments",
     "header-types/valid/enum",
@@ -74,6 +77,8 @@ const COVERED: &[&str] = &[
     "header-types/valid/minimal",
     "header-types/valid/noncanonical_commas",
     "schema-doors/valid/inline_verbatim_constraints",
+    "step-bodies/valid/calls_and_side_effects",
+    "step-bodies/valid/pipe_chain_stages",
 ];
 
 /// Compare `contents` against the on-disk golden. A MISSING golden is a hard

@@ -1,7 +1,10 @@
-//! Region-body lowering for the BC-2 covered subset: single-step regions whose
-//! bodies are action calls, sleeps, and pipe chains (action/field stages)
-//! ending in a route. Outcome cascades, forks, loops, substeps, waits, spawns,
-//! `on failure`, and combinators are deferred (`LowerError::unsupported`) —
+//! Region-body lowering for the BC-2 covered subset: sequential regions whose
+//! step bodies are action calls, sleeps, and pipe chains (action/field stages)
+//! ending in a route. A multi-step chain lowers as one `FlowFn` per step, each
+//! non-terminal step ending in a tail call to its successor (IR-14) with the
+//! chain-boundary live set (`chain::chain_params`) as arguments. Outcome
+//! cascades, forks, loops, substeps, waits, spawns, `on failure`, combinators,
+//! and dependency-parallel layers are deferred (`LowerError::unsupported`) —
 //! visible incompleteness, never silent divergence from the reference. The
 //! activity-emission primitives live in `activity`.
 
@@ -10,25 +13,33 @@ use crate::ast::{Call, CallStmt, PipeEnd, PipeStage, RouteTarget, Statement, Ste
 use crate::emitter::{GType, snake, type_ref_to_g};
 
 use super::super::func::{FlowFn, FnOrigin, MirFn};
-use super::super::ids::{Span, Var};
+use super::super::ids::{FnRef, Span, Var};
 use super::super::ops::{Block, Stmt, Tail, Value};
 use super::super::runtime::RuntimeFn;
 use super::super::tydesc::TyDesc;
 use super::activity::{activity_call, call_rt, encode_json, lower_sleep, record_new, zero_span};
 use super::build::{FnPlan, output_tydesc};
+use super::chain::chain_params;
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_arg_for, lower_expr};
 
-/// Lower every region into a `step_<entry>` `FlowFn`, appended to `functions`.
+/// The fall-through continuation of a non-terminal chain step: the successor's
+/// function ref and parameter names.
+struct Next {
+    callee: FnRef,
+    param_names: Vec<String>,
+}
+
+/// Lower every region into `step_<name>` `FlowFn`s (one per chain step, in
+/// chain order), appended to `functions`.
 pub(super) fn lower_regions(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     functions: &mut Vec<MirFn>,
 ) -> Result<(), LowerError> {
     for region_index in 0..ctx.plan.regions.len() {
-        let flow = lower_region(ctx, plan, region_index)?;
-        functions.push(MirFn::Flow(flow));
+        lower_region(ctx, plan, region_index, functions)?;
     }
     Ok(())
 }
@@ -37,30 +48,68 @@ fn lower_region(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     region_index: usize,
-) -> Result<FlowFn, LowerError> {
+    functions: &mut Vec<MirFn>,
+) -> Result<(), LowerError> {
     let region = &ctx.plan.regions[region_index];
     let entry_index = region.entry;
     let layers = region.layers.clone();
     let entry_step = ctx.emitter.document.steps[entry_index].clone();
-    let param_names = ctx.plan.region_params(region_index).to_vec();
 
-    if layers.len() != 1 || layers[0].len() != 1 || layers[0][0] != entry_index {
+    // A sequential chain has exactly one member per layer; dependency-parallel
+    // layers stay deferred.
+    let mut chain = Vec::with_capacity(layers.len());
+    for layer in &layers {
+        let [member] = layer.as_slice() else {
+            return Err(LowerError::unsupported(
+                "parallel region",
+                entry_step.name_span,
+            ));
+        };
+        chain.push(*member);
+    }
+    if chain.first() != Some(&entry_index) {
         return Err(LowerError::unsupported(
-            "multi-step or parallel region",
+            "parallel region",
             entry_step.name_span,
         ));
     }
 
+    let params = chain_params(ctx.emitter, ctx.plan, &chain);
+    for (position, &step_index) in chain.iter().enumerate() {
+        let step = ctx.emitter.document.steps[step_index].clone();
+        // The entry's parameter list is the shared plan's fixed point (the
+        // parity anchor); chain boundaries use the backward live sets.
+        let param_names = if position == 0 {
+            ctx.plan.region_params(region_index).to_vec()
+        } else {
+            params[position].clone()
+        };
+        let next = chain.get(position + 1).map(|_| Next {
+            callee: plan.chains[region_index][position + 1],
+            param_names: params[position + 1].clone(),
+        });
+        let flow = lower_chain_step(ctx, plan, &entry_step, &step, position, &param_names, next)?;
+        functions.push(MirFn::Flow(flow));
+    }
+    Ok(())
+}
+
+fn lower_chain_step(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    entry_step: &Step,
+    step: &Step,
+    position: usize,
+    param_names: &[String],
+    next: Option<Next>,
+) -> Result<FlowFn, LowerError> {
     ctx.reset_vars();
     let mut scope: Scope = Scope::new();
     let mut param_vars = Vec::new();
     let mut param_tys = Vec::new();
-    for name in &param_names {
+    for name in param_names {
         let ty = ctx.emitter.bindings.get(name).cloned().ok_or_else(|| {
-            LowerError::new(
-                entry_step.name_span,
-                format!("binding `{name}` has no type"),
-            )
+            LowerError::new(step.name_span, format!("binding `{name}` has no type"))
         })?;
         let var = ctx.fresh_var();
         param_vars.push(var);
@@ -68,17 +117,25 @@ fn lower_region(
         scope.insert(name.clone(), Binding { var, ty });
     }
 
-    let body = lower_step(ctx, plan, &entry_step, &mut scope)?;
-    Ok(FlowFn {
-        origin: FnOrigin::Region {
+    let body = lower_step(ctx, plan, step, &mut scope, next)?;
+    let origin = if position == 0 {
+        FnOrigin::Region {
             entry_step: entry_step.name.clone(),
-        },
-        name: format!("step_{}", snake(&entry_step.name)),
+        }
+    } else {
+        FnOrigin::ChainStep {
+            entry_step: entry_step.name.clone(),
+            step: step.name.clone(),
+        }
+    };
+    Ok(FlowFn {
+        origin,
+        name: format!("step_{}", snake(&step.name)),
         params: param_vars,
         param_tys,
         ret_ty: TyDesc::Result(Box::new(output_tydesc(ctx)), Box::new(TyDesc::AwlError)),
         body,
-        span: Span::from_source(entry_step.name_span),
+        span: Span::from_source(step.name_span),
         degraded_parallel: false,
     })
 }
@@ -88,6 +145,7 @@ fn lower_step(
     plan: &FnPlan,
     step: &Step,
     scope: &mut Scope,
+    next: Option<Next>,
 ) -> Result<Block, LowerError> {
     if step.on_failure.is_some() {
         return Err(LowerError::unsupported("on failure", step.name_span));
@@ -103,6 +161,27 @@ fn lower_step(
     }
     if !step.outcomes.is_empty() {
         return Err(LowerError::unsupported("outcome clauses", step.name_span));
+    }
+    // Fall-through: hand the chain-boundary live set to the successor as a
+    // tail call (IR-14).
+    if let Some(next) = next {
+        let mut args = Vec::new();
+        for name in &next.param_names {
+            let binding = scope.get(name).ok_or_else(|| {
+                LowerError::new(
+                    step.name_span,
+                    format!("fall-through needs `{name}` in scope"),
+                )
+            })?;
+            args.push(Value::Var(binding.var));
+        }
+        return Ok(Block {
+            stmts,
+            tail: Tail::TailLocal {
+                callee: next.callee,
+                args,
+            },
+        });
     }
     Err(LowerError::unsupported(
         "step falls through without a route",

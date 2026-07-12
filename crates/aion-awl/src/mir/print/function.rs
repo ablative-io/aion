@@ -46,6 +46,7 @@ fn render_origin(module: &MirModule, origin: &FnOrigin) -> String {
         FnOrigin::Definition => "definition".to_owned(),
         FnOrigin::Execute => "execute".to_owned(),
         FnOrigin::Region { entry_step } => format!("region({entry_step})"),
+        FnOrigin::ChainStep { entry_step, step } => format!("chain_step({entry_step}.{step})"),
         FnOrigin::SubStep { parent, sub } => format!("substep({parent}.{sub})"),
         FnOrigin::Loop { step, index } => format!("loop({step}#{index})"),
         FnOrigin::ActivityWrapper { action, raw } => {
