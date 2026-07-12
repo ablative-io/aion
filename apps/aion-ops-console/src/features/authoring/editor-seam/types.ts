@@ -9,7 +9,10 @@ export type LayoutMetrics = {
   scrollTop: number;
   scrollLeft: number;
 };
-export type HighlightSpan = { startByte: number; endByte: number; capture: string };
+// Offsets are UTF-16 code units (web-tree-sitter's native index space — NOT
+// bytes; treating them as bytes drags every highlight left past each
+// multi-byte character, the operator-reported drift of 2026-07-12).
+export type HighlightSpan = { startIndex: number; endIndex: number; capture: string };
 export type LineBackgroundDecoration = { line: number; className: string };
 export type GutterTextDecoration = { line: number; text: string; className: string };
 export type UnderlineDecoration = TextRange & { className: string; message?: string };

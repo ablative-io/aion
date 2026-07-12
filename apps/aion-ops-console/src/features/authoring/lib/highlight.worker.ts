@@ -23,9 +23,10 @@ self.onmessage = async (event: MessageEvent<{ id: number; source: string }>) => 
     const tree = parser?.parse(source);
     if (tree === undefined || tree === null || query === undefined)
       throw new Error('AWL parser unavailable');
+    // web-tree-sitter indexes are UTF-16 code units — pass through untouched.
     const spans = query.captures(tree.rootNode).map((capture) => ({
-      startByte: capture.node.startIndex,
-      endByte: capture.node.endIndex,
+      startIndex: capture.node.startIndex,
+      endIndex: capture.node.endIndex,
       capture: capture.name,
     }));
     tree.delete();

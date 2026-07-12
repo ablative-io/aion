@@ -213,10 +213,12 @@ export function createCodeMirrorEditor(
 }
 
 function highlightDecorations(view: EditorView, spans: readonly HighlightSpan[]): DecorationSet {
-  const source = view.state.doc.toString();
+  // Span offsets are UTF-16 code units — CM6's own index space. Clamp to the
+  // live document: spans race edits, and the next parse reconciles.
+  const docLength = view.state.doc.length;
   const ranges = spans.flatMap((span) => {
-    const from = byteToCodeUnit(source, span.startByte);
-    const to = byteToCodeUnit(source, span.endByte);
+    const from = Math.min(span.startIndex, docLength);
+    const to = Math.min(span.endIndex, docLength);
     return from < to
       ? [Decoration.mark({ class: `awl-syntax-${captureClass(span.capture)}` }).range(from, to)]
       : [];
@@ -262,20 +264,6 @@ function readMetrics(view: EditorView): LayoutMetrics {
     scrollTop: view.scrollDOM.scrollTop,
     scrollLeft: view.scrollDOM.scrollLeft,
   };
-}
-
-function byteToCodeUnit(source: string, byte: number): number {
-  if (byte <= 0) return 0;
-  const encoder = new TextEncoder();
-  let codeUnit = 0;
-  let consumed = 0;
-  for (const character of source) {
-    const width = encoder.encode(character).length;
-    if (consumed + width > byte) break;
-    consumed += width;
-    codeUnit += character.length;
-  }
-  return codeUnit;
 }
 
 function captureClass(capture: string): string {
