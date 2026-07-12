@@ -12,10 +12,17 @@ import { cn } from '@/lib/utils';
 import { createCodeMirrorEditor } from '../editor-seam/codemirror';
 import type { AuthoringEditor, HighlightSpan } from '../editor-seam/types';
 import { mapDiagnostics, minimalTextDelta, statusForCheck } from '../lib/diagnostics';
-import { type AwlDocument, authoringFacade, type CheckResult } from '../lib/facade';
+import {
+  type AwlDocument,
+  authoringFacade,
+  type CheckResult,
+  type EditResult,
+  type GestureOperation,
+} from '../lib/facade';
+import { applyGestureThroughSeam } from '../lib/gestures';
 import { byteOffsetToUtf16, stepAtPosition } from '../lib/projection';
 import type { SemanticIndex } from '../lib/projection-types';
-import { AuthoringCanvas } from './AuthoringCanvas';
+import { type AuthoringViewMode, ProjectionPane } from './ProjectionPane';
 
 export type EditorPaneProps = {
   path: string;
@@ -24,7 +31,7 @@ export type EditorPaneProps = {
   onOpenDocument: (path: string) => void;
 };
 
-type ViewMode = 'text' | 'canvas' | 'split';
+type ViewMode = AuthoringViewMode;
 
 type HighlightReply = { id: number; spans?: HighlightSpan[]; error?: string };
 
@@ -168,6 +175,22 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
     }
   }
 
+  const applyGesture = useCallback(async (operation: GestureOperation): Promise<EditResult> => {
+    setMessage(null);
+    try {
+      const editor = editorRef.current;
+      if (editor === null) throw new Error('Editor is not available');
+      // This is the architectural seam: every server-printed gesture reaches
+      // CodeMirror in exactly one applyTextDelta call, hence one undo unit.
+      const result = await applyGestureThroughSeam(editor, authoringFacade, operation);
+      setMessage('Canvas gesture applied');
+      return result;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Canvas gesture failed');
+      throw error;
+    }
+  }, []);
+
   const status = check === null ? null : statusForCheck(check);
   const statusStyle = statusPresentation(status?.tone);
   const documentName = path.split('/').at(-1) ?? path;
@@ -243,6 +266,7 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
           check={check}
           documents={documents}
           onJumpToSpan={jumpToSpan}
+          onGesture={applyGesture}
           onOpenDocument={onOpenDocument}
           path={path}
           selectedStep={selectedStep}
@@ -273,46 +297,6 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
         </AnimatePresence>
       </div>
     </section>
-  );
-}
-
-function ProjectionPane({
-  check,
-  documents,
-  onJumpToSpan,
-  onOpenDocument,
-  path,
-  selectedStep,
-  semantic,
-  viewMode,
-}: {
-  check: CheckResult | null;
-  documents: readonly AwlDocument[];
-  onJumpToSpan: (byteOffset: number) => void;
-  onOpenDocument: (path: string) => void;
-  path: string;
-  selectedStep: string | null;
-  semantic: SemanticIndex | null;
-  viewMode: ViewMode;
-}) {
-  if (viewMode === 'text') return null;
-  if (semantic === null) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-surface-elevated text-muted-foreground text-sm">
-        {check?.ok === false ? 'Fix source errors to create a projection' : 'Building projection…'}
-      </div>
-    );
-  }
-  return (
-    <AuthoringCanvas
-      diagnostics={check?.diagnostics ?? []}
-      documents={documents}
-      graph={semantic.graph}
-      onJumpToSpan={onJumpToSpan}
-      onOpenDocument={onOpenDocument}
-      path={path}
-      selectedStep={selectedStep}
-    />
   );
 }
 

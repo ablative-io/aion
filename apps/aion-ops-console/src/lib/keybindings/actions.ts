@@ -20,6 +20,13 @@ export const ACTION_IDS = {
   authoringViewText: 'authoring.view-text',
   authoringViewCanvas: 'authoring.view-canvas',
   authoringViewSplit: 'authoring.view-split',
+  authoringAddStep: 'authoring.add-step',
+  authoringAddAction: 'authoring.add-action',
+  authoringAddRoute: 'authoring.add-route',
+  authoringAddFallThrough: 'authoring.add-fall-through',
+  authoringEditProse: 'authoring.edit-prose',
+  authoringRenameBinding: 'authoring.rename-binding',
+  authoringDeleteStep: 'authoring.delete-step',
 } as const;
 
 export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
@@ -111,5 +118,47 @@ export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
     scope: 'view',
     defaultBinding: 'mod+3',
     allowInInputs: true,
+  },
+  {
+    id: ACTION_IDS.authoringAddStep,
+    title: 'Canvas: add step',
+    scope: 'view',
+    defaultBinding: 'mod+shift+n',
+  },
+  {
+    id: ACTION_IDS.authoringAddAction,
+    title: 'Canvas: add action contract',
+    scope: 'view',
+    defaultBinding: 'mod+shift+a',
+  },
+  {
+    id: ACTION_IDS.authoringAddRoute,
+    title: 'Canvas: connect outcome route',
+    scope: 'view',
+    defaultBinding: 'mod+shift+r',
+  },
+  {
+    id: ACTION_IDS.authoringAddFallThrough,
+    title: 'Canvas: connect fall-through',
+    scope: 'view',
+    defaultBinding: 'mod+shift+f',
+  },
+  {
+    id: ACTION_IDS.authoringEditProse,
+    title: 'Canvas: edit step prose',
+    scope: 'view',
+    defaultBinding: 'mod+shift+e',
+  },
+  {
+    id: ACTION_IDS.authoringRenameBinding,
+    title: 'Canvas: rename binding',
+    scope: 'view',
+    defaultBinding: 'mod+shift+m',
+  },
+  {
+    id: ACTION_IDS.authoringDeleteStep,
+    title: 'Canvas: delete step',
+    scope: 'view',
+    defaultBinding: 'mod+shift+backspace',
   },
 ];

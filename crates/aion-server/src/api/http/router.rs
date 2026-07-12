@@ -10,7 +10,7 @@ use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
 use super::awl::{
-    check, format, get_document, get_layout, list_documents, put_document, put_layout,
+    check, edit, format, get_document, get_layout, list_documents, put_document, put_layout,
 };
 use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
@@ -177,6 +177,7 @@ pub fn workflow_router(state: ServerState) -> Router {
     };
     let awl = Router::new()
         .route("/awl/check", post(check))
+        .route("/awl/edit", post(edit))
         .route("/awl/fmt", post(format))
         .merge(awl_documents);
     // The dev surface is dark by default, gated on `[dev].enabled`: when off the

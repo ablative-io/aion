@@ -1,8 +1,9 @@
 import dagre from 'dagre';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactFlow, {
   applyNodeChanges,
   Background,
+  type Connection,
   Controls,
   type Edge,
   MarkerType,
@@ -11,10 +12,11 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import type { AwlDiagnostic, AwlDocument } from '../lib/facade';
+import type { AwlDiagnostic, AwlDocument, EditResult, GestureOperation } from '../lib/facade';
 import { authoringFacade } from '../lib/facade';
 import { diagnosticsByStep } from '../lib/projection';
 import type { GraphProjection, LayoutRecord, ProjectionStep } from '../lib/projection-types';
+import { CanvasGestureControls } from './CanvasGestureControls';
 import { type CanvasNodeData, ChildCanvasNode, StepCanvasNode } from './CanvasNode';
 
 const NODE_WIDTH = 240;
@@ -27,9 +29,11 @@ export type AuthoringCanvasProps = {
   graph: GraphProjection;
   diagnostics: readonly AwlDiagnostic[];
   documents: readonly AwlDocument[];
+  routeTargets: readonly string[];
   selectedStep: string | null;
   onJumpToSpan: (byteOffset: number) => void;
   onOpenDocument: (path: string) => void;
+  onGesture: (operation: GestureOperation) => Promise<EditResult>;
 };
 
 export function AuthoringCanvas({
@@ -37,16 +41,54 @@ export function AuthoringCanvas({
   graph,
   diagnostics,
   documents,
+  routeTargets,
   selectedStep,
   onJumpToSpan,
   onOpenDocument,
+  onGesture,
 }: AuthoringCanvasProps) {
   const [layout, setLayout] = useState<LayoutRecord>({ positions: {} });
   const [layoutError, setLayoutError] = useState<string | null>(null);
+  const [gestureError, setGestureError] = useState<string | null>(null);
+  const [gestureWorking, setGestureWorking] = useState(false);
+  const [proseEditingStep, setProseEditingStep] = useState<string | null>(null);
   const diagnosticTones = useMemo(
     () => diagnosticsByStep(graph, diagnostics),
     [diagnostics, graph]
   );
+  const migrateStepLayout = useCallback(
+    async (result: EditResult) => {
+      if (result.rename?.kind !== 'step') return;
+      const position = layout.positions[result.rename.from];
+      if (position === undefined) return;
+      const positions = { ...layout.positions };
+      delete positions[result.rename.from];
+      positions[result.rename.to] = position;
+      const migrated = { positions };
+      setLayout(migrated);
+      await authoringFacade.saveLayout(path, migrated);
+    },
+    [layout, path]
+  );
+
+  const performGesture = useCallback(
+    async (operation: GestureOperation) => {
+      setGestureWorking(true);
+      setGestureError(null);
+      try {
+        const result = await onGesture(operation);
+        await migrateStepLayout(result);
+        return result;
+      } catch (error) {
+        setGestureError(error instanceof Error ? error.message : 'Gesture was refused');
+        throw error;
+      } finally {
+        setGestureWorking(false);
+      }
+    },
+    [migrateStepLayout, onGesture]
+  );
+
   const projected = useMemo(
     () =>
       projectFlow(
@@ -56,9 +98,22 @@ export function AuthoringCanvas({
         diagnosticTones,
         selectedStep,
         onJumpToSpan,
-        onOpenDocument
+        onOpenDocument,
+        proseEditingStep,
+        setProseEditingStep,
+        performGesture
       ),
-    [diagnosticTones, documents, graph, layout, onJumpToSpan, onOpenDocument, selectedStep]
+    [
+      diagnosticTones,
+      documents,
+      graph,
+      layout,
+      onJumpToSpan,
+      onOpenDocument,
+      performGesture,
+      proseEditingStep,
+      selectedStep,
+    ]
   );
   const [nodes, setNodes] = useState(projected.nodes);
 
@@ -96,6 +151,21 @@ export function AuthoringCanvas({
     });
   }
 
+  const connect = useCallback(
+    (connection: Connection) => {
+      if (connection.source === null || connection.target === null) return;
+      if (!graph.steps.some((step) => step.name === connection.target)) return;
+      void performGesture({
+        type: 'add_outcome_route',
+        source: connection.source,
+        target: connection.target,
+        name: `to_${connection.target}`,
+        guard: { type: 'otherwise' },
+      });
+    },
+    [graph.steps, performGesture]
+  );
+
   return (
     <section
       className="relative min-h-[32rem] flex-1 bg-surface-elevated"
@@ -108,7 +178,8 @@ export function AuthoringCanvas({
         fitViewOptions={{ padding: 0.2 }}
         nodeTypes={nodeTypes}
         nodes={nodes}
-        nodesConnectable={false}
+        nodesConnectable={!gestureWorking}
+        onConnect={connect}
         onNodeDragStop={(_event, node) => persistNodePosition(node)}
         onNodesChange={onNodesChange}
         panOnScroll
@@ -117,9 +188,18 @@ export function AuthoringCanvas({
         <Background color="var(--border)" gap={24} size={1} />
         <Controls showInteractive={false} />
       </ReactFlow>
+      <CanvasGestureControls
+        disabled={gestureWorking}
+        graph={graph}
+        onBeginProseEdit={setProseEditingStep}
+        onGesture={performGesture}
+        routeTargets={routeTargets}
+        selectedStep={selectedStep}
+      />
       <div className="pointer-events-none absolute right-3 bottom-3 rounded-lg border border-border bg-surface-base/95 px-3 py-2 text-muted-foreground text-xs shadow-sm">
-        <span>Tab through nodes · Enter jumps to source</span>
+        <span>Tab through controls · connect handles to draw an otherwise route</span>
         {layoutError !== null && <span className="ml-2 text-destructive">{layoutError}</span>}
+        {gestureError !== null && <span className="ml-2 text-destructive">{gestureError}</span>}
       </div>
     </section>
   );
@@ -132,7 +212,10 @@ function projectFlow(
   diagnosticTones: ReadonlyMap<string, 'primary' | 'cascade'>,
   selectedStep: string | null,
   onJumpToSpan: (byteOffset: number) => void,
-  onOpenDocument: (path: string) => void
+  onOpenDocument: (path: string) => void,
+  proseEditingStep: string | null,
+  onBeginProseEdit: (step: string | null) => void,
+  onGesture: (operation: GestureOperation) => Promise<EditResult>
 ): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
   const dagreGraph = new dagre.graphlib.Graph()
     .setDefaultEdgeLabel(() => ({}))
@@ -148,7 +231,17 @@ function projectFlow(
   dagre.layout(dagreGraph);
 
   const nodes: Node<CanvasNodeData>[] = graph.steps.map((step) =>
-    stepNode(step, dagreGraph.node(step.name), layout, diagnosticTones, selectedStep, onJumpToSpan)
+    stepNode(
+      step,
+      dagreGraph.node(step.name),
+      layout,
+      diagnosticTones,
+      selectedStep,
+      onJumpToSpan,
+      proseEditingStep,
+      onBeginProseEdit,
+      onGesture
+    )
   );
   for (const child of graph.childCalls) {
     const document = documents.find((item) => item.name === child.name);
@@ -209,7 +302,10 @@ function stepNode(
   layout: LayoutRecord,
   tones: ReadonlyMap<string, 'primary' | 'cascade'>,
   selectedStep: string | null,
-  onJumpToSpan: (byteOffset: number) => void
+  onJumpToSpan: (byteOffset: number) => void,
+  proseEditingStep: string | null,
+  onBeginProseEdit: (step: string | null) => void,
+  onGesture: (operation: GestureOperation) => Promise<EditResult>
 ): Node<CanvasNodeData> {
   return {
     id: step.name,
@@ -224,6 +320,13 @@ function stepNode(
       markers: step.markers,
       diagnostic: tones.get(step.name),
       onActivate: () => onJumpToSpan(step.span.start),
+      proseEditing: proseEditingStep === step.name,
+      onBeginProseEdit: () => onBeginProseEdit(step.name),
+      onCancelProseEdit: () => onBeginProseEdit(null),
+      onSaveProse: async (prose) => {
+        await onGesture({ type: 'edit_prose', step: step.name, prose });
+        onBeginProseEdit(null);
+      },
     },
   };
 }
