@@ -27,6 +27,47 @@ export type CheckResult = {
 
 export type AwlDocument = { path: string; name: string };
 
+export type ActionParameter = { name: string; type: string };
+export type RouteArgument = { name: string; expression: string };
+export type GestureOperation =
+  | { type: 'add_step'; name: string; prose?: string }
+  | {
+      type: 'add_action';
+      worker: string;
+      name: string;
+      params: ActionParameter[];
+      return_type: string;
+    }
+  | {
+      type: 'add_outcome_route';
+      source: string;
+      target: string;
+      name: string;
+      guard: { type: 'when'; expression: string } | { type: 'otherwise' };
+      payload?: RouteArgument[];
+    }
+  | { type: 'add_fall_through'; source: string; target: string }
+  | { type: 'edit_prose'; step: string; prose: string }
+  | { type: 'rename_binding'; kind: 'step' | 'binding'; from: string; to: string }
+  | { type: 'delete_step'; step: string };
+
+export type RenameMapping = { kind: 'step' | 'binding'; from: string; to: string };
+export type EditResult = {
+  source: string;
+  diagnostics: AwlDiagnostic[];
+  rename: RenameMapping | null;
+};
+
+export class GestureRefusedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'GestureRefusedError';
+  }
+}
+
 export class AuthoringWorkspaceNotConfiguredError extends Error {
   constructor() {
     super('authoring workspace not configured');
@@ -71,6 +112,23 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
     async format(source: string): Promise<string> {
       const value = expectRecord(await request('/awl/fmt', jsonInit('POST', { source })));
       return expectString(value.formatted, 'formatted');
+    },
+    async edit(source: string, operation: GestureOperation): Promise<EditResult> {
+      const value = expectRecord(
+        await request('/awl/edit', jsonInit('POST', { source, operation }))
+      );
+      if (!expectBoolean(value.ok, 'ok')) {
+        const refused = expectRecord(value.refusal);
+        throw new GestureRefusedError(
+          expectString(refused.code, 'refusal.code'),
+          expectString(refused.message, 'refusal.message')
+        );
+      }
+      return {
+        source: expectString(value.source, 'source'),
+        diagnostics: expectArray(value.diagnostics, 'diagnostics').map(parseDiagnostic),
+        rename: value.rename === undefined ? null : parseRenameMapping(value.rename),
+      };
     },
     async listDocuments(): Promise<AwlDocument[]> {
       const value = await request('/awl/documents', undefined, true);
@@ -220,6 +278,19 @@ function parseGraph(value: unknown): GraphProjection {
         span: parseSpan(child.span),
       };
     }),
+  };
+}
+
+function parseRenameMapping(value: unknown): RenameMapping {
+  const record = expectRecord(value);
+  const kind = expectString(record.kind, 'rename.kind');
+  if (kind !== 'step' && kind !== 'binding') {
+    throw new Error('Invalid authoring response: rename.kind');
+  }
+  return {
+    kind,
+    from: expectString(record.from, 'rename.from'),
+    to: expectString(record.to, 'rename.to'),
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { createAuthoringFacade } from './facade';
+import { createAuthoringFacade, GestureRefusedError } from './facade';
 
 const fixtures = [
   {
@@ -65,5 +65,25 @@ describe('authoring facade parsing', () => {
     });
     await facade.check('source', 'nested/demo.awl');
     expect(JSON.parse(body)).toEqual({ source: 'source', path: 'nested/demo.awl' });
+  });
+
+  test('surfaces typed gesture refusals without applying source', async () => {
+    const facade = createAuthoringFacade(async () =>
+      Response.json({
+        ok: false,
+        diagnostics: [],
+        refusal: { code: 'name_collision', message: 'step name already exists' },
+      })
+    );
+    const operation = { type: 'add_step', name: 'existing' } as const;
+
+    try {
+      await facade.edit('source', operation);
+      throw new Error('gesture unexpectedly succeeded');
+    } catch (error) {
+      expect(error).toBeInstanceOf(GestureRefusedError);
+      expect((error as GestureRefusedError).code).toBe('name_collision');
+      expect((error as Error).message).toBe('step name already exists');
+    }
   });
 });

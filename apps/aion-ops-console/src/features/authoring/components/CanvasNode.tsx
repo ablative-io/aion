@@ -1,4 +1,5 @@
 import { ExternalLink, GitFork, Repeat2, Timer, Workflow } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Handle, type NodeProps, Position } from 'reactflow';
 
 import { cn } from '@/lib/utils';
@@ -11,10 +12,27 @@ export type CanvasNodeData = {
   diagnostic?: 'primary' | 'cascade' | undefined;
   childDocumentPath?: string | undefined;
   onActivate: () => void;
+  proseEditing?: boolean;
+  onBeginProseEdit?: (() => void) | undefined;
+  onCancelProseEdit?: (() => void) | undefined;
+  onSaveProse?: ((prose: string) => Promise<void>) | undefined;
   onOpenChild?: (() => void) | undefined;
 };
 
 export function StepCanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
+  const [draft, setDraft] = useState(data.label);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setDraft(data.label), [data.label]);
+
+  const saveProse = async () => {
+    if (data.onSaveProse === undefined) return;
+    setSaving(true);
+    try {
+      await data.onSaveProse(draft);
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <article
       className={cn(
@@ -31,31 +49,77 @@ export function StepCanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
         position={Position.Top}
         type="target"
       />
-      <button
-        className="nodrag w-full rounded-xl p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base"
-        onClick={data.onActivate}
-        type="button"
-      >
-        <span className="flex items-center justify-between gap-2">
-          <span className="truncate font-mono font-semibold text-foreground text-xs">
-            {data.name}
+      {data.proseEditing === true ? (
+        <form
+          aria-label={`Edit prose for ${data.name}`}
+          className="nodrag p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void saveProse();
+          }}
+        >
+          <label className="block text-muted-foreground text-xs">
+            Step prose
+            <textarea
+              className="mt-2 min-h-20 w-full resize-y rounded-md border border-border bg-surface-base p-2 text-foreground text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
+              onChange={(event) => setDraft(event.target.value)}
+              value={draft}
+            />
+          </label>
+          <span className="mt-2 flex justify-end gap-2">
+            <button
+              className="rounded-md px-2 py-1 text-muted-foreground text-xs hover:bg-accent"
+              onClick={data.onCancelProseEdit}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className="rounded-md bg-primary px-2 py-1 text-primary-foreground text-xs disabled:opacity-50"
+              disabled={saving}
+              type="submit"
+            >
+              {saving ? 'Saving…' : 'Save prose'}
+            </button>
           </span>
-          <MarkerBadges markers={data.markers} />
-        </span>
-        <span className="mt-2 block text-foreground text-sm leading-snug">
-          {data.label || 'Undocumented step'}
-        </span>
-        {data.diagnostic !== undefined && (
-          <span
-            className={cn(
-              'mt-2 block text-xs',
-              data.diagnostic === 'primary' ? 'text-destructive' : 'text-muted-foreground'
-            )}
-          >
-            {data.diagnostic === 'primary' ? 'Primary error' : 'Downstream cascade'}
+        </form>
+      ) : (
+        <button
+          className="nodrag w-full rounded-xl p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base"
+          onClick={data.onActivate}
+          type="button"
+        >
+          <span className="flex items-center justify-between gap-2">
+            <span className="truncate font-mono font-semibold text-foreground text-xs">
+              {data.name}
+            </span>
+            <MarkerBadges markers={data.markers} />
           </span>
-        )}
-      </button>
+          <span className="mt-2 block text-foreground text-sm leading-snug">
+            {data.label || 'Undocumented step'}
+          </span>
+          {data.diagnostic !== undefined && (
+            <span
+              className={cn(
+                'mt-2 block text-xs',
+                data.diagnostic === 'primary' ? 'text-destructive' : 'text-muted-foreground'
+              )}
+            >
+              {data.diagnostic === 'primary' ? 'Primary error' : 'Downstream cascade'}
+            </span>
+          )}
+        </button>
+      )}
+      {data.proseEditing !== true && data.onBeginProseEdit !== undefined && (
+        <button
+          aria-label={`Edit prose for ${data.name}`}
+          className="nodrag mx-3 mb-2 rounded-md px-2 py-1 text-muted-foreground text-xs outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-accent-primary"
+          onClick={data.onBeginProseEdit}
+          type="button"
+        >
+          Edit prose
+        </button>
+      )}
       <Handle
         className="!size-2 !border-surface-elevated !bg-muted-foreground"
         position={Position.Bottom}
