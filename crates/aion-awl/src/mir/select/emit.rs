@@ -1,14 +1,21 @@
 //! The single burst emitter (AWL-BC-IR.md §11.2–§11.4): a resolved [`Body`] →
 //! a validate-clean `Instruction` stream.
 //!
-//! Register model (the R5 fallback realized conservatively, recorded in §11.6):
-//! every function with parameters or defined vars is **framed** — each var homed
-//! in its own Y slot, so Y is touched ONLY by `move` (reload before a use, store
-//! right after a def) and no value ever lives in X across a call. Frames open
-//! with `Allocate F` and close at a single shared `Lexit: Deallocate F; Return`
-//! (R7); tail calls deallocate via their own operand. Functions with neither a
-//! parameter nor a var are frameless (a tail over immediates only). Every `Live`
+//! Register model — BC-3 v1 ships R5's pre-authorized fallback (§11.6 R8 as
+//! amended for the tier predicate): the tier is `frame_size > 0`, so **every
+//! function with parameters or defined vars is framed** — each var homed in its
+//! own Y slot, so Y is touched ONLY by `move` (reload before a use, store right
+//! after a def) and no value ever lives in X across a call. Frames open with
+//! `Allocate F` and close at a single shared `Lexit: Deallocate F; Return` (R7);
+//! tail calls deallocate via their own operand. Only a body with neither a
+//! parameter nor a var is frameless (a tail over immediates only). Every `Live`
 //! operand is the exact X high-water so GC never clears a needed register.
+//!
+//! This is deliberately NOT the crossing-set tier predicate: a var-bearing
+//! function with an empty crossing set (`execute/1`, T-DEAD) is framed and thus
+//! interpreter-pinned, which costs nothing today (§11.1 — the JIT consumes
+//! sidecars). Crossing-set tier-1 (frameless with vars in X, JIT-eligible) is
+//! the deferred R5-primary refinement (§11.6 R8 fallback column).
 
 use std::collections::HashMap;
 

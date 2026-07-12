@@ -1204,7 +1204,7 @@ plus one per-shape unit test per §11.4 row.
 | R5 | register policy | two-tier X/Y (§11.1): tier-1 frameless X-only (JIT-eligible), tier-2 framed Y homes (JIT-refused by construction — zero JIT-visible Y access) | all functions framed with `Allocate 0+F` bracketing (erlc-idiom parity; cost: everything interpreter-pinned) if any engine surprise with frameless body calls | ratified this section |
 | R6 | `Trim` | never emitted (frames die at the single `Deallocate`) | emit trims if frame growth ever measurably matters (it cannot at these sizes) | ratified |
 | R7 | exit layout | single shared `Lexit: Deallocate F; Return` per framed function, linearly last (one-pass validator discipline, §11.3) | per-exit `Deallocate` with all Return-exits sorted last in linear order | ratified |
-| R8 | tier-2 Y-homing granularity (BC-3 v1) | **conservative: every var (params + all defs) is homed in Y, not only crossing-set members** — so Y is touched ONLY by `move` (reload before use, store after def), no X carries a value across any op, and TestHeap/GcBif `Live` = the exact per-burst X high-water. The crossing set still decides tier (empty ⇒ frameless tier-1). This trades a few extra Y slots (frames stay small, `< 256`) for a uniform, provably validator-clean burst emitter | per-segment-X minimization of §11.2 (Y homes only for crossing-set members, non-crossing vars per-segment-fresh X) as an additive BC-3 refinement — the frame layout is internal, so tightening it changes no ABI | ratified this commit (BC-3 build) |
+| R8 | tier-2 Y-homing granularity + tier predicate (BC-3 v1) | **conservative: every var (params + all defs) is homed in Y, not only crossing-set members** — so Y is touched ONLY by `move` (reload before use, store after def), no X carries a value across any op, and TestHeap/GcBif `Live` = the exact per-burst X high-water. **Tier predicate = `frame_size > 0` (BC-3 v1 ships R5's pre-authorized fallback, below): any function with a parameter or a defined var is framed; only a param-and-def-free body is frameless.** This supersedes the crossing-set predicate for v1 — a var-bearing function with an empty crossing set (`execute/1`, T-EXEC, T-SIG, T-DEAD, comparators) is framed/interpreter-pinned, not frameless tier-1. Trades a few extra Y slots + JIT-eligibility (frames stay small, `< 256`; JIT-ineligibility costs nothing today per §11.1) for a uniform, provably validator-clean burst emitter with a single emission path | **crossing-set tier-1 (R5-primary): frameless when the crossing set is empty, vars in per-segment-fresh X (§11.2), JIT-eligible** — plus per-segment-X minimization (Y homes only for crossing-set members). An additive BC-3 refinement; the frame layout is internal, so tightening it changes no ABI | fallback taken this commit (BC-3 build); revisit with the JIT ABI brief |
 
 ### 11.7 Defects exposed by BC-3 planning, and dependencies
 
@@ -1259,10 +1259,17 @@ never a silent artifact):
   `RuntimeFn` subset in first-use order, IR-24), `FunT` (`MakeClosure`/execute/
   dead-body first-use). `ExpT` = exactly `run/1`, `definition/0`, `execute/1`
   (decision 12, no `module_info`). Chunk set/order owned by `encode_module`.
-- **The R5 two-tier register allocator** realized per R8 (all-Y homing for
-  framed functions; frameless when the crossing set is empty). Determinism:
-  the whole pipeline is a pure function of the `MirModule` (`select` twice ⇒
-  identical bytes — #218 holds through BC-3).
+- **The register allocator** ships R5's pre-authorized fallback (§11.6 R8 as
+  amended this commit): all-Y homing for every function that has a parameter or
+  a defined var (framed, `Allocate F`), and frameless only for a body with
+  neither (a tail over immediates). The tier predicate is therefore `frame_size
+  > 0`, NOT the crossing set — a var-bearing function with an empty crossing set
+  (e.g. `execute/1`) is framed/interpreter-pinned. Crossing-set tier-1
+  (frameless with vars in X, JIT-eligible) is the deferred R5-primary refinement
+  (§11.6 R8 fallback column); it costs nothing today (§11.1: the JIT consumes
+  sidecars, a post-BC path). Determinism: the whole pipeline is a pure function
+  of the `MirModule` (`select` twice ⇒ identical bytes — #218 holds through
+  BC-3).
 - **Oracle coverage**: all nine `valid/` fixtures that BC-2 lowers emit +
   validate; the 43 fixtures BC-2 refuses stay refused (no MIR ⇒ nothing to
   emit — never a silent skip). Plus per-shape unit tests (one per §11.4 row the
