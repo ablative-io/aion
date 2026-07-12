@@ -1,0 +1,22 @@
+//! Canvas gestures build this workflow.
+workflow canvas_five
+  outcome done: type Result, route success
+
+type Result { value: String }
+
+/// Receive the request.
+step receive
+
+/// Validate the request.
+step validate
+
+/// Process the request.
+step process
+
+/// Record the result.
+step record
+
+/// Finish the workflow.
+step finish
+  outcome complete: otherwise,
+    route done(value: "complete")

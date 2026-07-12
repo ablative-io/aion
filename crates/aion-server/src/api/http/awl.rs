@@ -10,12 +10,16 @@ use serde::Serialize;
 use super::auth::HttpCaller;
 use crate::ServerState;
 use crate::awl::{
-    self, CheckRequest, CheckResponse, Diagnostic, DocumentEntry, DocumentResponse, FormatRequest,
-    FormatResponse, PutDocumentRequest,
+    self, CheckRequest, CheckResponse, Diagnostic, DocumentEntry, DocumentResponse, EditRequest,
+    EditResponse, FormatRequest, FormatResponse, PutDocumentRequest,
 };
 
 pub(crate) async fn check(Json(request): Json<CheckRequest>) -> Json<CheckResponse> {
     Json(awl::check_source(&request))
+}
+
+pub(crate) async fn edit(Json(request): Json<EditRequest>) -> Json<EditResponse> {
+    Json(awl::edit_source(&request))
 }
 
 pub(crate) async fn format(
