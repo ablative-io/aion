@@ -112,6 +112,19 @@ describe('authoring facade parsing', () => {
     }
   });
 
+  test('requests and parses a worker scaffold file map', async () => {
+    let body = '';
+    const facade = createAuthoringFacade(async (_input, init) => {
+      body = String(init?.body);
+      return Response.json({ ok: true, files: { 'worker.toml': '[worker]' } });
+    });
+
+    expect(await facade.scaffold('source', 'jobs', 'shell')).toEqual({
+      'worker.toml': '[worker]',
+    });
+    expect(JSON.parse(body)).toEqual({ source: 'source', worker: 'jobs', runtime: 'shell' });
+  });
+
   test('creates a workflow with the documented name body', async () => {
     let body = '';
     const facade = createAuthoringFacade(async (_input, init) => {

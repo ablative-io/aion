@@ -27,6 +27,8 @@ export type CheckResult = {
 };
 
 export type AwlDocument = { path: string; name: string };
+export type WorkerRuntime = 'shell' | 'rust';
+export type ScaffoldFiles = Record<string, string>;
 
 export type ActionParameter = { name: string; type: string };
 export type RouteArgument = { name: string; expression: string };
@@ -77,6 +79,16 @@ export class GestureRefusedError extends Error {
   ) {
     super(message);
     this.name = 'GestureRefusedError';
+  }
+}
+
+export class ScaffoldRefusedError extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ScaffoldRefusedError';
   }
 }
 
@@ -141,6 +153,25 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
         diagnostics: expectArray(value.diagnostics, 'diagnostics').map(parseDiagnostic),
         rename: value.rename === undefined ? null : parseRenameMapping(value.rename),
       };
+    },
+    async scaffold(source: string, worker: string, runtime: WorkerRuntime): Promise<ScaffoldFiles> {
+      const value = expectRecord(
+        await request('/awl/scaffold', jsonInit('POST', { source, worker, runtime }))
+      );
+      if (!expectBoolean(value.ok, 'ok')) {
+        const refusal = expectRecord(value.refusal);
+        const code = expectString(refusal.code, 'refusal.code');
+        const reason =
+          typeof refusal.reason === 'string' ? refusal.reason : `Worker scaffold refused: ${code}`;
+        throw new ScaffoldRefusedError(code, reason);
+      }
+      const files = expectRecord(value.files);
+      return Object.fromEntries(
+        Object.entries(files).map(([path, content]) => [
+          path,
+          expectString(content, `files.${path}`),
+        ])
+      );
     },
     async createDocument(name: string): Promise<AwlDocument> {
       const value = expectRecord(await request('/awl/documents', jsonInit('POST', { name }), true));
