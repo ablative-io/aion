@@ -77,9 +77,10 @@ fs4 = "1.1"
 notify = "8.2"
 saffron = { version = "0.1", features = ["std"] }
 hostname = "0.4"
-# 0.13.0 carries the LIFO run-queue starvation fix (co-resident natives lost
-# dispatch pushes under load) on top of 0.12.0's `Scheduler::spawn_link_closure`.
-beamr = { version = "0.13.0", features = ["json"] }
+# 0.14.0 adds `loader/encode` (the `.beam` container writer behind the `encode`
+# feature) consumed by aion-awl's BC-3 bytecode emitter; 0.13.0 carried the LIFO
+# run-queue starvation fix on top of 0.12.0's `Scheduler::spawn_link_closure`.
+beamr = { version = "0.14.0", features = ["json", "encode"] }
 haematite = "0.4.1"
 liminal = { package = "liminal-rs", version = "0.2.3" }
 liminal-sdk = "0.2.3"
