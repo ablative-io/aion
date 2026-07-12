@@ -13,57 +13,57 @@ use super::types::{GType, TypeEnv};
 
 /// Everything a lowering pass needs to know about one workflow outcome.
 #[derive(Debug, Clone)]
-pub(super) struct OutcomeInfo {
+pub(crate) struct OutcomeInfo {
     /// Payload type.
-    pub(super) ty: GType,
+    pub(crate) ty: GType,
     /// Engine terminal direction.
-    pub(super) direction: RouteDirection,
+    pub(crate) direction: RouteDirection,
     /// Union constructor name (success outcomes only).
-    pub(super) constructor: Option<String>,
+    pub(crate) constructor: Option<String>,
 }
 
 /// Feature flags the lowering passes set; the assembled header and helper
 /// sections read them afterwards.
 #[derive(Debug, Default, Clone)]
-pub(super) struct Flags {
-    pub(super) uses_list_module: bool,
-    pub(super) uses_child_module: bool,
+pub(crate) struct Flags {
+    pub(crate) uses_list_module: bool,
+    pub(crate) uses_child_module: bool,
     /// `gleam/<module>` comparator imports a `sort` stage needs.
-    pub(super) compare_modules: std::collections::BTreeSet<&'static str>,
+    pub(crate) compare_modules: std::collections::BTreeSet<&'static str>,
     /// Actions dispatched from a heterogeneous parallel group: each needs a
     /// raw (`Activity(String, String)`) wrapper twin so differently-typed
     /// branches can share one `workflow.all` list.
-    pub(super) raw_actions: std::collections::BTreeSet<String>,
+    pub(crate) raw_actions: std::collections::BTreeSet<String>,
 }
 
-pub(super) struct Emitter<'a> {
-    pub(super) document: &'a Document,
-    pub(super) env: TypeEnv,
+pub(crate) struct Emitter<'a> {
+    pub(crate) document: &'a Document,
+    pub(crate) env: TypeEnv,
     /// Action name → (worker/task-queue name, declaration).
-    pub(super) actions: BTreeMap<&'a str, (&'a str, &'a ActionDecl)>,
-    pub(super) children: BTreeMap<&'a str, &'a ChildDecl>,
-    pub(super) signals: BTreeMap<&'a str, &'a SignalDecl>,
-    pub(super) outcomes: BTreeMap<&'a str, OutcomeInfo>,
+    pub(crate) actions: BTreeMap<&'a str, (&'a str, &'a ActionDecl)>,
+    pub(crate) children: BTreeMap<&'a str, &'a ChildDecl>,
+    pub(crate) signals: BTreeMap<&'a str, &'a SignalDecl>,
+    pub(crate) outcomes: BTreeMap<&'a str, OutcomeInfo>,
     /// Global binding name → type (single-assignment surface).
-    pub(super) bindings: BTreeMap<String, GType>,
+    pub(crate) bindings: BTreeMap<String, GType>,
     /// Generated input record name (`<Workflow>Input`).
-    pub(super) input_type: String,
+    pub(crate) input_type: String,
     /// Generated outcome union name, `None` when no success outcome exists
     /// (the output type is then `Nil`).
-    pub(super) union_type: Option<String>,
+    pub(crate) union_type: Option<String>,
     /// Action name → generated `<Action>Input` record name.
-    pub(super) action_inputs: BTreeMap<String, String>,
-    pub(super) flags: Flags,
+    pub(crate) action_inputs: BTreeMap<String, String>,
+    pub(crate) flags: Flags,
     /// Rendered loop functions, appended after the step functions.
-    pub(super) loop_fns: Vec<String>,
+    pub(crate) loop_fns: Vec<String>,
     /// Monotonic counter for generated loop-function names.
-    pub(super) loop_counter: usize,
-    pub(super) out: String,
-    pub(super) indent: usize,
+    pub(crate) loop_counter: usize,
+    pub(crate) out: String,
+    pub(crate) indent: usize,
 }
 
 impl<'a> Emitter<'a> {
-    pub(super) fn new(document: &'a Document, env: TypeEnv) -> Result<Self, EmitError> {
+    pub(crate) fn new(document: &'a Document, env: TypeEnv) -> Result<Self, EmitError> {
         let mut env = env;
         let mut actions: BTreeMap<&str, (&str, &ActionDecl)> = BTreeMap::new();
         for worker in &document.workers {
@@ -156,24 +156,24 @@ impl<'a> Emitter<'a> {
 
     /// The Gleam output type of `execute` (the outcome union, or `Nil` when
     /// the workflow declares no success outcome).
-    pub(super) fn output_type(&self) -> String {
+    pub(crate) fn output_type(&self) -> String {
         self.union_type.clone().unwrap_or_else(|| "Nil".to_owned())
     }
 
     /// A fully-qualified reference to a wire type's `_to_json` function: a
     /// builtin leaf resolves to the SDK's `awlc.<leaf>_to_json`, a named or
     /// composite type to the module-generated `<stem>_to_json`.
-    pub(super) fn to_json_fn(&self, ty: &GType) -> String {
+    pub(crate) fn to_json_fn(&self, ty: &GType) -> String {
         self.codec_ref(ty, "to_json")
     }
 
     /// A fully-qualified reference to a wire type's `_decoder` function.
-    pub(super) fn decoder_fn(&self, ty: &GType) -> String {
+    pub(crate) fn decoder_fn(&self, ty: &GType) -> String {
         self.codec_ref(ty, "decoder")
     }
 
     /// A fully-qualified reference to a wire type's `_codec` function.
-    pub(super) fn codec_fn(&self, ty: &GType) -> String {
+    pub(crate) fn codec_fn(&self, ty: &GType) -> String {
         self.codec_ref(ty, "codec")
     }
 
@@ -186,7 +186,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    pub(super) fn line(&mut self, text: &str) {
+    pub(crate) fn line(&mut self, text: &str) {
         for _ in 0..self.indent {
             self.out.push_str("  ");
         }
@@ -194,17 +194,17 @@ impl<'a> Emitter<'a> {
         self.out.push('\n');
     }
 
-    pub(super) fn blank(&mut self) {
+    pub(crate) fn blank(&mut self) {
         self.out.push('\n');
     }
 
-    pub(super) fn indented(&mut self, f: impl FnOnce(&mut Self)) {
+    pub(crate) fn indented(&mut self, f: impl FnOnce(&mut Self)) {
         self.indent += 1;
         f(self);
         self.indent -= 1;
     }
 
-    pub(super) fn indented_try(
+    pub(crate) fn indented_try(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<(), EmitError>,
     ) -> Result<(), EmitError> {
@@ -216,7 +216,7 @@ impl<'a> Emitter<'a> {
 
     /// Run `f` against a fresh output buffer at indent zero and return the
     /// text it produced, restoring the main buffer afterwards.
-    pub(super) fn capture(
+    pub(crate) fn capture(
         &mut self,
         f: impl FnOnce(&mut Self) -> Result<(), EmitError>,
     ) -> Result<String, EmitError> {

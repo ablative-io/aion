@@ -1,0 +1,113 @@
+module fetch_upstream source=fetch_upstream.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_fetch:
+    aion@activity:retry/2 [activities] (v1, v5)
+    aion@activity:timeout/2 [activities] (v6, v7)
+    aion@activity:task_queue/2 [activities] (v8, lit#1)
+    aion@activity:node/2 [activities] (v9, lit#2)
+    aion@workflow:run/1 [activities] (v10)
+== durable families == activities
+== atoms ==
+  [0] payload
+  [1] fetch_input
+  [2] fetch_upstream_input
+  [3] fetched_outcome
+  [4] exponential
+  [5] retry_policy
+  [6] ok
+== types ==
+  record Payload tag=payload
+    body: string
+    status: int
+  record FetchInput tag=fetch_input
+    url: string
+  record FetchUpstreamInput tag=fetch_upstream_input
+    url: string
+  union FetchUpstreamOutcome
+    fetched -> fetched_outcome(ref(Payload))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fetch_upstream_input_codec output=fetch_upstream_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fetch_upstream.FetchUpstreamInput, fetch_upstream.FetchUpstreamOutcome, AwlError)
+  T-DEF name="fetch_upstream" input=fetch_upstream_input_codec output=fetch_upstream_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fetch_upstream.FetchUpstreamInput) -> Result(fetch_upstream.FetchUpstreamOutcome, AwlError)
+  T-EXEC fields=[url:String] entry=step_fetch args=[0]
+== fn payload_codec/0 origin=codec_template(RecordTrio, Payload, record#0) ==
+  sig: () -> Codec(fetch_upstream.Payload)
+  v0 = make_closure payload_to_json captures=[]
+  v1 = call_local payload_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn payload_to_json/1 origin=codec_template(RecordTrio, Payload, record#0) ==
+  sig: (fetch_upstream.Payload) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"body": v1|>awlc.string_to_json, "status": v2|>awlc.int_to_json}
+  return v3
+== fn payload_decoder/0 origin=codec_template(RecordTrio, Payload, record#0) ==
+  sig: () -> Decoder(fetch_upstream.Payload)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_input_codec/0 origin=codec_template(RecordTrio, FetchInput, record#1) ==
+  sig: () -> Codec(fetch_upstream.FetchInput)
+  v0 = make_closure fetch_input_to_json captures=[]
+  v1 = call_local fetch_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_input_to_json/1 origin=codec_template(RecordTrio, FetchInput, record#1) ==
+  sig: (fetch_upstream.FetchInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"url": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_input_decoder/0 origin=codec_template(RecordTrio, FetchInput, record#1) ==
+  sig: () -> Decoder(fetch_upstream.FetchInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_upstream_input_codec/0 origin=codec_template(RecordTrio, FetchUpstreamInput, record#2) ==
+  sig: () -> Codec(fetch_upstream.FetchUpstreamInput)
+  v0 = make_closure fetch_upstream_input_to_json captures=[]
+  v1 = call_local fetch_upstream_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_upstream_input_to_json/1 origin=codec_template(RecordTrio, FetchUpstreamInput, record#2) ==
+  sig: (fetch_upstream.FetchUpstreamInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"url": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_upstream_input_decoder/0 origin=codec_template(RecordTrio, FetchUpstreamInput, record#2) ==
+  sig: () -> Decoder(fetch_upstream.FetchUpstreamInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_upstream_outcome_codec/0 origin=codec_template(UnionTrio, FetchUpstreamOutcome, union#3) ==
+  sig: () -> Codec(fetch_upstream.FetchUpstreamOutcome)
+  v0 = make_closure fetch_upstream_outcome_to_json captures=[]
+  v1 = call_local fetch_upstream_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_upstream_outcome_to_json/1 origin=codec_template(UnionTrio, FetchUpstreamOutcome, union#3) ==
+  sig: (fetch_upstream.FetchUpstreamOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fetch_upstream_outcome_decoder/0 origin=codec_template(UnionTrio, FetchUpstreamOutcome, union#3) ==
+  sig: () -> Decoder(fetch_upstream.FetchUpstreamOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_activity/1 origin=activity_wrapper(fetch, raw=false) ==
+  sig: (String) -> Activity(fetch_upstream.FetchInput, fetch_upstream.Payload)
+  T-ACT action=fetch input_codec=fetch_input_codec return=payload_codec
+== fn step_fetch/1 origin=region(fetch) ==
+  sig: (String) -> Result(fetch_upstream.FetchUpstreamOutcome, AwlError)
+  v1 = call_local fetch_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(10000) live_after=[v1]
+  v3 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1, v2]
+  v4 = record(exponential, [v2, lit#0, v3])
+  v5 = record(retry_policy, [5, v4])
+  v6 = call_rt aion@activity:retry/2(v1, v5)
+  v7 = call_rt aion@duration:milliseconds/1(120000) live_after=[v6]
+  v8 = call_rt aion@activity:timeout/2(v6, v7)
+  v9 = call_rt aion@activity:task_queue/2(v8, lit#1)
+  v10 = call_rt aion@activity:node/2(v9, lit#2)
+  v11 = call_rt aion@workflow:run/1(v10)
+  v12 = call_rt aion@awl@error:map_activity_error/1(v11)
+  v13 = try_bind v12
+  v14 = record(fetched_outcome, [v13])
+  v15 = record(ok, [v14])
+  return v15
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

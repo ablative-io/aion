@@ -1,0 +1,119 @@
+module triage_message source=triage_message.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_classify:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] urgent
+  [1] routine
+  [2] spam
+  [3] verdict
+  [4] classify_input
+  [5] triage_message_input
+  [6] triaged_outcome
+  [7] ok
+== types ==
+  enum Category
+    urgent = "Urgent"
+    routine = "Routine"
+    spam = "Spam"
+  record Verdict tag=verdict
+    category: ref(Category)
+    note: string
+  record ClassifyInput tag=classify_input
+    message: string
+  record TriageMessageInput tag=triage_message_input
+    message: string
+  union TriageMessageOutcome
+    triaged -> triaged_outcome(ref(Verdict))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=triage_message_input_codec output=triage_message_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(triage_message.TriageMessageInput, triage_message.TriageMessageOutcome, AwlError)
+  T-DEF name="triage_message" input=triage_message_input_codec output=triage_message_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (triage_message.TriageMessageInput) -> Result(triage_message.TriageMessageOutcome, AwlError)
+  T-EXEC fields=[message:String] entry=step_classify args=[0]
+== fn category_codec/0 origin=codec_template(EnumTrio, Category, enum#0) ==
+  sig: () -> Codec(triage_message.Category)
+  v0 = make_closure category_to_json captures=[]
+  v1 = call_local category_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn category_to_json/1 origin=codec_template(EnumTrio, Category, enum#0) ==
+  sig: (triage_message.Category) -> Json
+  v1 = json_obj {}
+  return v1
+== fn category_decoder/0 origin=codec_template(EnumTrio, Category, enum#0) ==
+  sig: () -> Decoder(triage_message.Category)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Codec(triage_message.Verdict)
+  v0 = make_closure verdict_to_json captures=[]
+  v1 = call_local verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verdict_to_json/1 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: (triage_message.Verdict) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"category": v1|>category_to_json, "note": v2|>awlc.string_to_json}
+  return v3
+== fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Decoder(triage_message.Verdict)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn classify_input_codec/0 origin=codec_template(RecordTrio, ClassifyInput, record#2) ==
+  sig: () -> Codec(triage_message.ClassifyInput)
+  v0 = make_closure classify_input_to_json captures=[]
+  v1 = call_local classify_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn classify_input_to_json/1 origin=codec_template(RecordTrio, ClassifyInput, record#2) ==
+  sig: (triage_message.ClassifyInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"message": v1|>awlc.string_to_json}
+  return v2
+== fn classify_input_decoder/0 origin=codec_template(RecordTrio, ClassifyInput, record#2) ==
+  sig: () -> Decoder(triage_message.ClassifyInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn triage_message_input_codec/0 origin=codec_template(RecordTrio, TriageMessageInput, record#3) ==
+  sig: () -> Codec(triage_message.TriageMessageInput)
+  v0 = make_closure triage_message_input_to_json captures=[]
+  v1 = call_local triage_message_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn triage_message_input_to_json/1 origin=codec_template(RecordTrio, TriageMessageInput, record#3) ==
+  sig: (triage_message.TriageMessageInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"message": v1|>awlc.string_to_json}
+  return v2
+== fn triage_message_input_decoder/0 origin=codec_template(RecordTrio, TriageMessageInput, record#3) ==
+  sig: () -> Decoder(triage_message.TriageMessageInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn triage_message_outcome_codec/0 origin=codec_template(UnionTrio, TriageMessageOutcome, union#4) ==
+  sig: () -> Codec(triage_message.TriageMessageOutcome)
+  v0 = make_closure triage_message_outcome_to_json captures=[]
+  v1 = call_local triage_message_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn triage_message_outcome_to_json/1 origin=codec_template(UnionTrio, TriageMessageOutcome, union#4) ==
+  sig: (triage_message.TriageMessageOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn triage_message_outcome_decoder/0 origin=codec_template(UnionTrio, TriageMessageOutcome, union#4) ==
+  sig: () -> Decoder(triage_message.TriageMessageOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn classify_activity/1 origin=activity_wrapper(classify, raw=false) ==
+  sig: (String) -> Activity(triage_message.ClassifyInput, triage_message.Verdict)
+  T-ACT action=classify input_codec=classify_input_codec return=verdict_codec
+== fn step_classify/1 origin=region(classify) ==
+  sig: (String) -> Result(triage_message.TriageMessageOutcome, AwlError)
+  v1 = call_local classify_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(triaged_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

@@ -1,0 +1,144 @@
+module summarize_document source=summarize_document.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_fetch_and_summarize:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+    aion@activity:task_queue/2 [activities] (v6, lit#1)
+    aion@workflow:run/1 [activities] (v7)
+== durable families == activities
+== atoms ==
+  [0] document
+  [1] summary
+  [2] fetch_input
+  [3] summarize_input
+  [4] summarize_document_input
+  [5] summarized_outcome
+  [6] ok
+== types ==
+  record Document tag=document
+    url: string
+    body: string
+  record Summary tag=summary
+    text: string
+    word_count: int
+  record FetchInput tag=fetch_input
+    url: string
+  record SummarizeInput tag=summarize_input
+    document: ref(Document)
+  record SummarizeDocumentInput tag=summarize_document_input
+    url: string
+  union SummarizeDocumentOutcome
+    summarized -> summarized_outcome(ref(Summary))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=summarize_document_input_codec output=summarize_document_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(summarize_document.SummarizeDocumentInput, summarize_document.SummarizeDocumentOutcome, AwlError)
+  T-DEF name="summarize_document" input=summarize_document_input_codec output=summarize_document_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (summarize_document.SummarizeDocumentInput) -> Result(summarize_document.SummarizeDocumentOutcome, AwlError)
+  T-EXEC fields=[url:String] entry=step_fetch_and_summarize args=[0]
+== fn document_codec/0 origin=codec_template(RecordTrio, Document, record#0) ==
+  sig: () -> Codec(summarize_document.Document)
+  v0 = make_closure document_to_json captures=[]
+  v1 = call_local document_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn document_to_json/1 origin=codec_template(RecordTrio, Document, record#0) ==
+  sig: (summarize_document.Document) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"url": v1|>awlc.string_to_json, "body": v2|>awlc.string_to_json}
+  return v3
+== fn document_decoder/0 origin=codec_template(RecordTrio, Document, record#0) ==
+  sig: () -> Decoder(summarize_document.Document)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summary_codec/0 origin=codec_template(RecordTrio, Summary, record#1) ==
+  sig: () -> Codec(summarize_document.Summary)
+  v0 = make_closure summary_to_json captures=[]
+  v1 = call_local summary_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summary_to_json/1 origin=codec_template(RecordTrio, Summary, record#1) ==
+  sig: (summarize_document.Summary) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"text": v1|>awlc.string_to_json, "word_count": v2|>awlc.int_to_json}
+  return v3
+== fn summary_decoder/0 origin=codec_template(RecordTrio, Summary, record#1) ==
+  sig: () -> Decoder(summarize_document.Summary)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_input_codec/0 origin=codec_template(RecordTrio, FetchInput, record#2) ==
+  sig: () -> Codec(summarize_document.FetchInput)
+  v0 = make_closure fetch_input_to_json captures=[]
+  v1 = call_local fetch_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_input_to_json/1 origin=codec_template(RecordTrio, FetchInput, record#2) ==
+  sig: (summarize_document.FetchInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"url": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_input_decoder/0 origin=codec_template(RecordTrio, FetchInput, record#2) ==
+  sig: () -> Decoder(summarize_document.FetchInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_input_codec/0 origin=codec_template(RecordTrio, SummarizeInput, record#3) ==
+  sig: () -> Codec(summarize_document.SummarizeInput)
+  v0 = make_closure summarize_input_to_json captures=[]
+  v1 = call_local summarize_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summarize_input_to_json/1 origin=codec_template(RecordTrio, SummarizeInput, record#3) ==
+  sig: (summarize_document.SummarizeInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"document": v1|>document_to_json}
+  return v2
+== fn summarize_input_decoder/0 origin=codec_template(RecordTrio, SummarizeInput, record#3) ==
+  sig: () -> Decoder(summarize_document.SummarizeInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_document_input_codec/0 origin=codec_template(RecordTrio, SummarizeDocumentInput, record#4) ==
+  sig: () -> Codec(summarize_document.SummarizeDocumentInput)
+  v0 = make_closure summarize_document_input_to_json captures=[]
+  v1 = call_local summarize_document_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summarize_document_input_to_json/1 origin=codec_template(RecordTrio, SummarizeDocumentInput, record#4) ==
+  sig: (summarize_document.SummarizeDocumentInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"url": v1|>awlc.string_to_json}
+  return v2
+== fn summarize_document_input_decoder/0 origin=codec_template(RecordTrio, SummarizeDocumentInput, record#4) ==
+  sig: () -> Decoder(summarize_document.SummarizeDocumentInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_document_outcome_codec/0 origin=codec_template(UnionTrio, SummarizeDocumentOutcome, union#5) ==
+  sig: () -> Codec(summarize_document.SummarizeDocumentOutcome)
+  v0 = make_closure summarize_document_outcome_to_json captures=[]
+  v1 = call_local summarize_document_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summarize_document_outcome_to_json/1 origin=codec_template(UnionTrio, SummarizeDocumentOutcome, union#5) ==
+  sig: (summarize_document.SummarizeDocumentOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn summarize_document_outcome_decoder/0 origin=codec_template(UnionTrio, SummarizeDocumentOutcome, union#5) ==
+  sig: () -> Decoder(summarize_document.SummarizeDocumentOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_activity/1 origin=activity_wrapper(fetch, raw=false) ==
+  sig: (String) -> Activity(summarize_document.FetchInput, summarize_document.Document)
+  T-ACT action=fetch input_codec=fetch_input_codec return=document_codec
+== fn summarize_activity/1 origin=activity_wrapper(summarize, raw=false) ==
+  sig: (summarize_document.Document) -> Activity(summarize_document.SummarizeInput, summarize_document.Summary)
+  T-ACT action=summarize input_codec=summarize_input_codec return=summary_codec
+== fn step_fetch_and_summarize/1 origin=region(fetch_and_summarize) ==
+  sig: (String) -> Result(summarize_document.SummarizeDocumentOutcome, AwlError)
+  v1 = call_local fetch_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = call_local summarize_activity(v5)
+  v7 = call_rt aion@activity:task_queue/2(v6, lit#1)
+  v8 = call_rt aion@workflow:run/1(v7)
+  v9 = call_rt aion@awl@error:map_activity_error/1(v8)
+  v10 = try_bind v9
+  v11 = record(summarized_outcome, [v10])
+  v12 = record(ok, [v11])
+  return v12
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

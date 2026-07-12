@@ -1,0 +1,120 @@
+module inline_verbatim_constraints source=inline_verbatim_constraints.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_file:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] reading
+  [1] filed
+  [2] file_reading_input
+  [3] inline_verbatim_constraints_input
+  [4] filed_outcome
+  [5] ok
+== types ==
+  record Reading tag=reading
+    celsius: float
+    label: nullable(string) optional
+    pattern_id: nullable(string) optional
+    scaled: nullable(int) optional
+  record Filed tag=filed
+    note: string
+  record FileReadingInput tag=file_reading_input
+    reading: ref(Reading)
+  record InlineVerbatimConstraintsInput tag=inline_verbatim_constraints_input
+    reading: ref(Reading)
+  union InlineVerbatimConstraintsOutcome
+    filed -> filed_outcome(ref(Filed))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=inline_verbatim_constraints_input_codec output=inline_verbatim_constraints_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(inline_verbatim_constraints.InlineVerbatimConstraintsInput, inline_verbatim_constraints.InlineVerbatimConstraintsOutcome, AwlError)
+  T-DEF name="inline_verbatim_constraints" input=inline_verbatim_constraints_input_codec output=inline_verbatim_constraints_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (inline_verbatim_constraints.InlineVerbatimConstraintsInput) -> Result(inline_verbatim_constraints.InlineVerbatimConstraintsOutcome, AwlError)
+  T-EXEC fields=[reading:inline_verbatim_constraints.Reading] entry=step_file args=[0]
+== fn reading_codec/0 origin=codec_template(RecordTrio, Reading, record#0) ==
+  sig: () -> Codec(inline_verbatim_constraints.Reading)
+  v0 = make_closure reading_to_json captures=[]
+  v1 = call_local reading_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn reading_to_json/1 origin=codec_template(RecordTrio, Reading, record#0) ==
+  sig: (inline_verbatim_constraints.Reading) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = field(v0, 4)
+  v5 = json_obj {"celsius": v1|>awlc.float_to_json, "label": v2|>awlc.nil_to_json, "pattern_id": v3|>awlc.nil_to_json, "scaled": v4|>awlc.nil_to_json}
+  return v5
+== fn reading_decoder/0 origin=codec_template(RecordTrio, Reading, record#0) ==
+  sig: () -> Decoder(inline_verbatim_constraints.Reading)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn filed_codec/0 origin=codec_template(RecordTrio, Filed, record#1) ==
+  sig: () -> Codec(inline_verbatim_constraints.Filed)
+  v0 = make_closure filed_to_json captures=[]
+  v1 = call_local filed_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn filed_to_json/1 origin=codec_template(RecordTrio, Filed, record#1) ==
+  sig: (inline_verbatim_constraints.Filed) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"note": v1|>awlc.string_to_json}
+  return v2
+== fn filed_decoder/0 origin=codec_template(RecordTrio, Filed, record#1) ==
+  sig: () -> Decoder(inline_verbatim_constraints.Filed)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn file_reading_input_codec/0 origin=codec_template(RecordTrio, FileReadingInput, record#2) ==
+  sig: () -> Codec(inline_verbatim_constraints.FileReadingInput)
+  v0 = make_closure file_reading_input_to_json captures=[]
+  v1 = call_local file_reading_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn file_reading_input_to_json/1 origin=codec_template(RecordTrio, FileReadingInput, record#2) ==
+  sig: (inline_verbatim_constraints.FileReadingInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reading": v1|>reading_to_json}
+  return v2
+== fn file_reading_input_decoder/0 origin=codec_template(RecordTrio, FileReadingInput, record#2) ==
+  sig: () -> Decoder(inline_verbatim_constraints.FileReadingInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn inline_verbatim_constraints_input_codec/0 origin=codec_template(RecordTrio, InlineVerbatimConstraintsInput, record#3) ==
+  sig: () -> Codec(inline_verbatim_constraints.InlineVerbatimConstraintsInput)
+  v0 = make_closure inline_verbatim_constraints_input_to_json captures=[]
+  v1 = call_local inline_verbatim_constraints_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn inline_verbatim_constraints_input_to_json/1 origin=codec_template(RecordTrio, InlineVerbatimConstraintsInput, record#3) ==
+  sig: (inline_verbatim_constraints.InlineVerbatimConstraintsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reading": v1|>reading_to_json}
+  return v2
+== fn inline_verbatim_constraints_input_decoder/0 origin=codec_template(RecordTrio, InlineVerbatimConstraintsInput, record#3) ==
+  sig: () -> Decoder(inline_verbatim_constraints.InlineVerbatimConstraintsInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn inline_verbatim_constraints_outcome_codec/0 origin=codec_template(UnionTrio, InlineVerbatimConstraintsOutcome, union#4) ==
+  sig: () -> Codec(inline_verbatim_constraints.InlineVerbatimConstraintsOutcome)
+  v0 = make_closure inline_verbatim_constraints_outcome_to_json captures=[]
+  v1 = call_local inline_verbatim_constraints_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn inline_verbatim_constraints_outcome_to_json/1 origin=codec_template(UnionTrio, InlineVerbatimConstraintsOutcome, union#4) ==
+  sig: (inline_verbatim_constraints.InlineVerbatimConstraintsOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn inline_verbatim_constraints_outcome_decoder/0 origin=codec_template(UnionTrio, InlineVerbatimConstraintsOutcome, union#4) ==
+  sig: () -> Decoder(inline_verbatim_constraints.InlineVerbatimConstraintsOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn file_reading_activity/1 origin=activity_wrapper(file_reading, raw=false) ==
+  sig: (inline_verbatim_constraints.Reading) -> Activity(inline_verbatim_constraints.FileReadingInput, inline_verbatim_constraints.Filed)
+  T-ACT action=file_reading input_codec=file_reading_input_codec return=filed_codec
+== fn step_file/1 origin=region(file) ==
+  sig: (inline_verbatim_constraints.Reading) -> Result(inline_verbatim_constraints.InlineVerbatimConstraintsOutcome, AwlError)
+  v1 = call_local file_reading_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(filed_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

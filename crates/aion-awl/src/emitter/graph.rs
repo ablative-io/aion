@@ -25,52 +25,52 @@ use super::context::Emitter;
 use super::error::EmitError;
 
 /// One dependency-connected group of steps, lowered as one Gleam function.
-pub(super) struct Region {
+pub(crate) struct Region {
     /// Entry step index (the function is named for it).
-    pub(super) entry: usize,
+    pub(crate) entry: usize,
     /// Topological layers of member step indexes, written order within a
     /// layer.
-    pub(super) layers: Vec<Vec<usize>>,
+    pub(crate) layers: Vec<Vec<usize>>,
 }
 
 /// A function node in the liveness graph.
 #[derive(Debug, Default)]
-pub(super) struct Node {
-    pub(super) refs: BTreeSet<String>,
-    pub(super) defs: BTreeSet<String>,
-    pub(super) callees: BTreeSet<usize>,
+pub(crate) struct Node {
+    pub(crate) refs: BTreeSet<String>,
+    pub(crate) defs: BTreeSet<String>,
+    pub(crate) callees: BTreeSet<usize>,
 }
 
 /// The lowering plan: regions, substep chains, and per-function parameters.
-pub(super) struct Plan {
-    pub(super) regions: Vec<Region>,
+pub(crate) struct Plan {
+    pub(crate) regions: Vec<Region>,
     /// Step index → region index of which it is the entry.
-    pub(super) entry_region: BTreeMap<usize, usize>,
+    pub(crate) entry_region: BTreeMap<usize, usize>,
     /// Region index → liveness node.
-    pub(super) region_node: Vec<usize>,
+    pub(crate) region_node: Vec<usize>,
     /// (parent step index, substep position) → liveness node.
-    pub(super) sub_node: BTreeMap<(usize, usize), usize>,
+    pub(crate) sub_node: BTreeMap<(usize, usize), usize>,
     /// Per-node parameter lists (sorted, deterministic).
-    pub(super) params: Vec<Vec<String>>,
+    pub(crate) params: Vec<Vec<String>>,
 }
 
 impl Plan {
-    pub(super) fn region_params(&self, region: usize) -> &[String] {
+    pub(crate) fn region_params(&self, region: usize) -> &[String] {
         &self.params[self.region_node[region]]
     }
 
-    pub(super) fn sub_params(&self, step: usize, sub: usize) -> &[String] {
+    pub(crate) fn sub_params(&self, step: usize, sub: usize) -> &[String] {
         &self.params[self.sub_node[&(step, sub)]]
     }
 
     /// The region a route-targeted step heads, when it heads one.
-    pub(super) fn region_of_entry(&self, step: usize) -> Option<usize> {
+    pub(crate) fn region_of_entry(&self, step: usize) -> Option<usize> {
         self.entry_region.get(&step).copied()
     }
 }
 
 /// Where a step body's trailing substep block starts, validating the shape.
-pub(super) fn substep_split(step: &Step) -> Result<usize, EmitError> {
+pub(crate) fn substep_split(step: &Step) -> Result<usize, EmitError> {
     let first = step
         .body
         .iter()
@@ -117,11 +117,11 @@ pub(super) fn substep_split(step: &Step) -> Result<usize, EmitError> {
 
 /// Whether a step can complete and hand control onward (mirrors the
 /// checker's rule).
-pub(super) fn falls_through(step: &Step) -> bool {
+pub(crate) fn falls_through(step: &Step) -> bool {
     step.outcomes.is_empty() && !body_ends_in_route(&step.body)
 }
 
-pub(super) fn body_ends_in_route(body: &[Statement]) -> bool {
+pub(crate) fn body_ends_in_route(body: &[Statement]) -> bool {
     match body.last() {
         Some(Statement::Route(_)) => true,
         Some(Statement::Pipe(pipe)) => matches!(pipe.end, PipeEnd::Route(_)),
@@ -139,7 +139,7 @@ struct Edges {
 }
 
 /// Build the lowering plan for the document's steps.
-pub(super) fn plan(emitter: &Emitter<'_>) -> Result<Plan, EmitError> {
+pub(crate) fn plan(emitter: &Emitter<'_>) -> Result<Plan, EmitError> {
     let steps = &emitter.document.steps;
     let edges = build_edges(steps)?;
     check_refusals(steps, &edges)?;
@@ -412,7 +412,7 @@ fn route_names_in<'a>(statements: &'a [Statement], found: &mut Vec<&'a str>) {
 }
 
 /// Names an expression references.
-pub(super) fn expr_refs(expr: &Expr, refs: &mut BTreeSet<String>) {
+pub(crate) fn expr_refs(expr: &Expr, refs: &mut BTreeSet<String>) {
     match expr {
         Expr::String { .. }
         | Expr::Int { .. }

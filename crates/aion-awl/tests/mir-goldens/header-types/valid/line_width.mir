@@ -1,0 +1,126 @@
+module measure_widths source=measure_widths.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_measure:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] short_record
+  [1] wide_record
+  [2] measure_input
+  [3] measure_widths_input
+  [4] measured_outcome
+  [5] ok
+== types ==
+  record ShortRecord tag=short_record
+    id: int
+    label: string
+  record WideRecord tag=wide_record
+    request_identifier: string
+    normalized_request_body: string
+    response_status_code: int
+    response_elapsed_milliseconds: float
+    summary: ref(ShortRecord)
+    retryable: bool
+  record MeasureInput tag=measure_input
+    request: string
+  record MeasureWidthsInput tag=measure_widths_input
+    request: string
+  union MeasureWidthsOutcome
+    measured -> measured_outcome(ref(WideRecord))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=measure_widths_input_codec output=measure_widths_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(measure_widths.MeasureWidthsInput, measure_widths.MeasureWidthsOutcome, AwlError)
+  T-DEF name="measure_widths" input=measure_widths_input_codec output=measure_widths_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (measure_widths.MeasureWidthsInput) -> Result(measure_widths.MeasureWidthsOutcome, AwlError)
+  T-EXEC fields=[request:String] entry=step_measure args=[0]
+== fn short_record_codec/0 origin=codec_template(RecordTrio, ShortRecord, record#0) ==
+  sig: () -> Codec(measure_widths.ShortRecord)
+  v0 = make_closure short_record_to_json captures=[]
+  v1 = call_local short_record_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn short_record_to_json/1 origin=codec_template(RecordTrio, ShortRecord, record#0) ==
+  sig: (measure_widths.ShortRecord) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"id": v1|>awlc.int_to_json, "label": v2|>awlc.string_to_json}
+  return v3
+== fn short_record_decoder/0 origin=codec_template(RecordTrio, ShortRecord, record#0) ==
+  sig: () -> Decoder(measure_widths.ShortRecord)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn wide_record_codec/0 origin=codec_template(RecordTrio, WideRecord, record#1) ==
+  sig: () -> Codec(measure_widths.WideRecord)
+  v0 = make_closure wide_record_to_json captures=[]
+  v1 = call_local wide_record_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn wide_record_to_json/1 origin=codec_template(RecordTrio, WideRecord, record#1) ==
+  sig: (measure_widths.WideRecord) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = field(v0, 4)
+  v5 = field(v0, 5)
+  v6 = field(v0, 6)
+  v7 = json_obj {"request_identifier": v1|>awlc.string_to_json, "normalized_request_body": v2|>awlc.string_to_json, "response_status_code": v3|>awlc.int_to_json, "response_elapsed_milliseconds": v4|>awlc.float_to_json, "summary": v5|>short_record_to_json, "retryable": v6|>awlc.bool_to_json}
+  return v7
+== fn wide_record_decoder/0 origin=codec_template(RecordTrio, WideRecord, record#1) ==
+  sig: () -> Decoder(measure_widths.WideRecord)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn measure_input_codec/0 origin=codec_template(RecordTrio, MeasureInput, record#2) ==
+  sig: () -> Codec(measure_widths.MeasureInput)
+  v0 = make_closure measure_input_to_json captures=[]
+  v1 = call_local measure_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn measure_input_to_json/1 origin=codec_template(RecordTrio, MeasureInput, record#2) ==
+  sig: (measure_widths.MeasureInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"request": v1|>awlc.string_to_json}
+  return v2
+== fn measure_input_decoder/0 origin=codec_template(RecordTrio, MeasureInput, record#2) ==
+  sig: () -> Decoder(measure_widths.MeasureInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn measure_widths_input_codec/0 origin=codec_template(RecordTrio, MeasureWidthsInput, record#3) ==
+  sig: () -> Codec(measure_widths.MeasureWidthsInput)
+  v0 = make_closure measure_widths_input_to_json captures=[]
+  v1 = call_local measure_widths_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn measure_widths_input_to_json/1 origin=codec_template(RecordTrio, MeasureWidthsInput, record#3) ==
+  sig: (measure_widths.MeasureWidthsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"request": v1|>awlc.string_to_json}
+  return v2
+== fn measure_widths_input_decoder/0 origin=codec_template(RecordTrio, MeasureWidthsInput, record#3) ==
+  sig: () -> Decoder(measure_widths.MeasureWidthsInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn measure_widths_outcome_codec/0 origin=codec_template(UnionTrio, MeasureWidthsOutcome, union#4) ==
+  sig: () -> Codec(measure_widths.MeasureWidthsOutcome)
+  v0 = make_closure measure_widths_outcome_to_json captures=[]
+  v1 = call_local measure_widths_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn measure_widths_outcome_to_json/1 origin=codec_template(UnionTrio, MeasureWidthsOutcome, union#4) ==
+  sig: (measure_widths.MeasureWidthsOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn measure_widths_outcome_decoder/0 origin=codec_template(UnionTrio, MeasureWidthsOutcome, union#4) ==
+  sig: () -> Decoder(measure_widths.MeasureWidthsOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn measure_activity/1 origin=activity_wrapper(measure, raw=false) ==
+  sig: (String) -> Activity(measure_widths.MeasureInput, measure_widths.WideRecord)
+  T-ACT action=measure input_codec=measure_input_codec return=wide_record_codec
+== fn step_measure/1 origin=region(measure) ==
+  sig: (String) -> Result(measure_widths.MeasureWidthsOutcome, AwlError)
+  v1 = call_local measure_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(measured_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

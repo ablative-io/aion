@@ -16,5 +16,7 @@ categories = ["development-tools"]
 workspace = true
 
 [dependencies]
+beamr = { workspace = true }
+gleam-types = "0.4.3"
 serde_json.workspace = true
 thiserror.workspace = true
