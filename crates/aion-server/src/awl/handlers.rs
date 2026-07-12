@@ -46,6 +46,7 @@ pub struct FormatResponse {
 #[derive(Debug, Serialize)]
 pub struct SemanticIndex {
     pub entries: Vec<SemanticEntry>,
+    pub graph: super::projection::GraphProjection,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,6 +124,7 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
             error.span,
         ));
     }
+    let graph = super::projection::build(&document);
     let semantic = SemanticIndex {
         entries: analysis
             .iter()
@@ -140,6 +142,7 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
                     }),
             })
             .collect(),
+        graph,
     };
     CheckResponse {
         ok: true,
@@ -253,6 +256,65 @@ mod tests {
         })?;
         assert_eq!(once.formatted, twice.formatted);
         assert_eq!(once.formatted, HAPPY);
+        Ok(())
+    }
+
+    #[test]
+    fn every_valid_fixture_projects_without_mutating_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../aion-awl/tests/fixtures");
+        let mut paths = Vec::new();
+        collect_valid_fixtures(&fixtures, &mut paths)?;
+        assert!(!paths.is_empty());
+        for path in paths {
+            let source = std::fs::read_to_string(&path)?;
+            let original = source.clone();
+            let document = parse(&source)
+                .map_err(|error| format!("{} did not parse: {}", path.display(), error.message))?;
+            let canonical = print(&document);
+            assert_eq!(print(&parse(&canonical)?), canonical, "{}", path.display());
+            let response = check_source(&CheckRequest {
+                source: source.clone(),
+                path: Some(path.to_string_lossy().into_owned()),
+            });
+            assert_eq!(source, original, "projection mutated {}", path.display());
+            assert!(
+                response.ok,
+                "{}: {:?}",
+                path.display(),
+                response.diagnostics
+            );
+            let graph = response
+                .semantic
+                .ok_or("valid fixture had no semantics")?
+                .graph;
+            assert_eq!(
+                graph.steps.len(),
+                document.steps.len(),
+                "{}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn collect_valid_fixtures(
+        directory: &Path,
+        found: &mut Vec<std::path::PathBuf>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_valid_fixtures(&path, found)?;
+            } else if path.extension().is_some_and(|extension| extension == "awl")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "valid")
+            {
+                found.push(path);
+            }
+        }
         Ok(())
     }
 }

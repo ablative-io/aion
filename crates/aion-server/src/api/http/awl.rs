@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::Serialize;
 
+use super::auth::HttpCaller;
 use crate::ServerState;
 use crate::awl::{
     self, CheckRequest, CheckResponse, Diagnostic, DocumentEntry, DocumentResponse, FormatRequest,
@@ -58,6 +59,31 @@ pub(crate) async fn put_document(
         .map_err(DocumentHttpError)
 }
 
+pub(crate) async fn get_layout(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(path): Path<String>,
+) -> Result<Json<awl::layout::LayoutRecord>, LayoutHttpError> {
+    let root = workspace(&state).map_err(|error| LayoutHttpError::not_configured(&error.0))?;
+    awl::layout::read(&root, &path, caller.subject())
+        .await
+        .map(Json)
+        .map_err(LayoutHttpError)
+}
+
+pub(crate) async fn put_layout(
+    State(state): State<ServerState>,
+    HttpCaller(caller): HttpCaller,
+    Path(path): Path<String>,
+    Json(request): Json<awl::layout::LayoutRecord>,
+) -> Result<Json<awl::layout::LayoutRecord>, LayoutHttpError> {
+    let root = workspace(&state).map_err(|error| LayoutHttpError::not_configured(&error.0))?;
+    awl::layout::write(&root, &path, caller.subject(), request)
+        .await
+        .map(Json)
+        .map_err(LayoutHttpError)
+}
+
 fn workspace(state: &ServerState) -> Result<std::path::PathBuf, DocumentHttpError> {
     state
         .runtime_config()
@@ -87,6 +113,39 @@ impl IntoResponse for FormatHttpError {
             Json(DiagnosticsBody {
                 diagnostics: vec![self.diagnostic],
             }),
+        )
+            .into_response()
+    }
+}
+
+pub(crate) struct LayoutHttpError(pub(crate) awl::layout::LayoutError);
+
+impl LayoutHttpError {
+    fn not_configured(error: &awl::documents::DocumentError) -> Self {
+        Self(awl::layout::LayoutError::DocumentNotFound(
+            error.to_string(),
+        ))
+    }
+}
+
+impl IntoResponse for LayoutHttpError {
+    fn into_response(self) -> Response {
+        let (status, error_type, message) = match self.0 {
+            awl::layout::LayoutError::InvalidPath(message) => {
+                (StatusCode::BAD_REQUEST, "InvalidLayoutPath", message)
+            }
+            awl::layout::LayoutError::DocumentNotFound(message) => {
+                (StatusCode::NOT_FOUND, "DocumentNotFound", message)
+            }
+            awl::layout::LayoutError::Io(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "LayoutIoError",
+                error.to_string(),
+            ),
+        };
+        (
+            status,
+            Json(WireError::invalid_input(message).with_error_type(error_type)),
         )
             .into_response()
     }
