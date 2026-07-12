@@ -916,3 +916,318 @@ pub(crate) enum RuntimeFn {
 //            degraded_parallel (S13), expanded trios in full (S8).
 // pub(crate) fn print_mir(module: &MirModule) -> String;
 ```
+
+---
+
+## 11. BC-3 — selection and register allocation (design of record, 2026-07-12)
+
+BC-3 consumes a verified `MirModule` per §10 and owns everything from there to
+`.beam` bytes: shell expansion, instruction selection from the §2.5 burst
+table, register allocation, label resolution, chunk construction, and assembly
+through `beamr::loader::encode::encode_module` (**beamr 0.14.0 from crates.io,
+feature `encode`** — the operator amendment; no path-dep anywhere, D-BC4
+satisfied vacuously). Decisions 1–13 honored; decision 12 applies (no
+`int_code_end`, no `module_info/0,1` — the shipped encoder already emits no
+terminator). Binding constraints for this section, per the operator
+(2026-07-12): emit only structures erlc output uses at the chunk/term level
+(IR-20), and **no JIT-visible Y-relative access** — the X-registers-only rule,
+decoded against the verified register-file reality in §11.1.
+
+### 11.1 The register-file reality (code-verified; the docs are conceptual)
+
+`beamr/docs` describes the process stack conceptually (`docs/files/`
+`04-processes.md`: "its stack (where it is in its work)") and the typed-JIT
+direction (`docs/AOT-NORTH-STAR.md`: the JIT consumes `.gleam_types` sidecars,
+`TypedRegisterState`); the register-file specifics live in code. Verified
+2026-07-12, cited by file:line against the beamr checkout:
+
+1. **Interpreter** — per-process flat X file; Y registers are per-frame slots.
+   `allocate`/`allocate_heap`/`allocate_zero` push a Y-frame
+   (`interpreter/opcodes/core.rs:245-270`, `push_y_frame` 790-805);
+   `deallocate` pops it (807-811); frames isolate their Y slots
+   (`process/stack.rs:39-47`, test `y_registers_are_isolated_by_frame`
+   stack.rs:384). Crucially, **return points are pushed by `call`/body
+   `call_ext` themselves** (`core.rs:101-124` pushes a 0-slot frame,
+   `core.rs:165-178` `ExtCallReturn::Body`) — unlike OTP, `allocate` saves no
+   CP, so **a frameless non-tail call is legal in this VM**.
+2. **Validator** — one linear pass; a Y operand is legal only under a live
+   `Allocate…Deallocate` bracket with index < frame size
+   (`loader/validate.rs:33-48, 98-115, 211-229`); `Deallocate` resets the
+   tracked frame to `None` (validate.rs:229) — layout consequence in §11.3.
+   X register indices must be < 256 (validate.rs:94).
+3. **JIT** — the compile unit is ONE function (`jit/compile_job.rs:13-33`).
+   `Register::Y(i)` flat-maps to register-file slot `X_REGISTER_COUNT + i`
+   (= 1024+i) — **not frame-relative** (`jit/ir_common.rs:12-22, 161-167`).
+   The `Allocate`/`Deallocate`/`Trim` family has **no lowering anywhere in
+   `jit/`** (grep-verified): any function containing one fails compilation
+   (`UnsupportedOpcode` fallthrough, `jit/compiler/dispatch_data.rs:333`) and
+   runs interpreted forever. `CallExt` compiles to a helper that re-enters the
+   interpreter (`jit/compiler/dispatch_call.rs:47-89`).
+4. **GC** — gc points carrying a `Live` operand treat only `x0..x(live-1)` as
+   roots and **clear X registers above `live`** (`interpreter/opcodes/`
+   `core.rs:326-337` re `clear_dead_x_regs`/`gc::minor`;
+   `guards.rs:174-180`). A callee's own gc points therefore wipe the caller's
+   high X registers: **X can never carry a value across any call, in either
+   engine.** `put_list`/`put_tuple2` self-reserve defensively with the full
+   register file rooted (core.rs:320-345).
+
+**Theorem (why a global no-Y rule is impossible for this MIR).** A value live
+across a non-tail call must survive callee X-clobber and callee GC clearing
+(fact 4). The only callee-save storage the machine offers is the frame Y slot;
+the §6 capability set (S15) forbids every escape hatch (no process dictionary,
+no ETS, no erlang call surface), and rewriting call-crossing live ranges into
+SDK-driven continuation closures contradicts §2.2 (flattened `TryBind` exists
+precisely to avoid that), S8 (`select` never synthesizes functions), and
+D-BC1 parity. Region bodies with sequential `TryBind` chains have non-empty
+`live_after` by construction. Strict X-only-everywhere is therefore not a
+BC-3 design option — it would be a different MIR.
+
+**Resolution — the two-tier rule (R5).** The X-only constraint's operative
+content is that the JIT's broken flat-Y mapping must be unreachable for our
+output. BC-3 guarantees that outright:
+
+- **Tier 1 (frameless, X-only, JIT-eligible):** functions whose crossing set
+  (§11.2) is empty emit **no `Allocate`, no Y operand, ever** — arguments and
+  temporaries in X, frameless body calls per fact 1, tails via
+  `CallOnly`/`CallExtOnly`.
+- **Tier 2 (framed, interpreter-pinned by construction):** functions with a
+  non-empty crossing set open with `Allocate F` and home call-crossing values
+  in Y. Because the JIT compiles per function and has no `Allocate` lowering
+  (fact 3), **no function containing a Y operand is ever JIT-compiled** — the
+  flat mapping is dead code for BC output. Y never appears without `Allocate`
+  (the validator enforces it), so there is zero JIT-visible Y-relative access.
+
+Framed functions are exactly the park-bound workflow glue (regions, shells
+holding codec results); their JIT-ineligibility costs nothing today and lifts
+automatically when the ABI brief gives the JIT frame-relative Y.
+
+### 11.2 Register allocation
+
+**Call-bearing ops** (their bursts contain an X-clobbering call): `CallRt`,
+`CallLocal`, `CallClosure`, `Concat` (call_ext `gleam@string:append/2`, R2),
+`IndexGuard` (call_ext `aion@awl@runtime:index/3` + TryBind burst), `JsonObj`
+(per-pair to_json calls), `WaitTimeoutCase` (call_ext `duration:milliseconds`
++ `with_timeout/2`), `Attempt` (`call_fun`); `TryBind` only under the R1
+fallback (its primary burst is test+extract, call-free). **Not call-bearing:**
+`MakeClosure` (heap op; captures consumed at the op, defensive full-file
+rooting per fact 4's put-op pattern), `Increment` (gc_bif with an accurate
+`Live`), `Bind`/`FieldGet`/`RecordNew`/`ListNew`/`Cmp`/`BoolOp`/`Not`/
+`AssertList`/`AssertSome` (pure or heap-only bursts).
+
+**Liveness: recomputed, not trusted.** `select` recomputes full backward
+liveness per function (same discipline as `lower/liveness.rs`) because the
+S14 `live_after` annotations cover only `CallRt`/`CallLocal`/`CallClosure`/
+`TryBind` — the five fused call-bearing ops carry none (defect D1, §11.7).
+The S14 sets become a cross-check: any mismatch on the covered ops is a hard
+`EmitError`, never silently patched.
+
+**Crossing set** `X(f)` = union of live-across sets over all call-bearing ops
+in the function's block tree, plus one internal accumulator temp per
+`JsonObj` with ≥ 2 pairs (its pair list accumulates across its own interior
+calls). Params used after any call-bearing op are members by construction.
+
+**Tier assignment** is the per-function predicate `X(f) = ∅` (no class
+promises; it falls where it falls). Expected tier-1 population: T-EXEC
+(pure prelude + `call_only`), T-SIG (one codec call with nothing live, then
+`call_ext_last`), T-DEAD, T-WIT, enum `_to_json` (select + arm moves +
+`call_ext_last json:string/1`), the enum-decoder `is_eq_exact` cascade,
+comparators/accessors, keel-only helpers. Expected tier-2: regions, loops,
+substeps, T-DEF/T-RUN/T-ACT/T-ACTRAW (2+ codec-call results held
+simultaneously), record `_to_json` with ≥ 2 encoded fields, decoder
+continuations, `<stem>_codec/0` (the S8 closure is live across the decoder
+call; `select` does NOT reorder MIR to dodge this — determinism and parity
+outrank a 1-slot frame).
+
+**Homes.** Tier-2: members of `X(f)` get Y slots in first-definition order
+(params in `X(f)` are spilled `move x_i → y_j` in the prologue, immediately
+after `Allocate F`; thereafter ALL uses reload from Y). Everything else lives
+in X. Frame size `F = |X(f)| +` internal temps; **no Y-slot reuse in v1**
+(single-def vars; frames are small — bounded by the emitter's liveness-param
+discipline) and **no `Trim` ever** (R6).
+
+**X discipline.** Segments = maximal call-free runs. After every call-bearing
+op, every X register is dead except `x0` (live-across values are in Y by
+construction), so X allocation is per-segment fresh numbering — no intervals,
+no graph coloring, no spill search. Y slots are touched **only by `move`**
+(reload y→x before a use-run, store x→y right after a def) — every other
+instruction sees X/literal/atom operands only, keeping burst templates
+uniform and trivially validator-clean. Call marshaling is a standard
+parallel-move into `x0..x(k-1)` with one scratch X above the segment
+high-water for cycles; `CallFun` puts the fun in `x(arity)`; `MakeFun`
+captures go in `x0..x(free-1)` (convention confirmed by
+`jit/compiler/dispatch_call.rs` `make_fun_free_var_operands`).
+
+**Live-operand accuracy (hard rule).** Every emitted `Live` operand
+(`TestHeap`, `GcBif2`, `AllocateHeap`) = current live-X high-water + 1,
+because GC clears X above `Live` (fact 4). One coalesced `TestHeap` per
+heap-allocating run (tuple arity+1 words, 2 per cons); beamr's put ops
+self-reserve defensively, but we emit accurate reservations anyway (erlc
+parity, no reliance on VM slack).
+
+**No-spill argument.** There is no spill machinery to get wrong: the
+"allocation" is a deterministic partition (crossing → Y homes, rest →
+per-segment fresh X). X pressure per segment ≤ params + defs-in-segment +
+reloads + marshal width, all statically bounded by MIR shape (widest:
+`RecordNew`/`ListNew`/call marshals, ≤ max record/args arity). The emitter
+asserts X < 256 and arity ≤ 255 at emit time (validator caps,
+validate.rs:94) — an `EmitError`, never silent.
+
+### 11.3 Layout, labels, exits (the one-pass-validator discipline)
+
+- **Function header:** `Label(k)` / `FuncInfo` / `Label(k+1)` (the erlc
+  two-label shape from the round-trip corpus); tier-2 then `Allocate F` +
+  prologue spills.
+- **Body:** blocks in MIR tree order; `If` arms and `SelectEnum` arms emitted
+  then/else and declaration order; deferred blocks (badmatch targets for
+  `AssertList`/`AssertSome`/enum-total `SelectVal` fail — `Badmatch`,
+  unreachable by construction, emitted valid) after the body.
+- **Single shared exit (R7).** validate.rs is a linear scan and `Deallocate`
+  clears its frame tracking (fact 2) — a mid-stream `Deallocate; Return` would
+  invalidate every later Y operand in the same function. Therefore each framed
+  function has **exactly one** `Deallocate`, linearly last: every
+  `Return(value)` tail moves its value to `x0` and jumps to the shared
+  `Lexit: Deallocate F; Return`; `TryBind` fail branches jump straight to
+  `Lexit` (`x0` already holds `{error, E}` — §2.2 semantics unchanged);
+  tail calls leave via `CallLast{deallocate: F}` / `CallExtLast{deallocate:
+  F}`, which the validator's frame tracking ignores (validate.rs:211-229
+  handles only the Allocate family and standalone `Deallocate`). Tier-1
+  returns inline (`move → x0; Return`), tails via `CallOnly`/`CallExtOnly`.
+- **Labels** are symbolic during emission and numbered sequentially
+  module-wide at finalize; `label_count`/`function_count`/`opcode_max` are
+  derived from the stream by the encoder (writer contract: header counts
+  never hand-set).
+
+### 11.4 Per-node instruction templates
+
+Value operands: `Var` → home register (Y homes via reload move), `Lit` →
+`Operand::Literal(pool index)`, `Atom` → `Operand::Atom(Some(_))`, `Int` →
+`Operand::Integer`, `Nil` → `Operand::Atom(None)`. All variant names are
+beamr `loader::decode::Instruction` / `Operand` types (the encode feature
+shares them — no format knowledge duplicated).
+
+| MIR node | Burst (conventions of §11.2 apply) |
+|---|---|
+| `Bind` | `Move` value → home |
+| `FieldGet` | `GetTupleElement { source, element: index+1, dest }` (0-based incl. tag at 0) |
+| `RecordNew` | zero-field: `Move` bare tag atom; else `TestHeap`(coalesced) + `PutTuple2 { dest, elements: [tag, args…] }` |
+| `ListNew` | fully-constant: `Move` of pooled `LitT` list; else `TestHeap` + `PutList` chain from nil |
+| `CallRt` | marshal → `CallExt { arity, import }`; result `x0` → home |
+| `CallLocal` | marshal → `Call { arity, label }`; result `x0` → home |
+| `CallClosure` | marshal args, fun → `x(arity)` → `CallFun { arity }`; result `x0` → home |
+| `MakeClosure` | captures → `x0..f-1` → `MakeFun` (lambda index); result `x0` → home |
+| `TryBind` | `IsTaggedTuple { fail: Lexit-or-Lfail, value: x0, arity: 2, tag: 'ok' }` + `GetTupleElement x0[1]` → home (§2.2, capstone Deliverable B shape) |
+| `WaitTimeoutCase` | captures → `MakeFun`; `Move deadline_ms` → `CallExt duration:milliseconds/1`; marshal → `CallExt with_timeout/2`; nested `IsTaggedTuple` cascade over the 4 arms building `{ok,{some,V}}`/`{ok,none}`/error terms (`PutTuple2`), arms `Jump` to a local continuation label; result → home |
+| `Cmp` | `Comparison { op, fail: Lfalse, lhs, rhs }` + `Move 'true'` + `Jump Ldone`; `Lfalse: Move 'false'`; `Ldone:` (ComparisonOp Lt/Ge/Eq/Ne/EqExact/NeExact; Int/Float split is MIR-level semantics, same test instructions) |
+| `BoolOp` / `Not` | test burst (`Comparison EqExact` vs `'false'` for `Not`) + true/false materialization as `Cmp` |
+| `Concat` | marshal → `CallExt gleam@string:append/2` (R2); result → home |
+| `Increment` | `Bif { op: GcBif2, operands: [fail 0, Live: high-water+1, import(erlang:'+'/2), src, 1, dst] }` — see A1 |
+| `AssertList` | `GetList`/`GetHd`/`GetTl` chain + `TypeTest IsNil` on the final tail, fail → badmatch block |
+| `AssertSome` | `IsTaggedTuple { tag: 'some', arity: 2, fail: badmatch }` + `GetTupleElement` |
+| `JsonObj` | per pair: reload value, to_json call (`CallExt` leaf / `Call` local), `PutTuple2` pair (name binary from `LitT`), cons onto accumulator (Y-homed when ≥2 pairs); then `CallExt gleam@json:object/1` |
+| `IndexGuard` | marshal (base, index, message binary) → `CallExt aion@awl@runtime:index/3` + TryBind burst |
+| `Attempt` | captures → `MakeFun`; fun → `x0`… `CallFun { arity: 0 }`; `IsTaggedTuple {ok,2}` → `GetTupleElement` defs-tuple destructure → homes → on_ok block; fail edge → on_err block (compensation ends in a route tail — refusal preserved) |
+| `Tail::Return` | `Move → x0` + `Jump Lexit` (tier-2) / `Return` (tier-1) |
+| `Tail::TailLocal` | marshal → `CallLast { label, deallocate: F }` (tier-2) / `CallOnly` (tier-1) |
+| `Tail::TailRt` | marshal → `CallExtLast { import, deallocate: F }` / `CallExtOnly` |
+| `Tail::If` | `Comparison`/`TypeTest`/`IsTaggedTuple` per `Test` (Not = inverted op; short-circuit already nested by MIR) fail → else-label; then-block; else-block |
+| `Tail::SelectEnum` | `SelectVal { value, fail: badmatch, list: [atom→label…] }`; arm blocks in declaration order |
+
+**Shell expansion (one selector).** At entry, `select` expands each §2.4
+`TemplateFn` into a FlowFn-shaped body **in the §2.5 op set** (T-DEF:
+`MakeClosure(execute)` + name-binary `Bind` + codec `CallLocal`s/`CallRt`s +
+`TailRt WfDefine`; T-RUN, T-EXEC, T-ACT, T-ACTRAW (`CallClosure` on the codec
+record's `encode` field per IR-11), T-SIG, T-DEAD, T-WIT likewise, verbatim
+from the §2.4 recipe column). Recipes stay name-substitution-only and mint at
+most one closure (S8 intact); after expansion, ONE selection engine owns
+every function — there is no second instruction-emission path for shells.
+
+### 11.5 Assembly pipeline
+
+```
+verified MirModule
+  → expand      (shells → §2.5-op FlowFn bodies; fixed recipes)
+  → classify    (liveness recompute + S14 cross-check; crossing sets;
+                 tier; Y homes; frame sizes; X high-water)
+  → emit        (per-function burst walk of §11.4; symbolic labels;
+                 §11.3 layout; emit-time caps: X<256, arity≤255)
+  → finalize    (label numbering; atoms interned via beamr AtomTable;
+                 ImpT in first-use order = used RuntimeFn subset ∪
+                 bif-position rows (A1, IR-24 as amended);
+                 ExpT = exactly run/1, definition/0, execute/1 labels
+                 (decision 12); FunT in MakeClosure first-use order
+                 (unique_id is loader-derived — decode/chunks.rs:28-38 —
+                 and rename-recomputed, capstone obs. 6); LitT deduped
+                 first-use (MirLiteral → decode::chunks::Literal; float
+                 bytes from the S3 lexeme parse); Line instructions +
+                 line_info rows from op spans (R4, A2))
+  → beamr::loader::encode::encode_module(&parsed, &atom_table)   (0.14.0, "encode")
+  → self-gate   (load_beam_chunks → resolve_imports → validate_module
+                 on every emit — production path and tests; a rejection
+                 is an EmitError, never a silent artifact)
+```
+
+Determinism: every ordering above is a pure function of the `MirModule`
+(first-use, first-definition, tree order) — same `.awl` ⇒ same MIR ⇒ same
+bytes; #218 holds through BC-3. BC-3 also performs the deferred S1
+`TypeEnv` per-op result-type cross-check (it holds the environment during
+selection, per the BC-2 status note) and executes the **R3 pin** before
+goldens freeze: disassemble the reference-compiled corpus for the
+`decode.string` Decoder-constant materialization — never guessed.
+
+BC-3's ratchets (plan §3 row): `validate_module` over every checking fixture,
+plus one per-shape unit test per §11.4 row.
+
+### 11.6 Contract amendments (D-AOT2 maintenance rule — same-commit deltas)
+
+- **A1 (§6 / IR-24).** `erlang:'+'/2` **does occupy an ImpT row** when
+  `Increment` is used: gc_bif resolves its target through
+  `module.resolved_imports` (beamr `interpreter/opcodes/guards.rs:182-186`).
+  §6's "`erlang` (bif-position only, never ImpT)" is corrected to
+  "bif-position only — present in ImpT when used, never a `call_ext` target";
+  IR-24 becomes "ImpT = used `RuntimeFn` subset ∪ used bif-position entries,
+  in first-use order". (Deliverable A's 44-module corpus loads such rows
+  today; capability policy unaffected — `erlang` is not a native/NIF module.)
+- **A2 (§7 Line row).** The shipped encoder writes `num_fnames = 0`
+  (`loader/encode/chunks.rs:114-134`) — there is no filename table. The
+  "file 0 = the `.awl` source name" clause narrows to: line numbers anchor to
+  `.awl` source lines (`LineInfo { file: 0, line }` from op spans, bound via
+  `Instruction::Line { index }`); filename association is by module↔source
+  convention. R4's droppability is unchanged.
+- **A3 (IR-14 narrowed).** "y-registers live across calls under
+  allocate/deallocate/trim" applies to tier-2 functions only; tier-1
+  functions make frameless non-tail calls (legal per §11.1 fact 1) and use no
+  Y at all; `trim` is never emitted (R6).
+- **New decision-register rows (§8):**
+
+| # | Decision | Chosen | Pre-authorized fallback | Status |
+|---|---|---|---|---|
+| R5 | register policy | two-tier X/Y (§11.1): tier-1 frameless X-only (JIT-eligible), tier-2 framed Y homes (JIT-refused by construction — zero JIT-visible Y access) | all functions framed with `Allocate 0+F` bracketing (erlc-idiom parity; cost: everything interpreter-pinned) if any engine surprise with frameless body calls | ratified this section |
+| R6 | `Trim` | never emitted (frames die at the single `Deallocate`) | emit trims if frame growth ever measurably matters (it cannot at these sizes) | ratified |
+| R7 | exit layout | single shared `Lexit: Deallocate F; Return` per framed function, linearly last (one-pass validator discipline, §11.3) | per-exit `Deallocate` with all Return-exits sorted last in linear order | ratified |
+
+### 11.7 Defects exposed by BC-3 planning, and dependencies
+
+- **D1 (advisory, non-structural).** S14 `live_after` coverage misses the
+  five fused call-bearing ops (`Concat`, `IndexGuard`, `JsonObj`,
+  `WaitTimeoutCase`, `Attempt`): their bursts contain X-clobbering calls but
+  carry no annotation, so the golden-printed y-spill contract is incomplete.
+  `select` recomputes liveness authoritatively (§11.2) and cross-checks S14
+  where present. Recommended follow-up: extend the annotation (or at least
+  the golden printer) to those ops so regalloc-relevant diffs stay visible in
+  goldens — an additive MIR increment, not a blocker.
+- **D2 (doc defect — fixed by A1).** §6's "never ImpT" claim for `erlang`
+  was false against beamr's bif resolution path.
+- **D3 (doc narrowing — fixed by A2).** The Line-chunk filename clause was
+  unimplementable with the shipped encoder.
+- **Dependencies into BC-3:** the pending BC-2 increments (T-DEAD/T-ACTRAW/
+  T-WIT shells; record/enum/union `_decoder` bodies + enum/union `_to_json`;
+  composite trios; D4 optional-field `_to_json`) must land before their §11.4
+  rows can be golden'd — BC-3 proceeds on the covered subset in the same
+  increment order, and the `decode.success(nil)` placeholders emit as
+  ordinary (visibly wrong, structurally valid) bursts in the interim, never
+  silently correct.
+- **No structural MIR defect found.** Every §2.5 op has a bounded burst under
+  the two-tier rule; no op needs reordering, interior register-pressure
+  decisions, new MIR nodes, or select-time function synthesis. The one true
+  conflict — IR-14's Y-spill contract vs the X-only constraint — is resolved
+  by R5 with zero JIT-visible Y access, grounded in §11.1 facts 1–4.
