@@ -18,6 +18,7 @@ pub struct ProjectionStep {
     pub documentation: String,
     pub span: SourceSpan,
     pub markers: StepMarkers,
+    pub activities: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -72,6 +73,7 @@ pub fn build(document: &Document) -> GraphProjection {
             documentation: documentation(&step.docs),
             span: step.span.into(),
             markers: markers(step),
+            activities: activities(step),
         })
         .collect();
 
@@ -157,6 +159,33 @@ fn collect_markers(statements: &[Statement], markers: &mut StepMarkers) {
             }
             Statement::SubStep(step) => collect_markers(&step.body, markers),
             Statement::Call(_) | Statement::Spawn(_) | Statement::Pipe(_) | Statement::Route(_) => {
+            }
+        }
+    }
+}
+
+fn activities(step: &Step) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    collect_activities(&step.body, &mut names);
+    if let Some(failure) = &step.on_failure {
+        collect_activities(&failure.body, &mut names);
+    }
+    names.into_iter().collect()
+}
+
+fn collect_activities(statements: &[Statement], names: &mut BTreeSet<String>) {
+    for statement in statements {
+        match statement {
+            Statement::Call(call) => {
+                names.insert(call.call.name.clone());
+            }
+            Statement::Spawn(spawn) => {
+                names.insert(spawn.call.name.clone());
+            }
+            Statement::Fork(fork) => collect_activities(&fork.body, names),
+            Statement::Loop(looped) => collect_activities(&looped.body, names),
+            Statement::SubStep(step) => collect_activities(&step.body, names),
+            Statement::Pipe(_) | Statement::Wait(_) | Statement::Sleep(_) | Statement::Route(_) => {
             }
         }
     }

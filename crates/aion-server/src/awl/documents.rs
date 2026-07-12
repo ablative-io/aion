@@ -14,6 +14,7 @@ pub struct DocumentEntry {
 #[derive(Debug, Serialize)]
 pub struct DocumentResponse {
     pub source: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +27,7 @@ pub struct CreateDocumentResponse {
     pub path: String,
     pub name: String,
     pub source: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,7 +67,11 @@ pub async fn read(root: &Path, requested: &str) -> Result<DocumentResponse, Docu
             DocumentError::Io(error)
         }
     })?;
-    Ok(DocumentResponse { source })
+    let content_hash = super::revisions::content_hash(&source);
+    Ok(DocumentResponse {
+        source,
+        content_hash,
+    })
 }
 
 pub async fn create(
@@ -97,10 +103,14 @@ pub async fn create(
         let _ = tokio::fs::remove_file(&destination).await;
         return Err(DocumentError::Io(error));
     }
+    let revision = super::revisions::store(&canonical_root, &source)
+        .await
+        .map_err(|error| revision_io(&error))?;
     Ok(CreateDocumentResponse {
         path,
         name: request.name,
         source,
+        content_hash: revision.content_hash,
     })
 }
 
@@ -140,9 +150,17 @@ pub async fn write(
         let _ = tokio::fs::remove_file(&temp).await;
         return Err(DocumentError::Io(error));
     }
+    let revision = super::revisions::store(&canonical_root, &request.source)
+        .await
+        .map_err(|error| revision_io(&error))?;
     Ok(DocumentResponse {
         source: request.source,
+        content_hash: revision.content_hash,
     })
+}
+
+fn revision_io(error: &super::revisions::RevisionError) -> DocumentError {
+    DocumentError::Io(io::Error::other(error.to_string()))
 }
 
 fn list_sync(root: &Path) -> Result<Vec<DocumentEntry>, DocumentError> {

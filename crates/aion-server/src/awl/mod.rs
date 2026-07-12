@@ -8,6 +8,8 @@ mod edit_types;
 pub mod handlers;
 pub mod layout;
 mod projection;
+pub mod revisions;
+pub mod run_loop;
 pub mod scaffold;
 #[cfg(test)]
 mod scaffold_tests;
