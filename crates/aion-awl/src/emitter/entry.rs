@@ -43,6 +43,24 @@ pub fn emit_in(document: &Document, root: &Path) -> Result<String, EmitError> {
     emit_inner(document, Some(root))
 }
 
+/// Run the shared planning passes (`build_env`, `bindings::compute`,
+/// `graph::plan`) and return the populated [`Emitter`] context together with
+/// its control-flow [`Plan`]. This is the single lowering front the AWL-BC
+/// MIR backend consumes (D-BC1 / AWL-BC-IR.md §4 lowering rule zero): both the
+/// Gleam emitter and the bytecode `lower` derive regions, Kahn layers,
+/// liveness-threaded params, and refusals from these exact passes, so those
+/// decisions cannot drift between backends.
+pub(crate) fn prepare<'a>(
+    document: &'a Document,
+    root: Option<&Path>,
+) -> Result<(Emitter<'a>, graph::Plan), EmitError> {
+    let env = build_env(document, root)?;
+    let mut emitter = Emitter::new(document, env)?;
+    bindings::compute(&mut emitter)?;
+    let plan = graph::plan(&emitter)?;
+    Ok((emitter, plan))
+}
+
 fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitError> {
     let env = build_env(document, root)?;
     let mut emitter = Emitter::new(document, env)?;

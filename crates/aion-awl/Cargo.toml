@@ -16,5 +16,6 @@ categories = ["development-tools"]
 workspace = true
 
 [dependencies]
+gleam-types = "0.4.3"
 serde_json.workspace = true
 thiserror.workspace = true

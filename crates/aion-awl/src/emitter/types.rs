@@ -24,7 +24,7 @@ use super::names::{UpperNames, snake};
 
 /// A Gleam-facing type in the emitter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum GType {
+pub(crate) enum GType {
     Bool,
     Int,
     Float,
@@ -42,22 +42,22 @@ pub(super) enum GType {
 
 /// One field of a registered record definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FieldDef {
+pub(crate) struct FieldDef {
     /// Wire (AWL/JSON) field name.
-    pub(super) awl_name: String,
+    pub(crate) awl_name: String,
     /// Field type; optionality is `GType::Option`.
-    pub(super) ty: GType,
+    pub(crate) ty: GType,
 }
 
 /// A registered record definition (constructor name = type name).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RecordDef {
-    pub(super) fields: Vec<FieldDef>,
+pub(crate) struct RecordDef {
+    pub(crate) fields: Vec<FieldDef>,
 }
 
 /// A registered named definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum NamedDef {
+pub(crate) enum NamedDef {
     Record(RecordDef),
     /// Payload-less enum with its variant constructors.
     Enum(Vec<String>),
@@ -67,21 +67,21 @@ pub(super) enum NamedDef {
 
 /// The emitter's registry of named Gleam types.
 #[derive(Debug, Default)]
-pub(super) struct TypeEnv {
-    pub(super) defs: BTreeMap<String, NamedDef>,
+pub(crate) struct TypeEnv {
+    pub(crate) defs: BTreeMap<String, NamedDef>,
     /// Emission order: declared names in document order, synthesized names
     /// appended as projection creates them.
-    pub(super) order: Vec<String>,
-    pub(super) names: UpperNames,
+    pub(crate) order: Vec<String>,
+    pub(crate) names: UpperNames,
 }
 
 impl TypeEnv {
-    pub(super) fn get(&self, name: &str) -> Option<&NamedDef> {
+    pub(crate) fn get(&self, name: &str) -> Option<&NamedDef> {
         self.defs.get(name)
     }
 
     /// Resolve alias chains to a structural `GType`.
-    pub(super) fn resolve(&self, ty: &GType) -> GType {
+    pub(crate) fn resolve(&self, ty: &GType) -> GType {
         let mut current = ty.clone();
         for _ in 0..16 {
             match current {
@@ -96,7 +96,7 @@ impl TypeEnv {
     }
 
     /// Resolve to a record definition, when the type is one.
-    pub(super) fn record_of(&self, ty: &GType) -> Option<(String, &RecordDef)> {
+    pub(crate) fn record_of(&self, ty: &GType) -> Option<(String, &RecordDef)> {
         match self.resolve(ty) {
             GType::Named(name) => match self.defs.get(&name) {
                 Some(NamedDef::Record(record)) => Some((name, record)),
@@ -107,7 +107,7 @@ impl TypeEnv {
     }
 
     /// Render the Gleam type expression for a `GType`.
-    pub(super) fn gleam_type(&self, ty: &GType) -> String {
+    pub(crate) fn gleam_type(&self, ty: &GType) -> String {
         match ty {
             GType::Bool => "Bool".to_owned(),
             GType::Int => "Int".to_owned(),
@@ -126,7 +126,7 @@ impl TypeEnv {
 
     /// Whether a wire type is a builtin leaf (its codec lives in the SDK's
     /// `aion/awl/codec` and is referenced qualified, not generated per module).
-    pub(super) fn is_leaf(&self, ty: &GType) -> bool {
+    pub(crate) fn is_leaf(&self, ty: &GType) -> bool {
         matches!(
             self.resolve(ty),
             GType::Bool | GType::Int | GType::Float | GType::Str | GType::Nil | GType::Unknown
@@ -134,7 +134,7 @@ impl TypeEnv {
     }
 
     /// The codec-function stem for a type (`x` in `x_codec`/`x_to_json`).
-    pub(super) fn codec_name(&self, ty: &GType) -> String {
+    pub(crate) fn codec_name(&self, ty: &GType) -> String {
         match ty {
             GType::Bool => "bool".to_owned(),
             GType::Int => "int".to_owned(),
@@ -152,7 +152,7 @@ impl TypeEnv {
     }
 
     /// A zero value of `ty`, used as the decoder-failure default.
-    pub(super) fn zero_expr(&self, ty: &GType, span: Span) -> Result<String, EmitError> {
+    pub(crate) fn zero_expr(&self, ty: &GType, span: Span) -> Result<String, EmitError> {
         self.zero_expr_in(ty, span, &mut Vec::new())
     }
 
@@ -223,7 +223,7 @@ impl TypeEnv {
 
 /// Convert a declared `TypeRef` to a `GType`. `Dir` maps to Gleam `String`
 /// (a content-addressed handle travels as its string form in the stopgap).
-pub(super) fn type_ref_to_g(ty: &TypeRef) -> GType {
+pub(crate) fn type_ref_to_g(ty: &TypeRef) -> GType {
     match ty {
         TypeRef::Named { name, .. } => match name.as_str() {
             "Bool" => GType::Bool,
@@ -240,7 +240,7 @@ pub(super) fn type_ref_to_g(ty: &TypeRef) -> GType {
 
 /// Build the type environment: declared types first (claiming their names
 /// and enum variant constructors), then schema-door projections.
-pub(super) fn build_env(document: &Document, root: Option<&Path>) -> Result<TypeEnv, EmitError> {
+pub(crate) fn build_env(document: &Document, root: Option<&Path>) -> Result<TypeEnv, EmitError> {
     let mut env = TypeEnv::default();
     for builtin in ["Bool", "Int", "Float", "String", "Nil", "True", "False"] {
         env.names.claim(builtin);

@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 /// Reserved words in Gleam that cannot be used as value identifiers.
-pub(super) fn is_gleam_keyword(name: &str) -> bool {
+pub(crate) fn is_gleam_keyword(name: &str) -> bool {
     matches!(
         name,
         "as" | "assert"
@@ -35,7 +35,7 @@ pub(super) fn is_gleam_keyword(name: &str) -> bool {
 /// Sanitize an AWL identifier for emission: Gleam reserved words gain a
 /// trailing underscore, applied consistently at every emission site. Wire
 /// JSON keys always keep the AWL spelling.
-pub(super) fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     if is_gleam_keyword(name) {
         format!("{name}_")
     } else {
@@ -43,7 +43,7 @@ pub(super) fn ident(name: &str) -> String {
     }
 }
 
-pub(super) fn pascal(name: &str) -> String {
+pub(crate) fn pascal(name: &str) -> String {
     let mut out = String::new();
     let mut upper = true;
     for character in name.chars() {
@@ -59,7 +59,7 @@ pub(super) fn pascal(name: &str) -> String {
     out
 }
 
-pub(super) fn snake(name: &str) -> String {
+pub(crate) fn snake(name: &str) -> String {
     let mut out = String::new();
     for (index, character) in name.chars().enumerate() {
         if character.is_uppercase() {
@@ -74,7 +74,7 @@ pub(super) fn snake(name: &str) -> String {
     out
 }
 
-pub(super) fn string_lit(value: &str) -> String {
+pub(crate) fn string_lit(value: &str) -> String {
     let mut out = String::from("\"");
     for character in value.chars() {
         match character {
@@ -94,18 +94,18 @@ pub(super) fn string_lit(value: &str) -> String {
 /// value constructors; both share the claim set because a Gleam custom-type
 /// constructor clashing with another constructor is a compile error.
 #[derive(Debug, Default)]
-pub(super) struct UpperNames {
+pub(crate) struct UpperNames {
     taken: BTreeSet<String>,
 }
 
 impl UpperNames {
     /// Claim `candidate` verbatim, returning whether it was free.
-    pub(super) fn claim(&mut self, candidate: &str) -> bool {
+    pub(crate) fn claim(&mut self, candidate: &str) -> bool {
         self.taken.insert(candidate.to_owned())
     }
 
     /// Claim `base`, or the first `base2`, `base3`, … suffix that is free.
-    pub(super) fn fresh(&mut self, base: &str) -> String {
+    pub(crate) fn fresh(&mut self, base: &str) -> String {
         if self.claim(base) {
             return base.to_owned();
         }

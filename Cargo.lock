@@ -57,6 +57,7 @@ dependencies = [
 name = "aion-awl"
 version = "0.8.0"
 dependencies = [
+ "gleam-types",
  "serde_json",
  "thiserror 2.0.18",
 ]
