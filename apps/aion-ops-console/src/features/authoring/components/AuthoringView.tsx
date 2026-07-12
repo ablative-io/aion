@@ -9,7 +9,7 @@ import { degradeToFade, SPRING_SIGNATURE } from '@/components/kit';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
 
 import { useAuthoringDocument, useAuthoringDocuments } from '../hooks/useAuthoringDocuments';
-import { AuthoringWorkspaceNotConfiguredError } from '../lib/facade';
+import { AuthoringWorkspaceNotConfiguredError, authoringFacade } from '../lib/facade';
 import { DocumentList } from './DocumentList';
 import { EditorPane } from './EditorPane';
 
@@ -38,6 +38,14 @@ export function AuthoringView() {
   );
   const reducedMotion = useReducedMotion() ?? false;
   const transition = degradeToFade(SPRING_SIGNATURE, reducedMotion);
+  const createDocument = useCallback(
+    async (name: string) => {
+      const created = await authoringFacade.createDocument(name);
+      await documentsQuery.refetch();
+      setSelectedPath(created.path);
+    },
+    [documentsQuery, setSelectedPath]
+  );
 
   const documentsLoaded = documentsQuery.isSuccess;
   useEffect(() => {
@@ -106,6 +114,7 @@ export function AuthoringView() {
           </div>
           <DocumentList
             documents={documents}
+            onCreate={createDocument}
             onSelect={setSelectedPath}
             selectedPath={selectedPath}
           />

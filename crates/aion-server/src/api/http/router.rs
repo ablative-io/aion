@@ -10,7 +10,8 @@ use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
 use super::awl::{
-    check, edit, format, get_document, get_layout, list_documents, put_document, put_layout,
+    check, create_document, edit, format, get_document, get_layout, list_documents, put_document,
+    put_layout,
 };
 use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
@@ -161,20 +162,16 @@ pub fn workflow_router(state: ServerState) -> Router {
     } else {
         Router::new().route("/authoring/{*rest}", any(authoring_disabled))
     };
-    let awl_documents = if state.runtime_config().authoring.workspace_dir.is_some() {
-        Router::new()
-            .route("/awl/documents", get(list_documents))
-            .route(
-                "/awl/documents/{*path}",
-                get(get_document).put(put_document),
-            )
-            .route("/awl/layout/{*path}", get(get_layout).put(put_layout))
-    } else {
-        Router::new()
-            .route("/awl/documents", any(authoring_disabled))
-            .route("/awl/documents/{*path}", any(authoring_disabled))
-            .route("/awl/layout/{*path}", any(authoring_disabled))
-    };
+    // The AWL facade remains mounted when no workspace is configured so the
+    // document API can return its typed `AuthoringWorkspaceUnconfigured`
+    // refusal instead of an ambiguous SPA/route 404.
+    let awl_documents = Router::new()
+        .route("/awl/documents", get(list_documents).post(create_document))
+        .route(
+            "/awl/documents/{*path}",
+            get(get_document).put(put_document),
+        )
+        .route("/awl/layout/{*path}", get(get_layout).put(put_layout));
     let awl = Router::new()
         .route("/awl/check", post(check))
         .route("/awl/edit", post(edit))

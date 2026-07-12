@@ -47,6 +47,7 @@ pub struct FormatResponse {
 pub struct SemanticIndex {
     pub entries: Vec<SemanticEntry>,
     pub graph: super::projection::GraphProjection,
+    pub studio: super::studio_projection::StudioProjection,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +126,7 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
         ));
     }
     let graph = super::projection::build(&document);
+    let studio = super::studio_projection::build(&document);
     let semantic = SemanticIndex {
         entries: analysis
             .iter()
@@ -143,6 +145,7 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
             })
             .collect(),
         graph,
+        studio,
     };
     CheckResponse {
         ok: true,

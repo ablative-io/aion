@@ -8,13 +8,38 @@ const fixtures = [
     deploys_green: true,
     steps: 3,
     diagnostics: [],
-    semantic: { entries: [], graph: { steps: [], edges: [], child_calls: [] } },
+    semantic: {
+      entries: [],
+      graph: { steps: [], edges: [], child_calls: [] },
+      studio: {
+        builtins: ['String'],
+        types: [
+          { name: 'Order', kind: 'record', fields: [{ name: 'id', type: 'String' }], variants: [] },
+        ],
+        workers: [{ name: 'jobs', actions: [{ name: 'run', params: [], return_type: 'String' }] }],
+      },
+    },
     expected: {
       ok: true,
       deploysGreen: true,
       steps: 3,
       diagnostics: [],
-      semantic: { entries: [], graph: { steps: [], edges: [], childCalls: [] } },
+      semantic: {
+        entries: [],
+        graph: { steps: [], edges: [], childCalls: [] },
+        studio: {
+          builtins: ['String'],
+          types: [
+            {
+              name: 'Order',
+              kind: 'record',
+              fields: [{ name: 'id', type: 'String' }],
+              variants: [],
+            },
+          ],
+          workers: [{ name: 'jobs', actions: [{ name: 'run', params: [], returnType: 'String' }] }],
+        },
+      },
     },
   },
   {
@@ -85,5 +110,21 @@ describe('authoring facade parsing', () => {
       expect((error as GestureRefusedError).code).toBe('name_collision');
       expect((error as Error).message).toBe('step name already exists');
     }
+  });
+
+  test('creates a workflow with the documented name body', async () => {
+    let body = '';
+    const facade = createAuthoringFacade(async (_input, init) => {
+      body = String(init?.body);
+      return Response.json(
+        { path: 'order_flow.awl', name: 'order_flow', source: 'canonical' },
+        { status: 201 }
+      );
+    });
+    expect(await facade.createDocument('order_flow')).toEqual({
+      path: 'order_flow.awl',
+      name: 'order_flow',
+    });
+    expect(JSON.parse(body)).toEqual({ name: 'order_flow' });
   });
 });

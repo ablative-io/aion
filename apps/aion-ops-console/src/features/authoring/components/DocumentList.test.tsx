@@ -7,7 +7,7 @@ test('document list renders the empty state', () => {
   const html = renderToStaticMarkup(
     <DocumentList documents={[]} onSelect={() => undefined} selectedPath={null} />
   );
-  expect(html).toContain('No AWL documents');
+  expect(html).toContain('Create a workflow to begin.');
 });
 
 test('document list renders the exact unconfigured workspace state', () => {
@@ -15,7 +15,21 @@ test('document list renders the exact unconfigured workspace state', () => {
     <DocumentList documents={[]} onSelect={() => undefined} selectedPath={null} unconfigured />
   );
   expect(html).toContain('authoring workspace not configured');
-  expect(html).not.toContain('No AWL documents');
+  expect(html).not.toContain('Create a workflow to begin.');
+});
+
+test('document list exposes the New Workflow form when creation is configured', () => {
+  const html = renderToStaticMarkup(
+    <DocumentList
+      documents={[]}
+      onCreate={async () => undefined}
+      onSelect={() => undefined}
+      selectedPath={null}
+    />
+  );
+  expect(html).toContain('New workflow');
+  expect(html).toContain('id="new-workflow-name"');
+  expect(html).toContain('Create workflow');
 });
 
 test('document rows expose compact deployment state and selected semantics', () => {

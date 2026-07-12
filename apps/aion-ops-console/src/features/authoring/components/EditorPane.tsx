@@ -1,4 +1,13 @@
-import { AlignLeft, Check, Columns2, FileText, LoaderCircle, Save, Workflow } from 'lucide-react';
+import {
+  AlignLeft,
+  Check,
+  Columns2,
+  FileText,
+  LayoutDashboard,
+  LoaderCircle,
+  Save,
+  Workflow,
+} from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -23,6 +32,7 @@ import { applyGestureThroughSeam } from '../lib/gestures';
 import { byteOffsetToUtf16, stepAtPosition } from '../lib/projection';
 import type { SemanticIndex } from '../lib/projection-types';
 import { type AuthoringViewMode, ProjectionPane } from './ProjectionPane';
+import { StudioPane } from './StudioPane';
 
 export type EditorPaneProps = {
   path: string;
@@ -153,6 +163,7 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
   useAction(ACTION_IDS.authoringViewText, () => setViewMode('text'));
   useAction(ACTION_IDS.authoringViewCanvas, () => setViewMode('canvas'));
   useAction(ACTION_IDS.authoringViewSplit, () => setViewMode('split'));
+  useAction(ACTION_IDS.authoringViewStudio, () => setViewMode('studio'));
 
   const jumpToSpan = useCallback((byteOffset: number) => {
     setViewMode((current) => (current === 'canvas' ? 'text' : current));
@@ -237,6 +248,13 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
               selected={viewMode}
               onSelect={setViewMode}
             />
+            <ViewButton
+              icon={<LayoutDashboard className="size-3.5" />}
+              label="Studio"
+              mode="studio"
+              selected={viewMode}
+              onSelect={setViewMode}
+            />
           </fieldset>
           <Button
             disabled={working !== null}
@@ -257,7 +275,7 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
         <div
           className={cn(
             'min-h-[32rem] min-w-0 overflow-hidden',
-            viewMode === 'canvas' ? 'hidden' : 'flex-1',
+            viewMode === 'canvas' || viewMode === 'studio' ? 'hidden' : 'flex-1',
             viewMode === 'split' && 'border-border border-r'
           )}
           ref={hostRef}
@@ -273,6 +291,17 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
           semantic={semantic}
           viewMode={viewMode}
         />
+        {viewMode === 'studio' && semantic !== null && (
+          <StudioPane
+            documents={documents}
+            onGesture={applyGesture}
+            onJumpToSpan={jumpToSpan}
+            onOpenDocument={onOpenDocument}
+            path={path}
+            selectedStep={selectedStep}
+            semantic={semantic}
+          />
+        )}
       </div>
       <div className="flex min-h-11 items-center justify-between gap-4 border-border border-t bg-surface-base px-4 py-2 text-xs">
         <span

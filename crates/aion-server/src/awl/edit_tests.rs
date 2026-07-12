@@ -1,6 +1,6 @@
 use super::edit::{
-    ActionParameter, EditOperation, EditRequest, EditResponse, RefusalCode, RenameKind,
-    RouteArgument, RouteGuard, edit_source,
+    ActionDefinition, ActionParameter, EditOperation, EditRequest, EditResponse, RefusalCode,
+    RenameKind, RouteArgument, RouteGuard, TypeField, edit_source,
 };
 use super::handlers::{CheckRequest, check_source};
 
@@ -10,6 +10,7 @@ const AFTER: &str =
     include_str!("../../../aion-awl/tests/fixtures/rev2/dag-fork/valid/after_single.awl");
 const FIVE_STEP: &str = include_str!("../../tests/fixtures/p2_five_step.awl");
 const EMPTY: &str = "//! Canvas gestures build this workflow.\nworkflow canvas_five\n  outcome done: type Result, route success\n\ntype Result { value: String }\n";
+const STUDIO: &str = "//! Studio edits.\nworkflow studio\n  outcome done: type String, route success\n\ntype Item { value: String, spare: String }\n\nworker jobs\n  action used() -> String\n  action spare() -> String\n";
 
 #[test]
 fn every_v1_gesture_returns_byte_canonical_source() -> Result<(), String> {
@@ -210,6 +211,154 @@ fn p2_exit_bar_builds_five_step_workflow_byte_for_byte_and_checks_green() -> Res
     Ok(())
 }
 
+#[test]
+fn every_studio_operation_returns_byte_canonical_source() -> Result<(), String> {
+    let cases = [
+        apply(
+            STUDIO,
+            EditOperation::AddType {
+                name: "Order".to_owned(),
+                fields: vec![TypeField {
+                    name: "id".to_owned(),
+                    ty: "String".to_owned(),
+                }],
+            },
+        ),
+        apply(
+            STUDIO,
+            EditOperation::AddTypeField {
+                type_name: "Item".to_owned(),
+                name: "count".to_owned(),
+                field_type: "Int".to_owned(),
+            },
+        ),
+        apply(
+            STUDIO,
+            EditOperation::RemoveTypeField {
+                type_name: "Item".to_owned(),
+                name: "spare".to_owned(),
+            },
+        ),
+        apply(
+            STUDIO,
+            EditOperation::AddEnumType {
+                name: "Status".to_owned(),
+                variants: vec!["Pending".to_owned(), "Complete".to_owned()],
+            },
+        ),
+        apply(
+            STUDIO,
+            EditOperation::AddWorker {
+                name: "billing".to_owned(),
+                action: ActionDefinition {
+                    name: "charge".to_owned(),
+                    params: vec![ActionParameter {
+                        name: "item".to_owned(),
+                        ty: "Item".to_owned(),
+                    }],
+                    return_type: "Bool".to_owned(),
+                },
+            },
+        ),
+        apply(
+            STUDIO,
+            EditOperation::RemoveWorker {
+                name: "jobs".to_owned(),
+            },
+        ),
+        apply(
+            STUDIO,
+            EditOperation::RemoveAction {
+                worker: "jobs".to_owned(),
+                name: "spare".to_owned(),
+            },
+        ),
+    ];
+    for response in cases {
+        let source = success_source(response)?;
+        assert_eq!(aion_awl::print(&parse_source(&source)?), source);
+    }
+    Ok(())
+}
+
+#[test]
+fn studio_operations_return_specific_typed_refusals() -> Result<(), String> {
+    assert_refusal(
+        apply(
+            STUDIO,
+            EditOperation::AddType {
+                name: "Item".to_owned(),
+                fields: Vec::new(),
+            },
+        ),
+        &RefusalCode::NameCollision,
+    )?;
+    assert_refusal(
+        apply(
+            STUDIO,
+            EditOperation::AddTypeField {
+                type_name: "Item".to_owned(),
+                name: "missing".to_owned(),
+                field_type: "Missing".to_owned(),
+            },
+        ),
+        &RefusalCode::UnknownType,
+    )?;
+    assert_refusal(
+        apply(
+            STUDIO,
+            EditOperation::RemoveAction {
+                worker: "jobs".to_owned(),
+                name: "missing".to_owned(),
+            },
+        ),
+        &RefusalCode::UnknownAction,
+    )?;
+    let last_action = "//! Last action.\nworkflow last\n  outcome done: type String, route success\n\nworker jobs\n  action only() -> String\n";
+    assert_refusal(
+        apply(
+            last_action,
+            EditOperation::RemoveAction {
+                worker: "jobs".to_owned(),
+                name: "only".to_owned(),
+            },
+        ),
+        &RefusalCode::LastAction,
+    )?;
+    let referenced = "//! References.\nworkflow references\n  outcome done: type String, route success\n\nworker jobs\n  action used() -> String\n  action spare() -> String\n\nstep finish\n  used() -> value\n  route done(value: value)\n";
+    assert_refusal(
+        apply(
+            referenced,
+            EditOperation::RemoveAction {
+                worker: "jobs".to_owned(),
+                name: "used".to_owned(),
+            },
+        ),
+        &RefusalCode::ActionInUse,
+    )?;
+    assert_refusal(
+        apply(
+            referenced,
+            EditOperation::RemoveWorker {
+                name: "jobs".to_owned(),
+            },
+        ),
+        &RefusalCode::ActionInUse,
+    )?;
+    let field_reference = "//! Field reference.\nworkflow fields\n  input item: Item\n  outcome done: type String, route success\n\ntype Item { value: String }\n\nstep finish\n  route done(value: item.value)\n";
+    assert_refusal(
+        apply(
+            field_reference,
+            EditOperation::RemoveTypeField {
+                type_name: "Item".to_owned(),
+                name: "value".to_owned(),
+            },
+        ),
+        &RefusalCode::TypeInUse,
+    )?;
+    Ok(())
+}
+
 fn apply(source: &str, operation: EditOperation) -> EditResponse {
     edit_source(&EditRequest {
         source: source.to_owned(),
@@ -228,7 +377,9 @@ fn success_source(response: EditResponse) -> Result<String, String> {
 
 fn assert_refusal(response: EditResponse, expected: &RefusalCode) -> Result<(), String> {
     if response.ok {
-        return Err("gesture unexpectedly succeeded".to_owned());
+        return Err(format!(
+            "gesture unexpectedly succeeded; expected {expected:?}"
+        ));
     }
     let refusal = response
         .refusal

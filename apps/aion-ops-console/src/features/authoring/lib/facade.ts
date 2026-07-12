@@ -6,6 +6,7 @@ import type {
   SemanticEntry,
   SemanticIndex,
   SourceSpan,
+  StudioProjection,
 } from './projection-types';
 
 export type DiagnosticClass = 'error' | 'emit_subset';
@@ -31,6 +32,17 @@ export type ActionParameter = { name: string; type: string };
 export type RouteArgument = { name: string; expression: string };
 export type GestureOperation =
   | { type: 'add_step'; name: string; prose?: string }
+  | { type: 'add_type'; name: string; fields: ActionParameter[] }
+  | { type: 'add_type_field'; type_name: string; name: string; field_type: string }
+  | { type: 'remove_type_field'; type_name: string; name: string }
+  | { type: 'add_enum_type'; name: string; variants: string[] }
+  | {
+      type: 'add_worker';
+      name: string;
+      action: { name: string; params: ActionParameter[]; return_type: string };
+    }
+  | { type: 'remove_worker'; name: string }
+  | { type: 'remove_action'; worker: string; name: string }
   | {
       type: 'add_action';
       worker: string;
@@ -84,7 +96,7 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
     documentEndpoint = false
   ): Promise<unknown> {
     const response = await fetchImpl(path, init);
-    if (documentEndpoint && response.status === 404) {
+    if (documentEndpoint && (response.status === 404 || response.status === 503)) {
       throw new AuthoringWorkspaceNotConfiguredError();
     }
     if (!response.ok) {
@@ -128,6 +140,13 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
         source: expectString(value.source, 'source'),
         diagnostics: expectArray(value.diagnostics, 'diagnostics').map(parseDiagnostic),
         rename: value.rename === undefined ? null : parseRenameMapping(value.rename),
+      };
+    },
+    async createDocument(name: string): Promise<AwlDocument> {
+      const value = expectRecord(await request('/awl/documents', jsonInit('POST', { name }), true));
+      return {
+        path: expectString(value.path, 'path'),
+        name: expectString(value.name, 'name'),
       };
     },
     async listDocuments(): Promise<AwlDocument[]> {
@@ -186,6 +205,53 @@ function parseSemanticIndex(value: unknown): SemanticIndex {
   return {
     entries: expectArray(record.entries, 'entries').map(parseSemanticEntry),
     graph: parseGraph(record.graph),
+    studio: parseStudio(record.studio),
+  };
+}
+
+function parseStudio(value: unknown): StudioProjection {
+  const record = expectRecord(value);
+  return {
+    builtins: expectArray(record.builtins, 'studio.builtins').map((item) =>
+      expectString(item, 'builtin')
+    ),
+    types: expectArray(record.types, 'studio.types').map((item) => {
+      const type = expectRecord(item);
+      const kind = expectString(type.kind, 'type.kind');
+      if (kind !== 'record' && kind !== 'enum' && kind !== 'schema') {
+        throw new Error('Invalid authoring response: type.kind');
+      }
+      return {
+        name: expectString(type.name, 'type.name'),
+        kind,
+        fields: expectArray(type.fields, 'type.fields').map(parseStudioField),
+        variants: expectArray(type.variants, 'type.variants').map((variant) =>
+          expectString(variant, 'variant')
+        ),
+      };
+    }),
+    workers: expectArray(record.workers, 'studio.workers').map((item) => {
+      const worker = expectRecord(item);
+      return {
+        name: expectString(worker.name, 'worker.name'),
+        actions: expectArray(worker.actions, 'worker.actions').map((item) => {
+          const action = expectRecord(item);
+          return {
+            name: expectString(action.name, 'action.name'),
+            params: expectArray(action.params, 'action.params').map(parseStudioField),
+            returnType: expectString(action.return_type, 'action.return_type'),
+          };
+        }),
+      };
+    }),
+  };
+}
+
+function parseStudioField(value: unknown) {
+  const field = expectRecord(value);
+  return {
+    name: expectString(field.name, 'field.name'),
+    type: expectString(field.type, 'field.type'),
   };
 }
 
