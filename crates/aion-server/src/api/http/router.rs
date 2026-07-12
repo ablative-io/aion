@@ -11,7 +11,7 @@ use tower_http::cors::CorsLayer;
 use super::authoring::compile_source;
 use super::awl::{
     check, create_document, edit, format, get_document, get_layout, list_documents, put_document,
-    put_layout,
+    put_layout, scaffold,
 };
 use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
@@ -176,6 +176,7 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/awl/check", post(check))
         .route("/awl/edit", post(edit))
         .route("/awl/fmt", post(format))
+        .route("/awl/scaffold", post(scaffold))
         .merge(awl_documents);
     // The dev surface is dark by default, gated on `[dev].enabled`: when off the
     // routes are not mounted and every `/dev/*` path is a plain 404 (the
