@@ -50,6 +50,7 @@ aion-server = { version = "0.8.0", path = "../aion-server" }
 # toolchain embeds no compiler — it only spawns the operator-named gleam
 # binary — so naming it here adds no compiler to the CLI.
 aion-toolchain = { version = "0.8.0", path = "../aion-toolchain" }
+aion-worker = { version = "0.8.0", path = "../aion-worker" }
 # Event-driven filesystem watcher for `aion dev`. No poll interval: notify
 # delivers OS change events; the watch loop never spins on a timer (ADR-001).
 notify = { workspace = true }
@@ -63,7 +64,7 @@ anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-toml_edit = { workspace = true }
+toml_edit = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 uuid = { workspace = true }
 

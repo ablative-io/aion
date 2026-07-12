@@ -6,12 +6,14 @@ import { Button } from '@/components/ui/button';
 import type { AwlDocument, EditResult, GestureOperation } from '../lib/facade';
 import type { SemanticIndex, StudioProjection } from '../lib/projection-types';
 import { ProjectionPane } from './ProjectionPane';
+import { WorkerScaffold } from './WorkerScaffold';
 
 const control =
   'rounded-md border border-border bg-surface-base px-2 py-1.5 text-foreground text-xs outline-none focus:ring-2 focus:ring-accent-primary';
 
 type Props = {
   semantic: SemanticIndex;
+  source: string;
   documents: readonly AwlDocument[];
   path: string;
   selectedStep: string | null;
@@ -57,7 +59,7 @@ export function StudioPane(props: Props) {
           title="Workers & Actions"
         >
           <WorkerForms studio={studio} apply={apply} />
-          <WorkerList studio={studio} apply={apply} />
+          <WorkerList studio={studio} source={props.source} apply={apply} />
         </StudioSection>
       </div>
       <section className="mt-4 min-h-[30rem] overflow-hidden rounded-xl border border-border bg-surface-base">
@@ -297,9 +299,11 @@ function WorkerForms({
 
 function WorkerList({
   studio,
+  source,
   apply,
 }: {
   studio: StudioProjection;
+  source: string;
   apply: (operation: GestureOperation) => Promise<void>;
 }) {
   return (
@@ -359,6 +363,7 @@ function WorkerList({
               })
             }
           />
+          <WorkerScaffold source={source} worker={worker.name} />
         </li>
       ))}
     </ul>

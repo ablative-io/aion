@@ -300,6 +300,7 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
             path={path}
             selectedStep={selectedStep}
             semantic={semantic}
+            source={source}
           />
         )}
       </div>

@@ -34,6 +34,7 @@ mod package;
 mod payload;
 mod render;
 mod server;
+mod worker_shell;
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:50051";
 const DEFAULT_NAMESPACE: &str = "default";
@@ -103,9 +104,20 @@ enum Command {
         #[command(subcommand)]
         command: awl::AwlCommand,
     },
+    /// Run worker processes supplied by the Aion distribution.
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommand,
+    },
     /// Operate a running Aion server or package workflows locally.
     #[command(flatten)]
     Client(ClientCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkerCommand {
+    /// Serve strict manifest-wired shell commands on an Aion task queue.
+    Shell(worker_shell::ShellArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -401,6 +413,18 @@ async fn main() -> ExitCode {
         // The AWL authoring commands own their own compiler-style reporting
         // contract: diagnostics to stderr, a one-line summary to stdout.
         Command::Awl { ref command } => awl::run(command),
+        Command::Worker { ref command } => {
+            let result = match command {
+                WorkerCommand::Shell(args) => worker_shell::run(args, &cli.endpoint).await,
+            };
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{}", render::render_error(&error));
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Client(ref command) => {
             let result = run(&cli, command)
                 .await
@@ -1257,6 +1281,7 @@ mod tests {
                 Command::Server(_)
                 | Command::Dev(_)
                 | Command::Awl { .. }
+                | Command::Worker { .. }
                 | Command::Client(
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }
@@ -1312,6 +1337,7 @@ mod tests {
                 Command::Server(_)
                 | Command::Dev(_)
                 | Command::Awl { .. }
+                | Command::Worker { .. }
                 | Command::Client(
                     ClientCommand::Remote(
                         RemoteCommand::Start { .. }

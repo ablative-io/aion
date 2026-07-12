@@ -23,6 +23,12 @@ pub(crate) async fn edit(Json(request): Json<EditRequest>) -> Json<EditResponse>
     Json(awl::edit_source(&request))
 }
 
+pub(crate) async fn scaffold(
+    Json(request): Json<awl::scaffold::ScaffoldRequest>,
+) -> Json<awl::scaffold::ScaffoldResponse> {
+    Json(awl::scaffold::scaffold(&request))
+}
+
 pub(crate) async fn format(
     Json(request): Json<FormatRequest>,
 ) -> Result<Json<FormatResponse>, FormatHttpError> {
