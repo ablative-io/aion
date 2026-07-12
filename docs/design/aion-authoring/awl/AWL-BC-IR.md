@@ -363,7 +363,7 @@ The complete op set — each row one instruction burst, each grounded:
 | Op | Lowers (source) | Instruction burst |
 |---|---|---|
 | `Bind{dst,value}` | literals, refs, input prelude (`exprs.rs:142-214`) | `move` of var/literal/atom/int |
-| `FieldGet{dst,base,index}` | `.field` access (`pipes.rs:169`, `exprs.rs:170-173`) | `get_tuple_element base, index+1` |
+| `FieldGet{dst,base,index}` | `.field` access (`pipes.rs:169`, `exprs.rs:170-173`) | `get_tuple_element base, index` — **the MIR `index` is already the BEAM element index (1-based, tag at 0); `lower` stores `position+1` (`codec.rs:155`, `flow.rs:241`), so the burst does NOT add another `+1`** (D-BC3 correction, BC-3) |
 | `RecordNew{dst,tag,args}` | record construction (`exprs.rs:291-341`), Some-wrap (`pipes.rs:257-270`), outcome payloads (`outcomes.rs:114-208`) | `put_tuple2`; zero-field ⇒ `move` of the bare tag atom |
 | `ListNew{dst,items}` | list literals, `workflow.all` arg lists | `put_list` chain from nil, or `LitT` when fully constant |
 | `CallRt{dst,callee,args}` | every SDK/stdlib call (§6) | `call_ext` |
@@ -1108,7 +1108,7 @@ shares them — no format knowledge duplicated).
 | MIR node | Burst (conventions of §11.2 apply) |
 |---|---|
 | `Bind` | `Move` value → home |
-| `FieldGet` | `GetTupleElement { source, element: index+1, dest }` (0-based incl. tag at 0) |
+| `FieldGet` | `GetTupleElement { source, element: index, dest }` — the MIR `index` is ALREADY the element index (`lower` emits `position+1`); the earlier "`index+1`" wording assumed a 0-based MIR ordinal and was wrong against the shipped BC-2 lowering (D3b, corrected in the BC-3 commit) |
 | `RecordNew` | zero-field: `Move` bare tag atom; else `TestHeap`(coalesced) + `PutTuple2 { dest, elements: [tag, args…] }` |
 | `ListNew` | fully-constant: `Move` of pooled `LitT` list; else `TestHeap` + `PutList` chain from nil |
 | `CallRt` | marshal → `CallExt { arity, import }`; result `x0` → home |
@@ -1204,6 +1204,7 @@ plus one per-shape unit test per §11.4 row.
 | R5 | register policy | two-tier X/Y (§11.1): tier-1 frameless X-only (JIT-eligible), tier-2 framed Y homes (JIT-refused by construction — zero JIT-visible Y access) | all functions framed with `Allocate 0+F` bracketing (erlc-idiom parity; cost: everything interpreter-pinned) if any engine surprise with frameless body calls | ratified this section |
 | R6 | `Trim` | never emitted (frames die at the single `Deallocate`) | emit trims if frame growth ever measurably matters (it cannot at these sizes) | ratified |
 | R7 | exit layout | single shared `Lexit: Deallocate F; Return` per framed function, linearly last (one-pass validator discipline, §11.3) | per-exit `Deallocate` with all Return-exits sorted last in linear order | ratified |
+| R8 | tier-2 Y-homing granularity (BC-3 v1) | **conservative: every var (params + all defs) is homed in Y, not only crossing-set members** — so Y is touched ONLY by `move` (reload before use, store after def), no X carries a value across any op, and TestHeap/GcBif `Live` = the exact per-burst X high-water. The crossing set still decides tier (empty ⇒ frameless tier-1). This trades a few extra Y slots (frames stay small, `< 256`) for a uniform, provably validator-clean burst emitter | per-segment-X minimization of §11.2 (Y homes only for crossing-set members, non-crossing vars per-segment-fresh X) as an additive BC-3 refinement — the frame layout is internal, so tightening it changes no ABI | ratified this commit (BC-3 build) |
 
 ### 11.7 Defects exposed by BC-3 planning, and dependencies
 
@@ -1231,3 +1232,54 @@ plus one per-shape unit test per §11.4 row.
   decisions, new MIR nodes, or select-time function synthesis. The one true
   conflict — IR-14's Y-spill contract vs the X-only constraint — is resolved
   by R5 with zero JIT-visible Y access, grounded in §11.1 facts 1–4.
+
+### 11.8 BC-3 implementation status (2026-07-12)
+
+The `crates/aion-awl/src/mir/select` module (private submodule of `mir`;
+`select(&MirModule) -> Result<Vec<u8>, SelectError>`) ships the selection +
+register-allocation + assembly pipeline of §11.5 against beamr `0.14.0`
+(feature `encode`) from crates.io.
+
+**Landed and oracle-pinned** (the BC-3 oracle: every emitted module re-loads
+and passes `validate_module` through all five loader layers — `load_beam_chunks`
+→ `resolve_imports` → `validate_module`, exactly the capstone's standalone
+path, run inside `select` on every emit so a rejection is a hard `SelectError`,
+never a silent artifact):
+
+- **Shell expansion** T-DEF, T-RUN, T-EXEC, T-ACT (§2.4 recipes; T-ACT mints
+  the shared T-DEAD dead-body lambda + its `FunT` entry, so `activity:new/5`'s
+  fifth argument and the FunT population are real).
+- **Ops** `FieldGet`, `RecordNew` (tuple + zero-field bare-atom), `CallRt`
+  (`call_ext`), `CallLocal` (`call`), `MakeClosure` (`make_fun2` + FunT),
+  `TryBind` (flattened §2.2), `JsonObj` (incl. the ≥2-pair Y-homed accumulator),
+  `ListNew`. **Tails** `Return`, `TailRt` (`call_ext_last`/`call_ext_only`),
+  `TailLocal` (`call_last`/`call_only`).
+- **Pools** deterministic atom table, literal pool (first-use dedup, `MirLiteral
+  → decode::chunks::Literal`, S3 float lexeme parse), import table (used
+  `RuntimeFn` subset in first-use order, IR-24), `FunT` (`MakeClosure`/execute/
+  dead-body first-use). `ExpT` = exactly `run/1`, `definition/0`, `execute/1`
+  (decision 12, no `module_info`). Chunk set/order owned by `encode_module`.
+- **The R5 two-tier register allocator** realized per R8 (all-Y homing for
+  framed functions; frameless when the crossing set is empty). Determinism:
+  the whole pipeline is a pure function of the `MirModule` (`select` twice ⇒
+  identical bytes — #218 holds through BC-3).
+- **Oracle coverage**: all nine `valid/` fixtures that BC-2 lowers emit +
+  validate; the 43 fixtures BC-2 refuses stay refused (no MIR ⇒ nothing to
+  emit — never a silent skip). Plus per-shape unit tests (one per §11.4 row the
+  covered fixtures reach), each a hand-built module assembled + validated in
+  isolation.
+
+**Honest D-BC3 refusals (`SelectError::Unsupported`, span-anchored — the
+not-yet-reachable §11.4 rows; none appears in a BC-2-lowered fixture, so this
+narrows nothing the oracle covers):** shells T-ACTRAW / T-SIG / T-WIT; ops
+`Bind`, `CallClosure`, `WaitTimeoutCase`, `Cmp`, `BoolOp`, `Not`, `Concat`,
+`Increment`, `AssertList`, `AssertSome`, `IndexGuard`, `Attempt`; tails `If`,
+`SelectEnum`. Each lands with its §11.4 burst when the BC-2 increment that
+constructs it (decoder bodies, composite trios, keel expressions) lands — BC-3
+proceeds on the covered subset in the same increment order (§11.7 D-BC3
+dependency note), never emitting a shape it cannot verify.
+
+**R4 / A2 (Line chunk):** not emitted in v1 — `line_info` is left empty (the
+loader treats an absent `Line` chunk as empty; R4 is explicitly droppable and
+A2 records the shipped encoder writes no filename table). Re-add from op spans
+if runtime stacktraces are wanted; it changes no ABI.
