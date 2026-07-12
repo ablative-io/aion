@@ -1,6 +1,7 @@
 import { FileCode2 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect } from 'react';
+import { useSearchParams } from 'react-router';
 
 import { EmptyState } from '@/components/EmptyState';
 import { ErrorState } from '@/components/ErrorState';
@@ -15,16 +16,41 @@ import { EditorPane } from './EditorPane';
 export function AuthoringView() {
   const documentsQuery = useAuthoringDocuments();
   const documents = documentsQuery.data ?? [];
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // The URL is the source of truth for the open document (`?doc=<path>`), so
+  // any view is one shareable link (operator ruling, 2026-07-12). Selecting
+  // pushes history; the default/fallback selection replaces it so a plain
+  // /authoring visit never pollutes the back stack.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedPath = searchParams.get('doc');
+  const setSelectedPath = useCallback(
+    (path: string | null, options?: { replace: boolean }) => {
+      setSearchParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
+          if (path === null) next.delete('doc');
+          else next.set('doc', path);
+          return next;
+        },
+        { replace: options?.replace ?? false }
+      );
+    },
+    [setSearchParams]
+  );
   const reducedMotion = useReducedMotion() ?? false;
   const transition = degradeToFade(SPRING_SIGNATURE, reducedMotion);
 
+  const documentsLoaded = documentsQuery.isSuccess;
   useEffect(() => {
-    if (selectedPath === null && documents[0] !== undefined) setSelectedPath(documents[0].path);
-    if (selectedPath !== null && documents.every((document) => document.path !== selectedPath)) {
-      setSelectedPath(documents[0]?.path ?? null);
+    // Only reconcile once the list has actually loaded — a deep link must not
+    // be discarded because the fetch hasn't returned yet.
+    if (!documentsLoaded) return;
+    if (selectedPath === null && documents[0] !== undefined) {
+      setSelectedPath(documents[0].path, { replace: true });
     }
-  }, [documents, selectedPath]);
+    if (selectedPath !== null && documents.every((document) => document.path !== selectedPath)) {
+      setSelectedPath(documents[0]?.path ?? null, { replace: true });
+    }
+  }, [documents, documentsLoaded, selectedPath, setSelectedPath]);
 
   const documentQuery = useAuthoringDocument(selectedPath);
   const unconfigured =

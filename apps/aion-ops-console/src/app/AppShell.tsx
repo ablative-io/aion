@@ -49,7 +49,9 @@ export function AppShell() {
     <main className="min-h-screen bg-background text-foreground">
       {/* Global key actions register through the central registry — never ad-hoc. */}
       <GlobalActions />
-      <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-6 py-6">
+      {/* Full-bleed: the window is the width control — the console never
+          dictates a content column (operator ruling, 2026-07-12). */}
+      <div className="flex min-h-screen w-full flex-col px-6 py-6">
         <header className="border-border/70 flex flex-col gap-4 border-b pb-6 md:flex-row md:items-center md:justify-between">
           <div className="space-y-3">
             <p className="font-medium text-muted-foreground text-sm uppercase tracking-[0.2em]">

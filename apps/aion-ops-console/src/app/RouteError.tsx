@@ -20,7 +20,7 @@ export function RouteError() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-6 py-6">
+      <div className="flex min-h-screen w-full flex-col px-6 py-6">
         <header className="border-border/70 border-b pb-6">
           <p className="font-medium text-muted-foreground text-sm uppercase tracking-[0.2em]">
             Aion Ops Console
