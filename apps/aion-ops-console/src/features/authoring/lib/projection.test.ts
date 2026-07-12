@@ -13,12 +13,14 @@ const graph: GraphProjection = {
     {
       name: 'first',
       documentation: 'First',
+      activities: [],
       span: { start: 0, end: 5, line: 1, column: 1 },
       markers: { looped: false, forked: false, waits: false },
     },
     {
       name: 'second',
       documentation: 'Second',
+      activities: [],
       span: { start: 12, end: 18, line: 4, column: 1 },
       markers: { looped: false, forked: false, waits: false },
     },

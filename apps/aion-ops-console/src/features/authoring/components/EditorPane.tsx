@@ -5,6 +5,7 @@ import {
   FileText,
   LayoutDashboard,
   LoaderCircle,
+  Rocket,
   Save,
   Workflow,
 } from 'lucide-react';
@@ -32,6 +33,7 @@ import { applyGestureThroughSeam } from '../lib/gestures';
 import { byteOffsetToUtf16, stepAtPosition } from '../lib/projection';
 import type { SemanticIndex } from '../lib/projection-types';
 import { type AuthoringViewMode, ProjectionPane } from './ProjectionPane';
+import { ShipRunPanel } from './ShipRunPanel';
 import { StudioPane } from './StudioPane';
 
 export type EditorPaneProps = {
@@ -255,6 +257,13 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
               selected={viewMode}
               onSelect={setViewMode}
             />
+            <ViewButton
+              icon={<Rocket className="size-3.5" />}
+              label="Ship & Run"
+              mode="run"
+              selected={viewMode}
+              onSelect={setViewMode}
+            />
           </fieldset>
           <Button
             disabled={working !== null}
@@ -275,7 +284,9 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
         <div
           className={cn(
             'min-h-[32rem] min-w-0 overflow-hidden',
-            viewMode === 'canvas' || viewMode === 'studio' ? 'hidden' : 'flex-1',
+            viewMode === 'canvas' || viewMode === 'studio' || viewMode === 'run'
+              ? 'hidden'
+              : 'flex-1',
             viewMode === 'split' && 'border-border border-r'
           )}
           ref={hostRef}
@@ -303,6 +314,7 @@ export function EditorPane({ path, initialSource, documents, onOpenDocument }: E
             source={source}
           />
         )}
+        {viewMode === 'run' && <ShipRunPanel buffer={source} documents={documents} path={path} />}
       </div>
       <div className="flex min-h-11 items-center justify-between gap-4 border-border border-t bg-surface-base px-4 py-2 text-xs">
         <span
