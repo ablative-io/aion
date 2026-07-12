@@ -88,7 +88,9 @@ fn codec_fn(
             dst: Some(decoder),
             callee: decoder_ref,
             args: Vec::new(),
-            live_after: super::super::ops::LiveAfter(vec![closure]),
+            // S14 fills this: `closure` is live across the decoder call
+            // (both feed the `json_codec` tail).
+            live_after: super::super::ops::LiveAfter::default(),
             span: zero_span(),
         },
     ];

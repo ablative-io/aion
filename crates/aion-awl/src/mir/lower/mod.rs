@@ -7,5 +7,6 @@ mod ctx;
 mod driver;
 mod expr;
 mod flow;
+mod liveness;
 
 pub use driver::{LowerError, lower};

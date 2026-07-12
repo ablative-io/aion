@@ -73,7 +73,7 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
     let mut skeleton = build::skeleton(&mut ctx)?;
     flow::lower_regions(&mut ctx, &skeleton.plan, &mut skeleton.functions)?;
 
-    Ok(MirModule {
+    let mut module = MirModule {
         name: module_name,
         source,
         atoms: mem::take(&mut ctx.atoms),
@@ -81,5 +81,8 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
         exports: skeleton.exports,
         functions: skeleton.functions,
         types: skeleton.types,
-    })
+    };
+    // S14: compute the backward-liveness y-spill contract over every body.
+    super::liveness::annotate(&mut module);
+    Ok(module)
 }

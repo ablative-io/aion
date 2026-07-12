@@ -93,12 +93,12 @@ exports: run/1, definition/0, execute/1
 == fn step_fetch/1 origin=region(fetch) ==
   sig: (String) -> Result(fetch_upstream.FetchUpstreamOutcome, AwlError)
   v1 = call_local fetch_activity(v0)
-  v2 = call_rt aion@duration:milliseconds/1(10000)
-  v3 = call_rt aion@duration:milliseconds/1(300000)
+  v2 = call_rt aion@duration:milliseconds/1(10000) live_after=[v1]
+  v3 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1, v2]
   v4 = record(exponential, [v2, lit#0, v3])
   v5 = record(retry_policy, [5, v4])
   v6 = call_rt aion@activity:retry/2(v1, v5)
-  v7 = call_rt aion@duration:milliseconds/1(120000)
+  v7 = call_rt aion@duration:milliseconds/1(120000) live_after=[v6]
   v8 = call_rt aion@activity:timeout/2(v6, v7)
   v9 = call_rt aion@activity:task_queue/2(v8, lit#1)
   v10 = call_rt aion@activity:node/2(v9, lit#2)
