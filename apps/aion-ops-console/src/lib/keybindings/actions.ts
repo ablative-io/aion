@@ -17,6 +17,9 @@ export const ACTION_IDS = {
   focusSearch: 'search.focus',
   assistantFocusChat: 'assistant.focus-chat',
   authoringSave: 'authoring.save',
+  authoringViewText: 'authoring.view-text',
+  authoringViewCanvas: 'authoring.view-canvas',
+  authoringViewSplit: 'authoring.view-split',
 } as const;
 
 export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
@@ -86,6 +89,27 @@ export const CONSOLE_ACTIONS: readonly ActionDefinition[] = [
     scope: 'view',
     defaultBinding: 'mod+s',
     // Saving must work while the CodeMirror contenteditable owns focus.
+    allowInInputs: true,
+  },
+  {
+    id: ACTION_IDS.authoringViewText,
+    title: 'Show authoring text view',
+    scope: 'view',
+    defaultBinding: 'mod+1',
+    allowInInputs: true,
+  },
+  {
+    id: ACTION_IDS.authoringViewCanvas,
+    title: 'Show authoring canvas view',
+    scope: 'view',
+    defaultBinding: 'mod+2',
+    allowInInputs: true,
+  },
+  {
+    id: ACTION_IDS.authoringViewSplit,
+    title: 'Show split authoring view',
+    scope: 'view',
+    defaultBinding: 'mod+3',
     allowInInputs: true,
   },
 ];

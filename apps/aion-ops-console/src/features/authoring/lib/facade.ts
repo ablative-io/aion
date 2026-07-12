@@ -1,3 +1,13 @@
+import type {
+  GraphProjection,
+  LayoutPosition,
+  LayoutRecord,
+  SemanticDeclaration,
+  SemanticEntry,
+  SemanticIndex,
+  SourceSpan,
+} from './projection-types';
+
 export type DiagnosticClass = 'error' | 'emit_subset';
 
 export type AwlDiagnostic = {
@@ -10,9 +20,9 @@ export type AwlDiagnostic = {
 export type CheckResult = {
   ok: boolean;
   deploysGreen: boolean;
-  steps: number;
+  steps: number | null;
   diagnostics: AwlDiagnostic[];
-  semantic: object | null;
+  semantic: SemanticIndex | null;
 };
 
 export type AwlDocument = { path: string; name: string };
@@ -53,9 +63,9 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
       return {
         ok: expectBoolean(value.ok, 'ok'),
         deploysGreen: expectBoolean(value.deploys_green, 'deploys_green'),
-        steps: expectNumber(value.steps, 'steps'),
+        steps: value.steps === null ? null : expectNumber(value.steps, 'steps'),
         diagnostics: expectArray(value.diagnostics, 'diagnostics').map(parseDiagnostic),
-        semantic: value.semantic === null ? null : expectRecord(value.semantic),
+        semantic: value.semantic === null ? null : parseSemanticIndex(value.semantic),
       };
     },
     async format(source: string): Promise<string> {
@@ -82,6 +92,14 @@ export function createAuthoringFacade(fetchImpl: Fetch = globalThis.fetch.bind(g
         true
       );
     },
+    async loadLayout(path: string): Promise<LayoutRecord> {
+      return parseLayout(await request(`/awl/layout/${encodeURIComponent(path)}`, undefined, true));
+    },
+    async saveLayout(path: string, layout: LayoutRecord): Promise<LayoutRecord> {
+      return parseLayout(
+        await request(`/awl/layout/${encodeURIComponent(path)}`, jsonInit('PUT', layout), true)
+      );
+    },
   };
 }
 
@@ -103,6 +121,124 @@ function parseDiagnostic(value: unknown): AwlDiagnostic {
     line: expectNumber(record.line, 'line'),
     column: expectNumber(record.column, 'column'),
   };
+}
+
+function parseSemanticIndex(value: unknown): SemanticIndex {
+  const record = expectRecord(value);
+  return {
+    entries: expectArray(record.entries, 'entries').map(parseSemanticEntry),
+    graph: parseGraph(record.graph),
+  };
+}
+
+function parseSemanticEntry(value: unknown): SemanticEntry {
+  const record = expectRecord(value);
+  return {
+    span: parseSpan(record.span),
+    type: nullableString(record.type, 'type'),
+    declaration: record.declaration === null ? null : parseDeclaration(record.declaration),
+  };
+}
+
+function parseDeclaration(value: unknown): SemanticDeclaration {
+  const record = expectRecord(value);
+  const kind = expectString(record.kind, 'kind');
+  const kinds: SemanticDeclaration['kind'][] = [
+    'workflow',
+    'input',
+    'signal',
+    'outcome',
+    'type',
+    'field',
+    'variant',
+    'worker',
+    'action',
+    'child',
+    'parameter',
+    'step',
+    'binding',
+  ];
+  if (!kinds.includes(kind as SemanticDeclaration['kind'])) {
+    throw new Error('Invalid authoring response: declaration kind');
+  }
+  return {
+    name: expectString(record.name, 'name'),
+    kind: kind as SemanticDeclaration['kind'],
+    documentation: nullableString(record.documentation, 'documentation'),
+    span: parseSpan(record.span),
+  };
+}
+
+function parseSpan(value: unknown): SourceSpan {
+  const record = expectRecord(value);
+  return {
+    start: expectNumber(record.start, 'start'),
+    end: expectNumber(record.end, 'end'),
+    line: expectNumber(record.line, 'line'),
+    column: expectNumber(record.column, 'column'),
+  };
+}
+
+function parseGraph(value: unknown): GraphProjection {
+  const record = expectRecord(value);
+  return {
+    steps: expectArray(record.steps, 'graph.steps').map((item) => {
+      const step = expectRecord(item);
+      const markers = expectRecord(step.markers);
+      return {
+        name: expectString(step.name, 'step.name'),
+        documentation: expectString(step.documentation, 'step.documentation'),
+        span: parseSpan(step.span),
+        markers: {
+          looped: expectBoolean(markers.looped, 'markers.looped'),
+          forked: expectBoolean(markers.forked, 'markers.forked'),
+          waits: expectBoolean(markers.waits, 'markers.waits'),
+        },
+      };
+    }),
+    edges: expectArray(record.edges, 'graph.edges').map((item) => {
+      const edge = expectRecord(item);
+      const kind = edge.kind;
+      if (kind !== 'route' && kind !== 'fall_through' && kind !== 'after') {
+        throw new Error('Invalid authoring response: edge.kind');
+      }
+      return {
+        id: expectString(edge.id, 'edge.id'),
+        source: expectString(edge.source, 'edge.source'),
+        target: expectString(edge.target, 'edge.target'),
+        kind,
+        label: nullableString(edge.label, 'edge.label'),
+      };
+    }),
+    childCalls: expectArray(record.child_calls, 'graph.child_calls').map((item) => {
+      const child = expectRecord(item);
+      return {
+        id: expectString(child.id, 'child.id'),
+        parentStep: expectString(child.parent_step, 'child.parent_step'),
+        name: expectString(child.name, 'child.name'),
+        signature: expectString(child.signature, 'child.signature'),
+        span: parseSpan(child.span),
+      };
+    }),
+  };
+}
+
+function parseLayout(value: unknown): LayoutRecord {
+  const record = expectRecord(value);
+  const positionsRecord = expectRecord(record.positions);
+  const positions: Record<string, LayoutPosition> = {};
+  for (const [name, rawPosition] of Object.entries(positionsRecord)) {
+    const position = expectRecord(rawPosition);
+    positions[name] = {
+      x: expectNumber(position.x, 'position.x'),
+      y: expectNumber(position.y, 'position.y'),
+    };
+  }
+  return { positions };
+}
+
+function nullableString(value: unknown, field: string): string | null {
+  return value === null ? null : expectString(value, field);
 }
 
 function expectRecord(value: unknown): Record<string, unknown> {

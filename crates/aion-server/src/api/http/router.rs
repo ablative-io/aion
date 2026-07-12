@@ -9,7 +9,9 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use super::authoring::compile_source;
-use super::awl::{check, format, get_document, list_documents, put_document};
+use super::awl::{
+    check, format, get_document, get_layout, list_documents, put_document, put_layout,
+};
 use super::cluster_command::cluster_command;
 use super::deploy::{list_versions, route_version, unload_version, upload_package};
 use super::dev_ui::{dev_register_mock, dev_replay_run, dev_trigger_run};
@@ -166,10 +168,12 @@ pub fn workflow_router(state: ServerState) -> Router {
                 "/awl/documents/{*path}",
                 get(get_document).put(put_document),
             )
+            .route("/awl/layout/{*path}", get(get_layout).put(put_layout))
     } else {
         Router::new()
             .route("/awl/documents", any(authoring_disabled))
             .route("/awl/documents/{*path}", any(authoring_disabled))
+            .route("/awl/layout/{*path}", any(authoring_disabled))
     };
     let awl = Router::new()
         .route("/awl/check", post(check))

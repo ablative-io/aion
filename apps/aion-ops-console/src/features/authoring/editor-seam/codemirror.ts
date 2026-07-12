@@ -13,6 +13,7 @@ import {
 
 import type {
   AuthoringEditor,
+  CursorChange,
   EditorChange,
   EditorDecorations,
   HighlightSpan,
@@ -74,6 +75,7 @@ export function createCodeMirrorEditor(
   initialContent: string
 ): AuthoringEditor {
   const changeListeners = new Set<(change: EditorChange) => void>();
+  const cursorListeners = new Set<(change: CursorChange) => void>();
   const scrollListeners = new Set<(metrics: LayoutMetrics) => void>();
   const hoverListeners = new Set<(hover: MouseHover | null) => void>();
 
@@ -118,18 +120,9 @@ export function createCodeMirrorEditor(
             backgroundColor: 'var(--secondary)',
           },
         }),
-        EditorView.updateListener.of((update) => {
-          if (!update.docChanged) return;
-          const origin = update.transactions.some((transaction) =>
-            transaction.effects.some((effect) => effect.is(remoteOrigin))
-          )
-            ? 'remote'
-            : 'local';
-          if (origin === 'local') {
-            const change: EditorChange = { content: update.state.doc.toString(), origin };
-            for (const listener of changeListeners) listener(change);
-          }
-        }),
+        EditorView.updateListener.of((update) =>
+          notifyEditorUpdate(update, changeListeners, cursorListeners)
+        ),
         EditorView.domEventHandlers({
           mousemove(event, editor) {
             const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -207,9 +200,44 @@ export function createCodeMirrorEditor(
       hoverListeners.add(listener);
       return () => hoverListeners.delete(listener);
     },
+    onCursorChange(listener) {
+      cursorListeners.add(listener);
+      return () => cursorListeners.delete(listener);
+    },
+    setCursor(position) {
+      const anchor = Math.min(Math.max(position, 0), view.state.doc.length);
+      view.dispatch({ selection: { anchor }, scrollIntoView: true });
+    },
     focus: () => view.focus(),
     destroy: () => view.destroy(),
   };
+}
+
+function notifyEditorUpdate(
+  update: ViewUpdate,
+  changeListeners: ReadonlySet<(change: EditorChange) => void>,
+  cursorListeners: ReadonlySet<(change: CursorChange) => void>
+) {
+  if (update.docChanged) notifyDocumentChange(update, changeListeners);
+  if (update.selectionSet || update.docChanged) {
+    const change: CursorChange = { position: update.state.selection.main.head };
+    for (const listener of cursorListeners) listener(change);
+  }
+}
+
+function notifyDocumentChange(
+  update: ViewUpdate,
+  listeners: ReadonlySet<(change: EditorChange) => void>
+) {
+  const remote = update.transactions.some((transaction) =>
+    transaction.effects.some((effect) => effect.is(remoteOrigin))
+  );
+  if (remote) return;
+  const change: EditorChange = {
+    content: update.state.doc.toString(),
+    origin: 'local',
+  };
+  for (const listener of listeners) listener(change);
 }
 
 function highlightDecorations(view: EditorView, spans: readonly HighlightSpan[]): DecorationSet {
