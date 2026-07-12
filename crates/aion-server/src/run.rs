@@ -645,6 +645,7 @@ fn build_liminal_row_dispatch(
     outbox_config: &OutboxConfig,
 ) -> Result<(Arc<dyn OutboxRowDispatch>, OutboxWorkerListener), ServerError> {
     use liminal_server::config::ServerConfig as LiminalServerConfig;
+    use liminal_server::config::{LimitsConfig, ServicesConfig};
     use liminal_server::server::connection::{ConnectionSupervisor, LiminalConnectionServices};
     use liminal_server::server::listener::ServerListener;
 
@@ -691,6 +692,12 @@ fn build_liminal_row_dispatch(
         // operator-configured token through aion's outbox config is a separate
         // feature decision, not part of the dependency alignment.
         auth: None,
+        // liminal 0.2.4 (D2/§5): service profile + operational bounds. Defaults =
+        // full profile + the certifying-pair-signed caps — byte-equivalent to the
+        // 0.2.3 behaviour this embedded front door always had. A worker-front-door
+        // profile election here is a future feature decision, not this migration.
+        services: ServicesConfig::default(),
+        limits: LimitsConfig::default(),
     };
 
     // (1) Reuse the registry already in ServerState: gRPC + liminal workers share

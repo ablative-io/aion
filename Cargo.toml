@@ -82,9 +82,12 @@ hostname = "0.4"
 # run-queue starvation fix on top of 0.12.0's `Scheduler::spawn_link_closure`.
 beamr = { version = "0.14.0", features = ["json", "encode"] }
 haematite = "0.4.1"
-liminal = { package = "liminal-rs", version = "0.2.3" }
-liminal-sdk = "0.2.3"
-liminal-server = "0.2.3"
+# 0.2.4 carries the park-flip (idle connections park on fd readiness — retires
+# the embedded front door's per-connection busy-spin measured 2026-07-13) and
+# G7's push-reply contract restoration (receive = pure wait quantum).
+liminal = { package = "liminal-rs", version = "0.2.4" }
+liminal-sdk = "0.2.4"
+liminal-server = "0.2.4"
 tempfile = "3.27.0"
 tokio-stream = "0.1.18"
 ts-rs = { version = "12.0.1", features = ["chrono-impl", "uuid-impl", "no-serde-warnings"] }

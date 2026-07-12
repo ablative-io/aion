@@ -142,6 +142,9 @@ impl RunningServer {
             // production listener; aion-level registration metadata is the auth story.
             auth: None,
             drain_timeout_ms: 30_000,
+            // liminal 0.2.4 defaults = the 0.2.3 behaviour (full profile, signed caps).
+            services: liminal_server::config::ServicesConfig::default(),
+            limits: liminal_server::config::LimitsConfig::default(),
         };
 
         // The aion-side connected-worker registry the notifier registers into and

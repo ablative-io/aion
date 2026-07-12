@@ -701,7 +701,6 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0244e6b7f0decb2c29949fa6d0fcf64874661014e6b293d9b329c6218db7bcc4"
 dependencies = [
- "base64 0.22.1",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",
@@ -720,7 +719,6 @@ dependencies = [
  "num_cpus",
  "rand 0.10.1",
  "rustix 1.1.4",
- "serde_json",
  "tokio",
  "unicode-segmentation",
  "web-time",
@@ -2904,17 +2902,18 @@ dependencies = [
 
 [[package]]
 name = "liminal-rs"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f9b7c3808a3f6c9f45aaf12fbc2fdc5cddc7ec76dadd3ada6cf3faedc31a904"
+checksum = "daa293ad38a002234710520113956c5b3a2004a76541cedc05cdae275de199f9"
 dependencies = [
  "async-trait",
- "beamr 0.13.0",
+ "beamr 0.14.0",
  "chrono",
  "haematite",
  "jsonschema",
  "rand 0.10.1",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "uuid",
@@ -2922,9 +2921,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a4a337de01640733141b41f41cd858af36e8f9cd3ee23350a416cf3cb62187"
+checksum = "62c1a8ccec19b90dddfba31cf2a6535775dd37484f76318ad96a2c2fa86283b4"
 dependencies = [
  "futures-core",
  "liminal-rs",
@@ -2936,12 +2935,12 @@ dependencies = [
 
 [[package]]
 name = "liminal-server"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271346952ba018382afc1ce0c2f79fbbea070964d04e769c6e3322684a36f905"
+checksum = "d1da640ccdab36df1cf89632086894cd17e7fa35f7c99e06e550135d6e86ee46"
 dependencies = [
  "anyhow",
- "beamr 0.13.0",
+ "beamr 0.14.0",
  "clap",
  "haematite",
  "liminal-rs",
