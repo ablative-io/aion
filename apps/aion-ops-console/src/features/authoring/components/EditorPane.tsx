@@ -1,8 +1,13 @@
+import { AlignLeft, Check, LoaderCircle, Save } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
 
+import { StatusDot } from '@/components/kit';
+import { Badge } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { ACTION_IDS } from '@/lib/keybindings/actions';
 import { useAction } from '@/lib/keybindings/context';
+import { cn } from '@/lib/utils';
 
 import { createCodeMirrorEditor } from '../editor-seam/codemirror';
 import type { AuthoringEditor, HighlightSpan } from '../editor-seam/types';
@@ -122,19 +127,24 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
   }
 
   const status = check === null ? null : statusForCheck(check);
-  const statusClass =
-    status?.tone === 'green'
-      ? 'text-success'
-      : status?.tone === 'amber'
-        ? 'text-warning'
-        : 'text-destructive';
+  const statusStyle = statusPresentation(status?.tone);
+  const documentName = path.split('/').at(-1) ?? path;
 
   return (
     <section className="flex min-w-0 flex-1 flex-col" aria-label={`Editing ${path}`}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-border/70 border-b px-4 py-3">
-        <div className="min-w-0">
-          <h2 className="truncate font-medium text-sm">{path}</h2>
-          <p className="text-muted-foreground text-xs">{dirty ? 'Unsaved changes' : 'Saved'}</p>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-border border-b bg-surface-base px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="truncate font-semibold text-foreground text-sm">{documentName}</h2>
+              <Badge className="shrink-0" variant={dirty ? 'secondary' : 'outline'}>
+                {dirty ? 'Modified' : 'Saved'}
+              </Badge>
+            </div>
+            <p className="mt-0.5 truncate font-mono text-muted-foreground text-[0.6875rem]">
+              {path}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -143,20 +153,95 @@ export function EditorPane({ path, initialSource }: EditorPaneProps) {
             size="sm"
             variant="outline"
           >
+            <ActionIcon action="format" dirty={dirty} working={working} />
             {working === 'format' ? 'Formatting…' : 'Format'}
           </Button>
           <Button disabled={!dirty || working !== null} onClick={() => void save()} size="sm">
+            <ActionIcon action="save" dirty={dirty} working={working} />
             {working === 'save' ? 'Saving…' : 'Save'}
           </Button>
         </div>
-      </div>
+      </header>
       <div className="min-h-[32rem] flex-1 overflow-hidden" ref={hostRef} />
-      <div className="flex min-h-10 items-center justify-between gap-4 border-border/70 border-t px-4 py-2 text-xs">
-        <span className={statusClass}>{status?.label ?? 'Checking…'}</span>
-        <span className="text-muted-foreground">
-          {message ?? (check === null ? '' : `${check.steps} steps`)}
+      <div className="flex min-h-11 items-center justify-between gap-4 border-border border-t bg-surface-base px-4 py-2 text-xs">
+        <span
+          className={cn(
+            'inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-medium',
+            statusStyle.className
+          )}
+        >
+          <CheckStatusIcon checking={status === null} status={statusStyle.status} />
+          {status?.label ?? 'Checking…'}
         </span>
+        <AnimatePresence initial={false} mode="wait">
+          <motion.span
+            animate={{ opacity: 1, y: 0 }}
+            className="truncate text-muted-foreground"
+            exit={{ opacity: 0, y: 2 }}
+            initial={{ opacity: 0, y: -2 }}
+            key={message ?? check?.steps ?? 'checking'}
+          >
+            {message ?? (check === null ? 'Validating source' : `${check.steps} steps`)}
+          </motion.span>
+        </AnimatePresence>
       </div>
     </section>
   );
+}
+
+type WorkingAction = 'format' | 'save' | null;
+
+function ActionIcon({
+  action,
+  dirty,
+  working,
+}: {
+  action: Exclude<WorkingAction, null>;
+  dirty: boolean;
+  working: WorkingAction;
+}) {
+  if (working === action) {
+    return <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />;
+  }
+  if (action === 'format') return <AlignLeft aria-hidden="true" className="size-3.5" />;
+  if (dirty) return <Save aria-hidden="true" className="size-3.5" />;
+  return <Check aria-hidden="true" className="size-3.5" />;
+}
+
+function CheckStatusIcon({
+  checking,
+  status,
+}: {
+  checking: boolean;
+  status: 'healthy' | 'running' | 'failed' | 'idle';
+}) {
+  if (checking) {
+    return <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />;
+  }
+  return <StatusDot className="size-1.5" status={status} />;
+}
+
+function statusPresentation(tone: 'green' | 'amber' | 'red' | undefined) {
+  switch (tone) {
+    case 'green':
+      return {
+        status: 'healthy' as const,
+        className: 'border-success/30 bg-success/10 text-success',
+      };
+    case 'amber':
+      return {
+        status: 'running' as const,
+        className: 'border-warning/30 bg-warning/10 text-warning',
+      };
+    case 'red':
+      return {
+        status: 'failed' as const,
+        className: 'border-destructive/30 bg-destructive/10 text-destructive',
+      };
+    default:
+      return {
+        status: 'idle' as const,
+        className: 'border-border bg-surface-elevated text-muted-foreground',
+      };
+  }
 }

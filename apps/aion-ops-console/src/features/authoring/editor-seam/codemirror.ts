@@ -93,14 +93,26 @@ export function createCodeMirrorEditor(
         }),
         EditorView.lineWrapping,
         EditorView.theme({
-          '&': { height: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)' },
-          '.cm-content': { fontFamily: 'var(--font-mono)', caretColor: 'var(--foreground)' },
+          '&': {
+            height: '100%',
+            backgroundColor: 'var(--surface-elevated)',
+            color: 'var(--foreground)',
+            fontSize: '0.8125rem',
+          },
+          '.cm-scroller': { lineHeight: '1.65' },
+          '.cm-content': {
+            padding: '0.75rem 0',
+            fontFamily: 'var(--font-mono)',
+            caretColor: 'var(--accent-primary)',
+          },
+          '.cm-line': { padding: '0 1rem' },
           '.cm-cursor': { borderLeftColor: 'var(--foreground)' },
           '.cm-gutters': {
-            backgroundColor: 'var(--muted)',
+            backgroundColor: 'var(--surface-base)',
             color: 'var(--muted-foreground)',
             borderRightColor: 'var(--border)',
           },
+          '.cm-gutterElement': { padding: '0 0.625rem' },
           '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'var(--accent)' },
           '&.cm-focused .cm-selectionBackground, ::selection': {
             backgroundColor: 'var(--secondary)',
