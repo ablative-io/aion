@@ -2,10 +2,11 @@
 //! `_codec`/`_to_json`/`_decoder` `FlowFn`s carrying `FnOrigin::CodecTemplate`
 //! provenance and faithful signatures (the sidecar-projection source, S2).
 //!
-//! BC-2 scope note (reported): the `_codec` composer and record `_to_json`
-//! bodies follow the §3 recipe; enum/union `_to_json` and every `_decoder`
-//! body are structural placeholders (visible in goldens, never silent) pending
-//! the full decoder-continuation recipe — deferred to a later BC-2 increment.
+//! BC-2 scope note: the `_codec` composer and record `_to_json` bodies (for
+//! required leaf/`Ref` fields) follow the §3 recipe; enum/union `_to_json` and
+//! every `_decoder` body are structural placeholders (visible in goldens,
+//! never silent) pending the lifted-closure decoder-continuation recipe. See
+//! `AWL-BC-IR.md` "BC-2 implementation status" for the full pending list.
 
 use super::super::func::{CodecTemplateKind, FlowFn, FnOrigin, MirFn, TrioParams, TypeShapeRef};
 use super::super::ids::{FnRef, Span, Var};

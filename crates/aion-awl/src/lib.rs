@@ -15,9 +15,10 @@ mod lexer;
 // set (AWL-BC-IR.md Appendix A) includes the intentionally-unused `ResultTry`
 // fallback and a not-yet-complete `lower`, which cannot coexist with a
 // `pub(crate)` module under the workspace's `-D warnings` + no-`#[allow]`
-// discipline (unconstructed private variants are `dead_code`). See the BC-2
-// report; tightening to `pub(crate)` is a panel/operator decision once `lower`
-// constructs the full op surface and the `ResultTry` marker is resolved.
+// discipline (unconstructed private variants are `dead_code`). See
+// `AWL-BC-IR.md` "BC-2 implementation status"; tightening to `pub(crate)` is a
+// panel/operator decision once `lower` constructs the full op surface and the
+// `ResultTry` marker is resolved.
 #[doc(hidden)]
 pub mod mir;
 mod parser;

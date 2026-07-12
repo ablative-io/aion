@@ -20,7 +20,7 @@ pub enum DurableFamily {
 
 /// The closed set of runtime functions generated code may call (§6). Includes
 /// `LeafCodec(Leaf)` per the §6 capability row `leaf ×{_codec/0,…}` (the
-/// Appendix A sketch omitted it — recorded as a doc note in the BC-2 report).
+/// Appendix A sketch omitted it — recorded in `AWL-BC-IR.md` §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeFn {
     // aion@workflow

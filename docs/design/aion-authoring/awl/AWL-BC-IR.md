@@ -28,6 +28,55 @@ or a decision-register entry (§8) lands **in the same commit** as the code
 change, enforced at panel review. MIR stays private to `aion-awl` (ratified
 decision 3).
 
+### BC-2 implementation status (2026-07-12)
+
+This records the state of the `crates/aion-awl/src/mir` implementation against
+the design above, replacing the code comments' references to a "BC-2 report"
+that was never in the tree. It is the honest covered/pending split for the
+current increment; each pending item names why it is not yet landed.
+
+**Landed and golden-pinned:** the MIR node set (§2.5/§2.7), `lower` for the
+covered subset (single-step regions: action calls incl. action-declared
+retry/timeout/task_queue/node config, sleeps, action/field pipes, routes,
+success/failure outcome returns), record `_to_json` for required
+leaf/`Ref` fields, the codec-composer trio, the T-DEF/T-RUN/T-EXEC/T-ACT/T-SIG
+template shells, `project_sidecar` (S2, pinned against the SDK type spellings —
+`SignalRef` in `aion/signal`, `WorkflowDefinition` in `aion/workflow/define`),
+`verify` (capability closure + runtime/local-call arity + single-def), and
+**S14 backward liveness** (`lower/liveness.rs`).
+
+**Pending increments (NOT yet lowered; each needs infrastructure beyond a
+bounded fix-round, and — per the design — must be blessed against the BC-4
+differential oracle, not frozen as un-executed goldens):**
+
+- **Codec `_decoder` bodies (record/enum/union) and enum/union `_to_json`
+  (§3).** The decoder recipe is continuation-taking: it needs the lifted-closure
+  function inventory (§2.6 item 8, `FnOrigin::LiftedClosure`) and a slot-plan
+  extension reserving `3 + Σ(lifted)` slots per codec type. Until landed, the
+  `_decoder` bodies are visible `decode.success(nil)` placeholders and
+  enum/union `_to_json` are `json.object([])` placeholders — structurally
+  present in goldens, never silently correct.
+- **D4 optional-field `_to_json` omission and composite (list/option) fields.**
+  The reference `[pair]`/`[]` + `gleam@list:flatten` recipe requires MIR ops the
+  closed set does not yet carry (a dynamic JSON-pair-list constructor + flatten
+  path); records with optional or list/option-typed fields therefore keep the
+  current static-`json.object` body. A follow-up either adds those ops or routes
+  such records through `LowerError::Unsupported`.
+- **Composite (list/option) codec trios (§3).** Their `_to_json`/`_decoder`
+  are single-call (no lifted closures) but add codec types to the registry;
+  they land with the decoder increment so the whole codec surface re-baselines
+  once.
+- **T-DEAD / T-ACTRAW / T-WIT shells.** T-ACT's expansion references a
+  `make_fun2(T-DEAD)` dead body (§2.4); the shell lands with BC-3's T-ACT
+  expansion so the FunT inventory and sidecar carry it.
+- **`verify` per-op result-type cross-check against the rev-2 `TypeEnv` (S1).**
+  Not reachable from `verify(&MirModule)` (no `TypeEnv` in the signature);
+  performed in BC-3, which holds the environment during instruction selection.
+- **MIR visibility (decision 3).** Held at `#[doc(hidden)] pub mod mir` until
+  the pending increments construct the currently-unused variants (they are
+  `dead_code` under `pub(crate)` + `-D warnings` today); tightened to
+  `pub(crate)` once the op surface is fully constructed.
+
 ---
 
 ## 1. Synthesis decisions
