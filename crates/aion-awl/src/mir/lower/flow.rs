@@ -193,7 +193,7 @@ fn activity_call(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     call: &Call,
-    piped: Option<Value>,
+    piped: Option<(Value, GType)>,
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<Var, LowerError> {
@@ -205,15 +205,25 @@ fn activity_call(
     };
     let queue = queue.to_owned();
     let params = decl.params.clone();
+    let config = decl.config.clone();
     let mut arg_values = Vec::new();
-    if let Some(value) = piped {
-        if params.len() != 1 {
+    if let Some((value, value_ty)) = piped {
+        let [param] = params.as_slice() else {
             return Err(LowerError::unsupported(
                 "multi-arg action in pipe",
                 call.name_span,
             ));
-        }
-        arg_values.push(value);
+        };
+        let expected = type_ref_to_g(&param.ty);
+        let wrapped = super::expr::wrap_optional_value(
+            ctx,
+            value,
+            &value_ty,
+            &expected,
+            stmts,
+            call.name_span,
+        );
+        arg_values.push(wrapped);
     } else {
         for param in &params {
             let arg = call
@@ -236,15 +246,14 @@ fn activity_call(
         live_after: LiveAfter::default(),
         span: Span::from_source(call.name_span),
     });
-    let queue_lit = ctx.binary(&queue);
-    let queued = ctx.fresh_var();
-    stmts.push(Stmt::CallRt {
-        dst: Some(queued),
-        callee: RuntimeFn::ActTaskQueue,
-        args: vec![Value::Var(activity), Value::Lit(queue_lit)],
-        live_after: LiveAfter::default(),
-        span: Span::from_source(call.name_span),
-    });
+    let queued = apply_action_config(
+        ctx,
+        config.as_ref(),
+        activity,
+        &queue,
+        stmts,
+        call.name_span,
+    )?;
     let ran = call_rt(
         ctx,
         RuntimeFn::WfRun,
@@ -267,6 +276,127 @@ fn activity_call(
         span: Span::from_source(call.name_span),
     });
     Ok(bound)
+}
+
+/// Apply action-declared config in the reference's order (`stmts.rs:84-104`):
+/// retry, timeout, `task_queue` (always), node. Call-site config is refused
+/// upstream, so only the declaration config participates. Returns the final
+/// activity value to hand to `workflow.run`.
+fn apply_action_config(
+    ctx: &mut Ctx<'_>,
+    config: Option<&crate::ast::ConfigLine>,
+    activity: Var,
+    queue: &str,
+    stmts: &mut Vec<Stmt>,
+    span: crate::Span,
+) -> Result<Var, LowerError> {
+    let mut current = activity;
+    if let Some(retry) = config.and_then(|config| config.retry.as_ref()) {
+        let policy = build_retry_policy(ctx, retry, stmts, span)?;
+        current = call_rt(
+            ctx,
+            RuntimeFn::ActRetry,
+            vec![Value::Var(current), Value::Var(policy)],
+            stmts,
+            span,
+        );
+    }
+    if let Some(timeout) = config.and_then(|config| config.timeout.as_ref()) {
+        let dur = duration_var(ctx, timeout.magnitude, timeout.unit, stmts, span);
+        current = call_rt(
+            ctx,
+            RuntimeFn::ActTimeout,
+            vec![Value::Var(current), Value::Var(dur)],
+            stmts,
+            span,
+        );
+    }
+    let queue_lit = ctx.binary(queue);
+    let mut queued = ctx.fresh_var();
+    stmts.push(Stmt::CallRt {
+        dst: Some(queued),
+        callee: RuntimeFn::ActTaskQueue,
+        args: vec![Value::Var(current), Value::Lit(queue_lit)],
+        live_after: LiveAfter::default(),
+        span: Span::from_source(span),
+    });
+    if let Some(node) = config.and_then(|config| config.node.as_ref()) {
+        let node_lit = ctx.binary(&node.name);
+        queued = call_rt(
+            ctx,
+            RuntimeFn::ActNode,
+            vec![Value::Var(queued), Value::Lit(node_lit)],
+            stmts,
+            span,
+        );
+    }
+    Ok(queued)
+}
+
+/// A `duration.milliseconds(ms)` runtime value for a source duration.
+fn duration_var(
+    ctx: &mut Ctx<'_>,
+    magnitude: u64,
+    unit: crate::DurationUnit,
+    stmts: &mut Vec<Stmt>,
+    span: crate::Span,
+) -> Var {
+    let ms = duration_ms(magnitude, unit);
+    call_rt(
+        ctx,
+        RuntimeFn::DurationMs,
+        vec![Value::Int(ms)],
+        stmts,
+        span,
+    )
+}
+
+/// Build the `activity.RetryPolicy(max_attempts, backoff)` record the SDK's
+/// `activity.retry/2` takes, mirroring the reference `retry_policy`
+/// (`stmts.rs:141-156`): `Fixed(delay)` or `Exponential(initial, 2.0, max)`.
+fn build_retry_policy(
+    ctx: &mut Ctx<'_>,
+    retry: &crate::ast::RetrySpec,
+    stmts: &mut Vec<Stmt>,
+    span: crate::Span,
+) -> Result<Var, LowerError> {
+    use crate::ast::RetrySpec;
+    let (count, backoff) = match retry {
+        RetrySpec::Every { count, every, .. } => {
+            let delay = duration_var(ctx, every.magnitude, every.unit, stmts, span);
+            let fixed = ctx.atom("fixed");
+            (
+                *count,
+                record_new(ctx, fixed, vec![Value::Var(delay)], stmts),
+            )
+        }
+        RetrySpec::Backoff {
+            count, min, max, ..
+        } => {
+            let initial = duration_var(ctx, min.magnitude, min.unit, stmts, span);
+            let multiplier = ctx.push_float("2.0");
+            let cap = duration_var(ctx, max.magnitude, max.unit, stmts, span);
+            let exponential = ctx.atom("exponential");
+            (
+                *count,
+                record_new(
+                    ctx,
+                    exponential,
+                    vec![Value::Var(initial), Value::Lit(multiplier), Value::Var(cap)],
+                    stmts,
+                ),
+            )
+        }
+    };
+    let count_int = i64::try_from(count)
+        .map_err(|_| LowerError::unsupported("retry count above i64::MAX", span))?;
+    let policy_tag = ctx.atom("retry_policy");
+    Ok(record_new(
+        ctx,
+        policy_tag,
+        vec![Value::Int(count_int), Value::Var(backoff)],
+        stmts,
+    ))
 }
 
 fn call_rt(
@@ -352,7 +482,7 @@ fn lower_pipe_value(
                     name_span: *span,
                     args: Vec::new(),
                 };
-                let bound = activity_call(ctx, plan, &call, Some(value), scope, stmts)?;
+                let bound = activity_call(ctx, plan, &call, Some((value, ty)), scope, stmts)?;
                 ty = ctx
                     .emitter
                     .actions

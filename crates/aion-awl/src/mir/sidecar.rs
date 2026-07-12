@@ -76,9 +76,14 @@ pub(crate) fn map_tydesc(ty: &TyDesc) -> TypeDescriptor {
             "Activity",
             vec![map_tydesc(input), map_tydesc(output)],
         ),
-        TyDesc::SignalRef(inner) => custom("aion/signal", "Signal", vec![map_tydesc(inner)]),
+        // The nominal opaque type is `SignalRef` in `aion/signal`
+        // (`aion/workflow` only re-exports it as an alias, which Gleam erases);
+        // S10/IR-23 pins the spelling the extractor emits, not the alias.
+        TyDesc::SignalRef(inner) => custom("aion/signal", "SignalRef", vec![map_tydesc(inner)]),
+        // `aion/workflow.WorkflowDefinition` is an alias; the nominal opaque
+        // type lives in `aion/workflow/define` and Gleam erases the alias.
         TyDesc::WorkflowDefinition(input, output, error) => custom(
-            "aion/workflow",
+            "aion/workflow/define",
             "WorkflowDefinition",
             vec![map_tydesc(input), map_tydesc(output), map_tydesc(error)],
         ),

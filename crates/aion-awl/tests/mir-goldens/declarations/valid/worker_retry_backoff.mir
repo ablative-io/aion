@@ -2,15 +2,20 @@ module fetch_upstream source=fetch_upstream.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_fetch:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
-    aion@workflow:run/1 [activities] (v2)
+    aion@activity:retry/2 [activities] (v1, v5)
+    aion@activity:timeout/2 [activities] (v6, v7)
+    aion@activity:task_queue/2 [activities] (v8, lit#1)
+    aion@activity:node/2 [activities] (v9, lit#2)
+    aion@workflow:run/1 [activities] (v10)
 == durable families == activities
 == atoms ==
   [0] payload
   [1] fetch_input
   [2] fetch_upstream_input
   [3] fetched_outcome
-  [4] ok
+  [4] exponential
+  [5] retry_policy
+  [6] ok
 == types ==
   record Payload tag=payload
     body: string
@@ -88,10 +93,18 @@ exports: run/1, definition/0, execute/1
 == fn step_fetch/1 origin=region(fetch) ==
   sig: (String) -> Result(fetch_upstream.FetchUpstreamOutcome, AwlError)
   v1 = call_local fetch_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
-  v3 = call_rt aion@workflow:run/1(v2)
-  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
-  v5 = try_bind v4
-  v6 = record(fetched_outcome, [v5])
-  v7 = record(ok, [v6])
-  return v7
+  v2 = call_rt aion@duration:milliseconds/1(10000)
+  v3 = call_rt aion@duration:milliseconds/1(300000)
+  v4 = record(exponential, [v2, lit#0, v3])
+  v5 = record(retry_policy, [5, v4])
+  v6 = call_rt aion@activity:retry/2(v1, v5)
+  v7 = call_rt aion@duration:milliseconds/1(120000)
+  v8 = call_rt aion@activity:timeout/2(v6, v7)
+  v9 = call_rt aion@activity:task_queue/2(v8, lit#1)
+  v10 = call_rt aion@activity:node/2(v9, lit#2)
+  v11 = call_rt aion@workflow:run/1(v10)
+  v12 = call_rt aion@awl@error:map_activity_error/1(v11)
+  v13 = try_bind v12
+  v14 = record(fetched_outcome, [v13])
+  v15 = record(ok, [v14])
+  return v15

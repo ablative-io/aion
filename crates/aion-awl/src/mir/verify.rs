@@ -1,14 +1,18 @@
 //! `verify(&MirModule)` — the S1 pass that runs inside every MIR golden test.
 //!
-//! Checks reachable from `&MirModule` alone: capability closure (the `ResultTry`
-//! fallback is never minted by the primary design), local-call arity against
-//! the function list, single-def variable discipline, atom/literal/function
-//! reference resolution, tail invariants (structurally guaranteed — each
-//! `Block` ends in exactly one `Tail`, control constructs are tails), and the
-//! export set. The per-op result-type cross-check against the rev-2 `TypeEnv`
-//! that S1 also names is NOT reachable from this signature (the ratified
-//! `verify(&MirModule)` carries no `TypeEnv`); it is recorded as a doc note in
-//! the BC-2 report and left to BC-3, which holds the environment.
+//! Checks reachable from `&MirModule` alone: capability closure (the closed
+//! `RuntimeFn` manifest — the `ResultTry` fallback is never minted by the
+//! primary design — and every runtime call's arity against the fixed
+//! `RuntimeFn::signature` table, §6/IR-18), local- and runtime-call arity,
+//! single-def variable discipline, atom/literal/function reference resolution,
+//! tail invariants (structurally guaranteed — each `Block` ends in exactly one
+//! `Tail`, control constructs are tails), and the export set.
+//!
+//! The per-op result-type cross-check against the rev-2 `TypeEnv` that S1 also
+//! names is NOT reachable from `verify(&MirModule)` — the environment is not
+//! carried by this signature. It is performed in BC-3, which holds the
+//! `TypeEnv` during instruction selection; this split is recorded in
+//! `AWL-BC-IR.md` §7 (verifier scope) rather than deferred silently.
 
 use std::collections::BTreeSet;
 
@@ -110,6 +114,9 @@ fn verify_stmt(
         check_capability(function, callee)?;
     }
     match stmt {
+        Stmt::CallRt { callee, args, .. } => {
+            check_runtime_arity(function, *callee, args.len())?;
+        }
         Stmt::CallLocal { callee, args, .. } => {
             check_local_arity(module, function, *callee, args.len())?;
         }
@@ -182,6 +189,7 @@ fn verify_tail(
         }
         Tail::TailRt { callee, args } => {
             check_capability(function, *callee)?;
+            check_runtime_arity(function, *callee, args.len())?;
             for value in args {
                 check_value(module, function, value)?;
             }
@@ -216,6 +224,23 @@ fn check_capability(function: &str, callee: RuntimeFn) -> Result<(), VerifyError
         return Err(VerifyError::new(
             function,
             "the ResultTry fallback (R1) must not appear in the primary design",
+        ));
+    }
+    Ok(())
+}
+
+/// Every runtime call's argument count must match the fixed
+/// `RuntimeFn::signature` arity (§6/IR-18) — the import table is derived from
+/// the instruction stream, so a mismatch would mint a malformed `ImpT` row.
+fn check_runtime_arity(function: &str, callee: RuntimeFn, args: usize) -> Result<(), VerifyError> {
+    let (_, _, arity) = callee.signature();
+    if arity as usize != args {
+        return Err(VerifyError::new(
+            function,
+            format!(
+                "runtime call {} expects arity {arity}, got {args}",
+                callee.label()
+            ),
         ));
     }
     Ok(())

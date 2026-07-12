@@ -40,10 +40,11 @@ pub(super) fn lower_expr(
             let _ = span;
             Ok((Value::Lit(lit), GType::Str))
         }
-        Expr::Int { value, .. } => Ok((
-            Value::Int(i64::try_from(*value).unwrap_or(i64::MAX)),
-            GType::Int,
-        )),
+        Expr::Int { value, span } => {
+            let signed = i64::try_from(*value)
+                .map_err(|_| LowerError::unsupported("integer literal above i64::MAX", *span))?;
+            Ok((Value::Int(signed), GType::Int))
+        }
         Expr::Bool { value, .. } => {
             let atom = ctx.atom(if *value { "true" } else { "false" });
             Ok((Value::Atom(atom), GType::Bool))
@@ -101,8 +102,30 @@ pub(super) fn lower_arg_for(
     stmts: &mut Vec<Stmt>,
 ) -> Result<Value, LowerError> {
     let (value, actual) = lower_expr(ctx, expr, scope, stmts)?;
+    Ok(wrap_optional_value(
+        ctx,
+        value,
+        &actual,
+        expected,
+        stmts,
+        expr_span(expr),
+    ))
+}
+
+/// Wrap a present value in `Some` (`{some, V}`) when the slot is `Option` and
+/// the value is not — the reference `wrap_optional` (`pipes.rs:203`). Shared by
+/// argument lowering and the pipe-into-action path so both call forms of the
+/// same action produce identical terms.
+pub(super) fn wrap_optional_value(
+    ctx: &mut Ctx<'_>,
+    value: Value,
+    actual: &GType,
+    expected: &GType,
+    stmts: &mut Vec<Stmt>,
+    span: crate::Span,
+) -> Value {
     if matches!(ctx.emitter.env.resolve(expected), GType::Option(_))
-        && !matches!(ctx.emitter.env.resolve(&actual), GType::Option(_))
+        && !matches!(ctx.emitter.env.resolve(actual), GType::Option(_))
     {
         let some = ctx.atom("some");
         let dst = ctx.fresh_var();
@@ -110,11 +133,11 @@ pub(super) fn lower_arg_for(
             dst,
             tag: some,
             args: vec![value],
-            span: span_of(expr_span(expr)),
+            span: span_of(span),
         });
-        return Ok(Value::Var(dst));
+        return Value::Var(dst);
     }
-    Ok(value)
+    value
 }
 
 fn lower_record(
