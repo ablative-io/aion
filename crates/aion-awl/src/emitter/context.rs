@@ -27,6 +27,7 @@ pub(super) struct OutcomeInfo {
 #[derive(Debug, Default, Clone)]
 pub(super) struct Flags {
     pub(super) uses_list_module: bool,
+    pub(super) uses_child_module: bool,
     /// `gleam/<module>` comparator imports a `sort` stage needs.
     pub(super) compare_modules: std::collections::BTreeSet<&'static str>,
     /// Actions dispatched from a heterogeneous parallel group: each needs a

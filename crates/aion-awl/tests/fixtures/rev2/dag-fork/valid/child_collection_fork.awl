@@ -1,0 +1,19 @@
+//! Child-per-item collection fan-out regression.
+workflow child_collection_fork
+  input pack_revision: String
+  input sittings: [SittingSpec]
+  outcome reported: type ExamReport, route success
+
+type SittingSpec { harness: String, model: String, effort: String }
+type SittingRow  { spec: SittingSpec, first_try: Bool }
+type ExamReport  { rows: [SittingRow] }
+
+child sit_one(spec: SittingSpec, pack_revision: String) -> SittingRow
+
+step fan_out
+  fork spec in sittings
+    sit_one(spec: spec, pack_revision: pack_revision)
+  join -> rows
+
+step report
+  route reported(rows: rows)

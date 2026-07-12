@@ -21,6 +21,9 @@ pub(super) fn header(emitter: &mut Emitter<'_>) {
     emitter.line("import aion/awl/codec as awlc");
     emitter.line("import aion/awl/error as awl_error");
     emitter.line("import aion/awl/runtime");
+    if emitter.flags.uses_child_module {
+        emitter.line("import aion/child");
+    }
     emitter.line("import aion/codec.{type Codec}");
     emitter.line("import aion/duration");
     emitter.line("import aion/error");

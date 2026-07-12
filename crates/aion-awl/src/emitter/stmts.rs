@@ -157,7 +157,7 @@ pub(super) fn retry_policy(retry: &RetrySpec) -> String {
 
 /// Build the string-name child-spawn expression (without the leading
 /// `workflow.spawn`/`workflow.spawn_and_wait`, which differs by call form).
-fn child_spawn_args(
+pub(super) fn child_spawn_args(
     emitter: &mut Emitter<'_>,
     child: &ChildDecl,
     call: &Call,

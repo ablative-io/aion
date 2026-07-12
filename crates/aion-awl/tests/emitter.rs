@@ -33,6 +33,21 @@ fn emitted(source: &str) -> Result<String, Box<dyn Error>> {
     Ok(emit(&parse(source)?)?)
 }
 
+fn emitted_archived_exam() -> Result<String, Box<dyn Error>> {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = crate_root
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("failed to resolve repository root")?;
+    let path = repo_root.join("docs/design/aion-authoring/awl/exam/workbench/awl_exam.awl");
+    let source = fs::read_to_string(&path)?;
+    let document = parse(&source)?;
+    Ok(emit_in(
+        &document,
+        path.parent().ok_or("archived exam path has no parent")?,
+    )?)
+}
+
 /// Every valid rev-2 fixture parses, checks, and emits: the corpus is the
 /// phase gate, and the emitter refuses nothing the checker accepts.
 #[test]
@@ -185,6 +200,56 @@ fn child_call_lowers_to_string_name_spawn() -> Result<(), Box<dyn Error>> {
     ));
     assert!(!generated.contains("score_essay.execute"));
     assert!(!generated.contains("score_essay.input_codec"));
+    Ok(())
+}
+
+/// A collection fork over a child starts every child before awaiting results,
+/// preserving input order while providing true per-item child-run fan-out.
+#[test]
+fn child_collection_fork_spawns_all_then_awaits_all() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("dag-fork/valid/child_collection_fork.awl")?;
+    let spawn = generated
+        .find("workflow.spawn(\"sit_one\"")
+        .ok_or("child fork must emit a child spawn")?;
+    let await_child = generated
+        .find("child.await(awl_handle)")
+        .ok_or("child fork must await spawned handles")?;
+    assert!(
+        spawn < await_child,
+        "all-child spawn fold must precede await fold"
+    );
+    assert!(generated.contains("import aion/child"));
+    assert!(generated.contains("let rows = awl_children"));
+
+    let archived_exam = emitted_archived_exam()?;
+    assert!(archived_exam.contains("workflow.spawn(\"sit_one\""));
+    assert!(archived_exam.contains("let rows = awl_children"));
+    Ok(())
+}
+
+/// Unsupported child calls in named forks report the construct that is not
+/// lowerable instead of falsely claiming the declared child is not an action.
+#[test]
+fn named_fork_child_refusal_is_honest() -> Result<(), Box<dyn Error>> {
+    let source = "\
+//! Honest refusal regression.
+workflow honest_refusal
+  input value: String
+  outcome done: type String, route success
+
+child inspect(value: String) -> String
+
+step inspect
+  fork
+    inspect(value: value) -> inspected
+  join
+";
+    let error = emit(&parse(source)?).err().ok_or("emit must refuse")?;
+    assert_eq!(
+        error.message,
+        "child calls are not yet lowerable inside named fork branches"
+    );
+    assert!(!error.message.contains("no declared action"));
     Ok(())
 }
 
@@ -633,6 +698,11 @@ fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
                 "fork_named",
                 emitted_fixture("dag-fork/valid/fork_named_branches.awl")?,
             ),
+            (
+                "child_collection_fork",
+                emitted_fixture("dag-fork/valid/child_collection_fork.awl")?,
+            ),
+            ("archived_awl_exam", emitted_archived_exam()?),
             (
                 "backward_route",
                 emitted_fixture("loop-outcomes/valid/backward_route_bounded_cycle.awl")?,

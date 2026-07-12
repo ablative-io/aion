@@ -13,7 +13,9 @@ use super::context::Emitter;
 use super::error::EmitError;
 use super::exprs::{Scope, expr_type, render_expr};
 use super::names::{ident, string_lit};
-use super::stmts::{activity_value, activity_value_raw, flush_prelude, lower_call};
+use super::stmts::{
+    activity_value, activity_value_raw, child_spawn_args, flush_prelude, lower_call,
+};
 use super::types::{GType, type_ref_to_g};
 
 /// Lower a fork statement.
@@ -46,7 +48,7 @@ fn lower_collection_fork(
     let branch = single_action_branch(&fork.body).ok_or_else(|| {
         EmitError::new(
             fork.span,
-            "a collection fork lowers one unbound action call per item in the Gleam stopgap",
+            "a collection fork lowers one unbound action or child call per item in the Gleam stopgap",
         )
     })?;
     let mut prelude = Vec::new();
@@ -65,35 +67,173 @@ fn lower_collection_fork(
     };
     let mut branch_scope = scope.clone();
     branch_scope.insert(var.to_owned(), elem_ty);
-    let (_, action) = *emitter
-        .actions
-        .get(branch.call.name.as_str())
-        .ok_or_else(|| {
-            EmitError::new(
-                branch.call.name_span,
-                format!("`{}` names no declared action", branch.call.name),
-            )
-        })?;
-    let returns = type_ref_to_g(&action.returns);
+    let returns = if let Some((_, action)) = emitter.actions.get(branch.call.name.as_str()) {
+        type_ref_to_g(&action.returns)
+    } else if let Some(child) = emitter.children.get(branch.call.name.as_str()) {
+        type_ref_to_g(&child.returns)
+    } else {
+        return Err(EmitError::new(
+            branch.call.name_span,
+            format!(
+                "`{}` names neither a declared action nor a child workflow",
+                branch.call.name
+            ),
+        ));
+    };
     let binder = fork
         .join
         .bind
         .as_ref()
         .map_or_else(|| "_".to_owned(), |bind| ident(&bind.name));
+    if emitter.children.contains_key(branch.call.name.as_str()) {
+        lower_collection_child_fork(
+            emitter,
+            ChildFork {
+                call: branch,
+                scope: &branch_scope,
+                prelude,
+                items: &items,
+                var,
+                binder: &binder,
+                sequential,
+            },
+        )?;
+    } else {
+        lower_collection_action_fork(
+            emitter,
+            ActionFork {
+                call: branch,
+                scope: &branch_scope,
+                prelude,
+                items: &items,
+                var,
+                binder: &binder,
+                sequential,
+                span: fork.span,
+            },
+        )?;
+    }
+    if let Some(bind) = &fork.join.bind {
+        scope.insert(bind.name.clone(), GType::List(Box::new(returns)));
+    }
+    Ok(())
+}
+
+struct ChildFork<'a> {
+    call: &'a CallStmt,
+    scope: &'a Scope,
+    prelude: Vec<String>,
+    items: &'a str,
+    var: &'a str,
+    binder: &'a str,
+    sequential: bool,
+}
+
+fn lower_collection_child_fork(
+    emitter: &mut Emitter<'_>,
+    fork: ChildFork<'_>,
+) -> Result<(), EmitError> {
+    if fork.call.config.is_some() {
+        return Err(EmitError::new(
+            fork.call.span,
+            "`node`/`timeout` cannot pin a child workflow call — the engine routes children, not a queue",
+        ));
+    }
+    let child = emitter.children[fork.call.call.name.as_str()];
+    let mut branch_prelude = Vec::new();
+    let spawn = child_spawn_args(
+        emitter,
+        child,
+        &fork.call.call,
+        fork.scope,
+        &mut branch_prelude,
+    )?;
+    emitter.flags.uses_list_module = true;
+    flush_prelude(emitter, fork.prelude);
+    if fork.sequential {
+        emitter.line(&format!(
+            "use awl_children_reversed <- result.try(list.try_fold({}, [], fn(awl_acc, {}) {{",
+            fork.items,
+            ident(fork.var)
+        ));
+        emitter.indented_try(|this| {
+            flush_prelude(this, branch_prelude);
+            this.line(&format!(
+                "use awl_item <- result.try(workflow.spawn_and_wait{spawn} |> awl_error.map_child_error)"
+            ));
+            this.line("Ok([awl_item, ..awl_acc])");
+            Ok(())
+        })?;
+        emitter.line("}))");
+        emitter.line(&format!(
+            "let {} = list.reverse(awl_children_reversed)",
+            fork.binder
+        ));
+        return Ok(());
+    }
+    if !branch_prelude.is_empty() {
+        return Err(EmitError::new(
+            fork.call.span,
+            "indexing inside a parallel fork branch is not lowerable in the Gleam stopgap",
+        ));
+    }
+    emitter.flags.uses_child_module = true;
+    emitter.line(&format!(
+        "use awl_handles_reversed <- result.try(list.try_fold({}, [], fn(awl_acc, {}) {{",
+        fork.items,
+        ident(fork.var)
+    ));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "use awl_handle <- result.try(workflow.spawn{spawn} |> awl_error.map_spawn_error)"
+        ));
+        this.line("Ok([awl_handle, ..awl_acc])");
+    });
+    emitter.line("}))");
+    emitter.line(
+        "use awl_children <- result.try(list.try_fold(awl_handles_reversed, [], fn(awl_acc, awl_handle) {",
+    );
+    emitter.indented(|this| {
+        this.line(
+            "use awl_item <- result.try(child.await(awl_handle) |> awl_error.map_child_error)",
+        );
+        this.line("Ok([awl_item, ..awl_acc])");
+    });
+    emitter.line("}))");
+    emitter.line(&format!("let {} = awl_children", fork.binder));
+    Ok(())
+}
+
+struct ActionFork<'a> {
+    call: &'a CallStmt,
+    scope: &'a Scope,
+    prelude: Vec<String>,
+    items: &'a str,
+    var: &'a str,
+    binder: &'a str,
+    sequential: bool,
+    span: crate::Span,
+}
+
+fn lower_collection_action_fork(
+    emitter: &mut Emitter<'_>,
+    fork: ActionFork<'_>,
+) -> Result<(), EmitError> {
     let mut branch_prelude = Vec::new();
     let value = activity_value(
         emitter,
-        &branch.call,
-        branch.config.as_ref(),
-        &branch_scope,
+        &fork.call.call,
+        fork.call.config.as_ref(),
+        fork.scope,
         &mut branch_prelude,
     )?;
-    if sequential {
+    if fork.sequential {
         emitter.flags.uses_list_module = true;
-        flush_prelude(emitter, prelude);
+        flush_prelude(emitter, fork.prelude);
         emitter.line(&format!(
-            "use awl_folded <- result.try(list.try_fold({items}, [], fn(awl_acc, {}) {{",
-            ident(var)
+            "use awl_folded <- result.try(list.try_fold({}, [], fn(awl_acc, {}) {{",
+            fork.items,
+            ident(fork.var)
         ));
         emitter.indented_try(|this| {
             flush_prelude(this, branch_prelude);
@@ -104,7 +244,7 @@ fn lower_collection_fork(
             Ok(())
         })?;
         emitter.line("}))");
-        emitter.line(&format!("let {binder} = list.reverse(awl_folded)"));
+        emitter.line(&format!("let {} = list.reverse(awl_folded)", fork.binder));
     } else {
         if !branch_prelude.is_empty() {
             return Err(EmitError::new(
@@ -112,15 +252,13 @@ fn lower_collection_fork(
                 "indexing inside a parallel fork branch is not lowerable in the Gleam stopgap",
             ));
         }
-        flush_prelude(emitter, prelude);
+        flush_prelude(emitter, fork.prelude);
         emitter.line(&format!(
-            "use {binder} <- result.try(workflow.map({items}, fn({}) {{ {value} }}) |> \
-             awl_error.map_activity_error)",
-            ident(var)
+            "use {} <- result.try(workflow.map({}, fn({}) {{ {value} }}) |> awl_error.map_activity_error)",
+            fork.binder,
+            fork.items,
+            ident(fork.var)
         ));
-    }
-    if let Some(bind) = &fork.join.bind {
-        scope.insert(bind.name.clone(), GType::List(Box::new(returns)));
     }
     Ok(())
 }
@@ -140,10 +278,12 @@ fn lower_named_fork(
                 branches.push(call);
             }
             Statement::Call(call) => {
-                return Err(EmitError::new(
-                    call.span,
-                    "named fork branches lower as action calls in the Gleam stopgap",
-                ));
+                let message = if emitter.children.contains_key(call.call.name.as_str()) {
+                    "child calls are not yet lowerable inside named fork branches"
+                } else {
+                    "named fork branches lower as action calls in the Gleam stopgap"
+                };
+                return Err(EmitError::new(call.span, message));
             }
             _ => {
                 return Err(EmitError::new(
