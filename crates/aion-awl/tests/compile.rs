@@ -28,6 +28,76 @@ fn fixture(relative: &str) -> PathBuf {
     manifest_dir().join("tests/fixtures/rev2").join(relative)
 }
 
+fn unhex(text: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let text = text.trim();
+    Ok((0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()?)
+}
+
+type BeamChunk = (String, Vec<u8>);
+
+/// Splits a BEAM container into its `(name, payload)` chunk sequence.
+fn beam_chunks(bytes: &[u8]) -> Result<Vec<BeamChunk>, Box<dyn std::error::Error>> {
+    assert!(bytes.starts_with(b"FOR1"), "not a BEAM container");
+    let mut chunks = Vec::new();
+    let mut offset = 12;
+    while offset + 8 <= bytes.len() {
+        let name = String::from_utf8(bytes[offset..offset + 4].to_vec())?;
+        let size_bytes: [u8; 4] = bytes[offset + 4..offset + 8].try_into()?;
+        let size = u32::from_be_bytes(size_bytes);
+        let payload = bytes[offset + 8..offset + 8 + size as usize].to_vec();
+        chunks.push((name, payload));
+        offset += 8 + (size as usize).div_ceil(4) * 4;
+    }
+    Ok(chunks)
+}
+
+fn inflate_litt(payload: &[u8]) -> Result<(u32, Vec<u8>), Box<dyn std::error::Error>> {
+    let declared_bytes: [u8; 4] = payload[..4].try_into()?;
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&payload[4..]), &mut out)?;
+    Ok((u32::from_be_bytes(declared_bytes), out))
+}
+
+/// Byte-equality per chunk, except `LitT`: its deflate stream varies with the
+/// cargo feature graph (feature unification selects the flate backend beamr
+/// links, so `-p aion-awl` and `--workspace` builds emit different compressed
+/// bytes for identical literals). The decompressed content is the contract.
+fn beam_equivalent(actual: &[u8], expected: &[u8]) -> TestResult {
+    let actual_chunks = beam_chunks(actual)?;
+    let expected_chunks = beam_chunks(expected)?;
+    let names = |chunks: &[BeamChunk]| {
+        chunks
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&actual_chunks),
+        names(&expected_chunks),
+        "chunk sequence drifted from the committed golden"
+    );
+    for ((name, actual_payload), (_, expected_payload)) in
+        actual_chunks.iter().zip(expected_chunks.iter())
+    {
+        if name == "LitT" {
+            assert_eq!(
+                inflate_litt(actual_payload)?,
+                inflate_litt(expected_payload)?,
+                "LitT literal content drifted from the committed golden"
+            );
+        } else {
+            assert_eq!(
+                actual_payload, expected_payload,
+                "chunk {name} drifted from the committed golden"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn read(path: &Path) -> Result<(String, PathBuf), Box<dyn std::error::Error>> {
     let source = fs::read_to_string(path)?;
     let root = path
@@ -38,9 +108,11 @@ fn read(path: &Path) -> Result<(String, PathBuf), Box<dyn std::error::Error>> {
 }
 
 /// Obligation 1: `awl_hello` compiles; the bytes match the committed
-/// `awl_hello.beam.hex` golden (set `AWL_BC2_BLESS=1` to re-bless — never
-/// implicit) AND the direct MIR path's `select` output; the sidecar matches
-/// the committed `.gleam_types.hex` golden; two calls are identical.
+/// `awl_hello.beam.hex` golden chunk-canonically (`assert_beam_equivalent`:
+/// every chunk byte-equal except `LitT`, which compares decompressed; set
+/// `AWL_BC2_BLESS=1` to re-bless — never implicit) AND the direct MIR path's
+/// `select` output; the sidecar matches the committed `.gleam_types.hex`
+/// golden; two calls are identical.
 #[test]
 fn awl_hello_compiles_deterministically_to_the_select_bytes() -> TestResult {
     let (source, root) = read(&fixture("flagship/valid/awl_hello.awl"))?;
@@ -74,10 +146,7 @@ fn awl_hello_compiles_deterministically_to_the_select_bytes() -> TestResult {
             beam_golden.display()
         )
     })?;
-    assert_eq!(
-        beam_hex, expected,
-        "beam bytes drifted from the committed golden"
-    );
+    beam_equivalent(&first.beam_bytes, &unhex(&expected)?)?;
     assert_eq!(
         hex(&first.sidecar_bytes),
         fs::read_to_string(golden_root.join("awl_hello.gleam_types.hex"))?,
