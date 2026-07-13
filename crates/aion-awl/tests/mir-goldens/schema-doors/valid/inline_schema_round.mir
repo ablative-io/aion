@@ -1,0 +1,145 @@
+module inline_schema_round source=inline_schema_round.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_report:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] round
+  [1] report
+  [2] stuck
+  [3] write_report_input
+  [4] inline_schema_round_input
+  [5] reported_outcome
+  [6] ok
+  [7] awl_outcome_failure
+  [8] error
+== types ==
+  record Round tag=round
+    gates_green: bool
+    summary: string
+  record Report tag=report
+    summary: string
+  record Stuck tag=stuck
+    reason: string
+  record WriteReportInput tag=write_report_input
+    round: ref(Round)
+  record InlineSchemaRoundInput tag=inline_schema_round_input
+    round: ref(Round)
+  union InlineSchemaRoundOutcome
+    reported -> reported_outcome(ref(Report))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=inline_schema_round_input_codec output=inline_schema_round_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(inline_schema_round.InlineSchemaRoundInput, inline_schema_round.InlineSchemaRoundOutcome, AwlError)
+  T-DEF name="inline_schema_round" input=inline_schema_round_input_codec output=inline_schema_round_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (inline_schema_round.InlineSchemaRoundInput) -> Result(inline_schema_round.InlineSchemaRoundOutcome, AwlError)
+  T-EXEC fields=[round:inline_schema_round.Round] entry=step_report args=[0]
+== fn round_codec/0 origin=codec_template(RecordTrio, Round, record#0) ==
+  sig: () -> Codec(inline_schema_round.Round)
+  v0 = make_closure round_to_json captures=[]
+  v1 = call_local round_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn round_to_json/1 origin=codec_template(RecordTrio, Round, record#0) ==
+  sig: (inline_schema_round.Round) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"gates_green": v1|>awlc.bool_to_json, "summary": v2|>awlc.string_to_json}
+  return v3
+== fn round_decoder/0 origin=codec_template(RecordTrio, Round, record#0) ==
+  sig: () -> Decoder(inline_schema_round.Round)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn report_codec/0 origin=codec_template(RecordTrio, Report, record#1) ==
+  sig: () -> Codec(inline_schema_round.Report)
+  v0 = make_closure report_to_json captures=[]
+  v1 = call_local report_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn report_to_json/1 origin=codec_template(RecordTrio, Report, record#1) ==
+  sig: (inline_schema_round.Report) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"summary": v1|>awlc.string_to_json}
+  return v2
+== fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#1) ==
+  sig: () -> Decoder(inline_schema_round.Report)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn stuck_codec/0 origin=codec_template(RecordTrio, Stuck, record#2) ==
+  sig: () -> Codec(inline_schema_round.Stuck)
+  v0 = make_closure stuck_to_json captures=[]
+  v1 = call_local stuck_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn stuck_to_json/1 origin=codec_template(RecordTrio, Stuck, record#2) ==
+  sig: (inline_schema_round.Stuck) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn stuck_decoder/0 origin=codec_template(RecordTrio, Stuck, record#2) ==
+  sig: () -> Decoder(inline_schema_round.Stuck)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn write_report_input_codec/0 origin=codec_template(RecordTrio, WriteReportInput, record#3) ==
+  sig: () -> Codec(inline_schema_round.WriteReportInput)
+  v0 = make_closure write_report_input_to_json captures=[]
+  v1 = call_local write_report_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn write_report_input_to_json/1 origin=codec_template(RecordTrio, WriteReportInput, record#3) ==
+  sig: (inline_schema_round.WriteReportInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"round": v1|>round_to_json}
+  return v2
+== fn write_report_input_decoder/0 origin=codec_template(RecordTrio, WriteReportInput, record#3) ==
+  sig: () -> Decoder(inline_schema_round.WriteReportInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn inline_schema_round_input_codec/0 origin=codec_template(RecordTrio, InlineSchemaRoundInput, record#4) ==
+  sig: () -> Codec(inline_schema_round.InlineSchemaRoundInput)
+  v0 = make_closure inline_schema_round_input_to_json captures=[]
+  v1 = call_local inline_schema_round_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn inline_schema_round_input_to_json/1 origin=codec_template(RecordTrio, InlineSchemaRoundInput, record#4) ==
+  sig: (inline_schema_round.InlineSchemaRoundInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"round": v1|>round_to_json}
+  return v2
+== fn inline_schema_round_input_decoder/0 origin=codec_template(RecordTrio, InlineSchemaRoundInput, record#4) ==
+  sig: () -> Decoder(inline_schema_round.InlineSchemaRoundInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn inline_schema_round_outcome_codec/0 origin=codec_template(UnionTrio, InlineSchemaRoundOutcome, union#5) ==
+  sig: () -> Codec(inline_schema_round.InlineSchemaRoundOutcome)
+  v0 = make_closure inline_schema_round_outcome_to_json captures=[]
+  v1 = call_local inline_schema_round_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn inline_schema_round_outcome_to_json/1 origin=codec_template(UnionTrio, InlineSchemaRoundOutcome, union#5) ==
+  sig: (inline_schema_round.InlineSchemaRoundOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn inline_schema_round_outcome_decoder/0 origin=codec_template(UnionTrio, InlineSchemaRoundOutcome, union#5) ==
+  sig: () -> Decoder(inline_schema_round.InlineSchemaRoundOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn write_report_activity/1 origin=activity_wrapper(write_report, raw=false) ==
+  sig: (inline_schema_round.Round) -> Activity(inline_schema_round.WriteReportInput, inline_schema_round.Report)
+  T-ACT action=write_report input_codec=write_report_input_codec return=report_codec
+== fn step_report/1 origin=region(report) ==
+  sig: (inline_schema_round.Round) -> Result(inline_schema_round.InlineSchemaRoundOutcome, AwlError)
+  v1 = call_local write_report_activity(v0) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0) live_after=[v0]
+  v3 = call_rt aion@workflow:run/1(v2) live_after=[v0]
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3) live_after=[v0]
+  v5 = try_bind v4 live_after=[v0]
+  v6 = field(v0, 1)
+  if is_true v6:
+    v7 = field(v5, 1)
+    v8 = record(report, [v7])
+    v9 = record(reported_outcome, [v8])
+    v10 = record(ok, [v9])
+    return v10
+  else:
+    v11 = record(stuck, [lit#1])
+    v12 = call_local stuck_to_json(v11)
+    v13 = call_rt gleam@json:to_string/1(v12)
+    v14 = record(awl_outcome_failure, [lit#2, v13])
+    v15 = record(error, [v14])
+    return v15
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

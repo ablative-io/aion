@@ -1,0 +1,135 @@
+module optional_shorthand source=optional_shorthand.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_examine:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] note
+  [1] filed
+  [2] polish_input
+  [3] optional_shorthand_input
+  [4] filed_outcome
+  [5] none
+  [6] some
+  [7] ok
+== types ==
+  record Note tag=note
+    title: string
+    body: nullable(string) optional
+    tags: list(string)
+  record Filed tag=filed
+    title: string
+    body: nullable(string) optional
+  record PolishInput tag=polish_input
+    note: ref(Note)
+  record OptionalShorthandInput tag=optional_shorthand_input
+    note: ref(Note)
+  union OptionalShorthandOutcome
+    filed -> filed_outcome(ref(Filed))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=optional_shorthand_input_codec output=optional_shorthand_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(optional_shorthand.OptionalShorthandInput, optional_shorthand.OptionalShorthandOutcome, AwlError)
+  T-DEF name="optional_shorthand" input=optional_shorthand_input_codec output=optional_shorthand_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (optional_shorthand.OptionalShorthandInput) -> Result(optional_shorthand.OptionalShorthandOutcome, AwlError)
+  T-EXEC fields=[note:optional_shorthand.Note] entry=step_examine args=[0]
+== fn note_codec/0 origin=codec_template(RecordTrio, Note, record#0) ==
+  sig: () -> Codec(optional_shorthand.Note)
+  v0 = make_closure note_to_json captures=[]
+  v1 = call_local note_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn note_to_json/1 origin=codec_template(RecordTrio, Note, record#0) ==
+  sig: (optional_shorthand.Note) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"title": v1|>awlc.string_to_json, "body": v2|>awlc.nil_to_json, "tags": v3|>awlc.nil_to_json}
+  return v4
+== fn note_decoder/0 origin=codec_template(RecordTrio, Note, record#0) ==
+  sig: () -> Decoder(optional_shorthand.Note)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn filed_codec/0 origin=codec_template(RecordTrio, Filed, record#1) ==
+  sig: () -> Codec(optional_shorthand.Filed)
+  v0 = make_closure filed_to_json captures=[]
+  v1 = call_local filed_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn filed_to_json/1 origin=codec_template(RecordTrio, Filed, record#1) ==
+  sig: (optional_shorthand.Filed) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"title": v1|>awlc.string_to_json, "body": v2|>awlc.nil_to_json}
+  return v3
+== fn filed_decoder/0 origin=codec_template(RecordTrio, Filed, record#1) ==
+  sig: () -> Decoder(optional_shorthand.Filed)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn polish_input_codec/0 origin=codec_template(RecordTrio, PolishInput, record#2) ==
+  sig: () -> Codec(optional_shorthand.PolishInput)
+  v0 = make_closure polish_input_to_json captures=[]
+  v1 = call_local polish_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn polish_input_to_json/1 origin=codec_template(RecordTrio, PolishInput, record#2) ==
+  sig: (optional_shorthand.PolishInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"note": v1|>note_to_json}
+  return v2
+== fn polish_input_decoder/0 origin=codec_template(RecordTrio, PolishInput, record#2) ==
+  sig: () -> Decoder(optional_shorthand.PolishInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn optional_shorthand_input_codec/0 origin=codec_template(RecordTrio, OptionalShorthandInput, record#3) ==
+  sig: () -> Codec(optional_shorthand.OptionalShorthandInput)
+  v0 = make_closure optional_shorthand_input_to_json captures=[]
+  v1 = call_local optional_shorthand_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn optional_shorthand_input_to_json/1 origin=codec_template(RecordTrio, OptionalShorthandInput, record#3) ==
+  sig: (optional_shorthand.OptionalShorthandInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"note": v1|>note_to_json}
+  return v2
+== fn optional_shorthand_input_decoder/0 origin=codec_template(RecordTrio, OptionalShorthandInput, record#3) ==
+  sig: () -> Decoder(optional_shorthand.OptionalShorthandInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn optional_shorthand_outcome_codec/0 origin=codec_template(UnionTrio, OptionalShorthandOutcome, union#4) ==
+  sig: () -> Codec(optional_shorthand.OptionalShorthandOutcome)
+  v0 = make_closure optional_shorthand_outcome_to_json captures=[]
+  v1 = call_local optional_shorthand_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn optional_shorthand_outcome_to_json/1 origin=codec_template(UnionTrio, OptionalShorthandOutcome, union#4) ==
+  sig: (optional_shorthand.OptionalShorthandOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn optional_shorthand_outcome_decoder/0 origin=codec_template(UnionTrio, OptionalShorthandOutcome, union#4) ==
+  sig: () -> Decoder(optional_shorthand.OptionalShorthandOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn polish_activity/1 origin=activity_wrapper(polish, raw=false) ==
+  sig: (optional_shorthand.Note) -> Activity(optional_shorthand.PolishInput, optional_shorthand.Note)
+  T-ACT action=polish input_codec=polish_input_codec return=note_codec
+== fn step_examine/1 origin=region(examine) ==
+  sig: (optional_shorthand.Note) -> Result(optional_shorthand.OptionalShorthandOutcome, AwlError)
+  v1 = call_local polish_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = field(v5, 2)
+  v7 = cmp Ne v6 'none'
+  if is_true v7:
+    v8 = assert_some v6
+    v9 = field(v5, 1)
+    v10 = record(some, [v8])
+    v11 = record(filed, [v9, v10])
+    v12 = record(filed_outcome, [v11])
+    v13 = record(ok, [v12])
+    return v13
+  else:
+    v14 = field(v5, 1)
+    v15 = record(filed, [v14, 'none'])
+    v16 = record(filed_outcome, [v15])
+    v17 = record(ok, [v16])
+    return v17
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

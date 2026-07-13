@@ -1,0 +1,133 @@
+module summarize source=summarize.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_summarize:
+    aion@activity:timeout/2 [activities] (v1, v2)
+    aion@activity:task_queue/2 [activities] (v3, lit#0)
+    aion@activity:node/2 [activities] (v4, lit#1)
+    aion@workflow:run/1 [activities] (v5)
+== durable families == activities
+== atoms ==
+  [0] summary
+  [1] empty_doc
+  [2] condense_input
+  [3] summarize_input
+  [4] summary_outcome
+  [5] ok
+  [6] awl_outcome_failure
+  [7] error
+== types ==
+  record Summary tag=summary
+    text: string
+    words: int
+  record EmptyDoc tag=empty_doc
+    reason: string
+  record CondenseInput tag=condense_input
+    text: string
+  record SummarizeInput tag=summarize_input
+    text: string
+  union SummarizeOutcome
+    summary -> summary_outcome(ref(Summary))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=summarize_input_codec output=summarize_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(summarize.SummarizeInput, summarize.SummarizeOutcome, AwlError)
+  T-DEF name="summarize" input=summarize_input_codec output=summarize_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (summarize.SummarizeInput) -> Result(summarize.SummarizeOutcome, AwlError)
+  T-EXEC fields=[text:String] entry=step_summarize args=[0]
+== fn summary_codec/0 origin=codec_template(RecordTrio, Summary, record#0) ==
+  sig: () -> Codec(summarize.Summary)
+  v0 = make_closure summary_to_json captures=[]
+  v1 = call_local summary_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summary_to_json/1 origin=codec_template(RecordTrio, Summary, record#0) ==
+  sig: (summarize.Summary) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"text": v1|>awlc.string_to_json, "words": v2|>awlc.int_to_json}
+  return v3
+== fn summary_decoder/0 origin=codec_template(RecordTrio, Summary, record#0) ==
+  sig: () -> Decoder(summarize.Summary)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn empty_doc_codec/0 origin=codec_template(RecordTrio, EmptyDoc, record#1) ==
+  sig: () -> Codec(summarize.EmptyDoc)
+  v0 = make_closure empty_doc_to_json captures=[]
+  v1 = call_local empty_doc_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn empty_doc_to_json/1 origin=codec_template(RecordTrio, EmptyDoc, record#1) ==
+  sig: (summarize.EmptyDoc) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn empty_doc_decoder/0 origin=codec_template(RecordTrio, EmptyDoc, record#1) ==
+  sig: () -> Decoder(summarize.EmptyDoc)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn condense_input_codec/0 origin=codec_template(RecordTrio, CondenseInput, record#2) ==
+  sig: () -> Codec(summarize.CondenseInput)
+  v0 = make_closure condense_input_to_json captures=[]
+  v1 = call_local condense_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn condense_input_to_json/1 origin=codec_template(RecordTrio, CondenseInput, record#2) ==
+  sig: (summarize.CondenseInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn condense_input_decoder/0 origin=codec_template(RecordTrio, CondenseInput, record#2) ==
+  sig: () -> Decoder(summarize.CondenseInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_input_codec/0 origin=codec_template(RecordTrio, SummarizeInput, record#3) ==
+  sig: () -> Codec(summarize.SummarizeInput)
+  v0 = make_closure summarize_input_to_json captures=[]
+  v1 = call_local summarize_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summarize_input_to_json/1 origin=codec_template(RecordTrio, SummarizeInput, record#3) ==
+  sig: (summarize.SummarizeInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn summarize_input_decoder/0 origin=codec_template(RecordTrio, SummarizeInput, record#3) ==
+  sig: () -> Decoder(summarize.SummarizeInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summarize_outcome_codec/0 origin=codec_template(UnionTrio, SummarizeOutcome, union#4) ==
+  sig: () -> Codec(summarize.SummarizeOutcome)
+  v0 = make_closure summarize_outcome_to_json captures=[]
+  v1 = call_local summarize_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summarize_outcome_to_json/1 origin=codec_template(UnionTrio, SummarizeOutcome, union#4) ==
+  sig: (summarize.SummarizeOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn summarize_outcome_decoder/0 origin=codec_template(UnionTrio, SummarizeOutcome, union#4) ==
+  sig: () -> Decoder(summarize.SummarizeOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn condense_activity/1 origin=activity_wrapper(condense, raw=false) ==
+  sig: (String) -> Activity(summarize.CondenseInput, summarize.Summary)
+  T-ACT action=condense input_codec=condense_input_codec return=summary_codec
+== fn step_summarize/1 origin=region(summarize) ==
+  sig: (String) -> Result(summarize.SummarizeOutcome, AwlError)
+  v1 = call_local condense_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(600000) live_after=[v1]
+  v3 = call_rt aion@activity:timeout/2(v1, v2)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#0)
+  v5 = call_rt aion@activity:node/2(v4, lit#1)
+  v6 = call_rt aion@workflow:run/1(v5)
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6)
+  v8 = try_bind v7
+  v10 = field(v8, 2)
+  v9 = cmp Gt v10 0
+  if is_true v9:
+    v11 = record(summary_outcome, [v8])
+    v12 = record(ok, [v11])
+    return v12
+  else:
+    v13 = record(empty_doc, [lit#2])
+    v14 = call_local empty_doc_to_json(v13)
+    v15 = call_rt gleam@json:to_string/1(v14)
+    v16 = record(awl_outcome_failure, [lit#3, v15])
+    v17 = record(error, [v16])
+    return v17
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

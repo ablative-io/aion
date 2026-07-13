@@ -28,7 +28,7 @@ or a decision-register entry (§8) lands **in the same commit** as the code
 change, enforced at panel review. MIR stays private to `aion-awl` (ratified
 decision 3).
 
-### BC-2 implementation status (2026-07-12)
+### BC-2 implementation status (2026-07-13)
 
 This records the state of the `crates/aion-awl/src/mir` implementation against
 the design above, replacing the code comments' references to a "BC-2 report"
@@ -36,14 +36,17 @@ that was never in the tree. It is the honest covered/pending split for the
 current increment; each pending item names why it is not yet landed.
 
 **Landed and golden-pinned:** the MIR node set (§2.5/§2.7), `lower` for the
-covered subset (single-step regions: action calls incl. action-declared
-retry/timeout/task_queue/node config, sleeps, action/field pipes, routes,
-success/failure outcome returns), record `_to_json` for required
-leaf/`Ref` fields, the codec-composer trio, the T-DEF/T-RUN/T-EXEC/T-ACT/T-SIG
-template shells, `project_sidecar` (S2, pinned against the SDK type spellings —
-`SignalRef` in `aion/signal`, `WorkflowDefinition` in `aion/workflow/define`),
-`verify` (capability closure + runtime/local-call arity + single-def), and
-**S14 backward liveness** (`lower/liveness.rs`).
+covered subset (multi-step sequential regions; action calls incl.
+action-declared retry/timeout/task_queue/node config; sleeps; action/field
+pipes; routes; success/failure outcome returns; ordered `when`/`otherwise`
+`If` tails; enum-total `SelectEnum` tails; short-circuit `and`/`or`/`not`
+decision trees; `Cmp` guards; and `is present` `AssertSome` narrowing), record
+`_to_json` for required leaf/`Ref` fields, the codec-composer trio, the
+T-DEF/T-RUN/T-EXEC/T-ACT/T-SIG template shells,
+`project_sidecar` (S2, pinned against the SDK type spellings — `SignalRef` in
+`aion/signal`, `WorkflowDefinition` in `aion/workflow/define`), `verify`
+(capability closure + runtime/local-call arity + single-def), and **S14
+backward liveness** (`lower/liveness.rs`).
 
 **Pending increments (NOT yet lowered; each needs infrastructure beyond a
 bounded fix-round, and — per the design — must be blessed against the BC-4
@@ -1233,7 +1236,7 @@ plus one per-shape unit test per §11.4 row.
   conflict — IR-14's Y-spill contract vs the X-only constraint — is resolved
   by R5 with zero JIT-visible Y access, grounded in §11.1 facts 1–4.
 
-### 11.8 BC-3 implementation status (2026-07-12)
+### 11.8 BC-3 implementation status (2026-07-13)
 
 The `crates/aion-awl/src/mir/select` module (private submodule of `mir`;
 `select(&MirModule) -> Result<Vec<u8>, SelectError>`) ships the selection +
@@ -1252,8 +1255,10 @@ never a silent artifact):
 - **Ops** `FieldGet`, `RecordNew` (tuple + zero-field bare-atom), `CallRt`
   (`call_ext`), `CallLocal` (`call`), `MakeClosure` (`make_fun2` + FunT),
   `TryBind` (flattened §2.2), `JsonObj` (incl. the ≥2-pair Y-homed accumulator),
-  `ListNew`. **Tails** `Return`, `TailRt` (`call_ext_last`/`call_ext_only`),
-  `TailLocal` (`call_last`/`call_only`).
+  `ListNew`, `Cmp`, `BoolOp`, `Not`, `AssertSome` (checked `{some, payload}`
+  extraction; explicit `Badmatch` failure). **Tails** `Return`, `TailRt`
+  (`call_ext_last`/`call_ext_only`), `TailLocal` (`call_last`/`call_only`),
+  `If`, `SelectEnum` (explicit `CaseEnd` mismatch trap).
 - **Pools** deterministic atom table, literal pool (first-use dedup, `MirLiteral
   → decode::chunks::Literal`, S3 float lexeme parse), import table (used
   `RuntimeFn` subset in first-use order, IR-24), `FunT` (`MakeClosure`/execute/
@@ -1270,19 +1275,20 @@ never a silent artifact):
   sidecars, a post-BC path). Determinism: the whole pipeline is a pure function
   of the `MirModule` (`select` twice ⇒ identical bytes — #218 holds through
   BC-3).
-- **Oracle coverage**: all nine `valid/` fixtures that BC-2 lowers emit +
-  validate; the 43 fixtures BC-2 refuses stay refused (no MIR ⇒ nothing to
-  emit — never a silent skip). Plus per-shape unit tests (one per §11.4 row the
-  covered fixtures reach), each a hand-built module assembled + validated in
-  isolation.
+- **Oracle coverage**: all 25 `valid/` fixtures that BC-2 lowers emit +
+  validate; the 28 fixtures BC-2 refuses stay refused (no MIR ⇒ nothing to
+  emit — never a silent skip). Plus per-shape unit tests for the reached §11.4
+  rows, including explicit nonzero failure-label checks for outcome guards,
+  checked `AssertSome` + `Badmatch`, and an explicit `CaseEnd` trap check for
+  enum-total dispatch.
 
 **Honest D-BC3 refusals (`SelectError::Unsupported`, span-anchored — the
 not-yet-reachable §11.4 rows; none appears in a BC-2-lowered fixture, so this
 narrows nothing the oracle covers):** shells T-ACTRAW / T-SIG / T-WIT; ops
-`Bind`, `CallClosure`, `WaitTimeoutCase`, `Cmp`, `BoolOp`, `Not`, `Concat`,
-`Increment`, `AssertList`, `AssertSome`, `IndexGuard`, `Attempt`; tails `If`,
-`SelectEnum`. Each lands with its §11.4 burst when the BC-2 increment that
-constructs it (decoder bodies, composite trios, keel expressions) lands — BC-3
+`Bind`, `CallClosure`, `WaitTimeoutCase`, `Concat`, `Increment`, `AssertList`,
+`IndexGuard`, `Attempt`. Each lands with its §11.4 burst when the BC-2 increment
+that constructs it (decoder bodies, composite trios, remaining keel
+expressions) lands — BC-3
 proceeds on the covered subset in the same increment order (§11.7 D-BC3
 dependency note), never emitting a shape it cannot verify.
 

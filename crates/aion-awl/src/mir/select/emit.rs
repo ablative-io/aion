@@ -17,6 +17,9 @@
 //! sidecars). Crossing-set tier-1 (frameless with vars in X, JIT-eligible) is
 //! the deferred R5-primary refinement (§11.6 R8 fallback column).
 
+mod burst;
+mod control;
+
 use std::collections::HashMap;
 
 use beamr::loader::decode::{Instruction, Operand};
@@ -25,7 +28,7 @@ use crate::mir::Var;
 
 use super::builder::Builder;
 use super::error::SelectError;
-use super::ir::{Body, JsonPair, Src, Step, TailKind, Via};
+use super::ir::{Body, BranchBlock, JsonPair, Src, Step, TailKind, TestKind, Via};
 
 /// Emits one function body into a flat instruction stream.
 pub(super) fn emit_body(
@@ -66,25 +69,17 @@ impl FramePlan {
     fn new(body: &Body) -> Result<Self, SelectError> {
         let mut homes = HashMap::new();
         let mut slot = 0_u32;
-        let assign = |var: Var, homes: &mut HashMap<Var, u32>, slot: &mut u32| {
-            homes.entry(var).or_insert_with(|| {
-                let here = *slot;
-                *slot += 1;
-                here
-            });
-        };
         for param in &body.params {
-            assign(*param, &mut homes, &mut slot);
+            assign_var(*param, &mut homes, &mut slot);
         }
         let mut needs_acc = false;
-        for step in &body.steps {
-            if let Some(dst) = step.defined() {
-                assign(dst, &mut homes, &mut slot);
-            }
-            if let Step::JsonObj { pairs, .. } = step {
-                needs_acc = needs_acc || pairs.len() >= 2;
-            }
-        }
+        plan_steps(
+            &body.steps,
+            &body.tail,
+            &mut homes,
+            &mut slot,
+            &mut needs_acc,
+        );
         let acc_slot = needs_acc.then(|| {
             let here = slot;
             slot += 1;
@@ -103,15 +98,60 @@ impl FramePlan {
     }
 }
 
+fn assign_var(var: Var, homes: &mut HashMap<Var, u32>, slot: &mut u32) {
+    homes.entry(var).or_insert_with(|| {
+        let here = *slot;
+        *slot += 1;
+        here
+    });
+}
+
+fn plan_steps(
+    steps: &[Step],
+    tail: &TailKind,
+    homes: &mut HashMap<Var, u32>,
+    slot: &mut u32,
+    needs_acc: &mut bool,
+) {
+    for step in steps {
+        if let Some(dst) = step.defined() {
+            assign_var(dst, homes, slot);
+        }
+        if let Step::JsonObj { pairs, .. } = step {
+            *needs_acc = *needs_acc || pairs.len() >= 2;
+        }
+    }
+    match tail {
+        TailKind::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            plan_steps(&then_block.steps, &then_block.tail, homes, slot, needs_acc);
+            plan_steps(&else_block.steps, &else_block.tail, homes, slot, needs_acc);
+        }
+        TailKind::SelectEnum { arms, .. } => {
+            for (_, block) in arms {
+                plan_steps(&block.steps, &block.tail, homes, slot, needs_acc);
+            }
+        }
+        TailKind::Return(_) | TailKind::TailImport { .. } | TailKind::TailLocal { .. } => {}
+    }
+}
+
 impl Step {
     fn defined(&self) -> Option<Var> {
         match self {
             Self::FieldGet { dst, .. }
+            | Self::AssertSome { dst, .. }
             | Self::Record { dst, .. }
             | Self::ListNew { dst, .. }
             | Self::MakeClosure { dst, .. }
             | Self::TryBind { dst, .. }
-            | Self::JsonObj { dst, .. } => Some(*dst),
+            | Self::JsonObj { dst, .. }
+            | Self::Cmp { dst, .. }
+            | Self::BoolOp { dst, .. }
+            | Self::Not { dst, .. } => Some(*dst),
             Self::CallImport { dst, .. } | Self::CallLocal { dst, .. } => *dst,
         }
     }
@@ -226,22 +266,12 @@ impl Emit<'_, '_> {
 
     fn step(&mut self, step: &Step) -> Result<(), SelectError> {
         match step {
-            Step::FieldGet { dst, base, index } => {
-                let home = self.home(*base)?;
-                self.push(Instruction::Move {
-                    source: Operand::Y(home),
-                    destination: Operand::X(0),
-                });
-                self.push(Instruction::GetTupleElement {
-                    source: Operand::X(0),
-                    index: Operand::Unsigned(u64::from(*index)),
-                    destination: Operand::X(1),
-                });
-                self.push(Instruction::Move {
-                    source: Operand::X(1),
-                    destination: Operand::Y(self.home(*dst)?),
-                });
-            }
+            Step::FieldGet { dst, base, index } => self.field_get(*dst, *base, *index)?,
+            Step::AssertSome {
+                dst,
+                option,
+                some_atom,
+            } => self.assert_some(*dst, *option, *some_atom)?,
             Step::Record { dst, tag, args } => self.record(*dst, *tag, args)?,
             Step::ListNew { dst, items } => self.list_new(*dst, items)?,
             Step::CallImport {
@@ -318,7 +348,65 @@ impl Emit<'_, '_> {
                 pairs,
                 object_import,
             } => self.json_obj(*dst, pairs, *object_import)?,
+            Step::Cmp { dst, op, lhs, rhs } => self.cmp_value(*dst, *op, lhs, rhs)?,
+            Step::BoolOp { dst, op, lhs, rhs } => self.bool_value(*dst, *op, lhs, rhs)?,
+            Step::Not { dst, src } => self.not_value(*dst, src)?,
         }
+        Ok(())
+    }
+
+    fn field_get(&mut self, dst: Var, base: Var, index: u16) -> Result<(), SelectError> {
+        self.push(Instruction::Move {
+            source: Operand::Y(self.home(base)?),
+            destination: Operand::X(0),
+        });
+        self.push(Instruction::GetTupleElement {
+            source: Operand::X(0),
+            index: Operand::Unsigned(u64::from(index)),
+            destination: Operand::X(1),
+        });
+        self.push(Instruction::Move {
+            source: Operand::X(1),
+            destination: Operand::Y(self.home(dst)?),
+        });
+        Ok(())
+    }
+
+    fn assert_some(
+        &mut self,
+        dst: Var,
+        option: Var,
+        some_atom: beamr::atom::Atom,
+    ) -> Result<(), SelectError> {
+        let fail = self.builder.fresh_label();
+        let done = self.builder.fresh_label();
+        self.push(Instruction::Move {
+            source: Operand::Y(self.home(option)?),
+            destination: Operand::X(0),
+        });
+        self.push(Instruction::IsTaggedTuple {
+            fail: Operand::Label(fail),
+            value: Operand::X(0),
+            arity: Operand::Unsigned(2),
+            tag: Operand::Atom(Some(some_atom)),
+        });
+        self.push(Instruction::GetTupleElement {
+            source: Operand::X(0),
+            index: Operand::Unsigned(1),
+            destination: Operand::X(1),
+        });
+        self.push(Instruction::Move {
+            source: Operand::X(1),
+            destination: Operand::Y(self.home(dst)?),
+        });
+        self.push(Instruction::Jump {
+            target: Operand::Label(done),
+        });
+        self.push(Instruction::Label { label: fail });
+        self.push(Instruction::Badmatch {
+            value: Operand::X(0),
+        });
+        self.push(Instruction::Label { label: done });
         Ok(())
     }
 
@@ -453,57 +541,6 @@ impl Emit<'_, '_> {
             import: Operand::Unsigned(object_import as u64),
         });
         self.store(dst)
-    }
-
-    fn tail(&mut self, tail: &TailKind) -> Result<(), SelectError> {
-        match tail {
-            TailKind::Return(src) => {
-                self.reload(src, 0)?;
-                if self.framed {
-                    let exit = self.lexit();
-                    self.push(Instruction::Jump {
-                        target: Operand::Label(exit),
-                    });
-                } else {
-                    self.push(Instruction::Return);
-                }
-            }
-            TailKind::TailImport {
-                import,
-                arity,
-                args,
-            } => {
-                self.marshal(args)?;
-                if self.framed {
-                    self.push(Instruction::CallExtLast {
-                        arity: Operand::Unsigned(u64::from(*arity)),
-                        import: Operand::Unsigned(*import as u64),
-                        deallocate: Operand::Unsigned(u64::from(self.frame_size)),
-                    });
-                } else {
-                    self.push(Instruction::CallExtOnly {
-                        arity: Operand::Unsigned(u64::from(*arity)),
-                        import: Operand::Unsigned(*import as u64),
-                    });
-                }
-            }
-            TailKind::TailLocal { label, arity, args } => {
-                self.marshal(args)?;
-                if self.framed {
-                    self.push(Instruction::CallLast {
-                        arity: Operand::Unsigned(u64::from(*arity)),
-                        label: Operand::Label(*label),
-                        deallocate: Operand::Unsigned(u64::from(self.frame_size)),
-                    });
-                } else {
-                    self.push(Instruction::CallOnly {
-                        arity: Operand::Unsigned(u64::from(*arity)),
-                        label: Operand::Label(*label),
-                    });
-                }
-            }
-        }
-        Ok(())
     }
 
     fn exit_block(&mut self) {

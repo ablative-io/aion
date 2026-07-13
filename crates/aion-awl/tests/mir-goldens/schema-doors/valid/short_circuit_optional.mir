@@ -1,0 +1,118 @@
+module short_circuit_optional source=short_circuit_optional.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families == 
+== atoms ==
+  [0] candidate
+  [1] detail
+  [2] decision
+  [3] short_circuit_optional_input
+  [4] accepted_outcome
+  [5] none
+  [6] ok
+== types ==
+  record Candidate tag=candidate
+    detail: nullable(ref(Detail)) optional
+  record Detail tag=detail
+    approved: bool
+  record Decision tag=decision
+    path: string
+  record ShortCircuitOptionalInput tag=short_circuit_optional_input
+    candidate: ref(Candidate)
+  union ShortCircuitOptionalOutcome
+    accepted -> accepted_outcome(ref(Decision))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=short_circuit_optional_input_codec output=short_circuit_optional_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(short_circuit_optional.ShortCircuitOptionalInput, short_circuit_optional.ShortCircuitOptionalOutcome, AwlError)
+  T-DEF name="short_circuit_optional" input=short_circuit_optional_input_codec output=short_circuit_optional_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (short_circuit_optional.ShortCircuitOptionalInput) -> Result(short_circuit_optional.ShortCircuitOptionalOutcome, AwlError)
+  T-EXEC fields=[candidate:short_circuit_optional.Candidate] entry=step_decide args=[0]
+== fn candidate_codec/0 origin=codec_template(RecordTrio, Candidate, record#0) ==
+  sig: () -> Codec(short_circuit_optional.Candidate)
+  v0 = make_closure candidate_to_json captures=[]
+  v1 = call_local candidate_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn candidate_to_json/1 origin=codec_template(RecordTrio, Candidate, record#0) ==
+  sig: (short_circuit_optional.Candidate) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"detail": v1|>awlc.nil_to_json}
+  return v2
+== fn candidate_decoder/0 origin=codec_template(RecordTrio, Candidate, record#0) ==
+  sig: () -> Decoder(short_circuit_optional.Candidate)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn detail_codec/0 origin=codec_template(RecordTrio, Detail, record#1) ==
+  sig: () -> Codec(short_circuit_optional.Detail)
+  v0 = make_closure detail_to_json captures=[]
+  v1 = call_local detail_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn detail_to_json/1 origin=codec_template(RecordTrio, Detail, record#1) ==
+  sig: (short_circuit_optional.Detail) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"approved": v1|>awlc.bool_to_json}
+  return v2
+== fn detail_decoder/0 origin=codec_template(RecordTrio, Detail, record#1) ==
+  sig: () -> Decoder(short_circuit_optional.Detail)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn decision_codec/0 origin=codec_template(RecordTrio, Decision, record#2) ==
+  sig: () -> Codec(short_circuit_optional.Decision)
+  v0 = make_closure decision_to_json captures=[]
+  v1 = call_local decision_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn decision_to_json/1 origin=codec_template(RecordTrio, Decision, record#2) ==
+  sig: (short_circuit_optional.Decision) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"path": v1|>awlc.string_to_json}
+  return v2
+== fn decision_decoder/0 origin=codec_template(RecordTrio, Decision, record#2) ==
+  sig: () -> Decoder(short_circuit_optional.Decision)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn short_circuit_optional_input_codec/0 origin=codec_template(RecordTrio, ShortCircuitOptionalInput, record#3) ==
+  sig: () -> Codec(short_circuit_optional.ShortCircuitOptionalInput)
+  v0 = make_closure short_circuit_optional_input_to_json captures=[]
+  v1 = call_local short_circuit_optional_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn short_circuit_optional_input_to_json/1 origin=codec_template(RecordTrio, ShortCircuitOptionalInput, record#3) ==
+  sig: (short_circuit_optional.ShortCircuitOptionalInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"candidate": v1|>candidate_to_json}
+  return v2
+== fn short_circuit_optional_input_decoder/0 origin=codec_template(RecordTrio, ShortCircuitOptionalInput, record#3) ==
+  sig: () -> Decoder(short_circuit_optional.ShortCircuitOptionalInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn short_circuit_optional_outcome_codec/0 origin=codec_template(UnionTrio, ShortCircuitOptionalOutcome, union#4) ==
+  sig: () -> Codec(short_circuit_optional.ShortCircuitOptionalOutcome)
+  v0 = make_closure short_circuit_optional_outcome_to_json captures=[]
+  v1 = call_local short_circuit_optional_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn short_circuit_optional_outcome_to_json/1 origin=codec_template(UnionTrio, ShortCircuitOptionalOutcome, union#4) ==
+  sig: (short_circuit_optional.ShortCircuitOptionalOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn short_circuit_optional_outcome_decoder/0 origin=codec_template(UnionTrio, ShortCircuitOptionalOutcome, union#4) ==
+  sig: () -> Decoder(short_circuit_optional.ShortCircuitOptionalOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn step_decide/1 origin=region(decide) ==
+  sig: (short_circuit_optional.Candidate) -> Result(short_circuit_optional.ShortCircuitOptionalOutcome, AwlError)
+  v1 = field(v0, 1)
+  v2 = cmp Eq v1 'none'
+  if is_true v2:
+    v3 = record(decision, [lit#0])
+    v4 = record(accepted_outcome, [v3])
+    v5 = record(ok, [v4])
+    return v5
+  else:
+    v6 = assert_some v1
+    v7 = field(v6, 1)
+    if is_true v7:
+      v8 = record(decision, [lit#1])
+      v9 = record(accepted_outcome, [v8])
+      v10 = record(ok, [v9])
+      return v10
+    else:
+      v11 = record(decision, [lit#2])
+      v12 = record(accepted_outcome, [v11])
+      v13 = record(ok, [v12])
+      return v13

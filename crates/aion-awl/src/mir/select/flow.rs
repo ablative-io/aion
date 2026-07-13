@@ -5,11 +5,11 @@
 //! honest span-anchored `Unsupported` refusal (D-BC3).
 
 use crate::mir::runtime::RuntimeFn;
-use crate::mir::{FlowFn, FnRef, MirModule, Span, Stmt, Tail, ToJsonRef, Value};
+use crate::mir::{Block, FlowFn, FnRef, MirModule, Span, Stmt, Tail, Test, ToJsonRef, Value};
 
 use super::builder::Builder;
 use super::error::SelectError;
-use super::ir::{Body, JsonPair, Src, Step, TailKind, Via};
+use super::ir::{Body, BranchBlock, JsonPair, Src, Step, TailKind, TestKind, Via};
 
 pub(super) fn lower_flow(
     builder: &mut Builder<'_>,
@@ -23,21 +23,28 @@ pub(super) fn lower_flow(
     })?;
     let labels = Builder::fn_labels(reference);
 
-    let mut steps = Vec::with_capacity(flow.body.stmts.len());
-    for stmt in &flow.body.stmts {
-        steps.push(lower_stmt(builder, stmt)?);
-    }
-    let tail = lower_tail(builder, &flow.body.tail)?;
+    let body = lower_block(builder, &flow.body)?;
 
     Ok(Body {
         params: flow.params.clone(),
-        steps,
-        tail,
+        steps: body.steps,
+        tail: body.tail,
         name: name_atom,
         module: module_atom,
         arity,
         entry_label: labels.entry,
         code_label: labels.body,
+    })
+}
+
+fn lower_block(builder: &mut Builder<'_>, block: &Block) -> Result<BranchBlock, SelectError> {
+    let mut steps = Vec::with_capacity(block.stmts.len());
+    for stmt in &block.stmts {
+        steps.push(lower_stmt(builder, stmt)?);
+    }
+    Ok(BranchBlock {
+        steps,
+        tail: lower_tail(builder, &block.tail)?,
     })
 }
 
@@ -88,6 +95,11 @@ fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectErro
             base: require_var(base, "field access", *span)?,
             index: *index,
         }),
+        Stmt::AssertSome { dst, option, .. } => Ok(Step::AssertSome {
+            dst: *dst,
+            option: *option,
+            some_atom: builder.atom("some"),
+        }),
         Stmt::RecordNew { dst, tag, args, .. } => {
             let tag = builder.mir_atom(tag.0)?;
             let args = srcs(builder, args)?;
@@ -136,6 +148,28 @@ fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectErro
             ok_atom: builder.atom("ok"),
         }),
         Stmt::JsonObj { dst, pairs, .. } => lower_json_obj(builder, *dst, pairs),
+        Stmt::Cmp {
+            dst, op, lhs, rhs, ..
+        } => Ok(Step::Cmp {
+            dst: *dst,
+            op: *op,
+            lhs: src(builder, lhs)?,
+            rhs: src(builder, rhs)?,
+        }),
+        Stmt::BoolOp {
+            dst, op, lhs, rhs, ..
+        } => Ok(Step::BoolOp {
+            dst: *dst,
+            op: *op,
+            lhs: src(builder, lhs)?,
+            rhs: src(builder, rhs)?,
+        }),
+        Stmt::Not {
+            dst, src: value, ..
+        } => Ok(Step::Not {
+            dst: *dst,
+            src: src(builder, value)?,
+        }),
         other => Err(unsupported_stmt(other)),
     }
 }
@@ -210,9 +244,45 @@ fn lower_tail(builder: &mut Builder<'_>, tail: &Tail) -> Result<TailKind, Select
                 args: srcs(builder, args)?,
             })
         }
-        Tail::If { span, .. } => Err(SelectError::unsupported("if tail", *span)),
-        Tail::SelectEnum { span, .. } => Err(SelectError::unsupported("select_enum tail", *span)),
+        Tail::If {
+            test,
+            then_block,
+            else_block,
+            ..
+        } => Ok(TailKind::If {
+            test: lower_test(builder, test)?,
+            then_block: Box::new(lower_block(builder, then_block)?),
+            else_block: Box::new(lower_block(builder, else_block)?),
+        }),
+        Tail::SelectEnum { subject, arms, .. } => {
+            let subject = src(builder, subject)?;
+            let mut lowered = Vec::with_capacity(arms.len());
+            for (tag, block) in arms {
+                lowered.push((builder.mir_atom(tag.0)?, lower_block(builder, block)?));
+            }
+            Ok(TailKind::SelectEnum {
+                subject,
+                arms: lowered,
+            })
+        }
     }
+}
+
+fn lower_test(builder: &mut Builder<'_>, test: &Test) -> Result<TestKind, SelectError> {
+    Ok(match test {
+        Test::IsTrue(value) => TestKind::IsTrue(src(builder, value)?),
+        Test::Cmp { op, lhs, rhs } => TestKind::Cmp {
+            op: *op,
+            lhs: src(builder, lhs)?,
+            rhs: src(builder, rhs)?,
+        },
+        Test::IsTagged { value, tag, arity } => TestKind::IsTagged {
+            value: src(builder, value)?,
+            tag: builder.mir_atom(tag.0)?,
+            arity: *arity,
+        },
+        Test::Not(inner) => TestKind::Not(Box::new(lower_test(builder, inner)?)),
+    })
 }
 
 fn call_arity(callee: RuntimeFn) -> Result<u8, SelectError> {

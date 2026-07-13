@@ -1,0 +1,294 @@
+module predicates_and_operators source=predicates_and_operators.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_decide:
+    aion@activity:task_queue/2 [activities] (v2, lit#0)
+    aion@workflow:run/1 [activities] (v3)
+== durable families == activities
+== atoms ==
+  [0] candidate
+  [1] shipped
+  [2] held
+  [3] stamp_input
+  [4] predicates_and_operators_input
+  [5] shipped_outcome
+  [6] none
+  [7] awl_outcome_failure
+  [8] error
+  [9] ok
+== types ==
+  record Candidate tag=candidate
+    name: string
+    score: int
+    age_days: int
+    stale: bool
+    veto_note: nullable(string) optional
+  record Shipped tag=shipped
+    name: string
+  record Held tag=held
+    name: string
+    reason: string
+  record StampInput tag=stamp_input
+    name: string
+  record PredicatesAndOperatorsInput tag=predicates_and_operators_input
+    candidate: ref(Candidate)
+  union PredicatesAndOperatorsOutcome
+    shipped -> shipped_outcome(ref(Shipped))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=predicates_and_operators_input_codec output=predicates_and_operators_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(predicates_and_operators.PredicatesAndOperatorsInput, predicates_and_operators.PredicatesAndOperatorsOutcome, AwlError)
+  T-DEF name="predicates_and_operators" input=predicates_and_operators_input_codec output=predicates_and_operators_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (predicates_and_operators.PredicatesAndOperatorsInput) -> Result(predicates_and_operators.PredicatesAndOperatorsOutcome, AwlError)
+  T-EXEC fields=[candidate:predicates_and_operators.Candidate] entry=step_decide args=[0]
+== fn candidate_codec/0 origin=codec_template(RecordTrio, Candidate, record#0) ==
+  sig: () -> Codec(predicates_and_operators.Candidate)
+  v0 = make_closure candidate_to_json captures=[]
+  v1 = call_local candidate_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn candidate_to_json/1 origin=codec_template(RecordTrio, Candidate, record#0) ==
+  sig: (predicates_and_operators.Candidate) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = field(v0, 4)
+  v5 = field(v0, 5)
+  v6 = json_obj {"name": v1|>awlc.string_to_json, "score": v2|>awlc.int_to_json, "age_days": v3|>awlc.int_to_json, "stale": v4|>awlc.bool_to_json, "veto_note": v5|>awlc.nil_to_json}
+  return v6
+== fn candidate_decoder/0 origin=codec_template(RecordTrio, Candidate, record#0) ==
+  sig: () -> Decoder(predicates_and_operators.Candidate)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn shipped_codec/0 origin=codec_template(RecordTrio, Shipped, record#1) ==
+  sig: () -> Codec(predicates_and_operators.Shipped)
+  v0 = make_closure shipped_to_json captures=[]
+  v1 = call_local shipped_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn shipped_to_json/1 origin=codec_template(RecordTrio, Shipped, record#1) ==
+  sig: (predicates_and_operators.Shipped) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn shipped_decoder/0 origin=codec_template(RecordTrio, Shipped, record#1) ==
+  sig: () -> Decoder(predicates_and_operators.Shipped)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn held_codec/0 origin=codec_template(RecordTrio, Held, record#2) ==
+  sig: () -> Codec(predicates_and_operators.Held)
+  v0 = make_closure held_to_json captures=[]
+  v1 = call_local held_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn held_to_json/1 origin=codec_template(RecordTrio, Held, record#2) ==
+  sig: (predicates_and_operators.Held) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "reason": v2|>awlc.string_to_json}
+  return v3
+== fn held_decoder/0 origin=codec_template(RecordTrio, Held, record#2) ==
+  sig: () -> Decoder(predicates_and_operators.Held)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn stamp_input_codec/0 origin=codec_template(RecordTrio, StampInput, record#3) ==
+  sig: () -> Codec(predicates_and_operators.StampInput)
+  v0 = make_closure stamp_input_to_json captures=[]
+  v1 = call_local stamp_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn stamp_input_to_json/1 origin=codec_template(RecordTrio, StampInput, record#3) ==
+  sig: (predicates_and_operators.StampInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn stamp_input_decoder/0 origin=codec_template(RecordTrio, StampInput, record#3) ==
+  sig: () -> Decoder(predicates_and_operators.StampInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn predicates_and_operators_input_codec/0 origin=codec_template(RecordTrio, PredicatesAndOperatorsInput, record#4) ==
+  sig: () -> Codec(predicates_and_operators.PredicatesAndOperatorsInput)
+  v0 = make_closure predicates_and_operators_input_to_json captures=[]
+  v1 = call_local predicates_and_operators_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn predicates_and_operators_input_to_json/1 origin=codec_template(RecordTrio, PredicatesAndOperatorsInput, record#4) ==
+  sig: (predicates_and_operators.PredicatesAndOperatorsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"candidate": v1|>candidate_to_json}
+  return v2
+== fn predicates_and_operators_input_decoder/0 origin=codec_template(RecordTrio, PredicatesAndOperatorsInput, record#4) ==
+  sig: () -> Decoder(predicates_and_operators.PredicatesAndOperatorsInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn predicates_and_operators_outcome_codec/0 origin=codec_template(UnionTrio, PredicatesAndOperatorsOutcome, union#5) ==
+  sig: () -> Codec(predicates_and_operators.PredicatesAndOperatorsOutcome)
+  v0 = make_closure predicates_and_operators_outcome_to_json captures=[]
+  v1 = call_local predicates_and_operators_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn predicates_and_operators_outcome_to_json/1 origin=codec_template(UnionTrio, PredicatesAndOperatorsOutcome, union#5) ==
+  sig: (predicates_and_operators.PredicatesAndOperatorsOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn predicates_and_operators_outcome_decoder/0 origin=codec_template(UnionTrio, PredicatesAndOperatorsOutcome, union#5) ==
+  sig: () -> Decoder(predicates_and_operators.PredicatesAndOperatorsOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn stamp_activity/1 origin=activity_wrapper(stamp, raw=false) ==
+  sig: (String) -> Activity(predicates_and_operators.StampInput, predicates_and_operators.Shipped)
+  T-ACT action=stamp input_codec=stamp_input_codec return=shipped_codec
+== fn step_decide/1 origin=region(decide) ==
+  sig: (predicates_and_operators.Candidate) -> Result(predicates_and_operators.PredicatesAndOperatorsOutcome, AwlError)
+  v1 = field(v0, 1)
+  v2 = call_local stamp_activity(v1) live_after=[v0]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#0) live_after=[v0]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v0]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v0]
+  v6 = try_bind v5 live_after=[v0]
+  v8 = field(v0, 5)
+  v7 = cmp Ne v8 'none'
+  if is_true v7:
+    v9 = field(v0, 1)
+    v10 = record(held, [v9, lit#1])
+    v11 = call_local held_to_json(v10)
+    v12 = call_rt gleam@json:to_string/1(v11)
+    v13 = record(awl_outcome_failure, [lit#2, v12])
+    v14 = record(error, [v13])
+    return v14
+  else:
+    v16 = field(v0, 1)
+    v15 = cmp Eq v16 lit#3
+    if is_true v15:
+      v17 = field(v0, 1)
+      v18 = record(held, [v17, lit#4])
+      v19 = call_local held_to_json(v18)
+      v20 = call_rt gleam@json:to_string/1(v19)
+      v21 = record(awl_outcome_failure, [lit#5, v20])
+      v22 = record(error, [v21])
+      return v22
+    else:
+      v24 = field(v0, 2)
+      v23 = cmp Ge v24 100
+      if is_true v23:
+        v26 = field(v0, 5)
+        v25 = cmp Eq v26 'none'
+        if is_true v25:
+          v27 = field(v6, 1)
+          v28 = record(shipped, [v27])
+          v29 = record(shipped_outcome, [v28])
+          v30 = record(ok, [v29])
+          return v30
+        else:
+          v32 = field(v0, 2)
+          v31 = cmp Lt v32 80
+          if is_true v31:
+            v33 = field(v0, 1)
+            v34 = record(held, [v33, lit#6])
+            v35 = call_local held_to_json(v34)
+            v36 = call_rt gleam@json:to_string/1(v35)
+            v37 = record(awl_outcome_failure, [lit#7, v36])
+            v38 = record(error, [v37])
+            return v38
+          else:
+            v40 = field(v0, 3)
+            v39 = cmp Gt v40 30
+            if is_true v39:
+              v41 = field(v0, 1)
+              v42 = record(held, [v41, lit#8])
+              v43 = call_local held_to_json(v42)
+              v44 = call_rt gleam@json:to_string/1(v43)
+              v45 = record(awl_outcome_failure, [lit#9, v44])
+              v46 = record(error, [v45])
+              return v46
+            else:
+              v48 = field(v0, 3)
+              v47 = cmp Le v48 30
+              if is_true v47:
+                v49 = field(v0, 4)
+                if is_true v49:
+                  v50 = field(v0, 1)
+                  v51 = record(held, [v50, lit#10])
+                  v52 = call_local held_to_json(v51)
+                  v53 = call_rt gleam@json:to_string/1(v52)
+                  v54 = record(awl_outcome_failure, [lit#11, v53])
+                  v55 = record(error, [v54])
+                  return v55
+                else:
+                  v57 = field(v0, 2)
+                  v56 = cmp Ne v57 0
+                  if is_true v56:
+                    v58 = field(v6, 1)
+                    v59 = record(shipped, [v58])
+                    v60 = record(shipped_outcome, [v59])
+                    v61 = record(ok, [v60])
+                    return v61
+                  else:
+                    v62 = field(v0, 1)
+                    v63 = record(held, [v62, lit#12])
+                    v64 = call_local held_to_json(v63)
+                    v65 = call_rt gleam@json:to_string/1(v64)
+                    v66 = record(awl_outcome_failure, [lit#13, v65])
+                    v67 = record(error, [v66])
+                    return v67
+              else:
+                v68 = field(v0, 1)
+                v69 = record(held, [v68, lit#14])
+                v70 = call_local held_to_json(v69)
+                v71 = call_rt gleam@json:to_string/1(v70)
+                v72 = record(awl_outcome_failure, [lit#15, v71])
+                v73 = record(error, [v72])
+                return v73
+      else:
+        v75 = field(v0, 2)
+        v74 = cmp Lt v75 80
+        if is_true v74:
+          v76 = field(v0, 1)
+          v77 = record(held, [v76, lit#16])
+          v78 = call_local held_to_json(v77)
+          v79 = call_rt gleam@json:to_string/1(v78)
+          v80 = record(awl_outcome_failure, [lit#17, v79])
+          v81 = record(error, [v80])
+          return v81
+        else:
+          v83 = field(v0, 3)
+          v82 = cmp Gt v83 30
+          if is_true v82:
+            v84 = field(v0, 1)
+            v85 = record(held, [v84, lit#18])
+            v86 = call_local held_to_json(v85)
+            v87 = call_rt gleam@json:to_string/1(v86)
+            v88 = record(awl_outcome_failure, [lit#19, v87])
+            v89 = record(error, [v88])
+            return v89
+          else:
+            v91 = field(v0, 3)
+            v90 = cmp Le v91 30
+            if is_true v90:
+              v92 = field(v0, 4)
+              if is_true v92:
+                v93 = field(v0, 1)
+                v94 = record(held, [v93, lit#20])
+                v95 = call_local held_to_json(v94)
+                v96 = call_rt gleam@json:to_string/1(v95)
+                v97 = record(awl_outcome_failure, [lit#21, v96])
+                v98 = record(error, [v97])
+                return v98
+              else:
+                v100 = field(v0, 2)
+                v99 = cmp Ne v100 0
+                if is_true v99:
+                  v101 = field(v6, 1)
+                  v102 = record(shipped, [v101])
+                  v103 = record(shipped_outcome, [v102])
+                  v104 = record(ok, [v103])
+                  return v104
+                else:
+                  v105 = field(v0, 1)
+                  v106 = record(held, [v105, lit#22])
+                  v107 = call_local held_to_json(v106)
+                  v108 = call_rt gleam@json:to_string/1(v107)
+                  v109 = record(awl_outcome_failure, [lit#23, v108])
+                  v110 = record(error, [v109])
+                  return v110
+            else:
+              v111 = field(v0, 1)
+              v112 = record(held, [v111, lit#24])
+              v113 = call_local held_to_json(v112)
+              v114 = call_rt gleam@json:to_string/1(v113)
+              v115 = record(awl_outcome_failure, [lit#25, v114])
+              v116 = record(error, [v115])
+              return v116
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

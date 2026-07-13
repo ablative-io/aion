@@ -23,6 +23,7 @@ use super::chain::chain_params;
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_arg_for, lower_expr};
+use super::outcome::lower_outcomes;
 
 /// The fall-through continuation of a non-terminal chain step: the successor's
 /// function ref and parameter names.
@@ -38,8 +39,23 @@ pub(super) fn lower_regions(
     plan: &FnPlan,
     functions: &mut Vec<MirFn>,
 ) -> Result<(), LowerError> {
+    let mut retired_outcome_anchor = None;
     for region_index in 0..ctx.plan.regions.len() {
-        lower_region(ctx, plan, region_index, functions)?;
+        let outcome_anchor = ctx.plan.regions[region_index]
+            .layers
+            .iter()
+            .flatten()
+            .find_map(|step_index| {
+                let step = &ctx.emitter.document.steps[*step_index];
+                (!step.outcomes.is_empty()).then_some(step.name_span)
+            });
+        if let Err(error) = lower_region(ctx, plan, region_index, functions) {
+            return Err(match retired_outcome_anchor {
+                Some(anchor) => error.reanchor_unsupported(anchor),
+                None => error,
+            });
+        }
+        retired_outcome_anchor = retired_outcome_anchor.or(outcome_anchor);
     }
     Ok(())
 }
@@ -160,7 +176,13 @@ fn lower_step(
         }
     }
     if !step.outcomes.is_empty() {
-        return Err(LowerError::unsupported("outcome clauses", step.name_span));
+        let outcome = lower_outcomes(ctx, plan, &step.outcomes, scope)
+            .map_err(|error| error.reanchor_unsupported(step.name_span))?;
+        stmts.extend(outcome.stmts);
+        return Ok(Block {
+            stmts,
+            tail: outcome.tail,
+        });
     }
     // Fall-through: hand the chain-boundary live set to the successor as a
     // tail call (IR-14).
@@ -322,7 +344,7 @@ fn field_index(
     ))
 }
 
-fn route_tail(
+pub(super) fn route_tail(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     target: &RouteTarget,

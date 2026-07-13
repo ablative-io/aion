@@ -19,6 +19,8 @@ mod ir;
 mod shells;
 
 #[cfg(test)]
+mod control_tests;
+#[cfg(test)]
 mod tests;
 
 pub use error::SelectError;

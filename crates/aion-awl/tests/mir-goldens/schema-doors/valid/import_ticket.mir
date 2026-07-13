@@ -1,0 +1,150 @@
+module import_ticket source=import_ticket.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_triage:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] ticket
+  [1] triaged
+  [2] dropped
+  [3] assign_input
+  [4] import_ticket_input
+  [5] triaged_outcome
+  [6] none
+  [7] ok
+  [8] awl_outcome_failure
+  [9] error
+== types ==
+  record Ticket tag=ticket
+    assignee: nullable(string) optional
+    title: string
+  record Triaged tag=triaged
+    title: string
+    assignee: string
+  record Dropped tag=dropped
+    reason: string
+  record AssignInput tag=assign_input
+    ticket: ref(Ticket)
+  record ImportTicketInput tag=import_ticket_input
+    ticket: ref(Ticket)
+  union ImportTicketOutcome
+    triaged -> triaged_outcome(ref(Triaged))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=import_ticket_input_codec output=import_ticket_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(import_ticket.ImportTicketInput, import_ticket.ImportTicketOutcome, AwlError)
+  T-DEF name="import_ticket" input=import_ticket_input_codec output=import_ticket_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (import_ticket.ImportTicketInput) -> Result(import_ticket.ImportTicketOutcome, AwlError)
+  T-EXEC fields=[ticket:import_ticket.Ticket] entry=step_triage args=[0]
+== fn ticket_codec/0 origin=codec_template(RecordTrio, Ticket, record#0) ==
+  sig: () -> Codec(import_ticket.Ticket)
+  v0 = make_closure ticket_to_json captures=[]
+  v1 = call_local ticket_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ticket_to_json/1 origin=codec_template(RecordTrio, Ticket, record#0) ==
+  sig: (import_ticket.Ticket) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"assignee": v1|>awlc.nil_to_json, "title": v2|>awlc.string_to_json}
+  return v3
+== fn ticket_decoder/0 origin=codec_template(RecordTrio, Ticket, record#0) ==
+  sig: () -> Decoder(import_ticket.Ticket)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn triaged_codec/0 origin=codec_template(RecordTrio, Triaged, record#1) ==
+  sig: () -> Codec(import_ticket.Triaged)
+  v0 = make_closure triaged_to_json captures=[]
+  v1 = call_local triaged_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn triaged_to_json/1 origin=codec_template(RecordTrio, Triaged, record#1) ==
+  sig: (import_ticket.Triaged) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"title": v1|>awlc.string_to_json, "assignee": v2|>awlc.string_to_json}
+  return v3
+== fn triaged_decoder/0 origin=codec_template(RecordTrio, Triaged, record#1) ==
+  sig: () -> Decoder(import_ticket.Triaged)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn dropped_codec/0 origin=codec_template(RecordTrio, Dropped, record#2) ==
+  sig: () -> Codec(import_ticket.Dropped)
+  v0 = make_closure dropped_to_json captures=[]
+  v1 = call_local dropped_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn dropped_to_json/1 origin=codec_template(RecordTrio, Dropped, record#2) ==
+  sig: (import_ticket.Dropped) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn dropped_decoder/0 origin=codec_template(RecordTrio, Dropped, record#2) ==
+  sig: () -> Decoder(import_ticket.Dropped)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn assign_input_codec/0 origin=codec_template(RecordTrio, AssignInput, record#3) ==
+  sig: () -> Codec(import_ticket.AssignInput)
+  v0 = make_closure assign_input_to_json captures=[]
+  v1 = call_local assign_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn assign_input_to_json/1 origin=codec_template(RecordTrio, AssignInput, record#3) ==
+  sig: (import_ticket.AssignInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"ticket": v1|>ticket_to_json}
+  return v2
+== fn assign_input_decoder/0 origin=codec_template(RecordTrio, AssignInput, record#3) ==
+  sig: () -> Decoder(import_ticket.AssignInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn import_ticket_input_codec/0 origin=codec_template(RecordTrio, ImportTicketInput, record#4) ==
+  sig: () -> Codec(import_ticket.ImportTicketInput)
+  v0 = make_closure import_ticket_input_to_json captures=[]
+  v1 = call_local import_ticket_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn import_ticket_input_to_json/1 origin=codec_template(RecordTrio, ImportTicketInput, record#4) ==
+  sig: (import_ticket.ImportTicketInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"ticket": v1|>ticket_to_json}
+  return v2
+== fn import_ticket_input_decoder/0 origin=codec_template(RecordTrio, ImportTicketInput, record#4) ==
+  sig: () -> Decoder(import_ticket.ImportTicketInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn import_ticket_outcome_codec/0 origin=codec_template(UnionTrio, ImportTicketOutcome, union#5) ==
+  sig: () -> Codec(import_ticket.ImportTicketOutcome)
+  v0 = make_closure import_ticket_outcome_to_json captures=[]
+  v1 = call_local import_ticket_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn import_ticket_outcome_to_json/1 origin=codec_template(UnionTrio, ImportTicketOutcome, union#5) ==
+  sig: (import_ticket.ImportTicketOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn import_ticket_outcome_decoder/0 origin=codec_template(UnionTrio, ImportTicketOutcome, union#5) ==
+  sig: () -> Decoder(import_ticket.ImportTicketOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn assign_activity/1 origin=activity_wrapper(assign, raw=false) ==
+  sig: (import_ticket.Ticket) -> Activity(import_ticket.AssignInput, import_ticket.Triaged)
+  T-ACT action=assign input_codec=assign_input_codec return=triaged_codec
+== fn step_triage/1 origin=region(triage) ==
+  sig: (import_ticket.Ticket) -> Result(import_ticket.ImportTicketOutcome, AwlError)
+  v1 = call_local assign_activity(v0) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0) live_after=[v0]
+  v3 = call_rt aion@workflow:run/1(v2) live_after=[v0]
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3) live_after=[v0]
+  v5 = try_bind v4 live_after=[v0]
+  v6 = field(v0, 1)
+  v7 = cmp Ne v6 'none'
+  if is_true v7:
+    v8 = assert_some v6
+    v9 = field(v5, 1)
+    v10 = record(triaged, [v9, v8])
+    v11 = record(triaged_outcome, [v10])
+    v12 = record(ok, [v11])
+    return v12
+  else:
+    v13 = record(dropped, [lit#1])
+    v14 = call_local dropped_to_json(v13)
+    v15 = call_rt gleam@json:to_string/1(v14)
+    v16 = record(awl_outcome_failure, [lit#2, v15])
+    v17 = record(error, [v16])
+    return v17
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

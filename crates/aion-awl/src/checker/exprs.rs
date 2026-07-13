@@ -275,14 +275,42 @@ fn type_binary(
             } else {
                 "or"
             };
-            for side in [left, right] {
-                let ty = type_of(w, view, side);
-                if !is_bool(&ty, w) {
-                    w.err(
-                        side.span(),
-                        format!("`{word}` needs Bool operands, found {ty}"),
-                    );
+            let left_ty = type_of(w, view, left);
+            if !is_bool(&left_ty, w) {
+                w.err(
+                    left.span(),
+                    format!("`{word}` needs Bool operands, found {left_ty}"),
+                );
+            }
+            let narrowed_kind = match op {
+                BinaryOp::And => PredicateKind::Present,
+                BinaryOp::Or => PredicateKind::Absent,
+                _ => unreachable!(),
+            };
+            let narrow = match left {
+                Expr::Predicate { subject, kind, .. } if *kind == narrowed_kind => {
+                    match subject.as_ref() {
+                        Expr::Ref { name, .. } => view.get(name).and_then(|ty| {
+                            let Ty::Optional(inner) = resolve(&ty, &w.ctx.types) else {
+                                return None;
+                            };
+                            Some((name.clone(), inner.as_ref().clone()))
+                        }),
+                        _ => None,
+                    }
                 }
+                _ => None,
+            };
+            let right_view = View {
+                vars: view.vars,
+                narrow: narrow.as_ref().or(view.narrow),
+            };
+            let right_ty = type_of(w, right_view, right);
+            if !is_bool(&right_ty, w) {
+                w.err(
+                    right.span(),
+                    format!("`{word}` needs Bool operands, found {right_ty}"),
+                );
             }
             Ty::Bool
         }

@@ -39,6 +39,17 @@ impl LowerError {
             span,
         }
     }
+
+    /// Preserve the retired refusal's source anchor while narrowing its shape.
+    pub(super) fn reanchor_unsupported(self, anchor: crate::Span) -> Self {
+        match self {
+            Self::Unsupported { shape, .. } => Self::Unsupported {
+                shape,
+                span: anchor,
+            },
+            other => other,
+        }
+    }
 }
 
 impl fmt::Display for LowerError {

@@ -6,7 +6,7 @@
 
 use beamr::atom::Atom;
 
-use crate::mir::Var;
+use crate::mir::{BoolBin, CmpOp, Var};
 
 /// A resolved value source (no registers — the emitter assigns X/Y).
 #[derive(Debug, Clone)]
@@ -44,6 +44,14 @@ pub(super) enum Step {
     /// `get_tuple_element base, index -> dst` (index is the BEAM element index,
     /// tag at 0 — the MIR already stores element indices, not 0-based ordinals).
     FieldGet { dst: Var, base: Var, index: u16 },
+    /// Prove an option is `{some, Payload}` and extract its payload. The
+    /// failure edge is an explicit `case_end` trap rather than an unchecked
+    /// tuple-element read.
+    AssertSome {
+        dst: Var,
+        option: Var,
+        some_atom: Atom,
+    },
     /// `put_tuple2 dst, [tag, args...]`; zero args ⇒ bare tag atom `move`.
     Record { dst: Var, tag: Atom, args: Vec<Src> },
     /// `put_list` chain from nil.
@@ -82,6 +90,36 @@ pub(super) enum Step {
         pairs: Vec<JsonPair>,
         object_import: usize,
     },
+    /// A value-producing comparison burst with explicit true/false labels.
+    Cmp {
+        dst: Var,
+        op: CmpOp,
+        lhs: Src,
+        rhs: Src,
+    },
+    /// A value-producing boolean binary burst.
+    BoolOp {
+        dst: Var,
+        op: BoolBin,
+        lhs: Src,
+        rhs: Src,
+    },
+    /// A value-producing boolean negation burst.
+    Not { dst: Var, src: Src },
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum TestKind {
+    IsTrue(Src),
+    Cmp { op: CmpOp, lhs: Src, rhs: Src },
+    IsTagged { value: Src, tag: Atom, arity: u16 },
+    Not(Box<TestKind>),
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct BranchBlock {
+    pub(super) steps: Vec<Step>,
+    pub(super) tail: TailKind,
 }
 
 /// The block terminator.
@@ -99,6 +137,15 @@ pub(super) enum TailKind {
         label: u32,
         arity: u8,
         args: Vec<Src>,
+    },
+    If {
+        test: TestKind,
+        then_block: Box<BranchBlock>,
+        else_block: Box<BranchBlock>,
+    },
+    SelectEnum {
+        subject: Src,
+        arms: Vec<(Atom, BranchBlock)>,
     },
 }
 

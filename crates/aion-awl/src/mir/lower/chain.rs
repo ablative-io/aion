@@ -5,14 +5,18 @@
 //! straight-line chain — refs/defs collection mirrors the reference
 //! (`emitter/liveness.rs` `collect_into`/`collect_route`), and a route to
 //! another region contributes that region's `region_params` exactly as the
-//! fixed point's `params(callee) − defs` term does. Statement forms outside
+//! fixed point's `params(callee) − defs` term does. The shared collector cannot
+//! be consumed directly here: it intentionally aggregates an entire region
+//! into one graph node, while chain splitting needs a live-in set at every
+//! interior step boundary. Exposing those folds would widen the planner API and
+//! still require the chain-specific backward walk. Statement forms outside
 //! the covered subset (forks, loops, substeps) collect nothing here — their
 //! statements refuse during body lowering, so no module carrying them ever
 //! materializes.
 
 use std::collections::BTreeSet;
 
-use crate::ast::{Expr, PipeEnd, PipeStage, RouteTarget, Statement, Step};
+use crate::ast::{Expr, Guard, PipeEnd, PipeStage, RouteTarget, Statement, Step};
 use crate::emitter::{Emitter, Plan, expr_refs};
 
 /// Per-position parameter names for a sequential chain, in chain order. The
@@ -87,6 +91,12 @@ fn step_live_in(emitter: &Emitter<'_>, plan: &Plan, step: &Step, live: &mut BTre
             | Statement::Loop(_)
             | Statement::SubStep(_) => {}
         }
+    }
+    for clause in &step.outcomes {
+        if let Guard::When { expr, .. } = &clause.guard {
+            add_expr(expr, &defs, &mut refs);
+        }
+        route_refs(emitter, plan, &clause.route, &defs, &mut refs, true);
     }
     for def in &defs {
         live.remove(def);

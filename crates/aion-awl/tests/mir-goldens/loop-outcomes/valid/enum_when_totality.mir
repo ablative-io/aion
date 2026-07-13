@@ -1,0 +1,155 @@
+module triage_ticket source=triage_ticket.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_classify:
+    aion@activity:timeout/2 [activities] (v1, v2)
+    aion@activity:task_queue/2 [activities] (v3, lit#0)
+    aion@activity:node/2 [activities] (v4, lit#1)
+    aion@workflow:run/1 [activities] (v5)
+== durable families == activities
+== atoms ==
+  [0] urgent
+  [1] routine
+  [2] spam
+  [3] triage
+  [4] dispatched
+  [5] classify_input
+  [6] triage_ticket_input
+  [7] dispatched_outcome
+  [8] ok
+== types ==
+  enum Category
+    urgent = "Urgent"
+    routine = "Routine"
+    spam = "Spam"
+  record Triage tag=triage
+    category: ref(Category)
+    note: string
+  record Dispatched tag=dispatched
+    lane: string
+  record ClassifyInput tag=classify_input
+    ticket: string
+  record TriageTicketInput tag=triage_ticket_input
+    ticket: string
+  union TriageTicketOutcome
+    dispatched -> dispatched_outcome(ref(Dispatched))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=triage_ticket_input_codec output=triage_ticket_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(triage_ticket.TriageTicketInput, triage_ticket.TriageTicketOutcome, AwlError)
+  T-DEF name="triage_ticket" input=triage_ticket_input_codec output=triage_ticket_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (triage_ticket.TriageTicketInput) -> Result(triage_ticket.TriageTicketOutcome, AwlError)
+  T-EXEC fields=[ticket:String] entry=step_classify args=[0]
+== fn category_codec/0 origin=codec_template(EnumTrio, Category, enum#0) ==
+  sig: () -> Codec(triage_ticket.Category)
+  v0 = make_closure category_to_json captures=[]
+  v1 = call_local category_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn category_to_json/1 origin=codec_template(EnumTrio, Category, enum#0) ==
+  sig: (triage_ticket.Category) -> Json
+  v1 = json_obj {}
+  return v1
+== fn category_decoder/0 origin=codec_template(EnumTrio, Category, enum#0) ==
+  sig: () -> Decoder(triage_ticket.Category)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn triage_codec/0 origin=codec_template(RecordTrio, Triage, record#1) ==
+  sig: () -> Codec(triage_ticket.Triage)
+  v0 = make_closure triage_to_json captures=[]
+  v1 = call_local triage_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn triage_to_json/1 origin=codec_template(RecordTrio, Triage, record#1) ==
+  sig: (triage_ticket.Triage) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"category": v1|>category_to_json, "note": v2|>awlc.string_to_json}
+  return v3
+== fn triage_decoder/0 origin=codec_template(RecordTrio, Triage, record#1) ==
+  sig: () -> Decoder(triage_ticket.Triage)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn dispatched_codec/0 origin=codec_template(RecordTrio, Dispatched, record#2) ==
+  sig: () -> Codec(triage_ticket.Dispatched)
+  v0 = make_closure dispatched_to_json captures=[]
+  v1 = call_local dispatched_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn dispatched_to_json/1 origin=codec_template(RecordTrio, Dispatched, record#2) ==
+  sig: (triage_ticket.Dispatched) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"lane": v1|>awlc.string_to_json}
+  return v2
+== fn dispatched_decoder/0 origin=codec_template(RecordTrio, Dispatched, record#2) ==
+  sig: () -> Decoder(triage_ticket.Dispatched)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn classify_input_codec/0 origin=codec_template(RecordTrio, ClassifyInput, record#3) ==
+  sig: () -> Codec(triage_ticket.ClassifyInput)
+  v0 = make_closure classify_input_to_json captures=[]
+  v1 = call_local classify_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn classify_input_to_json/1 origin=codec_template(RecordTrio, ClassifyInput, record#3) ==
+  sig: (triage_ticket.ClassifyInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"ticket": v1|>awlc.string_to_json}
+  return v2
+== fn classify_input_decoder/0 origin=codec_template(RecordTrio, ClassifyInput, record#3) ==
+  sig: () -> Decoder(triage_ticket.ClassifyInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn triage_ticket_input_codec/0 origin=codec_template(RecordTrio, TriageTicketInput, record#4) ==
+  sig: () -> Codec(triage_ticket.TriageTicketInput)
+  v0 = make_closure triage_ticket_input_to_json captures=[]
+  v1 = call_local triage_ticket_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn triage_ticket_input_to_json/1 origin=codec_template(RecordTrio, TriageTicketInput, record#4) ==
+  sig: (triage_ticket.TriageTicketInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"ticket": v1|>awlc.string_to_json}
+  return v2
+== fn triage_ticket_input_decoder/0 origin=codec_template(RecordTrio, TriageTicketInput, record#4) ==
+  sig: () -> Decoder(triage_ticket.TriageTicketInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn triage_ticket_outcome_codec/0 origin=codec_template(UnionTrio, TriageTicketOutcome, union#5) ==
+  sig: () -> Codec(triage_ticket.TriageTicketOutcome)
+  v0 = make_closure triage_ticket_outcome_to_json captures=[]
+  v1 = call_local triage_ticket_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn triage_ticket_outcome_to_json/1 origin=codec_template(UnionTrio, TriageTicketOutcome, union#5) ==
+  sig: (triage_ticket.TriageTicketOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn triage_ticket_outcome_decoder/0 origin=codec_template(UnionTrio, TriageTicketOutcome, union#5) ==
+  sig: () -> Decoder(triage_ticket.TriageTicketOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn classify_activity/1 origin=activity_wrapper(classify, raw=false) ==
+  sig: (String) -> Activity(triage_ticket.ClassifyInput, triage_ticket.Triage)
+  T-ACT action=classify input_codec=classify_input_codec return=triage_codec
+== fn step_classify/1 origin=region(classify) ==
+  sig: (String) -> Result(triage_ticket.TriageTicketOutcome, AwlError)
+  v1 = call_local classify_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1]
+  v3 = call_rt aion@activity:timeout/2(v1, v2)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#0)
+  v5 = call_rt aion@activity:node/2(v4, lit#1)
+  v6 = call_rt aion@workflow:run/1(v5)
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6)
+  v8 = try_bind v7
+  v9 = field(v8, 1)
+  select v9 {
+    urgent ->
+      v10 = record(dispatched, [lit#2])
+      v11 = record(dispatched_outcome, [v10])
+      v12 = record(ok, [v11])
+      return v12
+    routine ->
+      v13 = record(dispatched, [lit#3])
+      v14 = record(dispatched_outcome, [v13])
+      v15 = record(ok, [v14])
+      return v15
+    spam ->
+      v16 = record(dispatched, [lit#4])
+      v17 = record(dispatched_outcome, [v16])
+      v18 = record(ok, [v17])
+      return v18
+  }
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

@@ -1,15 +1,15 @@
 //! Keel-expression lowering for the BC-2 covered subset: refs, field access,
-//! literals, variants, and record construction (`exprs.rs`). Deferred forms
-//! (index, binary/compare, boolean ops, predicates, lists, combinators) return
+//! literals, variants, record construction, and the boolean/comparison forms
+//! used by outcome guards (`exprs.rs`). Deferred forms return an explicit
 //! `LowerError::unsupported` — visible incompleteness, never silent drift.
 
 use std::collections::BTreeMap;
 
-use crate::ast::{Arg, Expr};
+use crate::ast::{Arg, BinaryOp, Expr, PredicateKind};
 use crate::emitter::{GType, snake};
 
 use super::super::ids::{Span, Var};
-use super::super::ops::{Stmt, Value};
+use super::super::ops::{BoolBin, CmpOp, Stmt, Value};
 use super::ctx::Ctx;
 use super::driver::LowerError;
 
@@ -88,7 +88,102 @@ pub(super) fn lower_expr(
             args,
             span,
         } => lower_record(ctx, name, *name_span, args, scope, stmts, *span),
+        Expr::Not { .. } | Expr::Binary { .. } | Expr::Predicate { .. } => {
+            lower_logic(ctx, expr, scope, stmts)
+        }
         other => Err(LowerError::unsupported("expression", expr_span(other))),
+    }
+}
+
+fn lower_logic(
+    ctx: &mut Ctx<'_>,
+    expr: &Expr,
+    scope: &Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(Value, GType), LowerError> {
+    let dst = ctx.fresh_var();
+    match expr {
+        Expr::Not { expr, span } => {
+            let (src, _) = lower_expr(ctx, expr, scope, stmts)?;
+            stmts.push(Stmt::Not {
+                dst,
+                src,
+                span: span_of(*span),
+            });
+        }
+        Expr::Binary {
+            left,
+            op,
+            right,
+            span,
+        } => {
+            let (lhs, lhs_ty) = lower_expr(ctx, left, scope, stmts)?;
+            let (rhs, _) = lower_expr(ctx, right, scope, stmts)?;
+            match op {
+                BinaryOp::And | BinaryOp::Or => stmts.push(Stmt::BoolOp {
+                    dst,
+                    op: if matches!(op, BinaryOp::And) {
+                        BoolBin::And
+                    } else {
+                        BoolBin::Or
+                    },
+                    lhs,
+                    rhs,
+                    span: span_of(*span),
+                }),
+                BinaryOp::Concat => {
+                    return Err(LowerError::unsupported("string concatenation", *span));
+                }
+                comparison => stmts.push(Stmt::Cmp {
+                    dst,
+                    op: cmp_op(*comparison, &lhs_ty),
+                    lhs,
+                    rhs,
+                    span: span_of(*span),
+                }),
+            }
+        }
+        Expr::Predicate {
+            subject,
+            kind,
+            span,
+        } => {
+            let (lhs, _) = lower_expr(ctx, subject, scope, stmts)?;
+            let rhs = match kind {
+                PredicateKind::Empty => Value::Nil,
+                PredicateKind::Present | PredicateKind::Absent => Value::Atom(ctx.atom("none")),
+            };
+            stmts.push(Stmt::Cmp {
+                dst,
+                op: if matches!(kind, PredicateKind::Present) {
+                    CmpOp::Ne
+                } else {
+                    CmpOp::Eq
+                },
+                lhs,
+                rhs,
+                span: span_of(*span),
+            });
+        }
+        _ => unreachable!("lower_logic called for a non-logical expression"),
+    }
+    Ok((Value::Var(dst), GType::Bool))
+}
+
+fn cmp_op(op: BinaryOp, lhs_ty: &GType) -> CmpOp {
+    let float = matches!(lhs_ty, GType::Float);
+    match (op, float) {
+        (BinaryOp::Eq, _) => CmpOp::Eq,
+        (BinaryOp::Ne, _) => CmpOp::Ne,
+        (BinaryOp::Lt, false) => CmpOp::Lt,
+        (BinaryOp::Le, false) => CmpOp::Le,
+        (BinaryOp::Gt, false) => CmpOp::Gt,
+        (BinaryOp::Ge, false) => CmpOp::Ge,
+        (BinaryOp::Lt, true) => CmpOp::FLt,
+        (BinaryOp::Le, true) => CmpOp::FLe,
+        (BinaryOp::Gt, true) => CmpOp::FGt,
+        (BinaryOp::Ge, true) => CmpOp::FGe,
+        (BinaryOp::And | BinaryOp::Or | BinaryOp::Concat, _) => unreachable!(),
     }
 }
 

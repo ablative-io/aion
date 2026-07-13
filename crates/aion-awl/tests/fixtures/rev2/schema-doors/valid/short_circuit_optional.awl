@@ -1,0 +1,21 @@
+//! Skip an unsafe optional field read when the left guard already decides.
+workflow short_circuit_optional
+  input candidate: Candidate
+  outcome accepted: type Decision, route success
+
+/// A candidate whose review detail may not exist.
+type Candidate { detail: Detail? }
+
+/// Optional review detail.
+type Detail { approved: Bool }
+
+/// The selected decision path.
+type Decision { path: String }
+
+step decide
+  candidate |> .detail -> detail
+
+  outcome absent_or_approved: when detail is absent or detail.approved,
+    route accepted(path: "short-circuit")
+  outcome rejected: otherwise,
+    route accepted(path: "fallback")

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::ast::{Arg, BinaryOp, Expr, PredicateKind};
+use crate::spanned::Spanned;
 use crate::{DurationUnit, Span};
 
 use super::context::Emitter;
@@ -194,6 +195,36 @@ pub(super) fn render_expr(
         Expr::Binary {
             left, op, right, ..
         } => {
+            if let Some((name, none_result)) = optional_short_circuit(left, *op) {
+                let option_ty = scope.get(name).ok_or_else(|| {
+                    EmitError::new(left.span(), format!("`{name}` is not in scope"))
+                })?;
+                let GType::Option(inner) = emitter.env.resolve(option_ty) else {
+                    return Err(EmitError::new(
+                        left.span(),
+                        format!("`{name}` is not optional"),
+                    ));
+                };
+                let mut rhs_scope = scope.clone();
+                rhs_scope.insert(name.to_owned(), *inner);
+                let mut rhs_prelude = Vec::new();
+                let rhs = render_expr(emitter, right, &rhs_scope, &mut rhs_prelude)?;
+                let name = ident(name);
+                let mut some_branch = String::new();
+                if rhs_prelude.is_empty() {
+                    some_branch.push_str(&rhs);
+                } else {
+                    some_branch.push_str("{\n");
+                    for line in rhs_prelude {
+                        let _ = writeln!(some_branch, "    {line}");
+                    }
+                    let _ = write!(some_branch, "    {rhs}\n  }}");
+                }
+                return Ok(format!(
+                    "case {name} {{\n  Some({name}) -> {some_branch}\n  None -> {}\n}}",
+                    if none_result { "True" } else { "False" }
+                ));
+            }
             let symbol = operator_for(emitter, *op, left, right, scope);
             let left = render_parenthesized(emitter, left, scope, prelude)?;
             let right = render_parenthesized(emitter, right, scope, prelude)?;
@@ -211,6 +242,23 @@ pub(super) fn render_expr(
             })
         }
     }
+}
+
+/// Recognize the optional predicates whose short-circuit edge proves the RHS
+/// binding is present. The returned boolean is the result for `None`.
+fn optional_short_circuit(left: &Expr, op: BinaryOp) -> Option<(&str, bool)> {
+    let expected = match op {
+        BinaryOp::And => PredicateKind::Present,
+        BinaryOp::Or => PredicateKind::Absent,
+        _ => return None,
+    };
+    let Expr::Predicate { subject, kind, .. } = left else {
+        return None;
+    };
+    let Expr::Ref { name, .. } = subject.as_ref() else {
+        return None;
+    };
+    (*kind == expected).then_some((name, matches!(op, BinaryOp::Or)))
 }
 
 fn render_parenthesized(

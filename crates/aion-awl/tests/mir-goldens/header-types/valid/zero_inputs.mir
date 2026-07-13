@@ -1,0 +1,125 @@
+module fixed_ping source=fixed_ping.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_ping_localhost:
+    aion@activity:task_queue/2 [activities] (v0, lit#1)
+    aion@workflow:run/1 [activities] (v1)
+== durable families == activities
+== atoms ==
+  [0] ack
+  [1] fault
+  [2] ping_input
+  [3] fixed_ping_input
+  [4] reachable_outcome
+  [5] ok
+  [6] awl_outcome_failure
+  [7] error
+== types ==
+  record Ack tag=ack
+    delivered: bool
+  record Fault tag=fault
+    reason: string
+  record PingInput tag=ping_input
+    host: string
+  record FixedPingInput tag=fixed_ping_input
+  union FixedPingOutcome
+    reachable -> reachable_outcome(ref(Ack))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fixed_ping_input_codec output=fixed_ping_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fixed_ping.FixedPingInput, fixed_ping.FixedPingOutcome, AwlError)
+  T-DEF name="fixed_ping" input=fixed_ping_input_codec output=fixed_ping_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fixed_ping.FixedPingInput) -> Result(fixed_ping.FixedPingOutcome, AwlError)
+  T-EXEC fields=[] entry=step_ping_localhost args=[]
+== fn ack_codec/0 origin=codec_template(RecordTrio, Ack, record#0) ==
+  sig: () -> Codec(fixed_ping.Ack)
+  v0 = make_closure ack_to_json captures=[]
+  v1 = call_local ack_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ack_to_json/1 origin=codec_template(RecordTrio, Ack, record#0) ==
+  sig: (fixed_ping.Ack) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"delivered": v1|>awlc.bool_to_json}
+  return v2
+== fn ack_decoder/0 origin=codec_template(RecordTrio, Ack, record#0) ==
+  sig: () -> Decoder(fixed_ping.Ack)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fault_codec/0 origin=codec_template(RecordTrio, Fault, record#1) ==
+  sig: () -> Codec(fixed_ping.Fault)
+  v0 = make_closure fault_to_json captures=[]
+  v1 = call_local fault_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fault_to_json/1 origin=codec_template(RecordTrio, Fault, record#1) ==
+  sig: (fixed_ping.Fault) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn fault_decoder/0 origin=codec_template(RecordTrio, Fault, record#1) ==
+  sig: () -> Decoder(fixed_ping.Fault)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn ping_input_codec/0 origin=codec_template(RecordTrio, PingInput, record#2) ==
+  sig: () -> Codec(fixed_ping.PingInput)
+  v0 = make_closure ping_input_to_json captures=[]
+  v1 = call_local ping_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ping_input_to_json/1 origin=codec_template(RecordTrio, PingInput, record#2) ==
+  sig: (fixed_ping.PingInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"host": v1|>awlc.string_to_json}
+  return v2
+== fn ping_input_decoder/0 origin=codec_template(RecordTrio, PingInput, record#2) ==
+  sig: () -> Decoder(fixed_ping.PingInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fixed_ping_input_codec/0 origin=codec_template(RecordTrio, FixedPingInput, record#3) ==
+  sig: () -> Codec(fixed_ping.FixedPingInput)
+  v0 = make_closure fixed_ping_input_to_json captures=[]
+  v1 = call_local fixed_ping_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fixed_ping_input_to_json/1 origin=codec_template(RecordTrio, FixedPingInput, record#3) ==
+  sig: (fixed_ping.FixedPingInput) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fixed_ping_input_decoder/0 origin=codec_template(RecordTrio, FixedPingInput, record#3) ==
+  sig: () -> Decoder(fixed_ping.FixedPingInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fixed_ping_outcome_codec/0 origin=codec_template(UnionTrio, FixedPingOutcome, union#4) ==
+  sig: () -> Codec(fixed_ping.FixedPingOutcome)
+  v0 = make_closure fixed_ping_outcome_to_json captures=[]
+  v1 = call_local fixed_ping_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fixed_ping_outcome_to_json/1 origin=codec_template(UnionTrio, FixedPingOutcome, union#4) ==
+  sig: (fixed_ping.FixedPingOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fixed_ping_outcome_decoder/0 origin=codec_template(UnionTrio, FixedPingOutcome, union#4) ==
+  sig: () -> Decoder(fixed_ping.FixedPingOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn ping_activity/1 origin=activity_wrapper(ping, raw=false) ==
+  sig: (String) -> Activity(fixed_ping.PingInput, fixed_ping.Ack)
+  T-ACT action=ping input_codec=ping_input_codec return=ack_codec
+== fn step_ping_localhost/0 origin=region(ping_localhost) ==
+  sig: () -> Result(fixed_ping.FixedPingOutcome, AwlError)
+  v0 = call_local ping_activity(lit#0)
+  v1 = call_rt aion@activity:task_queue/2(v0, lit#1)
+  v2 = call_rt aion@workflow:run/1(v1)
+  v3 = call_rt aion@awl@error:map_activity_error/1(v2)
+  v4 = try_bind v3
+  v5 = field(v4, 1)
+  if is_true v5:
+    v6 = field(v4, 1)
+    v7 = record(ack, [v6])
+    v8 = record(reachable_outcome, [v7])
+    v9 = record(ok, [v8])
+    return v9
+  else:
+    v10 = record(fault, [lit#2])
+    v11 = call_local fault_to_json(v10)
+    v12 = call_rt gleam@json:to_string/1(v11)
+    v13 = record(awl_outcome_failure, [lit#3, v12])
+    v14 = record(error, [v13])
+    return v14
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

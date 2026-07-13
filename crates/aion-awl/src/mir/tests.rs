@@ -67,18 +67,29 @@ fn hex(bytes: &[u8]) -> String {
 const COVERED: &[&str] = &[
     "dag-fork/valid/after_single",
     "dag-fork/valid/fall_through_chain",
+    "declarations/valid/worker_action_config_lines",
     "declarations/valid/worker_retry_backoff",
     "declarations/valid/worker_single_action",
     "declarations/valid/workers_multiple",
     "flagship/valid/awl_hello",
+    "header-types/valid/builtins",
     "header-types/valid/doc_comments",
     "header-types/valid/enum",
     "header-types/valid/line_width",
     "header-types/valid/minimal",
     "header-types/valid/noncanonical_commas",
+    "header-types/valid/zero_inputs",
+    "loop-outcomes/valid/enum_when_totality",
+    "loop-outcomes/valid/float_threshold_guard",
+    "loop-outcomes/valid/route_outcome_by_name",
+    "schema-doors/valid/import_ticket",
+    "schema-doors/valid/inline_schema_round",
     "schema-doors/valid/inline_verbatim_constraints",
+    "schema-doors/valid/optional_shorthand",
+    "schema-doors/valid/short_circuit_optional",
     "step-bodies/valid/calls_and_side_effects",
     "step-bodies/valid/pipe_chain_stages",
+    "step-bodies/valid/predicates_and_operators",
 ];
 
 /// Compare `contents` against the on-disk golden. A MISSING golden is a hard
@@ -106,30 +117,35 @@ fn check_golden(path: &Path, contents: &str) -> Result<(), String> {
     }
 }
 
-/// Every committed `.mir` golden must belong to a fixture in the covered set;
-/// an orphan (a golden whose fixture was deleted, renamed, or regressed to
-/// refused) is a ratchet failure, not a silently-stale file.
-fn walk_mir(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Every committed MIR and sidecar golden must belong to a fixture in the
+/// covered set; either artifact becoming orphaned is a ratchet failure.
+fn walk_goldens(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walk_mir(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "mir") {
-            out.push(path);
+            walk_goldens(&path, out);
+        } else {
+            let name = path.to_string_lossy();
+            if name.ends_with(".mir") || name.ends_with(".gleam_types.hex") {
+                out.push(path);
+            }
         }
     }
 }
 
-fn committed_mir_goldens(root: &Path) -> Vec<String> {
+fn committed_goldens(root: &Path, suffix: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut paths = Vec::new();
-    walk_mir(root, &mut paths);
+    walk_goldens(root, &mut paths);
     for path in paths {
         if let Ok(relative) = path.strip_prefix(root) {
-            found.push(relative.with_extension("").to_string_lossy().into_owned());
+            let relative = relative.to_string_lossy();
+            if let Some(stem) = relative.strip_suffix(suffix) {
+                found.push(stem.to_owned());
+            }
         }
     }
     found.sort();
@@ -172,19 +188,17 @@ fn lowers_cover_and_golden() -> Result<(), Box<dyn std::error::Error>> {
         "BC-2 covered set drifted from the pinned COVERED list"
     );
 
-    // No orphaned goldens: every committed `.mir` must map to a covered fixture.
+    // No orphaned goldens: both artifacts map one-for-one to covered fixtures.
     if std::env::var("AWL_BC2_BLESS").is_err() {
-        let goldens = committed_mir_goldens(&golden_root);
-        for golden in &goldens {
-            assert!(
-                covered.contains(golden),
-                "orphaned golden {golden}.mir has no covered fixture"
-            );
-        }
+        let mir_goldens = committed_goldens(&golden_root, ".mir");
+        let sidecar_goldens = committed_goldens(&golden_root, ".gleam_types.hex");
         assert_eq!(
-            goldens.len(),
-            covered.len(),
-            "committed golden count does not match the covered set"
+            mir_goldens, covered,
+            "MIR golden set does not match COVERED"
+        );
+        assert_eq!(
+            sidecar_goldens, covered,
+            "sidecar golden set does not match COVERED"
         );
     }
     Ok(())
@@ -213,6 +227,34 @@ fn minimal_exercises_core_op_shapes() -> Result<(), Box<dyn std::error::Error>> 
             "missing op shape `{token}` in:\n{text}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn optional_rhs_is_nested_below_short_circuit_branch() -> Result<(), Box<dyn std::error::Error>> {
+    let path =
+        manifest_dir().join("tests/fixtures/rev2/schema-doors/valid/short_circuit_optional.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+    let flow = text
+        .split("== fn step_decide/1")
+        .nth(1)
+        .ok_or("missing decide flow function")?;
+    let outer_if = flow
+        .find("  if is_true")
+        .ok_or("missing outer guard branch")?;
+    let unwrap = flow
+        .find("assert_some")
+        .ok_or("missing checked optional unwrap")?;
+    let rhs_field = flow[unwrap..]
+        .find(" = field(")
+        .map(|offset| unwrap + offset)
+        .ok_or("missing guarded RHS field access")?;
+    assert!(
+        outer_if < unwrap && unwrap < rhs_field,
+        "RHS optional unwrap/field must live below the deciding branch:\n{flow}"
+    );
     Ok(())
 }
 
