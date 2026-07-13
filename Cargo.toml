@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/aion-awl",
     "crates/aion-awl-lsp",
+    "crates/aion-awl-package",
     "crates/aion-core",
     "crates/aion-store",
     "crates/aion-store-libsql",

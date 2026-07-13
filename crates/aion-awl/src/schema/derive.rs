@@ -140,6 +140,13 @@ impl<'a> Deriver<'a> {
             properties.insert(input.name.clone(), schema);
         }
         let mut object = Map::new();
+        // The dialect pin mirrors `envelope_schema` (and the legacy authored
+        // schema documents): both derived contracts carry it, so the native
+        // path's manifest schemas match what the legacy path embedded.
+        object.insert(
+            "$schema".to_owned(),
+            json!("https://json-schema.org/draft/2020-12/schema"),
+        );
         object.insert("type".to_owned(), json!("object"));
         let narration = doc_text(&self.document.narration);
         if !narration.is_empty() {

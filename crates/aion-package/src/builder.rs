@@ -147,7 +147,10 @@ fn archive_entry_name(
     }
 }
 
-pub(crate) fn is_safe_logical_name(logical_name: &str) -> bool {
+/// Returns whether a logical module name can be represented safely as an
+/// archive entry path.
+#[must_use]
+pub fn is_safe_logical_name(logical_name: &str) -> bool {
     !logical_name.is_empty()
         && !logical_name.starts_with('/')
         && !logical_name.starts_with('\\')

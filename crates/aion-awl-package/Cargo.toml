@@ -1,0 +1,22 @@
+[package]
+name = "aion-awl-package"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Programmatic .aion assembly for compiled AWL workflows"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aion-awl = { version = "0.8.0", path = "../aion-awl" }
+aion-package = { version = "0.8.0", path = "../aion-package" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+beamr.workspace = true
+sha2.workspace = true
