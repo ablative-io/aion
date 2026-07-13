@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::Span;
 
 /// Failure to derive a JSON Schema from an AWL contract.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum SchemaError {
     /// The requested type is not declared in the document.
     #[error("no type named `{name}` is declared")]

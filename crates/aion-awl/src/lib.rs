@@ -8,6 +8,7 @@
 
 mod ast;
 mod checker;
+mod compile;
 mod emitter;
 mod lexer;
 // The AWL-BC bytecode MIR backend (BC-2). Exposed as `#[doc(hidden)] pub` — a
@@ -36,11 +37,15 @@ pub use ast::{
     SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
 };
 pub use checker::{CheckError, check, check_in};
+pub use compile::{
+    ActionRequirement, CompileError, CompiledWorkflow, action_requirements, compile,
+};
 pub use emitter::{EmitError, emit, emit_in};
 pub use lexer::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 pub use parser::{ParseError, parse};
 pub use printer::print;
 pub use schema::{
-    SchemaError, schema_for_type, schema_for_type_in, schema_for_workflow, schema_for_workflow_in,
+    SchemaError, schema_for_outcomes, schema_for_outcomes_in, schema_for_type, schema_for_type_in,
+    schema_for_workflow, schema_for_workflow_in,
 };
 pub use spanned::Spanned;

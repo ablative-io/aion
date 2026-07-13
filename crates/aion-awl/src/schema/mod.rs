@@ -5,6 +5,7 @@ mod derive;
 mod error;
 
 pub use derive::{
-    schema_for_type, schema_for_type_in, schema_for_workflow, schema_for_workflow_in,
+    schema_for_outcomes, schema_for_outcomes_in, schema_for_type, schema_for_type_in,
+    schema_for_workflow, schema_for_workflow_in,
 };
 pub use error::SchemaError;

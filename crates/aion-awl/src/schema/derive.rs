@@ -65,6 +65,32 @@ pub fn schema_for_workflow_in(document: &Document, root: &Path) -> Result<Value,
     Deriver::new(document, Some(root)).workflow_schema()
 }
 
+/// Derive the workflow's outcome envelope, with schema imports unresolvable
+/// (no document directory). Prefer [`schema_for_outcomes_in`] when the
+/// `.awl` file's directory is known.
+///
+/// # Errors
+///
+/// Returns [`SchemaError`] when an outcome payload type is undeclared, or
+/// when its schema door cannot be resolved or parsed.
+pub fn schema_for_outcomes(document: &Document) -> Result<Value, SchemaError> {
+    Deriver::new(document, None).envelope_schema()
+}
+
+/// Derive the workflow's outcome envelope — the `{ "outcome": name,
+/// "payload": … }` object the emitted codec produces — resolving schema
+/// imports relative to `root` (the document's directory). A single-outcome
+/// workflow pins `outcome` with `const`; multiple outcomes become `oneOf`
+/// arms pairing each outcome name with its payload schema.
+///
+/// # Errors
+///
+/// Returns [`SchemaError`] when an outcome payload type is undeclared, or
+/// when its schema door cannot be resolved or parsed.
+pub fn schema_for_outcomes_in(document: &Document, root: &Path) -> Result<Value, SchemaError> {
+    Deriver::new(document, Some(root)).envelope_schema()
+}
+
 struct Deriver<'a> {
     document: &'a Document,
     root: Option<&'a Path>,
@@ -125,6 +151,81 @@ impl<'a> Deriver<'a> {
             object.insert("$defs".to_owned(), Value::Object(defs));
         }
         Ok(Value::Object(object))
+    }
+
+    fn envelope_schema(&self) -> Result<Value, SchemaError> {
+        let mut defs = Map::new();
+        let mut arms = Vec::new();
+        for outcome in &self.document.outcomes {
+            let payload = self.outcome_payload_schema(&outcome.ty, &mut defs)?;
+            arms.push((outcome.name.clone(), payload));
+        }
+        let mut object = Map::new();
+        object.insert(
+            "$schema".to_owned(),
+            json!("https://json-schema.org/draft/2020-12/schema"),
+        );
+        object.insert(
+            "description".to_owned(),
+            Value::String(format!(
+                "The {} outcome envelope: which declared workflow outcome fired, \
+                 with its payload.",
+                self.document.name
+            )),
+        );
+        object.insert("type".to_owned(), json!("object"));
+        object.insert("required".to_owned(), json!(["outcome", "payload"]));
+        if arms.len() == 1 {
+            let mut properties = Map::new();
+            for (name, payload) in arms {
+                properties.insert("outcome".to_owned(), json!({ "const": name }));
+                properties.insert("payload".to_owned(), payload);
+            }
+            object.insert("properties".to_owned(), Value::Object(properties));
+        } else {
+            let branches: Vec<Value> = arms
+                .into_iter()
+                .map(|(name, payload)| {
+                    json!({
+                        "properties": {
+                            "outcome": { "const": name },
+                            "payload": payload,
+                        }
+                    })
+                })
+                .collect();
+            object.insert("oneOf".to_owned(), Value::Array(branches));
+        }
+        if !defs.is_empty() {
+            object.insert("$defs".to_owned(), Value::Object(defs));
+        }
+        Ok(Value::Object(object))
+    }
+
+    /// An outcome payload's schema, inlined like the reference envelope. A
+    /// named payload type inlines its body; a payload whose inlining would
+    /// produce a document-root `"#"` self-reference (which would resolve to
+    /// the envelope, not the payload) derives through `$defs` instead.
+    fn outcome_payload_schema(
+        &self,
+        ty: &TypeRef,
+        defs: &mut Map<String, Value>,
+    ) -> Result<Value, SchemaError> {
+        if let TypeRef::Named { name, .. } = ty
+            && builtin_schema(name).is_none()
+            && let Some(decl) = self.decl(name)
+        {
+            let mut trial = defs.clone();
+            let mut visited = BTreeSet::new();
+            visited.insert(name.clone());
+            let inline = self.decl_schema(decl, name, &mut trial, &mut visited)?;
+            if !contains_root_ref(&inline) && !trial.values().any(contains_root_ref) {
+                *defs = trial;
+                return Ok(inline);
+            }
+        }
+        let mut visited = BTreeSet::new();
+        self.type_ref_schema(ty, "", defs, &mut visited)
     }
 
     /// The schema of one declaration's body, with `root_name` the type the
@@ -248,6 +349,17 @@ impl<'a> Deriver<'a> {
                 self.type_ref_schema(inner, root_name, defs, visited)
             }
         }
+    }
+}
+
+/// Whether a schema tree carries a document-root `{"$ref": "#"}` reference.
+fn contains_root_ref(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, inner)| {
+            (key == "$ref" && inner.as_str() == Some("#")) || contains_root_ref(inner)
+        }),
+        Value::Array(items) => items.iter().any(contains_root_ref),
+        _ => false,
     }
 }
 
