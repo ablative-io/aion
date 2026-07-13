@@ -115,6 +115,15 @@ pub enum Stmt {
         items: Vec<Value>,
         span: Span,
     },
+    /// One cons cell onto an existing list (`[head, ..tail]` — the sequential
+    /// fork fold's accumulator prepend). Distinct from `ListNew`: the tail is
+    /// an arbitrary existing list value, not nil.
+    ListPrepend {
+        dst: Var,
+        head: Value,
+        tail: Value,
+        span: Span,
+    },
     CallRt {
         dst: Option<Var>,
         callee: RuntimeFn,
@@ -253,6 +262,7 @@ impl Stmt {
             | Self::RecordNew { dst, .. }
             | Self::TupleNew { dst, .. }
             | Self::ListNew { dst, .. }
+            | Self::ListPrepend { dst, .. }
             | Self::MakeClosure { dst, .. }
             | Self::TryBind { dst, .. }
             | Self::WaitTimeoutCase { dst, .. }

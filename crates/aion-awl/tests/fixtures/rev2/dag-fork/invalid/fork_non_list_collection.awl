@@ -1,0 +1,17 @@
+//! A collection fork needs a list to fan out over — a bare record refuses.
+workflow fork_non_list
+  input doc: Doc
+  outcome done: type Done, route success
+
+type Doc  { title: String }
+type Done { count: Int }
+
+worker review
+  action check_doc(doc: Doc) -> Done
+
+step check_all
+  fork item in doc
+    check_doc(doc: item)
+  join -> results
+
+  route done(count: 1)

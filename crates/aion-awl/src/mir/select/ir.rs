@@ -63,6 +63,18 @@ pub(super) enum Step {
     Increment { dst: Var, src: Var },
     /// `put_list` chain from nil.
     ListNew { dst: Var, items: Vec<Src> },
+    /// One `put_list` cell onto an existing tail (`[head, ..tail]`).
+    Cons { dst: Var, head: Src, tail: Src },
+    /// `let assert [a, b, …] = list` — unrolled `is_nonempty_list`/`get_list`
+    /// per element with a final `is_nil` exactness check; any mismatch traps
+    /// through `badmatch` (the Gleam `let assert` shape).
+    AssertList { binds: Vec<Option<Var>>, list: Var },
+    /// `call_fun` of a closure value (arity args in `x0..`, fun in `x(arity)`).
+    CallFun {
+        dst: Option<Var>,
+        fun: Src,
+        args: Vec<Src>,
+    },
     /// `call_ext import` (a used `RuntimeFn`).
     CallImport {
         dst: Option<Var>,
@@ -169,4 +181,30 @@ pub(super) struct Body {
     pub(super) arity: u8,
     pub(super) entry_label: u32,
     pub(super) code_label: u32,
+}
+
+impl Step {
+    /// The single var this step defines, when it defines one (frame
+    /// planning; `AssertList` binds are planned separately).
+    pub(super) fn defined(&self) -> Option<Var> {
+        match self {
+            Self::FieldGet { dst, .. }
+            | Self::AssertSome { dst, .. }
+            | Self::Record { dst, .. }
+            | Self::Tuple { dst, .. }
+            | Self::Increment { dst, .. }
+            | Self::ListNew { dst, .. }
+            | Self::MakeClosure { dst, .. }
+            | Self::TryBind { dst, .. }
+            | Self::JsonObj { dst, .. }
+            | Self::Cmp { dst, .. }
+            | Self::BoolOp { dst, .. }
+            | Self::Cons { dst, .. }
+            | Self::Not { dst, .. } => Some(*dst),
+            Self::CallImport { dst, .. }
+            | Self::CallLocal { dst, .. }
+            | Self::CallFun { dst, .. } => *dst,
+            Self::AssertList { .. } => None,
+        }
+    }
 }

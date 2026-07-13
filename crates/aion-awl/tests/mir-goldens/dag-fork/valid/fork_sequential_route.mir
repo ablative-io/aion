@@ -1,0 +1,144 @@
+module fork_sequential_route source=fork_sequential_route.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  apply_all_fork_0:
+    aion@activity:task_queue/2 [activities] (v2, lit#0)
+    aion@workflow:run/1 [activities] (v3)
+== durable families == activities
+== atoms ==
+  [0] migration
+  [1] receipt
+  [2] applied
+  [3] apply_one_input
+  [4] fork_sequential_route_input
+  [5] applied_outcome
+  [6] ok
+== types ==
+  record Migration tag=migration
+    name: string
+    sql: string
+  record Receipt tag=receipt
+    name: string
+    ok: bool
+  record Applied tag=applied
+    receipts: list(ref(Receipt))
+  record ApplyOneInput tag=apply_one_input
+    migration: ref(Migration)
+  record ForkSequentialRouteInput tag=fork_sequential_route_input
+    migrations: list(ref(Migration))
+  union ForkSequentialRouteOutcome
+    applied -> applied_outcome(ref(Applied))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fork_sequential_route_input_codec output=fork_sequential_route_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fork_sequential_route.ForkSequentialRouteInput, fork_sequential_route.ForkSequentialRouteOutcome, AwlError)
+  T-DEF name="fork_sequential_route" input=fork_sequential_route_input_codec output=fork_sequential_route_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fork_sequential_route.ForkSequentialRouteInput) -> Result(fork_sequential_route.ForkSequentialRouteOutcome, AwlError)
+  T-EXEC fields=[migrations:List(fork_sequential_route.Migration)] entry=step_apply_all args=[0]
+== fn migration_codec/0 origin=codec_template(RecordTrio, Migration, record#0) ==
+  sig: () -> Codec(fork_sequential_route.Migration)
+  v0 = make_closure migration_to_json captures=[]
+  v1 = call_local migration_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn migration_to_json/1 origin=codec_template(RecordTrio, Migration, record#0) ==
+  sig: (fork_sequential_route.Migration) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "sql": v2|>awlc.string_to_json}
+  return v3
+== fn migration_decoder/0 origin=codec_template(RecordTrio, Migration, record#0) ==
+  sig: () -> Decoder(fork_sequential_route.Migration)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn receipt_codec/0 origin=codec_template(RecordTrio, Receipt, record#1) ==
+  sig: () -> Codec(fork_sequential_route.Receipt)
+  v0 = make_closure receipt_to_json captures=[]
+  v1 = call_local receipt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn receipt_to_json/1 origin=codec_template(RecordTrio, Receipt, record#1) ==
+  sig: (fork_sequential_route.Receipt) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "ok": v2|>awlc.bool_to_json}
+  return v3
+== fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#1) ==
+  sig: () -> Decoder(fork_sequential_route.Receipt)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn applied_codec/0 origin=codec_template(RecordTrio, Applied, record#2) ==
+  sig: () -> Codec(fork_sequential_route.Applied)
+  v0 = make_closure applied_to_json captures=[]
+  v1 = call_local applied_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn applied_to_json/1 origin=codec_template(RecordTrio, Applied, record#2) ==
+  sig: (fork_sequential_route.Applied) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"receipts": v1|>awlc.nil_to_json}
+  return v2
+== fn applied_decoder/0 origin=codec_template(RecordTrio, Applied, record#2) ==
+  sig: () -> Decoder(fork_sequential_route.Applied)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn apply_one_input_codec/0 origin=codec_template(RecordTrio, ApplyOneInput, record#3) ==
+  sig: () -> Codec(fork_sequential_route.ApplyOneInput)
+  v0 = make_closure apply_one_input_to_json captures=[]
+  v1 = call_local apply_one_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn apply_one_input_to_json/1 origin=codec_template(RecordTrio, ApplyOneInput, record#3) ==
+  sig: (fork_sequential_route.ApplyOneInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"migration": v1|>migration_to_json}
+  return v2
+== fn apply_one_input_decoder/0 origin=codec_template(RecordTrio, ApplyOneInput, record#3) ==
+  sig: () -> Decoder(fork_sequential_route.ApplyOneInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_sequential_route_input_codec/0 origin=codec_template(RecordTrio, ForkSequentialRouteInput, record#4) ==
+  sig: () -> Codec(fork_sequential_route.ForkSequentialRouteInput)
+  v0 = make_closure fork_sequential_route_input_to_json captures=[]
+  v1 = call_local fork_sequential_route_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_sequential_route_input_to_json/1 origin=codec_template(RecordTrio, ForkSequentialRouteInput, record#4) ==
+  sig: (fork_sequential_route.ForkSequentialRouteInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"migrations": v1|>awlc.nil_to_json}
+  return v2
+== fn fork_sequential_route_input_decoder/0 origin=codec_template(RecordTrio, ForkSequentialRouteInput, record#4) ==
+  sig: () -> Decoder(fork_sequential_route.ForkSequentialRouteInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_sequential_route_outcome_codec/0 origin=codec_template(UnionTrio, ForkSequentialRouteOutcome, union#5) ==
+  sig: () -> Codec(fork_sequential_route.ForkSequentialRouteOutcome)
+  v0 = make_closure fork_sequential_route_outcome_to_json captures=[]
+  v1 = call_local fork_sequential_route_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_sequential_route_outcome_to_json/1 origin=codec_template(UnionTrio, ForkSequentialRouteOutcome, union#5) ==
+  sig: (fork_sequential_route.ForkSequentialRouteOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fork_sequential_route_outcome_decoder/0 origin=codec_template(UnionTrio, ForkSequentialRouteOutcome, union#5) ==
+  sig: () -> Decoder(fork_sequential_route.ForkSequentialRouteOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn apply_one_activity/1 origin=activity_wrapper(apply_one, raw=false) ==
+  sig: (fork_sequential_route.Migration) -> Activity(fork_sequential_route.ApplyOneInput, fork_sequential_route.Receipt)
+  T-ACT action=apply_one input_codec=apply_one_input_codec return=receipt_codec
+== fn step_apply_all/1 origin=region(apply_all) ==
+  sig: (List(fork_sequential_route.Migration)) -> Result(fork_sequential_route.ForkSequentialRouteOutcome, AwlError)
+  v1 = make_closure apply_all_fork_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, nil, v1)
+  v3 = try_bind v2
+  v4 = call_rt gleam@list:reverse/1(v3)
+  v5 = record(applied, [v4])
+  v6 = record(applied_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn apply_all_fork_0/2 origin=fork(apply_all#0) ==
+  sig: (List(fork_sequential_route.Receipt), fork_sequential_route.Migration) -> Result(List(fork_sequential_route.Receipt), AwlError)
+  v2 = call_local apply_one_activity(v1) live_after=[v0]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#0) live_after=[v0]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v0]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v0]
+  v6 = try_bind v5 live_after=[v0]
+  v7 = cons v6 v0
+  v8 = record(ok, [v7])
+  return v8
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

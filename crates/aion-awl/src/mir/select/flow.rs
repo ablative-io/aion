@@ -84,43 +84,10 @@ fn local_ref(module: &MirModule, reference: FnRef) -> Result<(u8, u32), SelectEr
 }
 
 fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectError> {
+    if let Some(step) = lower_data_stmt(builder, stmt)? {
+        return Ok(step);
+    }
     match stmt {
-        Stmt::FieldGet {
-            dst,
-            base,
-            index,
-            span,
-        } => Ok(Step::FieldGet {
-            dst: *dst,
-            base: require_var(base, "field access", *span)?,
-            index: *index,
-        }),
-        Stmt::AssertSome { dst, option, .. } => Ok(Step::AssertSome {
-            dst: *dst,
-            option: *option,
-            some_atom: builder.atom("some"),
-        }),
-        Stmt::RecordNew { dst, tag, args, .. } => {
-            let tag = builder.mir_atom(tag.0)?;
-            let args = srcs(builder, args)?;
-            Ok(Step::Record {
-                dst: *dst,
-                tag,
-                args,
-            })
-        }
-        Stmt::TupleNew { dst, items, .. } => Ok(Step::Tuple {
-            dst: *dst,
-            items: srcs(builder, items)?,
-        }),
-        Stmt::Increment { dst, src, .. } => Ok(Step::Increment {
-            dst: *dst,
-            src: *src,
-        }),
-        Stmt::ListNew { dst, items, .. } => Ok(Step::ListNew {
-            dst: *dst,
-            items: srcs(builder, items)?,
-        }),
         Stmt::CallRt {
             dst, callee, args, ..
         } => {
@@ -182,6 +149,62 @@ fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectErro
     }
 }
 
+/// The pure data-construction/destructure ops (no pools beyond atoms):
+/// `Some(step)` when `stmt` is one of them, `None` to fall through to the
+/// call/closure/json arms.
+fn lower_data_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Option<Step>, SelectError> {
+    Ok(Some(match stmt {
+        Stmt::FieldGet {
+            dst,
+            base,
+            index,
+            span,
+        } => Step::FieldGet {
+            dst: *dst,
+            base: require_var(base, "field access", *span)?,
+            index: *index,
+        },
+        Stmt::AssertSome { dst, option, .. } => Step::AssertSome {
+            dst: *dst,
+            option: *option,
+            some_atom: builder.atom("some"),
+        },
+        Stmt::RecordNew { dst, tag, args, .. } => {
+            let tag = builder.mir_atom(tag.0)?;
+            let args = srcs(builder, args)?;
+            Step::Record {
+                dst: *dst,
+                tag,
+                args,
+            }
+        }
+        Stmt::TupleNew { dst, items, .. } => Step::Tuple {
+            dst: *dst,
+            items: srcs(builder, items)?,
+        },
+        Stmt::Increment { dst, src, .. } => Step::Increment {
+            dst: *dst,
+            src: *src,
+        },
+        Stmt::ListNew { dst, items, .. } => Step::ListNew {
+            dst: *dst,
+            items: srcs(builder, items)?,
+        },
+        Stmt::ListPrepend {
+            dst, head, tail, ..
+        } => Step::Cons {
+            dst: *dst,
+            head: src(builder, head)?,
+            tail: src(builder, tail)?,
+        },
+        Stmt::AssertList { binds, list, .. } => Step::AssertList {
+            binds: binds.clone(),
+            list: *list,
+        },
+        _ => return Ok(None),
+    }))
+}
+
 fn lower_make_closure(
     builder: &mut Builder<'_>,
     dst: crate::mir::Var,
@@ -193,14 +216,21 @@ fn lower_make_closure(
         .function(lifted)
         .ok_or_else(|| SelectError::invariant("make_closure target out of range"))?;
     let name = function.name().to_owned();
-    let arity = u8::try_from(MirModule::arity(function)).map_err(|_| SelectError::OutOfRange {
+    let physical = MirModule::arity(function);
+    let free = u32::try_from(captures.len()).map_err(|_| SelectError::OutOfRange {
+        what: "capture count".to_owned(),
+    })?;
+    // beamr's `make_fun2` convention: the `FunT` arity is the CALLABLE arity
+    // (declared args), with the `num_free` captures marshaled from `x0..` at
+    // creation and appended after the args at call time.
+    let declared = physical
+        .checked_sub(free)
+        .ok_or_else(|| SelectError::invariant("closure captures exceed physical arity"))?;
+    let arity = u8::try_from(declared).map_err(|_| SelectError::OutOfRange {
         what: "closure arity".to_owned(),
     })?;
     let name_atom = builder.atom(&name);
     let code_label = Builder::fn_labels(lifted).body;
-    let free = u32::try_from(captures.len()).map_err(|_| SelectError::OutOfRange {
-        what: "capture count".to_owned(),
-    })?;
     let lambda = builder.lambda(name_atom, arity, code_label, free);
     Ok(Step::MakeClosure {
         dst,
@@ -308,7 +338,6 @@ fn unsupported_stmt(stmt: &Stmt) -> SelectError {
         Stmt::BoolOp { span, .. } => ("boolop", *span),
         Stmt::Not { span, .. } => ("not", *span),
         Stmt::Concat { span, .. } => ("concat", *span),
-        Stmt::AssertList { span, .. } => ("assert_list", *span),
         Stmt::AssertSome { span, .. } => ("assert_some", *span),
         Stmt::IndexGuard { span, .. } => ("index_guard", *span),
         Stmt::Attempt { span, .. } => ("attempt", *span),

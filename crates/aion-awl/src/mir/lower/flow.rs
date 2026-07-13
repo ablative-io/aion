@@ -4,8 +4,11 @@
 //! non-terminal step ending in a tail call to its successor (IR-14) with the
 //! chain-boundary live set (`chain::chain_params`) as arguments. Bounded
 //! loops lower through `loops` (a self-tail-calling `FlowFn(Loop)` per loop).
-//! Forks, substeps, waits, spawns, `on failure`, combinators, and
-//! dependency-parallel layers are deferred (`LowerError::unsupported`) —
+//! Forks lower through `forks` (activity fan-out over `workflow.map`/`all` /
+//! `list.try_fold` to the reference emitter's parity contract; the child
+//! fan-out still refuses). Substeps, waits, spawns, `on failure`,
+//! combinators, and dependency-parallel layers are deferred
+//! (`LowerError::unsupported`) —
 //! visible incompleteness, never silent divergence from the reference. The
 //! activity-emission primitives live in `activity`.
 
@@ -24,8 +27,10 @@ use super::chain::chain_params;
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_arg_for, lower_expr};
-use super::loops::{LoopSlots, lower_loop_stmt};
+use super::forks::lower_fork_stmt;
+use super::loops::lower_loop_stmt;
 use super::outcome::lower_outcomes;
+use super::slots::Slots;
 
 /// The fall-through continuation of a non-terminal chain step: the successor's
 /// function ref and parameter names.
@@ -40,7 +45,7 @@ pub(super) fn lower_regions(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     functions: &mut Vec<MirFn>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<(), LowerError> {
     let mut retired_outcome_anchor = None;
     for region_index in 0..ctx.plan.regions.len() {
@@ -68,7 +73,7 @@ fn lower_region(
     plan: &FnPlan,
     region_index: usize,
     functions: &mut Vec<MirFn>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<(), LowerError> {
     let region = &ctx.plan.regions[region_index];
     let entry_index = region.entry;
@@ -132,7 +137,7 @@ fn lower_chain_step(
     position: usize,
     param_names: &[String],
     next: Option<Next>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<FlowFn, LowerError> {
     ctx.reset_vars();
     let mut scope: Scope = Scope::new();
@@ -177,7 +182,7 @@ fn lower_step(
     step: &Step,
     scope: &mut Scope,
     next: Option<Next>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<Block, LowerError> {
     if step.on_failure.is_some() {
         return Err(LowerError::unsupported("on failure", step.name_span));
@@ -234,7 +239,7 @@ pub(super) fn lower_statement(
     statement: &Statement,
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<Option<Tail>, LowerError> {
     match statement {
         Statement::Call(call) => {
@@ -265,7 +270,10 @@ pub(super) fn lower_statement(
         }
         Statement::Spawn(spawn) => Err(LowerError::unsupported("spawn", spawn.span)),
         Statement::Wait(wait) => Err(LowerError::unsupported("wait", wait.span)),
-        Statement::Fork(fork) => Err(LowerError::unsupported("fork", fork.span)),
+        Statement::Fork(fork) => {
+            lower_fork_stmt(ctx, plan, step, fork, scope, stmts, slots)?;
+            Ok(None)
+        }
         Statement::Loop(looped) => {
             lower_loop_stmt(ctx, plan, step, looped, scope, stmts, slots)?;
             Ok(None)
@@ -274,7 +282,7 @@ pub(super) fn lower_statement(
     }
 }
 
-fn lower_call(
+pub(super) fn lower_call(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     call: &CallStmt,

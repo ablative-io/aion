@@ -1,0 +1,18 @@
+//! Apply migrations strictly one at a time in input order, then report every receipt.
+workflow fork_sequential_route
+  input migrations: [Migration]
+  outcome applied: type Applied, route success
+
+type Migration { name: String, sql: String }
+type Receipt   { name: String, ok: Bool }
+type Applied   { receipts: [Receipt] }
+
+worker db
+  action apply_one(migration: Migration) -> Receipt
+
+step apply_all
+  fork migration in migrations sequential
+    apply_one(migration: migration)
+  join -> receipts
+
+  route applied(receipts: receipts)

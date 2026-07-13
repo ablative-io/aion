@@ -1,0 +1,19 @@
+//! Probe two regions with the same action in one parallel dispatch.
+workflow fork_named_homogeneous
+  input primary: String
+  input secondary: String
+  outcome compared: type Compared, route success
+
+type Snapshot { region: String, healthy: Bool }
+type Compared { first: Snapshot, second: Snapshot }
+
+worker probe
+  action probe_region(region: String) -> Snapshot
+
+step gather
+  fork
+    probe_region(region: primary) -> first_probe
+    probe_region(region: secondary) -> second_probe
+  join
+
+  route compared(first: first_probe, second: second_probe)

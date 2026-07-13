@@ -52,6 +52,18 @@ fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
                 "child_collection_fork",
                 emitted_fixture("dag-fork/valid/child_collection_fork.awl")?,
             ),
+            (
+                "fork_action_fanout",
+                emitted_fixture("dag-fork/valid/fork_action_fanout.awl")?,
+            ),
+            (
+                "fork_sequential_route",
+                emitted_fixture("dag-fork/valid/fork_sequential_route.awl")?,
+            ),
+            (
+                "fork_named_homogeneous",
+                emitted_fixture("dag-fork/valid/fork_named_homogeneous.awl")?,
+            ),
             ("archived_awl_exam", emitted_archived_exam()?),
             (
                 "backward_route",

@@ -340,7 +340,12 @@ fn stmt_values(stmt: &Stmt) -> Vec<Value> {
         Stmt::MakeClosure { captures, .. } => captures.clone(),
         Stmt::Cmp { lhs, rhs, .. }
         | Stmt::BoolOp { lhs, rhs, .. }
-        | Stmt::Concat { lhs, rhs, .. } => {
+        | Stmt::Concat { lhs, rhs, .. }
+        | Stmt::ListPrepend {
+            head: lhs,
+            tail: rhs,
+            ..
+        } => {
             vec![lhs.clone(), rhs.clone()]
         }
         Stmt::Not { src, .. } => vec![src.clone()],

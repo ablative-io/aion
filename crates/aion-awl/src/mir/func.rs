@@ -111,6 +111,13 @@ pub enum FnOrigin {
         step: String,
         index: u32,
     },
+    /// A fork-lowering lifted function (the `workflow.map` branch body or a
+    /// sequential fork's `list.try_fold` body), reserved in the same slot
+    /// inventory discipline as loops (`lower/loops.rs`).
+    Fork {
+        step: String,
+        index: u32,
+    },
     ActivityWrapper {
         action: String,
         raw: bool,

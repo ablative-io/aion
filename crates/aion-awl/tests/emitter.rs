@@ -17,6 +17,8 @@ use aion_awl::{check_in, emit, emit_in, parse};
 mod child_tests;
 #[path = "emitter/compile.rs"]
 mod compile_tests;
+#[path = "emitter/forks.rs"]
+mod fork_tests;
 #[path = "emitter/loops.rs"]
 mod loop_tests;
 

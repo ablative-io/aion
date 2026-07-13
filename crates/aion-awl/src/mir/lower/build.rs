@@ -6,9 +6,7 @@ use std::collections::BTreeMap;
 use crate::RouteDirection;
 use crate::emitter::{FieldDef, GType, NamedDef, RecordDef, snake, type_ref_to_g};
 
-use super::super::func::{
-    CodecRef, CodecTemplateKind, FnOrigin, FnSig, MirFn, TemplateFn, TypeShapeRef,
-};
+use super::super::func::{CodecRef, CodecTemplateKind, FnOrigin, FnSig, MirFn, TemplateFn};
 use super::super::ids::{FnRef, Span};
 use super::super::shapes::{FieldShape, TypeShape, UnionArm};
 use super::super::tydesc::TyDesc;
@@ -35,6 +33,10 @@ pub(super) struct FnPlan {
     pub(super) codecs: BTreeMap<String, (FnRef, FnRef, FnRef)>,
     /// Action name to its activity-wrapper function ref.
     pub(super) activities: BTreeMap<String, FnRef>,
+    /// Action name to its raw wrapper twin (`Activity(String, String)`, wire
+    /// bytes identical) — planned only for actions a heterogeneous named fork
+    /// dispatches (`forks::raw_action_inventory`).
+    pub(super) raw_activities: BTreeMap<String, FnRef>,
     /// Region index to its entry-step function ref.
     pub(super) regions: Vec<FnRef>,
     /// Region index to the function refs of its chain steps, one per layer in
@@ -45,6 +47,12 @@ pub(super) struct FnPlan {
     /// statements pre-order — `loops::count_loops`). All loop slots follow
     /// every chain slot, so loop bodies append after region lowering.
     pub(super) loops: Vec<FnRef>,
+    /// One reserved slot per fork-lifted function (the `workflow.map` branch
+    /// body or a sequential fork's fold body), in the exact traversal order
+    /// lowering encounters them (`forks::count_fork_fns` — the same
+    /// pre-order discipline as `loops`, descending into loop bodies). All
+    /// fork slots follow every loop slot.
+    pub(super) forks: Vec<FnRef>,
 }
 
 /// The assembled module skeleton, ready for region-body filling.
@@ -253,6 +261,14 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         activities.insert(action.clone(), FnRef(next));
         next += 1;
     }
+    // Raw wrapper twins for heterogeneous named-fork actions, after every
+    // typed wrapper, in sorted-name order (deterministic).
+    let raw_actions = super::forks::raw_action_inventory(emitter);
+    let mut raw_activities = BTreeMap::new();
+    for action in &raw_actions {
+        raw_activities.insert(action.clone(), FnRef(next));
+        next += 1;
+    }
     let mut signals: Vec<String> = emitter.signals.keys().map(|k| (*k).to_owned()).collect();
     signals.sort();
     // Signal-ref shells occupy one slot each; nothing references them until a
@@ -280,6 +296,16 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
             }
         }
     }
+    let mut forks = Vec::new();
+    for region in &ctx.plan.regions {
+        for step_index in region.layers.iter().flatten() {
+            let step = &emitter.document.steps[*step_index];
+            for _ in 0..super::forks::count_fork_fns(&step.body, emitter) {
+                forks.push(FnRef(next));
+                next += 1;
+            }
+        }
+    }
 
     let plan = FnPlan {
         run: FnRef(0),
@@ -287,9 +313,11 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         execute: FnRef(2),
         codecs,
         activities,
+        raw_activities,
         regions,
         chains,
         loops,
+        forks,
     };
 
     // Build functions in slot order.
@@ -301,11 +329,15 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         codec::trio(ctx, &plan, &types, codec_type, &mut functions);
     }
     for action in &actions {
-        let shell = activity_shell(ctx, &plan, &types, action);
+        let shell = super::wrappers::activity_shell(ctx, &plan, &types, action);
+        functions.push(shell);
+    }
+    for action in &raw_actions {
+        let shell = super::wrappers::raw_activity_shell(ctx, &plan, &types, action);
         functions.push(shell);
     }
     for signal in &signals {
-        let shell = signal_shell(ctx, &plan, signal);
+        let shell = super::wrappers::signal_shell(ctx, &plan, signal);
         functions.push(shell);
     }
     // Region bodies are appended by `flow::regions`.
@@ -449,66 +481,6 @@ fn execute_shell(ctx: &Ctx<'_>, plan: &FnPlan) -> Result<MirFn, LowerError> {
     })
 }
 
-fn activity_shell(ctx: &mut Ctx<'_>, plan: &FnPlan, types: &[TypeShape], action: &str) -> MirFn {
-    let (_, decl) = ctx.emitter.actions[action];
-    let params: Vec<TyDesc> = decl
-        .params
-        .iter()
-        .map(|param| ctx.tydesc(&type_ref_to_g(&param.ty)))
-        .collect();
-    let return_g = type_ref_to_g(&decl.returns);
-    let input_name = ctx.emitter.action_inputs[action].clone();
-    let input_tydesc = TyDesc::Custom {
-        module: ctx.module_name.clone(),
-        name: input_name.clone(),
-        params: Vec::new(),
-    };
-    let ret = TyDesc::Activity(Box::new(input_tydesc), Box::new(ctx.tydesc(&return_g)));
-    let input_codec = plan
-        .codecs
-        .get(&snake(&input_name))
-        .map_or(plan.run, |trio| trio.0);
-    let return_codec = codec_ref_for(ctx, plan, &return_g);
-    let shape = find_shape_ref(types, &input_name);
-    MirFn::Templated {
-        name: format!("{}_activity", snake(action)),
-        origin: FnOrigin::ActivityWrapper {
-            action: action.to_owned(),
-            raw: false,
-        },
-        template: TemplateFn::ActivityWrapper {
-            action: action.to_owned(),
-            input: shape,
-            params: params.clone(),
-            input_codec,
-            return_codec,
-        },
-        sig: FnSig { params, ret },
-        span: zero_span(),
-    }
-}
-
-fn signal_shell(ctx: &mut Ctx<'_>, plan: &FnPlan, signal: &str) -> MirFn {
-    let payload_g = type_ref_to_g(&ctx.emitter.signals[signal].ty);
-    let payload_tydesc = ctx.tydesc(&payload_g);
-    let payload_codec = codec_ref_for(ctx, plan, &payload_g);
-    MirFn::Templated {
-        name: format!("{}_signal", snake(signal)),
-        origin: FnOrigin::SignalRef {
-            signal: signal.to_owned(),
-        },
-        template: TemplateFn::SignalRef {
-            signal: signal.to_owned(),
-            payload_codec,
-        },
-        sig: FnSig {
-            params: Vec::new(),
-            ret: TyDesc::SignalRef(Box::new(payload_tydesc)),
-        },
-        span: zero_span(),
-    }
-}
-
 /// The shared dead-body function (`fn(_) -> Error(error.terminal(...))`, §2.4
 /// T-DEAD): a real `module.functions` entry (S8 — `select` never synthesizes a
 /// function) that every T-ACT wrapper closes over, so the `FunT` lambda and the
@@ -537,12 +509,4 @@ pub(super) fn codec_ref_for(ctx: &Ctx<'_>, plan: &FnPlan, ty: &GType) -> CodecRe
     plan.codecs
         .get(&stem)
         .map_or(CodecRef::SdkNil, |trio| CodecRef::Local(trio.0))
-}
-
-fn find_shape_ref(types: &[TypeShape], name: &str) -> TypeShapeRef {
-    let index = types
-        .iter()
-        .position(|shape| shape.name() == name)
-        .unwrap_or(0);
-    TypeShapeRef(u16::try_from(index).unwrap_or(u16::MAX))
 }

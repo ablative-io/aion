@@ -49,6 +49,7 @@ fn render_origin(module: &MirModule, origin: &FnOrigin) -> String {
         FnOrigin::ChainStep { entry_step, step } => format!("chain_step({entry_step}.{step})"),
         FnOrigin::SubStep { parent, sub } => format!("substep({parent}.{sub})"),
         FnOrigin::Loop { step, index } => format!("loop({step}#{index})"),
+        FnOrigin::Fork { step, index } => format!("fork({step}#{index})"),
         FnOrigin::ActivityWrapper { action, raw } => {
             format!("activity_wrapper({action}, raw={raw})")
         }
@@ -233,9 +234,6 @@ fn render_stmt(module: &MirModule, stmt: &Stmt) -> String {
         Stmt::TupleNew { dst, items, .. } => {
             format!("{} = tuple([{}])", var(*dst), render_values(module, items))
         }
-        Stmt::ListNew { dst, items, .. } => {
-            format!("{} = list([{}])", var(*dst), render_values(module, items))
-        }
         Stmt::CallRt {
             dst,
             callee,
@@ -315,6 +313,17 @@ fn render_stmt(module: &MirModule, stmt: &Stmt) -> String {
 
 fn render_stmt_ops(module: &MirModule, stmt: &Stmt) -> String {
     match stmt {
+        Stmt::ListNew { dst, items, .. } => {
+            format!("{} = list([{}])", var(*dst), render_values(module, items))
+        }
+        Stmt::ListPrepend {
+            dst, head, tail, ..
+        } => format!(
+            "{} = cons {} {}",
+            var(*dst),
+            render_value(module, head),
+            render_value(module, tail)
+        ),
         Stmt::Cmp {
             dst, op, lhs, rhs, ..
         } => format!(

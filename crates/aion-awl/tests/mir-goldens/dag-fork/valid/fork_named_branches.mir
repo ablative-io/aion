@@ -1,0 +1,237 @@
+module fork_named_branches source=fork_named_branches.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_gather:
+    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v3, lit#1)
+    aion@workflow:all/1 [activities] (v5)
+  step_build_dossier:
+    aion@activity:task_queue/2 [activities] (v4, lit#4)
+    aion@workflow:run/1 [activities] (v5)
+== durable families == activities
+== atoms ==
+  [0] profile
+  [1] history
+  [2] dossier
+  [3] unusable
+  [4] assemble_input
+  [5] fetch_history_input
+  [6] fetch_profile_input
+  [7] fork_named_branches_input
+  [8] assembled_outcome
+  [9] ok
+  [10] awl_outcome_failure
+  [11] error
+== types ==
+  record Profile tag=profile
+    name: string
+    email: string
+  record History tag=history
+    events: list(string)
+  record Dossier tag=dossier
+    name: string
+    events: list(string)
+    complete: bool
+  record Unusable tag=unusable
+    reason: string
+  record AssembleInput tag=assemble_input
+    name: string
+    events: list(string)
+  record FetchHistoryInput tag=fetch_history_input
+    id: string
+  record FetchProfileInput tag=fetch_profile_input
+    id: string
+  record ForkNamedBranchesInput tag=fork_named_branches_input
+    user_id: string
+  union ForkNamedBranchesOutcome
+    assembled -> assembled_outcome(ref(Dossier))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fork_named_branches_input_codec output=fork_named_branches_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fork_named_branches.ForkNamedBranchesInput, fork_named_branches.ForkNamedBranchesOutcome, AwlError)
+  T-DEF name="fork_named_branches" input=fork_named_branches_input_codec output=fork_named_branches_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fork_named_branches.ForkNamedBranchesInput) -> Result(fork_named_branches.ForkNamedBranchesOutcome, AwlError)
+  T-EXEC fields=[user_id:String] entry=step_gather args=[0]
+== fn profile_codec/0 origin=codec_template(RecordTrio, Profile, record#0) ==
+  sig: () -> Codec(fork_named_branches.Profile)
+  v0 = make_closure profile_to_json captures=[]
+  v1 = call_local profile_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn profile_to_json/1 origin=codec_template(RecordTrio, Profile, record#0) ==
+  sig: (fork_named_branches.Profile) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "email": v2|>awlc.string_to_json}
+  return v3
+== fn profile_decoder/0 origin=codec_template(RecordTrio, Profile, record#0) ==
+  sig: () -> Decoder(fork_named_branches.Profile)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn history_codec/0 origin=codec_template(RecordTrio, History, record#1) ==
+  sig: () -> Codec(fork_named_branches.History)
+  v0 = make_closure history_to_json captures=[]
+  v1 = call_local history_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn history_to_json/1 origin=codec_template(RecordTrio, History, record#1) ==
+  sig: (fork_named_branches.History) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"events": v1|>awlc.nil_to_json}
+  return v2
+== fn history_decoder/0 origin=codec_template(RecordTrio, History, record#1) ==
+  sig: () -> Decoder(fork_named_branches.History)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn dossier_codec/0 origin=codec_template(RecordTrio, Dossier, record#2) ==
+  sig: () -> Codec(fork_named_branches.Dossier)
+  v0 = make_closure dossier_to_json captures=[]
+  v1 = call_local dossier_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn dossier_to_json/1 origin=codec_template(RecordTrio, Dossier, record#2) ==
+  sig: (fork_named_branches.Dossier) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"name": v1|>awlc.string_to_json, "events": v2|>awlc.nil_to_json, "complete": v3|>awlc.bool_to_json}
+  return v4
+== fn dossier_decoder/0 origin=codec_template(RecordTrio, Dossier, record#2) ==
+  sig: () -> Decoder(fork_named_branches.Dossier)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn unusable_codec/0 origin=codec_template(RecordTrio, Unusable, record#3) ==
+  sig: () -> Codec(fork_named_branches.Unusable)
+  v0 = make_closure unusable_to_json captures=[]
+  v1 = call_local unusable_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn unusable_to_json/1 origin=codec_template(RecordTrio, Unusable, record#3) ==
+  sig: (fork_named_branches.Unusable) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn unusable_decoder/0 origin=codec_template(RecordTrio, Unusable, record#3) ==
+  sig: () -> Decoder(fork_named_branches.Unusable)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn assemble_input_codec/0 origin=codec_template(RecordTrio, AssembleInput, record#4) ==
+  sig: () -> Codec(fork_named_branches.AssembleInput)
+  v0 = make_closure assemble_input_to_json captures=[]
+  v1 = call_local assemble_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn assemble_input_to_json/1 origin=codec_template(RecordTrio, AssembleInput, record#4) ==
+  sig: (fork_named_branches.AssembleInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "events": v2|>awlc.nil_to_json}
+  return v3
+== fn assemble_input_decoder/0 origin=codec_template(RecordTrio, AssembleInput, record#4) ==
+  sig: () -> Decoder(fork_named_branches.AssembleInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_history_input_codec/0 origin=codec_template(RecordTrio, FetchHistoryInput, record#5) ==
+  sig: () -> Codec(fork_named_branches.FetchHistoryInput)
+  v0 = make_closure fetch_history_input_to_json captures=[]
+  v1 = call_local fetch_history_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_history_input_to_json/1 origin=codec_template(RecordTrio, FetchHistoryInput, record#5) ==
+  sig: (fork_named_branches.FetchHistoryInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"id": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_history_input_decoder/0 origin=codec_template(RecordTrio, FetchHistoryInput, record#5) ==
+  sig: () -> Decoder(fork_named_branches.FetchHistoryInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fetch_profile_input_codec/0 origin=codec_template(RecordTrio, FetchProfileInput, record#6) ==
+  sig: () -> Codec(fork_named_branches.FetchProfileInput)
+  v0 = make_closure fetch_profile_input_to_json captures=[]
+  v1 = call_local fetch_profile_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_profile_input_to_json/1 origin=codec_template(RecordTrio, FetchProfileInput, record#6) ==
+  sig: (fork_named_branches.FetchProfileInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"id": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_profile_input_decoder/0 origin=codec_template(RecordTrio, FetchProfileInput, record#6) ==
+  sig: () -> Decoder(fork_named_branches.FetchProfileInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_named_branches_input_codec/0 origin=codec_template(RecordTrio, ForkNamedBranchesInput, record#7) ==
+  sig: () -> Codec(fork_named_branches.ForkNamedBranchesInput)
+  v0 = make_closure fork_named_branches_input_to_json captures=[]
+  v1 = call_local fork_named_branches_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_named_branches_input_to_json/1 origin=codec_template(RecordTrio, ForkNamedBranchesInput, record#7) ==
+  sig: (fork_named_branches.ForkNamedBranchesInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"user_id": v1|>awlc.string_to_json}
+  return v2
+== fn fork_named_branches_input_decoder/0 origin=codec_template(RecordTrio, ForkNamedBranchesInput, record#7) ==
+  sig: () -> Decoder(fork_named_branches.ForkNamedBranchesInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_named_branches_outcome_codec/0 origin=codec_template(UnionTrio, ForkNamedBranchesOutcome, union#8) ==
+  sig: () -> Codec(fork_named_branches.ForkNamedBranchesOutcome)
+  v0 = make_closure fork_named_branches_outcome_to_json captures=[]
+  v1 = call_local fork_named_branches_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_named_branches_outcome_to_json/1 origin=codec_template(UnionTrio, ForkNamedBranchesOutcome, union#8) ==
+  sig: (fork_named_branches.ForkNamedBranchesOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fork_named_branches_outcome_decoder/0 origin=codec_template(UnionTrio, ForkNamedBranchesOutcome, union#8) ==
+  sig: () -> Decoder(fork_named_branches.ForkNamedBranchesOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn assemble_activity/2 origin=activity_wrapper(assemble, raw=false) ==
+  sig: (String, List(String)) -> Activity(fork_named_branches.AssembleInput, fork_named_branches.Dossier)
+  T-ACT action=assemble input_codec=assemble_input_codec return=dossier_codec
+== fn fetch_history_activity/1 origin=activity_wrapper(fetch_history, raw=false) ==
+  sig: (String) -> Activity(fork_named_branches.FetchHistoryInput, fork_named_branches.History)
+  T-ACT action=fetch_history input_codec=fetch_history_input_codec return=history_codec
+== fn fetch_profile_activity/1 origin=activity_wrapper(fetch_profile, raw=false) ==
+  sig: (String) -> Activity(fork_named_branches.FetchProfileInput, fork_named_branches.Profile)
+  T-ACT action=fetch_profile input_codec=fetch_profile_input_codec return=profile_codec
+== fn fetch_history_activity_raw/1 origin=activity_wrapper(fetch_history, raw=true) ==
+  sig: (String) -> Activity(String, String)
+  T-ACTRAW action=fetch_history input_codec=fetch_history_input_codec
+== fn fetch_profile_activity_raw/1 origin=activity_wrapper(fetch_profile, raw=true) ==
+  sig: (String) -> Activity(String, String)
+  T-ACTRAW action=fetch_profile input_codec=fetch_profile_input_codec
+== fn step_gather/1 origin=region(gather) ==
+  sig: (String) -> Result(fork_named_branches.ForkNamedBranchesOutcome, AwlError)
+  v1 = call_local fetch_profile_activity_raw(v0) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#0) live_after=[v0]
+  v3 = call_local fetch_history_activity_raw(v0) live_after=[v2]
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#1) live_after=[v2]
+  v5 = list([v2, v4])
+  v6 = call_rt aion@workflow:all/1(v5)
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6)
+  v8 = try_bind v7
+  assert_list [v9, v10] = v8
+  v11 = call_local profile_codec() live_after=[v9, v10]
+  v12 = call_rt aion@awl@codec:decoded/3(v11, v9, lit#2) live_after=[v10]
+  v13 = try_bind v12 live_after=[v10]
+  v14 = call_local history_codec() live_after=[v10, v13]
+  v15 = call_rt aion@awl@codec:decoded/3(v14, v10, lit#3) live_after=[v13]
+  v16 = try_bind v15 live_after=[v13]
+  tail_local step_build_dossier(v16, v13)
+== fn step_build_dossier/2 origin=chain_step(gather.build_dossier) ==
+  sig: (fork_named_branches.History, fork_named_branches.Profile) -> Result(fork_named_branches.ForkNamedBranchesOutcome, AwlError)
+  v2 = field(v1, 1)
+  v3 = field(v0, 1)
+  v4 = call_local assemble_activity(v2, v3)
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#4)
+  v6 = call_rt aion@workflow:run/1(v5)
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6)
+  v8 = try_bind v7
+  v9 = field(v8, 3)
+  if is_true v9:
+    v10 = field(v8, 1)
+    v11 = field(v8, 2)
+    v12 = field(v8, 3)
+    v13 = record(dossier, [v10, v11, v12])
+    v14 = record(assembled_outcome, [v13])
+    v15 = record(ok, [v14])
+    return v15
+  else:
+    v16 = record(unusable, [lit#5])
+    v17 = call_local unusable_to_json(v16)
+    v18 = call_rt gleam@json:to_string/1(v17)
+    v19 = record(awl_outcome_failure, [lit#6, v18])
+    v20 = record(error, [v19])
+    return v20
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

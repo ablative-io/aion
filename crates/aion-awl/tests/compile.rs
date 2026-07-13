@@ -155,6 +155,51 @@ fn awl_hello_compiles_deterministically_to_the_select_bytes() -> TestResult {
     Ok(())
 }
 
+/// BC-2b-4 flagship BEAM golden: the parallel-action fork fixture compiles
+/// deterministically, the bytes equal the direct MIR path's `select` output,
+/// and they match the committed `fork_action_fanout.beam.hex` golden
+/// chunk-canonically (every chunk byte-equal except `LitT`, compared
+/// decompressed; `AWL_BC2_BLESS=1` re-blesses — never implicit).
+#[test]
+fn fork_action_fanout_compiles_deterministically_to_the_select_bytes() -> TestResult {
+    let (source, root) = read(&fixture("dag-fork/valid/fork_action_fanout.awl"))?;
+    let first = compile(&source, &root).map_err(|error| error.to_string())?;
+    let second = compile(&source, &root).map_err(|error| error.to_string())?;
+
+    assert_eq!(first.workflow_name, "fork_action_fanout");
+    assert!(first.beam_bytes.starts_with(b"FOR1"));
+    assert_eq!(first.beam_bytes, second.beam_bytes, "beam bytes drift");
+    assert_eq!(first, second, "compile is not a pure function of source");
+
+    let document = aion_awl::parse(&source)?;
+    let module = lower(&document, Some(&root))?;
+    assert_eq!(
+        first.beam_bytes,
+        select(&module)?,
+        "compile bytes differ from the direct MIR path"
+    );
+
+    let golden_root = manifest_dir().join("tests/mir-goldens/dag-fork/valid");
+    let beam_golden = golden_root.join("fork_action_fanout.beam.hex");
+    let beam_hex = hex(&first.beam_bytes);
+    if std::env::var("AWL_BC2_BLESS").is_ok() {
+        fs::write(&beam_golden, &beam_hex)?;
+    }
+    let expected = fs::read_to_string(&beam_golden).map_err(|error| {
+        format!(
+            "missing beam golden {} (run with AWL_BC2_BLESS=1 to create): {error}",
+            beam_golden.display()
+        )
+    })?;
+    beam_equivalent(&first.beam_bytes, &unhex(&expected)?)?;
+    assert_eq!(
+        hex(&first.sidecar_bytes),
+        fs::read_to_string(golden_root.join("fork_action_fanout.gleam_types.hex"))?,
+        "sidecar bytes differ from the committed golden"
+    );
+    Ok(())
+}
+
 /// Obligation 2: the derived contracts. The input schema is the existing
 /// start-contract derivation; the output schema matches the hand-authored
 /// reference envelope exactly (`Value` equality is key-order-insensitive).

@@ -232,8 +232,16 @@ Valid:
 - `dag-fork/valid/after_multi_diamond.awl` — diamond: two parallel steps sharing `after gather`,
   `after claims, citations` join.
 - `dag-fork/valid/fall_through_chain.awl` — pure fall-through, no after/route until final pipe.
+- `dag-fork/valid/fork_action_fanout.awl` — parallel action collection fork
+  (the doc-certification shape): one unbound action call with a captured free
+  name, `join -> name` feeding the route payload directly (no combinators —
+  the BC-2b-4 direct-lowering flagship, BEAM-golden'd).
 - `dag-fork/valid/fork_collection_join.awl` — `fork x in xs … join -> name`,
   count/filter/is-empty discrimination.
+- `dag-fork/valid/fork_named_homogeneous.awl` — bare `fork`, two branches of
+  the SAME action → one typed `workflow.all`, source-order destructure.
+- `dag-fork/valid/fork_sequential_route.awl` — `sequential` collection fork
+  whose joined list routes directly (no combinators — direct-lowerable).
 - `dag-fork/valid/fork_named_branches.awl` — bare `fork` heterogeneous branches with per-branch
   bindings, bare `join` (no `->`), branch bindings consumed downstream.
 - `dag-fork/valid/fork_sequential.awl` — `fork x in xs sequential … join -> name`.
@@ -253,6 +261,8 @@ Invalid (all CHECK — the family's required errors are semantic):
   (backward-edge route line).
 - `unreachable_step.awl` — step no route targets, below a step that always pipe-routes →
   CHECK "orphan" @15.
+- `fork_non_list_collection.awl` — `fork item in doc` over a bare record →
+  CHECK "needs a list" @13.
 
 Note: dag-fork route-cycle sidecars pin "bound", loop-outcomes' mixed-cycle pins "cycle" — the
 diagnostic wording must carry both (e.g. "route cycle without a bound").

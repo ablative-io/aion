@@ -4,7 +4,7 @@
 //! fail-0 is `Increment`'s `gc_bif2`, where a non-integer must raise
 //! `badarith` exactly as Gleam's `+` would.
 
-use beamr::loader::decode::{BifOp, ComparisonOp, Instruction, Operand};
+use beamr::loader::decode::{BifOp, ComparisonOp, Instruction, Operand, TypeTestOp};
 
 use crate::mir::RuntimeFn;
 use crate::mir::{BoolBin, CmpOp, Var};
@@ -197,5 +197,107 @@ fn comparison_op(op: CmpOp) -> (ComparisonOp, bool) {
         CmpOp::Ge | CmpOp::FGe => (ComparisonOp::Ge, false),
         CmpOp::Le | CmpOp::FLe => (ComparisonOp::Ge, true),
         CmpOp::Gt | CmpOp::FGt => (ComparisonOp::Lt, true),
+    }
+}
+
+impl Emit<'_, '_> {
+    /// One cons cell onto an existing tail (`[head, ..tail]` — the sequential
+    /// fork fold's accumulator prepend).
+    pub(super) fn cons(&mut self, dst: Var, head: &Src, tail: &Src) -> Result<(), SelectError> {
+        self.push(Instruction::TestHeap {
+            heap_need: Operand::Unsigned(2),
+            live: Operand::Unsigned(0),
+        });
+        let head_operand = if let Some(operand) = Self::immediate(head) {
+            operand
+        } else {
+            self.reload(head, 1)?;
+            Operand::X(1)
+        };
+        let tail_operand = if let Some(operand) = Self::immediate(tail) {
+            operand
+        } else {
+            self.reload(tail, 2)?;
+            Operand::X(2)
+        };
+        self.push(Instruction::PutList {
+            head: head_operand,
+            tail: tail_operand,
+            destination: Operand::X(0),
+        });
+        self.store(dst)
+    }
+
+    /// `let assert [a, b, …] = list` — unrolled head/tail extraction with an
+    /// exact-length `is_nil` check; any mismatch is an explicit `badmatch`
+    /// trap (the Gleam `let assert` shape, mirroring `assert_some`).
+    pub(super) fn assert_list(
+        &mut self,
+        binds: &[Option<Var>],
+        list: Var,
+    ) -> Result<(), SelectError> {
+        let fail = self.builder.fresh_label();
+        let done = self.builder.fresh_label();
+        self.push(Instruction::Move {
+            source: Operand::Y(self.home(list)?),
+            destination: Operand::X(0),
+        });
+        for bind in binds {
+            self.push(Instruction::TypeTest {
+                op: TypeTestOp::IsNonemptyList,
+                fail: Operand::Label(fail),
+                value: Operand::X(0),
+            });
+            self.push(Instruction::GetList {
+                source: Operand::X(0),
+                head: Operand::X(1),
+                tail: Operand::X(2),
+            });
+            if let Some(var) = bind {
+                self.push(Instruction::Move {
+                    source: Operand::X(1),
+                    destination: Operand::Y(self.home(*var)?),
+                });
+            }
+            self.push(Instruction::Move {
+                source: Operand::X(2),
+                destination: Operand::X(0),
+            });
+        }
+        self.push(Instruction::TypeTest {
+            op: TypeTestOp::IsNil,
+            fail: Operand::Label(fail),
+            value: Operand::X(0),
+        });
+        self.push(Instruction::Jump {
+            target: Operand::Label(done),
+        });
+        self.push(Instruction::Label { label: fail });
+        self.push(Instruction::Badmatch {
+            value: Operand::X(0),
+        });
+        self.push(Instruction::Label { label: done });
+        Ok(())
+    }
+}
+
+impl Emit<'_, '_> {
+    /// `call_fun` of a closure value: args in `x0..k-1`, the fun in `x(k)`
+    /// (the T-ACTRAW input-codec `encode` invocation).
+    pub(super) fn call_fun(
+        &mut self,
+        dst: Option<Var>,
+        fun: &Src,
+        args: &[Src],
+    ) -> Result<(), SelectError> {
+        let arity = self.marshal(args)?;
+        self.reload(fun, u32::from(arity))?;
+        self.push(Instruction::CallFun {
+            arity: Operand::Unsigned(u64::from(arity)),
+        });
+        if let Some(dst) = dst {
+            self.store(dst)?;
+        }
+        Ok(())
     }
 }

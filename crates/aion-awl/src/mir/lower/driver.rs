@@ -82,15 +82,20 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
 
     let mut ctx = Ctx::new(&emitter, &plan, module_name.clone());
     let mut skeleton = build::skeleton(&mut ctx)?;
-    let mut loop_slots = super::loops::LoopSlots::new(skeleton.plan.loops.clone());
+    let mut slots = super::slots::Slots {
+        loops: super::loops::LoopSlots::new(skeleton.plan.loops.clone()),
+        forks: super::slots::ForkSlots::new(skeleton.plan.forks.clone()),
+    };
     flow::lower_regions(
         &mut ctx,
         &skeleton.plan,
         &mut skeleton.functions,
-        &mut loop_slots,
+        &mut slots,
     )?;
-    // Loop bodies fill their skeleton-reserved slots after every chain fn.
-    loop_slots.append_into(&mut skeleton.functions)?;
+    // Loop bodies fill their skeleton-reserved slots after every chain fn;
+    // fork-lifted bodies follow after every loop fn (the reserved order).
+    slots.loops.append_into(&mut skeleton.functions)?;
+    slots.forks.append_into(&mut skeleton.functions)?;
     // The shared dead-body function (T-DEAD) is a real, sidecar-visible entry
     // (S8): append exactly one when the module has any activity to close over.
     if !skeleton.plan.activities.is_empty() {

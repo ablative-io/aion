@@ -30,16 +30,20 @@ fn zero_src() -> crate::Span {
     }
 }
 
-/// Build the activity call: `<action>_activity(args) |> config |>
-/// workflow.run |> map_activity_error`, then `TryBind`. `piped` supplies the
-/// single argument for a pipe stage; otherwise arguments come from `call.args`.
-pub(super) fn activity_call(
+/// Build the UNRUN configured activity value: `<action>_activity(args) |>
+/// config` (retry/timeout/`task_queue`/node), without `workflow.run`. This is
+/// the value `workflow.map`/`workflow.all` fan-outs take directly; `raw`
+/// selects the wire-identical raw wrapper twin (`Activity(String, String)`)
+/// heterogeneous named forks dispatch through. `piped` supplies the single
+/// argument for a pipe stage; otherwise arguments come from `call.args`.
+pub(super) fn activity_value(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     call: &Call,
     piped: Option<(Value, GType)>,
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
+    raw: bool,
 ) -> Result<Var, LowerError> {
     let Some(&(queue, decl)) = ctx.emitter.actions.get(call.name.as_str()) else {
         return Err(LowerError::unsupported(
@@ -74,7 +78,16 @@ pub(super) fn activity_call(
             arg_values.push(value);
         }
     }
-    let wrapper = plan.activities[call.name.as_str()];
+    let wrapper = if raw {
+        *plan
+            .raw_activities
+            .get(call.name.as_str())
+            .ok_or_else(|| LowerError::Planning {
+                message: format!("raw wrapper for `{}` was never planned", call.name),
+            })?
+    } else {
+        plan.activities[call.name.as_str()]
+    };
     let activity = ctx.fresh_var();
     stmts.push(Stmt::CallLocal {
         dst: Some(activity),
@@ -83,14 +96,28 @@ pub(super) fn activity_call(
         live_after: LiveAfter::default(),
         span: Span::from_source(call.name_span),
     });
-    let queued = apply_action_config(
+    apply_action_config(
         ctx,
         config.as_ref(),
         activity,
         &queue,
         stmts,
         call.name_span,
-    )?;
+    )
+}
+
+/// Build the activity call: `<action>_activity(args) |> config |>
+/// workflow.run |> map_activity_error`, then `TryBind`. `piped` supplies the
+/// single argument for a pipe stage; otherwise arguments come from `call.args`.
+pub(super) fn activity_call(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    call: &Call,
+    piped: Option<(Value, GType)>,
+    scope: &Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<Var, LowerError> {
+    let queued = activity_value(ctx, plan, call, piped, scope, stmts, false)?;
     let ran = call_rt(
         ctx,
         RuntimeFn::WfRun,

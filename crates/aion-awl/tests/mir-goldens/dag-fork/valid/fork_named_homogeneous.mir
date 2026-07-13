@@ -1,0 +1,126 @@
+module fork_named_homogeneous source=fork_named_homogeneous.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_gather:
+    aion@activity:task_queue/2 [activities] (v2, lit#0)
+    aion@activity:task_queue/2 [activities] (v4, lit#1)
+    aion@workflow:all/1 [activities] (v6)
+== durable families == activities
+== atoms ==
+  [0] snapshot
+  [1] compared
+  [2] probe_region_input
+  [3] fork_named_homogeneous_input
+  [4] compared_outcome
+  [5] ok
+== types ==
+  record Snapshot tag=snapshot
+    region: string
+    healthy: bool
+  record Compared tag=compared
+    first: ref(Snapshot)
+    second: ref(Snapshot)
+  record ProbeRegionInput tag=probe_region_input
+    region: string
+  record ForkNamedHomogeneousInput tag=fork_named_homogeneous_input
+    primary: string
+    secondary: string
+  union ForkNamedHomogeneousOutcome
+    compared -> compared_outcome(ref(Compared))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fork_named_homogeneous_input_codec output=fork_named_homogeneous_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fork_named_homogeneous.ForkNamedHomogeneousInput, fork_named_homogeneous.ForkNamedHomogeneousOutcome, AwlError)
+  T-DEF name="fork_named_homogeneous" input=fork_named_homogeneous_input_codec output=fork_named_homogeneous_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fork_named_homogeneous.ForkNamedHomogeneousInput) -> Result(fork_named_homogeneous.ForkNamedHomogeneousOutcome, AwlError)
+  T-EXEC fields=[primary:String, secondary:String] entry=step_gather args=[0, 1]
+== fn snapshot_codec/0 origin=codec_template(RecordTrio, Snapshot, record#0) ==
+  sig: () -> Codec(fork_named_homogeneous.Snapshot)
+  v0 = make_closure snapshot_to_json captures=[]
+  v1 = call_local snapshot_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn snapshot_to_json/1 origin=codec_template(RecordTrio, Snapshot, record#0) ==
+  sig: (fork_named_homogeneous.Snapshot) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"region": v1|>awlc.string_to_json, "healthy": v2|>awlc.bool_to_json}
+  return v3
+== fn snapshot_decoder/0 origin=codec_template(RecordTrio, Snapshot, record#0) ==
+  sig: () -> Decoder(fork_named_homogeneous.Snapshot)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn compared_codec/0 origin=codec_template(RecordTrio, Compared, record#1) ==
+  sig: () -> Codec(fork_named_homogeneous.Compared)
+  v0 = make_closure compared_to_json captures=[]
+  v1 = call_local compared_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn compared_to_json/1 origin=codec_template(RecordTrio, Compared, record#1) ==
+  sig: (fork_named_homogeneous.Compared) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"first": v1|>snapshot_to_json, "second": v2|>snapshot_to_json}
+  return v3
+== fn compared_decoder/0 origin=codec_template(RecordTrio, Compared, record#1) ==
+  sig: () -> Decoder(fork_named_homogeneous.Compared)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn probe_region_input_codec/0 origin=codec_template(RecordTrio, ProbeRegionInput, record#2) ==
+  sig: () -> Codec(fork_named_homogeneous.ProbeRegionInput)
+  v0 = make_closure probe_region_input_to_json captures=[]
+  v1 = call_local probe_region_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn probe_region_input_to_json/1 origin=codec_template(RecordTrio, ProbeRegionInput, record#2) ==
+  sig: (fork_named_homogeneous.ProbeRegionInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"region": v1|>awlc.string_to_json}
+  return v2
+== fn probe_region_input_decoder/0 origin=codec_template(RecordTrio, ProbeRegionInput, record#2) ==
+  sig: () -> Decoder(fork_named_homogeneous.ProbeRegionInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_named_homogeneous_input_codec/0 origin=codec_template(RecordTrio, ForkNamedHomogeneousInput, record#3) ==
+  sig: () -> Codec(fork_named_homogeneous.ForkNamedHomogeneousInput)
+  v0 = make_closure fork_named_homogeneous_input_to_json captures=[]
+  v1 = call_local fork_named_homogeneous_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_named_homogeneous_input_to_json/1 origin=codec_template(RecordTrio, ForkNamedHomogeneousInput, record#3) ==
+  sig: (fork_named_homogeneous.ForkNamedHomogeneousInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"primary": v1|>awlc.string_to_json, "secondary": v2|>awlc.string_to_json}
+  return v3
+== fn fork_named_homogeneous_input_decoder/0 origin=codec_template(RecordTrio, ForkNamedHomogeneousInput, record#3) ==
+  sig: () -> Decoder(fork_named_homogeneous.ForkNamedHomogeneousInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_named_homogeneous_outcome_codec/0 origin=codec_template(UnionTrio, ForkNamedHomogeneousOutcome, union#4) ==
+  sig: () -> Codec(fork_named_homogeneous.ForkNamedHomogeneousOutcome)
+  v0 = make_closure fork_named_homogeneous_outcome_to_json captures=[]
+  v1 = call_local fork_named_homogeneous_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_named_homogeneous_outcome_to_json/1 origin=codec_template(UnionTrio, ForkNamedHomogeneousOutcome, union#4) ==
+  sig: (fork_named_homogeneous.ForkNamedHomogeneousOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fork_named_homogeneous_outcome_decoder/0 origin=codec_template(UnionTrio, ForkNamedHomogeneousOutcome, union#4) ==
+  sig: () -> Decoder(fork_named_homogeneous.ForkNamedHomogeneousOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn probe_region_activity/1 origin=activity_wrapper(probe_region, raw=false) ==
+  sig: (String) -> Activity(fork_named_homogeneous.ProbeRegionInput, fork_named_homogeneous.Snapshot)
+  T-ACT action=probe_region input_codec=probe_region_input_codec return=snapshot_codec
+== fn step_gather/2 origin=region(gather) ==
+  sig: (String, String) -> Result(fork_named_homogeneous.ForkNamedHomogeneousOutcome, AwlError)
+  v2 = call_local probe_region_activity(v0) live_after=[v1]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#0) live_after=[v1]
+  v4 = call_local probe_region_activity(v1) live_after=[v3]
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#1) live_after=[v3]
+  v6 = list([v3, v5])
+  v7 = call_rt aion@workflow:all/1(v6)
+  v8 = call_rt aion@awl@error:map_activity_error/1(v7)
+  v9 = try_bind v8
+  assert_list [v10, v11] = v9
+  v12 = record(compared, [v10, v11])
+  v13 = record(compared_outcome, [v12])
+  v14 = record(ok, [v13])
+  return v14
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

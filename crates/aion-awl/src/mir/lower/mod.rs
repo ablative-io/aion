@@ -8,8 +8,12 @@ mod ctx;
 mod driver;
 mod expr;
 mod flow;
+mod fork_named;
+mod forks;
 mod liveness;
 mod loops;
 mod outcome;
+mod slots;
+mod wrappers;
 
 pub use driver::{LowerError, lower};

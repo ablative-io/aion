@@ -212,9 +212,12 @@ pub(super) fn lower_shell(
             return_codec,
             ..
         } => shell_activity(builder, action, *input, *input_codec, return_codec, &header),
-        TemplateFn::ActivityWrapperRaw { .. } => {
-            Err(SelectError::unsupported("T-ACTRAW shell", Span::zero()))
-        }
+        TemplateFn::ActivityWrapperRaw {
+            action,
+            input,
+            input_codec,
+            ..
+        } => shell_activity_raw(builder, action, *input, *input_codec, &header),
         TemplateFn::SignalRef { .. } => Err(SelectError::unsupported("T-SIG shell", Span::zero())),
         TemplateFn::DeadBody => shell_dead(builder, &header),
         TemplateFn::ChildWitness => Err(SelectError::unsupported("T-WIT shell", Span::zero())),
@@ -364,6 +367,77 @@ fn shell_activity(
             Src::Var(record),
             Src::Var(input_codec),
             Src::Var(return_codec),
+            Src::Var(dead_var),
+        ],
+    };
+    Ok(shell.finish(tail, header))
+}
+
+/// T-ACTRAW: the raw twin of T-ACT (`emitter/wrappers.rs::raw_wrapper`): the
+/// same action name and the same wire bytes — the input record is encoded
+/// with the action's own input codec (`codec.encode(record)`, one `call_fun`
+/// of the codec's encode field) — but typed `Activity(String, String)` via
+/// `awlc.raw()` twice, so differently-typed parallel branches share one
+/// `workflow.all` list.
+fn shell_activity_raw(
+    builder: &mut Builder<'_>,
+    action: &str,
+    input: crate::mir::TypeShapeRef,
+    input_codec: FnRef,
+    header: &Header,
+) -> Result<Body, SelectError> {
+    let name_lit = builder.binary_literal(action.as_bytes().to_vec());
+    let tag = record_tag(builder.module, input)?;
+    let tag_atom = builder.mir_atom(tag)?;
+    let dead_ref = find_dead(builder.module)?;
+    let mut shell = Shell::new(builder, header.param_count);
+    let codec = shell.local_codec(input_codec);
+    // `Codec(encode, decode)`: the encode fn sits at element 1 (tag at 0).
+    let encode = shell.fresh();
+    shell.steps.push(Step::FieldGet {
+        dst: encode,
+        base: codec,
+        index: 1,
+    });
+    let record = shell.fresh();
+    let params = (0..header.param_count)
+        .map(crate::mir::Var)
+        .map(Src::Var)
+        .collect();
+    shell.steps.push(Step::Record {
+        dst: record,
+        tag: tag_atom,
+        args: params,
+    });
+    let encoded = shell.fresh();
+    shell.steps.push(Step::CallFun {
+        dst: Some(encoded),
+        fun: Src::Var(encode),
+        args: vec![Src::Var(record)],
+    });
+    let raw_input = shell.fresh();
+    let raw_input_step = shell.import_call(raw_input, RuntimeFn::RawCodec)?;
+    shell.steps.push(raw_input_step);
+    let raw_return = shell.fresh();
+    let raw_return_step = shell.import_call(raw_return, RuntimeFn::RawCodec)?;
+    shell.steps.push(raw_return_step);
+    let dead_name = shell.builder.atom(DEAD_NAME);
+    let dead_label = Builder::fn_labels(dead_ref).body;
+    let dead = shell.builder.lambda(dead_name, 1, dead_label, 0);
+    let dead_var = shell.fresh();
+    shell.steps.push(Step::MakeClosure {
+        dst: dead_var,
+        lambda: dead,
+        captures: Vec::new(),
+    });
+    let tail = TailKind::TailImport {
+        import: shell.builder.import(RuntimeFn::ActNew)?,
+        arity: 5,
+        args: vec![
+            Src::Lit(name_lit),
+            Src::Var(encoded),
+            Src::Var(raw_input),
+            Src::Var(raw_return),
             Src::Var(dead_var),
         ],
     };

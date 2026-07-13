@@ -33,6 +33,7 @@ use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_expr};
 use super::flow::lower_statement;
 use super::outcome::lower_condition;
+use super::slots::Slots;
 
 /// The reserved loop function slots (skeleton-planned, pre-order) and the
 /// bodies built while regions lower. `FnRef(n)` is literally `functions[n]`,
@@ -78,10 +79,13 @@ impl LoopSlots {
 /// steps in layer order, statements in written order with the same
 /// early-stop as `lower_step` (nothing after a terminal route lowers), and
 /// pre-order into nested loop bodies (a loop takes its ordinal before its
-/// body lowers — the reference `loop_counter` discipline). Fork and substep
-/// bodies are deliberately not traversed while those shapes refuse before
-/// consuming slots; their lowering increments must extend this inventory in
-/// the same change.
+/// body lowers — the reference `loop_counter` discipline). Fork bodies are
+/// deliberately not traversed: the lowerable fork shapes hold exactly one
+/// call statement (never a loop), so no loop slot can hide there — fork
+/// functions have their own parallel inventory (`forks::count_fork_fns`).
+/// Substep bodies stay untraversed while substeps refuse before consuming
+/// slots; their lowering increment must extend this inventory in the same
+/// change.
 pub(super) fn count_loops(statements: &[Statement]) -> u32 {
     let mut count = 0;
     for statement in statements {
@@ -104,7 +108,7 @@ pub(super) fn lower_loop_stmt(
     looped: &LoopStmt,
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<(), LowerError> {
     preflight(looped, scope)?;
     let Some(max) = &looped.max else {
@@ -119,9 +123,10 @@ pub(super) fn lower_loop_stmt(
     let (max_value, _) = lower_expr(ctx, &max.expr, scope, stmts)?;
     let free = free_names(looped, scope);
 
-    let ordinal = slots.next;
-    slots.next += 1;
+    let ordinal = slots.loops.next;
+    slots.loops.next += 1;
     let self_ref = *slots
+        .loops
         .refs
         .get(ordinal)
         .ok_or_else(|| LowerError::Planning {
@@ -139,7 +144,7 @@ pub(super) fn lower_loop_stmt(
         ordinal,
     };
     let function = lower_loop_fn(ctx, &build, slots)?;
-    slots.built[ordinal] = Some(MirFn::Flow(function));
+    slots.loops.built[ordinal] = Some(MirFn::Flow(function));
 
     // Call site: count starts at 0; the worker never sees it.
     let mut args = vec![seed_value, Value::Int(0), max_value];
@@ -279,7 +284,7 @@ struct LoopControl {
 fn lower_loop_fn(
     ctx: &mut Ctx<'_>,
     build: &LoopBuild<'_>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<FlowFn, LowerError> {
     let saved = ctx.swap_var_counter(0);
     let result = build_loop_fn(ctx, build, slots);
@@ -290,7 +295,7 @@ fn lower_loop_fn(
 fn build_loop_fn(
     ctx: &mut Ctx<'_>,
     build: &LoopBuild<'_>,
-    slots: &mut LoopSlots,
+    slots: &mut Slots,
 ) -> Result<FlowFn, LowerError> {
     let plan = build.plan;
     let step = build.step;

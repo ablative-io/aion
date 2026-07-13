@@ -1,0 +1,144 @@
+module fork_action_fanout source=fork_action_fanout.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_fan_out:
+    aion@workflow:map/2 [activities] (v0, v2)
+  fan_out_fork_0:
+    aion@activity:task_queue/2 [activities] (v2, lit#0)
+== durable families == activities
+== atoms ==
+  [0] half
+  [1] report
+  [2] reviewed
+  [3] review_half_input
+  [4] fork_action_fanout_input
+  [5] reviewed_outcome
+  [6] ok
+== types ==
+  record Half tag=half
+    name: string
+    body: string
+  record Report tag=report
+    name: string
+    ok: bool
+  record Reviewed tag=reviewed
+    reports: list(ref(Report))
+  record ReviewHalfInput tag=review_half_input
+    half: ref(Half)
+    revision: string
+  record ForkActionFanoutInput tag=fork_action_fanout_input
+    halves: list(ref(Half))
+    revision: string
+  union ForkActionFanoutOutcome
+    reviewed -> reviewed_outcome(ref(Reviewed))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fork_action_fanout_input_codec output=fork_action_fanout_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fork_action_fanout.ForkActionFanoutInput, fork_action_fanout.ForkActionFanoutOutcome, AwlError)
+  T-DEF name="fork_action_fanout" input=fork_action_fanout_input_codec output=fork_action_fanout_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fork_action_fanout.ForkActionFanoutInput) -> Result(fork_action_fanout.ForkActionFanoutOutcome, AwlError)
+  T-EXEC fields=[halves:List(fork_action_fanout.Half), revision:String] entry=step_fan_out args=[0, 1]
+== fn half_codec/0 origin=codec_template(RecordTrio, Half, record#0) ==
+  sig: () -> Codec(fork_action_fanout.Half)
+  v0 = make_closure half_to_json captures=[]
+  v1 = call_local half_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn half_to_json/1 origin=codec_template(RecordTrio, Half, record#0) ==
+  sig: (fork_action_fanout.Half) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "body": v2|>awlc.string_to_json}
+  return v3
+== fn half_decoder/0 origin=codec_template(RecordTrio, Half, record#0) ==
+  sig: () -> Decoder(fork_action_fanout.Half)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn report_codec/0 origin=codec_template(RecordTrio, Report, record#1) ==
+  sig: () -> Codec(fork_action_fanout.Report)
+  v0 = make_closure report_to_json captures=[]
+  v1 = call_local report_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn report_to_json/1 origin=codec_template(RecordTrio, Report, record#1) ==
+  sig: (fork_action_fanout.Report) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "ok": v2|>awlc.bool_to_json}
+  return v3
+== fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#1) ==
+  sig: () -> Decoder(fork_action_fanout.Report)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn reviewed_codec/0 origin=codec_template(RecordTrio, Reviewed, record#2) ==
+  sig: () -> Codec(fork_action_fanout.Reviewed)
+  v0 = make_closure reviewed_to_json captures=[]
+  v1 = call_local reviewed_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn reviewed_to_json/1 origin=codec_template(RecordTrio, Reviewed, record#2) ==
+  sig: (fork_action_fanout.Reviewed) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reports": v1|>awlc.nil_to_json}
+  return v2
+== fn reviewed_decoder/0 origin=codec_template(RecordTrio, Reviewed, record#2) ==
+  sig: () -> Decoder(fork_action_fanout.Reviewed)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn review_half_input_codec/0 origin=codec_template(RecordTrio, ReviewHalfInput, record#3) ==
+  sig: () -> Codec(fork_action_fanout.ReviewHalfInput)
+  v0 = make_closure review_half_input_to_json captures=[]
+  v1 = call_local review_half_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn review_half_input_to_json/1 origin=codec_template(RecordTrio, ReviewHalfInput, record#3) ==
+  sig: (fork_action_fanout.ReviewHalfInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"half": v1|>half_to_json, "revision": v2|>awlc.string_to_json}
+  return v3
+== fn review_half_input_decoder/0 origin=codec_template(RecordTrio, ReviewHalfInput, record#3) ==
+  sig: () -> Decoder(fork_action_fanout.ReviewHalfInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_action_fanout_input_codec/0 origin=codec_template(RecordTrio, ForkActionFanoutInput, record#4) ==
+  sig: () -> Codec(fork_action_fanout.ForkActionFanoutInput)
+  v0 = make_closure fork_action_fanout_input_to_json captures=[]
+  v1 = call_local fork_action_fanout_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_action_fanout_input_to_json/1 origin=codec_template(RecordTrio, ForkActionFanoutInput, record#4) ==
+  sig: (fork_action_fanout.ForkActionFanoutInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"halves": v1|>awlc.nil_to_json, "revision": v2|>awlc.string_to_json}
+  return v3
+== fn fork_action_fanout_input_decoder/0 origin=codec_template(RecordTrio, ForkActionFanoutInput, record#4) ==
+  sig: () -> Decoder(fork_action_fanout.ForkActionFanoutInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn fork_action_fanout_outcome_codec/0 origin=codec_template(UnionTrio, ForkActionFanoutOutcome, union#5) ==
+  sig: () -> Codec(fork_action_fanout.ForkActionFanoutOutcome)
+  v0 = make_closure fork_action_fanout_outcome_to_json captures=[]
+  v1 = call_local fork_action_fanout_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_action_fanout_outcome_to_json/1 origin=codec_template(UnionTrio, ForkActionFanoutOutcome, union#5) ==
+  sig: (fork_action_fanout.ForkActionFanoutOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn fork_action_fanout_outcome_decoder/0 origin=codec_template(UnionTrio, ForkActionFanoutOutcome, union#5) ==
+  sig: () -> Decoder(fork_action_fanout.ForkActionFanoutOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn review_half_activity/2 origin=activity_wrapper(review_half, raw=false) ==
+  sig: (fork_action_fanout.Half, String) -> Activity(fork_action_fanout.ReviewHalfInput, fork_action_fanout.Report)
+  T-ACT action=review_half input_codec=review_half_input_codec return=report_codec
+== fn step_fan_out/2 origin=region(fan_out) ==
+  sig: (List(fork_action_fanout.Half), String) -> Result(fork_action_fanout.ForkActionFanoutOutcome, AwlError)
+  v2 = make_closure fan_out_fork_0 captures=[v1]
+  v3 = call_rt aion@workflow:map/2(v0, v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(reviewed, [v5])
+  v7 = record(reviewed_outcome, [v6])
+  v8 = record(ok, [v7])
+  return v8
+== fn fan_out_fork_0/2 origin=fork(fan_out#0) ==
+  sig: (fork_action_fanout.Half, String) -> Activity(fork_action_fanout.ReviewHalfInput, fork_action_fanout.Report)
+  v2 = call_local review_half_activity(v0, v1)
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#0)
+  return v3
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

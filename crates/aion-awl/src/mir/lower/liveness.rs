@@ -124,7 +124,12 @@ fn uses(stmt: &Stmt) -> BTreeSet<Var> {
         Stmt::TryBind { result, .. } => BTreeSet::from([*result]),
         Stmt::Cmp { lhs, rhs, .. }
         | Stmt::BoolOp { lhs, rhs, .. }
-        | Stmt::Concat { lhs, rhs, .. } => {
+        | Stmt::Concat { lhs, rhs, .. }
+        | Stmt::ListPrepend {
+            head: lhs,
+            tail: rhs,
+            ..
+        } => {
             let mut set = single(lhs);
             set.extend(single(rhs));
             set

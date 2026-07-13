@@ -1,0 +1,19 @@
+//! Fan one review per half over the worker pool — the doc-certification shape.
+workflow fork_action_fanout
+  input halves: [Half]
+  input revision: String
+  outcome reviewed: type Reviewed, route success
+
+type Half     { name: String, body: String }
+type Report   { name: String, ok: Bool }
+type Reviewed { reports: [Report] }
+
+worker review
+  action review_half(half: Half, revision: String) -> Report
+
+step fan_out
+  fork half in halves
+    review_half(half: half, revision: revision)
+  join -> reports
+
+  route reviewed(reports: reports)

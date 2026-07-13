@@ -117,6 +117,11 @@ fn plan_steps(
         if let Some(dst) = step.defined() {
             assign_var(dst, homes, slot);
         }
+        if let Step::AssertList { binds, .. } = step {
+            for bind in binds.iter().flatten() {
+                assign_var(*bind, homes, slot);
+            }
+        }
         if let Step::JsonObj { pairs, .. } = step {
             *needs_acc = *needs_acc || pairs.len() >= 2;
         }
@@ -136,26 +141,6 @@ fn plan_steps(
             }
         }
         TailKind::Return(_) | TailKind::TailImport { .. } | TailKind::TailLocal { .. } => {}
-    }
-}
-
-impl Step {
-    fn defined(&self) -> Option<Var> {
-        match self {
-            Self::FieldGet { dst, .. }
-            | Self::AssertSome { dst, .. }
-            | Self::Record { dst, .. }
-            | Self::Tuple { dst, .. }
-            | Self::Increment { dst, .. }
-            | Self::ListNew { dst, .. }
-            | Self::MakeClosure { dst, .. }
-            | Self::TryBind { dst, .. }
-            | Self::JsonObj { dst, .. }
-            | Self::Cmp { dst, .. }
-            | Self::BoolOp { dst, .. }
-            | Self::Not { dst, .. } => Some(*dst),
-            Self::CallImport { dst, .. } | Self::CallLocal { dst, .. } => *dst,
-        }
     }
 }
 
@@ -278,6 +263,9 @@ impl Emit<'_, '_> {
             Step::Tuple { dst, items } => self.tuple_new(*dst, items)?,
             Step::Increment { dst, src } => self.increment(*dst, *src)?,
             Step::ListNew { dst, items } => self.list_new(*dst, items)?,
+            Step::Cons { dst, head, tail } => self.cons(*dst, head, tail)?,
+            Step::AssertList { binds, list } => self.assert_list(binds, *list)?,
+            Step::CallFun { dst, fun, args } => self.call_fun(*dst, fun, args)?,
             Step::CallImport {
                 dst,
                 import,

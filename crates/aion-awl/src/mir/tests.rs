@@ -67,6 +67,10 @@ fn hex(bytes: &[u8]) -> String {
 const COVERED: &[&str] = &[
     "dag-fork/valid/after_single",
     "dag-fork/valid/fall_through_chain",
+    "dag-fork/valid/fork_action_fanout",
+    "dag-fork/valid/fork_named_branches",
+    "dag-fork/valid/fork_named_homogeneous",
+    "dag-fork/valid/fork_sequential_route",
     "declarations/valid/worker_action_config_lines",
     "declarations/valid/worker_retry_backoff",
     "declarations/valid/worker_single_action",
