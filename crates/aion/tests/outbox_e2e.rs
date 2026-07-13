@@ -1132,12 +1132,21 @@ async fn outbox_late_completion_for_cancelled_ordinal_is_dropped() -> TestResult
         "no completion yet for the cancelled ordinal"
     );
 
+    // Await the terminal result before attempting the late delivery. This is
+    // downstream of process exit and the monitor's retained-map drain, so the
+    // workflow process is now gone.
+    let outcome = engine.result(&workflow_id, &run_id).await?;
+    assert!(
+        outcome.is_err(),
+        "the workflow must retain its failed outcome before late delivery, got {outcome:?}"
+    );
+
     // Deliver a LATE success completion for the SAME cancelled ordinal. The
     // cancellation already terminally resolved the ordinal: this completion can
-    // never become a recorded terminal over the ActivityCancelled. After
-    // fail-fast the run has exited, so the delivery is rejected before reaching
-    // any mailbox (no live pid / process gone) — we tolerate either rejection
-    // form; the assertions below pin the durable outcome regardless.
+    // never become a recorded terminal over the ActivityCancelled. Because the
+    // run terminal has been awaited, the process is gone and delivery is rejected
+    // before reaching any mailbox. We tolerate either rejection form; the
+    // assertions below pin the durable outcome regardless.
     let delivered = deliver(&engine, &cancelled_row);
     assert!(
         !matches!(delivered, Ok(true)),
@@ -1173,12 +1182,11 @@ async fn outbox_late_completion_for_cancelled_ordinal_is_dropped() -> TestResult
         "the cancelled ordinal still has exactly one terminal (the cancellation)"
     );
 
-    // The workflow outcome is unchanged by the late completion: still a
-    // propagated failure (no panic, no flip to success).
-    let outcome = engine.result(&workflow_id, &run_id).await?;
+    // Pin terminal immutability against the rejected late delivery.
+    let outcome_after = engine.result(&workflow_id, &run_id).await?;
     assert!(
-        outcome.is_err(),
-        "a late completion for a cancelled ordinal must not flip the failed outcome, got {outcome:?}"
+        outcome_after.is_err(),
+        "a late completion for a cancelled ordinal must not flip the failed outcome, got {outcome_after:?}"
     );
 
     engine.shutdown()?;
