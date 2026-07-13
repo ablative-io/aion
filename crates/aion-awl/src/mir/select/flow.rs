@@ -109,6 +109,14 @@ fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectErro
                 args,
             })
         }
+        Stmt::TupleNew { dst, items, .. } => Ok(Step::Tuple {
+            dst: *dst,
+            items: srcs(builder, items)?,
+        }),
+        Stmt::Increment { dst, src, .. } => Ok(Step::Increment {
+            dst: *dst,
+            src: *src,
+        }),
         Stmt::ListNew { dst, items, .. } => Ok(Step::ListNew {
             dst: *dst,
             items: srcs(builder, items)?,
@@ -300,7 +308,6 @@ fn unsupported_stmt(stmt: &Stmt) -> SelectError {
         Stmt::BoolOp { span, .. } => ("boolop", *span),
         Stmt::Not { span, .. } => ("not", *span),
         Stmt::Concat { span, .. } => ("concat", *span),
-        Stmt::Increment { span, .. } => ("increment", *span),
         Stmt::AssertList { span, .. } => ("assert_list", *span),
         Stmt::AssertSome { span, .. } => ("assert_some", *span),
         Stmt::IndexGuard { span, .. } => ("index_guard", *span),

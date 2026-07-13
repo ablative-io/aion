@@ -102,6 +102,14 @@ pub enum Stmt {
         args: Vec<Value>,
         span: Span,
     },
+    /// An untagged tuple (`#(a, b)` — the counted-loop `Ok(#(value, count))`
+    /// result). Distinct from `RecordNew`: no tag atom occupies element 0, so
+    /// the Gleam tuple ABI (`TyDesc::Tuple`) is honored exactly.
+    TupleNew {
+        dst: Var,
+        items: Vec<Value>,
+        span: Span,
+    },
     ListNew {
         dst: Var,
         items: Vec<Value>,
@@ -243,6 +251,7 @@ impl Stmt {
             Self::Bind { dst, .. }
             | Self::FieldGet { dst, .. }
             | Self::RecordNew { dst, .. }
+            | Self::TupleNew { dst, .. }
             | Self::ListNew { dst, .. }
             | Self::MakeClosure { dst, .. }
             | Self::TryBind { dst, .. }

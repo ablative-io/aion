@@ -40,6 +40,11 @@ pub(super) struct FnPlan {
     /// Region index to the function refs of its chain steps, one per layer in
     /// chain order; `chains[r][0] == regions[r]`.
     pub(super) chains: Vec<Vec<FnRef>>,
+    /// One reserved slot per bounded loop, in the exact order lowering
+    /// encounters them (regions in plan order, chain steps in layer order,
+    /// statements pre-order — `loops::count_loops`). All loop slots follow
+    /// every chain slot, so loop bodies append after region lowering.
+    pub(super) loops: Vec<FnRef>,
 }
 
 /// The assembled module skeleton, ready for region-body filling.
@@ -265,6 +270,16 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         }
         chains.push(chain);
     }
+    let mut loops = Vec::new();
+    for region in &ctx.plan.regions {
+        for step_index in region.layers.iter().flatten() {
+            let step = &emitter.document.steps[*step_index];
+            for _ in 0..super::loops::count_loops(&step.body) {
+                loops.push(FnRef(next));
+                next += 1;
+            }
+        }
+    }
 
     let plan = FnPlan {
         run: FnRef(0),
@@ -274,6 +289,7 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         activities,
         regions,
         chains,
+        loops,
     };
 
     // Build functions in slot order.

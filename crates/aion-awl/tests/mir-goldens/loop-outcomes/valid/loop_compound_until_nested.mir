@@ -1,0 +1,233 @@
+module settle_draft source=settle_draft.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  settle_loop_0:
+    aion@activity:task_queue/2 [activities] (v6, lit#2)
+    aion@workflow:run/1 [activities] (v7)
+  settle_loop_1:
+    aion@activity:task_queue/2 [activities] (v3, lit#1)
+    aion@workflow:run/1 [activities] (v4)
+== durable families == activities
+== atoms ==
+  [0] detail
+  [1] draft
+  [2] summary
+  [3] inspect_input
+  [4] revise_input
+  [5] settle_draft_input
+  [6] settled_outcome
+  [7] false
+  [8] none
+  [9] ok
+  [10] awl_outcome_failure
+  [11] error
+== types ==
+  record Detail tag=detail
+    approved: bool
+  record Draft tag=draft
+    body: string
+    ready: bool
+    detail: nullable(ref(Detail)) optional
+  record Summary tag=summary
+    body: string
+    rounds: int
+  record InspectInput tag=inspect_input
+    prior: ref(Draft)
+  record ReviseInput tag=revise_input
+    prior: ref(Draft)
+  record SettleDraftInput tag=settle_draft_input
+    max_rounds: int
+    max_checks: int
+  union SettleDraftOutcome
+    settled -> settled_outcome(ref(Summary))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=settle_draft_input_codec output=settle_draft_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(settle_draft.SettleDraftInput, settle_draft.SettleDraftOutcome, AwlError)
+  T-DEF name="settle_draft" input=settle_draft_input_codec output=settle_draft_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (settle_draft.SettleDraftInput) -> Result(settle_draft.SettleDraftOutcome, AwlError)
+  T-EXEC fields=[max_rounds:Int, max_checks:Int] entry=step_settle args=[1, 0]
+== fn detail_codec/0 origin=codec_template(RecordTrio, Detail, record#0) ==
+  sig: () -> Codec(settle_draft.Detail)
+  v0 = make_closure detail_to_json captures=[]
+  v1 = call_local detail_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn detail_to_json/1 origin=codec_template(RecordTrio, Detail, record#0) ==
+  sig: (settle_draft.Detail) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"approved": v1|>awlc.bool_to_json}
+  return v2
+== fn detail_decoder/0 origin=codec_template(RecordTrio, Detail, record#0) ==
+  sig: () -> Decoder(settle_draft.Detail)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn draft_codec/0 origin=codec_template(RecordTrio, Draft, record#1) ==
+  sig: () -> Codec(settle_draft.Draft)
+  v0 = make_closure draft_to_json captures=[]
+  v1 = call_local draft_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn draft_to_json/1 origin=codec_template(RecordTrio, Draft, record#1) ==
+  sig: (settle_draft.Draft) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"body": v1|>awlc.string_to_json, "ready": v2|>awlc.bool_to_json, "detail": v3|>awlc.nil_to_json}
+  return v4
+== fn draft_decoder/0 origin=codec_template(RecordTrio, Draft, record#1) ==
+  sig: () -> Decoder(settle_draft.Draft)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn summary_codec/0 origin=codec_template(RecordTrio, Summary, record#2) ==
+  sig: () -> Codec(settle_draft.Summary)
+  v0 = make_closure summary_to_json captures=[]
+  v1 = call_local summary_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summary_to_json/1 origin=codec_template(RecordTrio, Summary, record#2) ==
+  sig: (settle_draft.Summary) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"body": v1|>awlc.string_to_json, "rounds": v2|>awlc.int_to_json}
+  return v3
+== fn summary_decoder/0 origin=codec_template(RecordTrio, Summary, record#2) ==
+  sig: () -> Decoder(settle_draft.Summary)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn inspect_input_codec/0 origin=codec_template(RecordTrio, InspectInput, record#3) ==
+  sig: () -> Codec(settle_draft.InspectInput)
+  v0 = make_closure inspect_input_to_json captures=[]
+  v1 = call_local inspect_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn inspect_input_to_json/1 origin=codec_template(RecordTrio, InspectInput, record#3) ==
+  sig: (settle_draft.InspectInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"prior": v1|>draft_to_json}
+  return v2
+== fn inspect_input_decoder/0 origin=codec_template(RecordTrio, InspectInput, record#3) ==
+  sig: () -> Decoder(settle_draft.InspectInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn revise_input_codec/0 origin=codec_template(RecordTrio, ReviseInput, record#4) ==
+  sig: () -> Codec(settle_draft.ReviseInput)
+  v0 = make_closure revise_input_to_json captures=[]
+  v1 = call_local revise_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn revise_input_to_json/1 origin=codec_template(RecordTrio, ReviseInput, record#4) ==
+  sig: (settle_draft.ReviseInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"prior": v1|>draft_to_json}
+  return v2
+== fn revise_input_decoder/0 origin=codec_template(RecordTrio, ReviseInput, record#4) ==
+  sig: () -> Decoder(settle_draft.ReviseInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn settle_draft_input_codec/0 origin=codec_template(RecordTrio, SettleDraftInput, record#5) ==
+  sig: () -> Codec(settle_draft.SettleDraftInput)
+  v0 = make_closure settle_draft_input_to_json captures=[]
+  v1 = call_local settle_draft_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn settle_draft_input_to_json/1 origin=codec_template(RecordTrio, SettleDraftInput, record#5) ==
+  sig: (settle_draft.SettleDraftInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"max_rounds": v1|>awlc.int_to_json, "max_checks": v2|>awlc.int_to_json}
+  return v3
+== fn settle_draft_input_decoder/0 origin=codec_template(RecordTrio, SettleDraftInput, record#5) ==
+  sig: () -> Decoder(settle_draft.SettleDraftInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn settle_draft_outcome_codec/0 origin=codec_template(UnionTrio, SettleDraftOutcome, union#6) ==
+  sig: () -> Codec(settle_draft.SettleDraftOutcome)
+  v0 = make_closure settle_draft_outcome_to_json captures=[]
+  v1 = call_local settle_draft_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn settle_draft_outcome_to_json/1 origin=codec_template(UnionTrio, SettleDraftOutcome, union#6) ==
+  sig: (settle_draft.SettleDraftOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn settle_draft_outcome_decoder/0 origin=codec_template(UnionTrio, SettleDraftOutcome, union#6) ==
+  sig: () -> Decoder(settle_draft.SettleDraftOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn inspect_activity/1 origin=activity_wrapper(inspect, raw=false) ==
+  sig: (settle_draft.Draft) -> Activity(settle_draft.InspectInput, settle_draft.Draft)
+  T-ACT action=inspect input_codec=inspect_input_codec return=draft_codec
+== fn revise_activity/1 origin=activity_wrapper(revise, raw=false) ==
+  sig: (settle_draft.Draft) -> Activity(settle_draft.ReviseInput, settle_draft.Draft)
+  T-ACT action=revise input_codec=revise_input_codec return=draft_codec
+== fn step_settle/2 origin=region(settle) ==
+  sig: (Int, Int) -> Result(settle_draft.SettleDraftOutcome, AwlError)
+  v2 = record(draft, [lit#0, 'false', 'none'])
+  v3 = call_local settle_loop_0(v2, 0, v1, v0)
+  v4 = try_bind v3
+  v5 = field(v4, 0)
+  v6 = field(v4, 1)
+  v7 = field(v5, 2)
+  if is_true v7:
+    v8 = field(v5, 1)
+    v9 = record(summary, [v8, v6])
+    v10 = record(settled_outcome, [v9])
+    v11 = record(ok, [v10])
+    return v11
+  else:
+    v12 = field(v5, 1)
+    v13 = record(summary, [v12, v6])
+    v14 = call_local summary_to_json(v13)
+    v15 = call_rt gleam@json:to_string/1(v14)
+    v16 = record(awl_outcome_failure, [lit#4, v15])
+    v17 = record(error, [v16])
+    return v17
+== fn settle_loop_0/4 origin=loop(settle#0) ==
+  sig: (settle_draft.Draft, Int, Int, Int) -> Result(#(settle_draft.Draft, Int), AwlError)
+  v4 = call_local settle_loop_1(v0, 0, v3) live_after=[v1, v2, v3]
+  v5 = try_bind v4 live_after=[v1, v2, v3]
+  v6 = call_local revise_activity(v5) live_after=[v1, v2, v3]
+  v7 = call_rt aion@activity:task_queue/2(v6, lit#2) live_after=[v1, v2, v3]
+  v8 = call_rt aion@workflow:run/1(v7) live_after=[v1, v2, v3]
+  v9 = call_rt aion@awl@error:map_activity_error/1(v8) live_after=[v1, v2, v3]
+  v10 = try_bind v9 live_after=[v1, v2, v3]
+  v11 = increment v1
+  v14 = field(v10, 2)
+  if is_true v14:
+    v16 = field(v10, 1)
+    v15 = cmp Eq v16 lit#3
+    if is_true v15:
+      v12 = tuple([v10, v11])
+      v13 = record(ok, [v12])
+      return v13
+    else:
+      if cmp Ge v11 v2:
+        v12 = tuple([v10, v11])
+        v13 = record(ok, [v12])
+        return v13
+      else:
+        tail_local settle_loop_0(v10, v11, v2, v3)
+  else:
+    if cmp Ge v11 v2:
+      v12 = tuple([v10, v11])
+      v13 = record(ok, [v12])
+      return v13
+    else:
+      tail_local settle_loop_0(v10, v11, v2, v3)
+== fn settle_loop_1/3 origin=loop(settle#1) ==
+  sig: (settle_draft.Draft, Int, Int) -> Result(settle_draft.Draft, AwlError)
+  v3 = call_local inspect_activity(v0) live_after=[v1, v2]
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#1) live_after=[v1, v2]
+  v5 = call_rt aion@workflow:run/1(v4) live_after=[v1, v2]
+  v6 = call_rt aion@awl@error:map_activity_error/1(v5) live_after=[v1, v2]
+  v7 = try_bind v6 live_after=[v1, v2]
+  v8 = field(v7, 3)
+  v9 = increment v1
+  v11 = cmp Eq v8 'none'
+  if is_true v11:
+    v10 = record(ok, [v7])
+    return v10
+  else:
+    v12 = assert_some v8
+    v13 = field(v12, 1)
+    if is_true v13:
+      v10 = record(ok, [v7])
+      return v10
+    else:
+      if cmp Ge v9 v2:
+        v10 = record(ok, [v7])
+        return v10
+      else:
+        tail_local settle_loop_1(v7, v9, v2)
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

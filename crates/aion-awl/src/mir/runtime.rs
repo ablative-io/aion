@@ -98,6 +98,12 @@ pub enum RuntimeFn {
     StrAppend,
     // R1 fallback ONLY (unused in the primary design; marked row in §6).
     ResultTry,
+    // Bif-position only (§6): the Increment burst's `gc_bif2 erlang:'+'`
+    // target. beamr's `Bif` instruction resolves its BIF through the import
+    // table, so this needs an ImpT row like real OTP `.beam` files carry —
+    // but `lower` never mints it as a `CallRt`/`TailRt` callee (`verify`
+    // rejects that alongside `ResultTry`).
+    IntAdd,
 }
 
 impl RuntimeFn {
@@ -174,6 +180,7 @@ impl RuntimeFn {
             Self::CmpBool => ("gleam@bool", "compare", 2),
             Self::StrAppend => ("gleam@string", "append", 2),
             Self::ResultTry => ("gleam@result", "try", 2),
+            Self::IntAdd => ("erlang", "+", 2),
         }
     }
 

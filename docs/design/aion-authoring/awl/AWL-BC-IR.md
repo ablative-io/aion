@@ -40,13 +40,67 @@ covered subset (multi-step sequential regions; action calls incl.
 action-declared retry/timeout/task_queue/node config; sleeps; action/field
 pipes; routes; success/failure outcome returns; ordered `when`/`otherwise`
 `If` tails; enum-total `SelectEnum` tails; short-circuit `and`/`or`/`not`
-decision trees; `Cmp` guards; and `is present` `AssertSome` narrowing), record
-`_to_json` for required leaf/`Ref` fields, the codec-composer trio, the
-T-DEF/T-RUN/T-EXEC/T-ACT/T-SIG template shells,
+decision trees; `Cmp` guards; `is present` `AssertSome` narrowing; and
+**bounded loops** — `FlowFn(Loop)` per the §4 row, skeleton-reserved slots
+after every chain slot, `Increment` + untagged `TupleNew` for counted
+results, the loop `until` reusing the outcome guards' short-circuit decision
+builder), record `_to_json` for required leaf/`Ref` fields, the
+codec-composer trio, the T-DEF/T-RUN/T-EXEC/T-ACT/T-SIG template shells,
 `project_sidecar` (S2, pinned against the SDK type spellings — `SignalRef` in
 `aion/signal`, `WorkflowDefinition` in `aion/workflow/define`), `verify`
 (capability closure + runtime/local-call arity + single-def), and **S14
 backward liveness** (`lower/liveness.rs`).
+
+**Loop semantic decisions (BC-2b-3, pinned by test — the spec is silent or
+the checker/emitter is the law):**
+
+- **Re-entry resets.** A backward route that re-enters a loop-carrying step
+  re-evaluates the seed and calls the loop function with count 0 — the
+  reference emitter's exact behavior (each entry to the step emits the loop
+  call anew). The exam ledger records single-assignment-under-re-entry as
+  UNSTATED spec (F-family) and the bounded-cycle rule as unsound-in-spirit
+  under reset; BC pins the implementation, not an invented spec
+  (`backward_route_reentry_resets_seed_and_count`).
+- **Counted result ABI = untagged `TupleNew`.** `Ok(#(value, count))` needs a
+  dynamic 2-tuple; `RecordNew` would inject a tag atom at element 0 and break
+  the `TyDesc::Tuple`/Gleam ABI. The closed op set gains `TupleNew{dst,items}`
+  (§2.5) with printer/verify/liveness/selection support; the call site
+  destructures with `FieldGet` 0/1 (untagged ⇒ 0-based).
+- **`FnOrigin::Loop.index` is module-global** — the pre-order ordinal across
+  the whole document (regions in plan order, statements pre-order, a loop
+  numbered before its body), matching the stopgap's monotonic `loop_counter`
+  naming `<step>_loop_<n>`.
+- **`until` uses the guard decision builder.** Gleam value-position `&&`/`||`
+  short-circuit, so an eager `BoolOp` lowering of `until` would diverge on an
+  effectful/narrowing RHS — the BC-2b-2 short-circuit bug family. One builder
+  (`outcome::lower_condition`), no second lowering path. The nested
+  `loop_compound_until_nested` fixture covers both `and` and an
+  optional-narrowing `or`; its MIR test pins continuation cloning only into
+  unresolved leaves, and the emitter test independently pins Gleam source
+  order.
+- **Counterless result ABI is scalar.** `loop_without_counting` pins the legal
+  no-`counting` path: `Result(value, AwlError)`, one call-site `TryBind`, no
+  `TupleNew`, and no `FieldGet(0/1)` pair destructure. The corpus-wide select
+  oracle loads and validates this path alongside the counted tuple path.
+- **Non-positive `max` still runs one pass** (post-test, matching the
+  stopgap and the spec's at-least-once rule); ceiling exhaustion exits `Ok`
+  and the step's mandatory conditional outcomes distinguish it
+  (`loop_lowering_pins_the_reference_semantics`).
+- **Defensive scope matches the checker.** A named counter is removed from the
+  emitter's cloned loop-body scope and `until` refs are validated before
+  rendering; direct unchecked emit therefore cannot leak a post-loop counter
+  into the generated function. A `counting` name equal to the threaded binding
+  is checker-illegal, avoiding the stopgap's single-name/single-type map and
+  Gleam's duplicate-pattern restriction.
+- **Chain-boundary liveness has one explicit asymmetry.** The boundary-specific
+  collector follows shared `collect_loop` seed/max/local handling, but does not
+  register loop-body binds as step defs; the shared region collector does so as
+  an aggregation artifact. Checked documents cannot read those binds after the
+  loop, and keeping them local is the stricter boundary behavior.
+- **BC-4 runtime obligation.** Selection currently proves `TupleNew` and
+  `Increment` by load+validate. The differential runtime oracle must execute a
+  counted loop and pin first observable count 1 plus the ceiling-pass value;
+  structural BC-2/BC-3 evidence does not claim execution coverage.
 
 **Pending increments (NOT yet lowered; each needs infrastructure beyond a
 bounded fix-round, and — per the design — must be blessed against the BC-4
@@ -368,6 +422,7 @@ The complete op set — each row one instruction burst, each grounded:
 | `Bind{dst,value}` | literals, refs, input prelude (`exprs.rs:142-214`) | `move` of var/literal/atom/int |
 | `FieldGet{dst,base,index}` | `.field` access (`pipes.rs:169`, `exprs.rs:170-173`) | `get_tuple_element base, index` — **the MIR `index` is already the BEAM element index (1-based, tag at 0); `lower` stores `position+1` (`codec.rs:155`, `flow.rs:241`), so the burst does NOT add another `+1`** (D-BC3 correction, BC-3) |
 | `RecordNew{dst,tag,args}` | record construction (`exprs.rs:291-341`), Some-wrap (`pipes.rs:257-270`), outcome payloads (`outcomes.rs:114-208`) | `put_tuple2`; zero-field ⇒ `move` of the bare tag atom |
+| `TupleNew{dst,items}` (BC-2b-3) | counted-loop `Ok(#(value, count))` result (`loops.rs:88-94`) — untagged, so `RecordNew`'s tag atom cannot stand in | `put_tuple2` without a tag element |
 | `ListNew{dst,items}` | list literals, `workflow.all` arg lists | `put_list` chain from nil, or `LitT` when fully constant |
 | `CallRt{dst,callee,args}` | every SDK/stdlib call (§6) | `call_ext` |
 | `CallLocal{dst,fn,args}` | wrapper/codec/loop-fn invocation | `call` |
@@ -590,7 +645,7 @@ is satisfied trivially.
 | `gleam@int` / `gleam@float` / `gleam@string` / `gleam@bool` | `compare/2` each |
 | `gleam@string` | `append/2` (R2 primary) |
 | **fallback rows** (marked; unused unless a register entry flips) | `gleam@result:try/2` (R1 fallback ONLY) |
-| `erlang` (bif-position only, never ImpT) | `'+'/2`, comparison ops via `gc_bif`/test instructions |
+| `erlang` (bif-position only) | `'+'/2` (the `Increment` burst's `gc_bif2` target), comparison ops via `gc_bif`/test instructions. **BC-2b-3 correction:** beamr's `Bif` instruction resolves its BIF through the import table, so `erlang:'+'/2` DOES occupy an ImpT row — exactly as OTP `.beam` files carry `gc_bif` targets. It remains bif-position only: `lower` never mints it as a `CallRt`/`TailRt` callee (`verify` rejects that alongside `ResultTry`), and it resolves to beamr's native pure `add`. |
 
 Retry/backoff config constructs SDK records (`RetryPolicy`,
 `Fixed`/`Exponential` — `stmts.rs:141-156`): `RecordNew` term shapes, not
@@ -601,7 +656,8 @@ imports; exact atoms pinned by contract row IR-10 against compiled
 receive loops, no `spawn`-family BIFs, no arithmetic beyond the loop-counter
 `'+'` and guard comparisons, no `gleam@result` (R1 folds it away; retained
 only as the marked fallback row), no `aion_flow_ffi` or any NIF module, no
-`erlang` ImpT entries, no dynamic `apply/3`.
+`erlang` ImpT entries beyond the bif-position `'+'/2` row above, no dynamic
+`apply/3`.
 
 **Derived durable-operation summary** (S16): the golden printer and an
 exported per-module summary classify used `RuntimeFn`s into
@@ -1256,9 +1312,13 @@ never a silent artifact):
   (`call_ext`), `CallLocal` (`call`), `MakeClosure` (`make_fun2` + FunT),
   `TryBind` (flattened §2.2), `JsonObj` (incl. the ≥2-pair Y-homed accumulator),
   `ListNew`, `Cmp`, `BoolOp`, `Not`, `AssertSome` (checked `{some, payload}`
-  extraction; explicit `Badmatch` failure). **Tails** `Return`, `TailRt`
-  (`call_ext_last`/`call_ext_only`), `TailLocal` (`call_last`/`call_only`),
-  `If`, `SelectEnum` (explicit `CaseEnd` mismatch trap).
+  extraction; explicit `Badmatch` failure), `TupleNew` (untagged
+  `put_tuple2`), `Increment` (`gc_bif2 erlang:'+'` against a real ImpT row;
+  fail label 0 is deliberate — non-integer raises `badarith` like Gleam's
+  `+`). **Tails** `Return`, `TailRt`
+  (`call_ext_last`/`call_ext_only`), `TailLocal` (`call_last`/`call_only` —
+  loop self-recursion is a framed `CallLast`, so iteration never grows the
+  stack), `If`, `SelectEnum` (explicit `CaseEnd` mismatch trap).
 - **Pools** deterministic atom table, literal pool (first-use dedup, `MirLiteral
   → decode::chunks::Literal`, S3 float lexeme parse), import table (used
   `RuntimeFn` subset in first-use order, IR-24), `FunT` (`MakeClosure`/execute/
@@ -1275,17 +1335,21 @@ never a silent artifact):
   sidecars, a post-BC path). Determinism: the whole pipeline is a pure function
   of the `MirModule` (`select` twice ⇒ identical bytes — #218 holds through
   BC-3).
-- **Oracle coverage**: all 25 `valid/` fixtures that BC-2 lowers emit +
-  validate; the 28 fixtures BC-2 refuses stay refused (no MIR ⇒ nothing to
-  emit — never a silent skip). Plus per-shape unit tests for the reached §11.4
-  rows, including explicit nonzero failure-label checks for outcome guards,
-  checked `AssertSome` + `Badmatch`, and an explicit `CaseEnd` trap check for
-  enum-total dispatch.
+- **Oracle coverage**: all 30 `valid/` fixtures that BC-2 lowers emit +
+  validate (loop evidence: `loop_counting_until_max`,
+  `backward_route_bounded_cycle`, `loop_after_fall_through`,
+  `loop_compound_until_nested`, and `loop_without_counting`); the 26 fixtures
+  BC-2 refuses stay refused (no MIR ⇒ nothing to emit — never a silent skip).
+  Plus per-shape unit tests for the
+  reached §11.4 rows, including explicit nonzero failure-label checks for
+  outcome guards, checked `AssertSome` + `Badmatch`, an explicit `CaseEnd`
+  trap check for enum-total dispatch, and the `gc_bif2 erlang:'+'/2`
+  increment burst check.
 
 **Honest D-BC3 refusals (`SelectError::Unsupported`, span-anchored — the
 not-yet-reachable §11.4 rows; none appears in a BC-2-lowered fixture, so this
 narrows nothing the oracle covers):** shells T-ACTRAW / T-SIG / T-WIT; ops
-`Bind`, `CallClosure`, `WaitTimeoutCase`, `Concat`, `Increment`, `AssertList`,
+`Bind`, `CallClosure`, `WaitTimeoutCase`, `Concat`, `AssertList`,
 `IndexGuard`, `Attempt`. Each lands with its §11.4 burst when the BC-2 increment
 that constructs it (decoder bodies, composite trios, remaining keel
 expressions) lands — BC-3

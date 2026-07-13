@@ -1,0 +1,24 @@
+//! Refresh a cache with a bounded loop whose iteration count is not exposed.
+workflow refresh_cache
+  input key: String
+  input max_attempts: Int
+
+  outcome ready: type CacheResult, route success
+  outcome stale: type CacheResult, route failure
+
+type Cache       { value: String, fresh: Bool }
+type CacheResult { value: String }
+
+worker caches
+  action refresh(key: String, prior: Cache) -> Cache
+
+step refresh
+  loop cache = Cache(value: "", fresh: false)
+    refresh(key: key, prior: cache) -> cache
+    until cache.fresh
+    max max_attempts
+
+  outcome done: when cache.fresh,
+    route ready(value: cache.value)
+  outcome spent: otherwise,
+    route stale(value: cache.value)

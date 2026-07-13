@@ -230,6 +230,9 @@ fn render_stmt(module: &MirModule, stmt: &Stmt) -> String {
             module.atom(tag.0).unwrap_or("?"),
             render_values(module, args)
         ),
+        Stmt::TupleNew { dst, items, .. } => {
+            format!("{} = tuple([{}])", var(*dst), render_values(module, items))
+        }
         Stmt::ListNew { dst, items, .. } => {
             format!("{} = list([{}])", var(*dst), render_values(module, items))
         }

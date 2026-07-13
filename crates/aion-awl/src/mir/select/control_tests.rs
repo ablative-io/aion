@@ -1,10 +1,11 @@
-//! Focused selection regressions for outcome guards and S17 control tails.
+//! Focused selection regressions for outcome guards, S17 control tails, and
+//! the loop bursts (Increment / untagged tuple / self tail call).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use beamr::atom::AtomTable;
-use beamr::loader::decode::{Instruction, Operand};
+use beamr::loader::decode::{BifOp, Instruction, Operand};
 use beamr::loader::load::load_beam_chunks;
 
 use crate::mir::{lower, print_mir};
@@ -100,6 +101,64 @@ fn short_circuit_optional_selects_checked_assert_some() -> Result<(), Box<dyn st
             .iter()
             .any(|instruction| matches!(instruction, Instruction::Badmatch { .. })),
         "AssertSome failure did not end in an explicit badmatch trap"
+    );
+    Ok(())
+}
+
+/// The Increment burst: `gc_bif2` against a real `erlang:'+'/2` `ImpT` row
+/// (beamr's `Bif` resolves through the import table), with fail label 0 —
+/// DELIBERATE here, so a non-integer raises `badarith` exactly like Gleam's
+/// `+`, instead of branching to a trap label.
+#[test]
+fn loop_counter_selects_a_gc_bif2_against_erlang_plus() -> Result<(), Box<dyn std::error::Error>> {
+    let path = fixture("loop-outcomes/valid/loop_counting_until_max.awl");
+    let module = lower_fixture(&path)?;
+    let mir = print_mir(&module);
+    for shape in [" = increment ", " = tuple([", "tail_local poll_loop_0("] {
+        assert!(
+            mir.contains(shape),
+            "loop lowering missed `{shape}`:\n{mir}"
+        );
+    }
+
+    let bytes = select(&module)?;
+    let atoms = AtomTable::with_common_atoms();
+    let parsed = load_beam_chunks(&bytes, &atoms)?;
+    let bif = parsed
+        .instructions
+        .iter()
+        .find_map(|instruction| match instruction {
+            Instruction::Bif {
+                op: BifOp::GcBif2,
+                operands,
+            } => Some(operands.clone()),
+            _ => None,
+        })
+        .ok_or("no gc_bif2 selected for the loop counter")?;
+    let [fail, _live, import, _lhs, rhs, _dst] = bif.as_slice() else {
+        return Err(format!("gc_bif2 operand shape unexpected: {bif:?}").into());
+    };
+    assert!(
+        matches!(fail, Operand::Label(0)),
+        "counter arithmetic must raise badarith (fail label 0), got {fail:?}"
+    );
+    assert!(
+        matches!(rhs, Operand::Integer(1)),
+        "the increment step must be exactly 1, got {rhs:?}"
+    );
+    let Operand::Unsigned(index) = import else {
+        return Err(format!("gc_bif2 import operand is not an index: {import:?}").into());
+    };
+    let entry = parsed
+        .imports
+        .get(usize::try_from(*index)?)
+        .ok_or("gc_bif2 import index out of range")?;
+    let module_name = atoms.resolve(entry.module).unwrap_or_default();
+    let function_name = atoms.resolve(entry.function).unwrap_or_default();
+    assert_eq!(
+        (module_name, function_name, entry.arity),
+        ("erlang", "+", 2),
+        "the counter BIF must be erlang:'+'/2"
     );
     Ok(())
 }

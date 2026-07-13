@@ -261,8 +261,16 @@ diagnostic wording must carry both (e.g. "route cycle without a bound").
 
 Valid:
 - `loop-outcomes/valid/loop_counting_until_max.awl` — `loop x = seed counting n … until … max`.
+- `loop-outcomes/valid/loop_without_counting.awl` — bounded `loop x = seed … until … max`
+  without a public counter (pins the scalar loop result and no-destructure call site).
+- `loop-outcomes/valid/loop_compound_until_nested.awl` — nested bounded loops with `and` and
+  optional-narrowing `or` compound `until` conditions (pins short-circuit ordering and nested
+  loop-slot planning).
 - `loop-outcomes/valid/backward_route_bounded_cycle.awl` — backward route legal because a
   max-bounded loop sits on a step in the cycle; counter used in a later step's payload.
+- `loop-outcomes/valid/loop_after_fall_through.awl` — a fall-through chain whose terminal
+  step loops on the first step's binding (pins the interior chain boundary carrying the
+  loop's seed and ceiling names).
 - `loop-outcomes/valid/route_outcome_by_name.awl` — bare `route <outcome>` picks up the
   in-scope binding NAMED like the outcome (interpretation: by-name, not by-type; the negative
   is `bare_route_no_binding`).
@@ -282,6 +290,8 @@ Valid:
 Invalid:
 - `loop_missing_seed.awl` — loop without `= seed` → PARSE "=" @18.
 - `counting_missing_name.awl` — `counting` without a name → PARSE "counting" @18.
+- `counting_shadows_loop_binding.awl` — public counter reuses the threaded binding name →
+  CHECK "counting" @13 (the values have distinct types and Gleam forbids a duplicate tuple binder).
 - `outcome_missing_route.awl` — `when` arm with no route → PARSE "route" @23.
 - `loop_no_max.awl` — unbounded loop → CHECK "unbounded" @15 (judgment: legality rule, not
   grammar; reclassify PARSE if `max` becomes grammar-mandatory).

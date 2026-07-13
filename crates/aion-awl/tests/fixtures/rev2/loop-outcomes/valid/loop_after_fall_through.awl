@@ -1,0 +1,32 @@
+//! A fall-through chain whose terminal step loops on the first step's binding:
+//! the interior chain boundary must carry the loop's seed and ceiling names.
+workflow chained_polish
+  input topic: String
+  input rounds_cap: Int
+
+  outcome polished: type Polished, route success
+  outcome ran_out:  type RanOut,   route failure
+
+type Draft    { body: String, ready: Bool }
+type Polished { body: String, rounds: Int }
+type RanOut   { reason: String }
+
+worker writing
+  action outline(topic: String) -> Draft
+    node writer, timeout 5m
+  action refine(prior: Draft) -> Draft
+    node writer, timeout 5m
+
+step outline
+  outline(topic: topic) -> sketch
+
+step polish after outline
+  loop draft = sketch counting rounds
+    refine(prior: draft) -> draft
+    until draft.ready
+    max rounds_cap
+
+  outcome done: when draft.ready,
+    route polished(body: draft.body, rounds: rounds)
+  outcome spent: otherwise,
+    route ran_out(reason: "the draft never settled")

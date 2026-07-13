@@ -1,0 +1,31 @@
+//! Settle a draft with nested bounded loops and short-circuiting stop conditions.
+workflow settle_draft
+  input max_rounds: Int
+  input max_checks: Int
+
+  outcome settled:   type Summary, route success
+  outcome exhausted: type Summary, route failure
+
+type Detail  { approved: Bool }
+type Draft   { body: String, ready: Bool, detail: Detail? }
+type Summary { body: String, rounds: Int }
+
+worker reviewer
+  action inspect(prior: Draft) -> Draft
+  action revise(prior: Draft) -> Draft
+
+step settle
+  loop draft = Draft(body: "", ready: false) counting rounds
+    loop probe = draft
+      inspect(prior: probe) -> probe
+      probe |> .detail -> detail
+      until detail is absent or detail.approved
+      max max_checks
+    revise(prior: probe) -> draft
+    until draft.ready and draft.body == "done"
+    max max_rounds
+
+  outcome done: when draft.ready,
+    route settled(body: draft.body, rounds: rounds)
+  outcome spent: otherwise,
+    route exhausted(body: draft.body, rounds: rounds)

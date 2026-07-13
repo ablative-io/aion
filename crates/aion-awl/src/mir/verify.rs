@@ -226,6 +226,12 @@ fn check_capability(function: &str, callee: RuntimeFn) -> Result<(), VerifyError
             "the ResultTry fallback (R1) must not appear in the primary design",
         ));
     }
+    if matches!(callee, RuntimeFn::IntAdd) {
+        return Err(VerifyError::new(
+            function,
+            "erlang:'+' is bif-position only (the Increment burst) — never a call target",
+        ));
+    }
     Ok(())
 }
 
@@ -322,6 +328,7 @@ fn stmt_values(stmt: &Stmt) -> Vec<Value> {
         Stmt::Bind { value, .. } => vec![value.clone()],
         Stmt::FieldGet { base, .. } => vec![base.clone()],
         Stmt::RecordNew { args, .. }
+        | Stmt::TupleNew { items: args, .. }
         | Stmt::ListNew { items: args, .. }
         | Stmt::CallRt { args, .. }
         | Stmt::CallLocal { args, .. } => args.clone(),

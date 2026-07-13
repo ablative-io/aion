@@ -112,6 +112,10 @@ enum Decision<'a> {
         guard: Option<&'a Expr>,
     },
     Cascade(&'a [OutcomeClause]),
+    /// A pre-built continuation (loop `until` exit/recurse blocks). Cloning
+    /// the same block into sibling arms is single-def-legal: the verifier
+    /// checks each arm from its own def-set clone.
+    Ready(&'a Block),
 }
 
 fn lower_outcome_cascade(
@@ -251,7 +255,29 @@ fn lower_decision(
         }
         Decision::Arm { clause, guard } => lower_outcome_arm(ctx, plan, clause, scope, *guard),
         Decision::Cascade(clauses) => lower_outcome_cascade(ctx, plan, clauses, scope),
+        Decision::Ready(block) => Ok((*block).clone()),
     }
+}
+
+/// Lower a boolean condition through the same short-circuit decision builder
+/// outcome guards use (the BC-2b-2 correctness fix), continuing into
+/// pre-built true/false blocks. The loop `until` path: Gleam's value-position
+/// `&&`/`||` short-circuit, so an eager `BoolOp` lowering would diverge on an
+/// effectful or narrowing right-hand side.
+pub(super) fn lower_condition(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    expr: &Expr,
+    scope: &Scope,
+    when_true: &Block,
+    when_false: &Block,
+) -> Result<Block, LowerError> {
+    let decision = guard_decision(
+        expr,
+        Decision::Ready(when_true),
+        Decision::Ready(when_false),
+    );
+    lower_decision(ctx, plan, &decision, scope, None)
 }
 
 fn lower_outcome_arm(

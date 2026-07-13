@@ -145,6 +145,8 @@ impl Step {
             Self::FieldGet { dst, .. }
             | Self::AssertSome { dst, .. }
             | Self::Record { dst, .. }
+            | Self::Tuple { dst, .. }
+            | Self::Increment { dst, .. }
             | Self::ListNew { dst, .. }
             | Self::MakeClosure { dst, .. }
             | Self::TryBind { dst, .. }
@@ -273,6 +275,8 @@ impl Emit<'_, '_> {
                 some_atom,
             } => self.assert_some(*dst, *option, *some_atom)?,
             Step::Record { dst, tag, args } => self.record(*dst, *tag, args)?,
+            Step::Tuple { dst, items } => self.tuple_new(*dst, items)?,
+            Step::Increment { dst, src } => self.increment(*dst, *src)?,
             Step::ListNew { dst, items } => self.list_new(*dst, items)?,
             Step::CallImport {
                 dst,

@@ -1,0 +1,185 @@
+module poll_job source=poll_job.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  poll_loop_0:
+    aion@activity:retry/2 [activities] (v4, v7)
+    aion@activity:timeout/2 [activities] (v8, v9)
+    aion@activity:task_queue/2 [activities] (v10, lit#1)
+    aion@activity:node/2 [activities] (v11, lit#2)
+    aion@workflow:run/1 [activities] (v12)
+== durable families == activities
+== atoms ==
+  [0] poll
+  [1] finished
+  [2] timed_out
+  [3] poll_input
+  [4] poll_job_input
+  [5] finished_outcome
+  [6] false
+  [7] fixed
+  [8] retry_policy
+  [9] ok
+  [10] awl_outcome_failure
+  [11] error
+== types ==
+  record Poll tag=poll
+    state: string
+    done: bool
+  record Finished tag=finished
+    job_id: string
+    polls: int
+  record TimedOut tag=timed_out
+    job_id: string
+    polls: int
+  record PollInput tag=poll_input
+    job_id: string
+    prior: ref(Poll)
+  record PollJobInput tag=poll_job_input
+    job_id: string
+    max_polls: int
+  union PollJobOutcome
+    finished -> finished_outcome(ref(Finished))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=poll_job_input_codec output=poll_job_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(poll_job.PollJobInput, poll_job.PollJobOutcome, AwlError)
+  T-DEF name="poll_job" input=poll_job_input_codec output=poll_job_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (poll_job.PollJobInput) -> Result(poll_job.PollJobOutcome, AwlError)
+  T-EXEC fields=[job_id:String, max_polls:Int] entry=step_poll args=[0, 1]
+== fn poll_codec/0 origin=codec_template(RecordTrio, Poll, record#0) ==
+  sig: () -> Codec(poll_job.Poll)
+  v0 = make_closure poll_to_json captures=[]
+  v1 = call_local poll_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn poll_to_json/1 origin=codec_template(RecordTrio, Poll, record#0) ==
+  sig: (poll_job.Poll) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"state": v1|>awlc.string_to_json, "done": v2|>awlc.bool_to_json}
+  return v3
+== fn poll_decoder/0 origin=codec_template(RecordTrio, Poll, record#0) ==
+  sig: () -> Decoder(poll_job.Poll)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn finished_codec/0 origin=codec_template(RecordTrio, Finished, record#1) ==
+  sig: () -> Codec(poll_job.Finished)
+  v0 = make_closure finished_to_json captures=[]
+  v1 = call_local finished_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn finished_to_json/1 origin=codec_template(RecordTrio, Finished, record#1) ==
+  sig: (poll_job.Finished) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"job_id": v1|>awlc.string_to_json, "polls": v2|>awlc.int_to_json}
+  return v3
+== fn finished_decoder/0 origin=codec_template(RecordTrio, Finished, record#1) ==
+  sig: () -> Decoder(poll_job.Finished)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn timed_out_codec/0 origin=codec_template(RecordTrio, TimedOut, record#2) ==
+  sig: () -> Codec(poll_job.TimedOut)
+  v0 = make_closure timed_out_to_json captures=[]
+  v1 = call_local timed_out_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn timed_out_to_json/1 origin=codec_template(RecordTrio, TimedOut, record#2) ==
+  sig: (poll_job.TimedOut) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"job_id": v1|>awlc.string_to_json, "polls": v2|>awlc.int_to_json}
+  return v3
+== fn timed_out_decoder/0 origin=codec_template(RecordTrio, TimedOut, record#2) ==
+  sig: () -> Decoder(poll_job.TimedOut)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn poll_input_codec/0 origin=codec_template(RecordTrio, PollInput, record#3) ==
+  sig: () -> Codec(poll_job.PollInput)
+  v0 = make_closure poll_input_to_json captures=[]
+  v1 = call_local poll_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn poll_input_to_json/1 origin=codec_template(RecordTrio, PollInput, record#3) ==
+  sig: (poll_job.PollInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"job_id": v1|>awlc.string_to_json, "prior": v2|>poll_to_json}
+  return v3
+== fn poll_input_decoder/0 origin=codec_template(RecordTrio, PollInput, record#3) ==
+  sig: () -> Decoder(poll_job.PollInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn poll_job_input_codec/0 origin=codec_template(RecordTrio, PollJobInput, record#4) ==
+  sig: () -> Codec(poll_job.PollJobInput)
+  v0 = make_closure poll_job_input_to_json captures=[]
+  v1 = call_local poll_job_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn poll_job_input_to_json/1 origin=codec_template(RecordTrio, PollJobInput, record#4) ==
+  sig: (poll_job.PollJobInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"job_id": v1|>awlc.string_to_json, "max_polls": v2|>awlc.int_to_json}
+  return v3
+== fn poll_job_input_decoder/0 origin=codec_template(RecordTrio, PollJobInput, record#4) ==
+  sig: () -> Decoder(poll_job.PollJobInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn poll_job_outcome_codec/0 origin=codec_template(UnionTrio, PollJobOutcome, union#5) ==
+  sig: () -> Codec(poll_job.PollJobOutcome)
+  v0 = make_closure poll_job_outcome_to_json captures=[]
+  v1 = call_local poll_job_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn poll_job_outcome_to_json/1 origin=codec_template(UnionTrio, PollJobOutcome, union#5) ==
+  sig: (poll_job.PollJobOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn poll_job_outcome_decoder/0 origin=codec_template(UnionTrio, PollJobOutcome, union#5) ==
+  sig: () -> Decoder(poll_job.PollJobOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn poll_activity/2 origin=activity_wrapper(poll, raw=false) ==
+  sig: (String, poll_job.Poll) -> Activity(poll_job.PollInput, poll_job.Poll)
+  T-ACT action=poll input_codec=poll_input_codec return=poll_codec
+== fn step_poll/2 origin=region(poll) ==
+  sig: (String, Int) -> Result(poll_job.PollJobOutcome, AwlError)
+  v2 = record(poll, [lit#0, 'false'])
+  v3 = call_local poll_loop_0(v2, 0, v1, v0) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  v5 = field(v4, 0)
+  v6 = field(v4, 1)
+  v7 = field(v5, 2)
+  if is_true v7:
+    v8 = record(finished, [v0, v6])
+    v9 = record(finished_outcome, [v8])
+    v10 = record(ok, [v9])
+    return v10
+  else:
+    v11 = record(timed_out, [v0, v6])
+    v12 = call_local timed_out_to_json(v11)
+    v13 = call_rt gleam@json:to_string/1(v12)
+    v14 = record(awl_outcome_failure, [lit#3, v13])
+    v15 = record(error, [v14])
+    return v15
+== fn poll_loop_0/4 origin=loop(poll#0) ==
+  sig: (poll_job.Poll, Int, Int, String) -> Result(#(poll_job.Poll, Int), AwlError)
+  v4 = call_local poll_activity(v3, v0) live_after=[v1, v2, v3]
+  v5 = call_rt aion@duration:milliseconds/1(10000) live_after=[v1, v2, v3, v4]
+  v6 = record(fixed, [v5])
+  v7 = record(retry_policy, [3, v6])
+  v8 = call_rt aion@activity:retry/2(v4, v7) live_after=[v1, v2, v3]
+  v9 = call_rt aion@duration:milliseconds/1(60000) live_after=[v1, v2, v3, v8]
+  v10 = call_rt aion@activity:timeout/2(v8, v9) live_after=[v1, v2, v3]
+  v11 = call_rt aion@activity:task_queue/2(v10, lit#1) live_after=[v1, v2, v3]
+  v12 = call_rt aion@activity:node/2(v11, lit#2) live_after=[v1, v2, v3]
+  v13 = call_rt aion@workflow:run/1(v12) live_after=[v1, v2, v3]
+  v14 = call_rt aion@awl@error:map_activity_error/1(v13) live_after=[v1, v2, v3]
+  v15 = try_bind v14 live_after=[v1, v2, v3]
+  v16 = increment v1
+  v19 = field(v15, 2)
+  if is_true v19:
+    v17 = tuple([v15, v16])
+    v18 = record(ok, [v17])
+    return v18
+  else:
+    if cmp Ge v16 v2:
+      v17 = tuple([v15, v16])
+      v18 = record(ok, [v17])
+      return v18
+    else:
+      tail_local poll_loop_0(v15, v16, v2, v3)
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

@@ -54,6 +54,13 @@ pub(super) enum Step {
     },
     /// `put_tuple2 dst, [tag, args...]`; zero args ⇒ bare tag atom `move`.
     Record { dst: Var, tag: Atom, args: Vec<Src> },
+    /// `put_tuple2 dst, [items...]` — untagged (the counted-loop
+    /// `#(value, count)` pair; the Gleam tuple ABI carries no tag atom).
+    Tuple { dst: Var, items: Vec<Src> },
+    /// `gc_bif2 erlang:'+'(src, 1)` — the loop-counter increment. Fail label
+    /// 0 is DELIBERATE here: arithmetic on a non-integer must raise
+    /// `badarith`, matching Gleam's `+`, not branch to a trap label.
+    Increment { dst: Var, src: Var },
     /// `put_list` chain from nil.
     ListNew { dst: Var, items: Vec<Src> },
     /// `call_ext import` (a used `RuntimeFn`).

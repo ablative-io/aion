@@ -1,0 +1,208 @@
+module chained_polish source=chained_polish.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_outline:
+    aion@activity:timeout/2 [activities] (v2, v3)
+    aion@activity:task_queue/2 [activities] (v4, lit#0)
+    aion@activity:node/2 [activities] (v5, lit#1)
+    aion@workflow:run/1 [activities] (v6)
+  polish_loop_0:
+    aion@activity:timeout/2 [activities] (v3, v4)
+    aion@activity:task_queue/2 [activities] (v5, lit#2)
+    aion@activity:node/2 [activities] (v6, lit#3)
+    aion@workflow:run/1 [activities] (v7)
+== durable families == activities
+== atoms ==
+  [0] draft
+  [1] polished
+  [2] ran_out
+  [3] outline_input
+  [4] refine_input
+  [5] chained_polish_input
+  [6] polished_outcome
+  [7] ok
+  [8] awl_outcome_failure
+  [9] error
+== types ==
+  record Draft tag=draft
+    body: string
+    ready: bool
+  record Polished tag=polished
+    body: string
+    rounds: int
+  record RanOut tag=ran_out
+    reason: string
+  record OutlineInput tag=outline_input
+    topic: string
+  record RefineInput tag=refine_input
+    prior: ref(Draft)
+  record ChainedPolishInput tag=chained_polish_input
+    topic: string
+    rounds_cap: int
+  union ChainedPolishOutcome
+    polished -> polished_outcome(ref(Polished))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=chained_polish_input_codec output=chained_polish_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(chained_polish.ChainedPolishInput, chained_polish.ChainedPolishOutcome, AwlError)
+  T-DEF name="chained_polish" input=chained_polish_input_codec output=chained_polish_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (chained_polish.ChainedPolishInput) -> Result(chained_polish.ChainedPolishOutcome, AwlError)
+  T-EXEC fields=[topic:String, rounds_cap:Int] entry=step_outline args=[1, 0]
+== fn draft_codec/0 origin=codec_template(RecordTrio, Draft, record#0) ==
+  sig: () -> Codec(chained_polish.Draft)
+  v0 = make_closure draft_to_json captures=[]
+  v1 = call_local draft_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn draft_to_json/1 origin=codec_template(RecordTrio, Draft, record#0) ==
+  sig: (chained_polish.Draft) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"body": v1|>awlc.string_to_json, "ready": v2|>awlc.bool_to_json}
+  return v3
+== fn draft_decoder/0 origin=codec_template(RecordTrio, Draft, record#0) ==
+  sig: () -> Decoder(chained_polish.Draft)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn polished_codec/0 origin=codec_template(RecordTrio, Polished, record#1) ==
+  sig: () -> Codec(chained_polish.Polished)
+  v0 = make_closure polished_to_json captures=[]
+  v1 = call_local polished_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn polished_to_json/1 origin=codec_template(RecordTrio, Polished, record#1) ==
+  sig: (chained_polish.Polished) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"body": v1|>awlc.string_to_json, "rounds": v2|>awlc.int_to_json}
+  return v3
+== fn polished_decoder/0 origin=codec_template(RecordTrio, Polished, record#1) ==
+  sig: () -> Decoder(chained_polish.Polished)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn ran_out_codec/0 origin=codec_template(RecordTrio, RanOut, record#2) ==
+  sig: () -> Codec(chained_polish.RanOut)
+  v0 = make_closure ran_out_to_json captures=[]
+  v1 = call_local ran_out_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ran_out_to_json/1 origin=codec_template(RecordTrio, RanOut, record#2) ==
+  sig: (chained_polish.RanOut) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn ran_out_decoder/0 origin=codec_template(RecordTrio, RanOut, record#2) ==
+  sig: () -> Decoder(chained_polish.RanOut)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn outline_input_codec/0 origin=codec_template(RecordTrio, OutlineInput, record#3) ==
+  sig: () -> Codec(chained_polish.OutlineInput)
+  v0 = make_closure outline_input_to_json captures=[]
+  v1 = call_local outline_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn outline_input_to_json/1 origin=codec_template(RecordTrio, OutlineInput, record#3) ==
+  sig: (chained_polish.OutlineInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"topic": v1|>awlc.string_to_json}
+  return v2
+== fn outline_input_decoder/0 origin=codec_template(RecordTrio, OutlineInput, record#3) ==
+  sig: () -> Decoder(chained_polish.OutlineInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn refine_input_codec/0 origin=codec_template(RecordTrio, RefineInput, record#4) ==
+  sig: () -> Codec(chained_polish.RefineInput)
+  v0 = make_closure refine_input_to_json captures=[]
+  v1 = call_local refine_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn refine_input_to_json/1 origin=codec_template(RecordTrio, RefineInput, record#4) ==
+  sig: (chained_polish.RefineInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"prior": v1|>draft_to_json}
+  return v2
+== fn refine_input_decoder/0 origin=codec_template(RecordTrio, RefineInput, record#4) ==
+  sig: () -> Decoder(chained_polish.RefineInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn chained_polish_input_codec/0 origin=codec_template(RecordTrio, ChainedPolishInput, record#5) ==
+  sig: () -> Codec(chained_polish.ChainedPolishInput)
+  v0 = make_closure chained_polish_input_to_json captures=[]
+  v1 = call_local chained_polish_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn chained_polish_input_to_json/1 origin=codec_template(RecordTrio, ChainedPolishInput, record#5) ==
+  sig: (chained_polish.ChainedPolishInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"topic": v1|>awlc.string_to_json, "rounds_cap": v2|>awlc.int_to_json}
+  return v3
+== fn chained_polish_input_decoder/0 origin=codec_template(RecordTrio, ChainedPolishInput, record#5) ==
+  sig: () -> Decoder(chained_polish.ChainedPolishInput)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn chained_polish_outcome_codec/0 origin=codec_template(UnionTrio, ChainedPolishOutcome, union#6) ==
+  sig: () -> Codec(chained_polish.ChainedPolishOutcome)
+  v0 = make_closure chained_polish_outcome_to_json captures=[]
+  v1 = call_local chained_polish_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn chained_polish_outcome_to_json/1 origin=codec_template(UnionTrio, ChainedPolishOutcome, union#6) ==
+  sig: (chained_polish.ChainedPolishOutcome) -> Json
+  v1 = json_obj {}
+  return v1
+== fn chained_polish_outcome_decoder/0 origin=codec_template(UnionTrio, ChainedPolishOutcome, union#6) ==
+  sig: () -> Decoder(chained_polish.ChainedPolishOutcome)
+  tail_rt gleam@dynamic@decode:success/1(nil)
+== fn outline_activity/1 origin=activity_wrapper(outline, raw=false) ==
+  sig: (String) -> Activity(chained_polish.OutlineInput, chained_polish.Draft)
+  T-ACT action=outline input_codec=outline_input_codec return=draft_codec
+== fn refine_activity/1 origin=activity_wrapper(refine, raw=false) ==
+  sig: (chained_polish.Draft) -> Activity(chained_polish.RefineInput, chained_polish.Draft)
+  T-ACT action=refine input_codec=refine_input_codec return=draft_codec
+== fn step_outline/2 origin=region(outline) ==
+  sig: (Int, String) -> Result(chained_polish.ChainedPolishOutcome, AwlError)
+  v2 = call_local outline_activity(v1) live_after=[v0]
+  v3 = call_rt aion@duration:milliseconds/1(300000) live_after=[v0, v2]
+  v4 = call_rt aion@activity:timeout/2(v2, v3) live_after=[v0]
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#0) live_after=[v0]
+  v6 = call_rt aion@activity:node/2(v5, lit#1) live_after=[v0]
+  v7 = call_rt aion@workflow:run/1(v6) live_after=[v0]
+  v8 = call_rt aion@awl@error:map_activity_error/1(v7) live_after=[v0]
+  v9 = try_bind v8 live_after=[v0]
+  tail_local step_polish(v0, v9)
+== fn step_polish/2 origin=chain_step(outline.polish) ==
+  sig: (Int, chained_polish.Draft) -> Result(chained_polish.ChainedPolishOutcome, AwlError)
+  v2 = call_local polish_loop_0(v1, 0, v0)
+  v3 = try_bind v2
+  v4 = field(v3, 0)
+  v5 = field(v3, 1)
+  v6 = field(v4, 2)
+  if is_true v6:
+    v7 = field(v4, 1)
+    v8 = record(polished, [v7, v5])
+    v9 = record(polished_outcome, [v8])
+    v10 = record(ok, [v9])
+    return v10
+  else:
+    v11 = record(ran_out, [lit#4])
+    v12 = call_local ran_out_to_json(v11)
+    v13 = call_rt gleam@json:to_string/1(v12)
+    v14 = record(awl_outcome_failure, [lit#5, v13])
+    v15 = record(error, [v14])
+    return v15
+== fn polish_loop_0/3 origin=loop(polish#0) ==
+  sig: (chained_polish.Draft, Int, Int) -> Result(#(chained_polish.Draft, Int), AwlError)
+  v3 = call_local refine_activity(v0) live_after=[v1, v2]
+  v4 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1, v2, v3]
+  v5 = call_rt aion@activity:timeout/2(v3, v4) live_after=[v1, v2]
+  v6 = call_rt aion@activity:task_queue/2(v5, lit#2) live_after=[v1, v2]
+  v7 = call_rt aion@activity:node/2(v6, lit#3) live_after=[v1, v2]
+  v8 = call_rt aion@workflow:run/1(v7) live_after=[v1, v2]
+  v9 = call_rt aion@awl@error:map_activity_error/1(v8) live_after=[v1, v2]
+  v10 = try_bind v9 live_after=[v1, v2]
+  v11 = increment v1
+  v14 = field(v10, 2)
+  if is_true v14:
+    v12 = tuple([v10, v11])
+    v13 = record(ok, [v12])
+    return v13
+  else:
+    if cmp Ge v11 v2:
+      v12 = tuple([v10, v11])
+      v13 = record(ok, [v12])
+      return v13
+    else:
+      tail_local polish_loop_0(v10, v11, v2)
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

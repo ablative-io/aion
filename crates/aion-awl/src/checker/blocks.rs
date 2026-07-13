@@ -150,6 +150,18 @@ pub(super) fn walk_loop(
         vars: scope,
         narrow: None,
     };
+    let counter_collides = looped
+        .counter
+        .as_ref()
+        .is_some_and(|counter| counter.name == looped.var);
+    if let Some(counter) = &looped.counter
+        && counter_collides
+    {
+        w.err(
+            counter.span,
+            "`counting` name must differ from the loop binding",
+        );
+    }
     let seed_ty = type_of(w, view, &looped.seed);
     // `max` is a ceiling fixed before the first pass: an expression over
     // inputs and prior bindings, typed in the pre-loop scope (the emitter
@@ -231,7 +243,9 @@ pub(super) fn walk_loop(
             ),
         );
     }
-    if let Some(counter) = &looped.counter {
+    if let Some(counter) = &looped.counter
+        && !counter_collides
+    {
         insert_binding(w, scope, &counter.name, Ty::Int, counter.span);
     }
     None

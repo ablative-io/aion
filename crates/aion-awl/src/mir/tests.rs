@@ -79,8 +79,13 @@ const COVERED: &[&str] = &[
     "header-types/valid/minimal",
     "header-types/valid/noncanonical_commas",
     "header-types/valid/zero_inputs",
+    "loop-outcomes/valid/backward_route_bounded_cycle",
     "loop-outcomes/valid/enum_when_totality",
     "loop-outcomes/valid/float_threshold_guard",
+    "loop-outcomes/valid/loop_after_fall_through",
+    "loop-outcomes/valid/loop_compound_until_nested",
+    "loop-outcomes/valid/loop_counting_until_max",
+    "loop-outcomes/valid/loop_without_counting",
     "loop-outcomes/valid/route_outcome_by_name",
     "schema-doors/valid/import_ticket",
     "schema-doors/valid/inline_schema_round",
@@ -255,6 +260,245 @@ fn optional_rhs_is_nested_below_short_circuit_branch() -> Result<(), Box<dyn std
         outer_if < unwrap && unwrap < rhs_field,
         "RHS optional unwrap/field must live below the deciding branch:\n{flow}"
     );
+    Ok(())
+}
+
+/// The four loop semantics pins, asserted against the reference Gleam
+/// emitter's actual behavior (`emitter/loops.rs:71-125`) and independently
+/// pinned by `tests/emitter.rs::loop_counter_is_language_owned`:
+/// 1. post-test — the body lowers BEFORE the increment and both checks;
+/// 2. the hidden count enters at 0 and increments once, after the body, so
+///    the first observable counter value is 1 (completed iterations);
+/// 3. `until` is tested FIRST, the ceiling SECOND, and ceiling exhaustion
+///    exits `Ok` (success side) — the step's outcome clauses distinguish it;
+/// 4. `until` reads the CURRENT pass's rebound value, not the entry param.
+#[test]
+fn loop_lowering_pins_the_reference_semantics() -> Result<(), Box<dyn std::error::Error>> {
+    let path =
+        manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/loop_counting_until_max.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+
+    // Call site: count starts at 0 (pin 2).
+    let call_line = text
+        .lines()
+        .find(|line| line.contains("call_local poll_loop_0("))
+        .ok_or("missing loop call site")?;
+    assert!(
+        call_line.contains(", 0,"),
+        "loop call site does not start the count at 0: {call_line}"
+    );
+
+    let flow = text
+        .split("== fn poll_loop_0/4")
+        .nth(1)
+        .ok_or("missing loop function")?;
+    let body_call = flow
+        .find("call_local poll_activity(")
+        .ok_or("missing body call")?;
+    let increment = flow.find(" = increment ").ok_or("missing increment")?;
+    let until_if = flow.find("if is_true").ok_or("missing until test")?;
+    let bound_if = flow.find("if cmp Ge").ok_or("missing ceiling test")?;
+    // Pin 1 + pin 2 + pin 3 ordering: body, then increment, then until, then
+    // the ceiling.
+    assert!(
+        body_call < increment && increment < until_if && until_if < bound_if,
+        "loop control order diverged from the reference (body -> increment -> until -> max):\n{flow}"
+    );
+
+    // Pin 3: ceiling exhaustion is success-side (`Ok`), so the outcome
+    // clauses — not an error path — distinguish it.
+    let bound_arm = &flow[bound_if..];
+    let exhausted_exit = bound_arm
+        .find("record(ok, [")
+        .ok_or("ceiling arm has no Ok exit")?;
+    let recurse = bound_arm
+        .find("tail_local poll_loop_0(")
+        .ok_or("missing self recursion")?;
+    assert!(
+        exhausted_exit < recurse,
+        "ceiling-hit arm must exit Ok before the recurse arm:\n{bound_arm}"
+    );
+
+    // Pin 4: the until test reads a field of the try_bind result (the value
+    // the body REBOUND this pass), never the entry parameter v0.
+    let rebound = flow
+        .lines()
+        .find_map(|line| {
+            let (dst, rest) = line.trim().split_once(" = try_bind ")?;
+            Some((dst.to_owned(), rest.split_whitespace().next()?.to_owned()))
+        })
+        .ok_or("missing body try_bind")?;
+    let until_read = flow[..until_if]
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let (_, rest) = line.trim().split_once(" = field(")?;
+            rest.split(',').next().map(str::to_owned)
+        })
+        .ok_or("missing until field read")?;
+    assert_eq!(
+        until_read, rebound.0,
+        "until must see the current pass's rebound value:\n{flow}"
+    );
+
+    // The hidden count never reaches the worker call (D3): the body call's
+    // arguments exclude the count parameter v1.
+    let (_, args) = flow[body_call..]
+        .split_once('(')
+        .ok_or("malformed body call")?;
+    let args = args.split(')').next().ok_or("malformed body call")?;
+    assert!(
+        args.split(", ").all(|arg| arg != "v1"),
+        "the worker call must never carry the language-owned count: ({args})"
+    );
+    Ok(())
+}
+
+/// Compound `until` conditions reuse the short-circuit decision builder. The
+/// continuation is cloned into each unresolved leaf, while an optional `or`
+/// RHS is reachable only after the absence test fails.
+#[test]
+fn compound_until_clones_control_only_into_unresolved_leaves()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = manifest_dir()
+        .join("tests/fixtures/rev2/loop-outcomes/valid/loop_compound_until_nested.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+
+    let outer = text
+        .split("== fn settle_loop_0/4")
+        .nth(1)
+        .and_then(|tail| tail.split("== fn settle_loop_1/3").next())
+        .ok_or("missing outer compound loop")?;
+    let left_test = outer.find("if is_true").ok_or("missing `and` left test")?;
+    let rhs_field = outer[left_test..]
+        .find(" = field(")
+        .map(|offset| left_test + offset)
+        .ok_or("missing `and` RHS field")?;
+    let rhs_test = outer[rhs_field..]
+        .find("if is_true")
+        .map(|offset| rhs_field + offset)
+        .ok_or("missing `and` RHS test")?;
+    assert!(
+        left_test < rhs_field && rhs_field < rhs_test,
+        "`and` RHS must be nested below its left decision:\n{outer}"
+    );
+    assert_eq!(
+        outer.matches("if cmp Ge").count(),
+        2,
+        "ceiling continuation must be cloned into both unresolved `and` leaves"
+    );
+    assert_eq!(outer.matches("tail_local settle_loop_0(").count(), 2);
+
+    let inner = text
+        .split("== fn settle_loop_1/3")
+        .nth(1)
+        .ok_or("missing nested optional `or` loop")?;
+    let absent_test = inner.find("cmp Eq").ok_or("missing absence test")?;
+    let short_exit = inner[absent_test..]
+        .find("record(ok, [")
+        .map(|offset| absent_test + offset)
+        .ok_or("missing short-circuit exit")?;
+    let unwrap = inner
+        .find("assert_some")
+        .ok_or("missing narrowed RHS unwrap")?;
+    assert!(
+        absent_test < short_exit && short_exit < unwrap,
+        "optional `or` must exit on absence before evaluating its narrowed RHS:\n{inner}"
+    );
+    assert_eq!(inner.matches("if cmp Ge").count(), 1);
+    Ok(())
+}
+
+/// Without `counting`, the loop function returns the scalar threaded value and
+/// the call site performs one `TryBind` with no tuple construction/destructure.
+#[test]
+fn counterless_loop_pins_the_scalar_result_path() -> Result<(), Box<dyn std::error::Error>> {
+    let path =
+        manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/loop_without_counting.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+
+    let call_site = text
+        .split("== fn step_refresh/2")
+        .nth(1)
+        .and_then(|tail| tail.split("== fn refresh_loop_0/4").next())
+        .ok_or("missing counterless loop call site")?;
+    assert!(call_site.contains("call_local refresh_loop_0(v2, 0, v1, v0)"));
+    assert!(call_site.contains("v4 = try_bind v3"));
+    assert!(!call_site.contains("field(v4, 0)"));
+
+    let flow = text
+        .split("== fn refresh_loop_0/4")
+        .nth(1)
+        .ok_or("missing counterless loop function")?;
+    assert!(flow.contains("-> Result(refresh_cache.Cache, AwlError)"));
+    assert!(!flow.contains("tuple(["));
+    assert!(flow.contains("record(ok, [v8])"));
+    Ok(())
+}
+
+/// Backward route re-entry resets the loop: the routed-to region re-evaluates
+/// the seed and calls the loop function with count 0 — the reference
+/// emitter's behavior (the spec leaves re-entry unstated; recorded in
+/// AWL-BC-IR.md, exam ledger F-family).
+#[test]
+fn backward_route_reentry_resets_seed_and_count() -> Result<(), Box<dyn std::error::Error>> {
+    let path = manifest_dir()
+        .join("tests/fixtures/rev2/loop-outcomes/valid/backward_route_bounded_cycle.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+    let check = text
+        .split("== fn step_check/")
+        .nth(1)
+        .ok_or("missing check step")?;
+    assert!(
+        check.contains("tail_local step_compose("),
+        "rework must re-enter the compose region:\n{check}"
+    );
+    let compose = text
+        .split("== fn step_compose/")
+        .nth(1)
+        .ok_or("missing compose step")?;
+    let call_line = compose
+        .lines()
+        .find(|line| line.contains("call_local compose_loop_0("))
+        .ok_or("missing loop call in compose")?;
+    assert!(
+        call_line.contains(", 0,"),
+        "re-entry must reset the count to 0: {call_line}"
+    );
+    Ok(())
+}
+
+/// The two combined fixtures advance to their next honest refusal instead of
+/// silently claiming coverage: `dev_brief` still refuses at its
+/// dependency-parallel layer, `ship_release_combined` now refuses at `wait`.
+#[test]
+fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn std::error::Error>> {
+    let dev_brief = manifest_dir().join("tests/fixtures/rev2/flagship/valid/dev_brief.awl");
+    match lower_fixture(&dev_brief)? {
+        Err(LowerError::Unsupported { shape, .. }) => {
+            assert_eq!(shape, "parallel region", "dev_brief refusal drifted");
+        }
+        other => return Err(format!("dev_brief must still refuse: {other:?}").into()),
+    }
+    let ship =
+        manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/ship_release_combined.awl");
+    match lower_fixture(&ship)? {
+        Err(LowerError::Unsupported { shape, .. }) => {
+            assert_eq!(
+                shape, "wait",
+                "ship_release refusal must advance past the loop"
+            );
+        }
+        other => return Err(format!("ship_release must refuse at wait: {other:?}").into()),
+    }
     Ok(())
 }
 

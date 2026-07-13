@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{ForkHeader, LoopStmt, PipeEnd, Statement};
+use crate::ast::{Expr, ForkHeader, LoopStmt, PipeEnd, Statement};
 use crate::{Span, Spanned};
 
 use super::context::Emitter;
@@ -50,19 +50,9 @@ pub(super) fn lower_loop(
     let (comma_free, comma_annotated_free) = loop_param_lists(emitter, &free, scope);
 
     // Call site.
-    let binder = if counter_named {
-        format!(
-            "#({var}, {})",
-            ident(
-                &looped
-                    .counter
-                    .as_ref()
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default()
-            )
-        )
-    } else {
-        var.clone()
+    let binder = match &looped.counter {
+        Some(counter) => format!("#({var}, {})", ident(&counter.name)),
+        None => var.clone(),
     };
     emitter.line(&format!(
         "use {binder} <- result.try({loop_fn}({seed}, 0, {max_rendered}{comma_free}))"
@@ -70,10 +60,12 @@ pub(super) fn lower_loop(
 
     // Loop function body.
     let mut loop_scope = scope.clone();
-    loop_scope.insert(looped.var.clone(), seed_ty.clone());
+    // The global binding-type pass knows post-loop names, so explicitly remove
+    // the counter before constructing the checker-equivalent body scope.
     if let Some(counter) = &looped.counter {
-        loop_scope.insert(counter.name.clone(), GType::Int);
+        loop_scope.remove(&counter.name);
     }
+    loop_scope.insert(looped.var.clone(), seed_ty.clone());
     let until = looped.until.as_ref().map(|tail| tail.expr.clone());
     let body = looped.body.clone();
     let rendered = emitter.capture(|this| {
@@ -103,6 +95,16 @@ pub(super) fn lower_loop(
             match &until {
                 Some(condition) => {
                     let mut condition_prelude = Vec::new();
+                    // `render_expr` permits bare refs because checked documents
+                    // already prove scope. Validate refs without eagerly typing
+                    // a short-circuited RHS, whose optional narrowing happens in
+                    // `render_expr` itself.
+                    if let Some((name, span)) = first_unbound_ref(condition, &inner_scope) {
+                        return Err(EmitError::new(
+                            span,
+                            format!("`{name}` has no binding with a known type in scope"),
+                        ));
+                    }
                     let rendered_condition =
                         render_expr(this, condition, &inner_scope, &mut condition_prelude)?;
                     flush_prelude(this, condition_prelude);
@@ -128,6 +130,29 @@ pub(super) fn lower_loop(
         scope.insert(counter.name.clone(), GType::Int);
     }
     Ok(())
+}
+
+fn first_unbound_ref(expr: &Expr, scope: &Scope) -> Option<(String, Span)> {
+    match expr {
+        Expr::Ref { span, name } => (!scope.contains_key(name)).then(|| (name.clone(), *span)),
+        Expr::List { items, .. } => items.iter().find_map(|item| first_unbound_ref(item, scope)),
+        Expr::Record { args, .. } => args
+            .iter()
+            .find_map(|arg| first_unbound_ref(&arg.value, scope)),
+        Expr::Field { base, .. } | Expr::Index { base, .. } => first_unbound_ref(base, scope),
+        Expr::Not { expr, .. } => first_unbound_ref(expr, scope),
+        Expr::Binary { left, right, .. } => {
+            first_unbound_ref(left, scope).or_else(|| first_unbound_ref(right, scope))
+        }
+        Expr::Predicate { subject, .. } => first_unbound_ref(subject, scope),
+        Expr::String { .. }
+        | Expr::Int { .. }
+        | Expr::Float { .. }
+        | Expr::Bool { .. }
+        | Expr::Duration(_)
+        | Expr::Variant { .. }
+        | Expr::Accessor { .. } => None,
+    }
 }
 
 /// Refuse loop shapes the tail-recursive lowering cannot honor, returning
@@ -172,7 +197,7 @@ fn loop_preflight<'l>(
 /// outcome clauses); this scan stays as the defensive backstop for `emit`
 /// called on an unchecked document, where an unrefused route would become a
 /// discarded mid-function expression in the generated loop function.
-fn first_route_span(statements: &[Statement]) -> Option<Span> {
+pub(crate) fn first_route_span(statements: &[Statement]) -> Option<Span> {
     for statement in statements {
         match statement {
             Statement::Route(route) => return Some(route.span),
@@ -246,7 +271,7 @@ fn loop_param_lists(emitter: &Emitter<'_>, free: &[String], scope: &Scope) -> (S
 }
 
 /// Names referenced anywhere in a statement list's expressions.
-pub(super) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet<String>) {
+pub(crate) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet<String>) {
     for statement in statements {
         match statement {
             Statement::Call(call) => {
@@ -302,7 +327,7 @@ pub(super) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet
 
 /// Names a statement list defines (loop-var/counter escapes included, fork
 /// collection-branch locals excluded).
-pub(super) fn statement_defs(statements: &[Statement], defs: &mut BTreeSet<String>) {
+pub(crate) fn statement_defs(statements: &[Statement], defs: &mut BTreeSet<String>) {
     for statement in statements {
         match statement {
             Statement::Call(call) => {

@@ -9,11 +9,16 @@
 
 use std::error::Error;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use aion_awl::{check_in, emit, emit_in, parse};
+
+#[path = "emitter/children.rs"]
+mod child_tests;
+#[path = "emitter/compile.rs"]
+mod compile_tests;
+#[path = "emitter/loops.rs"]
+mod loop_tests;
 
 fn rev2_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rev2")
@@ -31,6 +36,65 @@ fn emitted_fixture(relative: &str) -> Result<String, Box<dyn Error>> {
 
 fn emitted(source: &str) -> Result<String, Box<dyn Error>> {
     Ok(emit(&parse(source)?)?)
+}
+
+fn assert_fragments_in_order(text: &str, fragments: &[&str]) -> Result<(), Box<dyn Error>> {
+    let mut cursor = 0;
+    for fragment in fragments {
+        let relative = text[cursor..]
+            .find(fragment)
+            .ok_or_else(|| format!("missing ordered fragment `{fragment}` in:\n{text}"))?;
+        cursor += relative + fragment.len();
+    }
+    Ok(())
+}
+
+fn function_after<'a>(generated: &'a str, signature: &str) -> Result<&'a str, Box<dyn Error>> {
+    generated
+        .split(signature)
+        .nth(1)
+        .ok_or_else(|| format!("missing generated function `{signature}`").into())
+}
+
+/// Pin the reference emitter's loop semantics as the other half of the MIR
+/// parity contract, including call-site initialization and control nesting.
+#[test]
+fn loop_counter_is_language_owned() -> Result<(), Box<dyn Error>> {
+    let generated = emitted_fixture("loop-outcomes/valid/loop_counting_until_max.awl")?;
+    assert!(
+        generated.contains("let awl_count = awl_count + 1"),
+        "the generated loop must increment its own counter: {generated}"
+    );
+    assert!(
+        generated.contains("use #(status, polls) <- result.try(poll_loop_0("),
+        "the loop must return the threaded value and the counter: {generated}"
+    );
+    assert!(
+        generated.contains(", 0, max_polls, job_id))"),
+        "the call site must initialize the hidden count to zero: {generated}"
+    );
+
+    let flow = function_after(&generated, "fn poll_loop_0(")?;
+    assert_fragments_in_order(
+        flow,
+        &[
+            "poll_activity(job_id, status)",
+            "let awl_count = awl_count + 1",
+            "case status.done {",
+            "True -> Ok(#(status, awl_count))",
+            "False ->",
+            "case awl_count >= awl_max {",
+            "True -> Ok(#(status, awl_count))",
+            "False -> poll_loop_0(status, awl_count, awl_max, job_id)",
+        ],
+    )?;
+    assert!(
+        generated.contains("poll_activity(job_id, status)"),
+        "the worker dispatch must carry only the declared params, never the counter: {generated}"
+    );
+    // The counter reaches the outcome payloads from the loop's return alone.
+    assert!(generated.contains("Finished(job_id: job_id, polls: polls)"));
+    Ok(())
 }
 
 fn emitted_archived_exam() -> Result<String, Box<dyn Error>> {
@@ -154,119 +218,6 @@ step decide
     let generated = emitted(source)?;
     assert!(generated.contains("case { first && second } && third {"));
     assert!(!generated.contains("case (first && second) && third {"));
-    Ok(())
-}
-
-/// The loop counter is language-owned: maintained in generated code, never
-/// threaded through worker results (survey fix 1 / D3).
-#[test]
-fn loop_counter_is_language_owned() -> Result<(), Box<dyn Error>> {
-    let generated = emitted_fixture("loop-outcomes/valid/loop_counting_until_max.awl")?;
-    assert!(
-        generated.contains("let awl_count = awl_count + 1"),
-        "the generated loop must increment its own counter: {generated}"
-    );
-    assert!(
-        generated.contains("use #(status, polls) <- result.try(poll_loop_0("),
-        "the loop must return the threaded value and the counter: {generated}"
-    );
-    assert!(
-        generated.contains("case awl_count >= awl_max {"),
-        "the ceiling must gate recursion: {generated}"
-    );
-    assert!(
-        generated.contains("poll_activity(job_id, status)"),
-        "the worker dispatch must carry only the declared params, never the counter: {generated}"
-    );
-    // The counter reaches the outcome payloads from the loop's return alone.
-    assert!(generated.contains("Finished(job_id: job_id, polls: polls)"));
-    Ok(())
-}
-
-/// Child calls keep the string-name spawn discipline: registration-name
-/// spawn, JSON-object input, a witness fn the SDK never calls, and no
-/// phantom child module references.
-#[test]
-fn child_call_lowers_to_string_name_spawn() -> Result<(), Box<dyn Error>> {
-    let generated = emitted_fixture("declarations/valid/child_call_awaited.awl")?;
-    assert!(generated.contains("workflow.spawn_and_wait(\"score_essay\""));
-    assert!(
-        generated.contains("json.object([#(\"essay\", awlc.string_to_json(essay))])"),
-        "named child args must encode as one JSON object: {generated}"
-    );
-    assert!(generated.contains(
-        "fn(_: json.Json) { Error(awl_error.AwlChildFailed(\"child workflow body runs in its own \
-         execution\")) }"
-    ));
-    assert!(!generated.contains("score_essay.execute"));
-    assert!(!generated.contains("score_essay.input_codec"));
-    Ok(())
-}
-
-/// A collection fork over a child starts every child before awaiting results,
-/// preserving input order while providing true per-item child-run fan-out.
-#[test]
-fn child_collection_fork_spawns_all_then_awaits_all() -> Result<(), Box<dyn Error>> {
-    let generated = emitted_fixture("dag-fork/valid/child_collection_fork.awl")?;
-    let spawn = generated
-        .find("workflow.spawn(\"sit_one\"")
-        .ok_or("child fork must emit a child spawn")?;
-    let await_child = generated
-        .find("child.await(awl_handle)")
-        .ok_or("child fork must await spawned handles")?;
-    assert!(
-        spawn < await_child,
-        "all-child spawn fold must precede await fold"
-    );
-    assert!(generated.contains("import aion/child"));
-    assert!(generated.contains("let rows = awl_children"));
-
-    let archived_exam = emitted_archived_exam()?;
-    assert!(archived_exam.contains("workflow.spawn(\"sit_one\""));
-    assert!(archived_exam.contains("let rows = awl_children"));
-    Ok(())
-}
-
-/// Unsupported child calls in named forks report the construct that is not
-/// lowerable instead of falsely claiming the declared child is not an action.
-#[test]
-fn named_fork_child_refusal_is_honest() -> Result<(), Box<dyn Error>> {
-    let source = "\
-//! Honest refusal regression.
-workflow honest_refusal
-  input value: String
-  outcome done: type String, route success
-
-child inspect(value: String) -> String
-
-step inspect
-  fork
-    inspect(value: value) -> inspected
-  join
-";
-    let error = emit(&parse(source)?).err().ok_or("emit must refuse")?;
-    assert_eq!(
-        error.message,
-        "child calls are not yet lowerable inside named fork branches"
-    );
-    assert!(!error.message.contains("no declared action"));
-    Ok(())
-}
-
-/// `spawn` is detached: the SDK spawn is used, the handle is discarded, and
-/// the workflow continues.
-#[test]
-fn spawn_lowers_detached() -> Result<(), Box<dyn Error>> {
-    let generated = emitted_fixture("declarations/valid/spawn_detached.awl")?;
-    assert!(
-        generated.contains("use _ <- result.try(workflow.spawn(\"audit_trail\""),
-        "spawn must be detached and unbound: {generated}"
-    );
-    assert!(
-        generated.contains("map_spawn_error"),
-        "a failed detached spawn is a step failure: {generated}"
-    );
-    assert!(!generated.contains("spawn_and_wait(\"audit_trail\""));
     Ok(())
 }
 
@@ -438,97 +389,6 @@ fn sequential_layer_fallback_is_announced() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// A `route` inside a `loop` body is a language-level check error since the
-/// 2026-07-11 ruling (loops exit via `until`/`max`; routing belongs to the
-/// step's outcome clauses) — the user-facing refusal lives in `check`. The
-/// emitter keeps this spanned refusal as the defensive backstop for `emit`
-/// called on an UNCHECKED document, where the route could never reach tail
-/// position in the generated loop function (originally a 2026-07-11 emitter
-/// panel blocking finding).
-#[test]
-fn route_inside_a_loop_body_is_refused() -> Result<(), Box<dyn Error>> {
-    let source = "\
-//! Loop route stress.
-workflow loop_route
-  input target: String
-  outcome done: type Report, route success
-  outcome bailed: type Report, route failure
-
-type Round  { summary: String, gates_green: Bool }
-type Report { summary: String }
-
-worker builder
-  action work(prior: Round) -> Round
-
-step build
-  loop round = Round(summary: \"\", gates_green: false) counting cycles
-    work(prior: round) -> round
-    route bailed(summary: round.summary)
-    until round.gates_green
-    max 3
-
-  outcome green: when round.gates_green, route done(summary: round.summary)
-  outcome spent: otherwise, route done(summary: \"spent\")
-";
-    let document = parse(source)?;
-    let error = emit(&document).err().ok_or("emit must refuse")?;
-    assert!(
-        error.message.contains("`route` inside a `loop` body"),
-        "unexpected message: {}",
-        error.message
-    );
-    let route_line = source
-        .lines()
-        .position(|line| line.contains("route bailed"))
-        .ok_or("missing route line")?
-        + 1;
-    assert_eq!(error.span.line, route_line, "span must anchor the route");
-    Ok(())
-}
-
-/// A loop `max` referencing the loop-threaded value renders at the call
-/// site, where no loop-local exists: the stopgap refuses instead of
-/// emitting Gleam that cannot compile (2026-07-11 emitter panel, blocking
-/// finding; the checker refuses the same shape in the pre-loop scope).
-#[test]
-fn loop_max_must_be_loop_invariant() -> Result<(), Box<dyn Error>> {
-    let source = "\
-//! Loop ceiling stress.
-workflow loop_ceiling
-  input job: String
-  outcome done: type Report, route success
-
-type Round  { summary: String, gates_green: Bool, budget: Int }
-type Report { summary: String }
-
-worker builder
-  action work(prior: Round) -> Round
-
-step build
-  loop round = Round(summary: \"\", gates_green: false, budget: 3) counting cycles
-    work(prior: round) -> round
-    until round.gates_green
-    max round.budget
-
-  outcome green: when round.gates_green, route done(summary: round.summary)
-  outcome spent: otherwise, route done(summary: \"spent\")
-";
-    let document = parse(source)?;
-    let error = emit(&document).err().ok_or("emit must refuse")?;
-    assert!(
-        error.message.contains("before the loop"),
-        "unexpected message: {}",
-        error.message
-    );
-    let max_line = source
-        .lines()
-        .position(|line| line.contains("max round.budget"))
-        .ok_or("missing max line")?
-        + 1;
-    assert_eq!(error.span.line, max_line, "span must anchor the ceiling");
-    Ok(())
-}
-
 /// One binding name bound with two different types in disjoint route
 /// branches is refused: a name-keyed first-wins map would annotate the
 /// other branch's region parameters wrongly and emit non-compiling Gleam
@@ -656,138 +516,4 @@ fn schema_import_without_root_is_a_spanned_emit_error() -> Result<(), Box<dyn Er
         "span must anchor the import path, got `{quoted}`"
     );
     Ok(())
-}
-
-/// Flagship compile proof: `awl_hello` and `dev_brief` build under real
-/// `gleam build` against the local SDK (#248: if this fails under parallel
-/// load, re-run isolated once before treating it as red).
-#[test]
-fn flagship_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
-    compile_generated_modules(
-        "flagship",
-        &[
-            (
-                "awl_hello",
-                emitted_fixture("flagship/valid/awl_hello.awl")?,
-            ),
-            (
-                "dev_brief",
-                emitted_fixture("flagship/valid/dev_brief.awl")?,
-            ),
-        ],
-    )
-}
-
-/// Loop/fork-heavy compile proof: the combined fixtures exercising loops,
-/// counters, forks in all three forms, waits, routes, and compensation all
-/// build under real `gleam build`.
-#[test]
-fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
-    compile_generated_modules(
-        "loop_fork",
-        &[
-            (
-                "ship_release",
-                emitted_fixture("loop-outcomes/valid/ship_release_combined.awl")?,
-            ),
-            (
-                "release_pipeline",
-                emitted_fixture("dag-fork/valid/release_pipeline_combined.awl")?,
-            ),
-            (
-                "fork_named",
-                emitted_fixture("dag-fork/valid/fork_named_branches.awl")?,
-            ),
-            (
-                "child_collection_fork",
-                emitted_fixture("dag-fork/valid/child_collection_fork.awl")?,
-            ),
-            ("archived_awl_exam", emitted_archived_exam()?),
-            (
-                "backward_route",
-                emitted_fixture("loop-outcomes/valid/backward_route_bounded_cycle.awl")?,
-            ),
-            (
-                "substeps",
-                emitted_fixture("loop-outcomes/valid/substeps_two_stage.awl")?,
-            ),
-            (
-                "combinators",
-                emitted_fixture("step-bodies/valid/combinators.awl")?,
-            ),
-            (
-                "float_guard",
-                emitted_fixture("loop-outcomes/valid/float_threshold_guard.awl")?,
-            ),
-            (
-                "step_bodies",
-                emitted_fixture("step-bodies/valid/step_bodies_combined.awl")?,
-            ),
-            (
-                "mixed_doors",
-                emitted_fixture("schema-doors/valid/mixed_doors.awl")?,
-            ),
-            (
-                "declarations",
-                emitted_fixture("declarations/valid/declarations_combined.awl")?,
-            ),
-        ],
-    )
-}
-
-fn compile_generated_modules(
-    project_name: &str,
-    modules: &[(&str, String)],
-) -> Result<(), Box<dyn Error>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = root.parent().and_then(Path::parent).ok_or_else(|| {
-        io::Error::other("failed to resolve repository root from CARGO_MANIFEST_DIR")
-    })?;
-    let project = unique_temp_project(project_name);
-    fs::create_dir_all(project.join("src"))?;
-    fs::write(
-        project.join("gleam.toml"),
-        format!(
-            "name = \"awl_{project_name}_compile_proof\"\nversion = \"0.1.0\"\ntarget = \
-             \"erlang\"\n\n[dependencies]\naion_flow = {{ path = \"{}\" }}\ngleam_stdlib = \
-             \">= 0.34.0 and < 2.0.0\"\ngleam_json = \">= 2.0.0 and < 4.0.0\"\n",
-            repo_root.join("gleam/aion_flow").display()
-        ),
-    )?;
-    for (module_name, module_source) in modules {
-        fs::write(
-            project.join("src").join(format!("{module_name}.gleam")),
-            module_source,
-        )?;
-    }
-    let output = Command::new("gleam")
-        .arg("build")
-        .current_dir(&project)
-        .output()
-        .map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("gleam binary is required for AWL emitter compile-proof tests: {error}"),
-            )
-        })?;
-    assert!(
-        output.status.success(),
-        "gleam build failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
-}
-
-fn unique_temp_project(project_name: &str) -> PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push(format!(
-        "aion_awl_{project_name}_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ));
-    path
 }

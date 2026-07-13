@@ -1,0 +1,19 @@
+//! A public loop counter cannot reuse the threaded binding's name.
+workflow counter_collision
+  input max_rounds: Int
+  outcome done: type Count, route success
+
+type State { value: String }
+type Count { value: String }
+
+worker states
+  action tick(prior: State) -> State
+
+step run
+  loop state = State(value: "") counting state
+    tick(prior: state) -> state
+    until true
+    max max_rounds
+
+  outcome complete: otherwise,
+    route done(value: "complete")

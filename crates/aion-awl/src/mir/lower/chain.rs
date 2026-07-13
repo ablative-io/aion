@@ -2,15 +2,16 @@
 //! non-entry chain step lowers to its own `FlowFn`, reached by the previous
 //! step's tail call (IR-14), so its parameter list is the set of names live at
 //! that boundary. This is the shared plan's fixed point restricted to a
-//! straight-line chain — refs/defs collection mirrors the reference
-//! (`emitter/liveness.rs` `collect_into`/`collect_route`), and a route to
+//! straight-line chain — refs/defs collection follows the reference
+//! (`emitter/liveness.rs` `collect_into`/`collect_route`) except for the
+//! loop-body-bind asymmetry documented at the loop arm below. A route to
 //! another region contributes that region's `region_params` exactly as the
 //! fixed point's `params(callee) − defs` term does. The shared collector cannot
 //! be consumed directly here: it intentionally aggregates an entire region
 //! into one graph node, while chain splitting needs a live-in set at every
 //! interior step boundary. Exposing those folds would widen the planner API and
 //! still require the chain-specific backward walk. Statement forms outside
-//! the covered subset (forks, loops, substeps) collect nothing here — their
+//! the covered subset (forks, substeps) collect nothing here — their
 //! statements refuse during body lowering, so no module carrying them ever
 //! materializes.
 
@@ -43,55 +44,7 @@ pub(super) fn chain_params(
 fn step_live_in(emitter: &Emitter<'_>, plan: &Plan, step: &Step, live: &mut BTreeSet<String>) {
     let mut refs: BTreeSet<String> = BTreeSet::new();
     let mut defs: BTreeSet<String> = BTreeSet::new();
-    for statement in &step.body {
-        match statement {
-            Statement::Call(call) => {
-                for arg in &call.call.args {
-                    add_expr(&arg.value, &defs, &mut refs);
-                }
-                if let Some(bind) = &call.bind {
-                    defs.insert(bind.name.clone());
-                }
-            }
-            Statement::Spawn(spawn) => {
-                for arg in &spawn.call.args {
-                    add_expr(&arg.value, &defs, &mut refs);
-                }
-            }
-            Statement::Pipe(pipe) => {
-                add_expr(&pipe.head, &defs, &mut refs);
-                for stage in &pipe.stages {
-                    if let PipeStage::Combinator(combinator) = stage
-                        && let Some(arg) = &combinator.arg
-                    {
-                        add_expr(arg, &defs, &mut refs);
-                    }
-                }
-                match &pipe.end {
-                    PipeEnd::Bind(binding) => {
-                        defs.insert(binding.name.clone());
-                    }
-                    PipeEnd::Route(target) => {
-                        // A piped route carries the piped value as its
-                        // payload: no bare-outcome pickup (`collect_pipe`).
-                        route_refs(emitter, plan, target, &defs, &mut refs, false);
-                    }
-                }
-            }
-            Statement::Route(route) => {
-                route_refs(emitter, plan, &route.target, &defs, &mut refs, true);
-            }
-            Statement::Wait(wait) => {
-                defs.insert(wait.bind.name.clone());
-            }
-            // Forks, loops, substeps, and sleeps contribute nothing: sleeps
-            // reference no bindings, the rest refuse during body lowering.
-            Statement::Sleep(_)
-            | Statement::Fork(_)
-            | Statement::Loop(_)
-            | Statement::SubStep(_) => {}
-        }
-    }
+    collect_statements(emitter, plan, &step.body, &mut defs, &mut refs);
     for clause in &step.outcomes {
         if let Guard::When { expr, .. } = &clause.guard {
             add_expr(expr, &defs, &mut refs);
@@ -102,6 +55,87 @@ fn step_live_in(emitter: &Emitter<'_>, plan: &Plan, step: &Step, live: &mut BTre
         live.remove(def);
     }
     live.extend(refs);
+}
+
+fn collect_statements(
+    emitter: &Emitter<'_>,
+    plan: &Plan,
+    statements: &[Statement],
+    defs: &mut BTreeSet<String>,
+    refs: &mut BTreeSet<String>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::Call(call) => {
+                for arg in &call.call.args {
+                    add_expr(&arg.value, defs, refs);
+                }
+                if let Some(bind) = &call.bind {
+                    defs.insert(bind.name.clone());
+                }
+            }
+            Statement::Spawn(spawn) => {
+                for arg in &spawn.call.args {
+                    add_expr(&arg.value, defs, refs);
+                }
+            }
+            Statement::Pipe(pipe) => {
+                add_expr(&pipe.head, defs, refs);
+                for stage in &pipe.stages {
+                    if let PipeStage::Combinator(combinator) = stage
+                        && let Some(arg) = &combinator.arg
+                    {
+                        add_expr(arg, defs, refs);
+                    }
+                }
+                match &pipe.end {
+                    PipeEnd::Bind(binding) => {
+                        defs.insert(binding.name.clone());
+                    }
+                    PipeEnd::Route(target) => {
+                        // A piped route carries the piped value as its
+                        // payload: no bare-outcome pickup (`collect_pipe`).
+                        route_refs(emitter, plan, target, defs, refs, false);
+                    }
+                }
+            }
+            Statement::Route(route) => {
+                route_refs(emitter, plan, &route.target, defs, refs, true);
+            }
+            Statement::Wait(wait) => {
+                defs.insert(wait.bind.name.clone());
+            }
+            // Boundary-shaped like the shared collector's `collect_loop`:
+            // seed and `max` read the pre-loop scope; the threaded var and
+            // counter are local while collecting the body/`until`. Deliberate
+            // asymmetry: shared `collect_into` registers every `loop_defs`
+            // entry (including body binds) as a step def; this chain boundary
+            // keeps body binds local because the checker forbids them after
+            // the loop. Only the threaded value and counter escape here.
+            Statement::Loop(looped) => {
+                add_expr(&looped.seed, defs, refs);
+                if let Some(max) = &looped.max {
+                    add_expr(&max.expr, defs, refs);
+                }
+                let mut loop_defs = defs.clone();
+                loop_defs.insert(looped.var.clone());
+                if let Some(counter) = &looped.counter {
+                    loop_defs.insert(counter.name.clone());
+                }
+                collect_statements(emitter, plan, &looped.body, &mut loop_defs, refs);
+                if let Some(until) = &looped.until {
+                    add_expr(&until.expr, &loop_defs, refs);
+                }
+                defs.insert(looped.var.clone());
+                if let Some(counter) = &looped.counter {
+                    defs.insert(counter.name.clone());
+                }
+            }
+            // Forks, substeps, and sleeps contribute nothing: sleeps
+            // reference no bindings, the rest refuse during body lowering.
+            Statement::Sleep(_) | Statement::Fork(_) | Statement::SubStep(_) => {}
+        }
+    }
 }
 
 /// A route's name demand: payload argument refs, the bare-route outcome

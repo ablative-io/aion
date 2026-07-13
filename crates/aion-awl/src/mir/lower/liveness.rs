@@ -109,6 +109,7 @@ fn uses(stmt: &Stmt) -> BTreeSet<Var> {
     match stmt {
         Stmt::Bind { value, .. } | Stmt::FieldGet { base: value, .. } => single(value),
         Stmt::RecordNew { args, .. }
+        | Stmt::TupleNew { items: args, .. }
         | Stmt::ListNew { items: args, .. }
         | Stmt::CallRt { args, .. }
         | Stmt::CallLocal { args, .. } => value_set(args),

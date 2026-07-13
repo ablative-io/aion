@@ -62,6 +62,13 @@ impl<'a> Ctx<'a> {
         self.var_counter = 0;
     }
 
+    /// Swap the var counter (loop functions are their own SSA namespace,
+    /// built mid-way through the host function's lowering: save the host's
+    /// counter, lower the loop body from `v0`, restore).
+    pub(super) fn swap_var_counter(&mut self, value: u32) -> u32 {
+        std::mem::replace(&mut self.var_counter, value)
+    }
+
     pub(super) fn fresh_var(&mut self) -> Var {
         let var = Var(self.var_counter);
         self.var_counter = self.var_counter.saturating_add(1);

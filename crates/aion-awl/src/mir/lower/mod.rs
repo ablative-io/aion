@@ -9,6 +9,7 @@ mod driver;
 mod expr;
 mod flow;
 mod liveness;
+mod loops;
 mod outcome;
 
 pub use driver::{LowerError, lower};

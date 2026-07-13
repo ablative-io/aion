@@ -30,5 +30,6 @@ pub use error::EmitError;
 pub(crate) use context::Emitter;
 pub(crate) use entry::prepare;
 pub(crate) use graph::{Plan, expr_refs};
+pub(crate) use loops::{first_route_span, statement_defs, statements_expr_refs};
 pub(crate) use names::snake;
 pub(crate) use types::{FieldDef, GType, NamedDef, RecordDef, type_ref_to_g};
