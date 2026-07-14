@@ -1,0 +1,292 @@
+module import_constraints source=import_constraints.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_enroll:
+    aion@activity:task_queue/2 [activities] (v1, lit#20)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] profile
+  [1] registered
+  [2] refused
+  [3] register_input
+  [4] import_constraints_input
+  [5] registered_outcome
+  [6] some
+  [7] none
+  [8] awl_outcome_failure
+  [9] error
+  [10] ok
+== literals ==
+  [0] "age"
+  [1] "handle"
+  [2] "bio"
+  [3] "email"
+  [4] "age"
+  [5] "bio"
+  [6] "email"
+  [7] "handle"
+  [8] "handle"
+  [9] "reason"
+  [10] "profile"
+  [11] "profile"
+  [12] "registered"
+  [13] "outcome"
+  [14] ""
+  [15] "ImportConstraintsOutcome"
+  [16] "registered"
+  [17] "payload"
+  [18] "too young to register: "
+  [19] "refused"
+  [20] "doors"
+== types ==
+  record Profile tag=profile
+    age: int
+    bio: nullable(string) optional
+    email: nullable(string) optional
+    handle: string
+  record Registered tag=registered
+    handle: string
+  record Refused tag=refused
+    reason: string
+  record RegisterInput tag=register_input
+    profile: ref(Profile)
+  record ImportConstraintsInput tag=import_constraints_input
+    profile: ref(Profile)
+  union ImportConstraintsOutcome
+    registered -> registered_outcome(ref(Registered))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=import_constraints_input_codec output=import_constraints_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(import_constraints.ImportConstraintsInput, import_constraints.ImportConstraintsOutcome, AwlError)
+  T-DEF name="import_constraints" input=import_constraints_input_codec output=import_constraints_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (import_constraints.ImportConstraintsInput) -> Result(import_constraints.ImportConstraintsOutcome, AwlError)
+  T-EXEC fields=[profile:import_constraints.Profile] entry=step_gate args=[0]
+== fn profile_codec/0 origin=codec_template(RecordTrio, Profile, record#0) ==
+  sig: () -> Codec(import_constraints.Profile)
+  v0 = make_closure profile_to_json captures=[]
+  v1 = call_local profile_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn profile_to_json/1 origin=codec_template(RecordTrio, Profile, record#0) ==
+  sig: (import_constraints.Profile) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:int_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#0, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local profile_to_json$field1(v5) live_after=[v0, v4]
+  v7 = field(v0, 3)
+  v8 = call_local profile_to_json$field2(v7) live_after=[v0, v4, v6]
+  v9 = field(v0, 4)
+  v10 = call_rt aion@awl@codec:string_to_json/1(v9) live_after=[v4, v6, v8]
+  v11 = tuple([lit#1, v10])
+  v12 = list([v11])
+  v13 = list([v4, v6, v8, v12])
+  v14 = call_rt gleam@list:flatten/1(v13)
+  tail_rt gleam@json:object/1(v14)
+== fn profile_decoder/0 origin=codec_template(RecordTrio, Profile, record#0) ==
+  sig: () -> Decoder(import_constraints.Profile)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure profile_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn profile_to_json$field1/1 origin=lifted(profile_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#2, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn profile_to_json$field2/1 origin=lifted(profile_to_json, #1) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#3, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn profile_decoder$some/1 origin=lifted(profile_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn profile_decoder$0/1 origin=lifted(profile_decoder, #1) ==
+  sig: (Int) -> Decoder(import_constraints.Profile)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure profile_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure profile_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#5, 'none', v3, v4)
+== fn profile_decoder$1/2 origin=lifted(profile_decoder, #2) ==
+  sig: (Option(String), Int) -> Decoder(import_constraints.Profile)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure profile_decoder$some captures=[]
+  v4 = call_rt gleam@dynamic@decode:map/2(v2, v3) live_after=[v0, v1]
+  v5 = make_closure profile_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#6, 'none', v4, v5)
+== fn profile_decoder$2/3 origin=lifted(profile_decoder, #3) ==
+  sig: (Option(String), Int, Option(String)) -> Decoder(import_constraints.Profile)
+  v3 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure profile_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v3, v4)
+== fn profile_decoder$3/4 origin=lifted(profile_decoder, #4) ==
+  sig: (String, Int, Option(String), Option(String)) -> Decoder(import_constraints.Profile)
+  v4 = record(profile, [v1, v2, v3, v0])
+  tail_rt gleam@dynamic@decode:success/1(v4)
+== fn registered_codec/0 origin=codec_template(RecordTrio, Registered, record#1) ==
+  sig: () -> Codec(import_constraints.Registered)
+  v0 = make_closure registered_to_json captures=[]
+  v1 = call_local registered_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn registered_to_json/1 origin=codec_template(RecordTrio, Registered, record#1) ==
+  sig: (import_constraints.Registered) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"handle": v1|>awlc.string_to_json}
+  return v2
+== fn registered_decoder/0 origin=codec_template(RecordTrio, Registered, record#1) ==
+  sig: () -> Decoder(import_constraints.Registered)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure registered_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn registered_decoder$0/1 origin=lifted(registered_decoder, #0) ==
+  sig: (String) -> Decoder(import_constraints.Registered)
+  v1 = record(registered, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn refused_codec/0 origin=codec_template(RecordTrio, Refused, record#2) ==
+  sig: () -> Codec(import_constraints.Refused)
+  v0 = make_closure refused_to_json captures=[]
+  v1 = call_local refused_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn refused_to_json/1 origin=codec_template(RecordTrio, Refused, record#2) ==
+  sig: (import_constraints.Refused) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn refused_decoder/0 origin=codec_template(RecordTrio, Refused, record#2) ==
+  sig: () -> Decoder(import_constraints.Refused)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure refused_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn refused_decoder$0/1 origin=lifted(refused_decoder, #0) ==
+  sig: (String) -> Decoder(import_constraints.Refused)
+  v1 = record(refused, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn register_input_codec/0 origin=codec_template(RecordTrio, RegisterInput, record#3) ==
+  sig: () -> Codec(import_constraints.RegisterInput)
+  v0 = make_closure register_input_to_json captures=[]
+  v1 = call_local register_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn register_input_to_json/1 origin=codec_template(RecordTrio, RegisterInput, record#3) ==
+  sig: (import_constraints.RegisterInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"profile": v1|>profile_to_json}
+  return v2
+== fn register_input_decoder/0 origin=codec_template(RecordTrio, RegisterInput, record#3) ==
+  sig: () -> Decoder(import_constraints.RegisterInput)
+  v0 = call_local profile_decoder()
+  v1 = make_closure register_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn register_input_decoder$0/1 origin=lifted(register_input_decoder, #0) ==
+  sig: (import_constraints.Profile) -> Decoder(import_constraints.RegisterInput)
+  v1 = record(register_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn import_constraints_input_codec/0 origin=codec_template(RecordTrio, ImportConstraintsInput, record#4) ==
+  sig: () -> Codec(import_constraints.ImportConstraintsInput)
+  v0 = make_closure import_constraints_input_to_json captures=[]
+  v1 = call_local import_constraints_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn import_constraints_input_to_json/1 origin=codec_template(RecordTrio, ImportConstraintsInput, record#4) ==
+  sig: (import_constraints.ImportConstraintsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"profile": v1|>profile_to_json}
+  return v2
+== fn import_constraints_input_decoder/0 origin=codec_template(RecordTrio, ImportConstraintsInput, record#4) ==
+  sig: () -> Decoder(import_constraints.ImportConstraintsInput)
+  v0 = call_local profile_decoder()
+  v1 = make_closure import_constraints_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn import_constraints_input_decoder$0/1 origin=lifted(import_constraints_input_decoder, #0) ==
+  sig: (import_constraints.Profile) -> Decoder(import_constraints.ImportConstraintsInput)
+  v1 = record(import_constraints_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn import_constraints_outcome_codec/0 origin=codec_template(UnionTrio, ImportConstraintsOutcome, union#5) ==
+  sig: () -> Codec(import_constraints.ImportConstraintsOutcome)
+  v0 = make_closure import_constraints_outcome_to_json captures=[]
+  v1 = call_local import_constraints_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn import_constraints_outcome_to_json/1 origin=codec_template(UnionTrio, ImportConstraintsOutcome, union#5) ==
+  sig: (import_constraints.ImportConstraintsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#12|>awlc.string_to_json, "payload": v1|>registered_to_json}
+  return v2
+== fn import_constraints_outcome_decoder/0 origin=codec_template(UnionTrio, ImportConstraintsOutcome, union#5) ==
+  sig: () -> Decoder(import_constraints.ImportConstraintsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure import_constraints_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn import_constraints_outcome_decoder$outcome/1 origin=lifted(import_constraints_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(import_constraints.ImportConstraintsOutcome)
+  if cmp Eq v0 lit#16:
+    v3 = call_local registered_decoder()
+    v4 = make_closure import_constraints_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#17, v3, v4)
+  else:
+    v1 = record(registered, [lit#14])
+    v2 = record(registered_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#15)
+== fn import_constraints_outcome_decoder$arm0/1 origin=lifted(import_constraints_outcome_decoder, #1) ==
+  sig: (import_constraints.Registered) -> Decoder(import_constraints.ImportConstraintsOutcome)
+  v1 = record(registered_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn register_activity/1 origin=activity_wrapper(register, raw=false) ==
+  sig: (import_constraints.Profile) -> Activity(import_constraints.RegisterInput, import_constraints.Registered)
+  T-ACT action=register input_codec=register_input_codec return=registered_codec
+== fn step_gate/1 origin=region(gate) ==
+  sig: (import_constraints.Profile) -> Result(import_constraints.ImportConstraintsOutcome, AwlError)
+  v1 = field(v0, 4)
+  v3 = field(v0, 1)
+  v2 = cmp Ge v3 18
+  if is_true v2:
+    tail_local step_enroll(v0)
+  else:
+    v4 = concat lit#18 v1
+    v5 = record(refused, [v4])
+    v6 = call_local refused_to_json(v5)
+    v7 = call_rt gleam@json:to_string/1(v6)
+    v8 = record(awl_outcome_failure, [lit#19, v7])
+    v9 = record(error, [v8])
+    return v9
+== fn step_enroll/1 origin=region(enroll) ==
+  sig: (import_constraints.Profile) -> Result(import_constraints.ImportConstraintsOutcome, AwlError)
+  v1 = call_local register_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#20)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(registered_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

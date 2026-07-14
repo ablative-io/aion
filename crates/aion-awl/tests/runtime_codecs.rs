@@ -17,6 +17,8 @@
 
 #[path = "runtime_codecs/child_envelope.rs"]
 mod child_envelope;
+#[path = "runtime_codecs/concat.rs"]
+mod concat;
 #[path = "runtime_codecs/drivers.rs"]
 mod drivers;
 #[path = "runtime_codecs/harness.rs"]

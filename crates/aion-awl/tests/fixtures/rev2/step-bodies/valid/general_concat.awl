@@ -1,0 +1,10 @@
+//! Build the isolated dev-brief workspace path from config and workflow identity.
+workflow general_concat
+  input config: Config
+  outcome provisioned: type Provisioned, route success
+
+type Config      { repo_root: String }
+type Provisioned { path: String }
+
+step provision
+  route provisioned(path: config.repo_root + "/.yggdrasil-worktrees/dev-brief/" + workflow.id)

@@ -1,0 +1,367 @@
+module fork_in_loop_live_ins source=fork_in_loop_live_ins.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_prepare_batch:
+    aion@activity:task_queue/2 [activities] (v2, lit#15)
+    aion@workflow:run/1 [activities] (v3)
+  review_rounds_loop_0:
+    aion@workflow:map/2 [activities] (v4, v5)
+    aion@activity:task_queue/2 [activities] (v9, lit#17)
+    aion@workflow:run/1 [activities] (v10)
+  review_rounds_fork_0:
+    aion@activity:task_queue/2 [activities] (v1, lit#16)
+== durable families == activities
+== atoms ==
+  [0] batch
+  [1] verdict
+  [2] round
+  [3] summary
+  [4] fold_input
+  [5] inspect_input
+  [6] prepare_input
+  [7] fork_in_loop_live_ins_input
+  [8] completed_outcome
+  [9] false
+  [10] ok
+  [11] awl_outcome_failure
+  [12] error
+== literals ==
+  [0] "items"
+  [1] "blocking"
+  [2] "complete"
+  [3] "complete"
+  [4] "prior"
+  [5] "verdicts"
+  [6] "item"
+  [7] "items"
+  [8] "items"
+  [9] "max_rounds"
+  [10] "completed"
+  [11] "outcome"
+  [12] "ForkInLoopLiveInsOutcome"
+  [13] "completed"
+  [14] "payload"
+  [15] "review"
+  [16] "review"
+  [17] "review"
+  [18] "exhausted"
+== types ==
+  record Batch tag=batch
+    items: list(string)
+  record Verdict tag=verdict
+    blocking: bool
+  record Round tag=round
+    complete: bool
+  record Summary tag=summary
+    complete: bool
+  record FoldInput tag=fold_input
+    prior: ref(Round)
+    verdicts: list(ref(Verdict))
+  record InspectInput tag=inspect_input
+    item: string
+  record PrepareInput tag=prepare_input
+    items: list(string)
+  record ForkInLoopLiveInsInput tag=fork_in_loop_live_ins_input
+    items: list(string)
+    max_rounds: int
+  union ForkInLoopLiveInsOutcome
+    completed -> completed_outcome(ref(Summary))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fork_in_loop_live_ins_input_codec output=fork_in_loop_live_ins_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fork_in_loop_live_ins.ForkInLoopLiveInsInput, fork_in_loop_live_ins.ForkInLoopLiveInsOutcome, AwlError)
+  T-DEF name="fork_in_loop_live_ins" input=fork_in_loop_live_ins_input_codec output=fork_in_loop_live_ins_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fork_in_loop_live_ins.ForkInLoopLiveInsInput) -> Result(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome, AwlError)
+  T-EXEC fields=[items:List(String), max_rounds:Int] entry=step_prepare_batch args=[0, 1]
+== fn batch_codec/0 origin=codec_template(RecordTrio, Batch, record#0) ==
+  sig: () -> Codec(fork_in_loop_live_ins.Batch)
+  v0 = make_closure batch_to_json captures=[]
+  v1 = call_local batch_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn batch_to_json/1 origin=codec_template(RecordTrio, Batch, record#0) ==
+  sig: (fork_in_loop_live_ins.Batch) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"items": v1|>list_string_to_json}
+  return v2
+== fn batch_decoder/0 origin=codec_template(RecordTrio, Batch, record#0) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.Batch)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure batch_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn batch_decoder$0/1 origin=lifted(batch_decoder, #0) ==
+  sig: (List(String)) -> Decoder(fork_in_loop_live_ins.Batch)
+  v1 = record(batch, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Codec(fork_in_loop_live_ins.Verdict)
+  v0 = make_closure verdict_to_json captures=[]
+  v1 = call_local verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verdict_to_json/1 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: (fork_in_loop_live_ins.Verdict) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"blocking": v1|>awlc.bool_to_json}
+  return v2
+== fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.Verdict)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (Bool) -> Decoder(fork_in_loop_live_ins.Verdict)
+  v1 = record(verdict, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn round_codec/0 origin=codec_template(RecordTrio, Round, record#2) ==
+  sig: () -> Codec(fork_in_loop_live_ins.Round)
+  v0 = make_closure round_to_json captures=[]
+  v1 = call_local round_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn round_to_json/1 origin=codec_template(RecordTrio, Round, record#2) ==
+  sig: (fork_in_loop_live_ins.Round) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"complete": v1|>awlc.bool_to_json}
+  return v2
+== fn round_decoder/0 origin=codec_template(RecordTrio, Round, record#2) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.Round)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure round_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn round_decoder$0/1 origin=lifted(round_decoder, #0) ==
+  sig: (Bool) -> Decoder(fork_in_loop_live_ins.Round)
+  v1 = record(round, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn summary_codec/0 origin=codec_template(RecordTrio, Summary, record#3) ==
+  sig: () -> Codec(fork_in_loop_live_ins.Summary)
+  v0 = make_closure summary_to_json captures=[]
+  v1 = call_local summary_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn summary_to_json/1 origin=codec_template(RecordTrio, Summary, record#3) ==
+  sig: (fork_in_loop_live_ins.Summary) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"complete": v1|>awlc.bool_to_json}
+  return v2
+== fn summary_decoder/0 origin=codec_template(RecordTrio, Summary, record#3) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.Summary)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure summary_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn summary_decoder$0/1 origin=lifted(summary_decoder, #0) ==
+  sig: (Bool) -> Decoder(fork_in_loop_live_ins.Summary)
+  v1 = record(summary, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fold_input_codec/0 origin=codec_template(RecordTrio, FoldInput, record#4) ==
+  sig: () -> Codec(fork_in_loop_live_ins.FoldInput)
+  v0 = make_closure fold_input_to_json captures=[]
+  v1 = call_local fold_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fold_input_to_json/1 origin=codec_template(RecordTrio, FoldInput, record#4) ==
+  sig: (fork_in_loop_live_ins.FoldInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"prior": v1|>round_to_json, "verdicts": v2|>list_verdict_to_json}
+  return v3
+== fn fold_input_decoder/0 origin=codec_template(RecordTrio, FoldInput, record#4) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.FoldInput)
+  v0 = call_local round_decoder()
+  v1 = make_closure fold_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn fold_input_decoder$0/1 origin=lifted(fold_input_decoder, #0) ==
+  sig: (fork_in_loop_live_ins.Round) -> Decoder(fork_in_loop_live_ins.FoldInput)
+  v1 = call_local list_verdict_decoder() live_after=[v0]
+  v2 = make_closure fold_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn fold_input_decoder$1/2 origin=lifted(fold_input_decoder, #1) ==
+  sig: (List(fork_in_loop_live_ins.Verdict), fork_in_loop_live_ins.Round) -> Decoder(fork_in_loop_live_ins.FoldInput)
+  v2 = record(fold_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn inspect_input_codec/0 origin=codec_template(RecordTrio, InspectInput, record#5) ==
+  sig: () -> Codec(fork_in_loop_live_ins.InspectInput)
+  v0 = make_closure inspect_input_to_json captures=[]
+  v1 = call_local inspect_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn inspect_input_to_json/1 origin=codec_template(RecordTrio, InspectInput, record#5) ==
+  sig: (fork_in_loop_live_ins.InspectInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"item": v1|>awlc.string_to_json}
+  return v2
+== fn inspect_input_decoder/0 origin=codec_template(RecordTrio, InspectInput, record#5) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.InspectInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure inspect_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn inspect_input_decoder$0/1 origin=lifted(inspect_input_decoder, #0) ==
+  sig: (String) -> Decoder(fork_in_loop_live_ins.InspectInput)
+  v1 = record(inspect_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn prepare_input_codec/0 origin=codec_template(RecordTrio, PrepareInput, record#6) ==
+  sig: () -> Codec(fork_in_loop_live_ins.PrepareInput)
+  v0 = make_closure prepare_input_to_json captures=[]
+  v1 = call_local prepare_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn prepare_input_to_json/1 origin=codec_template(RecordTrio, PrepareInput, record#6) ==
+  sig: (fork_in_loop_live_ins.PrepareInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"items": v1|>list_string_to_json}
+  return v2
+== fn prepare_input_decoder/0 origin=codec_template(RecordTrio, PrepareInput, record#6) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.PrepareInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure prepare_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn prepare_input_decoder$0/1 origin=lifted(prepare_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(fork_in_loop_live_ins.PrepareInput)
+  v1 = record(prepare_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fork_in_loop_live_ins_input_codec/0 origin=codec_template(RecordTrio, ForkInLoopLiveInsInput, record#7) ==
+  sig: () -> Codec(fork_in_loop_live_ins.ForkInLoopLiveInsInput)
+  v0 = make_closure fork_in_loop_live_ins_input_to_json captures=[]
+  v1 = call_local fork_in_loop_live_ins_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_in_loop_live_ins_input_to_json/1 origin=codec_template(RecordTrio, ForkInLoopLiveInsInput, record#7) ==
+  sig: (fork_in_loop_live_ins.ForkInLoopLiveInsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"items": v1|>list_string_to_json, "max_rounds": v2|>awlc.int_to_json}
+  return v3
+== fn fork_in_loop_live_ins_input_decoder/0 origin=codec_template(RecordTrio, ForkInLoopLiveInsInput, record#7) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.ForkInLoopLiveInsInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure fork_in_loop_live_ins_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn fork_in_loop_live_ins_input_decoder$0/1 origin=lifted(fork_in_loop_live_ins_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(fork_in_loop_live_ins.ForkInLoopLiveInsInput)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure fork_in_loop_live_ins_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v1, v2)
+== fn fork_in_loop_live_ins_input_decoder$1/2 origin=lifted(fork_in_loop_live_ins_input_decoder, #1) ==
+  sig: (Int, List(String)) -> Decoder(fork_in_loop_live_ins.ForkInLoopLiveInsInput)
+  v2 = record(fork_in_loop_live_ins_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn fork_in_loop_live_ins_outcome_codec/0 origin=codec_template(UnionTrio, ForkInLoopLiveInsOutcome, union#8) ==
+  sig: () -> Codec(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome)
+  v0 = make_closure fork_in_loop_live_ins_outcome_to_json captures=[]
+  v1 = call_local fork_in_loop_live_ins_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fork_in_loop_live_ins_outcome_to_json/1 origin=codec_template(UnionTrio, ForkInLoopLiveInsOutcome, union#8) ==
+  sig: (fork_in_loop_live_ins.ForkInLoopLiveInsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#10|>awlc.string_to_json, "payload": v1|>summary_to_json}
+  return v2
+== fn fork_in_loop_live_ins_outcome_decoder/0 origin=codec_template(UnionTrio, ForkInLoopLiveInsOutcome, union#8) ==
+  sig: () -> Decoder(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fork_in_loop_live_ins_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn fork_in_loop_live_ins_outcome_decoder$outcome/1 origin=lifted(fork_in_loop_live_ins_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome)
+  if cmp Eq v0 lit#13:
+    v3 = call_local summary_decoder()
+    v4 = make_closure fork_in_loop_live_ins_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#14, v3, v4)
+  else:
+    v1 = record(summary, ['false'])
+    v2 = record(completed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#12)
+== fn fork_in_loop_live_ins_outcome_decoder$arm0/1 origin=lifted(fork_in_loop_live_ins_outcome_decoder, #1) ==
+  sig: (fork_in_loop_live_ins.Summary) -> Decoder(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome)
+  v1 = record(completed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn list_verdict_codec/0 origin=codec_template(CompositeTrio, List(Verdict), composite(list(ref(Verdict)))) ==
+  sig: () -> Codec(List(fork_in_loop_live_ins.Verdict))
+  v0 = make_closure list_verdict_to_json captures=[]
+  v1 = call_local list_verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_verdict_to_json/1 origin=codec_template(CompositeTrio, List(Verdict), composite(list(ref(Verdict)))) ==
+  sig: (List(fork_in_loop_live_ins.Verdict)) -> Json
+  v1 = make_closure verdict_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_verdict_decoder/0 origin=codec_template(CompositeTrio, List(Verdict), composite(list(ref(Verdict)))) ==
+  sig: () -> Decoder(List(fork_in_loop_live_ins.Verdict))
+  v0 = call_local verdict_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn fold_activity/2 origin=activity_wrapper(fold, raw=false) ==
+  sig: (fork_in_loop_live_ins.Round, List(fork_in_loop_live_ins.Verdict)) -> Activity(fork_in_loop_live_ins.FoldInput, fork_in_loop_live_ins.Round)
+  T-ACT action=fold input_codec=fold_input_codec return=round_codec
+== fn inspect_activity/1 origin=activity_wrapper(inspect, raw=false) ==
+  sig: (String) -> Activity(fork_in_loop_live_ins.InspectInput, fork_in_loop_live_ins.Verdict)
+  T-ACT action=inspect input_codec=inspect_input_codec return=verdict_codec
+== fn prepare_activity/1 origin=activity_wrapper(prepare, raw=false) ==
+  sig: (List(String)) -> Activity(fork_in_loop_live_ins.PrepareInput, fork_in_loop_live_ins.Batch)
+  T-ACT action=prepare input_codec=prepare_input_codec return=batch_codec
+== fn step_prepare_batch/2 origin=region(prepare_batch) ==
+  sig: (List(String), Int) -> Result(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome, AwlError)
+  v2 = call_local prepare_activity(v0) live_after=[v1]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#15) live_after=[v1]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v1]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v1]
+  v6 = try_bind v5 live_after=[v1]
+  tail_local step_review_rounds(v6, v1)
+== fn step_review_rounds/2 origin=chain_step(prepare_batch.review_rounds) ==
+  sig: (fork_in_loop_live_ins.Batch, Int) -> Result(fork_in_loop_live_ins.ForkInLoopLiveInsOutcome, AwlError)
+  v2 = record(round, ['false'])
+  v3 = call_local review_rounds_loop_0(v2, 0, v1, v0)
+  v4 = try_bind v3
+  v5 = field(v4, 1)
+  if is_true v5:
+    v6 = field(v4, 1)
+    v7 = record(summary, [v6])
+    v8 = record(completed_outcome, [v7])
+    v9 = record(ok, [v8])
+    return v9
+  else:
+    v10 = field(v4, 1)
+    v11 = record(summary, [v10])
+    v12 = call_local summary_to_json(v11)
+    v13 = call_rt gleam@json:to_string/1(v12)
+    v14 = record(awl_outcome_failure, [lit#18, v13])
+    v15 = record(error, [v14])
+    return v15
+== fn review_rounds_loop_0/4 origin=loop(review_rounds#0) ==
+  sig: (fork_in_loop_live_ins.Round, Int, Int, fork_in_loop_live_ins.Batch) -> Result(fork_in_loop_live_ins.Round, AwlError)
+  v4 = field(v3, 1)
+  v5 = make_closure review_rounds_fork_0 captures=[]
+  v6 = call_rt aion@workflow:map/2(v4, v5) live_after=[v0, v1, v2, v3]
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6) live_after=[v0, v1, v2, v3]
+  v8 = try_bind v7 live_after=[v0, v1, v2, v3]
+  v9 = call_local fold_activity(v0, v8) live_after=[v1, v2, v3, v8]
+  v10 = call_rt aion@activity:task_queue/2(v9, lit#17) live_after=[v1, v2, v3, v8]
+  v11 = call_rt aion@workflow:run/1(v10) live_after=[v1, v2, v3, v8]
+  v12 = call_rt aion@awl@error:map_activity_error/1(v11) live_after=[v1, v2, v3, v8]
+  v13 = try_bind v12 live_after=[v1, v2, v3, v8]
+  v14 = increment v1
+  v16 = cmp Eq v8 nil
+  if is_true v16:
+    v15 = record(ok, [v13])
+    return v15
+  else:
+    if cmp Ge v14 v2:
+      v15 = record(ok, [v13])
+      return v15
+    else:
+      tail_local review_rounds_loop_0(v13, v14, v2, v3)
+== fn review_rounds_fork_0/1 origin=fork(review_rounds#0) ==
+  sig: (String) -> Activity(fork_in_loop_live_ins.InspectInput, fork_in_loop_live_ins.Verdict)
+  v1 = call_local inspect_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#16)
+  return v2
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

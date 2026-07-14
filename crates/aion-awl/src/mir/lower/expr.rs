@@ -1,6 +1,6 @@
 //! Keel-expression lowering for the BC-2 covered subset: refs, field access,
-//! literals, variants, record construction, and the boolean/comparison forms
-//! used by outcome guards (`exprs.rs`). Deferred forms return an explicit
+//! literals, variants, record construction, general string concatenation, and
+//! the boolean/comparison forms used by outcome guards (`exprs.rs`). Deferred forms return an explicit
 //! `LowerError::unsupported` — visible incompleteness, never silent drift.
 
 use std::collections::BTreeMap;
@@ -184,9 +184,6 @@ fn lower_logic(
                     rhs,
                     span: span_of(*span),
                 }),
-                BinaryOp::Concat if !contains_workflow_id(left) && !contains_workflow_id(right) => {
-                    return Err(LowerError::unsupported("string concatenation", *span));
-                }
                 BinaryOp::Concat => stmts.push(Stmt::Concat {
                     dst,
                     lhs,
@@ -275,22 +272,6 @@ pub(super) fn lower_arg_for(
         stmts,
         expr_span(expr),
     ))
-}
-
-fn contains_workflow_id(expr: &Expr) -> bool {
-    match expr {
-        Expr::Field { base, name, .. } => {
-            (name == "id" && matches!(base.as_ref(), Expr::Workflow { .. }))
-                || contains_workflow_id(base)
-        }
-        Expr::Binary { left, right, .. } => {
-            contains_workflow_id(left) || contains_workflow_id(right)
-        }
-        Expr::Not { expr, .. } | Expr::Predicate { subject: expr, .. } => {
-            contains_workflow_id(expr)
-        }
-        _ => false,
-    }
 }
 
 /// Wrap a present value in `Some` (`{some, V}`) when the slot is `Option` and

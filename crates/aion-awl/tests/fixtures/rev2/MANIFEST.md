@@ -179,6 +179,9 @@ Valid:
   `is empty` guard.
 - `step-bodies/valid/predicates_and_operators.awl` — all six comparisons, `not`/`and`/`or`,
   `is present`/`is absent` on `String?`.
+- `step-bodies/valid/general_concat.awl` — direct-route payload with left-associated nested
+  string `+`: an input field, the dev-brief worktree literal, and `workflow.id` (the flagship
+  provision-path shape).
 - `step-bodies/valid/index_and_concat.awl` — literal-only indexing `xs[0]`, string `+`.
 - `step-bodies/valid/wait_and_sleep.awl` — `wait signal -> name` (no timeout), `sleep 30s`.
 - `step-bodies/valid/wait_timeout_optional.awl` — `wait … timeout 2d -> name` binding `T?`,
@@ -276,6 +279,10 @@ Valid:
 - `loop-outcomes/valid/loop_compound_until_nested.awl` — nested bounded loops with `and` and
   optional-narrowing `or` compound `until` conditions (pins short-circuit ordering and nested
   loop-slot planning).
+- `loop-outcomes/valid/fork_in_loop_live_ins.awl` — two-step fall-through into a loop containing
+  a collection fork; its `join -> verdicts` binding feeds a later body action and the `until`
+  condition while remaining loop-local (pins direct chain-boundary live-in collection without
+  threading the join binding out of the loop).
 - `loop-outcomes/valid/backward_route_bounded_cycle.awl` — backward route legal because a
   max-bounded loop sits on a step in the cycle; counter used in a later step's payload.
 - `loop-outcomes/valid/loop_after_fall_through.awl` — a fall-through chain whose terminal

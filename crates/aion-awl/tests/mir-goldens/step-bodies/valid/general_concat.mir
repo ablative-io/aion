@@ -1,0 +1,137 @@
+module general_concat source=general_concat.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families == 
+== atoms ==
+  [0] config
+  [1] provisioned
+  [2] general_concat_input
+  [3] provisioned_outcome
+  [4] ok
+== literals ==
+  [0] "repo_root"
+  [1] "path"
+  [2] "config"
+  [3] "provisioned"
+  [4] "outcome"
+  [5] ""
+  [6] "GeneralConcatOutcome"
+  [7] "provisioned"
+  [8] "payload"
+  [9] "/.yggdrasil-worktrees/dev-brief/"
+== types ==
+  record Config tag=config
+    repo_root: string
+  record Provisioned tag=provisioned
+    path: string
+  record GeneralConcatInput tag=general_concat_input
+    config: ref(Config)
+  union GeneralConcatOutcome
+    provisioned -> provisioned_outcome(ref(Provisioned))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=general_concat_input_codec output=general_concat_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(general_concat.GeneralConcatInput, general_concat.GeneralConcatOutcome, AwlError)
+  T-DEF name="general_concat" input=general_concat_input_codec output=general_concat_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (general_concat.GeneralConcatInput) -> Result(general_concat.GeneralConcatOutcome, AwlError)
+  T-EXEC fields=[config:general_concat.Config] entry=step_provision args=[0]
+== fn config_codec/0 origin=codec_template(RecordTrio, Config, record#0) ==
+  sig: () -> Codec(general_concat.Config)
+  v0 = make_closure config_to_json captures=[]
+  v1 = call_local config_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn config_to_json/1 origin=codec_template(RecordTrio, Config, record#0) ==
+  sig: (general_concat.Config) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"repo_root": v1|>awlc.string_to_json}
+  return v2
+== fn config_decoder/0 origin=codec_template(RecordTrio, Config, record#0) ==
+  sig: () -> Decoder(general_concat.Config)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure config_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn config_decoder$0/1 origin=lifted(config_decoder, #0) ==
+  sig: (String) -> Decoder(general_concat.Config)
+  v1 = record(config, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn provisioned_codec/0 origin=codec_template(RecordTrio, Provisioned, record#1) ==
+  sig: () -> Codec(general_concat.Provisioned)
+  v0 = make_closure provisioned_to_json captures=[]
+  v1 = call_local provisioned_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn provisioned_to_json/1 origin=codec_template(RecordTrio, Provisioned, record#1) ==
+  sig: (general_concat.Provisioned) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"path": v1|>awlc.string_to_json}
+  return v2
+== fn provisioned_decoder/0 origin=codec_template(RecordTrio, Provisioned, record#1) ==
+  sig: () -> Decoder(general_concat.Provisioned)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure provisioned_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn provisioned_decoder$0/1 origin=lifted(provisioned_decoder, #0) ==
+  sig: (String) -> Decoder(general_concat.Provisioned)
+  v1 = record(provisioned, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn general_concat_input_codec/0 origin=codec_template(RecordTrio, GeneralConcatInput, record#2) ==
+  sig: () -> Codec(general_concat.GeneralConcatInput)
+  v0 = make_closure general_concat_input_to_json captures=[]
+  v1 = call_local general_concat_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn general_concat_input_to_json/1 origin=codec_template(RecordTrio, GeneralConcatInput, record#2) ==
+  sig: (general_concat.GeneralConcatInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"config": v1|>config_to_json}
+  return v2
+== fn general_concat_input_decoder/0 origin=codec_template(RecordTrio, GeneralConcatInput, record#2) ==
+  sig: () -> Decoder(general_concat.GeneralConcatInput)
+  v0 = call_local config_decoder()
+  v1 = make_closure general_concat_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn general_concat_input_decoder$0/1 origin=lifted(general_concat_input_decoder, #0) ==
+  sig: (general_concat.Config) -> Decoder(general_concat.GeneralConcatInput)
+  v1 = record(general_concat_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn general_concat_outcome_codec/0 origin=codec_template(UnionTrio, GeneralConcatOutcome, union#3) ==
+  sig: () -> Codec(general_concat.GeneralConcatOutcome)
+  v0 = make_closure general_concat_outcome_to_json captures=[]
+  v1 = call_local general_concat_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn general_concat_outcome_to_json/1 origin=codec_template(UnionTrio, GeneralConcatOutcome, union#3) ==
+  sig: (general_concat.GeneralConcatOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#3|>awlc.string_to_json, "payload": v1|>provisioned_to_json}
+  return v2
+== fn general_concat_outcome_decoder/0 origin=codec_template(UnionTrio, GeneralConcatOutcome, union#3) ==
+  sig: () -> Decoder(general_concat.GeneralConcatOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure general_concat_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn general_concat_outcome_decoder$outcome/1 origin=lifted(general_concat_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(general_concat.GeneralConcatOutcome)
+  if cmp Eq v0 lit#7:
+    v3 = call_local provisioned_decoder()
+    v4 = make_closure general_concat_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+  else:
+    v1 = record(provisioned, [lit#5])
+    v2 = record(provisioned_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#6)
+== fn general_concat_outcome_decoder$arm0/1 origin=lifted(general_concat_outcome_decoder, #1) ==
+  sig: (general_concat.Provisioned) -> Decoder(general_concat.GeneralConcatOutcome)
+  v1 = record(provisioned_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn step_provision/1 origin=region(provision) ==
+  sig: (general_concat.Config) -> Result(general_concat.GeneralConcatOutcome, AwlError)
+  v3 = field(v0, 1)
+  v2 = concat v3 lit#9
+  v4 = call_rt aion@workflow:id/0() live_after=[v2]
+  v5 = call_rt aion@awl@error:map_engine_error/1(v4) live_after=[v2]
+  v6 = try_bind v5 live_after=[v2]
+  v1 = concat v2 v6
+  v7 = record(provisioned, [v1])
+  v8 = record(provisioned_outcome, [v7])
+  v9 = record(ok, [v8])
+  return v9

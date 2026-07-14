@@ -10,10 +10,9 @@
 //! be consumed directly here: it intentionally aggregates an entire region
 //! into one graph node, while chain splitting needs a live-in set at every
 //! interior step boundary. Exposing those folds would widen the planner API and
-//! still require the chain-specific backward walk. Statement forms outside
-//! the covered subset (forks, substeps) collect nothing here — their
-//! statements refuse during body lowering, so no module carrying them ever
-//! materializes.
+//! still require the chain-specific backward walk. Substeps remain outside the
+//! covered subset and collect nothing here because they refuse during body
+//! lowering, so no module carrying them ever materializes.
 
 use std::collections::BTreeSet;
 
@@ -131,9 +130,26 @@ fn collect_statements(
                     defs.insert(counter.name.clone());
                 }
             }
-            // Forks, substeps, and sleeps contribute nothing: sleeps
-            // reference no bindings, the rest refuse during body lowering.
-            Statement::Sleep(_) | Statement::Fork(_) | Statement::SubStep(_) => {}
+            Statement::Fork(fork) => {
+                if let crate::ast::ForkHeader::Collection {
+                    var, collection, ..
+                } = &fork.header
+                {
+                    add_expr(collection, defs, refs);
+                    let mut branch_defs = defs.clone();
+                    branch_defs.insert(var.clone());
+                    collect_statements(emitter, plan, &fork.body, &mut branch_defs, refs);
+                } else {
+                    // Named branches merge their bindings at the join.
+                    collect_statements(emitter, plan, &fork.body, defs, refs);
+                }
+                if let Some(bind) = &fork.join.bind {
+                    defs.insert(bind.name.clone());
+                }
+            }
+            // Sleeps reference no bindings. Substeps refuse during body
+            // lowering and therefore never reach chain materialization.
+            Statement::Sleep(_) | Statement::SubStep(_) => {}
         }
     }
 }

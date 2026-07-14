@@ -1,0 +1,34 @@
+//! Carry a prepared batch into a loop whose joined verdicts stay local to each round.
+workflow fork_in_loop_live_ins
+  input items: [String]
+  input max_rounds: Int
+  outcome completed: type Summary, route success
+  outcome exhausted: type Summary, route failure
+
+type Batch   { items: [String] }
+type Verdict { blocking: Bool }
+type Round   { complete: Bool }
+type Summary { complete: Bool }
+
+worker review
+  action prepare(items: [String]) -> Batch
+  action inspect(item: String) -> Verdict
+  action fold(prior: Round, verdicts: [Verdict]) -> Round
+
+step prepare_batch
+  prepare(items: items) -> batch
+
+step review_rounds
+  loop round = Round(complete: false)
+    fork item in batch.items
+      inspect(item: item)
+    join -> verdicts
+
+    fold(prior: round, verdicts: verdicts) -> round
+    until verdicts is empty
+    max max_rounds
+
+  outcome done: when round.complete,
+    route completed(complete: round.complete)
+  outcome spent: otherwise,
+    route exhausted(complete: round.complete)
