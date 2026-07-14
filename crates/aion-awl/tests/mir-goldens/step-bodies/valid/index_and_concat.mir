@@ -1,0 +1,190 @@
+module index_and_concat source=index_and_concat.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_send_kickoff:
+    aion@activity:task_queue/2 [activities] (v5, lit#15)
+    aion@workflow:run/1 [activities] (v6)
+== durable families == activities
+== atoms ==
+  [0] receipt
+  [1] send_input
+  [2] index_and_concat_input
+  [3] sent_outcome
+  [4] ok
+== literals ==
+  [0] "to"
+  [1] "body"
+  [2] "to"
+  [3] "body"
+  [4] "reviewers"
+  [5] "topic"
+  [6] "sent"
+  [7] "outcome"
+  [8] ""
+  [9] ""
+  [10] "IndexAndConcatOutcome"
+  [11] "sent"
+  [12] "payload"
+  [13] "index 0 out of range at line 13, column 12"
+  [14] "kickoff: "
+  [15] "mailer"
+== types ==
+  record Receipt tag=receipt
+    to: string
+    body: string
+  record SendInput tag=send_input
+    to: string
+    body: string
+  record IndexAndConcatInput tag=index_and_concat_input
+    reviewers: list(string)
+    topic: string
+  union IndexAndConcatOutcome
+    sent -> sent_outcome(ref(Receipt))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=index_and_concat_input_codec output=index_and_concat_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(index_and_concat.IndexAndConcatInput, index_and_concat.IndexAndConcatOutcome, AwlError)
+  T-DEF name="index_and_concat" input=index_and_concat_input_codec output=index_and_concat_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (index_and_concat.IndexAndConcatInput) -> Result(index_and_concat.IndexAndConcatOutcome, AwlError)
+  T-EXEC fields=[reviewers:List(String), topic:String] entry=step_send_kickoff args=[0, 1]
+== fn receipt_codec/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: () -> Codec(index_and_concat.Receipt)
+  v0 = make_closure receipt_to_json captures=[]
+  v1 = call_local receipt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn receipt_to_json/1 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: (index_and_concat.Receipt) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"to": v1|>awlc.string_to_json, "body": v2|>awlc.string_to_json}
+  return v3
+== fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: () -> Decoder(index_and_concat.Receipt)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure receipt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn receipt_decoder$0/1 origin=lifted(receipt_decoder, #0) ==
+  sig: (String) -> Decoder(index_and_concat.Receipt)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure receipt_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn receipt_decoder$1/2 origin=lifted(receipt_decoder, #1) ==
+  sig: (String, String) -> Decoder(index_and_concat.Receipt)
+  v2 = record(receipt, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn send_input_codec/0 origin=codec_template(RecordTrio, SendInput, record#1) ==
+  sig: () -> Codec(index_and_concat.SendInput)
+  v0 = make_closure send_input_to_json captures=[]
+  v1 = call_local send_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn send_input_to_json/1 origin=codec_template(RecordTrio, SendInput, record#1) ==
+  sig: (index_and_concat.SendInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"to": v1|>awlc.string_to_json, "body": v2|>awlc.string_to_json}
+  return v3
+== fn send_input_decoder/0 origin=codec_template(RecordTrio, SendInput, record#1) ==
+  sig: () -> Decoder(index_and_concat.SendInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure send_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn send_input_decoder$0/1 origin=lifted(send_input_decoder, #0) ==
+  sig: (String) -> Decoder(index_and_concat.SendInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure send_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn send_input_decoder$1/2 origin=lifted(send_input_decoder, #1) ==
+  sig: (String, String) -> Decoder(index_and_concat.SendInput)
+  v2 = record(send_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn index_and_concat_input_codec/0 origin=codec_template(RecordTrio, IndexAndConcatInput, record#2) ==
+  sig: () -> Codec(index_and_concat.IndexAndConcatInput)
+  v0 = make_closure index_and_concat_input_to_json captures=[]
+  v1 = call_local index_and_concat_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn index_and_concat_input_to_json/1 origin=codec_template(RecordTrio, IndexAndConcatInput, record#2) ==
+  sig: (index_and_concat.IndexAndConcatInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"reviewers": v1|>list_string_to_json, "topic": v2|>awlc.string_to_json}
+  return v3
+== fn index_and_concat_input_decoder/0 origin=codec_template(RecordTrio, IndexAndConcatInput, record#2) ==
+  sig: () -> Decoder(index_and_concat.IndexAndConcatInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure index_and_concat_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn index_and_concat_input_decoder$0/1 origin=lifted(index_and_concat_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(index_and_concat.IndexAndConcatInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure index_and_concat_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn index_and_concat_input_decoder$1/2 origin=lifted(index_and_concat_input_decoder, #1) ==
+  sig: (String, List(String)) -> Decoder(index_and_concat.IndexAndConcatInput)
+  v2 = record(index_and_concat_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn index_and_concat_outcome_codec/0 origin=codec_template(UnionTrio, IndexAndConcatOutcome, union#3) ==
+  sig: () -> Codec(index_and_concat.IndexAndConcatOutcome)
+  v0 = make_closure index_and_concat_outcome_to_json captures=[]
+  v1 = call_local index_and_concat_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn index_and_concat_outcome_to_json/1 origin=codec_template(UnionTrio, IndexAndConcatOutcome, union#3) ==
+  sig: (index_and_concat.IndexAndConcatOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>receipt_to_json}
+  return v2
+== fn index_and_concat_outcome_decoder/0 origin=codec_template(UnionTrio, IndexAndConcatOutcome, union#3) ==
+  sig: () -> Decoder(index_and_concat.IndexAndConcatOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure index_and_concat_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn index_and_concat_outcome_decoder$outcome/1 origin=lifted(index_and_concat_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(index_and_concat.IndexAndConcatOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local receipt_decoder()
+    v4 = make_closure index_and_concat_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(receipt, [lit#8, lit#9])
+    v2 = record(sent_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn index_and_concat_outcome_decoder$arm0/1 origin=lifted(index_and_concat_outcome_decoder, #1) ==
+  sig: (index_and_concat.Receipt) -> Decoder(index_and_concat.IndexAndConcatOutcome)
+  v1 = record(sent_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn send_activity/2 origin=activity_wrapper(send, raw=false) ==
+  sig: (String, String) -> Activity(index_and_concat.SendInput, index_and_concat.Receipt)
+  T-ACT action=send input_codec=send_input_codec return=receipt_codec
+== fn step_send_kickoff/2 origin=region(send_kickoff) ==
+  sig: (List(String), String) -> Result(index_and_concat.IndexAndConcatOutcome, AwlError)
+  v2 = call_rt aion@awl@runtime:index/3(v0, 0, lit#13) live_after=[v1]
+  v3 = try_bind v2 live_after=[v1]
+  v4 = concat lit#14 v1
+  v5 = call_local send_activity(v3, v4)
+  v6 = call_rt aion@activity:task_queue/2(v5, lit#15)
+  v7 = call_rt aion@workflow:run/1(v6)
+  v8 = call_rt aion@awl@error:map_activity_error/1(v7)
+  v9 = try_bind v8
+  v10 = record(sent_outcome, [v9])
+  v11 = record(ok, [v10])
+  return v11
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

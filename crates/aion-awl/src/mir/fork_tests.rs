@@ -355,49 +355,128 @@ fn stopgap_refusals_match_the_reference_classes() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-/// Carried BC-2b-5 pin (c): call-site config inside fork branches is an
-/// INTENTIONAL direct-backend parity exception — the reference emitter
-/// passes branch config through `activity_value`
-/// (`emitter/forks.rs:218-229,300-336`), while direct lowering refuses both
-/// fork forms with the global BC-2 `call-site config` scope class
-/// (support stays deferred; recorded in AWL-BC-IR.md). This pin keeps the
-/// refusal class from drifting silently in either fork form.
+/// BC-2b-5 CLOSED: call-site config on fork branches lowers with the per-key
+/// site-over-declaration merge (the reference passes branch config through
+/// `activity_value`, `emitter/forks.rs:218-229,300-336`). The named form
+/// applies the config in the branch sequence BEFORE the single
+/// `workflow.all`; the collection form applies it INSIDE the lifted fork fn
+/// whose value `workflow.map` dispatches. Child branches keep the reference's
+/// child-config class (`emitter/forks.rs:136-141`), pinned in
+/// `collection_child_fork_config_refuses_with_the_child_class`.
 #[test]
-fn fork_branch_call_site_config_refuses_with_the_scope_class()
--> Result<(), Box<dyn std::error::Error>> {
-    let cases: &[&str] = &[
-        // Named fork branch with a config line.
-        "step check_all
+fn fork_branch_call_site_config_lowers_with_per_key_merge() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Named fork (homogeneous, two branches): the configured branch's
+    // `activity.timeout` call precedes the one `workflow.all`.
+    let named = format!(
+        "{REFUSAL_HEADER}step check_all
   fork
-    check_doc(doc: docs[0]) -> verdict
+    check_doc(doc: docs[0]) -> a
       timeout 30m
+    check_doc(doc: docs[1]) -> b
   join
 
   route done(count: 1)
-",
-        // Collection fork branch with a config line.
-        "step check_all
+"
+    );
+    let module = lower_source(&named)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+    let host = text
+        .split("== fn step_check_all/1")
+        .nth(1)
+        .and_then(|tail| tail.split("== fn ").next())
+        .ok_or("missing check_all step")?;
+    let timeout = host
+        .find("call_rt aion@activity:timeout/2")
+        .ok_or("named branch config must apply activity.timeout")?;
+    let all = host
+        .find("call_rt aion@workflow:all/1")
+        .ok_or("named fork must still ride one workflow.all")?;
+    assert!(
+        timeout < all,
+        "branch config must apply before the all-dispatch:\n{host}"
+    );
+
+    // Collection fork: the branch config's `activity.node` call lives INSIDE
+    // the lifted fork fn (the unrun value `workflow.map` dispatches).
+    let collection = format!(
+        "{REFUSAL_HEADER}step check_all
   fork doc in docs
     check_doc(doc: doc)
       node edge01
   join -> results
 
   route done(count: 1)
-",
-    ];
-    for body in cases {
-        let source = format!("{REFUSAL_HEADER}{body}");
-        match lower_source(&source)? {
-            Err(LowerError::Unsupported { shape, .. }) => {
-                assert_eq!(
-                    shape, "call-site config",
-                    "fork call-site config refusal class drifted for:\n{body}"
-                );
-            }
-            other => {
-                return Err(format!("expected the call-site config refusal, got {other:?}").into());
-            }
+"
+    );
+    let module = lower_source(&collection)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+    let branch = text
+        .split("== fn check_all_fork_0/1 origin=fork(check_all#0) ==")
+        .nth(1)
+        .and_then(|tail| tail.split("== fn ").next())
+        .ok_or("missing lifted fork branch body")?;
+    let queue = branch
+        .find("call_rt aion@activity:task_queue/2")
+        .ok_or("branch body must still configure the task queue")?;
+    let node = branch
+        .find("call_rt aion@activity:node/2")
+        .ok_or("branch site config must apply activity.node inside the lifted fn")?;
+    assert!(
+        queue < node,
+        "per-key merge order is retry, timeout, task_queue, then node:\n{branch}"
+    );
+    let host = text
+        .split("== fn step_check_all/1")
+        .nth(1)
+        .and_then(|tail| tail.split("== fn ").next())
+        .ok_or("missing check_all host step")?;
+    assert!(
+        !host.contains("call_rt aion@activity:node/2"),
+        "the node pin belongs to the lifted branch fn, not the host:\n{host}"
+    );
+    Ok(())
+}
+
+/// A collection fork over a CHILD with branch config refuses with the
+/// reference's child class (`emitter/forks.rs:136-141`) — a hard message,
+/// not an `Unsupported` scope marker.
+#[test]
+fn collection_child_fork_config_refuses_with_the_child_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "\
+//! Pin: child fork branches refuse call-site config with the child class.
+workflow fork_pin_child_config
+  input essays: [String]
+  outcome done: type Done, route success
+
+type Done  { count: Int }
+type Score { value: Int }
+
+worker review
+  action check_essay(essay: String) -> Done
+
+child score_essay(essay: String) -> Score
+
+step gather
+  fork essay in essays
+    score_essay(essay: essay)
+      node edge01
+  join -> scores
+
+  route done(count: 1)
+";
+    match lower_source(source)? {
+        Err(LowerError::Message { message, .. }) => {
+            assert_eq!(
+                message,
+                "`node`/`timeout` cannot pin a child workflow call — the engine routes \
+                 children, not a queue"
+            );
         }
+        other => return Err(format!("expected the child-config refusal, got {other:?}").into()),
     }
     Ok(())
 }

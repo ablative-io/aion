@@ -1,0 +1,221 @@
+module literal_forms source=literal_forms.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_announce:
+    aion@activity:task_queue/2 [activities] (v1, lit#15)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] receipt
+  [1] muted
+  [2] broadcast_input
+  [3] literal_forms_input
+  [4] notified_outcome
+  [5] true
+  [6] ok
+  [7] awl_outcome_failure
+  [8] error
+== literals ==
+  [0] "delivered"
+  [1] "weight"
+  [2] "reason"
+  [3] "recipients"
+  [4] "body"
+  [5] "urgent"
+  [6] "notified"
+  [7] "outcome"
+  [8] float(0.0)
+  [9] "LiteralFormsOutcome"
+  [10] "notified"
+  [11] "payload"
+  [12] "ops"
+  [13] "oncall"
+  [14] "go \"now\"\n\t\\"
+  [15] "mailer"
+  [16] float(0.5)
+  [17] "message carried no weight"
+  [18] "muted"
+== types ==
+  record Receipt tag=receipt
+    delivered: int
+    weight: float
+  record Muted tag=muted
+    reason: string
+  record BroadcastInput tag=broadcast_input
+    recipients: list(string)
+    body: string
+    urgent: bool
+  record LiteralFormsInput tag=literal_forms_input
+  union LiteralFormsOutcome
+    notified -> notified_outcome(ref(Receipt))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=literal_forms_input_codec output=literal_forms_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(literal_forms.LiteralFormsInput, literal_forms.LiteralFormsOutcome, AwlError)
+  T-DEF name="literal_forms" input=literal_forms_input_codec output=literal_forms_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (literal_forms.LiteralFormsInput) -> Result(literal_forms.LiteralFormsOutcome, AwlError)
+  T-EXEC fields=[] entry=step_announce args=[]
+== fn receipt_codec/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: () -> Codec(literal_forms.Receipt)
+  v0 = make_closure receipt_to_json captures=[]
+  v1 = call_local receipt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn receipt_to_json/1 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: (literal_forms.Receipt) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"delivered": v1|>awlc.int_to_json, "weight": v2|>awlc.float_to_json}
+  return v3
+== fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
+  sig: () -> Decoder(literal_forms.Receipt)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure receipt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn receipt_decoder$0/1 origin=lifted(receipt_decoder, #0) ==
+  sig: (Int) -> Decoder(literal_forms.Receipt)
+  v1 = call_rt aion@awl@codec:float_decoder/0() live_after=[v0]
+  v2 = make_closure receipt_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn receipt_decoder$1/2 origin=lifted(receipt_decoder, #1) ==
+  sig: (Float, Int) -> Decoder(literal_forms.Receipt)
+  v2 = record(receipt, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn muted_codec/0 origin=codec_template(RecordTrio, Muted, record#1) ==
+  sig: () -> Codec(literal_forms.Muted)
+  v0 = make_closure muted_to_json captures=[]
+  v1 = call_local muted_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn muted_to_json/1 origin=codec_template(RecordTrio, Muted, record#1) ==
+  sig: (literal_forms.Muted) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn muted_decoder/0 origin=codec_template(RecordTrio, Muted, record#1) ==
+  sig: () -> Decoder(literal_forms.Muted)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure muted_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn muted_decoder$0/1 origin=lifted(muted_decoder, #0) ==
+  sig: (String) -> Decoder(literal_forms.Muted)
+  v1 = record(muted, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn broadcast_input_codec/0 origin=codec_template(RecordTrio, BroadcastInput, record#2) ==
+  sig: () -> Codec(literal_forms.BroadcastInput)
+  v0 = make_closure broadcast_input_to_json captures=[]
+  v1 = call_local broadcast_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn broadcast_input_to_json/1 origin=codec_template(RecordTrio, BroadcastInput, record#2) ==
+  sig: (literal_forms.BroadcastInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"recipients": v1|>list_string_to_json, "body": v2|>awlc.string_to_json, "urgent": v3|>awlc.bool_to_json}
+  return v4
+== fn broadcast_input_decoder/0 origin=codec_template(RecordTrio, BroadcastInput, record#2) ==
+  sig: () -> Decoder(literal_forms.BroadcastInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure broadcast_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn broadcast_input_decoder$0/1 origin=lifted(broadcast_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(literal_forms.BroadcastInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure broadcast_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn broadcast_input_decoder$1/2 origin=lifted(broadcast_input_decoder, #1) ==
+  sig: (String, List(String)) -> Decoder(literal_forms.BroadcastInput)
+  v2 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0, v1]
+  v3 = make_closure broadcast_input_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v2, v3)
+== fn broadcast_input_decoder$2/3 origin=lifted(broadcast_input_decoder, #2) ==
+  sig: (Bool, List(String), String) -> Decoder(literal_forms.BroadcastInput)
+  v3 = record(broadcast_input, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn literal_forms_input_codec/0 origin=codec_template(RecordTrio, LiteralFormsInput, record#3) ==
+  sig: () -> Codec(literal_forms.LiteralFormsInput)
+  v0 = make_closure literal_forms_input_to_json captures=[]
+  v1 = call_local literal_forms_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn literal_forms_input_to_json/1 origin=codec_template(RecordTrio, LiteralFormsInput, record#3) ==
+  sig: (literal_forms.LiteralFormsInput) -> Json
+  v1 = json_obj {}
+  return v1
+== fn literal_forms_input_decoder/0 origin=codec_template(RecordTrio, LiteralFormsInput, record#3) ==
+  sig: () -> Decoder(literal_forms.LiteralFormsInput)
+  tail_rt gleam@dynamic@decode:success/1('literal_forms_input')
+== fn literal_forms_outcome_codec/0 origin=codec_template(UnionTrio, LiteralFormsOutcome, union#4) ==
+  sig: () -> Codec(literal_forms.LiteralFormsOutcome)
+  v0 = make_closure literal_forms_outcome_to_json captures=[]
+  v1 = call_local literal_forms_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn literal_forms_outcome_to_json/1 origin=codec_template(UnionTrio, LiteralFormsOutcome, union#4) ==
+  sig: (literal_forms.LiteralFormsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>receipt_to_json}
+  return v2
+== fn literal_forms_outcome_decoder/0 origin=codec_template(UnionTrio, LiteralFormsOutcome, union#4) ==
+  sig: () -> Decoder(literal_forms.LiteralFormsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure literal_forms_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn literal_forms_outcome_decoder$outcome/1 origin=lifted(literal_forms_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(literal_forms.LiteralFormsOutcome)
+  if cmp Eq v0 lit#10:
+    v3 = call_local receipt_decoder()
+    v4 = make_closure literal_forms_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#11, v3, v4)
+  else:
+    v1 = record(receipt, [0, lit#8])
+    v2 = record(notified_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#9)
+== fn literal_forms_outcome_decoder$arm0/1 origin=lifted(literal_forms_outcome_decoder, #1) ==
+  sig: (literal_forms.Receipt) -> Decoder(literal_forms.LiteralFormsOutcome)
+  v1 = record(notified_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn broadcast_activity/3 origin=activity_wrapper(broadcast, raw=false) ==
+  sig: (List(String), String, Bool) -> Activity(literal_forms.BroadcastInput, literal_forms.Receipt)
+  T-ACT action=broadcast input_codec=broadcast_input_codec return=receipt_codec
+== fn step_announce/0 origin=region(announce) ==
+  sig: () -> Result(literal_forms.LiteralFormsOutcome, AwlError)
+  v0 = list([lit#12, lit#13])
+  v1 = call_local broadcast_activity(v0, lit#14, 'true')
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#15)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v7 = field(v5, 2)
+  v6 = cmp FGe v7 lit#16
+  if is_true v6:
+    v8 = field(v5, 1)
+    v9 = field(v5, 2)
+    v10 = record(receipt, [v8, v9])
+    v11 = record(notified_outcome, [v10])
+    v12 = record(ok, [v11])
+    return v12
+  else:
+    v13 = record(muted, [lit#17])
+    v14 = call_local muted_to_json(v13)
+    v15 = call_rt gleam@json:to_string/1(v14)
+    v16 = record(awl_outcome_failure, [lit#18, v15])
+    v17 = record(error, [v16])
+    return v17
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

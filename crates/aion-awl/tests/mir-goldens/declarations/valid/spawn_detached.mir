@@ -1,0 +1,221 @@
+module process_order source=process_order.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_ship:
+    aion@workflow:spawn/6 [children] (lit#13, v2, v1, v3, v4, v5)
+    aion@activity:retry/2 [activities] (v9, v12)
+    aion@activity:timeout/2 [activities] (v13, v14)
+    aion@activity:task_queue/2 [activities] (v15, lit#14)
+    aion@activity:node/2 [activities] (v16, lit#15)
+    aion@workflow:run/1 [activities] (v17)
+== durable families == activities, children
+== atoms ==
+  [0] order_result
+  [1] ship_input
+  [2] process_order_input
+  [3] shipped_outcome
+  [4] false
+  [5] fixed
+  [6] retry_policy
+  [7] ok
+  [8] awl_outcome_failure
+  [9] error
+== literals ==
+  [0] "order_id"
+  [1] "delivered"
+  [2] "order_id"
+  [3] "order_id"
+  [4] "shipped"
+  [5] "outcome"
+  [6] ""
+  [7] "ProcessOrderOutcome"
+  [8] "shipped"
+  [9] "payload"
+  [10] "child"
+  [11] "outcome"
+  [12] "payload"
+  [13] "audit_trail"
+  [14] "orders"
+  [15] "warehouse"
+  [16] "stuck"
+== types ==
+  record OrderResult tag=order_result
+    order_id: string
+    delivered: bool
+  record ShipInput tag=ship_input
+    order_id: string
+  record ProcessOrderInput tag=process_order_input
+    order_id: string
+  union ProcessOrderOutcome
+    shipped -> shipped_outcome(ref(OrderResult))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=process_order_input_codec output=process_order_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(process_order.ProcessOrderInput, process_order.ProcessOrderOutcome, AwlError)
+  T-DEF name="process_order" input=process_order_input_codec output=process_order_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (process_order.ProcessOrderInput) -> Result(process_order.ProcessOrderOutcome, AwlError)
+  T-EXEC fields=[order_id:String] entry=step_ship args=[0]
+== fn order_result_codec/0 origin=codec_template(RecordTrio, OrderResult, record#0) ==
+  sig: () -> Codec(process_order.OrderResult)
+  v0 = make_closure order_result_to_json captures=[]
+  v1 = call_local order_result_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn order_result_to_json/1 origin=codec_template(RecordTrio, OrderResult, record#0) ==
+  sig: (process_order.OrderResult) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"order_id": v1|>awlc.string_to_json, "delivered": v2|>awlc.bool_to_json}
+  return v3
+== fn order_result_decoder/0 origin=codec_template(RecordTrio, OrderResult, record#0) ==
+  sig: () -> Decoder(process_order.OrderResult)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure order_result_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn order_result_decoder$0/1 origin=lifted(order_result_decoder, #0) ==
+  sig: (String) -> Decoder(process_order.OrderResult)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure order_result_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn order_result_decoder$1/2 origin=lifted(order_result_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(process_order.OrderResult)
+  v2 = record(order_result, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn ship_input_codec/0 origin=codec_template(RecordTrio, ShipInput, record#1) ==
+  sig: () -> Codec(process_order.ShipInput)
+  v0 = make_closure ship_input_to_json captures=[]
+  v1 = call_local ship_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ship_input_to_json/1 origin=codec_template(RecordTrio, ShipInput, record#1) ==
+  sig: (process_order.ShipInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"order_id": v1|>awlc.string_to_json}
+  return v2
+== fn ship_input_decoder/0 origin=codec_template(RecordTrio, ShipInput, record#1) ==
+  sig: () -> Decoder(process_order.ShipInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ship_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn ship_input_decoder$0/1 origin=lifted(ship_input_decoder, #0) ==
+  sig: (String) -> Decoder(process_order.ShipInput)
+  v1 = record(ship_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn process_order_input_codec/0 origin=codec_template(RecordTrio, ProcessOrderInput, record#2) ==
+  sig: () -> Codec(process_order.ProcessOrderInput)
+  v0 = make_closure process_order_input_to_json captures=[]
+  v1 = call_local process_order_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn process_order_input_to_json/1 origin=codec_template(RecordTrio, ProcessOrderInput, record#2) ==
+  sig: (process_order.ProcessOrderInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"order_id": v1|>awlc.string_to_json}
+  return v2
+== fn process_order_input_decoder/0 origin=codec_template(RecordTrio, ProcessOrderInput, record#2) ==
+  sig: () -> Decoder(process_order.ProcessOrderInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure process_order_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn process_order_input_decoder$0/1 origin=lifted(process_order_input_decoder, #0) ==
+  sig: (String) -> Decoder(process_order.ProcessOrderInput)
+  v1 = record(process_order_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn process_order_outcome_codec/0 origin=codec_template(UnionTrio, ProcessOrderOutcome, union#3) ==
+  sig: () -> Codec(process_order.ProcessOrderOutcome)
+  v0 = make_closure process_order_outcome_to_json captures=[]
+  v1 = call_local process_order_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn process_order_outcome_to_json/1 origin=codec_template(UnionTrio, ProcessOrderOutcome, union#3) ==
+  sig: (process_order.ProcessOrderOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>order_result_to_json}
+  return v2
+== fn process_order_outcome_decoder/0 origin=codec_template(UnionTrio, ProcessOrderOutcome, union#3) ==
+  sig: () -> Decoder(process_order.ProcessOrderOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure process_order_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn process_order_outcome_decoder$outcome/1 origin=lifted(process_order_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(process_order.ProcessOrderOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local order_result_decoder()
+    v4 = make_closure process_order_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(order_result, [lit#6, 'false'])
+    v2 = record(shipped_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn process_order_outcome_decoder$arm0/1 origin=lifted(process_order_outcome_decoder, #1) ==
+  sig: (process_order.OrderResult) -> Decoder(process_order.ProcessOrderOutcome)
+  v1 = record(shipped_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn awl_child_output_nil_codec/0 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: () -> Codec(Nil)
+  v0 = make_closure awl_child_output_nil_to_json captures=[]
+  v1 = call_local awl_child_output_nil_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_nil_to_json/1 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: (Nil) -> Json
+  v1 = json_obj {"outcome": lit#10|>awlc.string_to_json, "payload": v0|>awlc.nil_to_json}
+  return v1
+== fn awl_child_output_nil_decoder/0 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: () -> Decoder(Nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_nil_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn awl_child_output_nil_decoder$outcome/1 origin=lifted(awl_child_output_nil_decoder, #0) ==
+  sig: (String) -> Decoder(Nil)
+  v1 = call_rt aion@awl@codec:nil_decoder/0()
+  v2 = make_closure awl_child_output_nil_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v1, v2)
+== fn awl_child_output_nil_decoder$payload/1 origin=lifted(awl_child_output_nil_decoder, #1) ==
+  sig: (Nil) -> Decoder(Nil)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn ship_activity/1 origin=activity_wrapper(ship, raw=false) ==
+  sig: (String) -> Activity(process_order.ShipInput, process_order.OrderResult)
+  T-ACT action=ship input_codec=ship_input_codec return=order_result_codec
+== fn step_ship/1 origin=region(ship) ==
+  sig: (String) -> Result(process_order.ProcessOrderOutcome, AwlError)
+  v1 = json_obj {"order_id": v0|>awlc.string_to_json}
+  v2 = make_closure awl$child_witness captures=[]
+  v3 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v1, v2]
+  v4 = call_local awl_child_output_nil_codec() live_after=[v0, v1, v2, v3]
+  v5 = call_rt aion@awl@error:codec/0() live_after=[v0, v1, v2, v3, v4]
+  v6 = call_rt aion@workflow:spawn/6(lit#13, v2, v1, v3, v4, v5) live_after=[v0]
+  v7 = call_rt aion@awl@error:map_spawn_error/1(v6) live_after=[v0]
+  v8 = try_bind v7 live_after=[v0]
+  v9 = call_local ship_activity(v0)
+  v10 = call_rt aion@duration:milliseconds/1(30000) live_after=[v9]
+  v11 = record(fixed, [v10])
+  v12 = record(retry_policy, [2, v11])
+  v13 = call_rt aion@activity:retry/2(v9, v12)
+  v14 = call_rt aion@duration:milliseconds/1(600000) live_after=[v13]
+  v15 = call_rt aion@activity:timeout/2(v13, v14)
+  v16 = call_rt aion@activity:task_queue/2(v15, lit#14)
+  v17 = call_rt aion@activity:node/2(v16, lit#15)
+  v18 = call_rt aion@workflow:run/1(v17)
+  v19 = call_rt aion@awl@error:map_activity_error/1(v18)
+  v20 = try_bind v19
+  v21 = field(v20, 2)
+  if is_true v21:
+    v22 = field(v20, 1)
+    v23 = field(v20, 2)
+    v24 = record(order_result, [v22, v23])
+    v25 = record(shipped_outcome, [v24])
+    v26 = record(ok, [v25])
+    return v26
+  else:
+    v27 = field(v20, 1)
+    v28 = field(v20, 2)
+    v29 = record(order_result, [v27, v28])
+    v30 = call_local order_result_to_json(v29)
+    v31 = call_rt gleam@json:to_string/1(v30)
+    v32 = record(awl_outcome_failure, [lit#16, v31])
+    v33 = record(error, [v32])
+    return v33
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

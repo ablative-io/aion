@@ -1,0 +1,263 @@
+module confirm_gate source=confirm_gate.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_ask:
+    aion@activity:timeout/2 [activities] (v1, v2)
+    aion@activity:task_queue/2 [activities] (v3, lit#12)
+    aion@activity:node/2 [activities] (v4, lit#13)
+    aion@workflow:run/1 [activities] (v5)
+    aion@workflow:with_timeout/2 [timers] (v9, v10)
+  ask_wait_0_receive:
+    aion@workflow:receive/1 [signals] (v0)
+== durable families == timers, activities, signals
+== atoms ==
+  [0] reply
+  [1] confirmed
+  [2] timed_out
+  [3] announce_input
+  [4] confirm_gate_input
+  [5] confirmed_outcome
+  [6] ok
+  [7] some
+  [8] none
+  [9] error
+  [10] timed_out_error
+  [11] inner_error
+  [12] awl_timer_failed
+  [13] awl_outcome_failure
+== literals ==
+  [0] "message"
+  [1] "approved"
+  [2] "message"
+  [3] "reason"
+  [4] "request"
+  [5] "request"
+  [6] "confirmed"
+  [7] "outcome"
+  [8] ""
+  [9] "ConfirmGateOutcome"
+  [10] "confirmed"
+  [11] "payload"
+  [12] "gate"
+  [13] "shell"
+  [14] "no reply within 30m"
+  [15] "timed_out"
+== types ==
+  record Reply tag=reply
+    message: string
+    approved: bool
+  record Confirmed tag=confirmed
+    message: string
+  record TimedOut tag=timed_out
+    reason: string
+  record AnnounceInput tag=announce_input
+    request: string
+  record ConfirmGateInput tag=confirm_gate_input
+    request: string
+  union ConfirmGateOutcome
+    confirmed -> confirmed_outcome(ref(Confirmed))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=confirm_gate_input_codec output=confirm_gate_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(confirm_gate.ConfirmGateInput, confirm_gate.ConfirmGateOutcome, AwlError)
+  T-DEF name="confirm_gate" input=confirm_gate_input_codec output=confirm_gate_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (confirm_gate.ConfirmGateInput) -> Result(confirm_gate.ConfirmGateOutcome, AwlError)
+  T-EXEC fields=[request:String] entry=step_ask args=[0]
+== fn reply_codec/0 origin=codec_template(RecordTrio, Reply, record#0) ==
+  sig: () -> Codec(confirm_gate.Reply)
+  v0 = make_closure reply_to_json captures=[]
+  v1 = call_local reply_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn reply_to_json/1 origin=codec_template(RecordTrio, Reply, record#0) ==
+  sig: (confirm_gate.Reply) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"message": v1|>awlc.string_to_json, "approved": v2|>awlc.bool_to_json}
+  return v3
+== fn reply_decoder/0 origin=codec_template(RecordTrio, Reply, record#0) ==
+  sig: () -> Decoder(confirm_gate.Reply)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure reply_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn reply_decoder$0/1 origin=lifted(reply_decoder, #0) ==
+  sig: (String) -> Decoder(confirm_gate.Reply)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure reply_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn reply_decoder$1/2 origin=lifted(reply_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(confirm_gate.Reply)
+  v2 = record(reply, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn confirmed_codec/0 origin=codec_template(RecordTrio, Confirmed, record#1) ==
+  sig: () -> Codec(confirm_gate.Confirmed)
+  v0 = make_closure confirmed_to_json captures=[]
+  v1 = call_local confirmed_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn confirmed_to_json/1 origin=codec_template(RecordTrio, Confirmed, record#1) ==
+  sig: (confirm_gate.Confirmed) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"message": v1|>awlc.string_to_json}
+  return v2
+== fn confirmed_decoder/0 origin=codec_template(RecordTrio, Confirmed, record#1) ==
+  sig: () -> Decoder(confirm_gate.Confirmed)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure confirmed_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn confirmed_decoder$0/1 origin=lifted(confirmed_decoder, #0) ==
+  sig: (String) -> Decoder(confirm_gate.Confirmed)
+  v1 = record(confirmed, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn timed_out_codec/0 origin=codec_template(RecordTrio, TimedOut, record#2) ==
+  sig: () -> Codec(confirm_gate.TimedOut)
+  v0 = make_closure timed_out_to_json captures=[]
+  v1 = call_local timed_out_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn timed_out_to_json/1 origin=codec_template(RecordTrio, TimedOut, record#2) ==
+  sig: (confirm_gate.TimedOut) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn timed_out_decoder/0 origin=codec_template(RecordTrio, TimedOut, record#2) ==
+  sig: () -> Decoder(confirm_gate.TimedOut)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure timed_out_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn timed_out_decoder$0/1 origin=lifted(timed_out_decoder, #0) ==
+  sig: (String) -> Decoder(confirm_gate.TimedOut)
+  v1 = record(timed_out, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn announce_input_codec/0 origin=codec_template(RecordTrio, AnnounceInput, record#3) ==
+  sig: () -> Codec(confirm_gate.AnnounceInput)
+  v0 = make_closure announce_input_to_json captures=[]
+  v1 = call_local announce_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn announce_input_to_json/1 origin=codec_template(RecordTrio, AnnounceInput, record#3) ==
+  sig: (confirm_gate.AnnounceInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"request": v1|>awlc.string_to_json}
+  return v2
+== fn announce_input_decoder/0 origin=codec_template(RecordTrio, AnnounceInput, record#3) ==
+  sig: () -> Decoder(confirm_gate.AnnounceInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure announce_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn announce_input_decoder$0/1 origin=lifted(announce_input_decoder, #0) ==
+  sig: (String) -> Decoder(confirm_gate.AnnounceInput)
+  v1 = record(announce_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn confirm_gate_input_codec/0 origin=codec_template(RecordTrio, ConfirmGateInput, record#4) ==
+  sig: () -> Codec(confirm_gate.ConfirmGateInput)
+  v0 = make_closure confirm_gate_input_to_json captures=[]
+  v1 = call_local confirm_gate_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn confirm_gate_input_to_json/1 origin=codec_template(RecordTrio, ConfirmGateInput, record#4) ==
+  sig: (confirm_gate.ConfirmGateInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"request": v1|>awlc.string_to_json}
+  return v2
+== fn confirm_gate_input_decoder/0 origin=codec_template(RecordTrio, ConfirmGateInput, record#4) ==
+  sig: () -> Decoder(confirm_gate.ConfirmGateInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure confirm_gate_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn confirm_gate_input_decoder$0/1 origin=lifted(confirm_gate_input_decoder, #0) ==
+  sig: (String) -> Decoder(confirm_gate.ConfirmGateInput)
+  v1 = record(confirm_gate_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn confirm_gate_outcome_codec/0 origin=codec_template(UnionTrio, ConfirmGateOutcome, union#5) ==
+  sig: () -> Codec(confirm_gate.ConfirmGateOutcome)
+  v0 = make_closure confirm_gate_outcome_to_json captures=[]
+  v1 = call_local confirm_gate_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn confirm_gate_outcome_to_json/1 origin=codec_template(UnionTrio, ConfirmGateOutcome, union#5) ==
+  sig: (confirm_gate.ConfirmGateOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>confirmed_to_json}
+  return v2
+== fn confirm_gate_outcome_decoder/0 origin=codec_template(UnionTrio, ConfirmGateOutcome, union#5) ==
+  sig: () -> Decoder(confirm_gate.ConfirmGateOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure confirm_gate_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn confirm_gate_outcome_decoder$outcome/1 origin=lifted(confirm_gate_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(confirm_gate.ConfirmGateOutcome)
+  if cmp Eq v0 lit#10:
+    v3 = call_local confirmed_decoder()
+    v4 = make_closure confirm_gate_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#11, v3, v4)
+  else:
+    v1 = record(confirmed, [lit#8])
+    v2 = record(confirmed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#9)
+== fn confirm_gate_outcome_decoder$arm0/1 origin=lifted(confirm_gate_outcome_decoder, #1) ==
+  sig: (confirm_gate.Confirmed) -> Decoder(confirm_gate.ConfirmGateOutcome)
+  v1 = record(confirmed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn announce_activity/1 origin=activity_wrapper(announce, raw=false) ==
+  sig: (String) -> Activity(confirm_gate.AnnounceInput, Nil)
+  T-ACT action=announce input_codec=announce_input_codec return=awlc.nil_codec
+== fn operator_reply_signal/0 origin=signal_ref(operator_reply) ==
+  sig: () -> Signal(confirm_gate.Reply)
+  T-SIG signal=operator_reply payload=reply_codec
+== fn step_ask/1 origin=region(ask) ==
+  sig: (String) -> Result(confirm_gate.ConfirmGateOutcome, AwlError)
+  v1 = call_local announce_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(60000) live_after=[v1]
+  v3 = call_rt aion@activity:timeout/2(v1, v2)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#12)
+  v5 = call_rt aion@activity:node/2(v4, lit#13)
+  v6 = call_rt aion@workflow:run/1(v5)
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6)
+  v8 = try_bind v7
+  v9 = make_closure ask_wait_0_receive captures=[]
+  v10 = call_rt aion@duration:milliseconds/1(1800000) live_after=[v9]
+  v11 = call_rt aion@workflow:with_timeout/2(v9, v10)
+  v12 = call_local ask_wait_0_case(v11)
+  v13 = try_bind v12
+  v14 = cmp Ne v13 'none'
+  if is_true v14:
+    v15 = assert_some v13
+    v16 = field(v15, 1)
+    v17 = record(confirmed, [v16])
+    v18 = record(confirmed_outcome, [v17])
+    v19 = record(ok, [v18])
+    return v19
+  else:
+    v20 = record(timed_out, [lit#14])
+    v21 = call_local timed_out_to_json(v20)
+    v22 = call_rt gleam@json:to_string/1(v21)
+    v23 = record(awl_outcome_failure, [lit#15, v22])
+    v24 = record(error, [v23])
+    return v24
+== fn ask_wait_0_receive/0 origin=wait(ask#0) ==
+  sig: () -> Result(confirm_gate.Reply, AwlError)
+  v0 = call_local operator_reply_signal()
+  v1 = call_rt aion@workflow:receive/1(v0)
+  tail_rt aion@awl@error:map_receive_error/1(v1)
+== fn ask_wait_0_case/1 origin=wait(ask#1) ==
+  sig: (Result(confirm_gate.Reply, aion/error.TimeoutResultError(AwlError))) -> Result(Option(confirm_gate.Reply), AwlError)
+  if is_tagged v0 ok/2:
+    v1 = field(v0, 1)
+    v2 = record(some, [v1])
+    v3 = record(ok, [v2])
+    return v3
+  else:
+    v7 = field(v0, 1)
+    if is_tagged v7 timed_out_error/2:
+      v4 = record(ok, ['none'])
+      return v4
+    else:
+      if is_tagged v7 inner_error/2:
+        v5 = field(v7, 1)
+        v6 = record(error, [v5])
+        return v6
+      else:
+        v8 = field(v7, 1)
+        v9 = record(awl_timer_failed, [v8])
+        v10 = record(error, [v9])
+        return v10
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

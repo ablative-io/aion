@@ -1,0 +1,648 @@
+module release_notes source=release_notes.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_compose:
+    aion@activity:timeout/2 [activities] (v4, v5)
+    aion@activity:task_queue/2 [activities] (v6, lit#50)
+    aion@activity:node/2 [activities] (v7, lit#51)
+    aion@workflow:run/1 [activities] (v8)
+  step_await_approval:
+    aion@workflow:receive/1 [signals] (v2)
+  step_ship:
+    aion@activity:retry/2 [activities] (v1, v4)
+    aion@activity:timeout/2 [activities] (v5, v6)
+    aion@activity:task_queue/2 [activities] (v7, lit#54)
+    aion@activity:node/2 [activities] (v8, lit#55)
+    aion@workflow:run/1 [activities] (v9)
+== durable families == activities, signals
+== atoms ==
+  [0] drafted
+  [1] approved
+  [2] shipped
+  [3] section
+  [4] draft
+  [5] approval
+  [6] published
+  [7] rejected_draft
+  [8] draft_notes_input
+  [9] publish_input
+  [10] release_notes_input
+  [11] published_outcome
+  [12] some
+  [13] none
+  [14] awl_outcome_failure
+  [15] error
+  [16] fixed
+  [17] retry_policy
+  [18] ok
+== literals ==
+  [0] "Drafted"
+  [1] "Approved"
+  [2] "Shipped"
+  [3] "Stage"
+  [4] "Shipped"
+  [5] "Approved"
+  [6] "Drafted"
+  [7] "title"
+  [8] "body"
+  [9] "trimmed_note"
+  [10] "title"
+  [11] "body"
+  [12] "trimmed_note"
+  [13] "tag"
+  [14] "sections"
+  [15] "stage"
+  [16] "approve"
+  [17] "reviewer"
+  [18] "note"
+  [19] "approve"
+  [20] "reviewer"
+  [21] "note"
+  [22] "tag"
+  [23] "sections"
+  [24] "tag"
+  [25] "reviewer"
+  [26] "reason"
+  [27] "tag"
+  [28] "workspace"
+  [29] "sections"
+  [30] "hint"
+  [31] "tag"
+  [32] "workspace"
+  [33] "sections"
+  [34] "hint"
+  [35] "draft"
+  [36] "tag"
+  [37] "workspace"
+  [38] "sections"
+  [39] "style_hint"
+  [40] "tag"
+  [41] "workspace"
+  [42] "sections"
+  [43] "style_hint"
+  [44] "published"
+  [45] "outcome"
+  [46] ""
+  [47] "ReleaseNotesOutcome"
+  [48] "published"
+  [49] "payload"
+  [50] "release"
+  [51] "writer"
+  [52] "operator rejected the draft"
+  [53] "rejected"
+  [54] "release"
+  [55] "shell"
+== types ==
+  enum Stage
+    drafted = "Drafted"
+    approved = "Approved"
+    shipped = "Shipped"
+  record Section tag=section
+    title: string
+    body: string
+    trimmed_note: nullable(string) optional
+  record Draft tag=draft
+    tag: string
+    sections: list(ref(Section))
+    stage: ref(Stage)
+  record Approval tag=approval
+    approve: bool
+    reviewer: string
+    note: nullable(string) optional
+  record Published tag=published
+    tag: string
+    sections: list(ref(Section))
+  record RejectedDraft tag=rejected_draft
+    tag: string
+    reviewer: string
+    reason: string
+  record DraftNotesInput tag=draft_notes_input
+    tag: string
+    workspace: string
+    sections: list(string)
+    hint: nullable(string) optional
+  record PublishInput tag=publish_input
+    draft: ref(Draft)
+  record ReleaseNotesInput tag=release_notes_input
+    tag: string
+    workspace: string
+    sections: list(string)
+    style_hint: nullable(string) optional
+  union ReleaseNotesOutcome
+    published -> published_outcome(ref(Published))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=release_notes_input_codec output=release_notes_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(release_notes.ReleaseNotesInput, release_notes.ReleaseNotesOutcome, AwlError)
+  T-DEF name="release_notes" input=release_notes_input_codec output=release_notes_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (release_notes.ReleaseNotesInput) -> Result(release_notes.ReleaseNotesOutcome, AwlError)
+  T-EXEC fields=[tag:String, workspace:String, sections:List(String), style_hint:Option(String)] entry=step_compose args=[2, 3, 0, 1]
+== fn stage_codec/0 origin=codec_template(EnumTrio, Stage, enum#0) ==
+  sig: () -> Codec(release_notes.Stage)
+  v0 = make_closure stage_to_json captures=[]
+  v1 = call_local stage_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn stage_to_json/1 origin=codec_template(EnumTrio, Stage, enum#0) ==
+  sig: (release_notes.Stage) -> Json
+  select v0 {
+    drafted ->
+      tail_rt gleam@json:string/1(lit#0)
+    approved ->
+      tail_rt gleam@json:string/1(lit#1)
+    shipped ->
+      tail_rt gleam@json:string/1(lit#2)
+  }
+== fn stage_decoder/0 origin=codec_template(EnumTrio, Stage, enum#0) ==
+  sig: () -> Decoder(release_notes.Stage)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure stage_decoder$then captures=[]
+  tail_rt gleam@dynamic@decode:then/2(v0, v1)
+== fn stage_decoder$then/1 origin=lifted(stage_decoder, #0) ==
+  sig: (String) -> Decoder(release_notes.Stage)
+  if cmp Eq v0 lit#6:
+    tail_rt gleam@dynamic@decode:success/1('drafted')
+  else:
+    if cmp Eq v0 lit#5:
+      tail_rt gleam@dynamic@decode:success/1('approved')
+    else:
+      if cmp Eq v0 lit#4:
+        tail_rt gleam@dynamic@decode:success/1('shipped')
+      else:
+        tail_rt gleam@dynamic@decode:failure/2('drafted', lit#3)
+== fn section_codec/0 origin=codec_template(RecordTrio, Section, record#1) ==
+  sig: () -> Codec(release_notes.Section)
+  v0 = make_closure section_to_json captures=[]
+  v1 = call_local section_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn section_to_json/1 origin=codec_template(RecordTrio, Section, record#1) ==
+  sig: (release_notes.Section) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#7, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:string_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#8, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_local section_to_json$field2(v9) live_after=[v4, v8]
+  v11 = list([v4, v8, v10])
+  v12 = call_rt gleam@list:flatten/1(v11)
+  tail_rt gleam@json:object/1(v12)
+== fn section_decoder/0 origin=codec_template(RecordTrio, Section, record#1) ==
+  sig: () -> Decoder(release_notes.Section)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure section_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn section_to_json$field2/1 origin=lifted(section_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#9, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn section_decoder$some/1 origin=lifted(section_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn section_decoder$0/1 origin=lifted(section_decoder, #1) ==
+  sig: (String) -> Decoder(release_notes.Section)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure section_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v1, v2)
+== fn section_decoder$1/2 origin=lifted(section_decoder, #2) ==
+  sig: (String, String) -> Decoder(release_notes.Section)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure section_decoder$some captures=[]
+  v4 = call_rt gleam@dynamic@decode:map/2(v2, v3) live_after=[v0, v1]
+  v5 = make_closure section_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#12, 'none', v4, v5)
+== fn section_decoder$2/3 origin=lifted(section_decoder, #3) ==
+  sig: (Option(String), String, String) -> Decoder(release_notes.Section)
+  v3 = record(section, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn draft_codec/0 origin=codec_template(RecordTrio, Draft, record#2) ==
+  sig: () -> Codec(release_notes.Draft)
+  v0 = make_closure draft_to_json captures=[]
+  v1 = call_local draft_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn draft_to_json/1 origin=codec_template(RecordTrio, Draft, record#2) ==
+  sig: (release_notes.Draft) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"tag": v1|>awlc.string_to_json, "sections": v2|>list_section_to_json, "stage": v3|>stage_to_json}
+  return v4
+== fn draft_decoder/0 origin=codec_template(RecordTrio, Draft, record#2) ==
+  sig: () -> Decoder(release_notes.Draft)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure draft_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn draft_decoder$0/1 origin=lifted(draft_decoder, #0) ==
+  sig: (String) -> Decoder(release_notes.Draft)
+  v1 = call_local list_section_decoder() live_after=[v0]
+  v2 = make_closure draft_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v1, v2)
+== fn draft_decoder$1/2 origin=lifted(draft_decoder, #1) ==
+  sig: (List(release_notes.Section), String) -> Decoder(release_notes.Draft)
+  v2 = call_local stage_decoder() live_after=[v0, v1]
+  v3 = make_closure draft_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#15, v2, v3)
+== fn draft_decoder$2/3 origin=lifted(draft_decoder, #2) ==
+  sig: (release_notes.Stage, String, List(release_notes.Section)) -> Decoder(release_notes.Draft)
+  v3 = record(draft, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn approval_codec/0 origin=codec_template(RecordTrio, Approval, record#3) ==
+  sig: () -> Codec(release_notes.Approval)
+  v0 = make_closure approval_to_json captures=[]
+  v1 = call_local approval_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn approval_to_json/1 origin=codec_template(RecordTrio, Approval, record#3) ==
+  sig: (release_notes.Approval) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:bool_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#16, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:string_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#17, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_local approval_to_json$field2(v9) live_after=[v4, v8]
+  v11 = list([v4, v8, v10])
+  v12 = call_rt gleam@list:flatten/1(v11)
+  tail_rt gleam@json:object/1(v12)
+== fn approval_decoder/0 origin=codec_template(RecordTrio, Approval, record#3) ==
+  sig: () -> Decoder(release_notes.Approval)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure approval_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#19, v0, v1)
+== fn approval_to_json$field2/1 origin=lifted(approval_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#18, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn approval_decoder$some/1 origin=lifted(approval_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn approval_decoder$0/1 origin=lifted(approval_decoder, #1) ==
+  sig: (Bool) -> Decoder(release_notes.Approval)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure approval_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#20, v1, v2)
+== fn approval_decoder$1/2 origin=lifted(approval_decoder, #2) ==
+  sig: (String, Bool) -> Decoder(release_notes.Approval)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure approval_decoder$some captures=[]
+  v4 = call_rt gleam@dynamic@decode:map/2(v2, v3) live_after=[v0, v1]
+  v5 = make_closure approval_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#21, 'none', v4, v5)
+== fn approval_decoder$2/3 origin=lifted(approval_decoder, #3) ==
+  sig: (Option(String), Bool, String) -> Decoder(release_notes.Approval)
+  v3 = record(approval, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn published_codec/0 origin=codec_template(RecordTrio, Published, record#4) ==
+  sig: () -> Codec(release_notes.Published)
+  v0 = make_closure published_to_json captures=[]
+  v1 = call_local published_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn published_to_json/1 origin=codec_template(RecordTrio, Published, record#4) ==
+  sig: (release_notes.Published) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"tag": v1|>awlc.string_to_json, "sections": v2|>list_section_to_json}
+  return v3
+== fn published_decoder/0 origin=codec_template(RecordTrio, Published, record#4) ==
+  sig: () -> Decoder(release_notes.Published)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure published_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#22, v0, v1)
+== fn published_decoder$0/1 origin=lifted(published_decoder, #0) ==
+  sig: (String) -> Decoder(release_notes.Published)
+  v1 = call_local list_section_decoder() live_after=[v0]
+  v2 = make_closure published_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#23, v1, v2)
+== fn published_decoder$1/2 origin=lifted(published_decoder, #1) ==
+  sig: (List(release_notes.Section), String) -> Decoder(release_notes.Published)
+  v2 = record(published, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn rejected_draft_codec/0 origin=codec_template(RecordTrio, RejectedDraft, record#5) ==
+  sig: () -> Codec(release_notes.RejectedDraft)
+  v0 = make_closure rejected_draft_to_json captures=[]
+  v1 = call_local rejected_draft_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn rejected_draft_to_json/1 origin=codec_template(RecordTrio, RejectedDraft, record#5) ==
+  sig: (release_notes.RejectedDraft) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"tag": v1|>awlc.string_to_json, "reviewer": v2|>awlc.string_to_json, "reason": v3|>awlc.string_to_json}
+  return v4
+== fn rejected_draft_decoder/0 origin=codec_template(RecordTrio, RejectedDraft, record#5) ==
+  sig: () -> Decoder(release_notes.RejectedDraft)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure rejected_draft_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#24, v0, v1)
+== fn rejected_draft_decoder$0/1 origin=lifted(rejected_draft_decoder, #0) ==
+  sig: (String) -> Decoder(release_notes.RejectedDraft)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure rejected_draft_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#25, v1, v2)
+== fn rejected_draft_decoder$1/2 origin=lifted(rejected_draft_decoder, #1) ==
+  sig: (String, String) -> Decoder(release_notes.RejectedDraft)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure rejected_draft_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#26, v2, v3)
+== fn rejected_draft_decoder$2/3 origin=lifted(rejected_draft_decoder, #2) ==
+  sig: (String, String, String) -> Decoder(release_notes.RejectedDraft)
+  v3 = record(rejected_draft, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn draft_notes_input_codec/0 origin=codec_template(RecordTrio, DraftNotesInput, record#6) ==
+  sig: () -> Codec(release_notes.DraftNotesInput)
+  v0 = make_closure draft_notes_input_to_json captures=[]
+  v1 = call_local draft_notes_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn draft_notes_input_to_json/1 origin=codec_template(RecordTrio, DraftNotesInput, record#6) ==
+  sig: (release_notes.DraftNotesInput) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#27, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:string_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#28, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_local list_string_to_json(v9) live_after=[v0, v4, v8]
+  v11 = tuple([lit#29, v10])
+  v12 = list([v11])
+  v13 = field(v0, 4)
+  v14 = call_local draft_notes_input_to_json$field3(v13) live_after=[v4, v8, v12]
+  v15 = list([v4, v8, v12, v14])
+  v16 = call_rt gleam@list:flatten/1(v15)
+  tail_rt gleam@json:object/1(v16)
+== fn draft_notes_input_decoder/0 origin=codec_template(RecordTrio, DraftNotesInput, record#6) ==
+  sig: () -> Decoder(release_notes.DraftNotesInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure draft_notes_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#31, v0, v1)
+== fn draft_notes_input_to_json$field3/1 origin=lifted(draft_notes_input_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#30, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn draft_notes_input_decoder$some/1 origin=lifted(draft_notes_input_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn draft_notes_input_decoder$0/1 origin=lifted(draft_notes_input_decoder, #1) ==
+  sig: (String) -> Decoder(release_notes.DraftNotesInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure draft_notes_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#32, v1, v2)
+== fn draft_notes_input_decoder$1/2 origin=lifted(draft_notes_input_decoder, #2) ==
+  sig: (String, String) -> Decoder(release_notes.DraftNotesInput)
+  v2 = call_local list_string_decoder() live_after=[v0, v1]
+  v3 = make_closure draft_notes_input_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#33, v2, v3)
+== fn draft_notes_input_decoder$2/3 origin=lifted(draft_notes_input_decoder, #3) ==
+  sig: (List(String), String, String) -> Decoder(release_notes.DraftNotesInput)
+  v3 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure draft_notes_input_decoder$some captures=[]
+  v5 = call_rt gleam@dynamic@decode:map/2(v3, v4) live_after=[v0, v1, v2]
+  v6 = make_closure draft_notes_input_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#34, 'none', v5, v6)
+== fn draft_notes_input_decoder$3/4 origin=lifted(draft_notes_input_decoder, #4) ==
+  sig: (Option(String), String, String, List(String)) -> Decoder(release_notes.DraftNotesInput)
+  v4 = record(draft_notes_input, [v1, v2, v3, v0])
+  tail_rt gleam@dynamic@decode:success/1(v4)
+== fn publish_input_codec/0 origin=codec_template(RecordTrio, PublishInput, record#7) ==
+  sig: () -> Codec(release_notes.PublishInput)
+  v0 = make_closure publish_input_to_json captures=[]
+  v1 = call_local publish_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn publish_input_to_json/1 origin=codec_template(RecordTrio, PublishInput, record#7) ==
+  sig: (release_notes.PublishInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"draft": v1|>draft_to_json}
+  return v2
+== fn publish_input_decoder/0 origin=codec_template(RecordTrio, PublishInput, record#7) ==
+  sig: () -> Decoder(release_notes.PublishInput)
+  v0 = call_local draft_decoder()
+  v1 = make_closure publish_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#35, v0, v1)
+== fn publish_input_decoder$0/1 origin=lifted(publish_input_decoder, #0) ==
+  sig: (release_notes.Draft) -> Decoder(release_notes.PublishInput)
+  v1 = record(publish_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn release_notes_input_codec/0 origin=codec_template(RecordTrio, ReleaseNotesInput, record#8) ==
+  sig: () -> Codec(release_notes.ReleaseNotesInput)
+  v0 = make_closure release_notes_input_to_json captures=[]
+  v1 = call_local release_notes_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn release_notes_input_to_json/1 origin=codec_template(RecordTrio, ReleaseNotesInput, record#8) ==
+  sig: (release_notes.ReleaseNotesInput) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#36, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:string_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#37, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_local list_string_to_json(v9) live_after=[v0, v4, v8]
+  v11 = tuple([lit#38, v10])
+  v12 = list([v11])
+  v13 = field(v0, 4)
+  v14 = call_local release_notes_input_to_json$field3(v13) live_after=[v4, v8, v12]
+  v15 = list([v4, v8, v12, v14])
+  v16 = call_rt gleam@list:flatten/1(v15)
+  tail_rt gleam@json:object/1(v16)
+== fn release_notes_input_decoder/0 origin=codec_template(RecordTrio, ReleaseNotesInput, record#8) ==
+  sig: () -> Decoder(release_notes.ReleaseNotesInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure release_notes_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#40, v0, v1)
+== fn release_notes_input_to_json$field3/1 origin=lifted(release_notes_input_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#39, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn release_notes_input_decoder$some/1 origin=lifted(release_notes_input_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn release_notes_input_decoder$0/1 origin=lifted(release_notes_input_decoder, #1) ==
+  sig: (String) -> Decoder(release_notes.ReleaseNotesInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure release_notes_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#41, v1, v2)
+== fn release_notes_input_decoder$1/2 origin=lifted(release_notes_input_decoder, #2) ==
+  sig: (String, String) -> Decoder(release_notes.ReleaseNotesInput)
+  v2 = call_local list_string_decoder() live_after=[v0, v1]
+  v3 = make_closure release_notes_input_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#42, v2, v3)
+== fn release_notes_input_decoder$2/3 origin=lifted(release_notes_input_decoder, #3) ==
+  sig: (List(String), String, String) -> Decoder(release_notes.ReleaseNotesInput)
+  v3 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure release_notes_input_decoder$some captures=[]
+  v5 = call_rt gleam@dynamic@decode:map/2(v3, v4) live_after=[v0, v1, v2]
+  v6 = make_closure release_notes_input_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#43, 'none', v5, v6)
+== fn release_notes_input_decoder$3/4 origin=lifted(release_notes_input_decoder, #4) ==
+  sig: (Option(String), String, String, List(String)) -> Decoder(release_notes.ReleaseNotesInput)
+  v4 = record(release_notes_input, [v1, v2, v3, v0])
+  tail_rt gleam@dynamic@decode:success/1(v4)
+== fn release_notes_outcome_codec/0 origin=codec_template(UnionTrio, ReleaseNotesOutcome, union#9) ==
+  sig: () -> Codec(release_notes.ReleaseNotesOutcome)
+  v0 = make_closure release_notes_outcome_to_json captures=[]
+  v1 = call_local release_notes_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn release_notes_outcome_to_json/1 origin=codec_template(UnionTrio, ReleaseNotesOutcome, union#9) ==
+  sig: (release_notes.ReleaseNotesOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#44|>awlc.string_to_json, "payload": v1|>published_to_json}
+  return v2
+== fn release_notes_outcome_decoder/0 origin=codec_template(UnionTrio, ReleaseNotesOutcome, union#9) ==
+  sig: () -> Decoder(release_notes.ReleaseNotesOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure release_notes_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#45, v0, v1)
+== fn release_notes_outcome_decoder$outcome/1 origin=lifted(release_notes_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(release_notes.ReleaseNotesOutcome)
+  if cmp Eq v0 lit#48:
+    v3 = call_local published_decoder()
+    v4 = make_closure release_notes_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#49, v3, v4)
+  else:
+    v1 = record(published, [lit#46, nil])
+    v2 = record(published_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#47)
+== fn release_notes_outcome_decoder$arm0/1 origin=lifted(release_notes_outcome_decoder, #1) ==
+  sig: (release_notes.Published) -> Decoder(release_notes.ReleaseNotesOutcome)
+  v1 = record(published_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_section_codec/0 origin=codec_template(CompositeTrio, List(Section), composite(list(ref(Section)))) ==
+  sig: () -> Codec(List(release_notes.Section))
+  v0 = make_closure list_section_to_json captures=[]
+  v1 = call_local list_section_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_section_to_json/1 origin=codec_template(CompositeTrio, List(Section), composite(list(ref(Section)))) ==
+  sig: (List(release_notes.Section)) -> Json
+  v1 = make_closure section_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_section_decoder/0 origin=codec_template(CompositeTrio, List(Section), composite(list(ref(Section)))) ==
+  sig: () -> Decoder(List(release_notes.Section))
+  v0 = call_local section_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn draft_notes_activity/4 origin=activity_wrapper(draft_notes, raw=false) ==
+  sig: (String, String, List(String), Option(String)) -> Activity(release_notes.DraftNotesInput, release_notes.Draft)
+  T-ACT action=draft_notes input_codec=draft_notes_input_codec return=draft_codec
+== fn publish_activity/1 origin=activity_wrapper(publish, raw=false) ==
+  sig: (release_notes.Draft) -> Activity(release_notes.PublishInput, release_notes.Published)
+  T-ACT action=publish input_codec=publish_input_codec return=published_codec
+== fn approval_signal/0 origin=signal_ref(approval) ==
+  sig: () -> Signal(release_notes.Approval)
+  T-SIG signal=approval payload=approval_codec
+== fn step_compose/4 origin=region(compose) ==
+  sig: (List(String), Option(String), String, String) -> Result(release_notes.ReleaseNotesOutcome, AwlError)
+  v4 = call_local draft_notes_activity(v2, v3, v0, v1) live_after=[v2]
+  v5 = call_rt aion@duration:milliseconds/1(600000) live_after=[v2, v4]
+  v6 = call_rt aion@activity:timeout/2(v4, v5) live_after=[v2]
+  v7 = call_rt aion@activity:task_queue/2(v6, lit#50) live_after=[v2]
+  v8 = call_rt aion@activity:node/2(v7, lit#51) live_after=[v2]
+  v9 = call_rt aion@workflow:run/1(v8) live_after=[v2]
+  v10 = call_rt aion@awl@error:map_activity_error/1(v9) live_after=[v2]
+  v11 = try_bind v10 live_after=[v2]
+  tail_local step_await_approval(v11, v2)
+== fn step_await_approval/2 origin=chain_step(compose.await_approval) ==
+  sig: (release_notes.Draft, String) -> Result(release_notes.ReleaseNotesOutcome, AwlError)
+  v2 = call_local approval_signal() live_after=[v0, v1]
+  v3 = call_rt aion@workflow:receive/1(v2) live_after=[v0, v1]
+  v4 = call_rt aion@awl@error:map_receive_error/1(v3) live_after=[v0, v1]
+  v5 = try_bind v4 live_after=[v0, v1]
+  v6 = field(v5, 1)
+  if is_true v6:
+    tail_local step_ship(v0)
+  else:
+    v7 = field(v5, 2)
+    v8 = record(rejected_draft, [v1, v7, lit#52])
+    v9 = call_local rejected_draft_to_json(v8)
+    v10 = call_rt gleam@json:to_string/1(v9)
+    v11 = record(awl_outcome_failure, [lit#53, v10])
+    v12 = record(error, [v11])
+    return v12
+== fn step_ship/1 origin=region(ship) ==
+  sig: (release_notes.Draft) -> Result(release_notes.ReleaseNotesOutcome, AwlError)
+  v1 = call_local publish_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(30000) live_after=[v1]
+  v3 = record(fixed, [v2])
+  v4 = record(retry_policy, [2, v3])
+  v5 = call_rt aion@activity:retry/2(v1, v4)
+  v6 = call_rt aion@duration:milliseconds/1(300000) live_after=[v5]
+  v7 = call_rt aion@activity:timeout/2(v5, v6)
+  v8 = call_rt aion@activity:task_queue/2(v7, lit#54)
+  v9 = call_rt aion@activity:node/2(v8, lit#55)
+  v10 = call_rt aion@workflow:run/1(v9)
+  v11 = call_rt aion@awl@error:map_activity_error/1(v10)
+  v12 = try_bind v11
+  v13 = record(published_outcome, [v12])
+  v14 = record(ok, [v13])
+  return v14
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

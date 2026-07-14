@@ -1,0 +1,206 @@
+module wait_and_sleep source=wait_and_sleep.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_cooldown:
+    aion@workflow:sleep/1 [timers] (v1)
+  step_hold:
+    aion@workflow:receive/1 [signals] (v1)
+  step_deploy:
+    aion@activity:task_queue/2 [activities] (v3, lit#13)
+    aion@workflow:run/1 [activities] (v4)
+== durable families == timers, activities, signals
+== atoms ==
+  [0] approval
+  [1] deployed
+  [2] deploy_input
+  [3] wait_and_sleep_input
+  [4] deployed_outcome
+  [5] ok
+== literals ==
+  [0] "approver"
+  [1] "build_id"
+  [2] "approver"
+  [3] "build_id"
+  [4] "approver"
+  [5] "build_id"
+  [6] "deployed"
+  [7] "outcome"
+  [8] ""
+  [9] ""
+  [10] "WaitAndSleepOutcome"
+  [11] "deployed"
+  [12] "payload"
+  [13] "deployer"
+== types ==
+  record Approval tag=approval
+    approver: string
+  record Deployed tag=deployed
+    build_id: string
+    approver: string
+  record DeployInput tag=deploy_input
+    build_id: string
+    approver: string
+  record WaitAndSleepInput tag=wait_and_sleep_input
+    build_id: string
+  union WaitAndSleepOutcome
+    deployed -> deployed_outcome(ref(Deployed))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=wait_and_sleep_input_codec output=wait_and_sleep_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(wait_and_sleep.WaitAndSleepInput, wait_and_sleep.WaitAndSleepOutcome, AwlError)
+  T-DEF name="wait_and_sleep" input=wait_and_sleep_input_codec output=wait_and_sleep_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (wait_and_sleep.WaitAndSleepInput) -> Result(wait_and_sleep.WaitAndSleepOutcome, AwlError)
+  T-EXEC fields=[build_id:String] entry=step_cooldown args=[0]
+== fn approval_codec/0 origin=codec_template(RecordTrio, Approval, record#0) ==
+  sig: () -> Codec(wait_and_sleep.Approval)
+  v0 = make_closure approval_to_json captures=[]
+  v1 = call_local approval_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn approval_to_json/1 origin=codec_template(RecordTrio, Approval, record#0) ==
+  sig: (wait_and_sleep.Approval) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"approver": v1|>awlc.string_to_json}
+  return v2
+== fn approval_decoder/0 origin=codec_template(RecordTrio, Approval, record#0) ==
+  sig: () -> Decoder(wait_and_sleep.Approval)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure approval_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn approval_decoder$0/1 origin=lifted(approval_decoder, #0) ==
+  sig: (String) -> Decoder(wait_and_sleep.Approval)
+  v1 = record(approval, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn deployed_codec/0 origin=codec_template(RecordTrio, Deployed, record#1) ==
+  sig: () -> Codec(wait_and_sleep.Deployed)
+  v0 = make_closure deployed_to_json captures=[]
+  v1 = call_local deployed_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn deployed_to_json/1 origin=codec_template(RecordTrio, Deployed, record#1) ==
+  sig: (wait_and_sleep.Deployed) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"build_id": v1|>awlc.string_to_json, "approver": v2|>awlc.string_to_json}
+  return v3
+== fn deployed_decoder/0 origin=codec_template(RecordTrio, Deployed, record#1) ==
+  sig: () -> Decoder(wait_and_sleep.Deployed)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure deployed_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn deployed_decoder$0/1 origin=lifted(deployed_decoder, #0) ==
+  sig: (String) -> Decoder(wait_and_sleep.Deployed)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure deployed_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v1, v2)
+== fn deployed_decoder$1/2 origin=lifted(deployed_decoder, #1) ==
+  sig: (String, String) -> Decoder(wait_and_sleep.Deployed)
+  v2 = record(deployed, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn deploy_input_codec/0 origin=codec_template(RecordTrio, DeployInput, record#2) ==
+  sig: () -> Codec(wait_and_sleep.DeployInput)
+  v0 = make_closure deploy_input_to_json captures=[]
+  v1 = call_local deploy_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn deploy_input_to_json/1 origin=codec_template(RecordTrio, DeployInput, record#2) ==
+  sig: (wait_and_sleep.DeployInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"build_id": v1|>awlc.string_to_json, "approver": v2|>awlc.string_to_json}
+  return v3
+== fn deploy_input_decoder/0 origin=codec_template(RecordTrio, DeployInput, record#2) ==
+  sig: () -> Decoder(wait_and_sleep.DeployInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure deploy_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn deploy_input_decoder$0/1 origin=lifted(deploy_input_decoder, #0) ==
+  sig: (String) -> Decoder(wait_and_sleep.DeployInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure deploy_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn deploy_input_decoder$1/2 origin=lifted(deploy_input_decoder, #1) ==
+  sig: (String, String) -> Decoder(wait_and_sleep.DeployInput)
+  v2 = record(deploy_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn wait_and_sleep_input_codec/0 origin=codec_template(RecordTrio, WaitAndSleepInput, record#3) ==
+  sig: () -> Codec(wait_and_sleep.WaitAndSleepInput)
+  v0 = make_closure wait_and_sleep_input_to_json captures=[]
+  v1 = call_local wait_and_sleep_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn wait_and_sleep_input_to_json/1 origin=codec_template(RecordTrio, WaitAndSleepInput, record#3) ==
+  sig: (wait_and_sleep.WaitAndSleepInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"build_id": v1|>awlc.string_to_json}
+  return v2
+== fn wait_and_sleep_input_decoder/0 origin=codec_template(RecordTrio, WaitAndSleepInput, record#3) ==
+  sig: () -> Decoder(wait_and_sleep.WaitAndSleepInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure wait_and_sleep_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn wait_and_sleep_input_decoder$0/1 origin=lifted(wait_and_sleep_input_decoder, #0) ==
+  sig: (String) -> Decoder(wait_and_sleep.WaitAndSleepInput)
+  v1 = record(wait_and_sleep_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn wait_and_sleep_outcome_codec/0 origin=codec_template(UnionTrio, WaitAndSleepOutcome, union#4) ==
+  sig: () -> Codec(wait_and_sleep.WaitAndSleepOutcome)
+  v0 = make_closure wait_and_sleep_outcome_to_json captures=[]
+  v1 = call_local wait_and_sleep_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn wait_and_sleep_outcome_to_json/1 origin=codec_template(UnionTrio, WaitAndSleepOutcome, union#4) ==
+  sig: (wait_and_sleep.WaitAndSleepOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>deployed_to_json}
+  return v2
+== fn wait_and_sleep_outcome_decoder/0 origin=codec_template(UnionTrio, WaitAndSleepOutcome, union#4) ==
+  sig: () -> Decoder(wait_and_sleep.WaitAndSleepOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure wait_and_sleep_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn wait_and_sleep_outcome_decoder$outcome/1 origin=lifted(wait_and_sleep_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(wait_and_sleep.WaitAndSleepOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local deployed_decoder()
+    v4 = make_closure wait_and_sleep_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(deployed, [lit#8, lit#9])
+    v2 = record(deployed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn wait_and_sleep_outcome_decoder$arm0/1 origin=lifted(wait_and_sleep_outcome_decoder, #1) ==
+  sig: (wait_and_sleep.Deployed) -> Decoder(wait_and_sleep.WaitAndSleepOutcome)
+  v1 = record(deployed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn deploy_activity/2 origin=activity_wrapper(deploy, raw=false) ==
+  sig: (String, String) -> Activity(wait_and_sleep.DeployInput, wait_and_sleep.Deployed)
+  T-ACT action=deploy input_codec=deploy_input_codec return=deployed_codec
+== fn go_signal/0 origin=signal_ref(go) ==
+  sig: () -> Signal(wait_and_sleep.Approval)
+  T-SIG signal=go payload=approval_codec
+== fn step_cooldown/1 origin=region(cooldown) ==
+  sig: (String) -> Result(wait_and_sleep.WaitAndSleepOutcome, AwlError)
+  v1 = call_rt aion@duration:milliseconds/1(30000) live_after=[v0]
+  v2 = call_rt aion@workflow:sleep/1(v1) live_after=[v0]
+  v3 = call_rt aion@awl@error:map_timer_error/1(v2) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  tail_local step_hold(v0)
+== fn step_hold/1 origin=chain_step(cooldown.hold) ==
+  sig: (String) -> Result(wait_and_sleep.WaitAndSleepOutcome, AwlError)
+  v1 = call_local go_signal() live_after=[v0]
+  v2 = call_rt aion@workflow:receive/1(v1) live_after=[v0]
+  v3 = call_rt aion@awl@error:map_receive_error/1(v2) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  tail_local step_deploy(v4, v0)
+== fn step_deploy/2 origin=chain_step(cooldown.deploy) ==
+  sig: (wait_and_sleep.Approval, String) -> Result(wait_and_sleep.WaitAndSleepOutcome, AwlError)
+  v2 = field(v0, 1)
+  v3 = call_local deploy_activity(v1, v2)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#13)
+  v5 = call_rt aion@workflow:run/1(v4)
+  v6 = call_rt aion@awl@error:map_activity_error/1(v5)
+  v7 = try_bind v6
+  v8 = record(deployed_outcome, [v7])
+  v9 = record(ok, [v8])
+  return v9
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

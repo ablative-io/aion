@@ -227,6 +227,11 @@ pub(super) fn expr_contains_index(expr: &Expr) -> bool {
         Expr::Predicate { subject, .. } => expr_contains_index(subject),
         Expr::Record { args, .. } => args.iter().any(|arg| expr_contains_index(&arg.value)),
         Expr::List { items, .. } => items.iter().any(expr_contains_index),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            ..
+        } => expr_contains_index(collection) || expr_contains_index(predicate),
         _ => false,
     }
 }

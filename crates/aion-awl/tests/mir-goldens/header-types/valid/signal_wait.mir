@@ -1,0 +1,282 @@
+module escalate_finding source=escalate_finding.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_notify_reviewer:
+    aion@activity:task_queue/2 [activities] (v2, lit#17)
+    aion@workflow:run/1 [activities] (v3)
+  step_await_ruling:
+    aion@workflow:receive/1 [signals] (v1)
+== durable families == activities, signals
+== atoms ==
+  [0] finding
+  [1] ruling
+  [2] dismissal
+  [3] ack
+  [4] notify_input
+  [5] escalate_finding_input
+  [6] accepted_outcome
+  [7] false
+  [8] ok
+  [9] awl_outcome_failure
+  [10] error
+== literals ==
+  [0] "summary"
+  [1] "severity"
+  [2] "accept"
+  [3] "note"
+  [4] "reviewer"
+  [5] "note"
+  [6] "delivered"
+  [7] "finding"
+  [8] "reviewer"
+  [9] "finding"
+  [10] "reviewer"
+  [11] "accepted"
+  [12] "outcome"
+  [13] ""
+  [14] "EscalateFindingOutcome"
+  [15] "accepted"
+  [16] "payload"
+  [17] "escalation"
+  [18] "dismissed"
+== types ==
+  record Finding tag=finding
+    summary: string
+    severity: int
+  record Ruling tag=ruling
+    accept: bool
+    note: string
+  record Dismissal tag=dismissal
+    reviewer: string
+    note: string
+  record Ack tag=ack
+    delivered: bool
+  record NotifyInput tag=notify_input
+    finding: ref(Finding)
+    reviewer: string
+  record EscalateFindingInput tag=escalate_finding_input
+    finding: ref(Finding)
+    reviewer: string
+  union EscalateFindingOutcome
+    accepted -> accepted_outcome(ref(Ruling))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=escalate_finding_input_codec output=escalate_finding_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(escalate_finding.EscalateFindingInput, escalate_finding.EscalateFindingOutcome, AwlError)
+  T-DEF name="escalate_finding" input=escalate_finding_input_codec output=escalate_finding_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (escalate_finding.EscalateFindingInput) -> Result(escalate_finding.EscalateFindingOutcome, AwlError)
+  T-EXEC fields=[finding:escalate_finding.Finding, reviewer:String] entry=step_notify_reviewer args=[0, 1]
+== fn finding_codec/0 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: () -> Codec(escalate_finding.Finding)
+  v0 = make_closure finding_to_json captures=[]
+  v1 = call_local finding_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn finding_to_json/1 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: (escalate_finding.Finding) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"summary": v1|>awlc.string_to_json, "severity": v2|>awlc.int_to_json}
+  return v3
+== fn finding_decoder/0 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: () -> Decoder(escalate_finding.Finding)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure finding_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn finding_decoder$0/1 origin=lifted(finding_decoder, #0) ==
+  sig: (String) -> Decoder(escalate_finding.Finding)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure finding_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn finding_decoder$1/2 origin=lifted(finding_decoder, #1) ==
+  sig: (Int, String) -> Decoder(escalate_finding.Finding)
+  v2 = record(finding, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn ruling_codec/0 origin=codec_template(RecordTrio, Ruling, record#1) ==
+  sig: () -> Codec(escalate_finding.Ruling)
+  v0 = make_closure ruling_to_json captures=[]
+  v1 = call_local ruling_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ruling_to_json/1 origin=codec_template(RecordTrio, Ruling, record#1) ==
+  sig: (escalate_finding.Ruling) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"accept": v1|>awlc.bool_to_json, "note": v2|>awlc.string_to_json}
+  return v3
+== fn ruling_decoder/0 origin=codec_template(RecordTrio, Ruling, record#1) ==
+  sig: () -> Decoder(escalate_finding.Ruling)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure ruling_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn ruling_decoder$0/1 origin=lifted(ruling_decoder, #0) ==
+  sig: (Bool) -> Decoder(escalate_finding.Ruling)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure ruling_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn ruling_decoder$1/2 origin=lifted(ruling_decoder, #1) ==
+  sig: (String, Bool) -> Decoder(escalate_finding.Ruling)
+  v2 = record(ruling, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn dismissal_codec/0 origin=codec_template(RecordTrio, Dismissal, record#2) ==
+  sig: () -> Codec(escalate_finding.Dismissal)
+  v0 = make_closure dismissal_to_json captures=[]
+  v1 = call_local dismissal_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn dismissal_to_json/1 origin=codec_template(RecordTrio, Dismissal, record#2) ==
+  sig: (escalate_finding.Dismissal) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"reviewer": v1|>awlc.string_to_json, "note": v2|>awlc.string_to_json}
+  return v3
+== fn dismissal_decoder/0 origin=codec_template(RecordTrio, Dismissal, record#2) ==
+  sig: () -> Decoder(escalate_finding.Dismissal)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure dismissal_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn dismissal_decoder$0/1 origin=lifted(dismissal_decoder, #0) ==
+  sig: (String) -> Decoder(escalate_finding.Dismissal)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure dismissal_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn dismissal_decoder$1/2 origin=lifted(dismissal_decoder, #1) ==
+  sig: (String, String) -> Decoder(escalate_finding.Dismissal)
+  v2 = record(dismissal, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn ack_codec/0 origin=codec_template(RecordTrio, Ack, record#3) ==
+  sig: () -> Codec(escalate_finding.Ack)
+  v0 = make_closure ack_to_json captures=[]
+  v1 = call_local ack_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ack_to_json/1 origin=codec_template(RecordTrio, Ack, record#3) ==
+  sig: (escalate_finding.Ack) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"delivered": v1|>awlc.bool_to_json}
+  return v2
+== fn ack_decoder/0 origin=codec_template(RecordTrio, Ack, record#3) ==
+  sig: () -> Decoder(escalate_finding.Ack)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure ack_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn ack_decoder$0/1 origin=lifted(ack_decoder, #0) ==
+  sig: (Bool) -> Decoder(escalate_finding.Ack)
+  v1 = record(ack, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn notify_input_codec/0 origin=codec_template(RecordTrio, NotifyInput, record#4) ==
+  sig: () -> Codec(escalate_finding.NotifyInput)
+  v0 = make_closure notify_input_to_json captures=[]
+  v1 = call_local notify_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn notify_input_to_json/1 origin=codec_template(RecordTrio, NotifyInput, record#4) ==
+  sig: (escalate_finding.NotifyInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"finding": v1|>finding_to_json, "reviewer": v2|>awlc.string_to_json}
+  return v3
+== fn notify_input_decoder/0 origin=codec_template(RecordTrio, NotifyInput, record#4) ==
+  sig: () -> Decoder(escalate_finding.NotifyInput)
+  v0 = call_local finding_decoder()
+  v1 = make_closure notify_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn notify_input_decoder$0/1 origin=lifted(notify_input_decoder, #0) ==
+  sig: (escalate_finding.Finding) -> Decoder(escalate_finding.NotifyInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure notify_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v1, v2)
+== fn notify_input_decoder$1/2 origin=lifted(notify_input_decoder, #1) ==
+  sig: (String, escalate_finding.Finding) -> Decoder(escalate_finding.NotifyInput)
+  v2 = record(notify_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn escalate_finding_input_codec/0 origin=codec_template(RecordTrio, EscalateFindingInput, record#5) ==
+  sig: () -> Codec(escalate_finding.EscalateFindingInput)
+  v0 = make_closure escalate_finding_input_to_json captures=[]
+  v1 = call_local escalate_finding_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn escalate_finding_input_to_json/1 origin=codec_template(RecordTrio, EscalateFindingInput, record#5) ==
+  sig: (escalate_finding.EscalateFindingInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"finding": v1|>finding_to_json, "reviewer": v2|>awlc.string_to_json}
+  return v3
+== fn escalate_finding_input_decoder/0 origin=codec_template(RecordTrio, EscalateFindingInput, record#5) ==
+  sig: () -> Decoder(escalate_finding.EscalateFindingInput)
+  v0 = call_local finding_decoder()
+  v1 = make_closure escalate_finding_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn escalate_finding_input_decoder$0/1 origin=lifted(escalate_finding_input_decoder, #0) ==
+  sig: (escalate_finding.Finding) -> Decoder(escalate_finding.EscalateFindingInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure escalate_finding_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v1, v2)
+== fn escalate_finding_input_decoder$1/2 origin=lifted(escalate_finding_input_decoder, #1) ==
+  sig: (String, escalate_finding.Finding) -> Decoder(escalate_finding.EscalateFindingInput)
+  v2 = record(escalate_finding_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn escalate_finding_outcome_codec/0 origin=codec_template(UnionTrio, EscalateFindingOutcome, union#6) ==
+  sig: () -> Codec(escalate_finding.EscalateFindingOutcome)
+  v0 = make_closure escalate_finding_outcome_to_json captures=[]
+  v1 = call_local escalate_finding_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn escalate_finding_outcome_to_json/1 origin=codec_template(UnionTrio, EscalateFindingOutcome, union#6) ==
+  sig: (escalate_finding.EscalateFindingOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#11|>awlc.string_to_json, "payload": v1|>ruling_to_json}
+  return v2
+== fn escalate_finding_outcome_decoder/0 origin=codec_template(UnionTrio, EscalateFindingOutcome, union#6) ==
+  sig: () -> Decoder(escalate_finding.EscalateFindingOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure escalate_finding_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v0, v1)
+== fn escalate_finding_outcome_decoder$outcome/1 origin=lifted(escalate_finding_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(escalate_finding.EscalateFindingOutcome)
+  if cmp Eq v0 lit#15:
+    v3 = call_local ruling_decoder()
+    v4 = make_closure escalate_finding_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#16, v3, v4)
+  else:
+    v1 = record(ruling, ['false', lit#13])
+    v2 = record(accepted_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#14)
+== fn escalate_finding_outcome_decoder$arm0/1 origin=lifted(escalate_finding_outcome_decoder, #1) ==
+  sig: (escalate_finding.Ruling) -> Decoder(escalate_finding.EscalateFindingOutcome)
+  v1 = record(accepted_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn notify_activity/2 origin=activity_wrapper(notify, raw=false) ==
+  sig: (escalate_finding.Finding, String) -> Activity(escalate_finding.NotifyInput, escalate_finding.Ack)
+  T-ACT action=notify input_codec=notify_input_codec return=ack_codec
+== fn ruling_signal/0 origin=signal_ref(ruling) ==
+  sig: () -> Signal(escalate_finding.Ruling)
+  T-SIG signal=ruling payload=ruling_codec
+== fn step_notify_reviewer/2 origin=region(notify_reviewer) ==
+  sig: (escalate_finding.Finding, String) -> Result(escalate_finding.EscalateFindingOutcome, AwlError)
+  v2 = call_local notify_activity(v0, v1) live_after=[v1]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#17) live_after=[v1]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v1]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v1]
+  v6 = try_bind v5 live_after=[v1]
+  tail_local step_await_ruling(v1)
+== fn step_await_ruling/1 origin=chain_step(notify_reviewer.await_ruling) ==
+  sig: (String) -> Result(escalate_finding.EscalateFindingOutcome, AwlError)
+  v1 = call_local ruling_signal() live_after=[v0]
+  v2 = call_rt aion@workflow:receive/1(v1) live_after=[v0]
+  v3 = call_rt aion@awl@error:map_receive_error/1(v2) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  v5 = field(v4, 1)
+  if is_true v5:
+    v6 = field(v4, 1)
+    v7 = field(v4, 2)
+    v8 = record(ruling, [v6, v7])
+    v9 = record(accepted_outcome, [v8])
+    v10 = record(ok, [v9])
+    return v10
+  else:
+    v11 = field(v4, 2)
+    v12 = record(dismissal, [v0, v11])
+    v13 = call_local dismissal_to_json(v12)
+    v14 = call_rt gleam@json:to_string/1(v13)
+    v15 = record(awl_outcome_failure, [lit#18, v14])
+    v16 = record(error, [v15])
+    return v16
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
