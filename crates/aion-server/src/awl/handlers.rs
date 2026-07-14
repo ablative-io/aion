@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use aion_awl::{Span, emit, parse, print, semantic};
+use aion_awl::{Span, parse, print, semantic};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -30,7 +30,6 @@ pub struct Diagnostic {
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticClass {
     Error,
-    EmitSubset,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,7 +99,7 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
         || semantic::analyze(&document),
         |root| semantic::analyze_in(&document, root),
     );
-    let mut diagnostics: Vec<_> = analysis
+    let diagnostics: Vec<_> = analysis
         .diagnostics()
         .iter()
         .map(|error| diagnostic(DiagnosticClass::Error, error.message.clone(), error.span))
@@ -113,17 +112,6 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
             diagnostics,
             semantic: None,
         };
-    }
-    let emitted = root.map_or_else(
-        || emit(&document),
-        |root| aion_awl::emit_in(&document, root),
-    );
-    if let Err(error) = emitted {
-        diagnostics.push(diagnostic(
-            DiagnosticClass::EmitSubset,
-            error.message,
-            error.span,
-        ));
     }
     let graph = super::projection::build(&document);
     let studio = super::studio_projection::build(&document);
@@ -234,19 +222,14 @@ mod tests {
     }
 
     #[test]
-    fn emit_refusal_is_an_amber_check_diagnostic() {
+    fn checker_only_check_does_not_consult_the_legacy_emitter() {
         let response = check_source(&CheckRequest {
             source: EMIT_REFUSED.to_owned(),
             path: None,
         });
         assert!(response.ok, "diagnostics: {:?}", response.diagnostics);
-        assert!(!response.deploys_green);
-        assert!(
-            response
-                .diagnostics
-                .iter()
-                .any(|diagnostic| matches!(diagnostic.class, DiagnosticClass::EmitSubset))
-        );
+        assert!(response.deploys_green);
+        assert!(response.diagnostics.is_empty());
     }
 
     #[test]
