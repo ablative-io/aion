@@ -74,6 +74,9 @@ pub(super) struct FnPlan {
     /// pre-order discipline as `loops`, descending into loop bodies). All
     /// fork slots follow every loop slot.
     pub(super) forks: Vec<FnRef>,
+    /// The fixed child witness function passed to string-name child spawns,
+    /// present exactly when a reachable child collection fork needs it.
+    pub(super) child_witness: Option<FnRef>,
 }
 
 /// The assembled module skeleton, ready for region-body filling.
@@ -206,15 +209,23 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         }
     }
     let mut forks = Vec::new();
+    let mut child_witness_needed = false;
     for region in &ctx.plan.regions {
         for step_index in region.layers.iter().flatten() {
             let step = &emitter.document.steps[*step_index];
+            child_witness_needed |= super::forks::needs_child_witness(&step.body, emitter);
             for _ in 0..super::forks::count_fork_fns(&step.body, emitter) {
                 forks.push(FnRef(next));
                 next += 1;
             }
         }
     }
+    // T-DEAD is appended before T-WIT in `driver`; account for its slot when
+    // both kinds of fixed helper are present without perturbing prior refs.
+    let child_witness = child_witness_needed.then(|| {
+        let dead_offset = u32::from(!activities.is_empty());
+        FnRef(next + dead_offset)
+    });
 
     let plan = FnPlan {
         run: FnRef(0),
@@ -228,6 +239,7 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         chains,
         loops,
         forks,
+        child_witness,
     };
 
     // Build functions in slot order.
@@ -417,6 +429,21 @@ pub(super) fn dead_shell() -> MirFn {
         template: TemplateFn::DeadBody,
         sig: FnSig {
             params: vec![TyDesc::Dynamic],
+            ret: TyDesc::Result(Box::new(TyDesc::Dynamic), Box::new(TyDesc::AwlError)),
+        },
+        span: zero_span(),
+    }
+}
+
+/// The SDK's string-name spawn witness: a type anchor the engine never calls.
+/// BC-3 expands this fixed shell to `Error(AwlChildFailed(message))`.
+pub(super) fn child_witness_shell() -> MirFn {
+    MirFn::Templated {
+        name: "awl$child_witness".to_owned(),
+        origin: FnOrigin::ChildWitness,
+        template: TemplateFn::ChildWitness,
+        sig: FnSig {
+            params: vec![TyDesc::Json],
             ret: TyDesc::Result(Box::new(TyDesc::Dynamic), Box::new(TyDesc::AwlError)),
         },
         span: zero_span(),

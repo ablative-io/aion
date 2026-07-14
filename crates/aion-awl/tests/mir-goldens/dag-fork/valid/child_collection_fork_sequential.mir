@@ -1,0 +1,184 @@
+module child_collection_fork_sequential source=child_collection_fork_sequential.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  run_all_fork_0:
+    aion@workflow:spawn_and_wait/6 [children] (lit#8, v3, v2, v4, v5, v6)
+== durable families == children
+== atoms ==
+  [0] row
+  [1] done
+  [2] child_collection_fork_sequential_input
+  [3] done_outcome
+  [4] ok
+== literals ==
+  [0] "value"
+  [1] "rows"
+  [2] "values"
+  [3] "done"
+  [4] "outcome"
+  [5] "ChildCollectionForkSequentialOutcome"
+  [6] "done"
+  [7] "payload"
+  [8] "run_one"
+== types ==
+  record Row tag=row
+    value: string
+  record Done tag=done
+    rows: list(ref(Row))
+  record ChildCollectionForkSequentialInput tag=child_collection_fork_sequential_input
+    values: list(string)
+  union ChildCollectionForkSequentialOutcome
+    done -> done_outcome(ref(Done))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=child_collection_fork_sequential_input_codec output=child_collection_fork_sequential_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(child_collection_fork_sequential.ChildCollectionForkSequentialInput, child_collection_fork_sequential.ChildCollectionForkSequentialOutcome, AwlError)
+  T-DEF name="child_collection_fork_sequential" input=child_collection_fork_sequential_input_codec output=child_collection_fork_sequential_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (child_collection_fork_sequential.ChildCollectionForkSequentialInput) -> Result(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome, AwlError)
+  T-EXEC fields=[values:List(String)] entry=step_run_all args=[0]
+== fn row_codec/0 origin=codec_template(RecordTrio, Row, record#0) ==
+  sig: () -> Codec(child_collection_fork_sequential.Row)
+  v0 = make_closure row_to_json captures=[]
+  v1 = call_local row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn row_to_json/1 origin=codec_template(RecordTrio, Row, record#0) ==
+  sig: (child_collection_fork_sequential.Row) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"value": v1|>awlc.string_to_json}
+  return v2
+== fn row_decoder/0 origin=codec_template(RecordTrio, Row, record#0) ==
+  sig: () -> Decoder(child_collection_fork_sequential.Row)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure row_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn row_decoder$0/1 origin=lifted(row_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork_sequential.Row)
+  v1 = record(row, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn done_codec/0 origin=codec_template(RecordTrio, Done, record#1) ==
+  sig: () -> Codec(child_collection_fork_sequential.Done)
+  v0 = make_closure done_to_json captures=[]
+  v1 = call_local done_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn done_to_json/1 origin=codec_template(RecordTrio, Done, record#1) ==
+  sig: (child_collection_fork_sequential.Done) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"rows": v1|>list_row_to_json}
+  return v2
+== fn done_decoder/0 origin=codec_template(RecordTrio, Done, record#1) ==
+  sig: () -> Decoder(child_collection_fork_sequential.Done)
+  v0 = call_local list_row_decoder()
+  v1 = make_closure done_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn done_decoder$0/1 origin=lifted(done_decoder, #0) ==
+  sig: (List(child_collection_fork_sequential.Row)) -> Decoder(child_collection_fork_sequential.Done)
+  v1 = record(done, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn child_collection_fork_sequential_input_codec/0 origin=codec_template(RecordTrio, ChildCollectionForkSequentialInput, record#2) ==
+  sig: () -> Codec(child_collection_fork_sequential.ChildCollectionForkSequentialInput)
+  v0 = make_closure child_collection_fork_sequential_input_to_json captures=[]
+  v1 = call_local child_collection_fork_sequential_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn child_collection_fork_sequential_input_to_json/1 origin=codec_template(RecordTrio, ChildCollectionForkSequentialInput, record#2) ==
+  sig: (child_collection_fork_sequential.ChildCollectionForkSequentialInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"values": v1|>list_string_to_json}
+  return v2
+== fn child_collection_fork_sequential_input_decoder/0 origin=codec_template(RecordTrio, ChildCollectionForkSequentialInput, record#2) ==
+  sig: () -> Decoder(child_collection_fork_sequential.ChildCollectionForkSequentialInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure child_collection_fork_sequential_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn child_collection_fork_sequential_input_decoder$0/1 origin=lifted(child_collection_fork_sequential_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(child_collection_fork_sequential.ChildCollectionForkSequentialInput)
+  v1 = record(child_collection_fork_sequential_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn child_collection_fork_sequential_outcome_codec/0 origin=codec_template(UnionTrio, ChildCollectionForkSequentialOutcome, union#3) ==
+  sig: () -> Codec(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome)
+  v0 = make_closure child_collection_fork_sequential_outcome_to_json captures=[]
+  v1 = call_local child_collection_fork_sequential_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn child_collection_fork_sequential_outcome_to_json/1 origin=codec_template(UnionTrio, ChildCollectionForkSequentialOutcome, union#3) ==
+  sig: (child_collection_fork_sequential.ChildCollectionForkSequentialOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#3|>awlc.string_to_json, "payload": v1|>done_to_json}
+  return v2
+== fn child_collection_fork_sequential_outcome_decoder/0 origin=codec_template(UnionTrio, ChildCollectionForkSequentialOutcome, union#3) ==
+  sig: () -> Decoder(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure child_collection_fork_sequential_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn child_collection_fork_sequential_outcome_decoder$outcome/1 origin=lifted(child_collection_fork_sequential_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome)
+  if cmp Eq v0 lit#6:
+    v3 = call_local done_decoder()
+    v4 = make_closure child_collection_fork_sequential_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#7, v3, v4)
+  else:
+    v1 = record(done, [nil])
+    v2 = record(done_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#5)
+== fn child_collection_fork_sequential_outcome_decoder$arm0/1 origin=lifted(child_collection_fork_sequential_outcome_decoder, #1) ==
+  sig: (child_collection_fork_sequential.Done) -> Decoder(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_row_codec/0 origin=codec_template(CompositeTrio, List(Row), composite(list(ref(Row)))) ==
+  sig: () -> Codec(List(child_collection_fork_sequential.Row))
+  v0 = make_closure list_row_to_json captures=[]
+  v1 = call_local list_row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_row_to_json/1 origin=codec_template(CompositeTrio, List(Row), composite(list(ref(Row)))) ==
+  sig: (List(child_collection_fork_sequential.Row)) -> Json
+  v1 = make_closure row_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_row_decoder/0 origin=codec_template(CompositeTrio, List(Row), composite(list(ref(Row)))) ==
+  sig: () -> Decoder(List(child_collection_fork_sequential.Row))
+  v0 = call_local row_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn step_run_all/1 origin=region(run_all) ==
+  sig: (List(String)) -> Result(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome, AwlError)
+  v1 = make_closure run_all_fork_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, nil, v1)
+  v3 = try_bind v2
+  v4 = call_rt gleam@list:reverse/1(v3)
+  tail_local step_report(v4)
+== fn step_report/1 origin=chain_step(run_all.report) ==
+  sig: (List(child_collection_fork_sequential.Row)) -> Result(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome, AwlError)
+  v1 = record(done, [v0])
+  v2 = record(done_outcome, [v1])
+  v3 = record(ok, [v2])
+  return v3
+== fn run_all_fork_0/2 origin=fork(run_all#0) ==
+  sig: (List(child_collection_fork_sequential.Row), String) -> Result(List(child_collection_fork_sequential.Row), AwlError)
+  v2 = json_obj {"value": v1|>awlc.string_to_json}
+  v3 = make_closure awl$child_witness captures=[]
+  v4 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v2, v3]
+  v5 = call_local row_codec() live_after=[v0, v2, v3, v4]
+  v6 = call_rt aion@awl@error:codec/0() live_after=[v0, v2, v3, v4, v5]
+  v7 = call_rt aion@workflow:spawn_and_wait/6(lit#8, v3, v2, v4, v5, v6) live_after=[v0]
+  v8 = call_rt aion@awl@error:map_child_error/1(v7) live_after=[v0]
+  v9 = try_bind v8 live_after=[v0]
+  v10 = cons v9 v0
+  v11 = record(ok, [v10])
+  return v11
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

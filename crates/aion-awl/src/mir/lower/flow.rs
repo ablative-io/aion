@@ -5,8 +5,8 @@
 //! chain-boundary live set (`chain::chain_params`) as arguments. Bounded
 //! loops lower through `loops` (a self-tail-calling `FlowFn(Loop)` per loop).
 //! Forks lower through `forks` (activity fan-out over `workflow.map`/`all` /
-//! `list.try_fold` to the reference emitter's parity contract; the child
-//! fan-out still refuses). Substeps, waits, spawns, `on failure`,
+//! `list.try_fold` and child spawn-all/ordered-await fan-out to the reference
+//! emitter's parity contract). Substeps, waits, spawns, `on failure`,
 //! combinators, and dependency-parallel layers are deferred
 //! (`LowerError::unsupported`) —
 //! visible incompleteness, never silent divergence from the reference. The
@@ -115,12 +115,14 @@ fn lower_region(
         });
         let flow = lower_chain_step(
             ctx,
-            plan,
-            &entry_step,
-            &step,
-            position,
-            &param_names,
-            next,
+            ChainStep {
+                plan,
+                entry_step: &entry_step,
+                step: &step,
+                position,
+                param_names: &param_names,
+                next,
+            },
             slots,
         )?;
         functions.push(MirFn::Flow(flow));
@@ -128,24 +130,30 @@ fn lower_region(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ChainStep<'a> {
+    plan: &'a FnPlan,
+    entry_step: &'a Step,
+    step: &'a Step,
+    position: usize,
+    param_names: &'a [String],
+    next: Option<Next>,
+}
+
 fn lower_chain_step(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
-    entry_step: &Step,
-    step: &Step,
-    position: usize,
-    param_names: &[String],
-    next: Option<Next>,
+    chain: ChainStep<'_>,
     slots: &mut Slots,
 ) -> Result<FlowFn, LowerError> {
     ctx.reset_vars();
     let mut scope: Scope = Scope::new();
     let mut param_vars = Vec::new();
     let mut param_tys = Vec::new();
-    for name in param_names {
+    for name in chain.param_names {
         let ty = ctx.emitter.bindings.get(name).cloned().ok_or_else(|| {
-            LowerError::new(step.name_span, format!("binding `{name}` has no type"))
+            LowerError::new(
+                chain.step.name_span,
+                format!("binding `{name}` has no type"),
+            )
         })?;
         let var = ctx.fresh_var();
         param_vars.push(var);
@@ -153,25 +161,25 @@ fn lower_chain_step(
         scope.insert(name.clone(), Binding { var, ty });
     }
 
-    let body = lower_step(ctx, plan, step, &mut scope, next, slots)?;
-    let origin = if position == 0 {
+    let body = lower_step(ctx, chain.plan, chain.step, &mut scope, chain.next, slots)?;
+    let origin = if chain.position == 0 {
         FnOrigin::Region {
-            entry_step: entry_step.name.clone(),
+            entry_step: chain.entry_step.name.clone(),
         }
     } else {
         FnOrigin::ChainStep {
-            entry_step: entry_step.name.clone(),
-            step: step.name.clone(),
+            entry_step: chain.entry_step.name.clone(),
+            step: chain.step.name.clone(),
         }
     };
     Ok(FlowFn {
         origin,
-        name: format!("step_{}", snake(&step.name)),
+        name: format!("step_{}", snake(&chain.step.name)),
         params: param_vars,
         param_tys,
         ret_ty: TyDesc::Result(Box::new(output_tydesc(ctx)), Box::new(TyDesc::AwlError)),
         body,
-        span: Span::from_source(step.name_span),
+        span: Span::from_source(chain.step.name_span),
         degraded_parallel: false,
     })
 }

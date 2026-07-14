@@ -1,0 +1,248 @@
+module child_collection_fork source=child_collection_fork.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  fan_out_fork_0:
+    aion@workflow:spawn/6 [children] (lit#13, v4, v3, v5, v6, v7)
+  fan_out_fork_1:
+    aion@child:await/1 [children] (v1)
+== durable families == children
+== atoms ==
+  [0] sitting_spec
+  [1] sitting_row
+  [2] exam_report
+  [3] child_collection_fork_input
+  [4] reported_outcome
+  [5] ok
+== literals ==
+  [0] "harness"
+  [1] "model"
+  [2] "effort"
+  [3] "spec"
+  [4] "first_try"
+  [5] "rows"
+  [6] "pack_revision"
+  [7] "sittings"
+  [8] "reported"
+  [9] "outcome"
+  [10] "ChildCollectionForkOutcome"
+  [11] "reported"
+  [12] "payload"
+  [13] "sit_one"
+== types ==
+  record SittingSpec tag=sitting_spec
+    harness: string
+    model: string
+    effort: string
+  record SittingRow tag=sitting_row
+    spec: ref(SittingSpec)
+    first_try: bool
+  record ExamReport tag=exam_report
+    rows: list(ref(SittingRow))
+  record ChildCollectionForkInput tag=child_collection_fork_input
+    pack_revision: string
+    sittings: list(ref(SittingSpec))
+  union ChildCollectionForkOutcome
+    reported -> reported_outcome(ref(ExamReport))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=child_collection_fork_input_codec output=child_collection_fork_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(child_collection_fork.ChildCollectionForkInput, child_collection_fork.ChildCollectionForkOutcome, AwlError)
+  T-DEF name="child_collection_fork" input=child_collection_fork_input_codec output=child_collection_fork_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (child_collection_fork.ChildCollectionForkInput) -> Result(child_collection_fork.ChildCollectionForkOutcome, AwlError)
+  T-EXEC fields=[pack_revision:String, sittings:List(child_collection_fork.SittingSpec)] entry=step_fan_out args=[0, 1]
+== fn sitting_spec_codec/0 origin=codec_template(RecordTrio, SittingSpec, record#0) ==
+  sig: () -> Codec(child_collection_fork.SittingSpec)
+  v0 = make_closure sitting_spec_to_json captures=[]
+  v1 = call_local sitting_spec_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sitting_spec_to_json/1 origin=codec_template(RecordTrio, SittingSpec, record#0) ==
+  sig: (child_collection_fork.SittingSpec) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"harness": v1|>awlc.string_to_json, "model": v2|>awlc.string_to_json, "effort": v3|>awlc.string_to_json}
+  return v4
+== fn sitting_spec_decoder/0 origin=codec_template(RecordTrio, SittingSpec, record#0) ==
+  sig: () -> Decoder(child_collection_fork.SittingSpec)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure sitting_spec_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn sitting_spec_decoder$0/1 origin=lifted(sitting_spec_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork.SittingSpec)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure sitting_spec_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn sitting_spec_decoder$1/2 origin=lifted(sitting_spec_decoder, #1) ==
+  sig: (String, String) -> Decoder(child_collection_fork.SittingSpec)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure sitting_spec_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v2, v3)
+== fn sitting_spec_decoder$2/3 origin=lifted(sitting_spec_decoder, #2) ==
+  sig: (String, String, String) -> Decoder(child_collection_fork.SittingSpec)
+  v3 = record(sitting_spec, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn sitting_row_codec/0 origin=codec_template(RecordTrio, SittingRow, record#1) ==
+  sig: () -> Codec(child_collection_fork.SittingRow)
+  v0 = make_closure sitting_row_to_json captures=[]
+  v1 = call_local sitting_row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sitting_row_to_json/1 origin=codec_template(RecordTrio, SittingRow, record#1) ==
+  sig: (child_collection_fork.SittingRow) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"spec": v1|>sitting_spec_to_json, "first_try": v2|>awlc.bool_to_json}
+  return v3
+== fn sitting_row_decoder/0 origin=codec_template(RecordTrio, SittingRow, record#1) ==
+  sig: () -> Decoder(child_collection_fork.SittingRow)
+  v0 = call_local sitting_spec_decoder()
+  v1 = make_closure sitting_row_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn sitting_row_decoder$0/1 origin=lifted(sitting_row_decoder, #0) ==
+  sig: (child_collection_fork.SittingSpec) -> Decoder(child_collection_fork.SittingRow)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure sitting_row_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn sitting_row_decoder$1/2 origin=lifted(sitting_row_decoder, #1) ==
+  sig: (Bool, child_collection_fork.SittingSpec) -> Decoder(child_collection_fork.SittingRow)
+  v2 = record(sitting_row, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn exam_report_codec/0 origin=codec_template(RecordTrio, ExamReport, record#2) ==
+  sig: () -> Codec(child_collection_fork.ExamReport)
+  v0 = make_closure exam_report_to_json captures=[]
+  v1 = call_local exam_report_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn exam_report_to_json/1 origin=codec_template(RecordTrio, ExamReport, record#2) ==
+  sig: (child_collection_fork.ExamReport) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"rows": v1|>list_sitting_row_to_json}
+  return v2
+== fn exam_report_decoder/0 origin=codec_template(RecordTrio, ExamReport, record#2) ==
+  sig: () -> Decoder(child_collection_fork.ExamReport)
+  v0 = call_local list_sitting_row_decoder()
+  v1 = make_closure exam_report_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn exam_report_decoder$0/1 origin=lifted(exam_report_decoder, #0) ==
+  sig: (List(child_collection_fork.SittingRow)) -> Decoder(child_collection_fork.ExamReport)
+  v1 = record(exam_report, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn child_collection_fork_input_codec/0 origin=codec_template(RecordTrio, ChildCollectionForkInput, record#3) ==
+  sig: () -> Codec(child_collection_fork.ChildCollectionForkInput)
+  v0 = make_closure child_collection_fork_input_to_json captures=[]
+  v1 = call_local child_collection_fork_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn child_collection_fork_input_to_json/1 origin=codec_template(RecordTrio, ChildCollectionForkInput, record#3) ==
+  sig: (child_collection_fork.ChildCollectionForkInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"pack_revision": v1|>awlc.string_to_json, "sittings": v2|>list_sitting_spec_to_json}
+  return v3
+== fn child_collection_fork_input_decoder/0 origin=codec_template(RecordTrio, ChildCollectionForkInput, record#3) ==
+  sig: () -> Decoder(child_collection_fork.ChildCollectionForkInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure child_collection_fork_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn child_collection_fork_input_decoder$0/1 origin=lifted(child_collection_fork_input_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork.ChildCollectionForkInput)
+  v1 = call_local list_sitting_spec_decoder() live_after=[v0]
+  v2 = make_closure child_collection_fork_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v1, v2)
+== fn child_collection_fork_input_decoder$1/2 origin=lifted(child_collection_fork_input_decoder, #1) ==
+  sig: (List(child_collection_fork.SittingSpec), String) -> Decoder(child_collection_fork.ChildCollectionForkInput)
+  v2 = record(child_collection_fork_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn child_collection_fork_outcome_codec/0 origin=codec_template(UnionTrio, ChildCollectionForkOutcome, union#4) ==
+  sig: () -> Codec(child_collection_fork.ChildCollectionForkOutcome)
+  v0 = make_closure child_collection_fork_outcome_to_json captures=[]
+  v1 = call_local child_collection_fork_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn child_collection_fork_outcome_to_json/1 origin=codec_template(UnionTrio, ChildCollectionForkOutcome, union#4) ==
+  sig: (child_collection_fork.ChildCollectionForkOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v1|>exam_report_to_json}
+  return v2
+== fn child_collection_fork_outcome_decoder/0 origin=codec_template(UnionTrio, ChildCollectionForkOutcome, union#4) ==
+  sig: () -> Decoder(child_collection_fork.ChildCollectionForkOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure child_collection_fork_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn child_collection_fork_outcome_decoder$outcome/1 origin=lifted(child_collection_fork_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork.ChildCollectionForkOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local exam_report_decoder()
+    v4 = make_closure child_collection_fork_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(exam_report, [nil])
+    v2 = record(reported_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn child_collection_fork_outcome_decoder$arm0/1 origin=lifted(child_collection_fork_outcome_decoder, #1) ==
+  sig: (child_collection_fork.ExamReport) -> Decoder(child_collection_fork.ChildCollectionForkOutcome)
+  v1 = record(reported_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_sitting_row_codec/0 origin=codec_template(CompositeTrio, List(SittingRow), composite(list(ref(SittingRow)))) ==
+  sig: () -> Codec(List(child_collection_fork.SittingRow))
+  v0 = make_closure list_sitting_row_to_json captures=[]
+  v1 = call_local list_sitting_row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_sitting_row_to_json/1 origin=codec_template(CompositeTrio, List(SittingRow), composite(list(ref(SittingRow)))) ==
+  sig: (List(child_collection_fork.SittingRow)) -> Json
+  v1 = make_closure sitting_row_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_sitting_row_decoder/0 origin=codec_template(CompositeTrio, List(SittingRow), composite(list(ref(SittingRow)))) ==
+  sig: () -> Decoder(List(child_collection_fork.SittingRow))
+  v0 = call_local sitting_row_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_sitting_spec_codec/0 origin=codec_template(CompositeTrio, List(SittingSpec), composite(list(ref(SittingSpec)))) ==
+  sig: () -> Codec(List(child_collection_fork.SittingSpec))
+  v0 = make_closure list_sitting_spec_to_json captures=[]
+  v1 = call_local list_sitting_spec_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_sitting_spec_to_json/1 origin=codec_template(CompositeTrio, List(SittingSpec), composite(list(ref(SittingSpec)))) ==
+  sig: (List(child_collection_fork.SittingSpec)) -> Json
+  v1 = make_closure sitting_spec_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_sitting_spec_decoder/0 origin=codec_template(CompositeTrio, List(SittingSpec), composite(list(ref(SittingSpec)))) ==
+  sig: () -> Decoder(List(child_collection_fork.SittingSpec))
+  v0 = call_local sitting_spec_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn step_fan_out/2 origin=region(fan_out) ==
+  sig: (String, List(child_collection_fork.SittingSpec)) -> Result(child_collection_fork.ChildCollectionForkOutcome, AwlError)
+  v2 = make_closure fan_out_fork_0 captures=[v0]
+  v3 = call_rt gleam@list:try_fold/3(v1, nil, v2)
+  v4 = try_bind v3
+  v5 = make_closure fan_out_fork_1 captures=[]
+  v6 = call_rt gleam@list:try_fold/3(v4, nil, v5)
+  v7 = try_bind v6
+  tail_local step_report(v7)
+== fn step_report/1 origin=chain_step(fan_out.report) ==
+  sig: (List(child_collection_fork.SittingRow)) -> Result(child_collection_fork.ChildCollectionForkOutcome, AwlError)
+  v1 = record(exam_report, [v0])
+  v2 = record(reported_outcome, [v1])
+  v3 = record(ok, [v2])
+  return v3
+== fn fan_out_fork_0/3 origin=fork(fan_out#0) ==
+  sig: (List(ChildHandle(child_collection_fork.SittingRow, AwlError)), child_collection_fork.SittingSpec, String) -> Result(List(ChildHandle(child_collection_fork.SittingRow, AwlError)), AwlError)
+  v3 = json_obj {"spec": v1|>sitting_spec_to_json, "pack_revision": v2|>awlc.string_to_json}
+  v4 = make_closure awl$child_witness captures=[]
+  v5 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v3, v4]
+  v6 = call_local sitting_row_codec() live_after=[v0, v3, v4, v5]
+  v7 = call_rt aion@awl@error:codec/0() live_after=[v0, v3, v4, v5, v6]
+  v8 = call_rt aion@workflow:spawn/6(lit#13, v4, v3, v5, v6, v7) live_after=[v0]
+  v9 = call_rt aion@awl@error:map_spawn_error/1(v8) live_after=[v0]
+  v10 = try_bind v9 live_after=[v0]
+  v11 = cons v10 v0
+  v12 = record(ok, [v11])
+  return v12
+== fn fan_out_fork_1/2 origin=fork(fan_out#1) ==
+  sig: (List(child_collection_fork.SittingRow), ChildHandle(child_collection_fork.SittingRow, AwlError)) -> Result(List(child_collection_fork.SittingRow), AwlError)
+  v2 = call_rt aion@child:await/1(v1) live_after=[v0]
+  v3 = call_rt aion@awl@error:map_child_error/1(v2) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  v5 = cons v4 v0
+  v6 = record(ok, [v5])
+  return v6
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

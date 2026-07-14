@@ -19,7 +19,11 @@ mod unit;
 mod verify;
 
 #[cfg(test)]
+mod child_fork_tests;
+#[cfg(test)]
 mod codec_tests;
+#[cfg(test)]
+mod deferred_tests;
 #[cfg(test)]
 mod fork_tests;
 #[cfg(test)]

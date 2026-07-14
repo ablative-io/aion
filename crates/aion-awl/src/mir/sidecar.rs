@@ -76,6 +76,11 @@ pub(crate) fn map_tydesc(ty: &TyDesc) -> TypeDescriptor {
             "Activity",
             vec![map_tydesc(input), map_tydesc(output)],
         ),
+        TyDesc::ChildHandle(output, error) => custom(
+            "aion/child",
+            "ChildHandle",
+            vec![map_tydesc(output), map_tydesc(error)],
+        ),
         // The nominal opaque type is `SignalRef` in `aion/signal`
         // (`aion/workflow` only re-exports it as an alias, which Gleam erases);
         // S10/IR-23 pins the spelling the extractor emits, not the alias.

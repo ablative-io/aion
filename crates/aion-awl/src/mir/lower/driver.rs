@@ -101,6 +101,9 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
     if !skeleton.plan.activities.is_empty() {
         skeleton.functions.push(build::dead_shell());
     }
+    if skeleton.plan.child_witness.is_some() {
+        skeleton.functions.push(build::child_witness_shell());
+    }
 
     let mut module = MirModule {
         name: module_name,

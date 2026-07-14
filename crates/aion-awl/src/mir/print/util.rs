@@ -174,6 +174,13 @@ pub(super) fn render_tydesc(ty: &TyDesc) -> String {
                 render_tydesc(output)
             )
         }
+        TyDesc::ChildHandle(output, error) => {
+            format!(
+                "ChildHandle({}, {})",
+                render_tydesc(output),
+                render_tydesc(error)
+            )
+        }
         TyDesc::SignalRef(inner) => format!("Signal({})", render_tydesc(inner)),
         TyDesc::WorkflowDefinition(input, output, error) => format!(
             "WorkflowDefinition({}, {}, {})",

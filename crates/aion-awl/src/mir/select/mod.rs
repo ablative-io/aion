@@ -12,6 +12,7 @@
 
 mod assemble;
 mod builder;
+mod child_witness;
 mod emit;
 mod error;
 mod flow;

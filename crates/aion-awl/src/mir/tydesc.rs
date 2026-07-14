@@ -55,6 +55,7 @@ pub enum TyDesc {
     Decoder(Box<TyDesc>),
     Codec(Box<TyDesc>),
     Activity(Box<TyDesc>, Box<TyDesc>),
+    ChildHandle(Box<TyDesc>, Box<TyDesc>),
     SignalRef(Box<TyDesc>),
     WorkflowDefinition(Box<TyDesc>, Box<TyDesc>, Box<TyDesc>),
     Duration,

@@ -11,6 +11,8 @@ mod ctx;
 mod driver;
 mod expr;
 mod flow;
+mod fork_action;
+mod fork_child;
 mod fork_named;
 mod forks;
 mod liveness;

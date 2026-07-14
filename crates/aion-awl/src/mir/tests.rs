@@ -66,6 +66,8 @@ fn hex(bytes: &[u8]) -> String {
 /// are relative to `tests/fixtures/rev2`, without the `.awl` extension.
 const COVERED: &[&str] = &[
     "dag-fork/valid/after_single",
+    "dag-fork/valid/child_collection_fork",
+    "dag-fork/valid/child_collection_fork_sequential",
     "dag-fork/valid/fall_through_chain",
     "dag-fork/valid/fork_action_fanout",
     "dag-fork/valid/fork_named_branches",
@@ -576,44 +578,5 @@ fn backward_route_reentry_resets_seed_and_count() -> Result<(), Box<dyn std::err
         call_line.contains(", 0,"),
         "re-entry must reset the count to 0: {call_line}"
     );
-    Ok(())
-}
-
-/// The two combined fixtures advance to their next honest refusal instead of
-/// silently claiming coverage: `dev_brief` still refuses at its
-/// dependency-parallel layer, `ship_release_combined` now refuses at `wait`.
-#[test]
-fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn std::error::Error>> {
-    let dev_brief = manifest_dir().join("tests/fixtures/rev2/flagship/valid/dev_brief.awl");
-    match lower_fixture(&dev_brief)? {
-        Err(LowerError::Unsupported { shape, .. }) => {
-            assert_eq!(shape, "parallel region", "dev_brief refusal drifted");
-        }
-        other => return Err(format!("dev_brief must still refuse: {other:?}").into()),
-    }
-    let ship =
-        manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/ship_release_combined.awl");
-    match lower_fixture(&ship)? {
-        Err(LowerError::Unsupported { shape, .. }) => {
-            assert_eq!(
-                shape, "wait",
-                "ship_release refusal must advance past the loop"
-            );
-        }
-        other => return Err(format!("ship_release must refuse at wait: {other:?}").into()),
-    }
-    Ok(())
-}
-
-#[test]
-fn deferred_fixture_errors_cleanly() -> Result<(), Box<dyn std::error::Error>> {
-    let path =
-        manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/guard_optional_wait.awl");
-    // A deferred fixture must not panic; it parses, then errors cleanly.
-    let result = lower_fixture(&path)?;
-    assert!(matches!(
-        result,
-        Err(LowerError::Unsupported { .. } | LowerError::Planning { .. })
-    ));
     Ok(())
 }

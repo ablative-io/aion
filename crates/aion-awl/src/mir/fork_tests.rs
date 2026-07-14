@@ -252,8 +252,8 @@ fn literal_index(text: &str, content: &str) -> Option<usize> {
 
 /// R1: the same AST call shape routes distinctly — an ACTION collection fork
 /// rides in-workflow activity fan-out (`workflow.map`, the Activities
-/// durable family), while a CHILD collection fork keeps refusing at lower
-/// with a clean diagnostic (the child witness shell does not select yet).
+/// durable family), while a CHILD collection fork uses the Children durable
+/// family and never collapses onto the parent activity path.
 #[test]
 fn action_and_child_collection_forks_route_distinctly() -> Result<(), Box<dyn std::error::Error>> {
     let action = lowered_fixture("dag-fork/valid/fork_action_fanout.awl")?;
@@ -266,15 +266,15 @@ fn action_and_child_collection_forks_route_distinctly() -> Result<(), Box<dyn st
         "an action fork must never spawn child workflows:\n{action}"
     );
 
-    let path = manifest_dir().join("tests/fixtures/rev2/dag-fork/valid/child_collection_fork.awl");
-    let source = fs::read_to_string(&path)?;
-    let document = crate::parse(&source)?;
-    match lower(&document, path.parent()) {
-        Err(LowerError::Unsupported { shape, .. }) => {
-            assert_eq!(shape, "child collection fork", "child routing pin drifted");
-        }
-        other => return Err(format!("child fork must refuse cleanly: {other:?}").into()),
-    }
+    let child = lowered_fixture("dag-fork/valid/child_collection_fork.awl")?;
+    assert!(
+        child.contains("aion@workflow:spawn/6 [children]"),
+        "child fan-out must create real child runs:\n{child}"
+    );
+    assert!(
+        !child.contains("aion@workflow:map/2 [activities]"),
+        "child fan-out must not become parent activities:\n{child}"
+    );
     Ok(())
 }
 

@@ -143,13 +143,13 @@ impl<'b, 'm> Shell<'b, 'm> {
     }
 }
 
-struct Header {
-    name: beamr::atom::Atom,
-    module: beamr::atom::Atom,
-    arity: u8,
-    param_count: u32,
-    entry_label: u32,
-    code_label: u32,
+pub(super) struct Header {
+    pub(super) name: beamr::atom::Atom,
+    pub(super) module: beamr::atom::Atom,
+    pub(super) arity: u8,
+    pub(super) param_count: u32,
+    pub(super) entry_label: u32,
+    pub(super) code_label: u32,
 }
 
 fn execute_arity(module: &MirModule, execute: FnRef) -> Result<u8, SelectError> {
@@ -220,7 +220,7 @@ pub(super) fn lower_shell(
         } => shell_activity_raw(builder, action, *input, *input_codec, &header),
         TemplateFn::SignalRef { .. } => Err(SelectError::unsupported("T-SIG shell", Span::zero())),
         TemplateFn::DeadBody => shell_dead(builder, &header),
-        TemplateFn::ChildWitness => Err(SelectError::unsupported("T-WIT shell", Span::zero())),
+        TemplateFn::ChildWitness => Ok(super::child_witness::lower(builder, &header)),
     }
 }
 

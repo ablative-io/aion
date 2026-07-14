@@ -1,0 +1,17 @@
+//! Sequential child-per-item collection fan-out regression.
+workflow child_collection_fork_sequential
+  input values: [String]
+  outcome done: type Done, route success
+
+type Row  { value: String }
+type Done { rows: [Row] }
+
+child run_one(value: String) -> Row
+
+step run_all
+  fork value in values sequential
+    run_one(value: value)
+  join -> rows
+
+step report
+  route done(rows: rows)
