@@ -11,5 +11,6 @@ pub mod handlers;
 
 pub use error::AuthoringApiError;
 pub use handlers::{
-    CompileSourceRequest, CompileSourceResponse, compile_and_load, compile_and_load_with_options,
+    CompileSourceRequest, CompileSourceResponse, compile_and_load, compile_and_load_document,
+    compile_and_load_with_options,
 };
