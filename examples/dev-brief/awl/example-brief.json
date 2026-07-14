@@ -1,0 +1,55 @@
+{
+  "brief": {
+    "id": "awl-first-brief",
+    "title": "Add a --version line to the norn-fan-worker README",
+    "objective": "Document the worker's --address/--identity/--task-queue flags in examples/norn-fan-worker/README.md with one short usage section.",
+    "context": "The norn-fan-worker example has a README that does not document its command-line flags. This is a deliberately small documentation brief used to prove the AWL-authored dev_brief pipeline end to end.",
+    "pointers": [
+      "examples/norn-fan-worker/README.md",
+      "examples/norn-fan-worker/src/main.rs"
+    ],
+    "scope_in": [
+      "examples/norn-fan-worker/README.md"
+    ],
+    "scope_out": [
+      "any Rust source change",
+      "any other example"
+    ],
+    "acceptance": [
+      "README.md documents the --address, --identity, and --task-queue flags in a usage section",
+      "no file outside examples/norn-fan-worker/README.md is touched"
+    ],
+    "notes": "Keep the section short. Do not restructure the rest of the README."
+  },
+  "config": {
+    "repo_root": "/Users/tom/Developer/ablative/aion",
+    "base_branch": "main",
+    "gates": [
+      {
+        "name": "readme-exists",
+        "argv": ["test", "-s", "examples/norn-fan-worker/README.md"]
+      },
+      {
+        "name": "scope-clean",
+        "argv": ["bash", "-c", "test -z \"$(git diff --name-only {base_commit} -- . ':!examples/norn-fan-worker/README.md')\""]
+      }
+    ],
+    "verify_gates": [
+      {
+        "name": "readme-exists",
+        "argv": ["test", "-s", "examples/norn-fan-worker/README.md"]
+      }
+    ],
+    "max_fix_cycles": 3,
+    "lenses": [
+      {
+        "name": "brief_compliance",
+        "charter": "Judge ONLY whether the diff satisfies the brief's acceptance criteria and stays inside scope_in. Blocking finding for any out-of-scope file touched or any acceptance criterion unmet."
+      },
+      {
+        "name": "clarity",
+        "charter": "Judge whether the added documentation is accurate against the worker's actual flags (read examples/norn-fan-worker/src/main.rs) and readable. Blocking finding only for factually wrong flag documentation."
+      }
+    ]
+  }
+}
