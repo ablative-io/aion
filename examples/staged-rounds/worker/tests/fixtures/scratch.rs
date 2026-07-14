@@ -3,7 +3,7 @@
 //! helpers both test binaries drive. Real git, no mocks.
 
 use staged_rounds_worker::shell::Shell;
-use staged_rounds_worker::types::{ProvisionItemInput, WorkItem};
+use staged_rounds_worker::types::{DoneItem, ProvisionItemInput, WorkItem};
 
 /// Run one git command in `dir`, failing the test loudly on any refusal.
 pub fn git(dir: &str, args: &[&str]) -> anyhow::Result<String> {
@@ -50,13 +50,20 @@ pub fn item(id: &str) -> WorkItem {
     }
 }
 
-/// The `provision_item` input for one work item against the scratch repo.
-pub fn provision_input(repo: &str, run_root: &str, work: WorkItem) -> ProvisionItemInput {
+/// The `provision_item` input for one work item against the scratch repo,
+/// carrying the run's done records the item's `depends_on` resolves against.
+pub fn provision_input(
+    repo: &str,
+    run_root: &str,
+    work: WorkItem,
+    done: Vec<DoneItem>,
+) -> ProvisionItemInput {
     ProvisionItemInput {
         run_root: run_root.to_owned(),
         repo_root: repo.to_owned(),
         base_branch: "main".to_owned(),
         item: work,
+        done,
     }
 }
 

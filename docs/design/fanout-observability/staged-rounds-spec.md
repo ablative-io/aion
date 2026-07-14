@@ -101,7 +101,9 @@ Write exactly this (then `aion awl fmt` it; the printer is the formatter, `crate
 //! items out — one worktree, one dev agent, and one reviewer per item, in
 //! parallel — and fold_phase moves accepted items to done, keeps rejected
 //! items pending with the reviewer's feedback attached, and releases
-//! newly-unblocked next-phase items. Accepted branches merge; conflicts
+//! newly-unblocked next-phase items. A released dependent's worktree is
+//! provisioned with its depends_on items' accepted branches merged in, so
+//! it really starts from their work. Accepted branches merge; conflicts
 //! feed a bounded remediation cycle whose agent RESUMES the planner's
 //! session — the persistent coordinator judges its own plan's conflicts.
 //!
@@ -240,7 +242,7 @@ type Conflicted {
 worker staged_rounds
   action planner(material: Material, repo_root: String, workspace_path: String) -> Plan
     node planner
-  action provision_item(run_root: String, repo_root: String, base_branch: String, item: WorkItem) -> ProvisionedItem
+  action provision_item(run_root: String, repo_root: String, base_branch: String, item: WorkItem, done: [DoneItem]) -> ProvisionedItem
     node shell
   action dev_item(work: ProvisionedItem, gates: [GateCommand]) -> DevItemResult
     node developer
@@ -261,7 +263,7 @@ step plan
 step execute
   loop state = seeded counting rounds
     fork item in state.ready
-      provision_item(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, item: item)
+      provision_item(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, item: item, done: state.done)
     join -> provisioned
     fork p in provisioned
       dev_item(work: p, gates: config.gates)
@@ -394,7 +396,7 @@ Start from dev-brief's (`examples/dev-brief/worker/src/harness.rs`) and generali
 - `start()`: extract context → resolve commit plan BEFORE the run (`harness.rs:120-127`) → assemble prompt → re-encode as JSON string payload (`harness.rs:128-133`) → clone inner harness, append `--workspace-root <root>`, `--session-id <workflow_id>-<suffix>`, `--resume-if-exists` → start.
 - `wait_result` commit behavior:
   - `DevWork`: commit round work in the item worktree under the machinery identity, rewrite the report's `commits` to the real head — port `commit_dev_work`/`rewrite_report_commits` (`examples/dev-brief/worker/src/harness.rs:199-242`, `commit.rs:117-205`) keyed by `item_id` instead of `brief.id`.
-  - `ConcludeMerge` (new): in the integration worktree, if a merge is in progress (`.git/MERGE_HEAD` present via `git rev-parse -q --verify MERGE_HEAD`), run `git add -A` then `git commit --no-edit` (concluding the conflicted merge with the agent's resolutions); if no merge in progress but the tree is dirty, `git add -A && git commit -m "fix(staged): remediation"`; if clean, record a skip. Failure of either command is an activity failure. This is the mechanical-git doctrine: agents never run git (`harness.rs:24-32`).
+  - `ConcludeMerge` (new): in the integration worktree, if a merge is in progress (`.git/MERGE_HEAD` present via `git rev-parse -q --verify MERGE_HEAD`), FIRST scan every still-unmerged file (`git diff --name-only --diff-filter=U`, read BEFORE any staging) for leftover conflict markers (a line starting `<<<<<<<`, `|||||||`, or `>>>>>>>`; a worktree-deleted file counts as resolved) — any hit REFUSES the conclusion as an activity failure naming the files, leaving the merge in progress. This guard is load-bearing: `git add -A` clears the index's unmerged-entry safety, so without it a remediator that resolved some (or zero) files would get the literal markers COMMITTED as a concluded merge and the run could end `completed` with corrupted integration content. Only a clean scan proceeds: `git add -A` then `git commit --no-edit` (concluding the conflicted merge with the agent's resolutions); if no merge in progress but the tree is dirty, `git add -A && git commit -m "fix(staged): remediation"`; if clean, record a skip. Failure of either command is an activity failure. This is the mechanical-git doctrine: agents never run git (`harness.rs:24-32`).
 
 ---
 
@@ -404,10 +406,11 @@ Start from dev-brief's (`examples/dev-brief/worker/src/harness.rs`) and generali
 Serde twins of §2's records with field names byte-equal to the AWL declarations. Conventions from dev-brief: `Option<T>` + `#[serde(default, skip_serializing_if = "Option::is_none")]` for `String?` fields (absent = omitted key); `#[serde(default)]` on lists so foreign payloads missing keys decode empty (`examples/dev-brief/worker/src/prompts.rs:230-234` precedent); where a handler ECHOES agent-produced values (fold_phase echoing verdict/report content into evidence only — it re-emits typed WorkItem/DoneItem, so plain typed structs suffice; raw `Value` passthrough is only needed if echo fidelity of agent extension fields matters — not here).
 
 ### 4.2 Shell handlers
-**`provision_item(run_root, repo_root, base_branch, item) -> ProvisionedItem`** (`handlers/provision.rs`), modeled on `examples/dev-brief/worker/src/handlers/workspace.rs:29-163` with ONE deliberate semantic change:
+**`provision_item(run_root, repo_root, base_branch, item, done) -> ProvisionedItem`** (`handlers/provision.rs`), modeled on `examples/dev-brief/worker/src/handlers/workspace.rs:29-163` with TWO deliberate semantic changes:
 - `workspace_path = {run_root}/items/{item.id}`; `branch = "staged/" + basename(run_root) + "/" + item.id` (basename of run_root is the workflow id → no cross-run branch collisions; ids are validated git-ref-safe slugs — refuse otherwise, terminal).
-- **Reuse, don't reset**: if the worktree exists, is on `branch`, and `git status --porcelain` is clean → return it as-is with `base_commit = git merge-base <branch> <base_branch>` (round-2 re-provisioning of a rejected item MUST preserve the committed round-1 work — the dev session resumes and continues; dev-brief's `-B` reset semantics, `workspace.rs:60-76`, would destroy it).
-- Otherwise: `ensure_parent_dir` (`workspace.rs:153-163`), reclaim stale clean holders of the branch / refuse dirty holders loudly (`workspace.rs:98-150` verbatim port), then `git -C <repo> worktree add --force -B <branch> <path> <base_branch>` and `rev-parse HEAD` (`workspace.rs:60-92`).
+- **Dependencies are delivered, not just scheduled**: the planner is promised that `depends_on` names items whose MERGED output the dependent needs, so a fresh worktree is created from the base branch and each `depends_on` item's done branch is then merged in (declaration order, `--no-ff`, scoped machinery identity `staged-rounds-provision`). A `depends_on` id with no `done` record is a terminal protocol violation (`fold_phase` releases dependents only after their dependencies are done); a conflict between dependency branches is a terminal PLAN violation — the merge is aborted and the half-provisioned worktree removed (guarded) so a retry starts fresh. The post-dependency-merge head is the item's `base_commit` AND is recorded at `refs/staged-rounds/<run id>/base/<item id>` so reuse re-derives the exact diff base.
+- **Reuse, don't reset**: if the worktree exists, is on `branch`, and `git status --porcelain` is clean → return it as-is with `base_commit` re-read from the recorded base ref (round-2 re-provisioning of a rejected item MUST preserve the committed round-1 work — the dev session resumes and continues; dev-brief's `-B` reset semantics, `workspace.rs:60-76`, would destroy it). A missing ref falls back to `git merge-base <branch> <base_branch>` ONLY for an item with no dependencies (exact there); for a dependent it refuses terminally — the merge-base would fold the dependencies' entire diff into the item's review.
+- Otherwise: `ensure_parent_dir` (`workspace.rs:153-163`), reclaim stale clean holders of the branch / refuse dirty holders loudly (`workspace.rs:98-150` verbatim port), then `git -C <repo> worktree add --force -B <branch> <path> <base_branch>`, the dependency merges, and `rev-parse HEAD` (`workspace.rs:60-92`).
 - All destructive ops guarded to `<repo_root>/.staged-rounds/` via the `paths.rs` guard (dev-brief `workspace.rs:186-192`).
 
 **`fold_phase(prior, incoming, dev, verdicts) -> PhaseState`** (`handlers/fold_phase.rs`), pure/`immediate`, modeled on `fold_round` (`examples/dev-brief/worker/src/handlers/fold_round.rs:18-62`):
@@ -438,7 +441,7 @@ Each mirrors §2's record byte-conventions (draft 2020-12, model `examples/dev-b
 ### 4.5 Prompts (`prompts.rs`) — one dumb assemble fn per role (`examples/dev-brief/worker/src/prompts.rs:10-13,57-71` discipline)
 All four render `context_section(title, context_json)` (fenced JSON, `prompts.rs:65-71`) plus role sections:
 
-- **planner**: title "Run context: material + repo root". Sections: (a) *Your job* — read the material and the repo (workspace root = the repo, read-only); return the typed plan: 3–10 work items, each with a git-ref-safe slug `id` (lowercase, `[a-z0-9-]`), a one-sentence `goal`, `scope_in` (files/dirs the item MAY touch) and `scope_out` (hard walls), an Int `phase` (1 = no prerequisites), `depends_on` listing item ids whose merged output this item needs, `feedback: ""`. Items in the same phase run **in parallel in separate worktrees against the same base branch** — they MUST NOT touch the same files; use phases/depends_on for anything that would collide or build on other items' work. (b) *Output* — the JSON schema is enforced; emit nothing but the object.
+- **planner**: title "Run context: material + repo root". Sections: (a) *Your job* — read the material and the repo (workspace root = the repo, read-only); return the typed plan: 3–10 work items, each with a git-ref-safe slug `id` (lowercase, `[a-z0-9-]`), a one-sentence `goal`, `scope_in` (files/dirs the item MAY touch) and `scope_out` (hard walls), an Int `phase` (1 = no prerequisites), `depends_on` listing item ids whose merged output this item needs (a released dependent's worktree is provisioned from the base branch WITH those items' accepted branches merged in — §4.2), `feedback: ""`. Items in the same phase run **in parallel in separate worktrees against the same base branch** — they MUST NOT touch the same files. A later item sees an earlier item's work ONLY through `depends_on`: build-on and same-file relations must be named there; a bare `phase` number alone sequences nothing at the git level. (b) *Output* — the JSON schema is enforced; emit nothing but the object.
 - **developer** (dev_item): title "Run context: your work item (+ reviewer feedback when cycling)". Sections: (a) your workspace IS the item's worktree on its own branch; implement `work.item.goal` strictly inside `scope_in`, never touching `scope_out`; you run NO git — the machinery commits your work after the turn (doctrine, `harness.rs:24-32`); if `work.item.feedback` is non-empty this is a resumed session continuing YOUR previous round — address the feedback first. (b) the **gate-discipline section**: port `gate_discipline_section` verbatim reading `gates` from the context (`prompts.rs:250-284` — task #236 lives inline in briefs; keep it). (c) report claims per acceptance-relevant point.
 - **reviewer** (review_item): title "Run context: item + dev report". Sections: (a) charter — adversarial single-reviewer covering correctness, scope-fence compliance (`scope_out` violations are blocking), and claim verification; any blocking finding ⇒ overall reject with a `reject_reason`. (b) workspace section ported from `reviewer_workspace_section` (`prompts.rs:543-570`): your cwd IS the item worktree at the reviewed state, you are read-only (write tools denied at the process boundary), reconstruct the diff yourself with `git diff <base_commit>` (base_commit read tolerantly from context, `prompts.rs:530-535`); you MAY run the configured gates read-only.
 - **remediator** (remediate): title "Run context: merge state + the plan". Sections: (a) *You are the planner, resumed* — this session planned these items; a merge of their branches hit the conflicts listed in `merge.conflicts`; your cwd IS the integration worktree with the conflicted merge IN PROGRESS; resolve every conflict marker preserving both items' intent per the plan; do NOT run git commit — the machinery concludes the merge after your turn. (b) output schema: summary + resolved file list.
@@ -464,6 +467,13 @@ Static role doctrine, loaded at startup, non-empty required (`examples/dev-brief
 - `provision_item_reuses_a_clean_existing_worktree_preserving_commits` — provision, commit a file in the worktree, provision again, assert the commit survives and base_commit is the merge-base.
 - `provision_item_refuses_a_dirty_stale_holder_by_name`
 - `provision_item_refuses_a_non_slug_item_id`
+
+**`worker/tests/shell_dependency_provisioning.rs`** (the `depends_on` merged-output semantics, proven by execution against real git):
+- `a_dependent_starts_from_its_dependencies_merged_output` — both dependency files readable in the dependent's worktree before its dev turn; `base_commit` = post-merge head; `git diff <base>` empty.
+- `a_dependent_with_no_done_record_is_refused_loudly`
+- `conflicting_dependency_branches_are_a_loud_plan_violation` — terminal, merge aborted, half-provisioned worktree removed.
+- `a_reused_dependent_keeps_the_recorded_base_excluding_dependency_work` — reuse re-reads the recorded base ref; the review diff carries ONLY the dependent's own work; the base differs from the main merge base.
+- `a_reused_dependent_without_its_recorded_base_is_refused`
 - `fold_phase_seeds_ready_and_blocked_from_incoming_by_phase_and_deps`
 - `fold_phase_accepts_a_clean_verdict_into_done_and_releases_dependents`
 - `fold_phase_keeps_a_rejected_item_pending_with_feedback_attached`
@@ -478,7 +488,7 @@ Static role doctrine, loaded at startup, non-empty required (`examples/dev-brief
 
 **`worker/tests/schemas_valid.rs`**: each embedded schema parses under `jsonschema::validator_for` and a canonical sample payload validates; a scope-violating sample fails.
 
-**Unit tests in-crate** (like dev-brief `src/*/tests`): `main_tests.rs` (arg parsing incl. `--max-parallel`, roles table nodes/suffixes), `harness` tests (workspace-root + session-suffix extraction per role incl. loud failures for missing item id; `ConcludeMerge` against a real conflicted repo in tempdir — execution proof, not mock), `prompts/tests.rs` (each role's prompt contains the fenced context; developer prompt contains the verbatim gate argv; reviewer prompt contains `git diff <base>`).
+**Unit tests in-crate** (like dev-brief `src/*/tests`): `main_tests.rs` (arg parsing incl. `--max-parallel`, roles table nodes/suffixes), `harness` tests (workspace-root + session-suffix extraction per role incl. loud failures for missing item id; `ConcludeMerge` against a real conflicted repo in tempdir — execution proof, not mock, INCLUDING the marker-guard refusals: `conclude_merge_refuses_unresolved_conflict_markers` (nothing resolved → activity failure, `MERGE_HEAD` survives, HEAD carries no markers) and `conclude_merge_refuses_a_partial_resolution_naming_the_unresolved_file` (one of two files resolved → refusal names only the unresolved file; resolving it makes the same conclusion succeed)), `prompts/tests.rs` (each role's prompt contains the fenced context; developer prompt contains the verbatim gate argv; reviewer prompt contains `git diff <base>`).
 
 **Honesty note carried into the lane output**: engine-driven end-to-end parallelism (server dispatch → semaphore → N live norn sessions) requires a live server + deploy, which this lane is forbidden to do (production server on this machine). The knob and the engine fan-out are individually verified (SDK semaphore test at `crates/aion-worker/src/worker.rs:1951`; `workflow.map` lowering pins at `crates/aion-awl/src/mir/fork_tests.rs:33-80`). Do NOT claim live parallel runtime behavior; list the live run as the owed follow-up.
 

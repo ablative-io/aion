@@ -5,8 +5,23 @@
 //! provisioning: round-2 re-provisioning of a rejected item MUST preserve the
 //! committed round-1 work (the dev session resumes and continues), so an
 //! existing worktree that is on the item branch and clean is returned as-is
-//! with `base_commit` re-derived as the merge base against the base branch.
+//! with `base_commit` re-read from the recorded base ref (see below).
 //! dev-brief's `-B` reset semantics would destroy the prior round's commits.
+//!
+//! DEPENDENCIES ARE DELIVERED, NOT JUST SCHEDULED — the planner is promised
+//! that `depends_on` names items whose MERGED output the dependent needs, so
+//! a fresh dependent worktree is created from the base branch and each
+//! dependency's accepted branch is then merged in (machinery identity,
+//! declaration order). Without this the dependent would start from the bare
+//! base branch, its gates could never pass against missing prerequisite
+//! code, and same-file sequencing would conflict exactly as if the phases
+//! had run in parallel.
+//!
+//! THE RECORDED BASE REF: the post-dependency-merge head is recorded at
+//! `refs/staged-rounds/<run id>/base/<item id>` when the worktree is
+//! created. Reuse reads that ref back so the reviewer's diff base always
+//! excludes dependency work — a merge base against the base branch would
+//! blame the dependent for its prerequisites' entire diff.
 
 use std::path::Path;
 
@@ -16,7 +31,14 @@ use crate::paths;
 use crate::shell::Shell;
 use crate::types::{ProvisionItemInput, ProvisionedItem};
 
-use super::support::require_run;
+use super::support::{clip, require_can_run, require_run};
+
+/// The dependency merge commit's scoped committer name — machinery
+/// identity, not an agent, not the operator.
+pub const PROVISION_COMMIT_NAME: &str = "staged-rounds-provision";
+
+/// The dependency merge commit's scoped committer email.
+pub const PROVISION_COMMIT_EMAIL: &str = "provision@staged-rounds.local";
 
 /// `provision_item`: ensure the item's worktree exists at
 /// `<run_root>/items/<item id>` on branch
@@ -24,20 +46,24 @@ use super::support::require_run;
 /// workflow id — so branches never collide across runs).
 ///
 /// - Existing worktree, on the item branch, clean → REUSED as-is;
-///   `base_commit` = `git merge-base <branch> <base_branch>`.
+///   `base_commit` = the recorded base ref (merge base with the base
+///   branch as the dependency-free fallback).
 /// - Existing worktree with uncommitted changes → terminal refusal
 ///   (uncommitted work must never be destroyed).
 /// - Existing worktree on the WRONG branch (clean) → removed (guarded),
 ///   then recreated fresh.
 /// - Absent → stale clean holders of the branch are reclaimed (dirty
 ///   holders refuse loudly), then `git worktree add --force -B` creates it
-///   from the base branch.
+///   from the base branch, every `depends_on` item's done branch is merged
+///   in, and the resulting head is recorded as the item's base ref.
 ///
 /// # Errors
 ///
 /// Terminal when the item id is not a git-ref-safe slug, when `git` cannot
-/// run, when a dirty worktree/holder blocks provisioning, or when the
-/// worktree cannot be created.
+/// run, when a dirty worktree/holder blocks provisioning, when the worktree
+/// cannot be created, when a `depends_on` id has no done record, or when a
+/// dependency branch does not merge cleanly (a plan violation — the
+/// half-provisioned worktree is removed so a retry starts fresh).
 pub fn provision_item(
     shell: &Shell,
     input: ProvisionItemInput,
@@ -46,9 +72,10 @@ pub fn provision_item(
     let run_id = run_basename(&input.run_root)?;
     let workspace_path = format!("{}/items/{}", input.run_root, input.item.id);
     let branch = format!("staged/{run_id}/{}", input.item.id);
+    let base_ref = format!("refs/staged-rounds/{run_id}/base/{}", input.item.id);
 
     if Path::new(&workspace_path).is_dir()
-        && let Some(reused) = try_reuse(shell, &input, &workspace_path, &branch)?
+        && let Some(reused) = try_reuse(shell, &input, &workspace_path, &branch, &base_ref)?
     {
         return Ok(reused);
     }
@@ -74,8 +101,13 @@ pub fn provision_item(
         "git worktree add",
     )?;
 
-    // The exact commit the worktree starts from. Run through the parent repo
-    // with -C so the shell's cwd check never couples to the new directory.
+    // Deliver `depends_on`'s promised semantics: the fresh worktree starts
+    // from the base branch WITH its dependencies' accepted work merged in.
+    merge_dependencies(shell, &input, &workspace_path)?;
+
+    // The exact commit the worktree starts from (post dependency merges).
+    // Run through the parent repo with -C so the shell's cwd check never
+    // couples to the new directory.
     let head = require_run(
         shell,
         "git",
@@ -83,13 +115,146 @@ pub fn provision_item(
         &input.repo_root,
         "git rev-parse HEAD (provisioned base)",
     )?;
+    let base_commit = head.stdout.trim().to_owned();
+
+    // Record the provisioned base so reuse re-derives the EXACT diff base
+    // (a dependent's merge base with the base branch would include its
+    // dependencies' work in the reviewer's diff).
+    require_run(
+        shell,
+        "git",
+        &[
+            "-C",
+            &input.repo_root,
+            "update-ref",
+            &base_ref,
+            &base_commit,
+        ],
+        &input.repo_root,
+        "git update-ref (record provisioned base)",
+    )?;
 
     Ok(ProvisionedItem {
         item: input.item,
         workspace_path,
         branch,
-        base_commit: head.stdout.trim().to_owned(),
+        base_commit,
     })
+}
+
+/// Merge every `depends_on` item's done branch into the freshly created
+/// worktree, in declaration order, under the provisioning machinery
+/// identity. `fold_phase` releases a dependent only after all of its
+/// dependencies are done, so a `depends_on` id with no done record is a
+/// terminal protocol violation. A conflict between dependency branches is a
+/// terminal PLAN violation (the plan promised disjoint parallel work); the
+/// in-progress merge is aborted and the worktree removed so a retry can
+/// start from a clean slate.
+fn merge_dependencies(
+    shell: &Shell,
+    input: &ProvisionItemInput,
+    workspace_path: &str,
+) -> Result<(), ActivityFailure> {
+    let user_name = format!("user.name={PROVISION_COMMIT_NAME}");
+    let user_email = format!("user.email={PROVISION_COMMIT_EMAIL}");
+    for dependency in &input.item.depends_on {
+        let Some(done) = input.done.iter().find(|entry| entry.item_id == *dependency) else {
+            return Err(ActivityFailure::terminal(format!(
+                "item {} depends on {dependency:?}, which has no done record — \
+                 dependents must only be released after their dependencies \
+                 are accepted",
+                input.item.id
+            )));
+        };
+        let message = format!(
+            "merge(staged): dependency {dependency} into {}",
+            input.item.id
+        );
+        let run = require_can_run(
+            shell,
+            "git",
+            &[
+                "-C",
+                workspace_path,
+                "-c",
+                &user_name,
+                "-c",
+                &user_email,
+                "merge",
+                "--no-ff",
+                &done.branch,
+                "-m",
+                &message,
+            ],
+            &input.repo_root,
+            "git merge (dependency)",
+        )?;
+        if run.succeeded() {
+            continue;
+        }
+        let detail = clip(run.output.trim());
+        abandon_conflicted_provision(shell, input, workspace_path);
+        return Err(ActivityFailure::terminal(format!(
+            "item {}: merging dependency {dependency} (branch {}) into the \
+             fresh worktree conflicted — dependency branches must be \
+             conflict-free among themselves; this is a plan violation, not a \
+             remediation case: {detail}",
+            input.item.id, done.branch
+        )));
+    }
+    Ok(())
+}
+
+/// Best-effort cleanup after a conflicted dependency merge: abort the
+/// in-progress merge and remove the half-provisioned worktree (guarded), so
+/// a retry recreates it fresh instead of refusing a dirty leftover. Failures
+/// here are logged, never masked — the terminal plan-violation error is
+/// already on its way out.
+fn abandon_conflicted_provision(shell: &Shell, input: &ProvisionItemInput, workspace_path: &str) {
+    match shell.run(
+        "git",
+        &["-C", workspace_path, "merge", "--abort"],
+        &input.repo_root,
+    ) {
+        Ok(run) if run.succeeded() => {}
+        Ok(run) => tracing::warn!(
+            exit_status = run.exit_status,
+            %workspace_path,
+            "could not abort the conflicted dependency merge"
+        ),
+        Err(failure) => tracing::warn!(
+            failure = %failure.message(),
+            %workspace_path,
+            "could not run git merge --abort after a dependency conflict"
+        ),
+    }
+    if paths::guard_destructive_path(&input.repo_root, workspace_path).is_err() {
+        return;
+    }
+    match shell.run(
+        "git",
+        &[
+            "-C",
+            &input.repo_root,
+            "worktree",
+            "remove",
+            "--force",
+            workspace_path,
+        ],
+        &input.repo_root,
+    ) {
+        Ok(run) if run.succeeded() => {}
+        Ok(run) => tracing::warn!(
+            exit_status = run.exit_status,
+            %workspace_path,
+            "could not remove the half-provisioned worktree"
+        ),
+        Err(failure) => tracing::warn!(
+            failure = %failure.message(),
+            %workspace_path,
+            "could not run git worktree remove after a dependency conflict"
+        ),
+    }
 }
 
 /// Attempt the reuse path for an existing directory at `workspace_path`.
@@ -101,6 +266,7 @@ fn try_reuse(
     input: &ProvisionItemInput,
     workspace_path: &str,
     branch: &str,
+    base_ref: &str,
 ) -> Result<Option<ProvisionedItem>, ActivityFailure> {
     let status = require_run(
         shell,
@@ -145,7 +311,53 @@ fn try_reuse(
         return Ok(None);
     }
     // Reuse: the committed prior-round work is preserved; the base the
-    // reviewer diffs against is the merge base with the base branch.
+    // reviewer diffs against is re-read from the recorded base ref.
+    Ok(Some(ProvisionedItem {
+        item: input.item.clone(),
+        workspace_path: workspace_path.to_owned(),
+        branch: branch.to_owned(),
+        base_commit: reused_base_commit(shell, input, branch, base_ref)?,
+    }))
+}
+
+/// The diff base for a REUSED worktree: the base ref recorded when the
+/// worktree was created (the post-dependency-merge head). When the ref is
+/// missing — a worktree created outside this provisioning path — the merge
+/// base with the base branch is an exact fallback ONLY for an item with no
+/// dependencies; for a dependent it would fold the dependencies' entire
+/// diff into the item's review, so that case refuses loudly instead.
+fn reused_base_commit(
+    shell: &Shell,
+    input: &ProvisionItemInput,
+    branch: &str,
+    base_ref: &str,
+) -> Result<String, ActivityFailure> {
+    let recorded = require_can_run(
+        shell,
+        "git",
+        &[
+            "-C",
+            &input.repo_root,
+            "rev-parse",
+            "-q",
+            "--verify",
+            base_ref,
+        ],
+        &input.repo_root,
+        "git rev-parse (recorded provisioned base)",
+    )?;
+    if recorded.succeeded() {
+        return Ok(recorded.stdout.trim().to_owned());
+    }
+    if !input.item.depends_on.is_empty() {
+        return Err(ActivityFailure::terminal(format!(
+            "item {} has an existing worktree but no recorded base ref \
+             {base_ref} — for a dependent item the merge-base fallback would \
+             misattribute its dependencies' work to its review diff; remove \
+             the worktree and re-run to provision it fresh",
+            input.item.id
+        )));
+    }
     let merge_base = require_run(
         shell,
         "git",
@@ -159,12 +371,7 @@ fn try_reuse(
         &input.repo_root,
         "git merge-base (reused item worktree)",
     )?;
-    Ok(Some(ProvisionedItem {
-        item: input.item.clone(),
-        workspace_path: workspace_path.to_owned(),
-        branch: branch.to_owned(),
-        base_commit: merge_base.stdout.trim().to_owned(),
-    }))
+    Ok(merge_base.stdout.trim().to_owned())
 }
 
 /// Find every OTHER worktree of `repo_root` holding `branch` and remove it

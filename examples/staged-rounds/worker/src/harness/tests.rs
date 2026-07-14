@@ -139,30 +139,38 @@ fn git(dir: &str, args: &[&str]) -> anyhow::Result<()> {
 }
 
 /// A real repo with a conflicted merge in progress: `main` and `side` both
-/// rewrite the same line of `file.txt`, and `git merge side` is left
-/// mid-conflict.
-fn conflicted_repo() -> anyhow::Result<(tempfile::TempDir, String)> {
+/// rewrite the same line of every file in `files`, and `git merge side` is
+/// left mid-conflict.
+fn conflicted_repo_over(files: &[&str]) -> anyhow::Result<(tempfile::TempDir, String)> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().display().to_string();
     git(&root, &["init", "-b", "main"])?;
     git(&root, &["config", "user.name", "test"])?;
     git(&root, &["config", "user.email", "test@example.com"])?;
-    std::fs::write(dir.path().join("file.txt"), "base\n")?;
-    git(&root, &["add", "-A"])?;
-    git(&root, &["commit", "-m", "base"])?;
-    git(&root, &["checkout", "-b", "side"])?;
-    std::fs::write(dir.path().join("file.txt"), "side\n")?;
-    git(&root, &["add", "-A"])?;
-    git(&root, &["commit", "-m", "side"])?;
-    git(&root, &["checkout", "main"])?;
-    std::fs::write(dir.path().join("file.txt"), "main\n")?;
-    git(&root, &["add", "-A"])?;
-    git(&root, &["commit", "-m", "main"])?;
+    for (content, commit_message, branch_cmd) in [
+        ("base\n", "base", Some(["checkout", "-b", "side"])),
+        ("side\n", "side", Some(["checkout", "main", "--"])),
+        ("main\n", "main", None),
+    ] {
+        for file in files {
+            std::fs::write(dir.path().join(file), content)?;
+        }
+        git(&root, &["add", "-A"])?;
+        git(&root, &["commit", "-m", commit_message])?;
+        if let Some(args) = branch_cmd {
+            git(&root, &[args[0], args[1], args[2]])?;
+        }
+    }
     let merge = Shell::inherited()
         .run("git", &["merge", "side"], &root)
         .map_err(|failure| anyhow::anyhow!(failure.message()))?;
     anyhow::ensure!(!merge.succeeded(), "the merge should have conflicted");
     Ok((dir, root))
+}
+
+/// The one-file conflicted repo most conclusion tests drive.
+fn conflicted_repo() -> anyhow::Result<(tempfile::TempDir, String)> {
+    conflicted_repo_over(&["file.txt"])
 }
 
 #[test]
@@ -203,6 +211,59 @@ fn conclude_merge_concludes_a_resolved_in_progress_merge() -> anyhow::Result<()>
         std::fs::read_to_string(dir.path().join("file.txt"))?,
         "resolved\n"
     );
+    Ok(())
+}
+
+#[test]
+fn conclude_merge_refuses_unresolved_conflict_markers() -> anyhow::Result<()> {
+    let (dir, root) = conflicted_repo()?;
+    // The "remediator" resolved NOTHING: the conflict markers are still in
+    // the tree exactly as git left them.
+    let Err(error) = conclude_merge(&Shell::inherited(), &root) else {
+        anyhow::bail!("an unresolved merge was concluded — markers would be committed");
+    };
+    assert!(error.contains("conflict markers"), "error was: {error}");
+    assert!(error.contains("file.txt"), "error was: {error}");
+
+    // Proven by execution: the merge is STILL in progress (MERGE_HEAD
+    // resolves) and nothing was committed — the next remediation attempt
+    // finds the conflict exactly where it was.
+    let shell = Shell::inherited();
+    let probe = shell
+        .run("git", &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &root)
+        .map_err(|failure| anyhow::anyhow!(failure.message()))?;
+    assert!(probe.succeeded(), "MERGE_HEAD must survive the refusal");
+    let committed = shell
+        .run("git", &["show", "HEAD:file.txt"], &root)
+        .map_err(|failure| anyhow::anyhow!(failure.message()))?;
+    assert!(
+        !committed.stdout.contains("<<<<<<<"),
+        "HEAD must not carry conflict markers: {}",
+        committed.stdout
+    );
+    drop(dir);
+    Ok(())
+}
+
+#[test]
+fn conclude_merge_refuses_a_partial_resolution_naming_the_unresolved_file() -> anyhow::Result<()> {
+    let (dir, root) = conflicted_repo_over(&["a.txt", "b.txt"])?;
+    // The "remediator" resolves only a.txt; b.txt keeps its markers.
+    std::fs::write(dir.path().join("a.txt"), "resolved\n")?;
+
+    let Err(error) = conclude_merge(&Shell::inherited(), &root) else {
+        anyhow::bail!("a partial resolution was concluded — b.txt's markers would be committed");
+    };
+    assert!(error.contains("b.txt"), "error was: {error}");
+    assert!(!error.contains("a.txt"), "error was: {error}");
+
+    // Resolving the remaining file makes the SAME conclusion succeed.
+    std::fs::write(dir.path().join("b.txt"), "resolved too\n")?;
+    let outcome = conclude_merge(&Shell::inherited(), &root).map_err(anyhow::Error::msg)?;
+    let ConcludeOutcome::Concluded { commit } = outcome else {
+        anyhow::bail!("expected the fully-resolved merge to conclude, got {outcome:?}");
+    };
+    assert!(!commit.is_empty());
     Ok(())
 }
 

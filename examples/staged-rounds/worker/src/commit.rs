@@ -15,7 +15,13 @@
 //! - [`conclude_merge`] (remediator role): in the integration worktree,
 //!   conclude the in-progress merge the remediator resolved (`git add -A` +
 //!   `git commit --no-edit`), or commit a dirty tree as a remediation fix,
-//!   or record a skip when the tree is clean.
+//!   or record a skip when the tree is clean. Concluding REFUSES when any
+//!   conflicted file still contains conflict markers: `git add -A` clears
+//!   the index's unmerged-entry safety, so without that scan a no-op
+//!   remediation would COMMIT the literal `<<<<<<<`/`>>>>>>>` markers as a
+//!   concluded merge and the run could end `completed` with corrupted
+//!   integration content. The refusal keeps the merge in progress and
+//!   fails the activity loudly instead.
 //!
 //! Both commit under scoped machinery identities via `-c`, so they are
 //! attributable without touching the workspace's git config, and both are
@@ -119,15 +125,23 @@ pub enum ConcludeOutcome {
 }
 
 /// Conclude the remediator's turn mechanically: if a merge is in progress
-/// (`MERGE_HEAD` resolves), stage everything and `git commit --no-edit`
-/// (concluding the conflicted merge with the agent's resolutions); if no
-/// merge is in progress but the tree is dirty, commit the remediation fix;
-/// if clean, record a skip.
+/// (`MERGE_HEAD` resolves), verify every still-unmerged file is genuinely
+/// resolved (no conflict markers left in the worktree), then stage
+/// everything and `git commit --no-edit` (concluding the conflicted merge
+/// with the agent's resolutions); if no merge is in progress but the tree
+/// is dirty, commit the remediation fix; if clean, record a skip.
+///
+/// The marker scan is load-bearing: `git add -A` clears the unmerged index
+/// entries, so without it a remediator that resolved some (or zero) files
+/// would get the literal conflict markers COMMITTED as a concluded merge —
+/// a silent wrong output on the run's flagship remediation mechanic.
 ///
 /// # Errors
 ///
-/// `git` unable to run, or any staging/commit command exiting non-zero —
-/// an unconcludable merge is an activity failure, never a silent pass.
+/// `git` unable to run, any staging/commit command exiting non-zero, or a
+/// conflicted file still carrying conflict markers (the merge is left in
+/// progress) — an unconcludable merge is an activity failure, never a
+/// silent pass.
 pub fn conclude_merge(shell: &Shell, workspace_path: &str) -> Result<ConcludeOutcome, String> {
     let probe = shell
         .run(
@@ -139,6 +153,15 @@ pub fn conclude_merge(shell: &Shell, workspace_path: &str) -> Result<ConcludeOut
     let user_name = format!("user.name={REMEDIATION_COMMIT_NAME}");
     let user_email = format!("user.email={REMEDIATION_COMMIT_EMAIL}");
     if probe.succeeded() {
+        let unresolved = unresolved_marker_paths(shell, workspace_path)?;
+        if !unresolved.is_empty() {
+            return Err(format!(
+                "refusing to conclude the in-progress merge: conflict markers \
+                 remain in [{}] — the merge stays in progress; resolve every \
+                 marker and the machinery will conclude it",
+                unresolved.join(", ")
+            ));
+        }
         require_git_ok(shell, workspace_path, &["add", "-A"], "git add -A")?;
         require_git_ok(
             shell,
@@ -178,6 +201,49 @@ pub fn conclude_merge(shell: &Shell, workspace_path: &str) -> Result<ConcludeOut
     )?;
     Ok(ConcludeOutcome::Committed {
         commit: rev_parse_head(shell, workspace_path)?,
+    })
+}
+
+/// The still-conflicted files of the in-progress merge (read BEFORE any
+/// staging — `git add -A` would erase the unmerged index entries this
+/// reads) whose worktree content still contains conflict markers. A file
+/// deleted from the worktree is a resolution (the delete side was chosen),
+/// not a marker hit.
+fn unresolved_marker_paths(shell: &Shell, workspace_path: &str) -> Result<Vec<String>, String> {
+    let conflicted = require_git_ok(
+        shell,
+        workspace_path,
+        &["diff", "--name-only", "--diff-filter=U"],
+        "git diff --diff-filter=U (conclusion marker scan)",
+    )?;
+    let mut unresolved = Vec::new();
+    for path in conflicted
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let absolute = std::path::Path::new(workspace_path).join(path);
+        if !absolute.exists() {
+            continue;
+        }
+        let bytes = std::fs::read(&absolute).map_err(|error| {
+            format!("could not read conflicted file {path} for the marker scan: {error}")
+        })?;
+        if contains_conflict_markers(&bytes) {
+            unresolved.push(path.to_owned());
+        }
+    }
+    Ok(unresolved)
+}
+
+/// Whether any line starts with an unambiguous git conflict marker:
+/// `<<<<<<<`, `|||||||`, or `>>>>>>>`. A bare `=======` line is NOT
+/// matched (it is legitimate content — setext underlines, comment rules)
+/// and an unresolved conflict region always retains the other markers.
+fn contains_conflict_markers(bytes: &[u8]) -> bool {
+    bytes.split(|byte| *byte == b'\n').any(|line| {
+        line.starts_with(b"<<<<<<<") || line.starts_with(b"|||||||") || line.starts_with(b">>>>>>>")
     })
 }
 

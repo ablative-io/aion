@@ -29,8 +29,10 @@ staged_rounds                       (awl/staged_rounds.awl, direct-compiled)
 │     ├── fork item in state.ready → provision_item     (SHELL, parallel)
 │     │     one git worktree per item under
 │     │     <repo>/.staged-rounds/<workflow id>/items/<item id>,
-│     │     branch staged/<workflow id>/<item id>; REUSED (never reset)
-│     │     across rounds so a rejected item's committed work survives
+│     │     branch staged/<workflow id>/<item id>; a dependent's worktree
+│     │     gets its depends_on items' accepted branches MERGED IN (it
+│     │     really starts from their work); REUSED (never reset) across
+│     │     rounds so a rejected item's committed work survives
 │     ├── fork p in provisioned → dev_item              (AGENT, parallel)
 │     │     session {workflow_id}-dev-<item id>, resumed across that
 │     │     item's feedback rounds; the WORKER commits the round's work —
@@ -51,7 +53,9 @@ staged_rounds                       (awl/staged_rounds.awl, direct-compiled)
       ├── remediate       (AGENT — RESUMES {workflow_id}-planner, rooted at
       │                    the integration worktree with the conflicted
       │                    merge IN PROGRESS; resolves the markers; the
-      │                    WORKER concludes the merge — agents run no git)
+      │                    WORKER concludes the merge — agents run no git —
+      │                    and REFUSES to conclude while any conflict
+      │                    marker remains in a conflicted file)
       └── merge_branches  (SHELL, idempotent continue-style re-merge)
 ```
 

@@ -31,5 +31,5 @@ mod support;
 
 pub use fold_phase::fold_phase;
 pub use merge::{MERGE_COMMIT_EMAIL, MERGE_COMMIT_NAME, merge_branches};
-pub use provision::provision_item;
+pub use provision::{PROVISION_COMMIT_EMAIL, PROVISION_COMMIT_NAME, provision_item};
 pub use support::clip;

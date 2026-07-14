@@ -4,7 +4,9 @@
 //! items out — one worktree, one dev agent, and one reviewer per item, in
 //! parallel — and fold_phase moves accepted items to done, keeps rejected
 //! items pending with the reviewer's feedback attached, and releases
-//! newly-unblocked next-phase items. Accepted branches merge; conflicts
+//! newly-unblocked next-phase items. A released dependent's worktree is
+//! provisioned with its depends_on items' accepted branches merged in, so
+//! it really starts from their work. Accepted branches merge; conflicts
 //! feed a bounded remediation cycle whose agent RESUMES the planner's
 //! session — the persistent coordinator judges its own plan's conflicts.
 //!
@@ -124,7 +126,7 @@ type Conflicted {
 worker staged_rounds
   action planner(material: Material, repo_root: String, workspace_path: String) -> Plan
     node planner
-  action provision_item(run_root: String, repo_root: String, base_branch: String, item: WorkItem) -> ProvisionedItem
+  action provision_item(run_root: String, repo_root: String, base_branch: String, item: WorkItem, done: [DoneItem]) -> ProvisionedItem
     node shell
   action dev_item(work: ProvisionedItem, gates: [GateCommand]) -> DevItemResult
     node developer
@@ -145,7 +147,7 @@ step plan
 step execute
   loop state = seeded counting rounds
     fork item in state.ready
-      provision_item(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, item: item)
+      provision_item(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, item: item, done: state.done)
     join -> provisioned
     fork p in provisioned
       dev_item(work: p, gates: config.gates)

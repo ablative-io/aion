@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "plan",
-  "description": "The planner agent's typed, phased plan. Items in the same phase run IN PARALLEL in separate worktrees against the same base branch — they must not touch the same files; ordering and build-on relations are expressed through phase and depends_on.",
+  "description": "The planner agent's typed, phased plan. Items in the same phase run IN PARALLEL in separate worktrees against the same base branch — they must not touch the same files. Build-on and same-file relations MUST be expressed through depends_on: a released dependent's worktree is provisioned with its dependencies' accepted branches merged in, while a bare phase number alone sequences nothing at the git level.",
   "type": "object",
   "required": ["summary", "items"],
   "additionalProperties": false,
@@ -53,12 +53,12 @@
           "phase": {
             "type": "integer",
             "minimum": 1,
-            "description": "1 = no prerequisites; same-phase items run in parallel."
+            "description": "1 = no prerequisites; same-phase items run in parallel. Phase alone does not sequence files — use depends_on for any build-on or same-file relation."
           },
           "depends_on": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Ids of items whose MERGED output this item needs."
+            "description": "Ids of items whose MERGED output this item needs; the item's worktree is provisioned with those branches merged in, so it really starts from their work."
           },
           "feedback": {
             "type": "string",

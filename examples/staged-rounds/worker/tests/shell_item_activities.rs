@@ -78,7 +78,7 @@ fn provision_item_creates_a_worktree_on_the_item_branch_and_reports_the_base() -
     let (_dir, repo, run_root) = scratch_repo()?;
     let provisioned = provision_item(
         &Shell::inherited(),
-        provision_input(&repo, &run_root, item("it-a")),
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
     )
     .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
 
@@ -98,13 +98,19 @@ fn provision_item_creates_a_worktree_on_the_item_branch_and_reports_the_base() -
 fn provision_item_reuses_a_clean_existing_worktree_preserving_commits() -> anyhow::Result<()> {
     let (_dir, repo, run_root) = scratch_repo()?;
     let shell = Shell::inherited();
-    let first = provision_item(&shell, provision_input(&repo, &run_root, item("it-a")))
-        .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
+    let first = provision_item(
+        &shell,
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
+    )
+    .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
     commit_file_in(&first.workspace_path, "it-a.txt", "round 1\n", "round 1")?;
     let round1_head = git(&first.workspace_path, &["rev-parse", "HEAD"])?;
 
-    let second = provision_item(&shell, provision_input(&repo, &run_root, item("it-a")))
-        .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
+    let second = provision_item(
+        &shell,
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
+    )
+    .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
 
     assert_eq!(second.workspace_path, first.workspace_path);
     assert_eq!(second.branch, first.branch);
@@ -122,14 +128,20 @@ fn provision_item_reuses_a_clean_existing_worktree_preserving_commits() -> anyho
 fn provision_item_refuses_a_dirty_existing_worktree() -> anyhow::Result<()> {
     let (_dir, repo, run_root) = scratch_repo()?;
     let shell = Shell::inherited();
-    let first = provision_item(&shell, provision_input(&repo, &run_root, item("it-a")))
-        .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
+    let first = provision_item(
+        &shell,
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
+    )
+    .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
     std::fs::write(
         std::path::Path::new(&first.workspace_path).join("uncommitted.txt"),
         "dirty\n",
     )?;
 
-    let Err(error) = provision_item(&shell, provision_input(&repo, &run_root, item("it-a"))) else {
+    let Err(error) = provision_item(
+        &shell,
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
+    ) else {
         anyhow::bail!("a dirty existing worktree was silently re-provisioned");
     };
     assert!(
@@ -152,7 +164,10 @@ fn provision_item_refuses_a_dirty_stale_holder_by_name() -> anyhow::Result<()> {
     )?;
     std::fs::write(std::path::Path::new(&stale).join("dirty.txt"), "x\n")?;
 
-    let Err(error) = provision_item(&shell, provision_input(&repo, &run_root, item("it-a"))) else {
+    let Err(error) = provision_item(
+        &shell,
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
+    ) else {
         anyhow::bail!("a dirty stale holder was silently destroyed");
     };
     assert!(
@@ -178,8 +193,11 @@ fn provision_item_reclaims_a_clean_stale_holder() -> anyhow::Result<()> {
         &["worktree", "add", "-B", "staged/wf-1/it-a", &stale, "main"],
     )?;
 
-    let provisioned = provision_item(&shell, provision_input(&repo, &run_root, item("it-a")))
-        .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
+    let provisioned = provision_item(
+        &shell,
+        provision_input(&repo, &run_root, item("it-a"), vec![]),
+    )
+    .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
     assert_eq!(provisioned.branch, "staged/wf-1/it-a");
     assert!(!std::path::Path::new(&stale).exists());
     Ok(())
@@ -191,7 +209,7 @@ fn provision_item_refuses_a_non_slug_item_id() -> anyhow::Result<()> {
     for bad in ["It-A", "it_a", "it a", "", "-a", "a-"] {
         let Err(error) = provision_item(
             &Shell::inherited(),
-            provision_input(&repo, &run_root, item(bad)),
+            provision_input(&repo, &run_root, item(bad), vec![]),
         ) else {
             anyhow::bail!("non-slug id {bad:?} was accepted");
         };

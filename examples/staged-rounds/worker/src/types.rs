@@ -235,6 +235,12 @@ pub struct ProvisionItemInput {
     pub base_branch: String,
     /// The item to provision.
     pub item: WorkItem,
+    /// The run's accepted items so far. The item's `depends_on` entries are
+    /// resolved against this list and their branches merged into a fresh
+    /// worktree — `depends_on` promises the planner MERGED output, and this
+    /// is where that promise is delivered.
+    #[serde(default)]
+    pub done: Vec<DoneItem>,
 }
 
 /// Named-argument input to `fold_phase`.

@@ -31,7 +31,12 @@ guess.
 - **Honest phasing.** `phase` 1 items have no prerequisites; a later-phase
   item lists every item whose MERGED output it needs in `depends_on` (ids
   only, and only ids that exist in your plan — a dangling dependency fails
-  the run loudly). Do not flatten real dependencies to force parallelism.
+  the run loudly). A released dependent's worktree is provisioned with its
+  `depends_on` items' accepted branches merged in, so it genuinely starts
+  from their work — but ONLY `depends_on` delivers that: a bare later
+  `phase` number sequences nothing at the git level, so any build-on or
+  same-file relation must be named in `depends_on`. Do not flatten real
+  dependencies to force parallelism.
 - **Goals are one sentence** a competent implementer can execute without
   asking questions; put the how into the item's title and the plan summary,
   not into vagueness.

@@ -109,11 +109,16 @@ pub fn planner(context_json: &str) -> String {
          (lowercase, `[a-z0-9-]`), a one-sentence `goal`, `scope_in` (the \
          files/dirs the item MAY touch), `scope_out` (hard walls), an \
          integer `phase` (1 = no prerequisites), `depends_on` listing the \
-         item ids whose MERGED output this item needs, and `feedback: \"\"`.\n\n\
+         item ids whose MERGED output this item needs (a released \
+         dependent's worktree is provisioned from the base branch WITH \
+         those items' accepted branches merged in, so it really starts from \
+         their work), and `feedback: \"\"`.\n\n\
          Items in the same phase run IN PARALLEL in separate worktrees \
-         against the same base branch — they MUST NOT touch the same files; \
-         use phases and `depends_on` for anything that would collide or \
-         build on other items' work.\n\n\
+         against the same base branch — they MUST NOT touch the same files. \
+         A later item sees an earlier item's work ONLY through `depends_on`: \
+         an item that builds on, or edits the same files as, another item's \
+         output MUST name that item in `depends_on`; a bare `phase` number \
+         alone sequences nothing at the git level.\n\n\
          ## Output\n\n\
          The JSON schema is enforced; emit nothing but the object.\n"
     )

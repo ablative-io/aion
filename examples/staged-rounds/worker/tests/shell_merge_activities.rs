@@ -19,7 +19,7 @@ fn two_done_items(repo: &str, run_root: &str, disjoint: bool) -> anyhow::Result<
     let shell = Shell::inherited();
     let mut done = Vec::new();
     for (id, content) in [("it-a", "alpha\n"), ("it-b", "beta\n")] {
-        let provisioned = provision_item(&shell, provision_input(repo, run_root, item(id)))
+        let provisioned = provision_item(&shell, provision_input(repo, run_root, item(id), vec![]))
             .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
         let file = if disjoint {
             format!("{id}.txt")
