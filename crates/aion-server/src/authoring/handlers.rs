@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aion::EngineError;
+use aion_awl_package::AwlAssembleOptions;
+use aion_package::{ExtractionLimits, Package, PackageBuilder};
 use aion_proto::WireError;
 use aion_toolchain::{CompileRequest, ToolchainError, compile_source};
 use serde::{Deserialize, Serialize};
@@ -70,10 +72,35 @@ pub async fn compile_and_load(
     transport: &'static str,
     request: CompileSourceRequest,
 ) -> Result<CompileSourceResponse, AuthoringApiError> {
+    compile_and_load_with_options(
+        state,
+        caller,
+        transport,
+        request,
+        AwlAssembleOptions::default(),
+    )
+    .await
+}
+
+/// Compiles and hot-loads submitted Gleam source while applying AWL-native
+/// manifest options after the frozen project compiler has packaged it.
+///
+/// # Errors
+///
+/// Returns the same failures as [`compile_and_load`], plus a package error if
+/// applying the AWL manifest timeout cannot round-trip the built archive.
+pub async fn compile_and_load_with_options(
+    state: &ServerState,
+    caller: &CallerIdentity,
+    transport: &'static str,
+    request: CompileSourceRequest,
+    options: AwlAssembleOptions,
+) -> Result<CompileSourceResponse, AuthoringApiError> {
     authorize_mutation(state, caller, transport)?;
     let (gleam_path, template_root) = authoring_paths(state)?;
 
-    let compiled = run_compile(gleam_path, template_root, request.source).await?;
+    let mut compiled = run_compile(gleam_path, template_root, request.source).await?;
+    compiled.package = package_with_options(compiled.package, options)?;
     let engine = engine_handle(state)?;
     match engine.load_package(compiled.package).await {
         Ok(outcome) => {
@@ -102,6 +129,35 @@ pub async fn compile_and_load(
         }
         Err(error) => Err(map_load_failure(caller, transport, error)),
     }
+}
+
+pub(crate) fn package_with_options(
+    package: Package,
+    options: AwlAssembleOptions,
+) -> Result<Package, AuthoringApiError> {
+    let Some(timeout) = options.timeout else {
+        return Ok(package);
+    };
+    let mut manifest = package.manifest().clone();
+    manifest.timeout = timeout;
+    let source = package
+        .source()
+        .iter()
+        .map(|(name, bytes)| (name.clone(), bytes.clone()));
+    let bytes = PackageBuilder::with_source(manifest, package.beams().clone(), source)
+        .write_to_bytes()
+        .map_err(|error| package_options_error(&error))?;
+    Package::load_from_bytes(bytes, ExtractionLimits::unbounded())
+        .map_err(|error| package_options_error(&error))
+}
+
+fn package_options_error(error: &aion_package::PackageError) -> AuthoringApiError {
+    AuthoringApiError::Wire(
+        WireError::invalid_input(format!(
+            "AWL manifest options could not be applied: {error}"
+        ))
+        .with_error_type("Package"),
+    )
 }
 
 /// Authorization plus drain gate, reusing the deploy guard: hot-loading new

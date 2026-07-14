@@ -1,0 +1,13 @@
+//! Process a report within the six-hour workflow deadline.
+workflow timed_report
+  timeout 6h
+  input report: String
+  outcome processed: type Report, route success
+
+type Report { text: String }
+
+worker reports
+  action process(report: String) -> Report
+
+step process_report
+  report |> process |> route processed

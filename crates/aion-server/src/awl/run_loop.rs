@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use aion_awl_package::{AwlAssembleOptions, assemble_awl};
+use aion_awl_package::AwlAssembleOptions;
 use aion_proto::WireError;
 use serde::{Deserialize, Serialize};
 
 use super::handlers::{CheckRequest, check_source};
 use super::revisions::{self, DeploymentRecord, RevisionError};
-use crate::authoring::AuthoringApiError;
+use crate::authoring::{AuthoringApiError, CompileSourceRequest, compile_and_load_with_options};
 use crate::worker::registry::DEFAULT_TASK_QUEUE;
 use crate::{CallerIdentity, ServerState};
 
@@ -77,8 +77,6 @@ pub enum RunLoopError {
     CheckRefused(String),
     #[error("AWL emission refused deployment: {0}")]
     EmitRefused(String),
-    #[error("AWL native compilation refused deployment: {0}")]
-    CompileRefused(String),
     #[error(transparent)]
     Revision(#[from] RevisionError),
     #[error("authoring deploy was refused")]
@@ -125,6 +123,29 @@ pub fn emit(
     })
 }
 
+struct PreparedEmission {
+    source: String,
+    timeout: Option<std::time::Duration>,
+}
+
+fn prepare_emission(
+    document: &aion_awl::Document,
+    root: &Path,
+) -> Result<PreparedEmission, RunLoopError> {
+    let timeout = document
+        .timeout
+        .as_ref()
+        .map(|timeout| {
+            timeout.duration.checked_duration().ok_or_else(|| {
+                RunLoopError::CheckRefused("workflow `timeout` is too large".to_owned())
+            })
+        })
+        .transpose()?;
+    let source = aion_awl::emit_in(document, root)
+        .map_err(|error| RunLoopError::EmitRefused(error.message))?;
+    Ok(PreparedEmission { source, timeout })
+}
+
 pub async fn deploy(
     state: &ServerState,
     caller: &CallerIdentity,
@@ -158,20 +179,19 @@ pub async fn deploy(
         || DEFAULT_TASK_QUEUE.to_owned(),
         |worker| worker.name.clone(),
     );
-    let document_path = root.join(&request.path);
-    let schema_root = document_path.parent().map_or(root, |parent| parent);
-    let compiled = aion_awl::compile(&revision.source, schema_root)
-        .map_err(|error| RunLoopError::CompileRefused(error.to_string()))?;
-    let archive = assemble_awl(
-        &compiled,
+    let prepared = prepare_emission(&document, root)?;
+    let loaded = compile_and_load_with_options(
+        state,
+        caller,
+        "http",
+        CompileSourceRequest {
+            source: prepared.source.clone(),
+        },
         AwlAssembleOptions {
-            timeout: compiled.timeout,
+            timeout: prepared.timeout,
         },
     )
-    .map_err(|error| RunLoopError::CompileRefused(error.to_string()))?;
-    let loaded = crate::api::handlers::deploy::load_package(state, caller, "http", archive)
-        .await
-        .map_err(|error| RunLoopError::Authoring(AuthoringApiError::Wire(error.wire().clone())))?;
+    .await?;
     let deployment = DeploymentRecord {
         deployment_id: uuid::Uuid::new_v4().to_string(),
         document_path: request.path,
@@ -190,11 +210,8 @@ pub async fn deploy(
                 detail: format!("{} steps deploy green", checked.steps.unwrap_or(0)),
             },
             GuidedStepResult {
-                step: "compile",
-                detail: format!(
-                    "{} bytes of native AWL bytecode compiled",
-                    compiled.beam_bytes.len()
-                ),
+                step: "emit",
+                detail: format!("{} bytes of Gleam emitted", prepared.source.len()),
             },
             GuidedStepResult {
                 step: "package",
@@ -254,7 +271,6 @@ pub fn wire_error(error: &RunLoopError) -> WireError {
         RunLoopError::RevisionMismatch { .. }
         | RunLoopError::CheckRefused(_)
         | RunLoopError::EmitRefused(_)
-        | RunLoopError::CompileRefused(_)
         | RunLoopError::Revision(_) => {
             WireError::invalid_input(error.to_string()).with_error_type(error_type(error))
         }
@@ -275,9 +291,98 @@ fn error_type(error: &RunLoopError) -> &'static str {
         RunLoopError::RevisionMismatch { .. } => "RevisionMismatch",
         RunLoopError::CheckRefused(_) => "CheckRefused",
         RunLoopError::EmitRefused(_) => "EmitRefused",
-        RunLoopError::CompileRefused(_) => "CompileRefused",
         RunLoopError::Revision(_) => "RevisionStore",
         RunLoopError::Authoring(_) => "AuthoringDeploy",
         RunLoopError::WorkerRegistry(_) => "WorkerRegistry",
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use aion_awl_package::AwlAssembleOptions;
+    use aion_package::{
+        BeamModule, BeamSet, CURRENT_FORMAT_VERSION, ExtractionLimits, Manifest, ManifestVersion,
+        Package, PackageBuilder,
+    };
+    use serde_json::json;
+
+    use super::prepare_emission;
+    use crate::authoring::handlers::package_with_options;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn fixture(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../aion-awl/tests/fixtures/rev2")
+            .join(relative)
+    }
+
+    #[test]
+    fn emitter_deploy_preparation_accepts_native_refused_fixtures() -> TestResult {
+        for relative in [
+            "flagship/valid/dev_brief.awl",
+            "loop-outcomes/valid/guard_optional_wait.awl",
+            "loop-outcomes/valid/ship_release_combined.awl",
+        ] {
+            let path = fixture(relative);
+            let source = std::fs::read_to_string(&path)?;
+            let root = path.parent().ok_or("fixture has no parent directory")?;
+            assert!(
+                aion_awl::compile(&source, root).is_err(),
+                "fixture is no longer a native refusal: {relative}"
+            );
+            let document = aion_awl::parse(&source)?;
+            let prepared = prepare_emission(&document, root)?;
+            assert!(
+                !prepared.source.is_empty(),
+                "emitter produced no source for {relative}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn emitter_deploy_timeout_reaches_the_manifest() -> TestResult {
+        let path = fixture("header-types/valid/workflow_timeout.awl");
+        let source = std::fs::read_to_string(&path)?;
+        let root = path.parent().ok_or("fixture has no parent directory")?;
+        let document = aion_awl::parse(&source)?;
+        let prepared = prepare_emission(&document, root)?;
+        let package = basic_package()?;
+        let adjusted = package_with_options(
+            package,
+            AwlAssembleOptions {
+                timeout: prepared.timeout,
+            },
+        )
+        .map_err(|error| format!("package timeout override failed: {error:?}"))?;
+        assert_eq!(
+            adjusted.manifest().timeout,
+            std::time::Duration::from_secs(21_600)
+        );
+        Ok(())
+    }
+
+    fn basic_package() -> TestResultPackage {
+        let beams = BeamSet::new(vec![BeamModule::new("server_timeout", b"opaque".to_vec())])?;
+        let manifest = Manifest {
+            entry_module: "server_timeout".to_owned(),
+            entry_function: "run".to_owned(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "object" }),
+            timeout: std::time::Duration::from_secs(30),
+            activities: Vec::new(),
+            version: ManifestVersion::new("unstamped"),
+            format_version: CURRENT_FORMAT_VERSION,
+        };
+        let bytes = PackageBuilder::new(manifest, beams).write_to_bytes()?;
+        Ok(Package::load_from_bytes(
+            bytes,
+            ExtractionLimits::unbounded(),
+        )?)
+    }
+
+    type TestResultPackage = Result<Package, Box<dyn std::error::Error>>;
 }

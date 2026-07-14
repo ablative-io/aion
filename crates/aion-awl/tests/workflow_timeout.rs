@@ -54,6 +54,24 @@ fn zero_and_negative_workflow_timeouts_are_checked_at_the_declaration() -> TestR
 }
 
 #[test]
+fn overflowing_workflow_timeout_is_checked_at_the_declaration() -> TestResult {
+    let document = parse(&with_timeout("18446744073709551615d"))?;
+    let errors = check(&document);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].message, "workflow `timeout` is too large");
+    assert_eq!(errors[0].span.line, 3);
+    assert_eq!(errors[0].span.column, 3);
+
+    let result = compile(&with_timeout("18446744073709551615d"), Path::new("."));
+    assert!(matches!(
+        result,
+        Err(aion_awl::CompileError::Check(errors))
+            if errors.iter().any(|error| error.message == "workflow `timeout` is too large")
+    ));
+    Ok(())
+}
+
+#[test]
 fn timeout_is_compile_metadata_for_both_backends_not_workflow_code() -> TestResult {
     let plain_document = parse(SOURCE)?;
     let declared_source = with_timeout("6h");

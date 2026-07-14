@@ -10,4 +10,6 @@ pub mod error;
 pub mod handlers;
 
 pub use error::AuthoringApiError;
-pub use handlers::{CompileSourceRequest, CompileSourceResponse, compile_and_load};
+pub use handlers::{
+    CompileSourceRequest, CompileSourceResponse, compile_and_load, compile_and_load_with_options,
+};

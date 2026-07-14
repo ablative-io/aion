@@ -155,7 +155,18 @@ pub fn compile(source: &str, schema_root: &Path) -> Result<CompiledWorkflow, Com
         message: error.to_string(),
     })?;
     let sidecar_bytes = project_sidecar(&module);
-    let timeout = document.timeout.as_ref().map(workflow_timeout);
+    let timeout = document
+        .timeout
+        .as_ref()
+        .map(|timeout| {
+            timeout
+                .duration
+                .checked_duration()
+                .ok_or_else(|| CompileError::Backend {
+                    message: "checked workflow timeout overflowed during compilation".to_owned(),
+                })
+        })
+        .transpose()?;
     Ok(CompiledWorkflow {
         workflow_name: document.name.clone(),
         timeout,
@@ -165,16 +176,6 @@ pub fn compile(source: &str, schema_root: &Path) -> Result<CompiledWorkflow, Com
         actions,
         sidecar_bytes,
     })
-}
-
-fn workflow_timeout(timeout: &crate::ast::WorkflowTimeoutDecl) -> Duration {
-    let seconds_per_unit = match timeout.duration.unit {
-        crate::DurationUnit::Seconds => 1,
-        crate::DurationUnit::Minutes => 60,
-        crate::DurationUnit::Hours => 60 * 60,
-        crate::DurationUnit::Days => 24 * 60 * 60,
-    };
-    Duration::from_secs(timeout.duration.magnitude.saturating_mul(seconds_per_unit))
 }
 
 /// Derive the effective action requirements of a parsed document: for each

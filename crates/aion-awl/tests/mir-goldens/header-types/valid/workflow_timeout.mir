@@ -1,0 +1,144 @@
+module timed_report source=timed_report.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_process_report:
+    aion@activity:task_queue/2 [activities] (v1, lit#9)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] report
+  [1] process_input
+  [2] timed_report_input
+  [3] processed_outcome
+  [4] ok
+== literals ==
+  [0] "text"
+  [1] "report"
+  [2] "report"
+  [3] "processed"
+  [4] "outcome"
+  [5] ""
+  [6] "TimedReportOutcome"
+  [7] "processed"
+  [8] "payload"
+  [9] "reports"
+== types ==
+  record Report tag=report
+    text: string
+  record ProcessInput tag=process_input
+    report: string
+  record TimedReportInput tag=timed_report_input
+    report: string
+  union TimedReportOutcome
+    processed -> processed_outcome(ref(Report))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=timed_report_input_codec output=timed_report_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(timed_report.TimedReportInput, timed_report.TimedReportOutcome, AwlError)
+  T-DEF name="timed_report" input=timed_report_input_codec output=timed_report_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (timed_report.TimedReportInput) -> Result(timed_report.TimedReportOutcome, AwlError)
+  T-EXEC fields=[report:String] entry=step_process_report args=[0]
+== fn report_codec/0 origin=codec_template(RecordTrio, Report, record#0) ==
+  sig: () -> Codec(timed_report.Report)
+  v0 = make_closure report_to_json captures=[]
+  v1 = call_local report_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn report_to_json/1 origin=codec_template(RecordTrio, Report, record#0) ==
+  sig: (timed_report.Report) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#0) ==
+  sig: () -> Decoder(timed_report.Report)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure report_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn report_decoder$0/1 origin=lifted(report_decoder, #0) ==
+  sig: (String) -> Decoder(timed_report.Report)
+  v1 = record(report, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn process_input_codec/0 origin=codec_template(RecordTrio, ProcessInput, record#1) ==
+  sig: () -> Codec(timed_report.ProcessInput)
+  v0 = make_closure process_input_to_json captures=[]
+  v1 = call_local process_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn process_input_to_json/1 origin=codec_template(RecordTrio, ProcessInput, record#1) ==
+  sig: (timed_report.ProcessInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"report": v1|>awlc.string_to_json}
+  return v2
+== fn process_input_decoder/0 origin=codec_template(RecordTrio, ProcessInput, record#1) ==
+  sig: () -> Decoder(timed_report.ProcessInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure process_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn process_input_decoder$0/1 origin=lifted(process_input_decoder, #0) ==
+  sig: (String) -> Decoder(timed_report.ProcessInput)
+  v1 = record(process_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn timed_report_input_codec/0 origin=codec_template(RecordTrio, TimedReportInput, record#2) ==
+  sig: () -> Codec(timed_report.TimedReportInput)
+  v0 = make_closure timed_report_input_to_json captures=[]
+  v1 = call_local timed_report_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn timed_report_input_to_json/1 origin=codec_template(RecordTrio, TimedReportInput, record#2) ==
+  sig: (timed_report.TimedReportInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"report": v1|>awlc.string_to_json}
+  return v2
+== fn timed_report_input_decoder/0 origin=codec_template(RecordTrio, TimedReportInput, record#2) ==
+  sig: () -> Decoder(timed_report.TimedReportInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure timed_report_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn timed_report_input_decoder$0/1 origin=lifted(timed_report_input_decoder, #0) ==
+  sig: (String) -> Decoder(timed_report.TimedReportInput)
+  v1 = record(timed_report_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn timed_report_outcome_codec/0 origin=codec_template(UnionTrio, TimedReportOutcome, union#3) ==
+  sig: () -> Codec(timed_report.TimedReportOutcome)
+  v0 = make_closure timed_report_outcome_to_json captures=[]
+  v1 = call_local timed_report_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn timed_report_outcome_to_json/1 origin=codec_template(UnionTrio, TimedReportOutcome, union#3) ==
+  sig: (timed_report.TimedReportOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#3|>awlc.string_to_json, "payload": v1|>report_to_json}
+  return v2
+== fn timed_report_outcome_decoder/0 origin=codec_template(UnionTrio, TimedReportOutcome, union#3) ==
+  sig: () -> Decoder(timed_report.TimedReportOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure timed_report_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn timed_report_outcome_decoder$outcome/1 origin=lifted(timed_report_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(timed_report.TimedReportOutcome)
+  if cmp Eq v0 lit#7:
+    v3 = call_local report_decoder()
+    v4 = make_closure timed_report_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+  else:
+    v1 = record(report, [lit#5])
+    v2 = record(processed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#6)
+== fn timed_report_outcome_decoder$arm0/1 origin=lifted(timed_report_outcome_decoder, #1) ==
+  sig: (timed_report.Report) -> Decoder(timed_report.TimedReportOutcome)
+  v1 = record(processed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn process_activity/1 origin=activity_wrapper(process, raw=false) ==
+  sig: (String) -> Activity(timed_report.ProcessInput, timed_report.Report)
+  T-ACT action=process input_codec=process_input_codec return=report_codec
+== fn step_process_report/1 origin=region(process_report) ==
+  sig: (String) -> Result(timed_report.TimedReportOutcome, AwlError)
+  v1 = call_local process_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#9)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(processed_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

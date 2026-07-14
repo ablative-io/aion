@@ -85,6 +85,7 @@ const COVERED: &[&str] = &[
     "header-types/valid/line_width",
     "header-types/valid/minimal",
     "header-types/valid/noncanonical_commas",
+    "header-types/valid/workflow_timeout",
     "header-types/valid/zero_inputs",
     "loop-outcomes/valid/backward_route_bounded_cycle",
     "loop-outcomes/valid/enum_when_totality",

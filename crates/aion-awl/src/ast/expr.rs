@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{DurationUnit, Span};
 
 /// Duration literal made from an integer magnitude and a unit suffix.
@@ -9,6 +11,23 @@ pub struct DurationLiteral {
     pub magnitude: u64,
     /// Unit suffix used by the duration literal.
     pub unit: DurationUnit,
+}
+
+impl DurationLiteral {
+    /// Converts this literal to a standard duration when its whole-seconds
+    /// value fits in a `u64`.
+    #[must_use]
+    pub fn checked_duration(&self) -> Option<Duration> {
+        let seconds_per_unit = match self.unit {
+            DurationUnit::Seconds => 1,
+            DurationUnit::Minutes => 60,
+            DurationUnit::Hours => 60 * 60,
+            DurationUnit::Days => 24 * 60 * 60,
+        };
+        self.magnitude
+            .checked_mul(seconds_per_unit)
+            .map(Duration::from_secs)
+    }
 }
 
 /// Named argument inside a call, record construction, or route payload.

@@ -40,6 +40,11 @@ fn run(document: &Document, root: Option<&Path>) -> (Vec<CheckError>, crate::sem
             "workflow `timeout` must be a positive duration",
         );
     }
+    if let Some(timeout) = &document.timeout
+        && timeout.duration.checked_duration().is_none()
+    {
+        ctx.error(timeout.span, "workflow `timeout` is too large");
+    }
     decls::run(&mut ctx);
     let step_graph = graph::build(&mut ctx);
     if !step_graph.after_cycle {

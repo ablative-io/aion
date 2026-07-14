@@ -31,6 +31,8 @@ Valid:
 - `header-types/valid/builtins.awl` — every builtin: `Dir`, `Float`, `Int`, `Bool`, `String`,
   `[String]`, `String?`, `[String]?`, `Nil` action result, composed optional-list field.
 - `header-types/valid/zero_inputs.awl` — zero-input workflow (grammar requires only >=1 outcome).
+- `header-types/valid/workflow_timeout.awl` — document-level `timeout 6h` in the workflow header;
+  timeout remains compile metadata and does not change emitted workflow code.
 - `header-types/valid/signal_wait.awl` — `signal` decl + `wait <signal> -> name`, two outcomes
   (success + failure), payload construction in route.
 - `header-types/valid/enum.awl` — payload-less enum declared and used as a field type.
