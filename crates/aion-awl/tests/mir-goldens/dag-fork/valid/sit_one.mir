@@ -1,7 +1,7 @@
 module sit_one source=sit_one.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
-== durable families == 
+== durable families ==
 == atoms ==
   [0] sitting_spec
   [1] sitting_row
