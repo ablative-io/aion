@@ -7,14 +7,14 @@
 use aion_worker::ActivityFailure;
 
 use super::verdicts::adverse_lines;
-use crate::types::{FoldRoundInput, FoldRoundOutput};
+use crate::types::{FoldRoundInput, FoldRoundOutput, LensVerdict};
 
 /// Pack one completed review round into the value carried by the AWL loop.
 ///
 /// # Errors
 ///
-/// This pure packer currently has no failure path. The result remains typed
-/// like the other shell handlers so registration uses the same worker adapter.
+/// Returns a terminal input failure when any raw verdict cannot be decoded into
+/// the typed view required by the shared adverse-evidence formatter.
 pub fn fold_round(input: FoldRoundInput) -> Result<FoldRoundOutput, ActivityFailure> {
     let FoldRoundInput {
         report,
@@ -23,7 +23,8 @@ pub fn fold_round(input: FoldRoundInput) -> Result<FoldRoundOutput, ActivityFail
         prior_evidence,
         droppings,
     } = input;
-    let mut round_lines = adverse_lines(&verdicts);
+    let typed_verdicts = decode_verdicts(&verdicts)?;
+    let mut round_lines = adverse_lines(&typed_verdicts);
     if !droppings.is_empty() {
         round_lines.push(format!("reset droppings: {}", droppings.join(", ")));
     }
@@ -38,6 +39,20 @@ pub fn fold_round(input: FoldRoundInput) -> Result<FoldRoundOutput, ActivityFail
     })
 }
 
+fn decode_verdicts(verdicts: &[serde_json::Value]) -> Result<Vec<LensVerdict>, ActivityFailure> {
+    verdicts
+        .iter()
+        .enumerate()
+        .map(|(index, verdict)| {
+            serde_json::from_value(verdict.clone()).map_err(|error| {
+                ActivityFailure::terminal(format!(
+                    "fold_round verdict at index {index} is invalid: {error}"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn smart_join(prior_evidence: &str, round_evidence: &str) -> String {
     match (prior_evidence.is_empty(), round_evidence.is_empty()) {
         (_, true) => prior_evidence.to_owned(),
@@ -48,7 +63,7 @@ fn smart_join(prior_evidence: &str, round_evidence: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::fold_round;
+    use super::{decode_verdicts, fold_round};
     use crate::handlers::verdicts::adverse_lines;
     use crate::types::{FoldRoundInput, FormatVerdictEvidenceInput};
 
@@ -130,13 +145,16 @@ mod tests {
         let mut input = realistic_input()?;
         input.prior_evidence.clear();
         input.droppings.clear();
-        let verdicts = input.verdicts.clone();
+        let typed_verdicts = decode_verdicts(&input.verdicts)?;
         let formatted = crate::handlers::format_verdict_evidence(FormatVerdictEvidenceInput {
-            verdicts: verdicts.clone(),
+            verdicts: typed_verdicts.clone(),
         })?;
         let folded = fold_round(input)?;
 
-        assert_eq!(adverse_lines(&verdicts).join("; "), formatted.evidence);
+        assert_eq!(
+            adverse_lines(&typed_verdicts).join("; "),
+            formatted.evidence
+        );
         assert_eq!(folded.evidence, formatted.evidence);
         Ok(())
     }
@@ -195,26 +213,11 @@ mod tests {
         Ok(())
     }
 
-    /// The three packed round values serialize back exactly as they arrived;
-    /// only `prior_evidence` and `droppings` are folded into `evidence`.
+    /// Omitted report collections and an omitted verdict reason remain absent
+    /// after folding rather than materializing as empty arrays or `null`.
     #[test]
-    fn report_gate_and_verdicts_are_echoed_without_wire_changes() -> anyhow::Result<()> {
-        let original: serde_json::Value = serde_json::from_str(REALISTIC_INPUT)?;
-        let input: FoldRoundInput = serde_json::from_value(original.clone())?;
-        let encoded = serde_json::to_value(fold_round(input)?)?;
-
-        assert_eq!(encoded["report"], original["report"]);
-        assert_eq!(encoded["gate"], original["gate"]);
-        assert_eq!(encoded["verdicts"], original["verdicts"]);
-        Ok(())
-    }
-
-    /// AWL named arguments require an object. Omitted report collections use
-    /// Gleam's empty defaults, while the verdict optional treats absent and
-    /// explicit `null` identically; collection fields remain absent-never-null.
-    #[test]
-    fn wire_requires_named_input_and_preserves_presence_rules() -> anyhow::Result<()> {
-        const ABSENT: &str = r#"{
+    fn omitted_optional_fields_remain_omitted_in_echo() -> anyhow::Result<()> {
+        const INPUT: &str = r#"{
             "report": {
                 "brief_id": "DB-1",
                 "summary": "minimal report",
@@ -225,42 +228,89 @@ mod tests {
             "prior_evidence": "",
             "droppings": []
         }"#;
-        const EXPLICIT_NULL: &str = r#"{
+        let original: serde_json::Value = serde_json::from_str(INPUT)?;
+        let input: FoldRoundInput = serde_json::from_value(original.clone())?;
+        let encoded = serde_json::to_value(fold_round(input)?)?;
+
+        assert_eq!(encoded["report"], original["report"]);
+        assert_eq!(encoded["gate"], original["gate"]);
+        assert_eq!(encoded["verdicts"], original["verdicts"]);
+        assert!(encoded["report"].get("commits").is_none());
+        assert!(encoded["report"].get("deviations").is_none());
+        assert!(encoded["verdicts"][0].get("reject_reason").is_none());
+        Ok(())
+    }
+
+    /// Extension fields are opaque loop state: typed evidence derivation may
+    /// ignore them, but the raw report and verdict values must retain them.
+    #[test]
+    fn unknown_report_and_verdict_fields_round_trip_unchanged() -> anyhow::Result<()> {
+        const INPUT: &str = r#"{
             "report": {
                 "brief_id": "DB-1",
-                "summary": "minimal report",
-                "acceptance_claims": []
+                "summary": "extended report",
+                "acceptance_claims": [],
+                "x_custom": 1
             },
             "gate": {"pass": true, "runs": [], "diff": "", "diagnostics": "green"},
             "verdicts": [{
                 "lens": "correctness",
                 "findings": [],
                 "overall": "accept",
-                "reject_reason": null
+                "x_custom": {"source": "reviewer"}
             }],
             "prior_evidence": "",
             "droppings": []
         }"#;
-        const NULL_COLLECTION: &str = r#"{
-            "report": {
-                "brief_id": "DB-1",
-                "summary": "minimal report",
-                "commits": null,
-                "acceptance_claims": []
-            },
-            "gate": {"pass": true, "runs": [], "diff": "", "diagnostics": "green"},
-            "verdicts": [],
-            "prior_evidence": "",
-            "droppings": []
-        }"#;
+        let original: serde_json::Value = serde_json::from_str(INPUT)?;
+        let input: FoldRoundInput = serde_json::from_value(original.clone())?;
+        let encoded = serde_json::to_value(fold_round(input)?)?;
 
+        assert_eq!(encoded["report"], original["report"]);
+        assert_eq!(encoded["verdicts"], original["verdicts"]);
+        assert_eq!(encoded["report"]["x_custom"], serde_json::json!(1));
+        assert_eq!(
+            encoded["verdicts"][0]["x_custom"],
+            serde_json::json!({"source": "reviewer"})
+        );
+        Ok(())
+    }
+
+    /// The worker boundary still requires AWL named arguments rather than a
+    /// bare positional collection.
+    #[test]
+    fn wire_requires_named_object_input() -> anyhow::Result<()> {
         assert!(serde_json::from_str::<FoldRoundInput>("[]").is_err());
-        let absent: FoldRoundInput = serde_json::from_str(ABSENT)?;
-        let explicit_null: FoldRoundInput = serde_json::from_str(EXPLICIT_NULL)?;
-        assert_eq!(absent, explicit_null);
-        assert!(absent.report.commits.is_empty());
-        assert!(absent.report.deviations.is_empty());
-        assert!(serde_json::from_str::<FoldRoundInput>(NULL_COLLECTION).is_err());
+        let input: FoldRoundInput = serde_json::from_str(
+            r#"{
+                "report": {},
+                "gate": {},
+                "verdicts": [],
+                "prior_evidence": "",
+                "droppings": []
+            }"#,
+        )?;
+        let output = fold_round(input)?;
+
+        assert_eq!(output.evidence, "");
+        Ok(())
+    }
+
+    /// Raw passthrough never becomes a silent fallback: every verdict must
+    /// also decode into the typed view required for evidence formatting.
+    #[test]
+    fn invalid_typed_verdict_view_fails_the_activity() -> anyhow::Result<()> {
+        let input: FoldRoundInput = serde_json::from_str(
+            r#"{
+                "report": {},
+                "gate": {},
+                "verdicts": [{"lens": "correctness", "overall": "accept"}],
+                "prior_evidence": "",
+                "droppings": []
+            }"#,
+        )?;
+
+        assert!(fold_round(input).is_err());
         Ok(())
     }
 }
