@@ -305,7 +305,7 @@ fn build_registry(norn_bin: &str, identity: &str) -> anyhow::Result<Arc<Activity
     let identity = identity.to_owned();
     registry = registry.register_activity(
         ASK_ACTIVITY_TYPE,
-        move |prompt: FanInput, context: &ActivityContext| -> HandlerFuture<'_, String> {
+        move |prompt: FanInput, context: &ActivityContext| -> HandlerFuture<'_, Value> {
             let norn_bin = norn_bin.clone();
             let session_id = ask_session_id(&identity, context);
             Box::pin(async move {
@@ -321,7 +321,9 @@ fn build_registry(norn_bin: &str, identity: &str) -> anyhow::Result<Arc<Activity
                     %answer,
                     "Norn ask step completed"
                 );
-                Ok(answer)
+                // AWL actions return record types; a bare JSON string cannot
+                // satisfy any declarable return type, so ship an object.
+                Ok(serde_json::json!({ "answer": answer }))
             })
         },
     )?;
