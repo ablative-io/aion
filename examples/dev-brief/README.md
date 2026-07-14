@@ -117,7 +117,7 @@ the server routes by (namespace × task_queue × node) only — see
 From the ops console start form (workflow type `dev_brief`), or:
 
 ```sh
-aion start dev_brief --input my-brief.json --task-queue dev_brief
+aion start dev_brief --input-file my-brief.json
 ```
 
 Watch it live at the console: the developer session streams as it works,

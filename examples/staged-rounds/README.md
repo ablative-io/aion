@@ -104,12 +104,15 @@ console start form (workflow type `staged_rounds`), or:
 
 ```sh
 aion start staged_rounds \
-  --input examples/staged-rounds/awl/example-input.json \
-  --task-queue staged_rounds
+  --input-file examples/staged-rounds/awl/example-input.json
 # or, one motion:
 aion run examples/staged-rounds/awl/staged_rounds.awl \
-  --input examples/staged-rounds/awl/example-input.json
+  --input "$(cat examples/staged-rounds/awl/example-input.json)"
 ```
+
+There is no task-queue flag: the run's task queue is derived from the
+deployed document (its first `worker` name), never passed at start.
+`--input` is always inline JSON; a file rides `--input-file` (start only).
 
 ## Writing the input
 
