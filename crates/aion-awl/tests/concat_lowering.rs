@@ -3,8 +3,8 @@
 use std::error::Error;
 use std::path::Path;
 
-use aion_awl::mir::{LowerError, lower};
-use aion_awl::{CompileError, compile, parse};
+use aion_awl::mir::{LowerError, lower, select};
+use aion_awl::{CompileError, check_in, compile, parse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -30,41 +30,111 @@ step finish
   route done(value: "x" + total)
 "#;
 
+const STRING_ALIAS_CONCAT: &str = r#"//! A scalar schema alias retains String concat semantics.
+workflow string_alias_concat
+  input prefix: Prefix
+  outcome done: type Done, route success
+
+type Prefix = schema {
+  "type": "string"
+}
+type Done { value: String }
+
+step finish
+  route done(value: prefix + "/suffix")
+"#;
+
+const INT_ALIAS_PLUS_STRING: &str = r#"//! A scalar Int alias is not a string.
+workflow int_alias_plus_string
+  input total: Total
+  outcome done: type Done, route success
+
+type Total = schema {
+  "type": "integer"
+}
+type Done { value: String }
+
+step finish
+  route done(value: total + "x")
+"#;
+
+fn assert_lower_refuses(source: &str, expected_line: usize) -> TestResult {
+    let document = parse(source)?;
+    match lower(&document, None) {
+        Err(LowerError::Unsupported { shape, span }) => {
+            assert_eq!(shape, "string concatenation");
+            assert_eq!(span.line, expected_line);
+            Ok(())
+        }
+        Err(other) => {
+            Err(format!("mixed concat reached the wrong lowering refusal: {other}").into())
+        }
+        Ok(_) => Err("mixed concat lowered to selectable MIR".into()),
+    }
+}
+
 #[test]
 fn direct_lower_refuses_concat_unless_both_operands_are_strings() -> TestResult {
     for source in [INT_PLUS_STRING, STRING_PLUS_INT] {
-        let document = parse(source)?;
-        match lower(&document, None) {
-            Err(LowerError::Unsupported { shape, span }) => {
-                assert_eq!(shape, "string concatenation");
-                assert_eq!(span.line, 9);
-            }
-            Err(other) => {
-                return Err(
-                    format!("mixed concat reached the wrong lowering refusal: {other}").into(),
-                );
-            }
-            Ok(_) => return Err("mixed concat lowered to selectable MIR".into()),
-        }
+        assert_lower_refuses(source, 9)?;
     }
     Ok(())
 }
 
 #[test]
 fn checked_compile_rejects_mixed_concat_before_lowering() -> TestResult {
-    match compile(INT_PLUS_STRING, Path::new(".")) {
-        Err(CompileError::Check(errors)) => {
-            let expected =
-                "`+` joins strings only — arithmetic is not in the language (found Int and String)";
-            assert!(
-                errors.iter().any(|error| error.message == expected),
-                "checker diagnostics did not contain the established concat refusal: {errors:?}"
-            );
-            Ok(())
+    let cases = [
+        (INT_PLUS_STRING, "found Int and String"),
+        (STRING_PLUS_INT, "found String and Int"),
+    ];
+    for (source, expected_types) in cases {
+        match compile(source, Path::new(".")) {
+            Err(CompileError::Check(errors)) => {
+                assert!(
+                    errors.iter().any(|error| {
+                        error.message.starts_with(
+                            "`+` joins strings only — arithmetic is not in the language",
+                        ) && error.message.contains(expected_types)
+                    }),
+                    "checker diagnostics did not contain the established concat refusal: {errors:?}"
+                );
+            }
+            Err(other) => {
+                return Err(
+                    format!("checker-refused concat escaped to a later stage: {other}").into(),
+                );
+            }
+            Ok(_) => return Err("checker-refused concat compiled successfully".into()),
         }
-        Err(other) => {
-            Err(format!("checker-refused concat escaped to a later stage: {other}").into())
-        }
-        Ok(_) => Err("checker-refused concat compiled successfully".into()),
     }
+    Ok(())
+}
+
+#[test]
+fn checker_approved_string_alias_concat_lowers_and_selects() -> TestResult {
+    let document = parse(STRING_ALIAS_CONCAT)?;
+    let errors = check_in(&document, Path::new("."));
+    if !errors.is_empty() {
+        return Err(format!("String alias concat no longer checks cleanly: {errors:?}").into());
+    }
+    let module = lower(&document, None)?;
+    let beam = select(&module)?;
+    assert!(
+        beam.starts_with(b"FOR1"),
+        "selection did not return BEAM bytes"
+    );
+    Ok(())
+}
+
+#[test]
+fn int_alias_plus_string_still_refuses_at_direct_lowering() -> TestResult {
+    let document = parse(INT_ALIAS_PLUS_STRING)?;
+    let errors = check_in(&document, Path::new("."));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("found Total and String")),
+        "Int alias concat no longer carries the checker refusal: {errors:?}"
+    );
+    assert_lower_refuses(INT_ALIAS_PLUS_STRING, 12)
 }

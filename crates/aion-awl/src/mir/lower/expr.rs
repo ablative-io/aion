@@ -185,7 +185,11 @@ fn lower_logic(
                     span: span_of(*span),
                 }),
                 BinaryOp::Concat => {
-                    if !matches!((&lhs_ty, &rhs_ty), (GType::Str, GType::Str)) {
+                    let resolved = (
+                        ctx.emitter.env.resolve(&lhs_ty),
+                        ctx.emitter.env.resolve(&rhs_ty),
+                    );
+                    if !matches!(resolved, (GType::Str, GType::Str)) {
                         return Err(LowerError::unsupported("string concatenation", *span));
                     }
                     stmts.push(Stmt::Concat {
