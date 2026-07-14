@@ -1,0 +1,271 @@
+module sequential_migrations source=sequential_migrations.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  apply_all_fork_0:
+    aion@activity:task_queue/2 [activities] (v2, lit#13)
+    aion@workflow:run/1 [activities] (v3)
+== durable families == activities
+== atoms ==
+  [0] migration
+  [1] receipt
+  [2] applied
+  [3] stalled
+  [4] apply_one_input
+  [5] sequential_migrations_input
+  [6] applied_outcome
+  [7] ok
+  [8] awl_outcome_failure
+  [9] error
+== literals ==
+  [0] "name"
+  [1] "sql"
+  [2] "name"
+  [3] "ok"
+  [4] "count"
+  [5] "completed"
+  [6] "migration"
+  [7] "migrations"
+  [8] "applied"
+  [9] "outcome"
+  [10] "SequentialMigrationsOutcome"
+  [11] "applied"
+  [12] "payload"
+  [13] "db"
+  [14] "stalled"
+== types ==
+  record Migration tag=migration
+    name: string
+    sql: string
+  record Receipt tag=receipt
+    name: string
+    ok: bool
+  record Applied tag=applied
+    count: int
+  record Stalled tag=stalled
+    completed: int
+  record ApplyOneInput tag=apply_one_input
+    migration: ref(Migration)
+  record SequentialMigrationsInput tag=sequential_migrations_input
+    migrations: list(ref(Migration))
+  union SequentialMigrationsOutcome
+    applied -> applied_outcome(ref(Applied))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=sequential_migrations_input_codec output=sequential_migrations_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(sequential_migrations.SequentialMigrationsInput, sequential_migrations.SequentialMigrationsOutcome, AwlError)
+  T-DEF name="sequential_migrations" input=sequential_migrations_input_codec output=sequential_migrations_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (sequential_migrations.SequentialMigrationsInput) -> Result(sequential_migrations.SequentialMigrationsOutcome, AwlError)
+  T-EXEC fields=[migrations:List(sequential_migrations.Migration)] entry=step_apply_all args=[0]
+== fn migration_codec/0 origin=codec_template(RecordTrio, Migration, record#0) ==
+  sig: () -> Codec(sequential_migrations.Migration)
+  v0 = make_closure migration_to_json captures=[]
+  v1 = call_local migration_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn migration_to_json/1 origin=codec_template(RecordTrio, Migration, record#0) ==
+  sig: (sequential_migrations.Migration) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "sql": v2|>awlc.string_to_json}
+  return v3
+== fn migration_decoder/0 origin=codec_template(RecordTrio, Migration, record#0) ==
+  sig: () -> Decoder(sequential_migrations.Migration)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure migration_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn migration_decoder$0/1 origin=lifted(migration_decoder, #0) ==
+  sig: (String) -> Decoder(sequential_migrations.Migration)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure migration_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn migration_decoder$1/2 origin=lifted(migration_decoder, #1) ==
+  sig: (String, String) -> Decoder(sequential_migrations.Migration)
+  v2 = record(migration, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn receipt_codec/0 origin=codec_template(RecordTrio, Receipt, record#1) ==
+  sig: () -> Codec(sequential_migrations.Receipt)
+  v0 = make_closure receipt_to_json captures=[]
+  v1 = call_local receipt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn receipt_to_json/1 origin=codec_template(RecordTrio, Receipt, record#1) ==
+  sig: (sequential_migrations.Receipt) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "ok": v2|>awlc.bool_to_json}
+  return v3
+== fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#1) ==
+  sig: () -> Decoder(sequential_migrations.Receipt)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure receipt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn receipt_decoder$0/1 origin=lifted(receipt_decoder, #0) ==
+  sig: (String) -> Decoder(sequential_migrations.Receipt)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure receipt_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn receipt_decoder$1/2 origin=lifted(receipt_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(sequential_migrations.Receipt)
+  v2 = record(receipt, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn applied_codec/0 origin=codec_template(RecordTrio, Applied, record#2) ==
+  sig: () -> Codec(sequential_migrations.Applied)
+  v0 = make_closure applied_to_json captures=[]
+  v1 = call_local applied_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn applied_to_json/1 origin=codec_template(RecordTrio, Applied, record#2) ==
+  sig: (sequential_migrations.Applied) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"count": v1|>awlc.int_to_json}
+  return v2
+== fn applied_decoder/0 origin=codec_template(RecordTrio, Applied, record#2) ==
+  sig: () -> Decoder(sequential_migrations.Applied)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure applied_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn applied_decoder$0/1 origin=lifted(applied_decoder, #0) ==
+  sig: (Int) -> Decoder(sequential_migrations.Applied)
+  v1 = record(applied, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn stalled_codec/0 origin=codec_template(RecordTrio, Stalled, record#3) ==
+  sig: () -> Codec(sequential_migrations.Stalled)
+  v0 = make_closure stalled_to_json captures=[]
+  v1 = call_local stalled_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn stalled_to_json/1 origin=codec_template(RecordTrio, Stalled, record#3) ==
+  sig: (sequential_migrations.Stalled) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"completed": v1|>awlc.int_to_json}
+  return v2
+== fn stalled_decoder/0 origin=codec_template(RecordTrio, Stalled, record#3) ==
+  sig: () -> Decoder(sequential_migrations.Stalled)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure stalled_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn stalled_decoder$0/1 origin=lifted(stalled_decoder, #0) ==
+  sig: (Int) -> Decoder(sequential_migrations.Stalled)
+  v1 = record(stalled, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn apply_one_input_codec/0 origin=codec_template(RecordTrio, ApplyOneInput, record#4) ==
+  sig: () -> Codec(sequential_migrations.ApplyOneInput)
+  v0 = make_closure apply_one_input_to_json captures=[]
+  v1 = call_local apply_one_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn apply_one_input_to_json/1 origin=codec_template(RecordTrio, ApplyOneInput, record#4) ==
+  sig: (sequential_migrations.ApplyOneInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"migration": v1|>migration_to_json}
+  return v2
+== fn apply_one_input_decoder/0 origin=codec_template(RecordTrio, ApplyOneInput, record#4) ==
+  sig: () -> Decoder(sequential_migrations.ApplyOneInput)
+  v0 = call_local migration_decoder()
+  v1 = make_closure apply_one_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn apply_one_input_decoder$0/1 origin=lifted(apply_one_input_decoder, #0) ==
+  sig: (sequential_migrations.Migration) -> Decoder(sequential_migrations.ApplyOneInput)
+  v1 = record(apply_one_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn sequential_migrations_input_codec/0 origin=codec_template(RecordTrio, SequentialMigrationsInput, record#5) ==
+  sig: () -> Codec(sequential_migrations.SequentialMigrationsInput)
+  v0 = make_closure sequential_migrations_input_to_json captures=[]
+  v1 = call_local sequential_migrations_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sequential_migrations_input_to_json/1 origin=codec_template(RecordTrio, SequentialMigrationsInput, record#5) ==
+  sig: (sequential_migrations.SequentialMigrationsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"migrations": v1|>list_migration_to_json}
+  return v2
+== fn sequential_migrations_input_decoder/0 origin=codec_template(RecordTrio, SequentialMigrationsInput, record#5) ==
+  sig: () -> Decoder(sequential_migrations.SequentialMigrationsInput)
+  v0 = call_local list_migration_decoder()
+  v1 = make_closure sequential_migrations_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn sequential_migrations_input_decoder$0/1 origin=lifted(sequential_migrations_input_decoder, #0) ==
+  sig: (List(sequential_migrations.Migration)) -> Decoder(sequential_migrations.SequentialMigrationsInput)
+  v1 = record(sequential_migrations_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn sequential_migrations_outcome_codec/0 origin=codec_template(UnionTrio, SequentialMigrationsOutcome, union#6) ==
+  sig: () -> Codec(sequential_migrations.SequentialMigrationsOutcome)
+  v0 = make_closure sequential_migrations_outcome_to_json captures=[]
+  v1 = call_local sequential_migrations_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sequential_migrations_outcome_to_json/1 origin=codec_template(UnionTrio, SequentialMigrationsOutcome, union#6) ==
+  sig: (sequential_migrations.SequentialMigrationsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v1|>applied_to_json}
+  return v2
+== fn sequential_migrations_outcome_decoder/0 origin=codec_template(UnionTrio, SequentialMigrationsOutcome, union#6) ==
+  sig: () -> Decoder(sequential_migrations.SequentialMigrationsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure sequential_migrations_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn sequential_migrations_outcome_decoder$outcome/1 origin=lifted(sequential_migrations_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(sequential_migrations.SequentialMigrationsOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local applied_decoder()
+    v4 = make_closure sequential_migrations_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(applied, [0])
+    v2 = record(applied_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn sequential_migrations_outcome_decoder$arm0/1 origin=lifted(sequential_migrations_outcome_decoder, #1) ==
+  sig: (sequential_migrations.Applied) -> Decoder(sequential_migrations.SequentialMigrationsOutcome)
+  v1 = record(applied_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_migration_codec/0 origin=codec_template(CompositeTrio, List(Migration), composite(list(ref(Migration)))) ==
+  sig: () -> Codec(List(sequential_migrations.Migration))
+  v0 = make_closure list_migration_to_json captures=[]
+  v1 = call_local list_migration_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_migration_to_json/1 origin=codec_template(CompositeTrio, List(Migration), composite(list(ref(Migration)))) ==
+  sig: (List(sequential_migrations.Migration)) -> Json
+  v1 = make_closure migration_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_migration_decoder/0 origin=codec_template(CompositeTrio, List(Migration), composite(list(ref(Migration)))) ==
+  sig: () -> Decoder(List(sequential_migrations.Migration))
+  v0 = call_local migration_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn apply_one_activity/1 origin=activity_wrapper(apply_one, raw=false) ==
+  sig: (sequential_migrations.Migration) -> Activity(sequential_migrations.ApplyOneInput, sequential_migrations.Receipt)
+  T-ACT action=apply_one input_codec=apply_one_input_codec return=receipt_codec
+== fn step_apply_all/1 origin=region(apply_all) ==
+  sig: (List(sequential_migrations.Migration)) -> Result(sequential_migrations.SequentialMigrationsOutcome, AwlError)
+  v1 = make_closure apply_all_fork_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, nil, v1)
+  v3 = try_bind v2
+  v4 = call_rt gleam@list:reverse/1(v3)
+  v5 = call_rt gleam@list:length/1(v4) live_after=[v4]
+  v6 = make_closure awl_combinator_0 captures=[]
+  v7 = call_rt gleam@list:filter/2(v4, v6) live_after=[v5]
+  v8 = call_rt gleam@list:length/1(v7) live_after=[v5]
+  v9 = cmp Eq v8 v5
+  if is_true v9:
+    v10 = record(applied, [v8])
+    v11 = record(applied_outcome, [v10])
+    v12 = record(ok, [v11])
+    return v12
+  else:
+    v13 = record(stalled, [v8])
+    v14 = call_local stalled_to_json(v13)
+    v15 = call_rt gleam@json:to_string/1(v14)
+    v16 = record(awl_outcome_failure, [lit#14, v15])
+    v17 = record(error, [v16])
+    return v17
+== fn apply_all_fork_0/2 origin=fork(apply_all#0) ==
+  sig: (List(sequential_migrations.Receipt), sequential_migrations.Migration) -> Result(List(sequential_migrations.Receipt), AwlError)
+  v2 = call_local apply_one_activity(v1) live_after=[v0]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#13) live_after=[v0]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v0]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v0]
+  v6 = try_bind v5 live_after=[v0]
+  v7 = cons v6 v0
+  v8 = record(ok, [v7])
+  return v8
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl_combinator_0/1 origin=lifted(execute, #0) ==
+  sig: (sequential_migrations.Receipt) -> Bool
+  v1 = field(v0, 2)
+  return v1

@@ -1,0 +1,481 @@
+module mixed_doors source=mixed_doors.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_enrichment:
+    aion@activity:retry/2 [activities] (v1, v4)
+    aion@activity:timeout/2 [activities] (v5, v6)
+    aion@activity:task_queue/2 [activities] (v7, lit#32)
+    aion@activity:node/2 [activities] (v8, lit#33)
+    aion@workflow:run/1 [activities] (v9)
+== durable families == activities
+== atoms ==
+  [0] submission
+  [1] intake_config
+  [2] filed_record
+  [3] bounced
+  [4] enriched
+  [5] enrich_submission_input
+  [6] mixed_doors_input
+  [7] filed_outcome
+  [8] some
+  [9] none
+  [10] awl_outcome_failure
+  [11] error
+  [12] fixed
+  [13] retry_policy
+  [14] ok
+== literals ==
+  [0] "attachments"
+  [1] "title"
+  [2] "category"
+  [3] "contact"
+  [4] "attachments"
+  [5] "category"
+  [6] "contact"
+  [7] "title"
+  [8] "max_attachments"
+  [9] "archive_dir"
+  [10] "archive_dir"
+  [11] "max_attachments"
+  [12] "reference"
+  [13] "contact"
+  [14] "reference"
+  [15] "contact"
+  [16] "reason"
+  [17] "reference"
+  [18] "contact"
+  [19] "reference"
+  [20] "contact"
+  [21] "submission"
+  [22] "submission"
+  [23] "config"
+  [24] "filed"
+  [25] "outcome"
+  [26] ""
+  [27] "MixedDoorsOutcome"
+  [28] "filed"
+  [29] "payload"
+  [30] "too many attachments"
+  [31] "bounced"
+  [32] "intake"
+  [33] "shell"
+== types ==
+  record Submission tag=submission
+    attachments: list(string)
+    category: nullable(string) optional
+    contact: nullable(string) optional
+    title: string
+  record IntakeConfig tag=intake_config
+    archive_dir: nullable(string) optional
+    max_attachments: int
+  record FiledRecord tag=filed_record
+    reference: string
+    contact: nullable(string) optional
+  record Bounced tag=bounced
+    reason: string
+  record Enriched tag=enriched
+    reference: string
+    contact: nullable(string) optional
+  record EnrichSubmissionInput tag=enrich_submission_input
+    submission: ref(Submission)
+  record MixedDoorsInput tag=mixed_doors_input
+    submission: ref(Submission)
+    config: ref(IntakeConfig)
+  union MixedDoorsOutcome
+    filed -> filed_outcome(ref(FiledRecord))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=mixed_doors_input_codec output=mixed_doors_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(mixed_doors.MixedDoorsInput, mixed_doors.MixedDoorsOutcome, AwlError)
+  T-DEF name="mixed_doors" input=mixed_doors_input_codec output=mixed_doors_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (mixed_doors.MixedDoorsInput) -> Result(mixed_doors.MixedDoorsOutcome, AwlError)
+  T-EXEC fields=[submission:mixed_doors.Submission, config:mixed_doors.IntakeConfig] entry=step_size_gate args=[1, 0]
+== fn submission_codec/0 origin=codec_template(RecordTrio, Submission, record#0) ==
+  sig: () -> Codec(mixed_doors.Submission)
+  v0 = make_closure submission_to_json captures=[]
+  v1 = call_local submission_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn submission_to_json/1 origin=codec_template(RecordTrio, Submission, record#0) ==
+  sig: (mixed_doors.Submission) -> Json
+  v1 = field(v0, 1)
+  v2 = call_local list_string_to_json(v1) live_after=[v0]
+  v3 = tuple([lit#0, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local submission_to_json$field1(v5) live_after=[v0, v4]
+  v7 = field(v0, 3)
+  v8 = call_local submission_to_json$field2(v7) live_after=[v0, v4, v6]
+  v9 = field(v0, 4)
+  v10 = call_rt aion@awl@codec:string_to_json/1(v9) live_after=[v4, v6, v8]
+  v11 = tuple([lit#1, v10])
+  v12 = list([v11])
+  v13 = list([v4, v6, v8, v12])
+  v14 = call_rt gleam@list:flatten/1(v13)
+  tail_rt gleam@json:object/1(v14)
+== fn submission_decoder/0 origin=codec_template(RecordTrio, Submission, record#0) ==
+  sig: () -> Decoder(mixed_doors.Submission)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure submission_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn submission_to_json$field1/1 origin=lifted(submission_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#2, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn submission_to_json$field2/1 origin=lifted(submission_to_json, #1) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#3, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn submission_decoder$some/1 origin=lifted(submission_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn submission_decoder$0/1 origin=lifted(submission_decoder, #1) ==
+  sig: (List(String)) -> Decoder(mixed_doors.Submission)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure submission_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure submission_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#5, 'none', v3, v4)
+== fn submission_decoder$1/2 origin=lifted(submission_decoder, #2) ==
+  sig: (Option(String), List(String)) -> Decoder(mixed_doors.Submission)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure submission_decoder$some captures=[]
+  v4 = call_rt gleam@dynamic@decode:map/2(v2, v3) live_after=[v0, v1]
+  v5 = make_closure submission_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#6, 'none', v4, v5)
+== fn submission_decoder$2/3 origin=lifted(submission_decoder, #3) ==
+  sig: (Option(String), List(String), Option(String)) -> Decoder(mixed_doors.Submission)
+  v3 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure submission_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v3, v4)
+== fn submission_decoder$3/4 origin=lifted(submission_decoder, #4) ==
+  sig: (String, List(String), Option(String), Option(String)) -> Decoder(mixed_doors.Submission)
+  v4 = record(submission, [v1, v2, v3, v0])
+  tail_rt gleam@dynamic@decode:success/1(v4)
+== fn intake_config_codec/0 origin=codec_template(RecordTrio, IntakeConfig, record#1) ==
+  sig: () -> Codec(mixed_doors.IntakeConfig)
+  v0 = make_closure intake_config_to_json captures=[]
+  v1 = call_local intake_config_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn intake_config_to_json/1 origin=codec_template(RecordTrio, IntakeConfig, record#1) ==
+  sig: (mixed_doors.IntakeConfig) -> Json
+  v1 = field(v0, 1)
+  v2 = call_local intake_config_to_json$field0(v1) live_after=[v0]
+  v3 = field(v0, 2)
+  v4 = call_rt aion@awl@codec:int_to_json/1(v3) live_after=[v2]
+  v5 = tuple([lit#8, v4])
+  v6 = list([v5])
+  v7 = list([v2, v6])
+  v8 = call_rt gleam@list:flatten/1(v7)
+  tail_rt gleam@json:object/1(v8)
+== fn intake_config_decoder/0 origin=codec_template(RecordTrio, IntakeConfig, record#1) ==
+  sig: () -> Decoder(mixed_doors.IntakeConfig)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure intake_config_decoder$some captures=[]
+  v2 = call_rt gleam@dynamic@decode:map/2(v0, v1)
+  v3 = make_closure intake_config_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#10, 'none', v2, v3)
+== fn intake_config_to_json$field0/1 origin=lifted(intake_config_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#9, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn intake_config_decoder$some/1 origin=lifted(intake_config_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn intake_config_decoder$0/1 origin=lifted(intake_config_decoder, #1) ==
+  sig: (Option(String)) -> Decoder(mixed_doors.IntakeConfig)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure intake_config_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v1, v2)
+== fn intake_config_decoder$1/2 origin=lifted(intake_config_decoder, #2) ==
+  sig: (Int, Option(String)) -> Decoder(mixed_doors.IntakeConfig)
+  v2 = record(intake_config, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn filed_record_codec/0 origin=codec_template(RecordTrio, FiledRecord, record#2) ==
+  sig: () -> Codec(mixed_doors.FiledRecord)
+  v0 = make_closure filed_record_to_json captures=[]
+  v1 = call_local filed_record_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn filed_record_to_json/1 origin=codec_template(RecordTrio, FiledRecord, record#2) ==
+  sig: (mixed_doors.FiledRecord) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#12, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local filed_record_to_json$field1(v5) live_after=[v4]
+  v7 = list([v4, v6])
+  v8 = call_rt gleam@list:flatten/1(v7)
+  tail_rt gleam@json:object/1(v8)
+== fn filed_record_decoder/0 origin=codec_template(RecordTrio, FiledRecord, record#2) ==
+  sig: () -> Decoder(mixed_doors.FiledRecord)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure filed_record_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v0, v1)
+== fn filed_record_to_json$field1/1 origin=lifted(filed_record_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#13, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn filed_record_decoder$some/1 origin=lifted(filed_record_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn filed_record_decoder$0/1 origin=lifted(filed_record_decoder, #1) ==
+  sig: (String) -> Decoder(mixed_doors.FiledRecord)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure filed_record_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure filed_record_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#15, 'none', v3, v4)
+== fn filed_record_decoder$1/2 origin=lifted(filed_record_decoder, #2) ==
+  sig: (Option(String), String) -> Decoder(mixed_doors.FiledRecord)
+  v2 = record(filed_record, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn bounced_codec/0 origin=codec_template(RecordTrio, Bounced, record#3) ==
+  sig: () -> Codec(mixed_doors.Bounced)
+  v0 = make_closure bounced_to_json captures=[]
+  v1 = call_local bounced_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn bounced_to_json/1 origin=codec_template(RecordTrio, Bounced, record#3) ==
+  sig: (mixed_doors.Bounced) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn bounced_decoder/0 origin=codec_template(RecordTrio, Bounced, record#3) ==
+  sig: () -> Decoder(mixed_doors.Bounced)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure bounced_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#16, v0, v1)
+== fn bounced_decoder$0/1 origin=lifted(bounced_decoder, #0) ==
+  sig: (String) -> Decoder(mixed_doors.Bounced)
+  v1 = record(bounced, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn enriched_codec/0 origin=codec_template(RecordTrio, Enriched, record#4) ==
+  sig: () -> Codec(mixed_doors.Enriched)
+  v0 = make_closure enriched_to_json captures=[]
+  v1 = call_local enriched_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn enriched_to_json/1 origin=codec_template(RecordTrio, Enriched, record#4) ==
+  sig: (mixed_doors.Enriched) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#17, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local enriched_to_json$field1(v5) live_after=[v4]
+  v7 = list([v4, v6])
+  v8 = call_rt gleam@list:flatten/1(v7)
+  tail_rt gleam@json:object/1(v8)
+== fn enriched_decoder/0 origin=codec_template(RecordTrio, Enriched, record#4) ==
+  sig: () -> Decoder(mixed_doors.Enriched)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure enriched_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#19, v0, v1)
+== fn enriched_to_json$field1/1 origin=lifted(enriched_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#18, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn enriched_decoder$some/1 origin=lifted(enriched_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn enriched_decoder$0/1 origin=lifted(enriched_decoder, #1) ==
+  sig: (String) -> Decoder(mixed_doors.Enriched)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure enriched_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure enriched_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#20, 'none', v3, v4)
+== fn enriched_decoder$1/2 origin=lifted(enriched_decoder, #2) ==
+  sig: (Option(String), String) -> Decoder(mixed_doors.Enriched)
+  v2 = record(enriched, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn enrich_submission_input_codec/0 origin=codec_template(RecordTrio, EnrichSubmissionInput, record#5) ==
+  sig: () -> Codec(mixed_doors.EnrichSubmissionInput)
+  v0 = make_closure enrich_submission_input_to_json captures=[]
+  v1 = call_local enrich_submission_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn enrich_submission_input_to_json/1 origin=codec_template(RecordTrio, EnrichSubmissionInput, record#5) ==
+  sig: (mixed_doors.EnrichSubmissionInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"submission": v1|>submission_to_json}
+  return v2
+== fn enrich_submission_input_decoder/0 origin=codec_template(RecordTrio, EnrichSubmissionInput, record#5) ==
+  sig: () -> Decoder(mixed_doors.EnrichSubmissionInput)
+  v0 = call_local submission_decoder()
+  v1 = make_closure enrich_submission_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#21, v0, v1)
+== fn enrich_submission_input_decoder$0/1 origin=lifted(enrich_submission_input_decoder, #0) ==
+  sig: (mixed_doors.Submission) -> Decoder(mixed_doors.EnrichSubmissionInput)
+  v1 = record(enrich_submission_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn mixed_doors_input_codec/0 origin=codec_template(RecordTrio, MixedDoorsInput, record#6) ==
+  sig: () -> Codec(mixed_doors.MixedDoorsInput)
+  v0 = make_closure mixed_doors_input_to_json captures=[]
+  v1 = call_local mixed_doors_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn mixed_doors_input_to_json/1 origin=codec_template(RecordTrio, MixedDoorsInput, record#6) ==
+  sig: (mixed_doors.MixedDoorsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"submission": v1|>submission_to_json, "config": v2|>intake_config_to_json}
+  return v3
+== fn mixed_doors_input_decoder/0 origin=codec_template(RecordTrio, MixedDoorsInput, record#6) ==
+  sig: () -> Decoder(mixed_doors.MixedDoorsInput)
+  v0 = call_local submission_decoder()
+  v1 = make_closure mixed_doors_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#22, v0, v1)
+== fn mixed_doors_input_decoder$0/1 origin=lifted(mixed_doors_input_decoder, #0) ==
+  sig: (mixed_doors.Submission) -> Decoder(mixed_doors.MixedDoorsInput)
+  v1 = call_local intake_config_decoder() live_after=[v0]
+  v2 = make_closure mixed_doors_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#23, v1, v2)
+== fn mixed_doors_input_decoder$1/2 origin=lifted(mixed_doors_input_decoder, #1) ==
+  sig: (mixed_doors.IntakeConfig, mixed_doors.Submission) -> Decoder(mixed_doors.MixedDoorsInput)
+  v2 = record(mixed_doors_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn mixed_doors_outcome_codec/0 origin=codec_template(UnionTrio, MixedDoorsOutcome, union#7) ==
+  sig: () -> Codec(mixed_doors.MixedDoorsOutcome)
+  v0 = make_closure mixed_doors_outcome_to_json captures=[]
+  v1 = call_local mixed_doors_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn mixed_doors_outcome_to_json/1 origin=codec_template(UnionTrio, MixedDoorsOutcome, union#7) ==
+  sig: (mixed_doors.MixedDoorsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#24|>awlc.string_to_json, "payload": v1|>filed_record_to_json}
+  return v2
+== fn mixed_doors_outcome_decoder/0 origin=codec_template(UnionTrio, MixedDoorsOutcome, union#7) ==
+  sig: () -> Decoder(mixed_doors.MixedDoorsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure mixed_doors_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#25, v0, v1)
+== fn mixed_doors_outcome_decoder$outcome/1 origin=lifted(mixed_doors_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(mixed_doors.MixedDoorsOutcome)
+  if cmp Eq v0 lit#28:
+    v3 = call_local filed_record_decoder()
+    v4 = make_closure mixed_doors_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#29, v3, v4)
+  else:
+    v1 = record(filed_record, [lit#26, 'none'])
+    v2 = record(filed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#27)
+== fn mixed_doors_outcome_decoder$arm0/1 origin=lifted(mixed_doors_outcome_decoder, #1) ==
+  sig: (mixed_doors.FiledRecord) -> Decoder(mixed_doors.MixedDoorsOutcome)
+  v1 = record(filed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn enrich_submission_activity/1 origin=activity_wrapper(enrich_submission, raw=false) ==
+  sig: (mixed_doors.Submission) -> Activity(mixed_doors.EnrichSubmissionInput, mixed_doors.Enriched)
+  T-ACT action=enrich_submission input_codec=enrich_submission_input_codec return=enriched_codec
+== fn step_size_gate/2 origin=region(size_gate) ==
+  sig: (mixed_doors.IntakeConfig, mixed_doors.Submission) -> Result(mixed_doors.MixedDoorsOutcome, AwlError)
+  v2 = field(v1, 1)
+  v3 = call_rt gleam@list:length/1(v2) live_after=[v0, v1]
+  v5 = field(v0, 2)
+  v4 = cmp Gt v3 v5
+  if is_true v4:
+    v6 = record(bounced, [lit#30])
+    v7 = call_local bounced_to_json(v6)
+    v8 = call_rt gleam@json:to_string/1(v7)
+    v9 = record(awl_outcome_failure, [lit#31, v8])
+    v10 = record(error, [v9])
+    return v10
+  else:
+    tail_local step_enrichment(v1)
+== fn step_enrichment/1 origin=region(enrichment) ==
+  sig: (mixed_doors.Submission) -> Result(mixed_doors.MixedDoorsOutcome, AwlError)
+  v1 = call_local enrich_submission_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(30000) live_after=[v1]
+  v3 = record(fixed, [v2])
+  v4 = record(retry_policy, [2, v3])
+  v5 = call_rt aion@activity:retry/2(v1, v4)
+  v6 = call_rt aion@duration:milliseconds/1(300000) live_after=[v5]
+  v7 = call_rt aion@activity:timeout/2(v5, v6)
+  v8 = call_rt aion@activity:task_queue/2(v7, lit#32)
+  v9 = call_rt aion@activity:node/2(v8, lit#33)
+  v10 = call_rt aion@workflow:run/1(v9)
+  v11 = call_rt aion@awl@error:map_activity_error/1(v10)
+  v12 = try_bind v11
+  v13 = field(v12, 2)
+  v14 = cmp Ne v13 'none'
+  if is_true v14:
+    v15 = assert_some v13
+    v16 = field(v12, 1)
+    v17 = record(some, [v15])
+    v18 = record(filed_record, [v16, v17])
+    v19 = record(filed_outcome, [v18])
+    v20 = record(ok, [v19])
+    return v20
+  else:
+    v21 = field(v12, 1)
+    v22 = record(filed_record, [v21, 'none'])
+    v23 = record(filed_outcome, [v22])
+    v24 = record(ok, [v23])
+    return v24
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

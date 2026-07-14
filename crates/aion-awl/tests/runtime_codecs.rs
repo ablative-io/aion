@@ -25,6 +25,8 @@ mod drivers;
 mod fix_cycle;
 #[path = "runtime_codecs/harness.rs"]
 mod harness;
+#[path = "runtime_codecs/pipes.rs"]
+mod pipes;
 
 use std::error::Error;
 

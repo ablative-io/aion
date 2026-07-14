@@ -27,6 +27,8 @@ mod deferred_tests;
 #[cfg(test)]
 mod fork_tests;
 #[cfg(test)]
+mod pipe_tests;
+#[cfg(test)]
 mod tests;
 
 pub use func::{

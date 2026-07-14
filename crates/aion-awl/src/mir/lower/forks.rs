@@ -86,8 +86,10 @@ fn fork_fn_count(fork: &ForkStmt, emitter: &Emitter<'_>) -> u32 {
     }
 }
 
-/// Whether reachable lowering traversal contains a child collection fork and
-/// therefore needs the one module-local T-WIT function.
+/// Whether reachable lowering traversal contains a child collection fork or a
+/// child-naming pipe stage and therefore needs the one module-local T-WIT
+/// function. A route-ended pipe checks its own stages BEFORE honoring the
+/// early stop.
 pub(super) fn needs_child_witness(statements: &[Statement], emitter: &Emitter<'_>) -> bool {
     for statement in statements {
         match statement {
@@ -104,7 +106,18 @@ pub(super) fn needs_child_witness(statements: &[Statement], emitter: &Emitter<'_
                 }
             }
             Statement::Route(_) => break,
-            Statement::Pipe(pipe) if matches!(pipe.end, crate::ast::PipeEnd::Route(_)) => break,
+            Statement::Pipe(pipe) => {
+                if pipe.stages.iter().any(|stage| {
+                    matches!(stage,
+                        crate::ast::PipeStage::Action { name, .. }
+                            if emitter.children.contains_key(name.as_str()))
+                }) {
+                    return true;
+                }
+                if matches!(pipe.end, crate::ast::PipeEnd::Route(_)) {
+                    break;
+                }
+            }
             _ => {}
         }
     }

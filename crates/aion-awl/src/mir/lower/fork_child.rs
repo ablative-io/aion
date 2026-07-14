@@ -5,13 +5,14 @@
 use crate::ast::{Call, ForkStmt, Step};
 use crate::emitter::{GType, snake, type_ref_to_g};
 
-use super::super::func::{CodecRef, FlowFn, FnOrigin, MirFn};
+use super::super::func::{FlowFn, FnOrigin, MirFn};
 use super::super::ids::{FnRef, Span, Var};
-use super::super::ops::{JsonVal, LiveAfter, Stmt, Tail, ToJsonRef, Value};
+use super::super::ops::{JsonVal, LiveAfter, Stmt, Tail, Value};
 use super::super::runtime::RuntimeFn;
-use super::super::tydesc::{Leaf, TyDesc};
+use super::super::tydesc::TyDesc;
 use super::activity::{call_rt, record_new};
-use super::build::{FnPlan, child_output_codec_ref_for, codec_ref_for};
+use super::build::FnPlan;
+use super::child_call::{spawn_wait_args, to_json_ref};
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_arg_for};
@@ -440,74 +441,15 @@ fn child_spawn_args(
         pairs,
         span: Span::from_source(fork.call.span),
     });
-    let witness_ref = plan.child_witness.ok_or_else(|| LowerError::Planning {
-        message: "child collection fork has no planned witness".to_owned(),
-    })?;
-    let witness = ctx.fresh_var();
-    stmts.push(Stmt::MakeClosure {
-        dst: witness,
-        lifted: witness_ref,
-        captures: Vec::new(),
-        span: Span::from_source(fork.call.name_span),
-    });
-    let input_codec = call_rt(
+    spawn_wait_args(
         ctx,
-        RuntimeFn::JsonValueCodec,
-        Vec::new(),
-        stmts,
+        plan,
+        &fork.call.name,
         fork.call.name_span,
-    );
-    let output_codec_ref = child_output_codec_ref_for(ctx, plan, fork.returns)?;
-    let output_codec = codec_value(ctx, &output_codec_ref, stmts, fork.call.name_span);
-    let error_codec = call_rt(
-        ctx,
-        RuntimeFn::ErrCodec,
-        Vec::new(),
+        fork.returns,
+        input,
         stmts,
-        fork.call.name_span,
-    );
-    let name = ctx.binary(&fork.call.name);
-    Ok(vec![
-        Value::Lit(name),
-        Value::Var(witness),
-        Value::Var(input),
-        Value::Var(input_codec),
-        Value::Var(output_codec),
-        Value::Var(error_codec),
-    ])
-}
-
-fn to_json_ref(ctx: &Ctx<'_>, plan: &FnPlan, ty: &GType) -> Result<ToJsonRef, LowerError> {
-    match codec_ref_for(ctx, plan, ty)? {
-        CodecRef::SdkLeaf(leaf) => Ok(ToJsonRef::SdkLeaf(leaf)),
-        CodecRef::Local(reference) => Ok(ToJsonRef::Local(FnRef(reference.0 + 1))),
-        CodecRef::SdkNil => Ok(ToJsonRef::SdkLeaf(Leaf::Nil)),
-    }
-}
-
-fn codec_value(
-    ctx: &mut Ctx<'_>,
-    codec: &CodecRef,
-    stmts: &mut Vec<Stmt>,
-    span: crate::Span,
-) -> Var {
-    match codec {
-        CodecRef::Local(reference) => {
-            let dst = ctx.fresh_var();
-            stmts.push(Stmt::CallLocal {
-                dst: Some(dst),
-                callee: *reference,
-                args: Vec::new(),
-                live_after: LiveAfter::default(),
-                span: Span::from_source(span),
-            });
-            dst
-        }
-        CodecRef::SdkNil => call_rt(ctx, RuntimeFn::NilCodec, Vec::new(), stmts, span),
-        CodecRef::SdkLeaf(leaf) => {
-            call_rt(ctx, RuntimeFn::LeafCodec(*leaf), Vec::new(), stmts, span)
-        }
-    }
+    )
 }
 
 fn result_list_desc(ctx: &Ctx<'_>, fork: &ChildFork<'_>) -> TyDesc {

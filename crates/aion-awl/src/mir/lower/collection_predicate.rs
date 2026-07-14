@@ -55,6 +55,50 @@ pub(super) fn lower_collection_predicate(
     let GType::List(element) = ctx.emitter.env.resolve(&collection_ty) else {
         return Err(LowerError::new(span, "collection predicate needs a list"));
     };
+    lower_predicate_over(
+        ctx,
+        PredicateOver {
+            items,
+            element: &element,
+            quantifier,
+            predicate,
+            span,
+        },
+        scope,
+        stmts,
+    )
+}
+
+/// A quantified predicate over an already-lowered collection value.
+pub(super) struct PredicateOver<'a> {
+    /// The lowered collection value.
+    pub(super) items: Value,
+    /// The resolved list element type.
+    pub(super) element: &'a GType,
+    /// `any` or `all`.
+    pub(super) quantifier: Quantifier,
+    /// The element predicate expression.
+    pub(super) predicate: &'a Expr,
+    /// The source anchor for every emitted statement.
+    pub(super) span: crate::Span,
+}
+
+/// Quantify a predicate over an already-lowered collection value — the direct
+/// twin of the reference `render_predicate_over` split: shared by
+/// `Expr::CollectionPredicate` and the post-stage `any`/`all` pipe combinators.
+pub(super) fn lower_predicate_over(
+    ctx: &mut Ctx<'_>,
+    over: PredicateOver<'_>,
+    scope: &Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(Value, GType), LowerError> {
+    let PredicateOver {
+        items,
+        element,
+        quantifier,
+        predicate,
+        span,
+    } = over;
     let mut referenced = BTreeSet::new();
     crate::emitter::expr_refs(predicate, &mut referenced);
     let captures: Vec<String> = referenced
@@ -71,7 +115,7 @@ pub(super) fn lower_collection_predicate(
             predicate,
             quantifier,
             fallible,
-            element: &element,
+            element,
             captures: &captures,
             host_scope: scope,
             span,

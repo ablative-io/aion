@@ -1,0 +1,9 @@
+//! The child: score anything, echo the essay through the feedback line.
+workflow score_essay
+  input essay: String
+  outcome scored: type Grade, route success
+
+type Grade { score: Int, feedback: String }
+
+step score
+  route scored(score: 42, feedback: "scored: " + essay)
