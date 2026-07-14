@@ -44,12 +44,32 @@ pub(crate) fn fixture(relative: &str) -> PathBuf {
     manifest_dir().join("tests/fixtures/rev2").join(relative)
 }
 
+/// Scratch root for throwaway reference builds: a stable, per-purpose
+/// directory under the repo's shared cargo target pile — NEVER the system
+/// temp directory (build artifacts in `/tmp` are banned; `cargo clean`
+/// bounds this pile). Names are stable so repeat runs reuse build caches
+/// instead of accumulating; every caller's label is unique within a run, so
+/// parallel tests never race one directory.
+pub(crate) fn scratch_build_dir(label: &str) -> PathBuf {
+    manifest_dir()
+        .parent()
+        .and_then(Path::parent)
+        .map_or_else(std::env::temp_dir, Path::to_path_buf)
+        .join("target/awl-test-scratch")
+        .join(label)
+}
+
 // ---- reference (gleam build) side ----------------------------------------
 
 /// Emit a fixture through the REFERENCE emitter and append a Gleam driver.
 pub(crate) fn reference_module(relative: &str, driver: &str) -> Result<String, Box<dyn Error>> {
-    let path = fixture(relative);
-    let source = fs::read_to_string(&path)?;
+    reference_module_at(&fixture(relative), driver)
+}
+
+/// [`reference_module`] over an arbitrary document path (for documents that
+/// live outside the fixture tree, like the flagship examples).
+pub(crate) fn reference_module_at(path: &Path, driver: &str) -> Result<String, Box<dyn Error>> {
+    let source = fs::read_to_string(path)?;
     let document = parse(&source)?;
     let dir = path
         .parent()
@@ -68,14 +88,8 @@ pub(crate) fn gleam_build(modules: &[(&str, &str)]) -> Result<Vec<PathBuf>, Box<
         .and_then(Path::parent)
         .ok_or("cannot resolve the repository root")?
         .to_path_buf();
-    let mut project = std::env::temp_dir();
-    project.push(format!(
-        "aion_awl_rt_codecs_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ));
+    let names: Vec<&str> = modules.iter().map(|(name, _)| *name).collect();
+    let project = scratch_build_dir(&format!("gleam_{}", names.join("_")));
     fs::create_dir_all(project.join("src"))?;
     fs::write(
         project.join("gleam.toml"),
@@ -127,11 +141,8 @@ pub(crate) fn child_host_ebin(
     child_module: &str,
     bare: bool,
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let mut dir = std::env::temp_dir();
-    dir.push(format!(
-        "aion_awl_child_host_{label}_{}",
-        std::process::id()
-    ));
+    let suffix = if bare { "_bare" } else { "" };
+    let dir = scratch_build_dir(&format!("child_host_{label}{suffix}"));
     fs::create_dir_all(&dir)?;
     let source = dir.join("aion_flow_ffi.erl");
     let terminal = if bare {
@@ -233,12 +244,43 @@ pub(crate) fn workflow_id_poison_ebin() -> Result<PathBuf, Box<dyn Error>> {
     )
 }
 
+/// Build a test-only `aion_flow_ffi` whose activity dispatch always refuses.
+/// Input ENCODING happens before dispatch in `workflow.run`, so reaching this
+/// stub (a clean `{error, _}` return instead of a crash) proves the dispatch
+/// input survived its codec.
+pub(crate) fn dispatch_refused_ebin() -> Result<PathBuf, Box<dyn Error>> {
+    let dir = scratch_build_dir("dispatch_refused");
+    fs::create_dir_all(&dir)?;
+    let source = dir.join("aion_flow_ffi.erl");
+    fs::write(
+        &source,
+        "-module(aion_flow_ffi).\n-export([dispatch_activity/3]).\n\
+         dispatch_activity(_Name, _Input, _Config) -> {error, <<\"stub dispatch\">>}.\n",
+    )?;
+    let output = Command::new("erlc")
+        .arg("-o")
+        .arg(&dir)
+        .arg(&source)
+        .output()
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("erlc is required for the dispatch-refusal proof: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "dispatch stub erlc failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(dir)
+}
+
 fn workflow_id_ebin(label: &str, implementation: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let mut dir = std::env::temp_dir();
-    dir.push(format!(
-        "aion_awl_workflow_id_{label}_{}",
-        std::process::id()
-    ));
+    let dir = scratch_build_dir(&format!("workflow_id_{label}"));
     fs::create_dir_all(&dir)?;
     let source = dir.join("aion_flow_ffi.erl");
     fs::write(

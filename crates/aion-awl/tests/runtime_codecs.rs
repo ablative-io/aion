@@ -21,6 +21,8 @@ mod child_envelope;
 mod concat;
 #[path = "runtime_codecs/drivers.rs"]
 mod drivers;
+#[path = "runtime_codecs/fix_cycle.rs"]
+mod fix_cycle;
 #[path = "runtime_codecs/harness.rs"]
 mod harness;
 

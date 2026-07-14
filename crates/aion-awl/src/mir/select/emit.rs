@@ -439,6 +439,17 @@ impl Emit<'_, '_> {
     }
 
     fn list_new(&mut self, dst: Var, items: &[Src]) -> Result<(), SelectError> {
+        if items.is_empty() {
+            // `[]` builds nothing below, so nil must be materialized
+            // explicitly — `store` would otherwise persist whatever X0 last
+            // held (the dev_brief fix-cycle seed captured the whole brief
+            // record this way).
+            self.push(Instruction::Move {
+                source: Operand::Atom(None),
+                destination: Operand::X(0),
+            });
+            return self.store(dst);
+        }
         self.push(Instruction::TestHeap {
             heap_need: Operand::Unsigned((items.len() * 2) as u64),
             live: Operand::Unsigned(0),
