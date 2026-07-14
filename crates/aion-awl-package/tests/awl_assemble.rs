@@ -160,6 +160,43 @@ fn format_v1_loader_admits_the_archive_with_derived_manifest() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn document_timeout_reaches_the_manifest_and_absence_keeps_the_default() -> TestResult {
+    let path = workspace_root()
+        .join("crates/aion-awl/tests/fixtures/rev2/dag-fork/valid/after_single.awl");
+    let source = fs::read_to_string(&path)?;
+    let root = path.parent().ok_or("fixture has no parent directory")?;
+
+    let plain = aion_awl::compile(&source, root)?;
+    let plain_bytes = assemble_awl(
+        &plain,
+        AwlAssembleOptions {
+            timeout: plain.timeout,
+        },
+    )?;
+    let plain_package = Package::load_from_bytes(plain_bytes, ExtractionLimits::unbounded())?;
+    assert_eq!(plain_package.manifest().timeout, DEFAULT_WORKFLOW_TIMEOUT);
+
+    let declared_source = source.replacen(
+        "workflow after_single\n",
+        "workflow after_single\n  timeout 6h\n",
+        1,
+    );
+    let declared = aion_awl::compile(&declared_source, root)?;
+    let declared_bytes = assemble_awl(
+        &declared,
+        AwlAssembleOptions {
+            timeout: declared.timeout,
+        },
+    )?;
+    let declared_package = Package::load_from_bytes(declared_bytes, ExtractionLimits::unbounded())?;
+    assert_eq!(
+        declared_package.manifest().timeout,
+        std::time::Duration::from_secs(21_600)
+    );
+    Ok(())
+}
+
 /// Proof 3 — closure coverage (the honesty test): every module the compiled
 /// workflow BEAM imports is shipped in the bundle or is the workflow module
 /// itself. A missing import fails here, not as a runtime surprise later.
@@ -325,6 +362,7 @@ fn bundle_is_versioned_pinned_and_carries_the_imported_sdk_modules() -> TestResu
 fn hand_built(name: &str) -> CompiledWorkflow {
     CompiledWorkflow {
         workflow_name: name.to_owned(),
+        timeout: None,
         beam_bytes: b"opaque".to_vec(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),

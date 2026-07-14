@@ -71,7 +71,12 @@ fn package_source(source: &str, schema_root: &Path) -> Result<(String, Value, Ve
     let compiled = aion_awl::compile(source, schema_root)?;
     let workflow_name = compiled.workflow_name.clone();
     let input_schema = compiled.input_schema.clone();
-    let archive = assemble_awl(&compiled, AwlAssembleOptions::default())?;
+    let archive = assemble_awl(
+        &compiled,
+        AwlAssembleOptions {
+            timeout: compiled.timeout,
+        },
+    )?;
     Ok((workflow_name, input_schema, archive))
 }
 
@@ -149,7 +154,7 @@ mod tests {
     use aion_package::{ExtractionLimits, Package};
     use serde_json::json;
 
-    use super::{InputValidationError, package_file, prepare_run};
+    use super::{InputValidationError, package_file, package_source, prepare_run};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -170,6 +175,25 @@ mod tests {
         assert_eq!(package.manifest().entry_function, "run");
         assert_eq!(package.manifest().input_schema, input_schema);
         assert!(package.beams().get("awl_hello").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn document_timeout_reaches_the_one_motion_archive_manifest() -> TestResult {
+        let path = fixture("dag-fork/valid/after_single.awl");
+        let source = std::fs::read_to_string(&path)?.replacen(
+            "workflow after_single\n",
+            "workflow after_single\n  timeout 6h\n",
+            1,
+        );
+        let root = path.parent().ok_or("fixture has no parent directory")?;
+        let (_, _, bytes) = package_source(&source, root)?;
+        let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
+
+        assert_eq!(
+            package.manifest().timeout,
+            std::time::Duration::from_secs(21_600)
+        );
         Ok(())
     }
 

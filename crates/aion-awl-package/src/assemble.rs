@@ -20,11 +20,8 @@ use crate::bundle;
 
 /// Manifest workflow timeout applied to AWL-native packages.
 ///
-/// This is an explicit policy default, not a derivation: AWL has no
-/// workflow-timeout syntax yet (the document grammar carries action/call/wait
-/// timeouts only), and the manifest field must never be inferred from action
-/// timeouts. When AWL grows workflow-timeout syntax, the derived value
-/// replaces this constant.
+/// This explicit policy default applies when an AWL document does not declare
+/// its own workflow timeout. It is never inferred from action timeouts.
 pub const DEFAULT_WORKFLOW_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Options for [`assemble_awl`].
@@ -148,6 +145,7 @@ mod tests {
     fn hand_built(name: &str) -> CompiledWorkflow {
         CompiledWorkflow {
             workflow_name: name.to_owned(),
+            timeout: None,
             beam_bytes: b"opaque-beam-bytes".to_vec(),
             input_schema: json!({ "type": "object" }),
             output_schema: json!({ "type": "object" }),

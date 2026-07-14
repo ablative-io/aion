@@ -19,6 +19,8 @@ pub struct Document {
     pub name_span: Span,
     /// Same-line comment on the `workflow` line.
     pub trailing: Option<Comment>,
+    /// Optional document-level workflow timeout.
+    pub timeout: Option<WorkflowTimeoutDecl>,
     /// `input` declarations in source order.
     pub inputs: Vec<InputDecl>,
     /// `signal` declarations in source order.
@@ -35,6 +37,21 @@ pub struct Document {
     pub steps: Vec<Step>,
     /// Trailing trivia at the very end of the document.
     pub epilogue: Vec<Lead>,
+}
+
+/// One `timeout <duration>` declaration in the workflow header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowTimeoutDecl {
+    /// Span covering the declaration line.
+    pub span: Span,
+    /// Leading trivia before the declaration.
+    pub lead: Vec<Lead>,
+    /// Same-line trailing comment.
+    pub trailing: Option<Comment>,
+    /// Duration literal, using the shared AWL duration syntax.
+    pub duration: DurationLiteral,
+    /// Whether the source duration carried a leading minus sign.
+    pub negative: bool,
 }
 
 /// One `input name: Type` declaration in the workflow header.

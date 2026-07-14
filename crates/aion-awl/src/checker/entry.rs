@@ -32,6 +32,14 @@ pub(crate) fn analyze(document: &Document, root: Option<&Path>) -> SemanticAnaly
 
 fn run(document: &Document, root: Option<&Path>) -> (Vec<CheckError>, crate::semantic::Builder) {
     let mut ctx = Ctx::new(document, root);
+    if let Some(timeout) = &document.timeout
+        && (timeout.negative || timeout.duration.magnitude == 0)
+    {
+        ctx.error(
+            timeout.span,
+            "workflow `timeout` must be a positive duration",
+        );
+    }
     decls::run(&mut ctx);
     let step_graph = graph::build(&mut ctx);
     if !step_graph.after_cycle {

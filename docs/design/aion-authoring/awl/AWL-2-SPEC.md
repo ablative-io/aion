@@ -113,6 +113,7 @@ One file, one workflow, declarations in canonical order:
 ```
 //! <workflow narration — one or more lines>
 workflow <name>
+  timeout <duration>                           // optional; default 1h
   input <name>: <Type>                        // repeatable
   signal <name>: <Type>                       // repeatable, optional
   outcome <name>: type <Type>, route success|failure   // repeatable, ≥1
@@ -129,6 +130,13 @@ step <name> [after <step>, …]                 // repeatable, ordered
 
 ### Workflow header
 
+- `timeout duration` — the positive maximum duration of this workflow run,
+  written with the same duration literal syntax used by action, call, and wait
+  timeouts (`30s`, `5m`, `3h`, `2d`). The declaration is optional; when absent,
+  assembly applies the `1h` workflow default. This is workflow metadata, not an
+  activity timeout and not executable workflow code. A child workflow's
+  timeout comes from the child's own AWL document; a parent's declaration is
+  never inherited by, or imposed on, a child.
 - `input name: Type` — the start contract. All inputs validate against
   their (derived or imported) JSON Schema at start; **an explicit `null` in
   the input document is a start-time error** — absence is expressed by

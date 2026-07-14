@@ -76,6 +76,15 @@ fn print_document(printer: &mut Printer, document: &Document) {
         &format!("workflow {}", document.name),
         document.trailing.as_ref(),
     );
+    if let Some(timeout) = &document.timeout {
+        printer.leads(1, &timeout.lead);
+        let sign = if timeout.negative { "-" } else { "" };
+        printer.line(
+            1,
+            &format!("timeout {sign}{}", duration_text(&timeout.duration)),
+            timeout.trailing.as_ref(),
+        );
+    }
     for input in &document.inputs {
         printer.leads(1, &input.lead);
         printer.line(

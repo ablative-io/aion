@@ -449,6 +449,7 @@ pub(super) fn describe(kind: &TokenKind) -> String {
         TokenKind::Equal => "`=`".to_owned(),
         TokenKind::DotDot => "`..`".to_owned(),
         TokenKind::Plus => "`+`".to_owned(),
+        TokenKind::Minus => "`-`".to_owned(),
         TokenKind::EqualEqual => "`==`".to_owned(),
         TokenKind::BangEqual => "`!=`".to_owned(),
         TokenKind::Less => "`<`".to_owned(),

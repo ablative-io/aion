@@ -77,6 +77,7 @@ impl<'line> Cursor<'line> {
             '.' if self.consume_if('.') => Ok(self.spanned(TokenKind::DotDot, start, self.index)),
             '.' => self.field_accessor(start),
             '-' if self.consume_if('>') => Ok(self.spanned(TokenKind::Arrow, start, self.index)),
+            '-' => Ok(self.simple(TokenKind::Minus, start)),
             '|' if self.consume_if('>') => Ok(self.spanned(TokenKind::Pipe, start, self.index)),
             '|' => Ok(self.simple(TokenKind::Bar, start)),
             '=' if self.consume_if('=') => {

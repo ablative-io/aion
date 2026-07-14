@@ -2,7 +2,8 @@
 //! signals, outcomes), and top-level declaration dispatch.
 
 use crate::ast::{
-    DocLine, Document, InputDecl, Lead, OutcomeDecl, RouteDirection, SignalDecl, join_span,
+    DocLine, Document, InputDecl, Lead, OutcomeDecl, RouteDirection, SignalDecl,
+    WorkflowTimeoutDecl, join_span,
 };
 use crate::{Keyword, Span, TokenKind, lex};
 
@@ -10,7 +11,7 @@ use super::ParseError;
 use super::steps::parse_step;
 use super::stream::{Stream, describe, gone_keyword_hint};
 use super::types::{parse_type_decl, parse_type_ref, type_ref_span};
-use super::workers::{parse_child, parse_worker};
+use super::workers::{expect_duration, parse_child, parse_worker};
 
 /// Parse a complete rev-2 AWL document.
 ///
@@ -63,6 +64,7 @@ pub fn parse(source: &str) -> Result<Document, ParseError> {
         name,
         name_span,
         trailing,
+        timeout: None,
         inputs: Vec::new(),
         signals: Vec::new(),
         outcomes: Vec::new(),
@@ -118,7 +120,7 @@ fn parse_narration(stream: &mut Stream) -> Result<Vec<DocLine>, ParseError> {
     Ok(narration)
 }
 
-/// Parse the indented header block: `input`, `signal`, and `outcome`
+/// Parse the indented header block: `timeout`, `input`, `signal`, and `outcome`
 /// declarations in any order (the printer canonicalizes the order).
 fn parse_header_block(stream: &mut Stream, document: &mut Document) -> Result<(), ParseError> {
     let leads = stream.take_leads()?;
@@ -139,6 +141,31 @@ fn parse_header_block(stream: &mut Stream, document: &mut Document) -> Result<()
         };
         let span = token.span;
         match &token.kind {
+            TokenKind::Keyword(Keyword::Timeout) => {
+                stream.next();
+                if document.timeout.is_some() {
+                    return Err(ParseError::new(
+                        span,
+                        "duplicate workflow `timeout` declaration",
+                    ));
+                }
+                let negative = stream
+                    .eat(|kind| matches!(kind, TokenKind::Minus))
+                    .is_some();
+                let duration = expect_duration(
+                    stream,
+                    span,
+                    "workflow `timeout` needs a duration (`30s`, `5m`, `3h`, `2d`)",
+                )?;
+                let trailing = stream.end_line()?;
+                document.timeout = Some(WorkflowTimeoutDecl {
+                    span: join_span(span, duration.span),
+                    lead,
+                    trailing,
+                    duration,
+                    negative,
+                });
+            }
             TokenKind::Keyword(Keyword::Input) => {
                 stream.next();
                 let decl = parse_io_decl(stream, "input")?;
@@ -172,7 +199,7 @@ fn parse_header_block(stream: &mut Stream, document: &mut Document) -> Result<()
             TokenKind::Identifier(word) => {
                 let message = gone_keyword_hint(word).unwrap_or_else(|| {
                     format!(
-                        "expected `input`, `signal`, or `outcome` in the workflow header, \
+                        "expected `timeout`, `input`, `signal`, or `outcome` in the workflow header, \
                          found `{word}`"
                     )
                 });
@@ -182,7 +209,7 @@ fn parse_header_block(stream: &mut Stream, document: &mut Document) -> Result<()
                 return Err(ParseError::new(
                     span,
                     format!(
-                        "expected `input`, `signal`, or `outcome` in the workflow header, \
+                        "expected `timeout`, `input`, `signal`, or `outcome` in the workflow header, \
                          found {}",
                         describe(other)
                     ),

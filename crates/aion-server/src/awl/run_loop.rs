@@ -1,11 +1,12 @@
 use std::path::Path;
 
+use aion_awl_package::{AwlAssembleOptions, assemble_awl};
 use aion_proto::WireError;
 use serde::{Deserialize, Serialize};
 
 use super::handlers::{CheckRequest, check_source};
 use super::revisions::{self, DeploymentRecord, RevisionError};
-use crate::authoring::{AuthoringApiError, CompileSourceRequest};
+use crate::authoring::AuthoringApiError;
 use crate::worker::registry::DEFAULT_TASK_QUEUE;
 use crate::{CallerIdentity, ServerState};
 
@@ -76,6 +77,8 @@ pub enum RunLoopError {
     CheckRefused(String),
     #[error("AWL emission refused deployment: {0}")]
     EmitRefused(String),
+    #[error("AWL native compilation refused deployment: {0}")]
+    CompileRefused(String),
     #[error(transparent)]
     Revision(#[from] RevisionError),
     #[error("authoring deploy was refused")]
@@ -151,21 +154,24 @@ pub async fn deploy(
     }
     let document = aion_awl::parse(&revision.source)
         .map_err(|error| RunLoopError::CheckRefused(error.message))?;
-    let emitted = aion_awl::emit_in(&document, root)
-        .map_err(|error| RunLoopError::EmitRefused(error.message))?;
     let task_queue = document.workers.first().map_or_else(
         || DEFAULT_TASK_QUEUE.to_owned(),
         |worker| worker.name.clone(),
     );
-    let loaded = crate::authoring::compile_and_load(
-        state,
-        caller,
-        "http",
-        CompileSourceRequest {
-            source: emitted.clone(),
+    let document_path = root.join(&request.path);
+    let schema_root = document_path.parent().map_or(root, |parent| parent);
+    let compiled = aion_awl::compile(&revision.source, schema_root)
+        .map_err(|error| RunLoopError::CompileRefused(error.to_string()))?;
+    let archive = assemble_awl(
+        &compiled,
+        AwlAssembleOptions {
+            timeout: compiled.timeout,
         },
     )
-    .await?;
+    .map_err(|error| RunLoopError::CompileRefused(error.to_string()))?;
+    let loaded = crate::api::handlers::deploy::load_package(state, caller, "http", archive)
+        .await
+        .map_err(|error| RunLoopError::Authoring(AuthoringApiError::Wire(error.wire().clone())))?;
     let deployment = DeploymentRecord {
         deployment_id: uuid::Uuid::new_v4().to_string(),
         document_path: request.path,
@@ -184,8 +190,11 @@ pub async fn deploy(
                 detail: format!("{} steps deploy green", checked.steps.unwrap_or(0)),
             },
             GuidedStepResult {
-                step: "emit",
-                detail: format!("{} bytes of Gleam emitted", emitted.len()),
+                step: "compile",
+                detail: format!(
+                    "{} bytes of native AWL bytecode compiled",
+                    compiled.beam_bytes.len()
+                ),
             },
             GuidedStepResult {
                 step: "package",
@@ -245,6 +254,7 @@ pub fn wire_error(error: &RunLoopError) -> WireError {
         RunLoopError::RevisionMismatch { .. }
         | RunLoopError::CheckRefused(_)
         | RunLoopError::EmitRefused(_)
+        | RunLoopError::CompileRefused(_)
         | RunLoopError::Revision(_) => {
             WireError::invalid_input(error.to_string()).with_error_type(error_type(error))
         }
@@ -265,6 +275,7 @@ fn error_type(error: &RunLoopError) -> &'static str {
         RunLoopError::RevisionMismatch { .. } => "RevisionMismatch",
         RunLoopError::CheckRefused(_) => "CheckRefused",
         RunLoopError::EmitRefused(_) => "EmitRefused",
+        RunLoopError::CompileRefused(_) => "CompileRefused",
         RunLoopError::Revision(_) => "RevisionStore",
         RunLoopError::Authoring(_) => "AuthoringDeploy",
         RunLoopError::WorkerRegistry(_) => "WorkerRegistry",

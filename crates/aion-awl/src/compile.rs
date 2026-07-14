@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -18,6 +19,9 @@ use crate::{CheckError, ParseError, SchemaError, Span};
 pub struct CompiledWorkflow {
     /// Workflow name declared in the AWL document.
     pub workflow_name: String,
+    /// Document-declared workflow timeout; `None` leaves packaging policy to
+    /// the assembler default.
+    pub timeout: Option<Duration>,
     /// Deterministic `.beam` bytes (the `select` output, self-validated).
     pub beam_bytes: Vec<u8>,
     /// Derived start contract (the existing workflow-schema derivation).
@@ -151,14 +155,26 @@ pub fn compile(source: &str, schema_root: &Path) -> Result<CompiledWorkflow, Com
         message: error.to_string(),
     })?;
     let sidecar_bytes = project_sidecar(&module);
+    let timeout = document.timeout.as_ref().map(workflow_timeout);
     Ok(CompiledWorkflow {
         workflow_name: document.name.clone(),
+        timeout,
         beam_bytes,
         input_schema,
         output_schema,
         actions,
         sidecar_bytes,
     })
+}
+
+fn workflow_timeout(timeout: &crate::ast::WorkflowTimeoutDecl) -> Duration {
+    let seconds_per_unit = match timeout.duration.unit {
+        crate::DurationUnit::Seconds => 1,
+        crate::DurationUnit::Minutes => 60,
+        crate::DurationUnit::Hours => 60 * 60,
+        crate::DurationUnit::Days => 24 * 60 * 60,
+    };
+    Duration::from_secs(timeout.duration.magnitude.saturating_mul(seconds_per_unit))
 }
 
 /// Derive the effective action requirements of a parsed document: for each

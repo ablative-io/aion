@@ -327,6 +327,8 @@ pub enum TokenKind {
     DotDot,
     /// `+` (string concatenation).
     Plus,
+    /// `-` (accepted before a workflow timeout for checker diagnostics).
+    Minus,
     /// `==`.
     EqualEqual,
     /// `!=`.

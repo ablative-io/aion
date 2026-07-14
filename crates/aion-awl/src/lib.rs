@@ -35,6 +35,7 @@ pub use ast::{
     LoopTail, OnFailure, OutcomeClause, OutcomeDecl, ParamDecl, PipeEnd, PipeStage, PipeStmt,
     PredicateKind, Quantifier, RetrySpec, RouteDirection, RouteStmt, RouteTarget, SignalDecl,
     SleepStmt, SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
+    WorkflowTimeoutDecl,
 };
 pub use checker::{CheckError, check, check_in};
 pub use compile::{
