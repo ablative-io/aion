@@ -3,7 +3,8 @@
 //! workflow input record, the outcome union, and every wire-reachable
 //! composite (list/option) shape in stem order — the reference emitter's
 //! exact discovery (`emitter/codecs.rs::emit_codecs`,
-//! `emitter/composites.rs::composite_codecs`).
+//! `emitter/composites.rs::composite_codecs`) — followed by strict parent-side
+//! child outcome-envelope codecs in payload-stem order.
 
 use std::collections::BTreeMap;
 
@@ -92,6 +93,26 @@ impl Ctx<'_> {
                 kind: CodecTemplateKind::CompositeTrio,
                 subject: self.emitter.env.gleam_type(&ty),
                 payload: CodecPayload::Composite(self.wiredesc(&ty)),
+            });
+        }
+        // 6. one parent-side child outcome-envelope codec per distinct
+        // declared payload type, matching `emitter/codecs.rs`.
+        let child_outputs: BTreeMap<String, GType> = emitter
+            .document
+            .children
+            .iter()
+            .map(|child| {
+                let ty = type_ref_to_g(&child.returns);
+                (emitter.env.codec_name(&ty), ty)
+            })
+            .collect();
+        for (payload_stem, ty) in child_outputs {
+            codecs.push(CodecType {
+                stem: format!("awl_child_output_{payload_stem}"),
+                tydesc: self.tydesc(&ty),
+                kind: CodecTemplateKind::ChildEnvelopeTrio,
+                subject: emitter.env.gleam_type(&ty),
+                payload: CodecPayload::ChildEnvelope(self.wiredesc(&ty)),
             });
         }
         (shapes, codecs)

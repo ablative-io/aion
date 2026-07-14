@@ -4,6 +4,7 @@ mod activity;
 mod build;
 mod chain;
 mod codec;
+mod codec_child;
 mod codec_decode;
 mod codec_decode_union;
 mod codec_encode;

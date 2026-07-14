@@ -28,6 +28,7 @@ pub(super) struct CodecType {
 pub(super) enum CodecPayload {
     Shape(usize),
     Composite(WireDesc),
+    ChildEnvelope(WireDesc),
 }
 
 impl CodecType {
@@ -35,7 +36,7 @@ impl CodecType {
     pub(super) fn shape<'t>(&self, types: &'t [TypeShape]) -> Option<&'t TypeShape> {
         match &self.payload {
             CodecPayload::Shape(index) => types.get(*index),
-            CodecPayload::Composite(_) => None,
+            CodecPayload::Composite(_) | CodecPayload::ChildEnvelope(_) => None,
         }
     }
 }
@@ -105,6 +106,9 @@ fn codec_owner(codec_type: &CodecType) -> String {
     match codec_type.kind {
         CodecTemplateKind::CompositeTrio => {
             format!("the composite shape `{}`", codec_type.subject)
+        }
+        CodecTemplateKind::ChildEnvelopeTrio => {
+            format!("the child output payload `{}`", codec_type.subject)
         }
         CodecTemplateKind::RecordTrio
         | CodecTemplateKind::EnumTrio
@@ -476,5 +480,17 @@ pub(super) fn codec_ref_for(
         return Ok(CodecRef::SdkLeaf(leaf));
     }
     let stem = ctx.codec_stem(ty);
+    Ok(CodecRef::Local(registered_codec(plan, ctx, &stem)?.0))
+}
+
+/// Resolve the strict parent-side child output codec for a declared payload.
+/// Its decoder requires the child's AWL outcome envelope; its symmetric encode
+/// side uses the neutral outcome name `child`.
+pub(super) fn child_output_codec_ref_for(
+    ctx: &Ctx<'_>,
+    plan: &FnPlan,
+    ty: &GType,
+) -> Result<CodecRef, LowerError> {
+    let stem = format!("awl_child_output_{}", ctx.codec_stem(ty));
     Ok(CodecRef::Local(registered_codec(plan, ctx, &stem)?.0))
 }

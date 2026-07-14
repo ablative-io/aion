@@ -1,0 +1,11 @@
+//! Real child half of the cross-module collection-fork contract proof.
+workflow sit_one
+  input spec: SittingSpec
+  input pack_revision: String
+  outcome sat: type SittingRow, route success
+
+type SittingSpec { harness: String, model: String, effort: String }
+type SittingRow  { spec: SittingSpec, first_try: Bool }
+
+step report
+  route sat(spec: spec, first_try: true)

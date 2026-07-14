@@ -180,6 +180,12 @@ impl<'a> Emitter<'a> {
         self.codec_ref(ty, "codec")
     }
 
+    /// The module-local codec passed to a child spawn. It unwraps the child's
+    /// honest AWL outcome envelope to the payload type declared by the parent.
+    pub(crate) fn child_output_codec_fn(&self, ty: &GType) -> String {
+        format!("awl_child_output_{}_codec", self.env.codec_name(ty))
+    }
+
     fn codec_ref(&self, ty: &GType, suffix: &str) -> String {
         let stem = self.env.codec_name(ty);
         if self.env.is_leaf(ty) {

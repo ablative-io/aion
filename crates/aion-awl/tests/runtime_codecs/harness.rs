@@ -25,6 +25,7 @@ use beamr::native::{
 };
 use beamr::process::ExitReason;
 use beamr::scheduler::{Scheduler, SchedulerConfig, SchedulerServices};
+use beamr::term::Term;
 use beamr::term::binary_ref::BinaryRef;
 use beamr::term::boxed::Tuple;
 use beamr::term::format::format_term;
@@ -115,6 +116,103 @@ pub(crate) fn gleam_build(modules: &[(&str, &str)]) -> Result<Vec<PathBuf>, Box<
         }
     }
     Ok(ebins)
+}
+
+/// Build the production FFI namespace used by the cross-module child proof.
+/// `spawn_child/3` executes the selected generated child's exported `run/1`
+/// host on the exact encoded input and records its encoded output verbatim.
+/// The optional bare mode is the strict-envelope negative pin.
+pub(crate) fn child_host_ebin(
+    label: &str,
+    child_module: &str,
+    bare: bool,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "aion_awl_child_host_{label}_{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir)?;
+    let source = dir.join("aion_flow_ffi.erl");
+    let terminal = if bare {
+        "{ok, <<\"ok:{\\\"spec\\\":{\\\"harness\\\":\\\"legacy\\\",\\\"model\\\":\\\"bare\\\",\\\"effort\\\":\\\"none\\\"},\\\"first_try\\\":true}\">>}"
+            .to_owned()
+    } else {
+        format!(
+            "case {child_module}:run(Input) of {{ok, Output}} -> {{ok, <<\"ok:\", Output/binary>>}}; \
+             {{error, _}} -> {{error, <<\"child run failed\">>}} end"
+        )
+    };
+    fs::write(
+        &source,
+        format!(
+            "-module(aion_flow_ffi).\n-export([spawn_child/3, await_child/1]).\n\
+             spawn_child(<<\"sit_one\">>, Input, _Config) ->\n\
+             ChildId = Input,\n\
+             Result = {terminal},\n\
+             erlang:put({{awl_child_result, ChildId}}, Result),\n\
+             {{ok, ChildId}}.\n\
+             await_child(ChildId) ->\n\
+             case erlang:get({{awl_child_result, ChildId}}) of\n\
+             undefined -> {{error, <<\"unknown child\">>}}; Result -> Result end.\n"
+        ),
+    )?;
+    let (parent_module, run_fn, bare_fn, roundtrip_fn, child_error_fn) =
+        if child_module.starts_with("ref_") {
+            (
+                "ref_child_collection_fork",
+                "awl_rt_run",
+                "awl_rt_bare_decode_fails",
+                "awl_rt_neutral_roundtrip",
+                "awl_rt_bare_child_error",
+            )
+        } else {
+            (
+                "child_collection_fork",
+                "'awl$rt_run'",
+                "'awl$rt_bare_decode_fails'",
+                "'awl$rt_neutral_roundtrip'",
+                "'awl$rt_bare_child_error'",
+            )
+        };
+    let runner = dir.join("aion_awl_test_heap.erl");
+    fs::write(
+        &runner,
+        format!(
+            "-module(aion_awl_test_heap).\n-export([run/2, target/2]).\n\
+         run(_Module, {run_fn}) -> run_fun(run_target);\n\
+         run(_Module, {bare_fn}) -> run_fun(bare_target);\n\
+         run(_Module, {roundtrip_fn}) -> run_fun(roundtrip_target);\n\
+         run(_Module, {child_error_fn}) -> run_fun(child_error_target).\n\
+         run_fun(Target) ->\n\
+         Parent = self(),\n\
+         _ = erlang:spawn_opt(?MODULE, target, [Parent, Target], [{{min_heap_size, 2048}}]),\n\
+         receive {{aion_awl_test_result, Result}} -> Result end.\n\
+         target(Parent, run_target) ->\n\
+         Parent ! {{aion_awl_test_result, {parent_module}:{run_fn}()}};\n\
+         target(Parent, bare_target) ->\n\
+         Parent ! {{aion_awl_test_result, {parent_module}:{bare_fn}()}};\n\
+         target(Parent, roundtrip_target) ->\n\
+         Parent ! {{aion_awl_test_result, {parent_module}:{roundtrip_fn}()}};\n\
+         target(Parent, child_error_target) ->\n\
+         Parent ! {{aion_awl_test_result, {parent_module}:{child_error_fn}()}}.\n"
+        ),
+    )?;
+    let output = Command::new("erlc")
+        .arg("-o")
+        .arg(&dir)
+        .arg(&source)
+        .arg(&runner)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "child host erlc failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(dir)
 }
 
 /// Build a test-only `aion_flow_ffi` whose workflow context lookup fails. Load
@@ -235,6 +333,22 @@ impl Vm {
         }
     }
 
+    /// Run a zero-arity target in the test heap runner's independent 2048-word
+    /// workflow process. This models the production child execution boundary;
+    /// beamr's ordinary top-level test process is intentionally only 233 words.
+    pub(crate) fn call0_large(
+        &self,
+        module: &str,
+        function: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let (reason, formatted, _bytes) = self.call0_large_raw(module, function)?;
+        if reason == ExitReason::Normal {
+            Ok(formatted)
+        } else {
+            Err(format!("{module}:{function}/0 exited {reason:?}: {formatted}").into())
+        }
+    }
+
     /// Spawn and return `(exit reason, formatted result, first tuple-element
     /// binary when the result is a tuple whose element 0 is a binary)`.
     pub(crate) fn call0_raw(
@@ -248,6 +362,26 @@ impl Vm {
             .scheduler
             .spawn(module_atom, function_atom, Vec::new())
             .map_err(|error| error.format_with_atoms(&self.atoms))?;
+        Ok(self.finish_call(pid))
+    }
+
+    fn call0_large_raw(&self, module: &str, function: &str) -> Result<RawCall, Box<dyn Error>> {
+        let runner = self.atoms.intern("aion_awl_test_heap");
+        let run = self.atoms.intern("run");
+        let module_atom = self.atoms.intern(module);
+        let function_atom = self.atoms.intern(function);
+        let pid = self
+            .scheduler
+            .spawn(
+                runner,
+                run,
+                vec![Term::atom(module_atom), Term::atom(function_atom)],
+            )
+            .map_err(|error| error.format_with_atoms(&self.atoms))?;
+        Ok(self.finish_call(pid))
+    }
+
+    fn finish_call(&self, pid: u64) -> RawCall {
         let (reason, owned) = self.scheduler.run_until_exit(pid);
         let root = owned.root();
         let formatted = if reason == ExitReason::Normal {
@@ -264,7 +398,7 @@ impl Vm {
             .and_then(|tuple| tuple.get(0))
             .and_then(BinaryRef::new)
             .map(|binary| binary.as_bytes().to_vec());
-        Ok((reason, formatted, payload))
+        (reason, formatted, payload)
     }
 
     /// A round-trip driver's `#(encoded, equal)` pair: the encoded JSON
@@ -275,6 +409,21 @@ impl Vm {
         function: &str,
     ) -> Result<(String, bool), Box<dyn Error>> {
         let (reason, formatted, payload) = self.call0_raw(module, function)?;
+        if reason != ExitReason::Normal {
+            return Err(format!("{module}:{function}/0 exited {reason:?}: {formatted}").into());
+        }
+        let bytes = payload.ok_or_else(|| format!("{function} returned no binary: {formatted}"))?;
+        let equal = formatted.ends_with(", true}");
+        Ok((String::from_utf8(bytes)?, equal))
+    }
+
+    /// [`roundtrip`] through the workflow-sized heap runner.
+    pub(crate) fn roundtrip_large(
+        &self,
+        module: &str,
+        function: &str,
+    ) -> Result<(String, bool), Box<dyn Error>> {
+        let (reason, formatted, payload) = self.call0_large_raw(module, function)?;
         if reason != ExitReason::Normal {
             return Err(format!("{module}:{function}/0 exited {reason:?}: {formatted}").into());
         }

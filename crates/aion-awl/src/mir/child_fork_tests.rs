@@ -101,16 +101,16 @@ fn parallel_child_fork_is_spawn_all_then_ordered_await_with_emitter_parity()
 }
 
 /// Child identity and typed decode: each item invokes real string-name
-/// `workflow.spawn`, carries the fixed witness, and passes `SittingRow`'s
-/// declared codec in the output-codec position of the spawn ABI.
+/// `workflow.spawn`, carries the fixed witness, and passes the parent-side
+/// `SittingRow` outcome-envelope codec in the spawn ABI's output slot.
 #[test]
-fn child_spawn_keeps_identity_and_declared_output_codec() -> Result<(), Box<dyn std::error::Error>>
+fn child_spawn_keeps_identity_and_outcome_envelope_codec() -> Result<(), Box<dyn std::error::Error>>
 {
     let (mir, emitted) = fixture_artifacts("child_collection_fork.awl")?;
     let spawn = function(&mir, "== fn fan_out_fork_0/3")?;
     assert!(
-        mir.contains("[13] \"sit_one\"")
-            && spawn.contains("aion@workflow:spawn/6(lit#13, v4, v3, v5, v6, v7)"),
+        mir.contains("\"sit_one\"")
+            && spawn.contains("aion@workflow:spawn/6(lit#16, v4, v3, v5, v6, v7)"),
         "every item must use the declared child registration name:\n{spawn}"
     );
     assert!(
@@ -125,16 +125,18 @@ fn child_spawn_keeps_identity_and_declared_output_codec() -> Result<(), Box<dyn 
         "child input must encode each declared parameter through its codec:\n{spawn}"
     );
     assert!(
-        spawn.contains("v6 = call_local sitting_row_codec()")
-            && spawn.contains("spawn/6(lit#13, v4, v3, v5, v6, v7)"),
-        "the spawn output slot must carry the child's declared `SittingRow` codec:\n{spawn}"
+        spawn.contains("v6 = call_local awl_child_output_sitting_row_codec()")
+            && spawn.contains("spawn/6(lit#16, v4, v3, v5, v6, v7)"),
+        "the spawn output slot must carry the strict parent-side envelope codec:\n{spawn}"
     );
     assert!(mir.contains("== durable families == children"));
     assert!(!mir.contains("aion@workflow:map/2 [activities]"));
 
     assert!(emitted.contains("workflow.spawn(\"sit_one\""));
-    assert!(emitted.contains("sitting_row_codec()"));
+    assert!(emitted.contains("awl_child_output_sitting_row_codec()"));
     assert!(emitted.contains("json.object([#(\"spec\", sitting_spec_to_json(spec))"));
+    assert!(emitted.contains("use _outcome <- decode.field(\"outcome\", decode.string)"));
+    assert!(emitted.contains("use payload <- decode.field(\"payload\", sitting_row_decoder())"));
     assert!(!emitted.contains("sit_one.execute"));
     Ok(())
 }

@@ -275,7 +275,7 @@ fn pipe_action_stage(
             "json.object([#({}, {to_json}({arg}))])",
             string_lit(&param.name)
         );
-        let output_codec = emitter.codec_fn(&type_ref_to_g(&child.returns));
+        let output_codec = emitter.child_output_codec_fn(&type_ref_to_g(&child.returns));
         emitter.line(&format!(
             "use {fresh} <- result.try(workflow.spawn_and_wait({}, {CHILD_WITNESS}, {input}, \
              awlc.json_value(), {output_codec}(), awl_error.codec()) |> \

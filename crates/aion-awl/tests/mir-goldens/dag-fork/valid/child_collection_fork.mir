@@ -2,7 +2,7 @@ module child_collection_fork source=child_collection_fork.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   fan_out_fork_0:
-    aion@workflow:spawn/6 [children] (lit#13, v4, v3, v5, v6, v7)
+    aion@workflow:spawn/6 [children] (lit#16, v4, v3, v5, v6, v7)
   fan_out_fork_1:
     aion@child:await/1 [children] (v1)
 == durable families == children
@@ -27,7 +27,10 @@ exports: run/1, definition/0, execute/1
   [10] "ChildCollectionForkOutcome"
   [11] "reported"
   [12] "payload"
-  [13] "sit_one"
+  [13] "child"
+  [14] "outcome"
+  [15] "payload"
+  [16] "sit_one"
 == types ==
   record SittingSpec tag=sitting_spec
     harness: string
@@ -207,6 +210,28 @@ exports: run/1, definition/0, execute/1
   sig: () -> Decoder(List(child_collection_fork.SittingSpec))
   v0 = call_local sitting_spec_decoder()
   tail_rt gleam@dynamic@decode:list/1(v0)
+== fn awl_child_output_sitting_row_codec/0 origin=codec_template(ChildEnvelopeTrio, SittingRow, child_envelope(ref(SittingRow))) ==
+  sig: () -> Codec(child_collection_fork.SittingRow)
+  v0 = make_closure awl_child_output_sitting_row_to_json captures=[]
+  v1 = call_local awl_child_output_sitting_row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_sitting_row_to_json/1 origin=codec_template(ChildEnvelopeTrio, SittingRow, child_envelope(ref(SittingRow))) ==
+  sig: (child_collection_fork.SittingRow) -> Json
+  v1 = json_obj {"outcome": lit#13|>awlc.string_to_json, "payload": v0|>sitting_row_to_json}
+  return v1
+== fn awl_child_output_sitting_row_decoder/0 origin=codec_template(ChildEnvelopeTrio, SittingRow, child_envelope(ref(SittingRow))) ==
+  sig: () -> Decoder(child_collection_fork.SittingRow)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_sitting_row_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v0, v1)
+== fn awl_child_output_sitting_row_decoder$outcome/1 origin=lifted(awl_child_output_sitting_row_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork.SittingRow)
+  v1 = call_local sitting_row_decoder()
+  v2 = make_closure awl_child_output_sitting_row_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#15, v1, v2)
+== fn awl_child_output_sitting_row_decoder$payload/1 origin=lifted(awl_child_output_sitting_row_decoder, #1) ==
+  sig: (child_collection_fork.SittingRow) -> Decoder(child_collection_fork.SittingRow)
+  tail_rt gleam@dynamic@decode:success/1(v0)
 == fn step_fan_out/2 origin=region(fan_out) ==
   sig: (String, List(child_collection_fork.SittingSpec)) -> Result(child_collection_fork.ChildCollectionForkOutcome, AwlError)
   v2 = make_closure fan_out_fork_0 captures=[v0]
@@ -227,9 +252,9 @@ exports: run/1, definition/0, execute/1
   v3 = json_obj {"spec": v1|>sitting_spec_to_json, "pack_revision": v2|>awlc.string_to_json}
   v4 = make_closure awl$child_witness captures=[]
   v5 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v3, v4]
-  v6 = call_local sitting_row_codec() live_after=[v0, v3, v4, v5]
+  v6 = call_local awl_child_output_sitting_row_codec() live_after=[v0, v3, v4, v5]
   v7 = call_rt aion@awl@error:codec/0() live_after=[v0, v3, v4, v5, v6]
-  v8 = call_rt aion@workflow:spawn/6(lit#13, v4, v3, v5, v6, v7) live_after=[v0]
+  v8 = call_rt aion@workflow:spawn/6(lit#16, v4, v3, v5, v6, v7) live_after=[v0]
   v9 = call_rt aion@awl@error:map_spawn_error/1(v8) live_after=[v0]
   v10 = try_bind v9 live_after=[v0]
   v11 = cons v10 v0

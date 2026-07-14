@@ -1,0 +1,167 @@
+module sit_one source=sit_one.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families == 
+== atoms ==
+  [0] sitting_spec
+  [1] sitting_row
+  [2] sit_one_input
+  [3] sat_outcome
+  [4] false
+  [5] true
+  [6] ok
+== literals ==
+  [0] "harness"
+  [1] "model"
+  [2] "effort"
+  [3] "spec"
+  [4] "first_try"
+  [5] "spec"
+  [6] "pack_revision"
+  [7] "sat"
+  [8] "outcome"
+  [9] ""
+  [10] ""
+  [11] ""
+  [12] "SitOneOutcome"
+  [13] "sat"
+  [14] "payload"
+== types ==
+  record SittingSpec tag=sitting_spec
+    harness: string
+    model: string
+    effort: string
+  record SittingRow tag=sitting_row
+    spec: ref(SittingSpec)
+    first_try: bool
+  record SitOneInput tag=sit_one_input
+    spec: ref(SittingSpec)
+    pack_revision: string
+  union SitOneOutcome
+    sat -> sat_outcome(ref(SittingRow))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=sit_one_input_codec output=sit_one_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(sit_one.SitOneInput, sit_one.SitOneOutcome, AwlError)
+  T-DEF name="sit_one" input=sit_one_input_codec output=sit_one_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (sit_one.SitOneInput) -> Result(sit_one.SitOneOutcome, AwlError)
+  T-EXEC fields=[spec:sit_one.SittingSpec, pack_revision:String] entry=step_report args=[0]
+== fn sitting_spec_codec/0 origin=codec_template(RecordTrio, SittingSpec, record#0) ==
+  sig: () -> Codec(sit_one.SittingSpec)
+  v0 = make_closure sitting_spec_to_json captures=[]
+  v1 = call_local sitting_spec_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sitting_spec_to_json/1 origin=codec_template(RecordTrio, SittingSpec, record#0) ==
+  sig: (sit_one.SittingSpec) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"harness": v1|>awlc.string_to_json, "model": v2|>awlc.string_to_json, "effort": v3|>awlc.string_to_json}
+  return v4
+== fn sitting_spec_decoder/0 origin=codec_template(RecordTrio, SittingSpec, record#0) ==
+  sig: () -> Decoder(sit_one.SittingSpec)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure sitting_spec_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn sitting_spec_decoder$0/1 origin=lifted(sitting_spec_decoder, #0) ==
+  sig: (String) -> Decoder(sit_one.SittingSpec)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure sitting_spec_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn sitting_spec_decoder$1/2 origin=lifted(sitting_spec_decoder, #1) ==
+  sig: (String, String) -> Decoder(sit_one.SittingSpec)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure sitting_spec_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v2, v3)
+== fn sitting_spec_decoder$2/3 origin=lifted(sitting_spec_decoder, #2) ==
+  sig: (String, String, String) -> Decoder(sit_one.SittingSpec)
+  v3 = record(sitting_spec, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn sitting_row_codec/0 origin=codec_template(RecordTrio, SittingRow, record#1) ==
+  sig: () -> Codec(sit_one.SittingRow)
+  v0 = make_closure sitting_row_to_json captures=[]
+  v1 = call_local sitting_row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sitting_row_to_json/1 origin=codec_template(RecordTrio, SittingRow, record#1) ==
+  sig: (sit_one.SittingRow) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"spec": v1|>sitting_spec_to_json, "first_try": v2|>awlc.bool_to_json}
+  return v3
+== fn sitting_row_decoder/0 origin=codec_template(RecordTrio, SittingRow, record#1) ==
+  sig: () -> Decoder(sit_one.SittingRow)
+  v0 = call_local sitting_spec_decoder()
+  v1 = make_closure sitting_row_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn sitting_row_decoder$0/1 origin=lifted(sitting_row_decoder, #0) ==
+  sig: (sit_one.SittingSpec) -> Decoder(sit_one.SittingRow)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure sitting_row_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn sitting_row_decoder$1/2 origin=lifted(sitting_row_decoder, #1) ==
+  sig: (Bool, sit_one.SittingSpec) -> Decoder(sit_one.SittingRow)
+  v2 = record(sitting_row, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn sit_one_input_codec/0 origin=codec_template(RecordTrio, SitOneInput, record#2) ==
+  sig: () -> Codec(sit_one.SitOneInput)
+  v0 = make_closure sit_one_input_to_json captures=[]
+  v1 = call_local sit_one_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sit_one_input_to_json/1 origin=codec_template(RecordTrio, SitOneInput, record#2) ==
+  sig: (sit_one.SitOneInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"spec": v1|>sitting_spec_to_json, "pack_revision": v2|>awlc.string_to_json}
+  return v3
+== fn sit_one_input_decoder/0 origin=codec_template(RecordTrio, SitOneInput, record#2) ==
+  sig: () -> Decoder(sit_one.SitOneInput)
+  v0 = call_local sitting_spec_decoder()
+  v1 = make_closure sit_one_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn sit_one_input_decoder$0/1 origin=lifted(sit_one_input_decoder, #0) ==
+  sig: (sit_one.SittingSpec) -> Decoder(sit_one.SitOneInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure sit_one_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v1, v2)
+== fn sit_one_input_decoder$1/2 origin=lifted(sit_one_input_decoder, #1) ==
+  sig: (String, sit_one.SittingSpec) -> Decoder(sit_one.SitOneInput)
+  v2 = record(sit_one_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn sit_one_outcome_codec/0 origin=codec_template(UnionTrio, SitOneOutcome, union#3) ==
+  sig: () -> Codec(sit_one.SitOneOutcome)
+  v0 = make_closure sit_one_outcome_to_json captures=[]
+  v1 = call_local sit_one_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sit_one_outcome_to_json/1 origin=codec_template(UnionTrio, SitOneOutcome, union#3) ==
+  sig: (sit_one.SitOneOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#7|>awlc.string_to_json, "payload": v1|>sitting_row_to_json}
+  return v2
+== fn sit_one_outcome_decoder/0 origin=codec_template(UnionTrio, SitOneOutcome, union#3) ==
+  sig: () -> Decoder(sit_one.SitOneOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure sit_one_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn sit_one_outcome_decoder$outcome/1 origin=lifted(sit_one_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(sit_one.SitOneOutcome)
+  if cmp Eq v0 lit#13:
+    v4 = call_local sitting_row_decoder()
+    v5 = make_closure sit_one_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#14, v4, v5)
+  else:
+    v1 = record(sitting_spec, [lit#9, lit#10, lit#11])
+    v2 = record(sitting_row, [v1, 'false'])
+    v3 = record(sat_outcome, [v2])
+    tail_rt gleam@dynamic@decode:failure/2(v3, lit#12)
+== fn sit_one_outcome_decoder$arm0/1 origin=lifted(sit_one_outcome_decoder, #1) ==
+  sig: (sit_one.SittingRow) -> Decoder(sit_one.SitOneOutcome)
+  v1 = record(sat_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn step_report/1 origin=region(report) ==
+  sig: (sit_one.SittingSpec) -> Result(sit_one.SitOneOutcome, AwlError)
+  v1 = record(sitting_row, [v0, 'true'])
+  v2 = record(sat_outcome, [v1])
+  v3 = record(ok, [v2])
+  return v3

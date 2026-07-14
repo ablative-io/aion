@@ -2,7 +2,7 @@ module child_collection_fork_sequential source=child_collection_fork_sequential.
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   run_all_fork_0:
-    aion@workflow:spawn_and_wait/6 [children] (lit#8, v3, v2, v4, v5, v6)
+    aion@workflow:spawn_and_wait/6 [children] (lit#11, v3, v2, v4, v5, v6)
 == durable families == children
 == atoms ==
   [0] row
@@ -19,7 +19,10 @@ exports: run/1, definition/0, execute/1
   [5] "ChildCollectionForkSequentialOutcome"
   [6] "done"
   [7] "payload"
-  [8] "run_one"
+  [8] "child"
+  [9] "outcome"
+  [10] "payload"
+  [11] "run_one"
 == types ==
   record Row tag=row
     value: string
@@ -153,6 +156,28 @@ exports: run/1, definition/0, execute/1
 == fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
   sig: (String) -> Json
   tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn awl_child_output_row_codec/0 origin=codec_template(ChildEnvelopeTrio, Row, child_envelope(ref(Row))) ==
+  sig: () -> Codec(child_collection_fork_sequential.Row)
+  v0 = make_closure awl_child_output_row_to_json captures=[]
+  v1 = call_local awl_child_output_row_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_row_to_json/1 origin=codec_template(ChildEnvelopeTrio, Row, child_envelope(ref(Row))) ==
+  sig: (child_collection_fork_sequential.Row) -> Json
+  v1 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v0|>row_to_json}
+  return v1
+== fn awl_child_output_row_decoder/0 origin=codec_template(ChildEnvelopeTrio, Row, child_envelope(ref(Row))) ==
+  sig: () -> Decoder(child_collection_fork_sequential.Row)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_row_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn awl_child_output_row_decoder$outcome/1 origin=lifted(awl_child_output_row_decoder, #0) ==
+  sig: (String) -> Decoder(child_collection_fork_sequential.Row)
+  v1 = call_local row_decoder()
+  v2 = make_closure awl_child_output_row_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v1, v2)
+== fn awl_child_output_row_decoder$payload/1 origin=lifted(awl_child_output_row_decoder, #1) ==
+  sig: (child_collection_fork_sequential.Row) -> Decoder(child_collection_fork_sequential.Row)
+  tail_rt gleam@dynamic@decode:success/1(v0)
 == fn step_run_all/1 origin=region(run_all) ==
   sig: (List(String)) -> Result(child_collection_fork_sequential.ChildCollectionForkSequentialOutcome, AwlError)
   v1 = make_closure run_all_fork_0 captures=[]
@@ -171,9 +196,9 @@ exports: run/1, definition/0, execute/1
   v2 = json_obj {"value": v1|>awlc.string_to_json}
   v3 = make_closure awl$child_witness captures=[]
   v4 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v2, v3]
-  v5 = call_local row_codec() live_after=[v0, v2, v3, v4]
+  v5 = call_local awl_child_output_row_codec() live_after=[v0, v2, v3, v4]
   v6 = call_rt aion@awl@error:codec/0() live_after=[v0, v2, v3, v4, v5]
-  v7 = call_rt aion@workflow:spawn_and_wait/6(lit#8, v3, v2, v4, v5, v6) live_after=[v0]
+  v7 = call_rt aion@workflow:spawn_and_wait/6(lit#11, v3, v2, v4, v5, v6) live_after=[v0]
   v8 = call_rt aion@awl@error:map_child_error/1(v7) live_after=[v0]
   v9 = try_bind v8 live_after=[v0]
   v10 = cons v9 v0

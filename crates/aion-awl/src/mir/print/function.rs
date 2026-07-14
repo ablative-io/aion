@@ -78,6 +78,9 @@ fn render_trio(params: &TrioParams) -> String {
         TrioParams::Enum { shape } => format!("enum#{}", shape.0),
         TrioParams::Union { shape } => format!("union#{}", shape.0),
         TrioParams::Composite { desc } => format!("composite({})", render_wire(desc)),
+        TrioParams::ChildEnvelope { payload } => {
+            format!("child_envelope({})", render_wire(payload))
+        }
     }
 }
 

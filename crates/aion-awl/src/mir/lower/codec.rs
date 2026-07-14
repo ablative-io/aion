@@ -46,6 +46,7 @@ pub(super) fn lifted_count(codec_type: &CodecType, types: &[TypeShape]) -> usize
             }
             _ => 0,
         },
+        (CodecPayload::ChildEnvelope(_), _) => 2,
         (CodecPayload::Shape(_), None) => 0,
     }
 }
@@ -123,6 +124,10 @@ pub(super) fn trio(
                 decode::composite(ctx, plan, codec_type, &desc)?,
             )
         }
+        CodecPayload::ChildEnvelope(payload) => {
+            let payload = payload.clone();
+            super::codec_child::codec(ctx, plan, codec_type, &payload, lifted_refs)?
+        }
     };
     functions.push(composer);
     functions.push(enc.main);
@@ -165,6 +170,9 @@ pub(super) fn trio_params(codec_type: &CodecType) -> TrioParams {
             }
         }
         CodecPayload::Composite(desc) => TrioParams::Composite { desc: desc.clone() },
+        CodecPayload::ChildEnvelope(payload) => TrioParams::ChildEnvelope {
+            payload: payload.clone(),
+        },
     }
 }
 

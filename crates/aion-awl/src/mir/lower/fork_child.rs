@@ -11,7 +11,7 @@ use super::super::ops::{JsonVal, LiveAfter, Stmt, Tail, ToJsonRef, Value};
 use super::super::runtime::RuntimeFn;
 use super::super::tydesc::{Leaf, TyDesc};
 use super::activity::{call_rt, record_new};
-use super::build::{FnPlan, codec_ref_for};
+use super::build::{FnPlan, child_output_codec_ref_for, codec_ref_for};
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_arg_for};
@@ -457,7 +457,7 @@ fn child_spawn_args(
         stmts,
         fork.call.name_span,
     );
-    let output_codec_ref = codec_ref_for(ctx, plan, fork.returns)?;
+    let output_codec_ref = child_output_codec_ref_for(ctx, plan, fork.returns)?;
     let output_codec = codec_value(ctx, &output_codec_ref, stmts, fork.call.name_span);
     let error_codec = call_rt(
         ctx,

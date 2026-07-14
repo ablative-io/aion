@@ -66,6 +66,7 @@ pub enum CodecTemplateKind {
     EnumTrio,
     UnionTrio,
     CompositeTrio,
+    ChildEnvelopeTrio,
 }
 
 /// Descriptor-style template parameters retained for a post-BC descriptor
@@ -84,6 +85,9 @@ pub enum TrioParams {
     },
     Composite {
         desc: WireDesc,
+    },
+    ChildEnvelope {
+        payload: WireDesc,
     },
 }
 

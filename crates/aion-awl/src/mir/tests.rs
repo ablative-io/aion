@@ -73,6 +73,7 @@ const COVERED: &[&str] = &[
     "dag-fork/valid/fork_named_branches",
     "dag-fork/valid/fork_named_homogeneous",
     "dag-fork/valid/fork_sequential_route",
+    "dag-fork/valid/sit_one",
     "declarations/valid/worker_action_config_lines",
     "declarations/valid/worker_retry_backoff",
     "declarations/valid/worker_single_action",

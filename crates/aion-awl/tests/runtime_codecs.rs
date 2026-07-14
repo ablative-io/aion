@@ -15,6 +15,8 @@
 //! FAIL). A final case executes the `AssertList` failure path and pins the
 //! badmatch SUBJECT (carried fix b).
 
+#[path = "runtime_codecs/child_envelope.rs"]
+mod child_envelope;
 #[path = "runtime_codecs/drivers.rs"]
 mod drivers;
 #[path = "runtime_codecs/harness.rs"]

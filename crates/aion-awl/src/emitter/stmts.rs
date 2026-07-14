@@ -175,7 +175,7 @@ pub(super) fn child_spawn_args(
         ));
     }
     let input = format!("json.object([{}])", fields.join(", "));
-    let output_codec = emitter.codec_fn(&type_ref_to_g(&child.returns));
+    let output_codec = emitter.child_output_codec_fn(&type_ref_to_g(&child.returns));
     Ok(format!(
         "({}, {CHILD_WITNESS}, {input}, awlc.json_value(), {output_codec}(), \
          awl_error.codec())",

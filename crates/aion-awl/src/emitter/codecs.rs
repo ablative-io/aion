@@ -1,6 +1,10 @@
 //! Generated codecs: the workflow input record, the outcome union, every
 //! declared/projected record and enum, action input records, and composite
-//! (list/option) codecs. The workflow-error codec and the builtin leaf codecs
+//! (list/option) codecs. Child output codecs strictly decode the child's AWL
+//! `{outcome, payload}` result envelope to the payload type declared by the
+//! parent. Their encode side uses the fixed neutral outcome name `child`, so
+//! both backends expose one byte-identical symmetric wire contract.
+//! The workflow-error codec and the builtin leaf codecs
 //! are hoisted into the `aion/awl` SDK (AWL-BC-0); leaf references here resolve
 //! to `awlc.<leaf>_…` via [`Emitter::to_json_fn`]/`decoder_fn`.
 //!
@@ -9,6 +13,8 @@
 //! explicit `null` fails to decode. Element-position `?` (`[T?]`) is refused
 //! by the checker (ruled 2026-07-11); the remaining non-field options
 //! (optional lists and other whole values) keep the SDK's nullable form.
+
+use std::collections::BTreeMap;
 
 use crate::RouteDirection;
 
@@ -64,7 +70,64 @@ pub(super) fn emit_codecs(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     }
 
     super::composites::composite_codecs(emitter);
+    child_output_codecs(emitter);
     Ok(())
+}
+
+/// Emit one strict AWL outcome-envelope codec per distinct declared child
+/// payload type. The outcome string is required but deliberately unconstrained;
+/// the parent's `-> T` contract selects only the required typed payload.
+fn child_output_codecs(emitter: &mut Emitter<'_>) {
+    let outputs: BTreeMap<String, GType> = emitter
+        .document
+        .children
+        .iter()
+        .map(|child| {
+            let ty = type_ref_to_g(&child.returns);
+            (emitter.env.codec_name(&ty), ty)
+        })
+        .collect();
+    for (payload_stem, ty) in outputs {
+        child_output_codec(emitter, &payload_stem, &ty);
+    }
+}
+
+fn child_output_codec(emitter: &mut Emitter<'_>, payload_stem: &str, ty: &GType) {
+    let stem = format!("awl_child_output_{payload_stem}");
+    let gleam_type = emitter.env.gleam_type(ty);
+    let to_json = emitter.to_json_fn(ty);
+    let decoder = emitter.decoder_fn(ty);
+    emitter.line(&format!("fn {stem}_codec() -> Codec({gleam_type}) {{"));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "codec.json_codec({stem}_to_json, {stem}_decoder())"
+        ));
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line(&format!(
+        "fn {stem}_to_json(payload: {gleam_type}) -> json.Json {{"
+    ));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "json.object([#(\"outcome\", json.string(\"child\")), #(\"payload\", \
+             {to_json}(payload))])"
+        ));
+    });
+    emitter.line("}");
+    emitter.blank();
+    emitter.line(&format!(
+        "fn {stem}_decoder() -> decode.Decoder({gleam_type}) {{"
+    ));
+    emitter.indented(|this| {
+        this.line("use _outcome <- decode.field(\"outcome\", decode.string)");
+        this.line(&format!(
+            "use payload <- decode.field(\"payload\", {decoder}())"
+        ));
+        this.line("decode.success(payload)");
+    });
+    emitter.line("}");
+    emitter.blank();
 }
 
 fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
