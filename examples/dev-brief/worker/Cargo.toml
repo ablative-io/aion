@@ -3,7 +3,7 @@
 # Standalone (NOT a workspace member) so it builds from a plain `cargo build`
 # in this directory, mirroring the `remediation` example worker.
 #
-# It serves EIGHT activity types on ONE task queue (`dev_brief`):
+# It serves NINE activity types on ONE task queue (`dev_brief`):
 #
 # - TWO DRIVEN AGENT activities (`developer`, `review_lens`) — each routed
 #   through its OWN composed harness: a `ProfiledNornHarness` that assembles
@@ -13,17 +13,17 @@
 #   `--output-schema` and a `{workflow_id}`-derived `--session-id`, over the
 #   liminal server-push transport (`serve_with_redial`). One connection per
 #   role.
-# - SIX SHELL-NODE activities (`provision_workspace`, `run_gates`,
+# - SEVEN SHELL-NODE activities (`provision_workspace`, `run_gates`,
 #   `reset_workspace`, `verify_gates`, `cleanup_workspace`, and
-#   `format_verdict_evidence`) — typed registry handlers for git, configured
-#   gates, workspace lifecycle, and pure evidence formatting, on a third
-#   connection with no harness.
+#   the pure `format_verdict_evidence` and `fold_round` boundaries) — typed
+#   registry handlers for git, configured gates, workspace lifecycle, evidence
+#   formatting, and round-state packing, on a third connection with no harness.
 [package]
 name = "dev-brief-worker"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Rust worker serving eight dev-brief activities: two driven Norn agent roles and six shell-node handlers."
+description = "Rust worker serving nine dev-brief activities: two driven Norn agent roles and seven shell-node handlers."
 
 [[bin]]
 name = "dev-brief-worker"

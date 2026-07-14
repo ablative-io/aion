@@ -77,6 +77,80 @@ pub struct FormatVerdictEvidenceOutput {
     pub evidence: String,
 }
 
+/// One acceptance-criterion claim in a [`DevReport`]
+/// (`codecs.acceptance_claim_decoder`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptanceClaim {
+    /// The brief criterion the developer says is satisfied.
+    pub criterion: String,
+    /// The concrete implementation evidence for that claim.
+    pub how: String,
+}
+
+/// One declared departure in a [`DevReport`] (`codecs.deviation_decoder`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deviation {
+    /// What departed from the brief.
+    pub what: String,
+    /// Why the departure was necessary.
+    pub why: String,
+}
+
+/// The developer agent's report (`codecs.dev_report_codec` and
+/// `schemas/dev-report.schema.json`).
+///
+/// `commits` and `deviations` follow the Gleam decoder's presence rules:
+/// omission produces an empty list, while explicit `null` is not a list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevReport {
+    /// The brief this implementation round addresses.
+    pub brief_id: String,
+    /// A concrete summary of what changed and why.
+    pub summary: String,
+    /// The real commits recorded by the worker.
+    #[serde(default)]
+    pub commits: Vec<String>,
+    /// One implementation claim per acceptance criterion.
+    pub acceptance_claims: Vec<AcceptanceClaim>,
+    /// Every declared departure from the brief.
+    #[serde(default)]
+    pub deviations: Vec<Deviation>,
+}
+
+/// Named-argument input to `fold_round`.
+///
+/// This pure boundary packs one review round into the single value carried by
+/// an AWL loop. It performs no shell I/O and owns no workflow disposition.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldRoundInput {
+    /// The developer report for this round.
+    pub report: DevReport,
+    /// The mechanical gate outcome for this round.
+    pub gate: GateOutcome,
+    /// The collected review-lens verdicts in lens order.
+    pub verdicts: Vec<LensVerdict>,
+    /// Evidence carried from earlier rounds.
+    pub prior_evidence: String,
+    /// Workspace droppings observed while resetting after this round.
+    pub droppings: Vec<String>,
+}
+
+/// Record result from `fold_round`.
+///
+/// The round values are echoed unchanged alongside the smart-joined evidence
+/// carried into the next AWL iteration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldRoundOutput {
+    /// The input developer report, unchanged.
+    pub report: DevReport,
+    /// The input gate outcome, unchanged.
+    pub gate: GateOutcome,
+    /// The input review-lens verdicts, unchanged.
+    pub verdicts: Vec<LensVerdict>,
+    /// Prior and current adverse evidence joined without empty separators.
+    pub evidence: String,
+}
+
 /// Input to `provision_workspace` (`codecs.provision_input_codec`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProvisionInput {

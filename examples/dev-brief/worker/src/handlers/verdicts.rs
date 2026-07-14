@@ -30,13 +30,17 @@ pub fn format_verdict_evidence(
 /// Reproduce `adverse_lines` followed by the workflow's `string.join(lines,
 /// "; ")`. The derive-and-check calculation is used only to select the same
 /// evidence lines as Gleam; no acceptance Boolean leaves this formatter.
-fn format_evidence(verdicts: &[LensVerdict]) -> String {
+pub(crate) fn format_evidence(verdicts: &[LensVerdict]) -> String {
+    adverse_lines(verdicts).join("; ")
+}
+
+/// Reproduce the workflow's ordered `adverse_lines` before its final join.
+pub(crate) fn adverse_lines(verdicts: &[LensVerdict]) -> Vec<String> {
     verdicts
         .iter()
         .filter(|verdict| emits_adverse_line(verdict))
         .map(format_adverse_line)
         .collect::<Vec<_>>()
-        .join("; ")
 }
 
 fn emits_adverse_line(verdict: &LensVerdict) -> bool {

@@ -4,7 +4,7 @@ use aion_worker::{ActivityContext, ActivityRegistry, HandlerFuture};
 use dev_brief_worker::handlers;
 use dev_brief_worker::shell::Shell;
 
-/// The six shell-node activities served by the binary.
+/// The seven shell-node activities served by the binary.
 pub(super) fn shell_registry(shell: Shell) -> Result<ActivityRegistry, aion_worker::WorkerError> {
     ActivityRegistry::new()
         .register_activity(
@@ -21,6 +21,7 @@ pub(super) fn shell_registry(shell: Shell) -> Result<ActivityRegistry, aion_work
             "format_verdict_evidence",
             immediate(handlers::format_verdict_evidence),
         )?
+        .register_activity("fold_round", immediate(handlers::fold_round))?
         .register_activity("cleanup_workspace", blocking(shell, handlers::cleanup))
 }
 

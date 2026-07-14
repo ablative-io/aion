@@ -1,6 +1,6 @@
 //! Composition root for the dev-brief worker.
 //!
-//! It serves eight activity types on ONE task queue (`dev_brief`) across
+//! It serves nine activity types on ONE task queue (`dev_brief`) across
 //! THREE liminal connections in this single process, each connection
 //! registered on its OWN node (the third routing dimension: namespace ×
 //! `task_queue` × node) so the server — which routes by those three
@@ -16,8 +16,8 @@
 //!   assembled with the per-run context by the role's ONE prompt function.
 //! - one SHELL connection, registered on node `shell`, serving
 //!   `provision_workspace`, `run_gates`, `reset_workspace`, `verify_gates`,
-//!   `cleanup_workspace`, and `format_verdict_evidence` from a typed registry,
-//!   with no harness.
+//!   `cleanup_workspace`, `format_verdict_evidence`, and `fold_round` from a
+//!   typed registry, with no harness.
 //!
 //! Session isolation falls out of the topology: the developer runs inside
 //! the `dev_brief` workflow (`{workflow_id}-developer` — per brief, resumed
@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
         norn_bin = %args.norn_bin,
         profiles_dir = %args.profiles_dir,
         task_queue = TASK_QUEUE,
-        "dev-brief-worker starting: 2 driven agent roles + 6 shell activities across 3 connections"
+        "dev-brief-worker starting: 2 driven agent roles + 7 shell activities across 3 connections"
     );
 
     let roles = roles(profiles);
@@ -271,7 +271,7 @@ fn inner_norn_harness(norn_bin: &str, role: &Role) -> NornHarness {
     harness.without_env("OPENAI_API_KEY")
 }
 
-/// Serve the six shell-node activities from a typed registry on one connection,
+/// Serve the seven shell-node activities from a typed registry on one connection,
 /// registered on the `shell` node so only shell activities are routed here.
 fn serve_shell(args: &Args) -> anyhow::Result<()> {
     let identity = format!("{}-shell", args.identity_prefix);
@@ -294,7 +294,7 @@ fn serve_shell(args: &Args) -> anyhow::Result<()> {
             }
             tracing::info!(
                 "shell connection registered; serving provision/run_gates/reset/\
-                 verify_gates/cleanup/format_verdict_evidence"
+                 verify_gates/cleanup/format_verdict_evidence/fold_round"
             );
         },
     )?;

@@ -190,6 +190,7 @@ fn node_mapping_is_exhaustive_and_injective() -> anyhow::Result<()> {
         vec![
             "cleanup_workspace",
             "developer",
+            "fold_round",
             "format_verdict_evidence",
             "provision_workspace",
             "reset_workspace",
