@@ -18,7 +18,7 @@ use aion::EngineError;
 use aion_awl_package::AwlAssembleOptions;
 use aion_package::{ExtractionLimits, Package, PackageBuilder};
 use aion_proto::WireError;
-use aion_toolchain::{CompileRequest, ToolchainError, compile_source};
+use aion_toolchain::{CompileRequest, ToolchainError, compile_source, compile_source_for_entry};
 use serde::{Deserialize, Serialize};
 
 use super::error::AuthoringApiError;
@@ -96,10 +96,63 @@ pub async fn compile_and_load_with_options(
     request: CompileSourceRequest,
     options: AwlAssembleOptions,
 ) -> Result<CompileSourceResponse, AuthoringApiError> {
+    compile_and_load_inner(state, caller, transport, request, options, None).await
+}
+
+/// Compiles and hot-loads an emitted AWL document under the workflow type
+/// declared by that document rather than the authoring template's frozen entry.
+///
+/// `workflow_type` must come from the parsed document header. It becomes the
+/// staged Gleam module path, package manifest entry module, engine workflow
+/// type, and sole routing target for the load.
+///
+/// # Errors
+///
+/// Returns the same failures as [`compile_and_load_with_options`], plus an
+/// invalid-project error if `workflow_type` cannot name a Gleam module.
+pub async fn compile_and_load_document(
+    state: &ServerState,
+    caller: &CallerIdentity,
+    transport: &'static str,
+    request: CompileSourceRequest,
+    workflow_type: String,
+    options: AwlAssembleOptions,
+) -> Result<CompileSourceResponse, AuthoringApiError> {
+    compile_and_load_inner(
+        state,
+        caller,
+        transport,
+        request,
+        options,
+        Some(workflow_type),
+    )
+    .await
+}
+
+async fn compile_and_load_inner(
+    state: &ServerState,
+    caller: &CallerIdentity,
+    transport: &'static str,
+    request: CompileSourceRequest,
+    options: AwlAssembleOptions,
+    workflow_type: Option<String>,
+) -> Result<CompileSourceResponse, AuthoringApiError> {
     authorize_mutation(state, caller, transport)?;
     let (gleam_path, template_root) = authoring_paths(state)?;
-
-    let mut compiled = run_compile(gleam_path, template_root, request.source).await?;
+    let expected_workflow_type = workflow_type.clone();
+    let mut compiled =
+        run_compile(gleam_path, template_root, request.source, workflow_type).await?;
+    if let Some(expected) = expected_workflow_type {
+        let actual = &compiled.package.manifest().entry_module;
+        if actual != &expected {
+            return Err(AuthoringApiError::Wire(
+                WireError::backend(format!(
+                    "document compile returned manifest entry module `{actual}` instead of `{expected}`"
+                ))
+                .with_error_type("Toolchain"),
+            ));
+        }
+    }
     compiled.package = package_with_options(compiled.package, options)?;
     let engine = engine_handle(state)?;
     match engine.load_package(compiled.package).await {
@@ -217,13 +270,18 @@ async fn run_compile(
     gleam_path: PathBuf,
     template_root: PathBuf,
     source: String,
+    workflow_type: Option<String>,
 ) -> Result<aion_toolchain::CompiledWorkflow, AuthoringApiError> {
     let join = tokio::task::spawn_blocking(move || {
-        compile_source(&CompileRequest {
+        let request = CompileRequest {
             template_root: &template_root,
             gleam_path: &gleam_path,
             source: &source,
-        })
+        };
+        workflow_type.map_or_else(
+            || compile_source(&request),
+            |entry_module| compile_source_for_entry(&request, &entry_module),
+        )
     })
     .await;
     match join {

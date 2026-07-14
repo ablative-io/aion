@@ -89,10 +89,38 @@ pub struct CompiledWorkflow {
 /// [`ToolchainError::Packaging`] when the built project cannot be assembled
 /// into a verified archive.
 pub fn compile_source(request: &CompileRequest<'_>) -> Result<CompiledWorkflow, ToolchainError> {
+    compile_source_with_entry(request, None)
+}
+
+/// Compiles and packages submitted source under an explicit logical entry
+/// module instead of the frozen module declared by the project template.
+///
+/// The override is applied only inside the per-submission workspace: the
+/// template remains read-only, its other manifest policy is preserved, and the
+/// replaced template entry source is excluded from the resulting package.
+/// This is the document-authoring path, where the parsed document name owns the
+/// package identity and therefore the engine routing key.
+///
+/// # Errors
+///
+/// Returns the same errors as [`compile_source`], and
+/// [`ToolchainError::InvalidProject`] when `entry_module` is not a safe logical
+/// module name.
+pub fn compile_source_for_entry(
+    request: &CompileRequest<'_>,
+    entry_module: &str,
+) -> Result<CompiledWorkflow, ToolchainError> {
+    compile_source_with_entry(request, Some(entry_module))
+}
+
+fn compile_source_with_entry(
+    request: &CompileRequest<'_>,
+    requested_entry: Option<&str>,
+) -> Result<CompiledWorkflow, ToolchainError> {
     // Validate the template up front so a misconfigured project root fails
     // before the cost of staging a working copy.
     project::validate_project_root(request.template_root)?;
-    let entry_module = project::single_entry_module(request.template_root)?;
+    let template_entry = project::single_entry_module(request.template_root)?;
 
     // Every submission gets its own isolated working copy; the template is
     // never touched. The workspace (and the captured source within it) is
@@ -100,8 +128,13 @@ pub fn compile_source(request: &CompileRequest<'_>) -> Result<CompiledWorkflow, 
     // success path and on every `?` early return alike.
     let workspace = Workspace::stage(request.template_root)?;
     let workspace_root = workspace.root();
-
-    let source_path = project::entry_module_source_path(workspace_root, &entry_module)?;
+    let entry_module = requested_entry.unwrap_or(&template_entry);
+    if entry_module != template_entry {
+        project::retarget_single_entry_module(workspace_root, entry_module)?;
+        let template_source = project::entry_module_source_path(workspace_root, &template_entry)?;
+        project::remove_entry_source(&template_source)?;
+    }
+    let source_path = project::entry_module_source_path(workspace_root, entry_module)?;
     project::write_entry_source(&source_path, request.source)?;
     compile_built_project(workspace_root, request.gleam_path)
 }

@@ -163,6 +163,82 @@ pub fn write_entry_source(path: &Path, source: &str) -> Result<(), ToolchainErro
     })
 }
 
+/// Replaces the staged descriptor's sole entry module while preserving all
+/// other workflow packaging policy from the operator's template.
+///
+/// This is deliberately limited to a staged workspace: callers retain the
+/// configured template as read-only, while a document-aware submission can
+/// compile and package under its own logical module name.
+pub(crate) fn retarget_single_entry_module(
+    root: &Path,
+    entry_module: &str,
+) -> Result<(), ToolchainError> {
+    drop(entry_module_source_path(root, entry_module)?);
+    let descriptor = root.join(WORKFLOW_CONFIG_FILE);
+    let text = std::fs::read_to_string(&descriptor).map_err(|source| ToolchainError::Io {
+        path: descriptor.clone(),
+        source,
+    })?;
+    let mut config: toml::Value =
+        toml::from_str(&text).map_err(|source| ToolchainError::InvalidProject {
+            message: format!("failed to parse {}: {source}", descriptor.display()),
+        })?;
+    let workflows = config
+        .get_mut("workflow")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or_else(|| ToolchainError::InvalidProject {
+            message: format!(
+                "{} declares no [[workflow]] entry; source submission requires exactly one",
+                descriptor.display()
+            ),
+        })?;
+    let workflow = match workflows.as_mut_slice() {
+        [single] => single,
+        many => {
+            return Err(ToolchainError::InvalidProject {
+                message: format!(
+                    "{} declares {} [[workflow]] entries; source submission requires exactly one entry module to write the submitted source into",
+                    descriptor.display(),
+                    many.len()
+                ),
+            });
+        }
+    };
+    let table = workflow
+        .as_table_mut()
+        .ok_or_else(|| ToolchainError::InvalidProject {
+            message: format!(
+                "{} contains a non-table [[workflow]] entry",
+                descriptor.display()
+            ),
+        })?;
+    table.insert(
+        "entry_module".to_owned(),
+        toml::Value::String(entry_module.to_owned()),
+    );
+    let adjusted = toml::to_string(&config).map_err(|source| ToolchainError::InvalidProject {
+        message: format!("failed to serialize {}: {source}", descriptor.display()),
+    })?;
+    std::fs::write(&descriptor, adjusted).map_err(|source| ToolchainError::Io {
+        path: descriptor,
+        source,
+    })
+}
+
+/// Removes the frozen entry source from a staged workspace after its descriptor
+/// has been retargeted. A missing source is valid because template validation
+/// requires the manifest, not a pre-existing placeholder module.
+pub(crate) fn remove_entry_source(path: &Path) -> Result<(), ToolchainError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ToolchainError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// Whether `candidate`, folded lexically, stays inside `base`.
 ///
 /// Folds `.` and `..` components without touching the filesystem so the check

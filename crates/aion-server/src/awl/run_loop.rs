@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::handlers::{CheckRequest, check_source};
 use super::revisions::{self, DeploymentRecord, RevisionError};
-use crate::authoring::{AuthoringApiError, CompileSourceRequest, compile_and_load_with_options};
+use crate::authoring::{AuthoringApiError, CompileSourceRequest, compile_and_load_document};
 use crate::worker::registry::DEFAULT_TASK_QUEUE;
 use crate::{CallerIdentity, ServerState};
 
@@ -146,6 +146,20 @@ fn prepare_emission(
     Ok(PreparedEmission { source, timeout })
 }
 
+/// Selects the queue recorded for ship-and-run from the document itself.
+///
+/// AWL has no separate workflow-level task-queue header: worker declaration
+/// names are task queues, so the first declaration is the document's launch
+/// queue. Workerless workflows use the server's canonical default queue. The
+/// authoring template's frozen manifest is intentionally not consulted because
+/// it describes build policy, not the deployed document's workers.
+fn document_task_queue(document: &aion_awl::Document) -> String {
+    document.workers.first().map_or_else(
+        || DEFAULT_TASK_QUEUE.to_owned(),
+        |worker| worker.name.clone(),
+    )
+}
+
 pub async fn deploy(
     state: &ServerState,
     caller: &CallerIdentity,
@@ -175,18 +189,17 @@ pub async fn deploy(
     }
     let document = aion_awl::parse(&revision.source)
         .map_err(|error| RunLoopError::CheckRefused(error.message))?;
-    let task_queue = document.workers.first().map_or_else(
-        || DEFAULT_TASK_QUEUE.to_owned(),
-        |worker| worker.name.clone(),
-    );
+    let workflow_type = document.name.clone();
+    let task_queue = document_task_queue(&document);
     let prepared = prepare_emission(&document, root)?;
-    let loaded = compile_and_load_with_options(
+    let loaded = compile_and_load_document(
         state,
         caller,
         "http",
         CompileSourceRequest {
             source: prepared.source.clone(),
         },
+        workflow_type.clone(),
         AwlAssembleOptions {
             timeout: prepared.timeout,
         },
@@ -197,7 +210,7 @@ pub async fn deploy(
         document_path: request.path,
         content_hash: revision.content_hash,
         package_id: loaded.content_hash.clone(),
-        workflow_type: loaded.workflow_type.clone(),
+        workflow_type,
         task_queue,
         workflow_id: None,
         run_id: None,
