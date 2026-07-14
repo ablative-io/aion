@@ -1,0 +1,21 @@
+{
+  "material": {
+    "title": "Example: split a module",
+    "brief": "Split src/lib.rs into focused modules while preserving the public API. The design notes in docs/DESIGN.md name the intended seams; keep each new module under 500 code lines and re-export the existing surface from lib.rs.",
+    "pointers": ["src/lib.rs", "docs/DESIGN.md"]
+  },
+  "config": {
+    "repo_root": "/abs/path/to/target/repo",
+    "base_branch": "main",
+    "gates": [
+      { "name": "fmt", "argv": ["cargo", "fmt", "--all"] },
+      {
+        "name": "clippy",
+        "argv": ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+      },
+      { "name": "test", "argv": ["cargo", "test", "--workspace"] }
+    ],
+    "max_rounds": 3,
+    "max_merge_rounds": 2
+  }
+}

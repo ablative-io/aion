@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "remediation report",
+  "description": "The remediator's structured result for one merge-conflict resolution turn. The machinery concludes the in-progress merge after the turn — the agent never runs git commit.",
+  "type": "object",
+  "required": ["summary", "resolved"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What conflicted, whose intent won where, and why — the next merge pass records this."
+    },
+    "resolved": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Every conflicted file resolved this turn."
+    }
+  }
+}

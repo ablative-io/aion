@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "item report",
+  "description": "The dev agent's structured result for one item round. `item_id` and `commits` are rewritten by the WORKER after it commits the round's work — an agent-asserted hash never survives.",
+  "type": "object",
+  "required": ["item_id", "summary", "claims"],
+  "additionalProperties": false,
+  "properties": {
+    "item_id": { "type": "string", "minLength": 1 },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What was changed and why, concretely — the reviewer reads this."
+    },
+    "commits": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Filled by the worker with the real commit hash; leave empty."
+    },
+    "claims": {
+      "type": "array",
+      "description": "One entry per acceptance-relevant point: how the diff meets it. Claims are checked adversarially, never trusted.",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "how"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "how": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

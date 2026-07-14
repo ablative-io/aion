@@ -1,0 +1,188 @@
+//! staged_rounds: supplied material goes in; merged, reviewed work comes
+//! out. One planner agent reads the material and returns a typed, phased
+//! plan of scope-fenced work items. Bounded rounds then fan the released
+//! items out — one worktree, one dev agent, and one reviewer per item, in
+//! parallel — and fold_phase moves accepted items to done, keeps rejected
+//! items pending with the reviewer's feedback attached, and releases
+//! newly-unblocked next-phase items. Accepted branches merge; conflicts
+//! feed a bounded remediation cycle whose agent RESUMES the planner's
+//! session — the persistent coordinator judges its own plan's conflicts.
+//!
+//! Operator notes: work item ids must be git-ref-safe slugs (they name
+//! branches); a terminal per-item activity failure fails the run (the
+//! parallel fan-out is engine-owned fail-fast).
+workflow staged_rounds
+  timeout 12h
+  input material: Material
+  input config: RunConfig
+  outcome completed:  type Completed,  route success
+  outcome exhausted:  type Exhausted,  route failure
+  outcome conflicted: type Conflicted, route failure
+
+/// What the planner reads: a title, the large brief, and repo pointers.
+type Material { title: String, brief: String, pointers: [String] }
+
+type GateCommand { name: String, argv: [String] }
+
+/// Run configuration. Every field is explicit — no defaults.
+type RunConfig {
+  repo_root: String,
+  base_branch: String,
+  gates: [GateCommand],
+  max_rounds: Int,
+  max_merge_rounds: Int,
+}
+
+/// One planned work item: scope fences, a phase tag, and dependency ids.
+/// `feedback` starts empty; fold_phase writes rejected items' reviewer
+/// feedback into it for the next round's dev turn.
+type WorkItem {
+  id: String,
+  title: String,
+  goal: String,
+  scope_in: [String],
+  scope_out: [String],
+  phase: Int,
+  depends_on: [String],
+  feedback: String,
+}
+
+type Plan { summary: String, items: [WorkItem] }
+
+type DoneItem { item_id: String, branch: String, base_commit: String, summary: String }
+
+/// The one loop-carried value: released/blocked/done partitions plus the
+/// run's accumulated adverse evidence.
+type PhaseState { ready: [WorkItem], blocked: [WorkItem], done: [DoneItem], evidence: String }
+
+type ProvisionedItem { item: WorkItem, workspace_path: String, branch: String, base_commit: String }
+
+type ItemClaim { criterion: String, how: String }
+
+type ItemReport { item_id: String, summary: String, commits: [String], claims: [ItemClaim] }
+
+type DevItemResult {
+  item: WorkItem,
+  workspace_path: String,
+  branch: String,
+  base_commit: String,
+  report: ItemReport,
+}
+
+type Finding { severity: String, title: String, evidence: String }
+
+/// One item verdict: severity is "blocking" or "advisory", overall is
+/// "accept" or "reject".
+type ItemVerdict {
+  item_id: String,
+  overall: String,
+  findings: [Finding],
+  /// Present when the verdict rejects.
+  reject_reason: String?,
+}
+
+type MergeConflict { item_id: String, branch: String, files: [String], detail: String }
+
+/// The merge loop's one threaded value, returned whole by merge_branches.
+type MergeState {
+  integration_branch: String,
+  workspace_path: String,
+  merged: [String],
+  conflicts: [MergeConflict],
+  evidence: String,
+}
+
+type RemediationReport { summary: String, resolved: [String] }
+
+type Completed {
+  plan: String,
+  rounds: Int,
+  merge_rounds: Int,
+  done: [DoneItem],
+  integration_branch: String,
+  merged: [String],
+  evidence: String,
+}
+
+type Exhausted {
+  rounds: Int,
+  ready: [WorkItem],
+  blocked: [WorkItem],
+  done: [DoneItem],
+  evidence: String,
+}
+
+type Conflicted {
+  rounds: Int,
+  merge_rounds: Int,
+  done: [DoneItem],
+  integration_branch: String,
+  conflicts: [MergeConflict],
+  evidence: String,
+}
+
+worker staged_rounds
+  action planner(material: Material, repo_root: String, workspace_path: String) -> Plan
+    node planner
+  action provision_item(run_root: String, repo_root: String, base_branch: String, item: WorkItem) -> ProvisionedItem
+    node shell
+  action dev_item(work: ProvisionedItem, gates: [GateCommand]) -> DevItemResult
+    node developer
+  action review_item(work: DevItemResult) -> ItemVerdict
+    node reviewer
+  action fold_phase(prior: PhaseState, incoming: [WorkItem], dev: [DevItemResult], verdicts: [ItemVerdict]) -> PhaseState
+    node shell
+  action merge_branches(run_root: String, repo_root: String, base_branch: String, done: [DoneItem], prior_evidence: String, remediation: String) -> MergeState
+    node shell
+  action remediate(merge: MergeState, plan: Plan, workspace_path: String) -> RemediationReport
+    node remediation
+
+step plan
+  config.repo_root + "/.staged-rounds/" + workflow.id -> run_root
+  planner(material: material, repo_root: config.repo_root, workspace_path: config.repo_root) -> plan
+  fold_phase(prior: PhaseState(ready: [], blocked: [], done: [], evidence: ""), incoming: plan.items, dev: [], verdicts: []) -> seeded
+
+step execute
+  loop state = seeded counting rounds
+    fork item in state.ready
+      provision_item(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, item: item)
+    join -> provisioned
+    fork p in provisioned
+      dev_item(work: p, gates: config.gates)
+    join -> dev_results
+    fork d in dev_results
+      review_item(work: d)
+    join -> verdicts
+    fold_phase(prior: state, incoming: [], dev: dev_results, verdicts: verdicts) -> state
+    until state.ready is empty and state.blocked is empty
+    max config.max_rounds
+
+  outcome complete: when state.ready is empty and state.blocked is empty, route merge_once
+  outcome spent: otherwise, route wrap_exhausted
+
+step merge_once
+  merge_branches(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, done: state.done, prior_evidence: state.evidence, remediation: "") -> attempt
+  outcome clean: when attempt.conflicts is empty, route finish_clean
+  outcome dirty: otherwise, route fix_conflicts
+
+step fix_conflicts
+  loop mstate = attempt counting merge_rounds
+    remediate(merge: mstate, plan: plan, workspace_path: mstate.workspace_path) -> advice
+    merge_branches(run_root: run_root, repo_root: config.repo_root, base_branch: config.base_branch, done: state.done, prior_evidence: mstate.evidence, remediation: advice.summary) -> mstate
+    until mstate.conflicts is empty
+    max config.max_merge_rounds
+
+  outcome merged: when mstate.conflicts is empty, route finish_fixed
+  outcome stuck: otherwise, route wrap_conflicted
+
+step finish_clean
+  route completed(plan: plan.summary, rounds: rounds, merge_rounds: 0, done: state.done, integration_branch: attempt.integration_branch, merged: attempt.merged, evidence: state.evidence)
+
+step finish_fixed
+  route completed(plan: plan.summary, rounds: rounds, merge_rounds: merge_rounds, done: state.done, integration_branch: mstate.integration_branch, merged: mstate.merged, evidence: mstate.evidence)
+
+step wrap_exhausted
+  route exhausted(rounds: rounds, ready: state.ready, blocked: state.blocked, done: state.done, evidence: state.evidence)
+
+step wrap_conflicted
+  route conflicted(rounds: rounds, merge_rounds: merge_rounds, done: state.done, integration_branch: mstate.integration_branch, conflicts: mstate.conflicts, evidence: mstate.evidence)
