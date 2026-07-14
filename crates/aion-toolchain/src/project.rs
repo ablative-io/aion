@@ -32,6 +32,11 @@ struct EntryWorkflow {
     entry_module: String,
 }
 
+#[derive(serde::Deserialize)]
+struct GleamProjectConfig {
+    name: String,
+}
+
 /// Validates that `root` is a usable Gleam workflow project: it must contain
 /// both a `gleam.toml` and a `workflow.toml`.
 ///
@@ -102,24 +107,23 @@ pub fn single_entry_module(root: &Path) -> Result<String, ToolchainError> {
 /// Resolves the on-disk source path for `entry_module` under `<root>/src`,
 /// confining it to that directory.
 ///
-/// Gleam's nested-module separator `@` maps to a path separator under `src/`
-/// (`demo@nested` -> `src/demo/nested.gleam`). The module name is validated to
-/// reject traversal (`..`), absolute escapes, backslashes, and the deployed
-/// name separator before any path is built, so a submitted module name can
-/// never write outside `src/`.
+/// Gleam's internal nested-module separator `@` maps to a path separator under
+/// `src/` (`demo@nested` -> `src/demo/nested.gleam`); source-style `/` separators
+/// are also accepted. Every component must match `[a-z][a-z0-9_]*`, the exact
+/// module grammar this toolchain supports, before any path is built.
 ///
 /// # Errors
 ///
 /// Returns [`ToolchainError::InvalidProject`] when the module name is not a
-/// safe logical name or the resolved path escapes `<root>/src`.
+/// supported Gleam logical name or the resolved path escapes `<root>/src`.
 pub fn entry_module_source_path(
     root: &Path,
     entry_module: &str,
 ) -> Result<PathBuf, ToolchainError> {
-    if !is_safe_logical_name(entry_module) {
+    if !is_supported_logical_module(entry_module) {
         return Err(ToolchainError::InvalidProject {
             message: format!(
-                "entry module `{entry_module}` is not a safe logical module name (no `$`, backslashes, leading separators, or empty/`.`/`..` components)"
+                "entry module `{entry_module}` is not a supported Gleam logical module name (each `/` or `@` separated component must match `[a-z][a-z0-9_]*`)"
             ),
         });
     }
@@ -129,8 +133,8 @@ pub fn entry_module_source_path(
     let mut candidate = src_root.join(relative);
     candidate.set_extension("gleam");
 
-    // Defence in depth: even though `is_safe_logical_name` already rejects
-    // traversal, confirm lexically that the resolved path stays under
+    // Defence in depth: even though the module grammar rejects traversal,
+    // confirm lexically that the resolved path stays under
     // `<root>/src` before it is ever handed to the filesystem.
     if !is_confined(&src_root, &candidate) {
         return Err(ToolchainError::InvalidProject {
@@ -239,6 +243,74 @@ pub(crate) fn remove_entry_source(path: &Path) -> Result<(), ToolchainError> {
     }
 }
 
+/// Removes the root package's compiler output copied from a prebuilt template.
+///
+/// Gleam's incremental build does not prune a `.beam` after its source is
+/// removed. Explicit-entry submissions replace the frozen entry source, so the
+/// staged root package must rebuild from empty output. Dependency outputs remain
+/// available: they cannot contain the replaced first-party module and retaining
+/// them avoids an unnecessary network resolution during an authoring deploy.
+pub(crate) fn remove_staged_root_build(root: &Path) -> Result<(), ToolchainError> {
+    let package = root_package_name(root)?;
+    let build = root.join("build").join("dev").join("erlang").join(package);
+    match std::fs::remove_dir_all(&build) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ToolchainError::Io {
+            path: build,
+            source,
+        }),
+    }
+}
+
+/// Removes Gleam's generated root-package application bootstrap after a clean
+/// explicit-entry build.
+///
+/// `<package>@@main.beam` belongs to the frozen `gleam.toml` package shell, not
+/// to the emitted workflow or a runtime dependency. Excluding it prevents the
+/// template package name from entering document version identity. Generic
+/// project compilation retains it; this ruling is specific to document-owned
+/// packages assembled by `compile_source_for_entry`.
+pub(crate) fn remove_generated_root_main_beam(root: &Path) -> Result<(), ToolchainError> {
+    let package = root_package_name(root)?;
+    let artifact = root
+        .join("build")
+        .join("dev")
+        .join("erlang")
+        .join(&package)
+        .join("ebin")
+        .join(format!("{package}@@main.beam"));
+    match std::fs::remove_file(&artifact) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ToolchainError::Io {
+            path: artifact,
+            source,
+        }),
+    }
+}
+
+fn root_package_name(root: &Path) -> Result<String, ToolchainError> {
+    let descriptor = root.join(GLEAM_CONFIG_FILE);
+    let text = std::fs::read_to_string(&descriptor).map_err(|source| ToolchainError::Io {
+        path: descriptor.clone(),
+        source,
+    })?;
+    let config: GleamProjectConfig =
+        toml::from_str(&text).map_err(|source| ToolchainError::InvalidProject {
+            message: format!("failed to parse {}: {source}", descriptor.display()),
+        })?;
+    if !is_gleam_name_component(&config.name) {
+        return Err(ToolchainError::InvalidProject {
+            message: format!(
+                "Gleam package name `{}` must match `[a-z][a-z0-9_]*`",
+                config.name
+            ),
+        });
+    }
+    Ok(config.name)
+}
+
 /// Whether `candidate`, folded lexically, stays inside `base`.
 ///
 /// Folds `.` and `..` components without touching the filesystem so the check
@@ -266,21 +338,15 @@ fn is_confined(base: &Path, candidate: &Path) -> bool {
     depth >= 0
 }
 
-/// Whether `logical_name` is a safe logical module name.
-///
-/// Mirrors `aion_package`'s confinement discipline for declared module names:
-/// no deployed-name separator (`$`), no backslashes, no leading separator, and
-/// no empty/`.`/`..` path components. The `@` nested-module separator is
-/// permitted (it maps to `/` under `src/`).
-fn is_safe_logical_name(logical_name: &str) -> bool {
-    !logical_name.is_empty()
-        && !logical_name.starts_with('/')
-        && !logical_name.starts_with('\\')
-        && !logical_name.contains('\\')
-        && !logical_name.contains('$')
-        && logical_name
-            .split(['/', '@'])
-            .all(|component| !component.is_empty() && component != "." && component != "..")
+/// Whether a logical module uses the exact Gleam grammar supported here.
+fn is_supported_logical_module(logical_name: &str) -> bool {
+    logical_name.split(['/', '@']).all(is_gleam_name_component)
+}
+
+fn is_gleam_name_component(component: &str) -> bool {
+    let mut bytes = component.bytes();
+    bytes.next().is_some_and(|first| first.is_ascii_lowercase())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 #[cfg(test)]
@@ -288,7 +354,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        entry_module_source_path, is_confined, is_safe_logical_name, single_entry_module,
+        entry_module_source_path, is_confined, is_supported_logical_module, single_entry_module,
         validate_project_root,
     };
     use crate::error::ToolchainError;
@@ -304,15 +370,28 @@ mod tests {
     }
 
     #[test]
-    fn safe_logical_names_accept_nested_modules_and_reject_traversal() {
-        assert!(is_safe_logical_name("hello_world"));
-        assert!(is_safe_logical_name("demo@nested"));
-        assert!(!is_safe_logical_name(""));
-        assert!(!is_safe_logical_name("../escape"));
-        assert!(!is_safe_logical_name("demo@.."));
-        assert!(!is_safe_logical_name("/abs"));
-        assert!(!is_safe_logical_name("demo$bad"));
-        assert!(!is_safe_logical_name("demo\\bad"));
+    fn supported_logical_modules_enforce_gleam_grammar_and_nesting() {
+        for valid in ["hello_world", "demo2", "demo@nested", "demo/nested"] {
+            assert!(is_supported_logical_module(valid), "must accept `{valid}`");
+        }
+        for invalid in [
+            "",
+            "Demo",
+            "bad-name",
+            "bad name",
+            "../escape",
+            "demo@..",
+            "/abs",
+            "demo$bad",
+            "demo\\bad",
+            "demo//nested",
+            "demo/Upper",
+        ] {
+            assert!(
+                !is_supported_logical_module(invalid),
+                "must reject `{invalid}`"
+            );
+        }
     }
 
     #[test]
@@ -322,6 +401,8 @@ mod tests {
         assert_eq!(flat, PathBuf::from("/work/src/hello_world.gleam"));
         let nested = entry_module_source_path(root, "demo@nested")?;
         assert_eq!(nested, PathBuf::from("/work/src/demo/nested.gleam"));
+        let source_style = entry_module_source_path(root, "demo/other")?;
+        assert_eq!(source_style, PathBuf::from("/work/src/demo/other.gleam"));
         Ok(())
     }
 

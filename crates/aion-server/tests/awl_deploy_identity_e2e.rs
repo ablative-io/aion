@@ -134,6 +134,7 @@ async fn server_with(
     TestError,
 > {
     let project = provision_project()?;
+    aion_toolchain::build_project(project.path(), &gleam)?;
     let workspace = tempfile::tempdir()?;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let mut search_attribute_schema = aion_core::SearchAttributeSchema::new();

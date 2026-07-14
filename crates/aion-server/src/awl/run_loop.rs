@@ -321,8 +321,9 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::prepare_emission;
+    use super::{document_task_queue, prepare_emission};
     use crate::authoring::handlers::package_with_options;
+    use crate::worker::registry::DEFAULT_TASK_QUEUE;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -353,6 +354,24 @@ mod tests {
                 "emitter produced no source for {relative}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn document_task_queue_uses_first_worker_or_canonical_default() -> TestResult {
+        let multi_source =
+            std::fs::read_to_string(fixture("declarations/valid/workers_multiple.awl"))?;
+        let multi = aion_awl::parse(&multi_source)?;
+        assert_eq!(
+            document_task_queue(&multi),
+            "audio",
+            "source order makes the first worker the launch queue"
+        );
+
+        let workerless_source =
+            std::fs::read_to_string(fixture("step-bodies/valid/workflow_id.awl"))?;
+        let workerless = aion_awl::parse(&workerless_source)?;
+        assert_eq!(document_task_queue(&workerless), DEFAULT_TASK_QUEUE);
         Ok(())
     }
 

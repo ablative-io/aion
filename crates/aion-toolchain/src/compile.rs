@@ -97,15 +97,18 @@ pub fn compile_source(request: &CompileRequest<'_>) -> Result<CompiledWorkflow, 
 ///
 /// The override is applied only inside the per-submission workspace: the
 /// template remains read-only, its other manifest policy is preserved, and the
-/// replaced template entry source is excluded from the resulting package.
-/// This is the document-authoring path, where the parsed document name owns the
-/// package identity and therefore the engine routing key.
+/// replaced template entry source is excluded from the resulting package. A
+/// clean root-package build prevents copied compiler output from leaking stale
+/// modules, while retaining already-built dependency output, and Gleam's
+/// template-named root `@@main` bootstrap is removed before packaging
+/// because it is not document runtime code. This is the document-authoring path,
+/// where the parsed document name owns package identity and the routing key.
 ///
 /// # Errors
 ///
 /// Returns the same errors as [`compile_source`], and
-/// [`ToolchainError::InvalidProject`] when `entry_module` is not a safe logical
-/// module name.
+/// [`ToolchainError::InvalidProject`] when `entry_module` is not a supported
+/// Gleam logical module name.
 pub fn compile_source_for_entry(
     request: &CompileRequest<'_>,
     entry_module: &str,
@@ -128,15 +131,30 @@ fn compile_source_with_entry(
     // success path and on every `?` early return alike.
     let workspace = Workspace::stage(request.template_root)?;
     let workspace_root = workspace.root();
+    let explicit_entry = requested_entry.is_some();
     let entry_module = requested_entry.unwrap_or(&template_entry);
     if entry_module != template_entry {
         project::retarget_single_entry_module(workspace_root, entry_module)?;
         let template_source = project::entry_module_source_path(workspace_root, &template_entry)?;
         project::remove_entry_source(&template_source)?;
     }
+    if explicit_entry {
+        // The staged template may be prebuilt. Gleam does not prune BEAMs for
+        // deleted sources, so root-package incremental reuse would retain the
+        // frozen entry. Dependency output is safe to preserve.
+        project::remove_staged_root_build(workspace_root)?;
+    }
     let source_path = project::entry_module_source_path(workspace_root, entry_module)?;
     project::write_entry_source(&source_path, request.source)?;
-    compile_built_project(workspace_root, request.gleam_path)
+    if explicit_entry {
+        build_project(workspace_root, request.gleam_path)?;
+        // The generated application bootstrap is named for the frozen Gleam
+        // package shell and is neither the document entry nor a dependency.
+        project::remove_generated_root_main_beam(workspace_root)?;
+        package_built_project(workspace_root)
+    } else {
+        compile_built_project(workspace_root, request.gleam_path)
+    }
 }
 
 /// Runs `gleam build` against `project_root` then packages it.
