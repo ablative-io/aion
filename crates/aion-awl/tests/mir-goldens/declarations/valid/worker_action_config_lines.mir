@@ -4,13 +4,13 @@ exports: run/1, definition/0, execute/1
   step_compile:
     aion@activity:retry/2 [activities] (v1, v4)
     aion@activity:timeout/2 [activities] (v5, v6)
-    aion@activity:task_queue/2 [activities] (v7, lit#0)
-    aion@activity:node/2 [activities] (v8, lit#1)
+    aion@activity:task_queue/2 [activities] (v7, lit#12)
+    aion@activity:node/2 [activities] (v8, lit#13)
     aion@workflow:run/1 [activities] (v9)
   step_salvage:
     aion@activity:timeout/2 [activities] (v1, v2)
-    aion@activity:task_queue/2 [activities] (v3, lit#2)
-    aion@activity:node/2 [activities] (v4, lit#3)
+    aion@activity:task_queue/2 [activities] (v3, lit#14)
+    aion@activity:node/2 [activities] (v4, lit#15)
     aion@workflow:run/1 [activities] (v5)
 == durable families == activities
 == atoms ==
@@ -20,11 +20,30 @@ exports: run/1, definition/0, execute/1
   [3] compile_input
   [4] build_once_input
   [5] built_outcome
-  [6] fixed
-  [7] retry_policy
-  [8] ok
-  [9] awl_outcome_failure
-  [10] error
+  [6] false
+  [7] fixed
+  [8] retry_policy
+  [9] ok
+  [10] awl_outcome_failure
+  [11] error
+== literals ==
+  [0] "artifact_path"
+  [1] "ok"
+  [2] "log_tail"
+  [3] "project_dir"
+  [4] "project_dir"
+  [5] "project_dir"
+  [6] "built"
+  [7] "outcome"
+  [8] ""
+  [9] "BuildOnceOutcome"
+  [10] "built"
+  [11] "payload"
+  [12] "builder"
+  [13] "shell"
+  [14] "builder"
+  [15] "shell"
+  [16] "broken"
 == types ==
   record BuildResult tag=build_result
     artifact_path: string
@@ -61,7 +80,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn build_result_decoder/0 origin=codec_template(RecordTrio, BuildResult, record#0) ==
   sig: () -> Decoder(build_once.BuildResult)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure build_result_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn build_result_decoder$0/1 origin=lifted(build_result_decoder, #0) ==
+  sig: (String) -> Decoder(build_once.BuildResult)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure build_result_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn build_result_decoder$1/2 origin=lifted(build_result_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(build_once.BuildResult)
+  v2 = record(build_result, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn build_failure_codec/0 origin=codec_template(RecordTrio, BuildFailure, record#1) ==
   sig: () -> Codec(build_once.BuildFailure)
   v0 = make_closure build_failure_to_json captures=[]
@@ -74,7 +104,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn build_failure_decoder/0 origin=codec_template(RecordTrio, BuildFailure, record#1) ==
   sig: () -> Decoder(build_once.BuildFailure)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure build_failure_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn build_failure_decoder$0/1 origin=lifted(build_failure_decoder, #0) ==
+  sig: (String) -> Decoder(build_once.BuildFailure)
+  v1 = record(build_failure, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn collect_log_input_codec/0 origin=codec_template(RecordTrio, CollectLogInput, record#2) ==
   sig: () -> Codec(build_once.CollectLogInput)
   v0 = make_closure collect_log_input_to_json captures=[]
@@ -87,7 +123,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn collect_log_input_decoder/0 origin=codec_template(RecordTrio, CollectLogInput, record#2) ==
   sig: () -> Decoder(build_once.CollectLogInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure collect_log_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn collect_log_input_decoder$0/1 origin=lifted(collect_log_input_decoder, #0) ==
+  sig: (String) -> Decoder(build_once.CollectLogInput)
+  v1 = record(collect_log_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn compile_input_codec/0 origin=codec_template(RecordTrio, CompileInput, record#3) ==
   sig: () -> Codec(build_once.CompileInput)
   v0 = make_closure compile_input_to_json captures=[]
@@ -100,7 +142,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn compile_input_decoder/0 origin=codec_template(RecordTrio, CompileInput, record#3) ==
   sig: () -> Decoder(build_once.CompileInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure compile_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn compile_input_decoder$0/1 origin=lifted(compile_input_decoder, #0) ==
+  sig: (String) -> Decoder(build_once.CompileInput)
+  v1 = record(compile_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn build_once_input_codec/0 origin=codec_template(RecordTrio, BuildOnceInput, record#4) ==
   sig: () -> Codec(build_once.BuildOnceInput)
   v0 = make_closure build_once_input_to_json captures=[]
@@ -113,7 +161,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn build_once_input_decoder/0 origin=codec_template(RecordTrio, BuildOnceInput, record#4) ==
   sig: () -> Decoder(build_once.BuildOnceInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure build_once_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn build_once_input_decoder$0/1 origin=lifted(build_once_input_decoder, #0) ==
+  sig: (String) -> Decoder(build_once.BuildOnceInput)
+  v1 = record(build_once_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn build_once_outcome_codec/0 origin=codec_template(UnionTrio, BuildOnceOutcome, union#5) ==
   sig: () -> Codec(build_once.BuildOnceOutcome)
   v0 = make_closure build_once_outcome_to_json captures=[]
@@ -121,11 +175,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn build_once_outcome_to_json/1 origin=codec_template(UnionTrio, BuildOnceOutcome, union#5) ==
   sig: (build_once.BuildOnceOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>build_result_to_json}
+  return v2
 == fn build_once_outcome_decoder/0 origin=codec_template(UnionTrio, BuildOnceOutcome, union#5) ==
   sig: () -> Decoder(build_once.BuildOnceOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure build_once_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn build_once_outcome_decoder$outcome/1 origin=lifted(build_once_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(build_once.BuildOnceOutcome)
+  if cmp Eq v0 lit#10:
+    v3 = call_local build_result_decoder()
+    v4 = make_closure build_once_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#11, v3, v4)
+  else:
+    v1 = record(build_result, [lit#8, 'false'])
+    v2 = record(built_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#9)
+== fn build_once_outcome_decoder$arm0/1 origin=lifted(build_once_outcome_decoder, #1) ==
+  sig: (build_once.BuildResult) -> Decoder(build_once.BuildOnceOutcome)
+  v1 = record(built_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn collect_log_activity/1 origin=activity_wrapper(collect_log, raw=false) ==
   sig: (String) -> Activity(build_once.CollectLogInput, build_once.BuildFailure)
   T-ACT action=collect_log input_codec=collect_log_input_codec return=build_failure_codec
@@ -141,8 +212,8 @@ exports: run/1, definition/0, execute/1
   v5 = call_rt aion@activity:retry/2(v1, v4) live_after=[v0]
   v6 = call_rt aion@duration:milliseconds/1(1200000) live_after=[v0, v5]
   v7 = call_rt aion@activity:timeout/2(v5, v6) live_after=[v0]
-  v8 = call_rt aion@activity:task_queue/2(v7, lit#0) live_after=[v0]
-  v9 = call_rt aion@activity:node/2(v8, lit#1) live_after=[v0]
+  v8 = call_rt aion@activity:task_queue/2(v7, lit#12) live_after=[v0]
+  v9 = call_rt aion@activity:node/2(v8, lit#13) live_after=[v0]
   v10 = call_rt aion@workflow:run/1(v9) live_after=[v0]
   v11 = call_rt aion@awl@error:map_activity_error/1(v10) live_after=[v0]
   v12 = try_bind v11 live_after=[v0]
@@ -161,14 +232,14 @@ exports: run/1, definition/0, execute/1
   v1 = call_local collect_log_activity(v0)
   v2 = call_rt aion@duration:milliseconds/1(90000) live_after=[v1]
   v3 = call_rt aion@activity:timeout/2(v1, v2)
-  v4 = call_rt aion@activity:task_queue/2(v3, lit#2)
-  v5 = call_rt aion@activity:node/2(v4, lit#3)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#14)
+  v5 = call_rt aion@activity:node/2(v4, lit#15)
   v6 = call_rt aion@workflow:run/1(v5)
   v7 = call_rt aion@awl@error:map_activity_error/1(v6)
   v8 = try_bind v7
   v9 = call_local build_failure_to_json(v8)
   v10 = call_rt gleam@json:to_string/1(v9)
-  v11 = record(awl_outcome_failure, [lit#4, v10])
+  v11 = record(awl_outcome_failure, [lit#16, v10])
   v12 = record(error, [v11])
   return v12
 == fn awl$dead_body/1 origin=dead_body ==

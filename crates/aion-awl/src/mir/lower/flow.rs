@@ -395,7 +395,7 @@ pub(super) fn route_tail(
                 Ok(Tail::Return(Value::Var(ok_value)))
             }
             RouteDirection::Failure => {
-                let json = encode_json(ctx, plan, &info.ty, payload, stmts);
+                let json = encode_json(ctx, plan, &info.ty, payload, stmts)?;
                 let string = call_rt(
                     ctx,
                     RuntimeFn::JToString,

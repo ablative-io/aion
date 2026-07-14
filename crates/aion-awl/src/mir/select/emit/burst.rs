@@ -273,6 +273,13 @@ impl Emit<'_, '_> {
             target: Operand::Label(done),
         });
         self.push(Instruction::Label { label: fail });
+        // Trap on the SUBJECT list, not the walked tail X0 happens to hold —
+        // `let assert [...] = subject` reports the whole subject (BC-2b-5
+        // carried fix; the walked-tail operand misattributed the mismatch).
+        self.push(Instruction::Move {
+            source: Operand::Y(self.home(list)?),
+            destination: Operand::X(0),
+        });
         self.push(Instruction::Badmatch {
             value: Operand::X(0),
         });

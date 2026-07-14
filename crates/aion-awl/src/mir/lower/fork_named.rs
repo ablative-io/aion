@@ -104,7 +104,7 @@ pub(super) fn lower_named_fork(
         list: joined,
         span,
     });
-    bind_branches(ctx, plan, &branches, binds, homogeneous, scope, stmts);
+    bind_branches(ctx, plan, &branches, binds, homogeneous, scope, stmts)?;
     Ok(())
 }
 
@@ -118,7 +118,7 @@ fn bind_branches(
     homogeneous: bool,
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
-) {
+) -> Result<(), LowerError> {
     for (branch, bound) in branches.iter().zip(binds) {
         let Some(bind) = &branch.bind else { continue };
         let Some(bound) = bound else { continue };
@@ -137,7 +137,7 @@ fn bind_branches(
         // R5: decode this position's raw payload with THIS action's return
         // codec and string action name — wrong-codec decode is the silent
         // failure mode the raw twins exist to prevent.
-        let codec_ref = codec_ref_for(ctx, plan, &returns);
+        let codec_ref = codec_ref_for(ctx, plan, &returns)?;
         let codec = codec_value(ctx, &codec_ref, stmts, branch.call.name_span);
         let name_lit = ctx.binary(&branch.call.name);
         let decoded = call_rt(
@@ -162,6 +162,7 @@ fn bind_branches(
             },
         );
     }
+    Ok(())
 }
 
 /// A codec VALUE (0-arity composer call) for a resolved codec reference.

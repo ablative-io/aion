@@ -2,10 +2,10 @@ module calls_and_side_effects source=calls_and_side_effects.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_provision:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#13)
     aion@workflow:run/1 [activities] (v2)
   step_announce:
-    aion@activity:task_queue/2 [activities] (v1, lit#2)
+    aion@activity:task_queue/2 [activities] (v1, lit#15)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -16,6 +16,23 @@ exports: run/1, definition/0, execute/1
   [4] calls_and_side_effects_input
   [5] ready_outcome
   [6] ok
+== literals ==
+  [0] "path"
+  [1] "branch"
+  [2] "delivered"
+  [3] "message"
+  [4] "repo_root"
+  [5] "repo_root"
+  [6] "ready"
+  [7] "outcome"
+  [8] ""
+  [9] ""
+  [10] "CallsAndSideEffectsOutcome"
+  [11] "ready"
+  [12] "payload"
+  [13] "infra"
+  [14] "workspace provisioned"
+  [15] "infra"
 == types ==
   record Workspace tag=workspace
     path: string
@@ -52,7 +69,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn workspace_decoder/0 origin=codec_template(RecordTrio, Workspace, record#0) ==
   sig: () -> Decoder(calls_and_side_effects.Workspace)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure workspace_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn workspace_decoder$0/1 origin=lifted(workspace_decoder, #0) ==
+  sig: (String) -> Decoder(calls_and_side_effects.Workspace)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure workspace_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn workspace_decoder$1/2 origin=lifted(workspace_decoder, #1) ==
+  sig: (String, String) -> Decoder(calls_and_side_effects.Workspace)
+  v2 = record(workspace, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn ack_codec/0 origin=codec_template(RecordTrio, Ack, record#1) ==
   sig: () -> Codec(calls_and_side_effects.Ack)
   v0 = make_closure ack_to_json captures=[]
@@ -65,7 +93,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn ack_decoder/0 origin=codec_template(RecordTrio, Ack, record#1) ==
   sig: () -> Decoder(calls_and_side_effects.Ack)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure ack_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn ack_decoder$0/1 origin=lifted(ack_decoder, #0) ==
+  sig: (Bool) -> Decoder(calls_and_side_effects.Ack)
+  v1 = record(ack, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn announce_input_codec/0 origin=codec_template(RecordTrio, AnnounceInput, record#2) ==
   sig: () -> Codec(calls_and_side_effects.AnnounceInput)
   v0 = make_closure announce_input_to_json captures=[]
@@ -78,7 +112,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn announce_input_decoder/0 origin=codec_template(RecordTrio, AnnounceInput, record#2) ==
   sig: () -> Decoder(calls_and_side_effects.AnnounceInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure announce_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn announce_input_decoder$0/1 origin=lifted(announce_input_decoder, #0) ==
+  sig: (String) -> Decoder(calls_and_side_effects.AnnounceInput)
+  v1 = record(announce_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn provision_input_codec/0 origin=codec_template(RecordTrio, ProvisionInput, record#3) ==
   sig: () -> Codec(calls_and_side_effects.ProvisionInput)
   v0 = make_closure provision_input_to_json captures=[]
@@ -91,7 +131,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn provision_input_decoder/0 origin=codec_template(RecordTrio, ProvisionInput, record#3) ==
   sig: () -> Decoder(calls_and_side_effects.ProvisionInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure provision_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn provision_input_decoder$0/1 origin=lifted(provision_input_decoder, #0) ==
+  sig: (String) -> Decoder(calls_and_side_effects.ProvisionInput)
+  v1 = record(provision_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn calls_and_side_effects_input_codec/0 origin=codec_template(RecordTrio, CallsAndSideEffectsInput, record#4) ==
   sig: () -> Codec(calls_and_side_effects.CallsAndSideEffectsInput)
   v0 = make_closure calls_and_side_effects_input_to_json captures=[]
@@ -104,7 +150,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn calls_and_side_effects_input_decoder/0 origin=codec_template(RecordTrio, CallsAndSideEffectsInput, record#4) ==
   sig: () -> Decoder(calls_and_side_effects.CallsAndSideEffectsInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure calls_and_side_effects_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn calls_and_side_effects_input_decoder$0/1 origin=lifted(calls_and_side_effects_input_decoder, #0) ==
+  sig: (String) -> Decoder(calls_and_side_effects.CallsAndSideEffectsInput)
+  v1 = record(calls_and_side_effects_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn calls_and_side_effects_outcome_codec/0 origin=codec_template(UnionTrio, CallsAndSideEffectsOutcome, union#5) ==
   sig: () -> Codec(calls_and_side_effects.CallsAndSideEffectsOutcome)
   v0 = make_closure calls_and_side_effects_outcome_to_json captures=[]
@@ -112,11 +164,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn calls_and_side_effects_outcome_to_json/1 origin=codec_template(UnionTrio, CallsAndSideEffectsOutcome, union#5) ==
   sig: (calls_and_side_effects.CallsAndSideEffectsOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>workspace_to_json}
+  return v2
 == fn calls_and_side_effects_outcome_decoder/0 origin=codec_template(UnionTrio, CallsAndSideEffectsOutcome, union#5) ==
   sig: () -> Decoder(calls_and_side_effects.CallsAndSideEffectsOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure calls_and_side_effects_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn calls_and_side_effects_outcome_decoder$outcome/1 origin=lifted(calls_and_side_effects_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(calls_and_side_effects.CallsAndSideEffectsOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local workspace_decoder()
+    v4 = make_closure calls_and_side_effects_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(workspace, [lit#8, lit#9])
+    v2 = record(ready_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn calls_and_side_effects_outcome_decoder$arm0/1 origin=lifted(calls_and_side_effects_outcome_decoder, #1) ==
+  sig: (calls_and_side_effects.Workspace) -> Decoder(calls_and_side_effects.CallsAndSideEffectsOutcome)
+  v1 = record(ready_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn announce_activity/1 origin=activity_wrapper(announce, raw=false) ==
   sig: (String) -> Activity(calls_and_side_effects.AnnounceInput, calls_and_side_effects.Ack)
   T-ACT action=announce input_codec=announce_input_codec return=ack_codec
@@ -126,15 +195,15 @@ exports: run/1, definition/0, execute/1
 == fn step_provision/1 origin=region(provision) ==
   sig: (String) -> Result(calls_and_side_effects.CallsAndSideEffectsOutcome, AwlError)
   v1 = call_local provision_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#13)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4
   tail_local step_announce(v5)
 == fn step_announce/1 origin=chain_step(provision.announce) ==
   sig: (calls_and_side_effects.Workspace) -> Result(calls_and_side_effects.CallsAndSideEffectsOutcome, AwlError)
-  v1 = call_local announce_activity(lit#1) live_after=[v0]
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#2) live_after=[v0]
+  v1 = call_local announce_activity(lit#14) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#15) live_after=[v0]
   v3 = call_rt aion@workflow:run/1(v2) live_after=[v0]
   v4 = call_rt aion@awl@error:map_activity_error/1(v3) live_after=[v0]
   v5 = try_bind v4 live_after=[v0]

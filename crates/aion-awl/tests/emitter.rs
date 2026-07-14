@@ -309,6 +309,42 @@ fn wait_timeout_binds_optionally() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// BC-2b-5 typed-codec wire-shape pins, two-sided with
+/// `mir/tests.rs::typed_codec_bodies_pin_the_wire_shapes`: the reference
+/// emitter's rendering of the SAME fragments the direct MIR carries —
+/// `optional_field` with the `None` default, flatten-based omission, composite
+/// trios, and enum/union decode.failure on unknowns.
+#[test]
+fn codec_bodies_pin_the_same_wire_fragments() -> Result<(), Box<dyn Error>> {
+    let note = emitted_fixture("schema-doors/valid/optional_shorthand.awl")?;
+    assert!(
+        note.contains(
+            "use body <- decode.optional_field(\"body\", None, \
+             decode.map(awlc.string_decoder(), Some))"
+        ),
+        "optional field must ride optional_field with the None default: {note}"
+    );
+    assert!(
+        note.contains("json.object(list.flatten(["),
+        "optional-bearing record encode must flatten pair lists: {note}"
+    );
+    assert!(
+        note.contains("fn list_string_codec() -> Codec(List(String))"),
+        "the reachable [String] composite trio must be generated: {note}"
+    );
+
+    let triage = emitted_fixture("header-types/valid/enum.awl")?;
+    assert!(
+        triage.contains("_ -> decode.failure(Urgent, \"Category\")"),
+        "unknown enum strings must FAIL with the first variant + type name: {triage}"
+    );
+    assert!(
+        triage.contains("use outcome <- decode.field(\"outcome\", decode.string)"),
+        "union decode must dispatch on the `outcome` field: {triage}"
+    );
+    Ok(())
+}
+
 /// Enum-total outcome clauses lower to one exhaustive Gleam `case` over the
 /// subject instead of a guard cascade.
 #[test]
@@ -343,13 +379,24 @@ fn heterogeneous_named_fork_dispatches_one_parallel_all() -> Result<(), Box<dyn 
             && all_line.contains("fetch_history_activity_raw(user_id)"),
         "both branches must dispatch in the same workflow.all: {all_line}"
     );
+    // R5 codec IDENTITY (two-sided with `mir/fork_tests.rs`): the COMPLETE
+    // call including the action-name literal content — a swapped codec or a
+    // swapped name (same shapes, same arity) can never pass.
     assert!(
-        generated.contains("use profile <- result.try(awlc.decoded(profile_codec(), awl_raw_0,"),
-        "branch 1 must decode with its return codec: {generated}"
+        generated.contains(
+            "use profile <- result.try(awlc.decoded(profile_codec(), awl_raw_0, \
+             \"fetch_profile\"))"
+        ),
+        "branch 1 must decode with its return codec AND its action-name \
+         literal: {generated}"
     );
     assert!(
-        generated.contains("use history <- result.try(awlc.decoded(history_codec(), awl_raw_1,"),
-        "branch 2 must decode with its return codec: {generated}"
+        generated.contains(
+            "use history <- result.try(awlc.decoded(history_codec(), awl_raw_1, \
+             \"fetch_history\"))"
+        ),
+        "branch 2 must decode with its return codec AND its action-name \
+         literal: {generated}"
     );
     Ok(())
 }
@@ -371,9 +418,11 @@ fn flagship_scout_and_warm_build_share_one_parallel_all() -> Result<(), Box<dyn 
     );
     assert!(
         generated.contains(
-            "use scout_report <- result.try(awlc.decoded(scout_report_codec(), awl_raw_0,"
+            "use scout_report <- result.try(awlc.decoded(scout_report_codec(), awl_raw_0, \
+             \"scout\"))"
         ),
-        "the bound branch must decode with its return codec: {generated}"
+        "the bound branch must decode with its return codec AND its \
+         action-name literal: {generated}"
     );
     Ok(())
 }

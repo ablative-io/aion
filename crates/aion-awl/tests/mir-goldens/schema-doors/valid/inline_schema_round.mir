@@ -2,7 +2,7 @@ module inline_schema_round source=inline_schema_round.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_report:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#12)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -15,6 +15,22 @@ exports: run/1, definition/0, execute/1
   [6] ok
   [7] awl_outcome_failure
   [8] error
+== literals ==
+  [0] "gates_green"
+  [1] "summary"
+  [2] "summary"
+  [3] "reason"
+  [4] "round"
+  [5] "round"
+  [6] "reported"
+  [7] "outcome"
+  [8] ""
+  [9] "InlineSchemaRoundOutcome"
+  [10] "reported"
+  [11] "payload"
+  [12] "doors"
+  [13] "gates were red"
+  [14] "stuck"
 == types ==
   record Round tag=round
     gates_green: bool
@@ -51,7 +67,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn round_decoder/0 origin=codec_template(RecordTrio, Round, record#0) ==
   sig: () -> Decoder(inline_schema_round.Round)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure round_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn round_decoder$0/1 origin=lifted(round_decoder, #0) ==
+  sig: (Bool) -> Decoder(inline_schema_round.Round)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure round_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn round_decoder$1/2 origin=lifted(round_decoder, #1) ==
+  sig: (String, Bool) -> Decoder(inline_schema_round.Round)
+  v2 = record(round, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn report_codec/0 origin=codec_template(RecordTrio, Report, record#1) ==
   sig: () -> Codec(inline_schema_round.Report)
   v0 = make_closure report_to_json captures=[]
@@ -64,7 +91,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#1) ==
   sig: () -> Decoder(inline_schema_round.Report)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure report_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn report_decoder$0/1 origin=lifted(report_decoder, #0) ==
+  sig: (String) -> Decoder(inline_schema_round.Report)
+  v1 = record(report, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn stuck_codec/0 origin=codec_template(RecordTrio, Stuck, record#2) ==
   sig: () -> Codec(inline_schema_round.Stuck)
   v0 = make_closure stuck_to_json captures=[]
@@ -77,7 +110,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn stuck_decoder/0 origin=codec_template(RecordTrio, Stuck, record#2) ==
   sig: () -> Decoder(inline_schema_round.Stuck)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure stuck_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn stuck_decoder$0/1 origin=lifted(stuck_decoder, #0) ==
+  sig: (String) -> Decoder(inline_schema_round.Stuck)
+  v1 = record(stuck, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn write_report_input_codec/0 origin=codec_template(RecordTrio, WriteReportInput, record#3) ==
   sig: () -> Codec(inline_schema_round.WriteReportInput)
   v0 = make_closure write_report_input_to_json captures=[]
@@ -90,7 +129,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn write_report_input_decoder/0 origin=codec_template(RecordTrio, WriteReportInput, record#3) ==
   sig: () -> Decoder(inline_schema_round.WriteReportInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local round_decoder()
+  v1 = make_closure write_report_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn write_report_input_decoder$0/1 origin=lifted(write_report_input_decoder, #0) ==
+  sig: (inline_schema_round.Round) -> Decoder(inline_schema_round.WriteReportInput)
+  v1 = record(write_report_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn inline_schema_round_input_codec/0 origin=codec_template(RecordTrio, InlineSchemaRoundInput, record#4) ==
   sig: () -> Codec(inline_schema_round.InlineSchemaRoundInput)
   v0 = make_closure inline_schema_round_input_to_json captures=[]
@@ -103,7 +148,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn inline_schema_round_input_decoder/0 origin=codec_template(RecordTrio, InlineSchemaRoundInput, record#4) ==
   sig: () -> Decoder(inline_schema_round.InlineSchemaRoundInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local round_decoder()
+  v1 = make_closure inline_schema_round_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn inline_schema_round_input_decoder$0/1 origin=lifted(inline_schema_round_input_decoder, #0) ==
+  sig: (inline_schema_round.Round) -> Decoder(inline_schema_round.InlineSchemaRoundInput)
+  v1 = record(inline_schema_round_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn inline_schema_round_outcome_codec/0 origin=codec_template(UnionTrio, InlineSchemaRoundOutcome, union#5) ==
   sig: () -> Codec(inline_schema_round.InlineSchemaRoundOutcome)
   v0 = make_closure inline_schema_round_outcome_to_json captures=[]
@@ -111,18 +162,35 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn inline_schema_round_outcome_to_json/1 origin=codec_template(UnionTrio, InlineSchemaRoundOutcome, union#5) ==
   sig: (inline_schema_round.InlineSchemaRoundOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>report_to_json}
+  return v2
 == fn inline_schema_round_outcome_decoder/0 origin=codec_template(UnionTrio, InlineSchemaRoundOutcome, union#5) ==
   sig: () -> Decoder(inline_schema_round.InlineSchemaRoundOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure inline_schema_round_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn inline_schema_round_outcome_decoder$outcome/1 origin=lifted(inline_schema_round_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(inline_schema_round.InlineSchemaRoundOutcome)
+  if cmp Eq v0 lit#10:
+    v3 = call_local report_decoder()
+    v4 = make_closure inline_schema_round_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#11, v3, v4)
+  else:
+    v1 = record(report, [lit#8])
+    v2 = record(reported_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#9)
+== fn inline_schema_round_outcome_decoder$arm0/1 origin=lifted(inline_schema_round_outcome_decoder, #1) ==
+  sig: (inline_schema_round.Report) -> Decoder(inline_schema_round.InlineSchemaRoundOutcome)
+  v1 = record(reported_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn write_report_activity/1 origin=activity_wrapper(write_report, raw=false) ==
   sig: (inline_schema_round.Round) -> Activity(inline_schema_round.WriteReportInput, inline_schema_round.Report)
   T-ACT action=write_report input_codec=write_report_input_codec return=report_codec
 == fn step_report/1 origin=region(report) ==
   sig: (inline_schema_round.Round) -> Result(inline_schema_round.InlineSchemaRoundOutcome, AwlError)
   v1 = call_local write_report_activity(v0) live_after=[v0]
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#12) live_after=[v0]
   v3 = call_rt aion@workflow:run/1(v2) live_after=[v0]
   v4 = call_rt aion@awl@error:map_activity_error/1(v3) live_after=[v0]
   v5 = try_bind v4 live_after=[v0]
@@ -134,10 +202,10 @@ exports: run/1, definition/0, execute/1
     v10 = record(ok, [v9])
     return v10
   else:
-    v11 = record(stuck, [lit#1])
+    v11 = record(stuck, [lit#13])
     v12 = call_local stuck_to_json(v11)
     v13 = call_rt gleam@json:to_string/1(v12)
-    v14 = record(awl_outcome_failure, [lit#2, v13])
+    v14 = record(awl_outcome_failure, [lit#14, v13])
     v15 = record(error, [v14])
     return v15
 == fn awl$dead_body/1 origin=dead_body ==

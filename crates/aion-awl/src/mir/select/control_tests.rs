@@ -163,6 +163,75 @@ fn loop_counter_selects_a_gc_bif2_against_erlang_plus() -> Result<(), Box<dyn st
     Ok(())
 }
 
+/// Carried BC-2b-5 fix: `let assert [a, b] = subject` must badmatch the
+/// SUBJECT list, not whichever walked tail the unroll left in X0 — an
+/// overlong/too-short/non-list mismatch reports the whole subject, exactly
+/// like the Gleam source form. Structurally: the fail block reloads the
+/// subject's Y home into X0 immediately before the `badmatch`.
+#[test]
+fn assert_list_badmatch_traps_the_subject_list() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::mir::{
+        Block, FlowFn, FnOrigin, FnRef, MirFn, MirModule, Span, Stmt, Tail, TyDesc, Value, Var,
+    };
+    let flow = MirFn::Flow(FlowFn {
+        origin: FnOrigin::Execute,
+        name: "execute".to_owned(),
+        params: vec![Var(0)],
+        param_tys: vec![TyDesc::Nil],
+        ret_ty: TyDesc::Nil,
+        body: Block {
+            stmts: vec![Stmt::AssertList {
+                binds: vec![Some(Var(1)), Some(Var(2))],
+                list: Var(0),
+                span: Span::zero(),
+            }],
+            tail: Tail::Return(Value::Var(Var(1))),
+        },
+        span: Span::zero(),
+        degraded_parallel: false,
+    });
+    let module = MirModule {
+        name: "al".to_owned(),
+        source: "al.awl".to_owned(),
+        atoms: Vec::new(),
+        literals: Vec::new(),
+        exports: vec![FnRef(0)],
+        functions: vec![flow],
+        types: Vec::new(),
+    };
+    let bytes = select(&module)?;
+    let atoms = AtomTable::with_common_atoms();
+    let parsed = load_beam_chunks(&bytes, &atoms)?;
+    let badmatch = parsed
+        .instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Badmatch { .. }))
+        .ok_or("AssertList emitted no badmatch trap")?;
+    // The subject list is the fn's only param, homed in Y0; the fail block
+    // must reload it over the walked tail before trapping.
+    assert!(
+        matches!(
+            parsed.instructions.get(badmatch.wrapping_sub(1)),
+            Some(Instruction::Move {
+                source: Operand::Y(0),
+                destination: Operand::X(0),
+            })
+        ),
+        "badmatch does not reload the subject list from Y0: {:?}",
+        &parsed.instructions[badmatch.saturating_sub(2)..=badmatch]
+    );
+    assert!(
+        matches!(
+            parsed.instructions.get(badmatch),
+            Some(Instruction::Badmatch {
+                value: Operand::X(0)
+            })
+        ),
+        "badmatch operand is not the reloaded subject"
+    );
+    Ok(())
+}
+
 #[test]
 fn enum_total_tail_selects_with_explicit_case_end_trap() -> Result<(), Box<dyn std::error::Error>> {
     let path = fixture("loop-outcomes/valid/enum_when_totality.awl");
@@ -187,8 +256,12 @@ fn enum_total_tail_selects_with_explicit_case_end_trap() -> Result<(), Box<dyn s
             _ => None,
         })
         .collect();
-    assert_eq!(select_failures.len(), 1, "expected one enum select burst");
-    assert_ne!(select_failures[0], 0, "enum select used trap label zero");
+    // Two enum select bursts since BC-2b-5: the outcome-total tail AND the
+    // enum codec's `_to_json` case over the variant atoms.
+    assert_eq!(select_failures.len(), 2, "expected two enum select bursts");
+    for label in &select_failures {
+        assert_ne!(*label, 0, "enum select used trap label zero");
+    }
     assert!(
         parsed
             .instructions

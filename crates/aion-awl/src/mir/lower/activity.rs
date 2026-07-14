@@ -335,8 +335,8 @@ pub(super) fn encode_json(
     ty: &GType,
     payload: Value,
     stmts: &mut Vec<Stmt>,
-) -> Var {
-    let via = match codec_ref_for(ctx, plan, ty) {
+) -> Result<Var, LowerError> {
+    let via = match codec_ref_for(ctx, plan, ty)? {
         CodecRef::SdkLeaf(leaf) => ToJsonRef::SdkLeaf(leaf),
         // The `_to_json` fn sits one slot after `_codec`.
         CodecRef::Local(codec_ref) => ToJsonRef::Local(FnRef(codec_ref.0 + 1)),
@@ -363,7 +363,7 @@ pub(super) fn encode_json(
             });
         }
     }
-    dst
+    Ok(dst)
 }
 
 pub(super) fn record_new(

@@ -2,7 +2,7 @@ module notify_once source=notify_once.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_send:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#10)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -10,7 +10,20 @@ exports: run/1, definition/0, execute/1
   [1] send_message_input
   [2] notify_once_input
   [3] sent_outcome
-  [4] ok
+  [4] false
+  [5] ok
+== literals ==
+  [0] "id"
+  [1] "accepted"
+  [2] "message"
+  [3] "message"
+  [4] "sent"
+  [5] "outcome"
+  [6] ""
+  [7] "NotifyOnceOutcome"
+  [8] "sent"
+  [9] "payload"
+  [10] "notifier"
 == types ==
   record Receipt tag=receipt
     id: string
@@ -43,7 +56,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#0) ==
   sig: () -> Decoder(notify_once.Receipt)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure receipt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn receipt_decoder$0/1 origin=lifted(receipt_decoder, #0) ==
+  sig: (String) -> Decoder(notify_once.Receipt)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure receipt_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn receipt_decoder$1/2 origin=lifted(receipt_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(notify_once.Receipt)
+  v2 = record(receipt, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn send_message_input_codec/0 origin=codec_template(RecordTrio, SendMessageInput, record#1) ==
   sig: () -> Codec(notify_once.SendMessageInput)
   v0 = make_closure send_message_input_to_json captures=[]
@@ -56,7 +80,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn send_message_input_decoder/0 origin=codec_template(RecordTrio, SendMessageInput, record#1) ==
   sig: () -> Decoder(notify_once.SendMessageInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure send_message_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn send_message_input_decoder$0/1 origin=lifted(send_message_input_decoder, #0) ==
+  sig: (String) -> Decoder(notify_once.SendMessageInput)
+  v1 = record(send_message_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn notify_once_input_codec/0 origin=codec_template(RecordTrio, NotifyOnceInput, record#2) ==
   sig: () -> Codec(notify_once.NotifyOnceInput)
   v0 = make_closure notify_once_input_to_json captures=[]
@@ -69,7 +99,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn notify_once_input_decoder/0 origin=codec_template(RecordTrio, NotifyOnceInput, record#2) ==
   sig: () -> Decoder(notify_once.NotifyOnceInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure notify_once_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn notify_once_input_decoder$0/1 origin=lifted(notify_once_input_decoder, #0) ==
+  sig: (String) -> Decoder(notify_once.NotifyOnceInput)
+  v1 = record(notify_once_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn notify_once_outcome_codec/0 origin=codec_template(UnionTrio, NotifyOnceOutcome, union#3) ==
   sig: () -> Codec(notify_once.NotifyOnceOutcome)
   v0 = make_closure notify_once_outcome_to_json captures=[]
@@ -77,18 +113,35 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn notify_once_outcome_to_json/1 origin=codec_template(UnionTrio, NotifyOnceOutcome, union#3) ==
   sig: (notify_once.NotifyOnceOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>receipt_to_json}
+  return v2
 == fn notify_once_outcome_decoder/0 origin=codec_template(UnionTrio, NotifyOnceOutcome, union#3) ==
   sig: () -> Decoder(notify_once.NotifyOnceOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure notify_once_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn notify_once_outcome_decoder$outcome/1 origin=lifted(notify_once_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(notify_once.NotifyOnceOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local receipt_decoder()
+    v4 = make_closure notify_once_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(receipt, [lit#6, 'false'])
+    v2 = record(sent_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn notify_once_outcome_decoder$arm0/1 origin=lifted(notify_once_outcome_decoder, #1) ==
+  sig: (notify_once.Receipt) -> Decoder(notify_once.NotifyOnceOutcome)
+  v1 = record(sent_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn send_message_activity/1 origin=activity_wrapper(send_message, raw=false) ==
   sig: (String) -> Activity(notify_once.SendMessageInput, notify_once.Receipt)
   T-ACT action=send_message input_codec=send_message_input_codec return=receipt_codec
 == fn step_send/1 origin=region(send) ==
   sig: (String) -> Result(notify_once.NotifyOnceOutcome, AwlError)
   v1 = call_local send_message_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#10)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4

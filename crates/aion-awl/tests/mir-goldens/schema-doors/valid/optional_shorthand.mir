@@ -2,7 +2,7 @@ module optional_shorthand source=optional_shorthand.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_examine:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#18)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -11,9 +11,29 @@ exports: run/1, definition/0, execute/1
   [2] polish_input
   [3] optional_shorthand_input
   [4] filed_outcome
-  [5] none
-  [6] some
+  [5] some
+  [6] none
   [7] ok
+== literals ==
+  [0] "title"
+  [1] "tags"
+  [2] "body"
+  [3] "title"
+  [4] "body"
+  [5] "tags"
+  [6] "title"
+  [7] "body"
+  [8] "title"
+  [9] "body"
+  [10] "note"
+  [11] "note"
+  [12] "filed"
+  [13] "outcome"
+  [14] ""
+  [15] "OptionalShorthandOutcome"
+  [16] "filed"
+  [17] "payload"
+  [18] "doors"
 == types ==
   record Note tag=note
     title: string
@@ -45,13 +65,53 @@ exports: run/1, definition/0, execute/1
 == fn note_to_json/1 origin=codec_template(RecordTrio, Note, record#0) ==
   sig: (optional_shorthand.Note) -> Json
   v1 = field(v0, 1)
-  v2 = field(v0, 2)
-  v3 = field(v0, 3)
-  v4 = json_obj {"title": v1|>awlc.string_to_json, "body": v2|>awlc.nil_to_json, "tags": v3|>awlc.nil_to_json}
-  return v4
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#0, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local note_to_json$field1(v5) live_after=[v0, v4]
+  v7 = field(v0, 3)
+  v8 = call_local list_string_to_json(v7) live_after=[v4, v6]
+  v9 = tuple([lit#1, v8])
+  v10 = list([v9])
+  v11 = list([v4, v6, v10])
+  v12 = call_rt gleam@list:flatten/1(v11)
+  tail_rt gleam@json:object/1(v12)
 == fn note_decoder/0 origin=codec_template(RecordTrio, Note, record#0) ==
   sig: () -> Decoder(optional_shorthand.Note)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure note_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn note_to_json$field1/1 origin=lifted(note_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#2, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn note_decoder$some/1 origin=lifted(note_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn note_decoder$0/1 origin=lifted(note_decoder, #1) ==
+  sig: (String) -> Decoder(optional_shorthand.Note)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure note_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure note_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#4, 'none', v3, v4)
+== fn note_decoder$1/2 origin=lifted(note_decoder, #2) ==
+  sig: (Option(String), String) -> Decoder(optional_shorthand.Note)
+  v2 = call_local list_string_decoder() live_after=[v0, v1]
+  v3 = make_closure note_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v2, v3)
+== fn note_decoder$2/3 origin=lifted(note_decoder, #3) ==
+  sig: (List(String), String, Option(String)) -> Decoder(optional_shorthand.Note)
+  v3 = record(note, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
 == fn filed_codec/0 origin=codec_template(RecordTrio, Filed, record#1) ==
   sig: () -> Codec(optional_shorthand.Filed)
   v0 = make_closure filed_to_json captures=[]
@@ -60,12 +120,44 @@ exports: run/1, definition/0, execute/1
 == fn filed_to_json/1 origin=codec_template(RecordTrio, Filed, record#1) ==
   sig: (optional_shorthand.Filed) -> Json
   v1 = field(v0, 1)
-  v2 = field(v0, 2)
-  v3 = json_obj {"title": v1|>awlc.string_to_json, "body": v2|>awlc.nil_to_json}
-  return v3
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#6, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local filed_to_json$field1(v5) live_after=[v4]
+  v7 = list([v4, v6])
+  v8 = call_rt gleam@list:flatten/1(v7)
+  tail_rt gleam@json:object/1(v8)
 == fn filed_decoder/0 origin=codec_template(RecordTrio, Filed, record#1) ==
   sig: () -> Decoder(optional_shorthand.Filed)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure filed_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn filed_to_json$field1/1 origin=lifted(filed_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#7, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn filed_decoder$some/1 origin=lifted(filed_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn filed_decoder$0/1 origin=lifted(filed_decoder, #1) ==
+  sig: (String) -> Decoder(optional_shorthand.Filed)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure filed_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure filed_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#9, 'none', v3, v4)
+== fn filed_decoder$1/2 origin=lifted(filed_decoder, #2) ==
+  sig: (Option(String), String) -> Decoder(optional_shorthand.Filed)
+  v2 = record(filed, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn polish_input_codec/0 origin=codec_template(RecordTrio, PolishInput, record#2) ==
   sig: () -> Codec(optional_shorthand.PolishInput)
   v0 = make_closure polish_input_to_json captures=[]
@@ -78,7 +170,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn polish_input_decoder/0 origin=codec_template(RecordTrio, PolishInput, record#2) ==
   sig: () -> Decoder(optional_shorthand.PolishInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local note_decoder()
+  v1 = make_closure polish_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn polish_input_decoder$0/1 origin=lifted(polish_input_decoder, #0) ==
+  sig: (optional_shorthand.Note) -> Decoder(optional_shorthand.PolishInput)
+  v1 = record(polish_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn optional_shorthand_input_codec/0 origin=codec_template(RecordTrio, OptionalShorthandInput, record#3) ==
   sig: () -> Codec(optional_shorthand.OptionalShorthandInput)
   v0 = make_closure optional_shorthand_input_to_json captures=[]
@@ -91,7 +189,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn optional_shorthand_input_decoder/0 origin=codec_template(RecordTrio, OptionalShorthandInput, record#3) ==
   sig: () -> Decoder(optional_shorthand.OptionalShorthandInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local note_decoder()
+  v1 = make_closure optional_shorthand_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn optional_shorthand_input_decoder$0/1 origin=lifted(optional_shorthand_input_decoder, #0) ==
+  sig: (optional_shorthand.Note) -> Decoder(optional_shorthand.OptionalShorthandInput)
+  v1 = record(optional_shorthand_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn optional_shorthand_outcome_codec/0 origin=codec_template(UnionTrio, OptionalShorthandOutcome, union#4) ==
   sig: () -> Codec(optional_shorthand.OptionalShorthandOutcome)
   v0 = make_closure optional_shorthand_outcome_to_json captures=[]
@@ -99,18 +203,67 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn optional_shorthand_outcome_to_json/1 origin=codec_template(UnionTrio, OptionalShorthandOutcome, union#4) ==
   sig: (optional_shorthand.OptionalShorthandOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#12|>awlc.string_to_json, "payload": v1|>filed_to_json}
+  return v2
 == fn optional_shorthand_outcome_decoder/0 origin=codec_template(UnionTrio, OptionalShorthandOutcome, union#4) ==
   sig: () -> Decoder(optional_shorthand.OptionalShorthandOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure optional_shorthand_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn optional_shorthand_outcome_decoder$outcome/1 origin=lifted(optional_shorthand_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(optional_shorthand.OptionalShorthandOutcome)
+  if cmp Eq v0 lit#16:
+    v3 = call_local filed_decoder()
+    v4 = make_closure optional_shorthand_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#17, v3, v4)
+  else:
+    v1 = record(filed, [lit#14, 'none'])
+    v2 = record(filed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#15)
+== fn optional_shorthand_outcome_decoder$arm0/1 origin=lifted(optional_shorthand_outcome_decoder, #1) ==
+  sig: (optional_shorthand.Filed) -> Decoder(optional_shorthand.OptionalShorthandOutcome)
+  v1 = record(filed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
 == fn polish_activity/1 origin=activity_wrapper(polish, raw=false) ==
   sig: (optional_shorthand.Note) -> Activity(optional_shorthand.PolishInput, optional_shorthand.Note)
   T-ACT action=polish input_codec=polish_input_codec return=note_codec
 == fn step_examine/1 origin=region(examine) ==
   sig: (optional_shorthand.Note) -> Result(optional_shorthand.OptionalShorthandOutcome, AwlError)
   v1 = call_local polish_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#18)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4

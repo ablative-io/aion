@@ -2,7 +2,7 @@ module refresh_cache source=refresh_cache.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   refresh_loop_0:
-    aion@activity:task_queue/2 [activities] (v4, lit#1)
+    aion@activity:task_queue/2 [activities] (v4, lit#14)
     aion@workflow:run/1 [activities] (v5)
 == durable families == activities
 == atoms ==
@@ -15,6 +15,23 @@ exports: run/1, definition/0, execute/1
   [6] ok
   [7] awl_outcome_failure
   [8] error
+== literals ==
+  [0] "value"
+  [1] "fresh"
+  [2] "value"
+  [3] "key"
+  [4] "prior"
+  [5] "key"
+  [6] "max_attempts"
+  [7] "ready"
+  [8] "outcome"
+  [9] ""
+  [10] "RefreshCacheOutcome"
+  [11] "ready"
+  [12] "payload"
+  [13] ""
+  [14] "caches"
+  [15] "stale"
 == types ==
   record Cache tag=cache
     value: string
@@ -51,7 +68,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn cache_decoder/0 origin=codec_template(RecordTrio, Cache, record#0) ==
   sig: () -> Decoder(refresh_cache.Cache)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure cache_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn cache_decoder$0/1 origin=lifted(cache_decoder, #0) ==
+  sig: (String) -> Decoder(refresh_cache.Cache)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure cache_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn cache_decoder$1/2 origin=lifted(cache_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(refresh_cache.Cache)
+  v2 = record(cache, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn cache_result_codec/0 origin=codec_template(RecordTrio, CacheResult, record#1) ==
   sig: () -> Codec(refresh_cache.CacheResult)
   v0 = make_closure cache_result_to_json captures=[]
@@ -64,7 +92,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn cache_result_decoder/0 origin=codec_template(RecordTrio, CacheResult, record#1) ==
   sig: () -> Decoder(refresh_cache.CacheResult)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure cache_result_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn cache_result_decoder$0/1 origin=lifted(cache_result_decoder, #0) ==
+  sig: (String) -> Decoder(refresh_cache.CacheResult)
+  v1 = record(cache_result, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn refresh_input_codec/0 origin=codec_template(RecordTrio, RefreshInput, record#2) ==
   sig: () -> Codec(refresh_cache.RefreshInput)
   v0 = make_closure refresh_input_to_json captures=[]
@@ -78,7 +112,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn refresh_input_decoder/0 origin=codec_template(RecordTrio, RefreshInput, record#2) ==
   sig: () -> Decoder(refresh_cache.RefreshInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure refresh_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn refresh_input_decoder$0/1 origin=lifted(refresh_input_decoder, #0) ==
+  sig: (String) -> Decoder(refresh_cache.RefreshInput)
+  v1 = call_local cache_decoder() live_after=[v0]
+  v2 = make_closure refresh_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn refresh_input_decoder$1/2 origin=lifted(refresh_input_decoder, #1) ==
+  sig: (refresh_cache.Cache, String) -> Decoder(refresh_cache.RefreshInput)
+  v2 = record(refresh_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn refresh_cache_input_codec/0 origin=codec_template(RecordTrio, RefreshCacheInput, record#3) ==
   sig: () -> Codec(refresh_cache.RefreshCacheInput)
   v0 = make_closure refresh_cache_input_to_json captures=[]
@@ -92,7 +137,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn refresh_cache_input_decoder/0 origin=codec_template(RecordTrio, RefreshCacheInput, record#3) ==
   sig: () -> Decoder(refresh_cache.RefreshCacheInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure refresh_cache_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn refresh_cache_input_decoder$0/1 origin=lifted(refresh_cache_input_decoder, #0) ==
+  sig: (String) -> Decoder(refresh_cache.RefreshCacheInput)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure refresh_cache_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v1, v2)
+== fn refresh_cache_input_decoder$1/2 origin=lifted(refresh_cache_input_decoder, #1) ==
+  sig: (Int, String) -> Decoder(refresh_cache.RefreshCacheInput)
+  v2 = record(refresh_cache_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn refresh_cache_outcome_codec/0 origin=codec_template(UnionTrio, RefreshCacheOutcome, union#4) ==
   sig: () -> Codec(refresh_cache.RefreshCacheOutcome)
   v0 = make_closure refresh_cache_outcome_to_json captures=[]
@@ -100,17 +156,34 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn refresh_cache_outcome_to_json/1 origin=codec_template(UnionTrio, RefreshCacheOutcome, union#4) ==
   sig: (refresh_cache.RefreshCacheOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#7|>awlc.string_to_json, "payload": v1|>cache_result_to_json}
+  return v2
 == fn refresh_cache_outcome_decoder/0 origin=codec_template(UnionTrio, RefreshCacheOutcome, union#4) ==
   sig: () -> Decoder(refresh_cache.RefreshCacheOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure refresh_cache_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn refresh_cache_outcome_decoder$outcome/1 origin=lifted(refresh_cache_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(refresh_cache.RefreshCacheOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local cache_result_decoder()
+    v4 = make_closure refresh_cache_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(cache_result, [lit#9])
+    v2 = record(ready_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn refresh_cache_outcome_decoder$arm0/1 origin=lifted(refresh_cache_outcome_decoder, #1) ==
+  sig: (refresh_cache.CacheResult) -> Decoder(refresh_cache.RefreshCacheOutcome)
+  v1 = record(ready_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn refresh_activity/2 origin=activity_wrapper(refresh, raw=false) ==
   sig: (String, refresh_cache.Cache) -> Activity(refresh_cache.RefreshInput, refresh_cache.Cache)
   T-ACT action=refresh input_codec=refresh_input_codec return=cache_codec
 == fn step_refresh/2 origin=region(refresh) ==
   sig: (String, Int) -> Result(refresh_cache.RefreshCacheOutcome, AwlError)
-  v2 = record(cache, [lit#0, 'false'])
+  v2 = record(cache, [lit#13, 'false'])
   v3 = call_local refresh_loop_0(v2, 0, v1, v0)
   v4 = try_bind v3
   v5 = field(v4, 2)
@@ -125,13 +198,13 @@ exports: run/1, definition/0, execute/1
     v11 = record(cache_result, [v10])
     v12 = call_local cache_result_to_json(v11)
     v13 = call_rt gleam@json:to_string/1(v12)
-    v14 = record(awl_outcome_failure, [lit#2, v13])
+    v14 = record(awl_outcome_failure, [lit#15, v13])
     v15 = record(error, [v14])
     return v15
 == fn refresh_loop_0/4 origin=loop(refresh#0) ==
   sig: (refresh_cache.Cache, Int, Int, String) -> Result(refresh_cache.Cache, AwlError)
   v4 = call_local refresh_activity(v3, v0) live_after=[v1, v2, v3]
-  v5 = call_rt aion@activity:task_queue/2(v4, lit#1) live_after=[v1, v2, v3]
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#14) live_after=[v1, v2, v3]
   v6 = call_rt aion@workflow:run/1(v5) live_after=[v1, v2, v3]
   v7 = call_rt aion@awl@error:map_activity_error/1(v6) live_after=[v1, v2, v3]
   v8 = try_bind v7 live_after=[v1, v2, v3]

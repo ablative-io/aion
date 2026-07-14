@@ -2,7 +2,7 @@ module measure_widths source=measure_widths.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_measure:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#19)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -11,7 +11,29 @@ exports: run/1, definition/0, execute/1
   [2] measure_input
   [3] measure_widths_input
   [4] measured_outcome
-  [5] ok
+  [5] false
+  [6] ok
+== literals ==
+  [0] "id"
+  [1] "label"
+  [2] "request_identifier"
+  [3] "normalized_request_body"
+  [4] "response_status_code"
+  [5] "response_elapsed_milliseconds"
+  [6] "summary"
+  [7] "retryable"
+  [8] "request"
+  [9] "request"
+  [10] "measured"
+  [11] "outcome"
+  [12] ""
+  [13] ""
+  [14] float(0.0)
+  [15] ""
+  [16] "MeasureWidthsOutcome"
+  [17] "measured"
+  [18] "payload"
+  [19] "measurer"
 == types ==
   record ShortRecord tag=short_record
     id: int
@@ -51,7 +73,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn short_record_decoder/0 origin=codec_template(RecordTrio, ShortRecord, record#0) ==
   sig: () -> Decoder(measure_widths.ShortRecord)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure short_record_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn short_record_decoder$0/1 origin=lifted(short_record_decoder, #0) ==
+  sig: (Int) -> Decoder(measure_widths.ShortRecord)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure short_record_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn short_record_decoder$1/2 origin=lifted(short_record_decoder, #1) ==
+  sig: (String, Int) -> Decoder(measure_widths.ShortRecord)
+  v2 = record(short_record, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn wide_record_codec/0 origin=codec_template(RecordTrio, WideRecord, record#1) ==
   sig: () -> Codec(measure_widths.WideRecord)
   v0 = make_closure wide_record_to_json captures=[]
@@ -69,7 +102,38 @@ exports: run/1, definition/0, execute/1
   return v7
 == fn wide_record_decoder/0 origin=codec_template(RecordTrio, WideRecord, record#1) ==
   sig: () -> Decoder(measure_widths.WideRecord)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure wide_record_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn wide_record_decoder$0/1 origin=lifted(wide_record_decoder, #0) ==
+  sig: (String) -> Decoder(measure_widths.WideRecord)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure wide_record_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn wide_record_decoder$1/2 origin=lifted(wide_record_decoder, #1) ==
+  sig: (String, String) -> Decoder(measure_widths.WideRecord)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure wide_record_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v2, v3)
+== fn wide_record_decoder$2/3 origin=lifted(wide_record_decoder, #2) ==
+  sig: (Int, String, String) -> Decoder(measure_widths.WideRecord)
+  v3 = call_rt aion@awl@codec:float_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure wide_record_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v3, v4)
+== fn wide_record_decoder$3/4 origin=lifted(wide_record_decoder, #3) ==
+  sig: (Float, String, String, Int) -> Decoder(measure_widths.WideRecord)
+  v4 = call_local short_record_decoder() live_after=[v0, v1, v2, v3]
+  v5 = make_closure wide_record_decoder$4 captures=[v1, v2, v3, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v4, v5)
+== fn wide_record_decoder$4/5 origin=lifted(wide_record_decoder, #4) ==
+  sig: (measure_widths.ShortRecord, String, String, Int, Float) -> Decoder(measure_widths.WideRecord)
+  v5 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0, v1, v2, v3, v4]
+  v6 = make_closure wide_record_decoder$5 captures=[v1, v2, v3, v4, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v5, v6)
+== fn wide_record_decoder$5/6 origin=lifted(wide_record_decoder, #5) ==
+  sig: (Bool, String, String, Int, Float, measure_widths.ShortRecord) -> Decoder(measure_widths.WideRecord)
+  v6 = record(wide_record, [v1, v2, v3, v4, v5, v0])
+  tail_rt gleam@dynamic@decode:success/1(v6)
 == fn measure_input_codec/0 origin=codec_template(RecordTrio, MeasureInput, record#2) ==
   sig: () -> Codec(measure_widths.MeasureInput)
   v0 = make_closure measure_input_to_json captures=[]
@@ -82,7 +146,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn measure_input_decoder/0 origin=codec_template(RecordTrio, MeasureInput, record#2) ==
   sig: () -> Decoder(measure_widths.MeasureInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure measure_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn measure_input_decoder$0/1 origin=lifted(measure_input_decoder, #0) ==
+  sig: (String) -> Decoder(measure_widths.MeasureInput)
+  v1 = record(measure_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn measure_widths_input_codec/0 origin=codec_template(RecordTrio, MeasureWidthsInput, record#3) ==
   sig: () -> Codec(measure_widths.MeasureWidthsInput)
   v0 = make_closure measure_widths_input_to_json captures=[]
@@ -95,7 +165,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn measure_widths_input_decoder/0 origin=codec_template(RecordTrio, MeasureWidthsInput, record#3) ==
   sig: () -> Decoder(measure_widths.MeasureWidthsInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure measure_widths_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn measure_widths_input_decoder$0/1 origin=lifted(measure_widths_input_decoder, #0) ==
+  sig: (String) -> Decoder(measure_widths.MeasureWidthsInput)
+  v1 = record(measure_widths_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn measure_widths_outcome_codec/0 origin=codec_template(UnionTrio, MeasureWidthsOutcome, union#4) ==
   sig: () -> Codec(measure_widths.MeasureWidthsOutcome)
   v0 = make_closure measure_widths_outcome_to_json captures=[]
@@ -103,18 +179,36 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn measure_widths_outcome_to_json/1 origin=codec_template(UnionTrio, MeasureWidthsOutcome, union#4) ==
   sig: (measure_widths.MeasureWidthsOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#10|>awlc.string_to_json, "payload": v1|>wide_record_to_json}
+  return v2
 == fn measure_widths_outcome_decoder/0 origin=codec_template(UnionTrio, MeasureWidthsOutcome, union#4) ==
   sig: () -> Decoder(measure_widths.MeasureWidthsOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure measure_widths_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn measure_widths_outcome_decoder$outcome/1 origin=lifted(measure_widths_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(measure_widths.MeasureWidthsOutcome)
+  if cmp Eq v0 lit#17:
+    v4 = call_local wide_record_decoder()
+    v5 = make_closure measure_widths_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#18, v4, v5)
+  else:
+    v1 = record(short_record, [0, lit#15])
+    v2 = record(wide_record, [lit#12, lit#13, 0, lit#14, v1, 'false'])
+    v3 = record(measured_outcome, [v2])
+    tail_rt gleam@dynamic@decode:failure/2(v3, lit#16)
+== fn measure_widths_outcome_decoder$arm0/1 origin=lifted(measure_widths_outcome_decoder, #1) ==
+  sig: (measure_widths.WideRecord) -> Decoder(measure_widths.MeasureWidthsOutcome)
+  v1 = record(measured_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn measure_activity/1 origin=activity_wrapper(measure, raw=false) ==
   sig: (String) -> Activity(measure_widths.MeasureInput, measure_widths.WideRecord)
   T-ACT action=measure input_codec=measure_input_codec return=wide_record_codec
 == fn step_measure/1 origin=region(measure) ==
   sig: (String) -> Result(measure_widths.MeasureWidthsOutcome, AwlError)
   v1 = call_local measure_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#19)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4

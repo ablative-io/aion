@@ -21,6 +21,7 @@ pub fn print_mir(module: &MirModule) -> String {
     print_effect_schedule(module, &mut out);
     print_capability_summary(module, &mut out);
     print_atoms(module, &mut out);
+    print_literals(module, &mut out);
     print_types(module, &mut out);
     for function in &module.functions {
         print_function(module, function, &mut out);
@@ -139,6 +140,20 @@ fn print_atoms(module: &MirModule, out: &mut String) {
     out.push_str("== atoms ==\n");
     for (index, atom) in module.atoms.iter().enumerate() {
         let _ = writeln!(out, "  [{index}] {atom}");
+    }
+}
+
+/// The literal table (R5 two-sided codec-identity pins): every `lit#N`
+/// operand's CONTENT is golden-visible, so swapping two same-shaped literals
+/// (an action-name pair, a field name) can never pass a pin.
+fn print_literals(module: &MirModule, out: &mut String) {
+    out.push_str("== literals ==\n");
+    for (index, literal) in module.literals.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "  [{index}] {}",
+            super::util::render_literal(module, literal)
+        );
     }
 }
 

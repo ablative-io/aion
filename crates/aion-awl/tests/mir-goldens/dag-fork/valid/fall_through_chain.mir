@@ -2,13 +2,13 @@ module fall_through_chain source=fall_through_chain.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_clean_input:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#13)
     aion@workflow:run/1 [activities] (v2)
   step_render_page:
-    aion@activity:task_queue/2 [activities] (v2, lit#1)
+    aion@activity:task_queue/2 [activities] (v2, lit#14)
     aion@workflow:run/1 [activities] (v3)
   step_publish_page:
-    aion@activity:task_queue/2 [activities] (v2, lit#2)
+    aion@activity:task_queue/2 [activities] (v2, lit#15)
     aion@workflow:run/1 [activities] (v3)
 == durable families == activities
 == atoms ==
@@ -21,6 +21,23 @@ exports: run/1, definition/0, execute/1
   [6] fall_through_chain_input
   [7] published_outcome
   [8] ok
+== literals ==
+  [0] "text"
+  [1] "html"
+  [2] "url"
+  [3] "raw"
+  [4] "html"
+  [5] "text"
+  [6] "raw"
+  [7] "published"
+  [8] "outcome"
+  [9] ""
+  [10] "FallThroughChainOutcome"
+  [11] "published"
+  [12] "payload"
+  [13] "pipeline"
+  [14] "pipeline"
+  [15] "pipeline"
 == types ==
   record Cleaned tag=cleaned
     text: string
@@ -59,7 +76,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn cleaned_decoder/0 origin=codec_template(RecordTrio, Cleaned, record#0) ==
   sig: () -> Decoder(fall_through_chain.Cleaned)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure cleaned_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn cleaned_decoder$0/1 origin=lifted(cleaned_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.Cleaned)
+  v1 = record(cleaned, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn rendered_codec/0 origin=codec_template(RecordTrio, Rendered, record#1) ==
   sig: () -> Codec(fall_through_chain.Rendered)
   v0 = make_closure rendered_to_json captures=[]
@@ -72,7 +95,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn rendered_decoder/0 origin=codec_template(RecordTrio, Rendered, record#1) ==
   sig: () -> Decoder(fall_through_chain.Rendered)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure rendered_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn rendered_decoder$0/1 origin=lifted(rendered_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.Rendered)
+  v1 = record(rendered, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn published_codec/0 origin=codec_template(RecordTrio, Published, record#2) ==
   sig: () -> Codec(fall_through_chain.Published)
   v0 = make_closure published_to_json captures=[]
@@ -85,7 +114,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn published_decoder/0 origin=codec_template(RecordTrio, Published, record#2) ==
   sig: () -> Decoder(fall_through_chain.Published)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure published_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn published_decoder$0/1 origin=lifted(published_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.Published)
+  v1 = record(published, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn clean_input_codec/0 origin=codec_template(RecordTrio, CleanInput, record#3) ==
   sig: () -> Codec(fall_through_chain.CleanInput)
   v0 = make_closure clean_input_to_json captures=[]
@@ -98,7 +133,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn clean_input_decoder/0 origin=codec_template(RecordTrio, CleanInput, record#3) ==
   sig: () -> Decoder(fall_through_chain.CleanInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure clean_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn clean_input_decoder$0/1 origin=lifted(clean_input_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.CleanInput)
+  v1 = record(clean_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn publish_input_codec/0 origin=codec_template(RecordTrio, PublishInput, record#4) ==
   sig: () -> Codec(fall_through_chain.PublishInput)
   v0 = make_closure publish_input_to_json captures=[]
@@ -111,7 +152,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn publish_input_decoder/0 origin=codec_template(RecordTrio, PublishInput, record#4) ==
   sig: () -> Decoder(fall_through_chain.PublishInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure publish_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn publish_input_decoder$0/1 origin=lifted(publish_input_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.PublishInput)
+  v1 = record(publish_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn render_input_codec/0 origin=codec_template(RecordTrio, RenderInput, record#5) ==
   sig: () -> Codec(fall_through_chain.RenderInput)
   v0 = make_closure render_input_to_json captures=[]
@@ -124,7 +171,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn render_input_decoder/0 origin=codec_template(RecordTrio, RenderInput, record#5) ==
   sig: () -> Decoder(fall_through_chain.RenderInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure render_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn render_input_decoder$0/1 origin=lifted(render_input_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.RenderInput)
+  v1 = record(render_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fall_through_chain_input_codec/0 origin=codec_template(RecordTrio, FallThroughChainInput, record#6) ==
   sig: () -> Codec(fall_through_chain.FallThroughChainInput)
   v0 = make_closure fall_through_chain_input_to_json captures=[]
@@ -137,7 +190,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fall_through_chain_input_decoder/0 origin=codec_template(RecordTrio, FallThroughChainInput, record#6) ==
   sig: () -> Decoder(fall_through_chain.FallThroughChainInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fall_through_chain_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn fall_through_chain_input_decoder$0/1 origin=lifted(fall_through_chain_input_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.FallThroughChainInput)
+  v1 = record(fall_through_chain_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fall_through_chain_outcome_codec/0 origin=codec_template(UnionTrio, FallThroughChainOutcome, union#7) ==
   sig: () -> Codec(fall_through_chain.FallThroughChainOutcome)
   v0 = make_closure fall_through_chain_outcome_to_json captures=[]
@@ -145,11 +204,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn fall_through_chain_outcome_to_json/1 origin=codec_template(UnionTrio, FallThroughChainOutcome, union#7) ==
   sig: (fall_through_chain.FallThroughChainOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#7|>awlc.string_to_json, "payload": v1|>published_to_json}
+  return v2
 == fn fall_through_chain_outcome_decoder/0 origin=codec_template(UnionTrio, FallThroughChainOutcome, union#7) ==
   sig: () -> Decoder(fall_through_chain.FallThroughChainOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fall_through_chain_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn fall_through_chain_outcome_decoder$outcome/1 origin=lifted(fall_through_chain_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fall_through_chain.FallThroughChainOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local published_decoder()
+    v4 = make_closure fall_through_chain_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(published, [lit#9])
+    v2 = record(published_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn fall_through_chain_outcome_decoder$arm0/1 origin=lifted(fall_through_chain_outcome_decoder, #1) ==
+  sig: (fall_through_chain.Published) -> Decoder(fall_through_chain.FallThroughChainOutcome)
+  v1 = record(published_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn clean_activity/1 origin=activity_wrapper(clean, raw=false) ==
   sig: (String) -> Activity(fall_through_chain.CleanInput, fall_through_chain.Cleaned)
   T-ACT action=clean input_codec=clean_input_codec return=cleaned_codec
@@ -162,7 +238,7 @@ exports: run/1, definition/0, execute/1
 == fn step_clean_input/1 origin=region(clean_input) ==
   sig: (String) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
   v1 = call_local clean_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#13)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4
@@ -171,7 +247,7 @@ exports: run/1, definition/0, execute/1
   sig: (fall_through_chain.Cleaned) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
   v1 = field(v0, 1)
   v2 = call_local render_activity(v1)
-  v3 = call_rt aion@activity:task_queue/2(v2, lit#1)
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#14)
   v4 = call_rt aion@workflow:run/1(v3)
   v5 = call_rt aion@awl@error:map_activity_error/1(v4)
   v6 = try_bind v5
@@ -180,7 +256,7 @@ exports: run/1, definition/0, execute/1
   sig: (fall_through_chain.Rendered) -> Result(fall_through_chain.FallThroughChainOutcome, AwlError)
   v1 = field(v0, 1)
   v2 = call_local publish_activity(v1)
-  v3 = call_rt aion@activity:task_queue/2(v2, lit#2)
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#15)
   v4 = call_rt aion@workflow:run/1(v3)
   v5 = call_rt aion@awl@error:map_activity_error/1(v4)
   v6 = try_bind v5

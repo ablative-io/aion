@@ -8,8 +8,9 @@ use super::super::func::{FnOrigin, FnSig, MirFn, TemplateFn, TypeShapeRef};
 use super::super::ids::Span;
 use super::super::shapes::TypeShape;
 use super::super::tydesc::TyDesc;
-use super::build::{FnPlan, codec_ref_for};
+use super::build::{FnPlan, codec_ref_for, registered_codec};
 use super::ctx::Ctx;
+use super::driver::LowerError;
 
 fn zero_span() -> Span {
     Span::zero()
@@ -20,7 +21,7 @@ pub(super) fn activity_shell(
     plan: &FnPlan,
     types: &[TypeShape],
     action: &str,
-) -> MirFn {
+) -> Result<MirFn, LowerError> {
     let (_, decl) = ctx.emitter.actions[action];
     let params: Vec<TyDesc> = decl
         .params
@@ -35,13 +36,10 @@ pub(super) fn activity_shell(
         params: Vec::new(),
     };
     let ret = TyDesc::Activity(Box::new(input_tydesc), Box::new(ctx.tydesc(&return_g)));
-    let input_codec = plan
-        .codecs
-        .get(&snake(&input_name))
-        .map_or(plan.run, |trio| trio.0);
-    let return_codec = codec_ref_for(ctx, plan, &return_g);
+    let input_codec = registered_codec(plan, ctx, &snake(&input_name))?.0;
+    let return_codec = codec_ref_for(ctx, plan, &return_g)?;
     let shape = find_shape_ref(types, &input_name);
-    MirFn::Templated {
+    Ok(MirFn::Templated {
         name: format!("{}_activity", snake(action)),
         origin: FnOrigin::ActivityWrapper {
             action: action.to_owned(),
@@ -56,7 +54,7 @@ pub(super) fn activity_shell(
         },
         sig: FnSig { params, ret },
         span: zero_span(),
-    }
+    })
 }
 
 /// The raw wrapper twin (T-ACTRAW): the same action name and wire bytes (the
@@ -68,7 +66,7 @@ pub(super) fn raw_activity_shell(
     plan: &FnPlan,
     types: &[TypeShape],
     action: &str,
-) -> MirFn {
+) -> Result<MirFn, LowerError> {
     let (_, decl) = ctx.emitter.actions[action];
     let params: Vec<TyDesc> = decl
         .params
@@ -76,13 +74,10 @@ pub(super) fn raw_activity_shell(
         .map(|param| ctx.tydesc(&type_ref_to_g(&param.ty)))
         .collect();
     let input_name = ctx.emitter.action_inputs[action].clone();
-    let input_codec = plan
-        .codecs
-        .get(&snake(&input_name))
-        .map_or(plan.run, |trio| trio.0);
+    let input_codec = registered_codec(plan, ctx, &snake(&input_name))?.0;
     let shape = find_shape_ref(types, &input_name);
     let ret = TyDesc::Activity(Box::new(TyDesc::String), Box::new(TyDesc::String));
-    MirFn::Templated {
+    Ok(MirFn::Templated {
         name: format!("{}_activity_raw", snake(action)),
         origin: FnOrigin::ActivityWrapper {
             action: action.to_owned(),
@@ -96,14 +91,18 @@ pub(super) fn raw_activity_shell(
         },
         sig: FnSig { params, ret },
         span: zero_span(),
-    }
+    })
 }
 
-pub(super) fn signal_shell(ctx: &mut Ctx<'_>, plan: &FnPlan, signal: &str) -> MirFn {
+pub(super) fn signal_shell(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    signal: &str,
+) -> Result<MirFn, LowerError> {
     let payload_g = type_ref_to_g(&ctx.emitter.signals[signal].ty);
     let payload_tydesc = ctx.tydesc(&payload_g);
-    let payload_codec = codec_ref_for(ctx, plan, &payload_g);
-    MirFn::Templated {
+    let payload_codec = codec_ref_for(ctx, plan, &payload_g)?;
+    Ok(MirFn::Templated {
         name: format!("{}_signal", snake(signal)),
         origin: FnOrigin::SignalRef {
             signal: signal.to_owned(),
@@ -117,7 +116,7 @@ pub(super) fn signal_shell(ctx: &mut Ctx<'_>, plan: &FnPlan, signal: &str) -> Mi
             ret: TyDesc::SignalRef(Box::new(payload_tydesc)),
         },
         span: zero_span(),
-    }
+    })
 }
 
 fn find_shape_ref(types: &[TypeShape], name: &str) -> TypeShapeRef {

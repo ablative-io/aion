@@ -4,6 +4,9 @@ mod activity;
 mod build;
 mod chain;
 mod codec;
+mod codec_decode;
+mod codec_decode_union;
+mod codec_encode;
 mod ctx;
 mod driver;
 mod expr;
@@ -13,6 +16,7 @@ mod forks;
 mod liveness;
 mod loops;
 mod outcome;
+mod registry;
 mod slots;
 mod wrappers;
 

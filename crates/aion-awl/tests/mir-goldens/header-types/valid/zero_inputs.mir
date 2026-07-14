@@ -2,7 +2,7 @@ module fixed_ping source=fixed_ping.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_ping_localhost:
-    aion@activity:task_queue/2 [activities] (v0, lit#1)
+    aion@activity:task_queue/2 [activities] (v0, lit#9)
     aion@workflow:run/1 [activities] (v1)
 == durable families == activities
 == atoms ==
@@ -11,9 +11,23 @@ exports: run/1, definition/0, execute/1
   [2] ping_input
   [3] fixed_ping_input
   [4] reachable_outcome
-  [5] ok
-  [6] awl_outcome_failure
-  [7] error
+  [5] false
+  [6] ok
+  [7] awl_outcome_failure
+  [8] error
+== literals ==
+  [0] "delivered"
+  [1] "reason"
+  [2] "host"
+  [3] "reachable"
+  [4] "outcome"
+  [5] "FixedPingOutcome"
+  [6] "reachable"
+  [7] "payload"
+  [8] "127.0.0.1"
+  [9] "ping"
+  [10] "no reply from localhost"
+  [11] "unreachable"
 == types ==
   record Ack tag=ack
     delivered: bool
@@ -45,7 +59,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn ack_decoder/0 origin=codec_template(RecordTrio, Ack, record#0) ==
   sig: () -> Decoder(fixed_ping.Ack)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure ack_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn ack_decoder$0/1 origin=lifted(ack_decoder, #0) ==
+  sig: (Bool) -> Decoder(fixed_ping.Ack)
+  v1 = record(ack, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fault_codec/0 origin=codec_template(RecordTrio, Fault, record#1) ==
   sig: () -> Codec(fixed_ping.Fault)
   v0 = make_closure fault_to_json captures=[]
@@ -58,7 +78,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fault_decoder/0 origin=codec_template(RecordTrio, Fault, record#1) ==
   sig: () -> Decoder(fixed_ping.Fault)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fault_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn fault_decoder$0/1 origin=lifted(fault_decoder, #0) ==
+  sig: (String) -> Decoder(fixed_ping.Fault)
+  v1 = record(fault, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn ping_input_codec/0 origin=codec_template(RecordTrio, PingInput, record#2) ==
   sig: () -> Codec(fixed_ping.PingInput)
   v0 = make_closure ping_input_to_json captures=[]
@@ -71,7 +97,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn ping_input_decoder/0 origin=codec_template(RecordTrio, PingInput, record#2) ==
   sig: () -> Decoder(fixed_ping.PingInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ping_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn ping_input_decoder$0/1 origin=lifted(ping_input_decoder, #0) ==
+  sig: (String) -> Decoder(fixed_ping.PingInput)
+  v1 = record(ping_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fixed_ping_input_codec/0 origin=codec_template(RecordTrio, FixedPingInput, record#3) ==
   sig: () -> Codec(fixed_ping.FixedPingInput)
   v0 = make_closure fixed_ping_input_to_json captures=[]
@@ -83,7 +115,7 @@ exports: run/1, definition/0, execute/1
   return v1
 == fn fixed_ping_input_decoder/0 origin=codec_template(RecordTrio, FixedPingInput, record#3) ==
   sig: () -> Decoder(fixed_ping.FixedPingInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  tail_rt gleam@dynamic@decode:success/1('fixed_ping_input')
 == fn fixed_ping_outcome_codec/0 origin=codec_template(UnionTrio, FixedPingOutcome, union#4) ==
   sig: () -> Codec(fixed_ping.FixedPingOutcome)
   v0 = make_closure fixed_ping_outcome_to_json captures=[]
@@ -91,18 +123,35 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn fixed_ping_outcome_to_json/1 origin=codec_template(UnionTrio, FixedPingOutcome, union#4) ==
   sig: (fixed_ping.FixedPingOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#3|>awlc.string_to_json, "payload": v1|>ack_to_json}
+  return v2
 == fn fixed_ping_outcome_decoder/0 origin=codec_template(UnionTrio, FixedPingOutcome, union#4) ==
   sig: () -> Decoder(fixed_ping.FixedPingOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fixed_ping_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn fixed_ping_outcome_decoder$outcome/1 origin=lifted(fixed_ping_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fixed_ping.FixedPingOutcome)
+  if cmp Eq v0 lit#6:
+    v3 = call_local ack_decoder()
+    v4 = make_closure fixed_ping_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#7, v3, v4)
+  else:
+    v1 = record(ack, ['false'])
+    v2 = record(reachable_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#5)
+== fn fixed_ping_outcome_decoder$arm0/1 origin=lifted(fixed_ping_outcome_decoder, #1) ==
+  sig: (fixed_ping.Ack) -> Decoder(fixed_ping.FixedPingOutcome)
+  v1 = record(reachable_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn ping_activity/1 origin=activity_wrapper(ping, raw=false) ==
   sig: (String) -> Activity(fixed_ping.PingInput, fixed_ping.Ack)
   T-ACT action=ping input_codec=ping_input_codec return=ack_codec
 == fn step_ping_localhost/0 origin=region(ping_localhost) ==
   sig: () -> Result(fixed_ping.FixedPingOutcome, AwlError)
-  v0 = call_local ping_activity(lit#0)
-  v1 = call_rt aion@activity:task_queue/2(v0, lit#1)
+  v0 = call_local ping_activity(lit#8)
+  v1 = call_rt aion@activity:task_queue/2(v0, lit#9)
   v2 = call_rt aion@workflow:run/1(v1)
   v3 = call_rt aion@awl@error:map_activity_error/1(v2)
   v4 = try_bind v3
@@ -114,10 +163,10 @@ exports: run/1, definition/0, execute/1
     v9 = record(ok, [v8])
     return v9
   else:
-    v10 = record(fault, [lit#2])
+    v10 = record(fault, [lit#10])
     v11 = call_local fault_to_json(v10)
     v12 = call_rt gleam@json:to_string/1(v11)
-    v13 = record(awl_outcome_failure, [lit#3, v12])
+    v13 = record(awl_outcome_failure, [lit#11, v12])
     v14 = record(error, [v13])
     return v14
 == fn awl$dead_body/1 origin=dead_body ==

@@ -3,13 +3,13 @@ exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_check:
     aion@activity:timeout/2 [activities] (v4, v5)
-    aion@activity:task_queue/2 [activities] (v6, lit#5)
-    aion@activity:node/2 [activities] (v7, lit#6)
+    aion@activity:task_queue/2 [activities] (v6, lit#23)
+    aion@activity:node/2 [activities] (v7, lit#24)
     aion@workflow:run/1 [activities] (v8)
   compose_loop_0:
     aion@activity:timeout/2 [activities] (v4, v5)
-    aion@activity:task_queue/2 [activities] (v6, lit#1)
-    aion@activity:node/2 [activities] (v7, lit#2)
+    aion@activity:task_queue/2 [activities] (v6, lit#19)
+    aion@activity:node/2 [activities] (v7, lit#20)
     aion@workflow:run/1 [activities] (v8)
 == durable families == activities
 == atoms ==
@@ -25,6 +25,32 @@ exports: run/1, definition/0, execute/1
   [9] ok
   [10] awl_outcome_failure
   [11] error
+== literals ==
+  [0] "body"
+  [1] "ready"
+  [2] "approved"
+  [3] "notes"
+  [4] "body"
+  [5] "polish_rounds"
+  [6] "reason"
+  [7] "topic"
+  [8] "prior"
+  [9] "draft"
+  [10] "topic"
+  [11] "max_polish_rounds"
+  [12] "published"
+  [13] "outcome"
+  [14] ""
+  [15] "DraftingOutcome"
+  [16] "published"
+  [17] "payload"
+  [18] ""
+  [19] "writing"
+  [20] "writer"
+  [21] "draft never stabilized"
+  [22] "exhausted_draft"
+  [23] "writing"
+  [24] "reviewer"
 == types ==
   record Draft tag=draft
     body: string
@@ -69,7 +95,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn draft_decoder/0 origin=codec_template(RecordTrio, Draft, record#0) ==
   sig: () -> Decoder(drafting.Draft)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure draft_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn draft_decoder$0/1 origin=lifted(draft_decoder, #0) ==
+  sig: (String) -> Decoder(drafting.Draft)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure draft_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn draft_decoder$1/2 origin=lifted(draft_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(drafting.Draft)
+  v2 = record(draft, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
   sig: () -> Codec(drafting.Verdict)
   v0 = make_closure verdict_to_json captures=[]
@@ -83,7 +120,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
   sig: () -> Decoder(drafting.Verdict)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (Bool) -> Decoder(drafting.Verdict)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure verdict_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn verdict_decoder$1/2 origin=lifted(verdict_decoder, #1) ==
+  sig: (String, Bool) -> Decoder(drafting.Verdict)
+  v2 = record(verdict, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn published_codec/0 origin=codec_template(RecordTrio, Published, record#2) ==
   sig: () -> Codec(drafting.Published)
   v0 = make_closure published_to_json captures=[]
@@ -97,7 +145,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn published_decoder/0 origin=codec_template(RecordTrio, Published, record#2) ==
   sig: () -> Decoder(drafting.Published)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure published_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn published_decoder$0/1 origin=lifted(published_decoder, #0) ==
+  sig: (String) -> Decoder(drafting.Published)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure published_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn published_decoder$1/2 origin=lifted(published_decoder, #1) ==
+  sig: (Int, String) -> Decoder(drafting.Published)
+  v2 = record(published, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn exhausted_codec/0 origin=codec_template(RecordTrio, Exhausted, record#3) ==
   sig: () -> Codec(drafting.Exhausted)
   v0 = make_closure exhausted_to_json captures=[]
@@ -110,7 +169,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn exhausted_decoder/0 origin=codec_template(RecordTrio, Exhausted, record#3) ==
   sig: () -> Decoder(drafting.Exhausted)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure exhausted_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn exhausted_decoder$0/1 origin=lifted(exhausted_decoder, #0) ==
+  sig: (String) -> Decoder(drafting.Exhausted)
+  v1 = record(exhausted, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn polish_input_codec/0 origin=codec_template(RecordTrio, PolishInput, record#4) ==
   sig: () -> Codec(drafting.PolishInput)
   v0 = make_closure polish_input_to_json captures=[]
@@ -124,7 +189,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn polish_input_decoder/0 origin=codec_template(RecordTrio, PolishInput, record#4) ==
   sig: () -> Decoder(drafting.PolishInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure polish_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn polish_input_decoder$0/1 origin=lifted(polish_input_decoder, #0) ==
+  sig: (String) -> Decoder(drafting.PolishInput)
+  v1 = call_local draft_decoder() live_after=[v0]
+  v2 = make_closure polish_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v1, v2)
+== fn polish_input_decoder$1/2 origin=lifted(polish_input_decoder, #1) ==
+  sig: (drafting.Draft, String) -> Decoder(drafting.PolishInput)
+  v2 = record(polish_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn review_input_codec/0 origin=codec_template(RecordTrio, ReviewInput, record#5) ==
   sig: () -> Codec(drafting.ReviewInput)
   v0 = make_closure review_input_to_json captures=[]
@@ -137,7 +213,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn review_input_decoder/0 origin=codec_template(RecordTrio, ReviewInput, record#5) ==
   sig: () -> Decoder(drafting.ReviewInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local draft_decoder()
+  v1 = make_closure review_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn review_input_decoder$0/1 origin=lifted(review_input_decoder, #0) ==
+  sig: (drafting.Draft) -> Decoder(drafting.ReviewInput)
+  v1 = record(review_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn drafting_input_codec/0 origin=codec_template(RecordTrio, DraftingInput, record#6) ==
   sig: () -> Codec(drafting.DraftingInput)
   v0 = make_closure drafting_input_to_json captures=[]
@@ -151,7 +233,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn drafting_input_decoder/0 origin=codec_template(RecordTrio, DraftingInput, record#6) ==
   sig: () -> Decoder(drafting.DraftingInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure drafting_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn drafting_input_decoder$0/1 origin=lifted(drafting_input_decoder, #0) ==
+  sig: (String) -> Decoder(drafting.DraftingInput)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure drafting_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v1, v2)
+== fn drafting_input_decoder$1/2 origin=lifted(drafting_input_decoder, #1) ==
+  sig: (Int, String) -> Decoder(drafting.DraftingInput)
+  v2 = record(drafting_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn drafting_outcome_codec/0 origin=codec_template(UnionTrio, DraftingOutcome, union#7) ==
   sig: () -> Codec(drafting.DraftingOutcome)
   v0 = make_closure drafting_outcome_to_json captures=[]
@@ -159,11 +252,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn drafting_outcome_to_json/1 origin=codec_template(UnionTrio, DraftingOutcome, union#7) ==
   sig: (drafting.DraftingOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#12|>awlc.string_to_json, "payload": v1|>published_to_json}
+  return v2
 == fn drafting_outcome_decoder/0 origin=codec_template(UnionTrio, DraftingOutcome, union#7) ==
   sig: () -> Decoder(drafting.DraftingOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure drafting_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn drafting_outcome_decoder$outcome/1 origin=lifted(drafting_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(drafting.DraftingOutcome)
+  if cmp Eq v0 lit#16:
+    v3 = call_local published_decoder()
+    v4 = make_closure drafting_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#17, v3, v4)
+  else:
+    v1 = record(published, [lit#14, 0])
+    v2 = record(published_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#15)
+== fn drafting_outcome_decoder$arm0/1 origin=lifted(drafting_outcome_decoder, #1) ==
+  sig: (drafting.Published) -> Decoder(drafting.DraftingOutcome)
+  v1 = record(published_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn polish_activity/2 origin=activity_wrapper(polish, raw=false) ==
   sig: (String, drafting.Draft) -> Activity(drafting.PolishInput, drafting.Draft)
   T-ACT action=polish input_codec=polish_input_codec return=draft_codec
@@ -172,7 +282,7 @@ exports: run/1, definition/0, execute/1
   T-ACT action=review input_codec=review_input_codec return=verdict_codec
 == fn step_compose/2 origin=region(compose) ==
   sig: (Int, String) -> Result(drafting.DraftingOutcome, AwlError)
-  v2 = record(draft, [lit#0, 'false'])
+  v2 = record(draft, [lit#18, 'false'])
   v3 = call_local compose_loop_0(v2, 0, v0, v1) live_after=[v0, v1]
   v4 = try_bind v3 live_after=[v0, v1]
   v5 = field(v4, 0)
@@ -181,10 +291,10 @@ exports: run/1, definition/0, execute/1
   if is_true v7:
     tail_local step_check(v5, v0, v6, v1)
   else:
-    v8 = record(exhausted, [lit#3])
+    v8 = record(exhausted, [lit#21])
     v9 = call_local exhausted_to_json(v8)
     v10 = call_rt gleam@json:to_string/1(v9)
-    v11 = record(awl_outcome_failure, [lit#4, v10])
+    v11 = record(awl_outcome_failure, [lit#22, v10])
     v12 = record(error, [v11])
     return v12
 == fn step_check/4 origin=region(check) ==
@@ -192,8 +302,8 @@ exports: run/1, definition/0, execute/1
   v4 = call_local review_activity(v0) live_after=[v0, v1, v2, v3]
   v5 = call_rt aion@duration:milliseconds/1(600000) live_after=[v0, v1, v2, v3, v4]
   v6 = call_rt aion@activity:timeout/2(v4, v5) live_after=[v0, v1, v2, v3]
-  v7 = call_rt aion@activity:task_queue/2(v6, lit#5) live_after=[v0, v1, v2, v3]
-  v8 = call_rt aion@activity:node/2(v7, lit#6) live_after=[v0, v1, v2, v3]
+  v7 = call_rt aion@activity:task_queue/2(v6, lit#23) live_after=[v0, v1, v2, v3]
+  v8 = call_rt aion@activity:node/2(v7, lit#24) live_after=[v0, v1, v2, v3]
   v9 = call_rt aion@workflow:run/1(v8) live_after=[v0, v1, v2, v3]
   v10 = call_rt aion@awl@error:map_activity_error/1(v9) live_after=[v0, v1, v2, v3]
   v11 = try_bind v10 live_after=[v0, v1, v2, v3]
@@ -211,8 +321,8 @@ exports: run/1, definition/0, execute/1
   v4 = call_local polish_activity(v3, v0) live_after=[v1, v2, v3]
   v5 = call_rt aion@duration:milliseconds/1(600000) live_after=[v1, v2, v3, v4]
   v6 = call_rt aion@activity:timeout/2(v4, v5) live_after=[v1, v2, v3]
-  v7 = call_rt aion@activity:task_queue/2(v6, lit#1) live_after=[v1, v2, v3]
-  v8 = call_rt aion@activity:node/2(v7, lit#2) live_after=[v1, v2, v3]
+  v7 = call_rt aion@activity:task_queue/2(v6, lit#19) live_after=[v1, v2, v3]
+  v8 = call_rt aion@activity:node/2(v7, lit#20) live_after=[v1, v2, v3]
   v9 = call_rt aion@workflow:run/1(v8) live_after=[v1, v2, v3]
   v10 = call_rt aion@awl@error:map_activity_error/1(v9) live_after=[v1, v2, v3]
   v11 = try_bind v10 live_after=[v1, v2, v3]

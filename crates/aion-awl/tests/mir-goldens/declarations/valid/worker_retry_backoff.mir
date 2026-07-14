@@ -4,8 +4,8 @@ exports: run/1, definition/0, execute/1
   step_fetch:
     aion@activity:retry/2 [activities] (v1, v5)
     aion@activity:timeout/2 [activities] (v6, v7)
-    aion@activity:task_queue/2 [activities] (v8, lit#1)
-    aion@activity:node/2 [activities] (v9, lit#2)
+    aion@activity:task_queue/2 [activities] (v8, lit#11)
+    aion@activity:node/2 [activities] (v9, lit#12)
     aion@workflow:run/1 [activities] (v10)
 == durable families == activities
 == atoms ==
@@ -16,6 +16,20 @@ exports: run/1, definition/0, execute/1
   [4] exponential
   [5] retry_policy
   [6] ok
+== literals ==
+  [0] "body"
+  [1] "status"
+  [2] "url"
+  [3] "url"
+  [4] "fetched"
+  [5] "outcome"
+  [6] ""
+  [7] "FetchUpstreamOutcome"
+  [8] "fetched"
+  [9] "payload"
+  [10] float(2.0)
+  [11] "fetcher"
+  [12] "network"
 == types ==
   record Payload tag=payload
     body: string
@@ -48,7 +62,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn payload_decoder/0 origin=codec_template(RecordTrio, Payload, record#0) ==
   sig: () -> Decoder(fetch_upstream.Payload)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure payload_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn payload_decoder$0/1 origin=lifted(payload_decoder, #0) ==
+  sig: (String) -> Decoder(fetch_upstream.Payload)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure payload_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn payload_decoder$1/2 origin=lifted(payload_decoder, #1) ==
+  sig: (Int, String) -> Decoder(fetch_upstream.Payload)
+  v2 = record(payload, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn fetch_input_codec/0 origin=codec_template(RecordTrio, FetchInput, record#1) ==
   sig: () -> Codec(fetch_upstream.FetchInput)
   v0 = make_closure fetch_input_to_json captures=[]
@@ -61,7 +86,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fetch_input_decoder/0 origin=codec_template(RecordTrio, FetchInput, record#1) ==
   sig: () -> Decoder(fetch_upstream.FetchInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn fetch_input_decoder$0/1 origin=lifted(fetch_input_decoder, #0) ==
+  sig: (String) -> Decoder(fetch_upstream.FetchInput)
+  v1 = record(fetch_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fetch_upstream_input_codec/0 origin=codec_template(RecordTrio, FetchUpstreamInput, record#2) ==
   sig: () -> Codec(fetch_upstream.FetchUpstreamInput)
   v0 = make_closure fetch_upstream_input_to_json captures=[]
@@ -74,7 +105,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fetch_upstream_input_decoder/0 origin=codec_template(RecordTrio, FetchUpstreamInput, record#2) ==
   sig: () -> Decoder(fetch_upstream.FetchUpstreamInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_upstream_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn fetch_upstream_input_decoder$0/1 origin=lifted(fetch_upstream_input_decoder, #0) ==
+  sig: (String) -> Decoder(fetch_upstream.FetchUpstreamInput)
+  v1 = record(fetch_upstream_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fetch_upstream_outcome_codec/0 origin=codec_template(UnionTrio, FetchUpstreamOutcome, union#3) ==
   sig: () -> Codec(fetch_upstream.FetchUpstreamOutcome)
   v0 = make_closure fetch_upstream_outcome_to_json captures=[]
@@ -82,11 +119,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn fetch_upstream_outcome_to_json/1 origin=codec_template(UnionTrio, FetchUpstreamOutcome, union#3) ==
   sig: (fetch_upstream.FetchUpstreamOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>payload_to_json}
+  return v2
 == fn fetch_upstream_outcome_decoder/0 origin=codec_template(UnionTrio, FetchUpstreamOutcome, union#3) ==
   sig: () -> Decoder(fetch_upstream.FetchUpstreamOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_upstream_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn fetch_upstream_outcome_decoder$outcome/1 origin=lifted(fetch_upstream_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fetch_upstream.FetchUpstreamOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local payload_decoder()
+    v4 = make_closure fetch_upstream_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(payload, [lit#6, 0])
+    v2 = record(fetched_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn fetch_upstream_outcome_decoder$arm0/1 origin=lifted(fetch_upstream_outcome_decoder, #1) ==
+  sig: (fetch_upstream.Payload) -> Decoder(fetch_upstream.FetchUpstreamOutcome)
+  v1 = record(fetched_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fetch_activity/1 origin=activity_wrapper(fetch, raw=false) ==
   sig: (String) -> Activity(fetch_upstream.FetchInput, fetch_upstream.Payload)
   T-ACT action=fetch input_codec=fetch_input_codec return=payload_codec
@@ -95,13 +149,13 @@ exports: run/1, definition/0, execute/1
   v1 = call_local fetch_activity(v0)
   v2 = call_rt aion@duration:milliseconds/1(10000) live_after=[v1]
   v3 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1, v2]
-  v4 = record(exponential, [v2, lit#0, v3])
+  v4 = record(exponential, [v2, lit#10, v3])
   v5 = record(retry_policy, [5, v4])
   v6 = call_rt aion@activity:retry/2(v1, v5)
   v7 = call_rt aion@duration:milliseconds/1(120000) live_after=[v6]
   v8 = call_rt aion@activity:timeout/2(v6, v7)
-  v9 = call_rt aion@activity:task_queue/2(v8, lit#1)
-  v10 = call_rt aion@activity:node/2(v9, lit#2)
+  v9 = call_rt aion@activity:task_queue/2(v8, lit#11)
+  v10 = call_rt aion@activity:node/2(v9, lit#12)
   v11 = call_rt aion@workflow:run/1(v10)
   v12 = call_rt aion@awl@error:map_activity_error/1(v11)
   v13 = try_bind v12

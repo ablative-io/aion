@@ -3,8 +3,8 @@ exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_grade:
     aion@activity:timeout/2 [activities] (v1, v2)
-    aion@activity:task_queue/2 [activities] (v3, lit#0)
-    aion@activity:node/2 [activities] (v4, lit#1)
+    aion@activity:task_queue/2 [activities] (v3, lit#14)
+    aion@activity:node/2 [activities] (v4, lit#15)
     aion@workflow:run/1 [activities] (v5)
 == durable families == activities
 == atoms ==
@@ -17,6 +17,25 @@ exports: run/1, definition/0, execute/1
   [6] ok
   [7] awl_outcome_failure
   [8] error
+== literals ==
+  [0] "score"
+  [1] "summary"
+  [2] "score"
+  [3] "summary"
+  [4] "summary"
+  [5] "essay"
+  [6] "essay"
+  [7] "published"
+  [8] "outcome"
+  [9] float(0.0)
+  [10] ""
+  [11] "FloatThresholdGuardOutcome"
+  [12] "published"
+  [13] "payload"
+  [14] "grading"
+  [15] "model"
+  [16] float(0.5)
+  [17] "rejected"
 == types ==
   record Verdict tag=verdict
     score: float
@@ -54,7 +73,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#0) ==
   sig: () -> Decoder(float_threshold_guard.Verdict)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:float_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (Float) -> Decoder(float_threshold_guard.Verdict)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure verdict_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn verdict_decoder$1/2 origin=lifted(verdict_decoder, #1) ==
+  sig: (String, Float) -> Decoder(float_threshold_guard.Verdict)
+  v2 = record(verdict, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn published_codec/0 origin=codec_template(RecordTrio, Published, record#1) ==
   sig: () -> Codec(float_threshold_guard.Published)
   v0 = make_closure published_to_json captures=[]
@@ -68,7 +98,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn published_decoder/0 origin=codec_template(RecordTrio, Published, record#1) ==
   sig: () -> Decoder(float_threshold_guard.Published)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:float_decoder/0()
+  v1 = make_closure published_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn published_decoder$0/1 origin=lifted(published_decoder, #0) ==
+  sig: (Float) -> Decoder(float_threshold_guard.Published)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure published_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn published_decoder$1/2 origin=lifted(published_decoder, #1) ==
+  sig: (String, Float) -> Decoder(float_threshold_guard.Published)
+  v2 = record(published, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn rejected_codec/0 origin=codec_template(RecordTrio, Rejected, record#2) ==
   sig: () -> Codec(float_threshold_guard.Rejected)
   v0 = make_closure rejected_to_json captures=[]
@@ -81,7 +122,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn rejected_decoder/0 origin=codec_template(RecordTrio, Rejected, record#2) ==
   sig: () -> Decoder(float_threshold_guard.Rejected)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure rejected_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn rejected_decoder$0/1 origin=lifted(rejected_decoder, #0) ==
+  sig: (String) -> Decoder(float_threshold_guard.Rejected)
+  v1 = record(rejected, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn grade_input_codec/0 origin=codec_template(RecordTrio, GradeInput, record#3) ==
   sig: () -> Codec(float_threshold_guard.GradeInput)
   v0 = make_closure grade_input_to_json captures=[]
@@ -94,7 +141,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn grade_input_decoder/0 origin=codec_template(RecordTrio, GradeInput, record#3) ==
   sig: () -> Decoder(float_threshold_guard.GradeInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure grade_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn grade_input_decoder$0/1 origin=lifted(grade_input_decoder, #0) ==
+  sig: (String) -> Decoder(float_threshold_guard.GradeInput)
+  v1 = record(grade_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn float_threshold_guard_input_codec/0 origin=codec_template(RecordTrio, FloatThresholdGuardInput, record#4) ==
   sig: () -> Codec(float_threshold_guard.FloatThresholdGuardInput)
   v0 = make_closure float_threshold_guard_input_to_json captures=[]
@@ -107,7 +160,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn float_threshold_guard_input_decoder/0 origin=codec_template(RecordTrio, FloatThresholdGuardInput, record#4) ==
   sig: () -> Decoder(float_threshold_guard.FloatThresholdGuardInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure float_threshold_guard_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn float_threshold_guard_input_decoder$0/1 origin=lifted(float_threshold_guard_input_decoder, #0) ==
+  sig: (String) -> Decoder(float_threshold_guard.FloatThresholdGuardInput)
+  v1 = record(float_threshold_guard_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn float_threshold_guard_outcome_codec/0 origin=codec_template(UnionTrio, FloatThresholdGuardOutcome, union#5) ==
   sig: () -> Codec(float_threshold_guard.FloatThresholdGuardOutcome)
   v0 = make_closure float_threshold_guard_outcome_to_json captures=[]
@@ -115,11 +174,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn float_threshold_guard_outcome_to_json/1 origin=codec_template(UnionTrio, FloatThresholdGuardOutcome, union#5) ==
   sig: (float_threshold_guard.FloatThresholdGuardOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#7|>awlc.string_to_json, "payload": v1|>published_to_json}
+  return v2
 == fn float_threshold_guard_outcome_decoder/0 origin=codec_template(UnionTrio, FloatThresholdGuardOutcome, union#5) ==
   sig: () -> Decoder(float_threshold_guard.FloatThresholdGuardOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure float_threshold_guard_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn float_threshold_guard_outcome_decoder$outcome/1 origin=lifted(float_threshold_guard_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(float_threshold_guard.FloatThresholdGuardOutcome)
+  if cmp Eq v0 lit#12:
+    v3 = call_local published_decoder()
+    v4 = make_closure float_threshold_guard_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#13, v3, v4)
+  else:
+    v1 = record(published, [lit#9, lit#10])
+    v2 = record(published_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#11)
+== fn float_threshold_guard_outcome_decoder$arm0/1 origin=lifted(float_threshold_guard_outcome_decoder, #1) ==
+  sig: (float_threshold_guard.Published) -> Decoder(float_threshold_guard.FloatThresholdGuardOutcome)
+  v1 = record(published_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn grade_activity/1 origin=activity_wrapper(grade, raw=false) ==
   sig: (String) -> Activity(float_threshold_guard.GradeInput, float_threshold_guard.Verdict)
   T-ACT action=grade input_codec=grade_input_codec return=verdict_codec
@@ -128,13 +204,13 @@ exports: run/1, definition/0, execute/1
   v1 = call_local grade_activity(v0)
   v2 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1]
   v3 = call_rt aion@activity:timeout/2(v1, v2)
-  v4 = call_rt aion@activity:task_queue/2(v3, lit#0)
-  v5 = call_rt aion@activity:node/2(v4, lit#1)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#14)
+  v5 = call_rt aion@activity:node/2(v4, lit#15)
   v6 = call_rt aion@workflow:run/1(v5)
   v7 = call_rt aion@awl@error:map_activity_error/1(v6)
   v8 = try_bind v7
   v10 = field(v8, 1)
-  v9 = cmp FGt v10 lit#2
+  v9 = cmp FGt v10 lit#16
   if is_true v9:
     v11 = field(v8, 1)
     v12 = field(v8, 2)
@@ -147,7 +223,7 @@ exports: run/1, definition/0, execute/1
     v17 = record(rejected, [v16])
     v18 = call_local rejected_to_json(v17)
     v19 = call_rt gleam@json:to_string/1(v18)
-    v20 = record(awl_outcome_failure, [lit#3, v19])
+    v20 = record(awl_outcome_failure, [lit#17, v19])
     v21 = record(error, [v20])
     return v21
 == fn awl$dead_body/1 origin=dead_body ==

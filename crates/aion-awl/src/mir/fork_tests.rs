@@ -207,19 +207,47 @@ fn heterogeneous_named_fork_pins_raw_twins_and_positional_decode()
         host.contains("assert_list [v9, v10] = v8"),
         "join must destructure raw payloads by source position:\n{host}"
     );
-    // Position 0 decodes with profile's return codec + its action name;
-    // position 1 with history's — never the other way around.
+    // R5 codec IDENTITY, two-sided with `tests/emitter.rs`: each position's
+    // decode must carry that action's return codec AND its action-name
+    // literal CONTENT — the printed literal table makes `lit#N` transparent,
+    // so swapping the two names (same shapes, same arity) can never pass.
+    let profile_lit = literal_index(&text, "fetch_profile")
+        .ok_or("literal table does not carry \"fetch_profile\"")?;
+    let history_lit = literal_index(&text, "fetch_history")
+        .ok_or("literal table does not carry \"fetch_history\"")?;
     assert!(
         host.contains("v11 = call_local profile_codec()")
-            && host.contains("call_rt aion@awl@codec:decoded/3(v11, v9, lit#2)"),
-        "position 0 must decode with the profile return codec:\n{host}"
+            && host.contains(&format!(
+                "call_rt aion@awl@codec:decoded/3(v11, v9, lit#{profile_lit})"
+            )),
+        "position 0 must decode with the profile return codec and the \
+         `fetch_profile` name literal:\n{host}"
     );
     assert!(
         host.contains("v14 = call_local history_codec()")
-            && host.contains("call_rt aion@awl@codec:decoded/3(v14, v10, lit#3)"),
-        "position 1 must decode with the history return codec:\n{host}"
+            && host.contains(&format!(
+                "call_rt aion@awl@codec:decoded/3(v14, v10, lit#{history_lit})"
+            )),
+        "position 1 must decode with the history return codec and the \
+         `fetch_history` name literal:\n{host}"
     );
     Ok(())
+}
+
+/// The pool index of a binary literal with exactly `content`, read from the
+/// printed `== literals ==` table (`  [N] "content"`).
+fn literal_index(text: &str, content: &str) -> Option<usize> {
+    let table = text.split("== literals ==").nth(1)?;
+    let quoted = format!("{content:?}");
+    table
+        .lines()
+        .skip(1)
+        .take_while(|line| line.starts_with("  ["))
+        .find_map(|line| {
+            let rest = line.trim().strip_prefix('[')?;
+            let (index, value) = rest.split_once("] ")?;
+            (value == quoted).then(|| index.parse().ok())?
+        })
 }
 
 /// R1: the same AST call shape routes distinctly — an ACTION collection fork
@@ -321,6 +349,53 @@ fn stopgap_refusals_match_the_reference_classes() -> Result<(), Box<dyn std::err
             }
             other => {
                 return Err(format!("expected `{expected}` refusal, got {other:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Carried BC-2b-5 pin (c): call-site config inside fork branches is an
+/// INTENTIONAL direct-backend parity exception — the reference emitter
+/// passes branch config through `activity_value`
+/// (`emitter/forks.rs:218-229,300-336`), while direct lowering refuses both
+/// fork forms with the global BC-2 `call-site config` scope class
+/// (support stays deferred; recorded in AWL-BC-IR.md). This pin keeps the
+/// refusal class from drifting silently in either fork form.
+#[test]
+fn fork_branch_call_site_config_refuses_with_the_scope_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cases: &[&str] = &[
+        // Named fork branch with a config line.
+        "step check_all
+  fork
+    check_doc(doc: docs[0]) -> verdict
+      timeout 30m
+  join
+
+  route done(count: 1)
+",
+        // Collection fork branch with a config line.
+        "step check_all
+  fork doc in docs
+    check_doc(doc: doc)
+      node edge01
+  join -> results
+
+  route done(count: 1)
+",
+    ];
+    for body in cases {
+        let source = format!("{REFUSAL_HEADER}{body}");
+        match lower_source(&source)? {
+            Err(LowerError::Unsupported { shape, .. }) => {
+                assert_eq!(
+                    shape, "call-site config",
+                    "fork call-site config refusal class drifted for:\n{body}"
+                );
+            }
+            other => {
+                return Err(format!("expected the call-site config refusal, got {other:?}").into());
             }
         }
     }

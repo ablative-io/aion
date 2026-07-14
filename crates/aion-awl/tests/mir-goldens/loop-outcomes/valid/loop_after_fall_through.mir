@@ -3,13 +3,13 @@ exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_outline:
     aion@activity:timeout/2 [activities] (v2, v3)
-    aion@activity:task_queue/2 [activities] (v4, lit#0)
-    aion@activity:node/2 [activities] (v5, lit#1)
+    aion@activity:task_queue/2 [activities] (v4, lit#15)
+    aion@activity:node/2 [activities] (v5, lit#16)
     aion@workflow:run/1 [activities] (v6)
   polish_loop_0:
     aion@activity:timeout/2 [activities] (v3, v4)
-    aion@activity:task_queue/2 [activities] (v5, lit#2)
-    aion@activity:node/2 [activities] (v6, lit#3)
+    aion@activity:task_queue/2 [activities] (v5, lit#17)
+    aion@activity:node/2 [activities] (v6, lit#18)
     aion@workflow:run/1 [activities] (v7)
 == durable families == activities
 == atoms ==
@@ -23,6 +23,28 @@ exports: run/1, definition/0, execute/1
   [7] ok
   [8] awl_outcome_failure
   [9] error
+== literals ==
+  [0] "body"
+  [1] "ready"
+  [2] "body"
+  [3] "rounds"
+  [4] "reason"
+  [5] "topic"
+  [6] "prior"
+  [7] "topic"
+  [8] "rounds_cap"
+  [9] "polished"
+  [10] "outcome"
+  [11] ""
+  [12] "ChainedPolishOutcome"
+  [13] "polished"
+  [14] "payload"
+  [15] "writing"
+  [16] "writer"
+  [17] "writing"
+  [18] "writer"
+  [19] "the draft never settled"
+  [20] "ran_out"
 == types ==
   record Draft tag=draft
     body: string
@@ -63,7 +85,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn draft_decoder/0 origin=codec_template(RecordTrio, Draft, record#0) ==
   sig: () -> Decoder(chained_polish.Draft)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure draft_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn draft_decoder$0/1 origin=lifted(draft_decoder, #0) ==
+  sig: (String) -> Decoder(chained_polish.Draft)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure draft_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn draft_decoder$1/2 origin=lifted(draft_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(chained_polish.Draft)
+  v2 = record(draft, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn polished_codec/0 origin=codec_template(RecordTrio, Polished, record#1) ==
   sig: () -> Codec(chained_polish.Polished)
   v0 = make_closure polished_to_json captures=[]
@@ -77,7 +110,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn polished_decoder/0 origin=codec_template(RecordTrio, Polished, record#1) ==
   sig: () -> Decoder(chained_polish.Polished)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure polished_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn polished_decoder$0/1 origin=lifted(polished_decoder, #0) ==
+  sig: (String) -> Decoder(chained_polish.Polished)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure polished_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn polished_decoder$1/2 origin=lifted(polished_decoder, #1) ==
+  sig: (Int, String) -> Decoder(chained_polish.Polished)
+  v2 = record(polished, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn ran_out_codec/0 origin=codec_template(RecordTrio, RanOut, record#2) ==
   sig: () -> Codec(chained_polish.RanOut)
   v0 = make_closure ran_out_to_json captures=[]
@@ -90,7 +134,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn ran_out_decoder/0 origin=codec_template(RecordTrio, RanOut, record#2) ==
   sig: () -> Decoder(chained_polish.RanOut)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ran_out_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn ran_out_decoder$0/1 origin=lifted(ran_out_decoder, #0) ==
+  sig: (String) -> Decoder(chained_polish.RanOut)
+  v1 = record(ran_out, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn outline_input_codec/0 origin=codec_template(RecordTrio, OutlineInput, record#3) ==
   sig: () -> Codec(chained_polish.OutlineInput)
   v0 = make_closure outline_input_to_json captures=[]
@@ -103,7 +153,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn outline_input_decoder/0 origin=codec_template(RecordTrio, OutlineInput, record#3) ==
   sig: () -> Decoder(chained_polish.OutlineInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure outline_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn outline_input_decoder$0/1 origin=lifted(outline_input_decoder, #0) ==
+  sig: (String) -> Decoder(chained_polish.OutlineInput)
+  v1 = record(outline_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn refine_input_codec/0 origin=codec_template(RecordTrio, RefineInput, record#4) ==
   sig: () -> Codec(chained_polish.RefineInput)
   v0 = make_closure refine_input_to_json captures=[]
@@ -116,7 +172,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn refine_input_decoder/0 origin=codec_template(RecordTrio, RefineInput, record#4) ==
   sig: () -> Decoder(chained_polish.RefineInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local draft_decoder()
+  v1 = make_closure refine_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn refine_input_decoder$0/1 origin=lifted(refine_input_decoder, #0) ==
+  sig: (chained_polish.Draft) -> Decoder(chained_polish.RefineInput)
+  v1 = record(refine_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn chained_polish_input_codec/0 origin=codec_template(RecordTrio, ChainedPolishInput, record#5) ==
   sig: () -> Codec(chained_polish.ChainedPolishInput)
   v0 = make_closure chained_polish_input_to_json captures=[]
@@ -130,7 +192,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn chained_polish_input_decoder/0 origin=codec_template(RecordTrio, ChainedPolishInput, record#5) ==
   sig: () -> Decoder(chained_polish.ChainedPolishInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure chained_polish_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn chained_polish_input_decoder$0/1 origin=lifted(chained_polish_input_decoder, #0) ==
+  sig: (String) -> Decoder(chained_polish.ChainedPolishInput)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure chained_polish_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v1, v2)
+== fn chained_polish_input_decoder$1/2 origin=lifted(chained_polish_input_decoder, #1) ==
+  sig: (Int, String) -> Decoder(chained_polish.ChainedPolishInput)
+  v2 = record(chained_polish_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn chained_polish_outcome_codec/0 origin=codec_template(UnionTrio, ChainedPolishOutcome, union#6) ==
   sig: () -> Codec(chained_polish.ChainedPolishOutcome)
   v0 = make_closure chained_polish_outcome_to_json captures=[]
@@ -138,11 +211,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn chained_polish_outcome_to_json/1 origin=codec_template(UnionTrio, ChainedPolishOutcome, union#6) ==
   sig: (chained_polish.ChainedPolishOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#9|>awlc.string_to_json, "payload": v1|>polished_to_json}
+  return v2
 == fn chained_polish_outcome_decoder/0 origin=codec_template(UnionTrio, ChainedPolishOutcome, union#6) ==
   sig: () -> Decoder(chained_polish.ChainedPolishOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure chained_polish_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn chained_polish_outcome_decoder$outcome/1 origin=lifted(chained_polish_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(chained_polish.ChainedPolishOutcome)
+  if cmp Eq v0 lit#13:
+    v3 = call_local polished_decoder()
+    v4 = make_closure chained_polish_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#14, v3, v4)
+  else:
+    v1 = record(polished, [lit#11, 0])
+    v2 = record(polished_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#12)
+== fn chained_polish_outcome_decoder$arm0/1 origin=lifted(chained_polish_outcome_decoder, #1) ==
+  sig: (chained_polish.Polished) -> Decoder(chained_polish.ChainedPolishOutcome)
+  v1 = record(polished_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn outline_activity/1 origin=activity_wrapper(outline, raw=false) ==
   sig: (String) -> Activity(chained_polish.OutlineInput, chained_polish.Draft)
   T-ACT action=outline input_codec=outline_input_codec return=draft_codec
@@ -154,8 +244,8 @@ exports: run/1, definition/0, execute/1
   v2 = call_local outline_activity(v1) live_after=[v0]
   v3 = call_rt aion@duration:milliseconds/1(300000) live_after=[v0, v2]
   v4 = call_rt aion@activity:timeout/2(v2, v3) live_after=[v0]
-  v5 = call_rt aion@activity:task_queue/2(v4, lit#0) live_after=[v0]
-  v6 = call_rt aion@activity:node/2(v5, lit#1) live_after=[v0]
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#15) live_after=[v0]
+  v6 = call_rt aion@activity:node/2(v5, lit#16) live_after=[v0]
   v7 = call_rt aion@workflow:run/1(v6) live_after=[v0]
   v8 = call_rt aion@awl@error:map_activity_error/1(v7) live_after=[v0]
   v9 = try_bind v8 live_after=[v0]
@@ -174,10 +264,10 @@ exports: run/1, definition/0, execute/1
     v10 = record(ok, [v9])
     return v10
   else:
-    v11 = record(ran_out, [lit#4])
+    v11 = record(ran_out, [lit#19])
     v12 = call_local ran_out_to_json(v11)
     v13 = call_rt gleam@json:to_string/1(v12)
-    v14 = record(awl_outcome_failure, [lit#5, v13])
+    v14 = record(awl_outcome_failure, [lit#20, v13])
     v15 = record(error, [v14])
     return v15
 == fn polish_loop_0/3 origin=loop(polish#0) ==
@@ -185,8 +275,8 @@ exports: run/1, definition/0, execute/1
   v3 = call_local refine_activity(v0) live_after=[v1, v2]
   v4 = call_rt aion@duration:milliseconds/1(300000) live_after=[v1, v2, v3]
   v5 = call_rt aion@activity:timeout/2(v3, v4) live_after=[v1, v2]
-  v6 = call_rt aion@activity:task_queue/2(v5, lit#2) live_after=[v1, v2]
-  v7 = call_rt aion@activity:node/2(v6, lit#3) live_after=[v1, v2]
+  v6 = call_rt aion@activity:task_queue/2(v5, lit#17) live_after=[v1, v2]
+  v7 = call_rt aion@activity:node/2(v6, lit#18) live_after=[v1, v2]
   v8 = call_rt aion@workflow:run/1(v7) live_after=[v1, v2]
   v9 = call_rt aion@awl@error:map_activity_error/1(v8) live_after=[v1, v2]
   v10 = try_bind v9 live_after=[v1, v2]

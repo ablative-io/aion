@@ -20,6 +20,15 @@
 //! named-child branches, non-action named branches. Child collection forks
 //! additionally stay refused AT LOWER this increment (the child witness
 //! shell does not select yet) — a clean diagnostic, never a backend error.
+//!
+//! ONE deliberate parity exception (BC-2b-5, recorded in AWL-BC-IR.md): the
+//! reference emitter passes call-site config on fork branches through
+//! `activity_value` (`emitter/forks.rs:218-229,300-336,351-365`), while
+//! direct lowering refuses it with the global BC-2 `call-site config` scope
+//! class — full support needs per-key site/declaration merge across the
+//! typed and raw call paths and stays deferred with the global marker
+//! (`tests/compile.rs::call_site_node_override_yields_the_override`;
+//! fork-form pins in `mir/fork_tests.rs`).
 
 use std::collections::BTreeSet;
 

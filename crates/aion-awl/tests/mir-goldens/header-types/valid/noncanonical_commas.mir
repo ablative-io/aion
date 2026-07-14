@@ -2,7 +2,7 @@ module comma_tolerance source=comma_tolerance.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_record:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#13)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -12,6 +12,21 @@ exports: run/1, definition/0, execute/1
   [3] comma_tolerance_input
   [4] recorded_outcome
   [5] ok
+== literals ==
+  [0] "id"
+  [1] "entries"
+  [2] "id"
+  [3] "ledger"
+  [4] "id"
+  [5] "id"
+  [6] "recorded"
+  [7] "outcome"
+  [8] ""
+  [9] ""
+  [10] "CommaToleranceOutcome"
+  [11] "recorded"
+  [12] "payload"
+  [13] "bookkeeper"
 == types ==
   record Ledger tag=ledger
     id: string
@@ -43,11 +58,22 @@ exports: run/1, definition/0, execute/1
   sig: (comma_tolerance.Ledger) -> Json
   v1 = field(v0, 1)
   v2 = field(v0, 2)
-  v3 = json_obj {"id": v1|>awlc.string_to_json, "entries": v2|>awlc.nil_to_json}
+  v3 = json_obj {"id": v1|>awlc.string_to_json, "entries": v2|>list_string_to_json}
   return v3
 == fn ledger_decoder/0 origin=codec_template(RecordTrio, Ledger, record#0) ==
   sig: () -> Decoder(comma_tolerance.Ledger)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ledger_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn ledger_decoder$0/1 origin=lifted(ledger_decoder, #0) ==
+  sig: (String) -> Decoder(comma_tolerance.Ledger)
+  v1 = call_local list_string_decoder() live_after=[v0]
+  v2 = make_closure ledger_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn ledger_decoder$1/2 origin=lifted(ledger_decoder, #1) ==
+  sig: (List(String), String) -> Decoder(comma_tolerance.Ledger)
+  v2 = record(ledger, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn receipt_codec/0 origin=codec_template(RecordTrio, Receipt, record#1) ==
   sig: () -> Codec(comma_tolerance.Receipt)
   v0 = make_closure receipt_to_json captures=[]
@@ -61,7 +87,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn receipt_decoder/0 origin=codec_template(RecordTrio, Receipt, record#1) ==
   sig: () -> Decoder(comma_tolerance.Receipt)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure receipt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn receipt_decoder$0/1 origin=lifted(receipt_decoder, #0) ==
+  sig: (String) -> Decoder(comma_tolerance.Receipt)
+  v1 = call_local ledger_decoder() live_after=[v0]
+  v2 = make_closure receipt_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn receipt_decoder$1/2 origin=lifted(receipt_decoder, #1) ==
+  sig: (comma_tolerance.Ledger, String) -> Decoder(comma_tolerance.Receipt)
+  v2 = record(receipt, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn record_input_codec/0 origin=codec_template(RecordTrio, RecordInput, record#2) ==
   sig: () -> Codec(comma_tolerance.RecordInput)
   v0 = make_closure record_input_to_json captures=[]
@@ -74,7 +111,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn record_input_decoder/0 origin=codec_template(RecordTrio, RecordInput, record#2) ==
   sig: () -> Decoder(comma_tolerance.RecordInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure record_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn record_input_decoder$0/1 origin=lifted(record_input_decoder, #0) ==
+  sig: (String) -> Decoder(comma_tolerance.RecordInput)
+  v1 = record(record_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn comma_tolerance_input_codec/0 origin=codec_template(RecordTrio, CommaToleranceInput, record#3) ==
   sig: () -> Codec(comma_tolerance.CommaToleranceInput)
   v0 = make_closure comma_tolerance_input_to_json captures=[]
@@ -87,7 +130,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn comma_tolerance_input_decoder/0 origin=codec_template(RecordTrio, CommaToleranceInput, record#3) ==
   sig: () -> Decoder(comma_tolerance.CommaToleranceInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure comma_tolerance_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn comma_tolerance_input_decoder$0/1 origin=lifted(comma_tolerance_input_decoder, #0) ==
+  sig: (String) -> Decoder(comma_tolerance.CommaToleranceInput)
+  v1 = record(comma_tolerance_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn comma_tolerance_outcome_codec/0 origin=codec_template(UnionTrio, CommaToleranceOutcome, union#4) ==
   sig: () -> Codec(comma_tolerance.CommaToleranceOutcome)
   v0 = make_closure comma_tolerance_outcome_to_json captures=[]
@@ -95,18 +144,52 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn comma_tolerance_outcome_to_json/1 origin=codec_template(UnionTrio, CommaToleranceOutcome, union#4) ==
   sig: (comma_tolerance.CommaToleranceOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#6|>awlc.string_to_json, "payload": v1|>receipt_to_json}
+  return v2
 == fn comma_tolerance_outcome_decoder/0 origin=codec_template(UnionTrio, CommaToleranceOutcome, union#4) ==
   sig: () -> Decoder(comma_tolerance.CommaToleranceOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure comma_tolerance_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn comma_tolerance_outcome_decoder$outcome/1 origin=lifted(comma_tolerance_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(comma_tolerance.CommaToleranceOutcome)
+  if cmp Eq v0 lit#11:
+    v4 = call_local receipt_decoder()
+    v5 = make_closure comma_tolerance_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v4, v5)
+  else:
+    v1 = record(ledger, [lit#9, nil])
+    v2 = record(receipt, [lit#8, v1])
+    v3 = record(recorded_outcome, [v2])
+    tail_rt gleam@dynamic@decode:failure/2(v3, lit#10)
+== fn comma_tolerance_outcome_decoder$arm0/1 origin=lifted(comma_tolerance_outcome_decoder, #1) ==
+  sig: (comma_tolerance.Receipt) -> Decoder(comma_tolerance.CommaToleranceOutcome)
+  v1 = record(recorded_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
 == fn record_activity/1 origin=activity_wrapper(record, raw=false) ==
   sig: (String) -> Activity(comma_tolerance.RecordInput, comma_tolerance.Receipt)
   T-ACT action=record input_codec=record_input_codec return=receipt_codec
 == fn step_record/1 origin=region(record) ==
   sig: (String) -> Result(comma_tolerance.CommaToleranceOutcome, AwlError)
   v1 = call_local record_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#13)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4

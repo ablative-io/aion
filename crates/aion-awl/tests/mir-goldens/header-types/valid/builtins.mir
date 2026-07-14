@@ -2,13 +2,13 @@ module analyze_snapshot source=analyze_snapshot.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_probe:
-    aion@activity:task_queue/2 [activities] (v5, lit#1)
+    aion@activity:task_queue/2 [activities] (v5, lit#45)
     aion@workflow:run/1 [activities] (v6)
   step_analyze:
-    aion@activity:task_queue/2 [activities] (v5, lit#2)
+    aion@activity:task_queue/2 [activities] (v5, lit#46)
     aion@workflow:run/1 [activities] (v6)
   step_stamp_and_pass:
-    aion@activity:task_queue/2 [activities] (v1, lit#5)
+    aion@activity:task_queue/2 [activities] (v1, lit#49)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -19,9 +19,63 @@ exports: run/1, definition/0, execute/1
   [4] touch_input
   [5] analyze_snapshot_input
   [6] passed_outcome
-  [7] awl_outcome_failure
-  [8] error
-  [9] ok
+  [7] some
+  [8] none
+  [9] false
+  [10] awl_outcome_failure
+  [11] error
+  [12] ok
+== literals ==
+  [0] "path"
+  [1] "score"
+  [2] "attempts"
+  [3] "clean"
+  [4] "labels"
+  [5] "detail"
+  [6] "extra_labels"
+  [7] "path"
+  [8] "score"
+  [9] "attempts"
+  [10] "clean"
+  [11] "labels"
+  [12] "detail"
+  [13] "extra_labels"
+  [14] "reason"
+  [15] "dir"
+  [16] "cap"
+  [17] "tries"
+  [18] "tags"
+  [19] "note"
+  [20] "dir"
+  [21] "cap"
+  [22] "tries"
+  [23] "tags"
+  [24] "note"
+  [25] "report"
+  [26] "path"
+  [27] "dir"
+  [28] "limit"
+  [29] "tries"
+  [30] "tags"
+  [31] "note"
+  [32] "dir"
+  [33] "limit"
+  [34] "tries"
+  [35] "tags"
+  [36] "note"
+  [37] "passed"
+  [38] "outcome"
+  [39] ""
+  [40] float(0.0)
+  [41] "AnalyzeSnapshotOutcome"
+  [42] "passed"
+  [43] "payload"
+  [44] "probe.txt"
+  [45] "analyzer"
+  [46] "analyzer"
+  [47] "analysis flagged the snapshot"
+  [48] "failed"
+  [49] "analyzer"
 == types ==
   record Report tag=report
     path: string
@@ -68,17 +122,99 @@ exports: run/1, definition/0, execute/1
 == fn report_to_json/1 origin=codec_template(RecordTrio, Report, record#0) ==
   sig: (analyze_snapshot.Report) -> Json
   v1 = field(v0, 1)
-  v2 = field(v0, 2)
-  v3 = field(v0, 3)
-  v4 = field(v0, 4)
-  v5 = field(v0, 5)
-  v6 = field(v0, 6)
-  v7 = field(v0, 7)
-  v8 = json_obj {"path": v1|>awlc.string_to_json, "score": v2|>awlc.float_to_json, "attempts": v3|>awlc.int_to_json, "clean": v4|>awlc.bool_to_json, "labels": v5|>awlc.nil_to_json, "detail": v6|>awlc.nil_to_json, "extra_labels": v7|>awlc.nil_to_json}
-  return v8
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#0, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:float_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#1, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_rt aion@awl@codec:int_to_json/1(v9) live_after=[v0, v4, v8]
+  v11 = tuple([lit#2, v10])
+  v12 = list([v11])
+  v13 = field(v0, 4)
+  v14 = call_rt aion@awl@codec:bool_to_json/1(v13) live_after=[v0, v4, v8, v12]
+  v15 = tuple([lit#3, v14])
+  v16 = list([v15])
+  v17 = field(v0, 5)
+  v18 = call_local list_string_to_json(v17) live_after=[v0, v4, v8, v12, v16]
+  v19 = tuple([lit#4, v18])
+  v20 = list([v19])
+  v21 = field(v0, 6)
+  v22 = call_local report_to_json$field5(v21) live_after=[v0, v4, v8, v12, v16, v20]
+  v23 = field(v0, 7)
+  v24 = call_local report_to_json$field6(v23) live_after=[v4, v8, v12, v16, v20, v22]
+  v25 = list([v4, v8, v12, v16, v20, v22, v24])
+  v26 = call_rt gleam@list:flatten/1(v25)
+  tail_rt gleam@json:object/1(v26)
 == fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#0) ==
   sig: () -> Decoder(analyze_snapshot.Report)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure report_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn report_to_json$field5/1 origin=lifted(report_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#5, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn report_to_json$field6/1 origin=lifted(report_to_json, #1) ==
+  sig: (Option(List(String))) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_local list_string_to_json(v1)
+    v3 = tuple([lit#6, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn report_decoder$some/1 origin=lifted(report_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn report_decoder$0/1 origin=lifted(report_decoder, #1) ==
+  sig: (String) -> Decoder(analyze_snapshot.Report)
+  v1 = call_rt aion@awl@codec:float_decoder/0() live_after=[v0]
+  v2 = make_closure report_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v1, v2)
+== fn report_decoder$1/2 origin=lifted(report_decoder, #2) ==
+  sig: (Float, String) -> Decoder(analyze_snapshot.Report)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure report_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v2, v3)
+== fn report_decoder$2/3 origin=lifted(report_decoder, #3) ==
+  sig: (Int, String, Float) -> Decoder(analyze_snapshot.Report)
+  v3 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure report_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v3, v4)
+== fn report_decoder$3/4 origin=lifted(report_decoder, #4) ==
+  sig: (Bool, String, Float, Int) -> Decoder(analyze_snapshot.Report)
+  v4 = call_local list_string_decoder() live_after=[v0, v1, v2, v3]
+  v5 = make_closure report_decoder$4 captures=[v1, v2, v3, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v4, v5)
+== fn report_decoder$4/5 origin=lifted(report_decoder, #5) ==
+  sig: (List(String), String, Float, Int, Bool) -> Decoder(analyze_snapshot.Report)
+  v5 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3, v4]
+  v6 = make_closure report_decoder$some captures=[]
+  v7 = call_rt gleam@dynamic@decode:map/2(v5, v6) live_after=[v0, v1, v2, v3, v4]
+  v8 = make_closure report_decoder$5 captures=[v1, v2, v3, v4, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#12, 'none', v7, v8)
+== fn report_decoder$5/6 origin=lifted(report_decoder, #6) ==
+  sig: (Option(String), String, Float, Int, Bool, List(String)) -> Decoder(analyze_snapshot.Report)
+  v6 = call_local list_string_decoder() live_after=[v0, v1, v2, v3, v4, v5]
+  v7 = make_closure report_decoder$some captures=[]
+  v8 = call_rt gleam@dynamic@decode:map/2(v6, v7) live_after=[v0, v1, v2, v3, v4, v5]
+  v9 = make_closure report_decoder$6 captures=[v1, v2, v3, v4, v5, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#13, 'none', v8, v9)
+== fn report_decoder$6/7 origin=lifted(report_decoder, #7) ==
+  sig: (Option(List(String)), String, Float, Int, Bool, List(String), Option(String)) -> Decoder(analyze_snapshot.Report)
+  v7 = record(report, [v1, v2, v3, v4, v5, v6, v0])
+  tail_rt gleam@dynamic@decode:success/1(v7)
 == fn flagged_codec/0 origin=codec_template(RecordTrio, Flagged, record#1) ==
   sig: () -> Codec(analyze_snapshot.Flagged)
   v0 = make_closure flagged_to_json captures=[]
@@ -91,7 +227,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn flagged_decoder/0 origin=codec_template(RecordTrio, Flagged, record#1) ==
   sig: () -> Decoder(analyze_snapshot.Flagged)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure flagged_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v0, v1)
+== fn flagged_decoder$0/1 origin=lifted(flagged_decoder, #0) ==
+  sig: (String) -> Decoder(analyze_snapshot.Flagged)
+  v1 = record(flagged, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn analyze_input_codec/0 origin=codec_template(RecordTrio, AnalyzeInput, record#2) ==
   sig: () -> Codec(analyze_snapshot.AnalyzeInput)
   v0 = make_closure analyze_input_to_json captures=[]
@@ -100,15 +242,71 @@ exports: run/1, definition/0, execute/1
 == fn analyze_input_to_json/1 origin=codec_template(RecordTrio, AnalyzeInput, record#2) ==
   sig: (analyze_snapshot.AnalyzeInput) -> Json
   v1 = field(v0, 1)
-  v2 = field(v0, 2)
-  v3 = field(v0, 3)
-  v4 = field(v0, 4)
-  v5 = field(v0, 5)
-  v6 = json_obj {"dir": v1|>awlc.string_to_json, "cap": v2|>awlc.float_to_json, "tries": v3|>awlc.int_to_json, "tags": v4|>awlc.nil_to_json, "note": v5|>awlc.nil_to_json}
-  return v6
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#15, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:float_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#16, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_rt aion@awl@codec:int_to_json/1(v9) live_after=[v0, v4, v8]
+  v11 = tuple([lit#17, v10])
+  v12 = list([v11])
+  v13 = field(v0, 4)
+  v14 = call_local list_string_to_json(v13) live_after=[v0, v4, v8, v12]
+  v15 = tuple([lit#18, v14])
+  v16 = list([v15])
+  v17 = field(v0, 5)
+  v18 = call_local analyze_input_to_json$field4(v17) live_after=[v4, v8, v12, v16]
+  v19 = list([v4, v8, v12, v16, v18])
+  v20 = call_rt gleam@list:flatten/1(v19)
+  tail_rt gleam@json:object/1(v20)
 == fn analyze_input_decoder/0 origin=codec_template(RecordTrio, AnalyzeInput, record#2) ==
   sig: () -> Decoder(analyze_snapshot.AnalyzeInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure analyze_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#20, v0, v1)
+== fn analyze_input_to_json$field4/1 origin=lifted(analyze_input_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#19, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn analyze_input_decoder$some/1 origin=lifted(analyze_input_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn analyze_input_decoder$0/1 origin=lifted(analyze_input_decoder, #1) ==
+  sig: (String) -> Decoder(analyze_snapshot.AnalyzeInput)
+  v1 = call_rt aion@awl@codec:float_decoder/0() live_after=[v0]
+  v2 = make_closure analyze_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#21, v1, v2)
+== fn analyze_input_decoder$1/2 origin=lifted(analyze_input_decoder, #2) ==
+  sig: (Float, String) -> Decoder(analyze_snapshot.AnalyzeInput)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure analyze_input_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#22, v2, v3)
+== fn analyze_input_decoder$2/3 origin=lifted(analyze_input_decoder, #3) ==
+  sig: (Int, String, Float) -> Decoder(analyze_snapshot.AnalyzeInput)
+  v3 = call_local list_string_decoder() live_after=[v0, v1, v2]
+  v4 = make_closure analyze_input_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#23, v3, v4)
+== fn analyze_input_decoder$3/4 origin=lifted(analyze_input_decoder, #4) ==
+  sig: (List(String), String, Float, Int) -> Decoder(analyze_snapshot.AnalyzeInput)
+  v4 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3]
+  v5 = make_closure analyze_input_decoder$some captures=[]
+  v6 = call_rt gleam@dynamic@decode:map/2(v4, v5) live_after=[v0, v1, v2, v3]
+  v7 = make_closure analyze_input_decoder$4 captures=[v1, v2, v3, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#24, 'none', v6, v7)
+== fn analyze_input_decoder$4/5 origin=lifted(analyze_input_decoder, #5) ==
+  sig: (Option(String), String, Float, Int, List(String)) -> Decoder(analyze_snapshot.AnalyzeInput)
+  v5 = record(analyze_input, [v1, v2, v3, v4, v0])
+  tail_rt gleam@dynamic@decode:success/1(v5)
 == fn stamp_input_codec/0 origin=codec_template(RecordTrio, StampInput, record#3) ==
   sig: () -> Codec(analyze_snapshot.StampInput)
   v0 = make_closure stamp_input_to_json captures=[]
@@ -121,7 +319,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn stamp_input_decoder/0 origin=codec_template(RecordTrio, StampInput, record#3) ==
   sig: () -> Decoder(analyze_snapshot.StampInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local report_decoder()
+  v1 = make_closure stamp_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#25, v0, v1)
+== fn stamp_input_decoder$0/1 origin=lifted(stamp_input_decoder, #0) ==
+  sig: (analyze_snapshot.Report) -> Decoder(analyze_snapshot.StampInput)
+  v1 = record(stamp_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn touch_input_codec/0 origin=codec_template(RecordTrio, TouchInput, record#4) ==
   sig: () -> Codec(analyze_snapshot.TouchInput)
   v0 = make_closure touch_input_to_json captures=[]
@@ -134,7 +338,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn touch_input_decoder/0 origin=codec_template(RecordTrio, TouchInput, record#4) ==
   sig: () -> Decoder(analyze_snapshot.TouchInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure touch_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#26, v0, v1)
+== fn touch_input_decoder$0/1 origin=lifted(touch_input_decoder, #0) ==
+  sig: (String) -> Decoder(analyze_snapshot.TouchInput)
+  v1 = record(touch_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn analyze_snapshot_input_codec/0 origin=codec_template(RecordTrio, AnalyzeSnapshotInput, record#5) ==
   sig: () -> Codec(analyze_snapshot.AnalyzeSnapshotInput)
   v0 = make_closure analyze_snapshot_input_to_json captures=[]
@@ -143,15 +353,71 @@ exports: run/1, definition/0, execute/1
 == fn analyze_snapshot_input_to_json/1 origin=codec_template(RecordTrio, AnalyzeSnapshotInput, record#5) ==
   sig: (analyze_snapshot.AnalyzeSnapshotInput) -> Json
   v1 = field(v0, 1)
-  v2 = field(v0, 2)
-  v3 = field(v0, 3)
-  v4 = field(v0, 4)
-  v5 = field(v0, 5)
-  v6 = json_obj {"dir": v1|>awlc.string_to_json, "limit": v2|>awlc.float_to_json, "tries": v3|>awlc.int_to_json, "tags": v4|>awlc.nil_to_json, "note": v5|>awlc.nil_to_json}
-  return v6
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#27, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:float_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#28, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_rt aion@awl@codec:int_to_json/1(v9) live_after=[v0, v4, v8]
+  v11 = tuple([lit#29, v10])
+  v12 = list([v11])
+  v13 = field(v0, 4)
+  v14 = call_local list_string_to_json(v13) live_after=[v0, v4, v8, v12]
+  v15 = tuple([lit#30, v14])
+  v16 = list([v15])
+  v17 = field(v0, 5)
+  v18 = call_local analyze_snapshot_input_to_json$field4(v17) live_after=[v4, v8, v12, v16]
+  v19 = list([v4, v8, v12, v16, v18])
+  v20 = call_rt gleam@list:flatten/1(v19)
+  tail_rt gleam@json:object/1(v20)
 == fn analyze_snapshot_input_decoder/0 origin=codec_template(RecordTrio, AnalyzeSnapshotInput, record#5) ==
   sig: () -> Decoder(analyze_snapshot.AnalyzeSnapshotInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure analyze_snapshot_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#32, v0, v1)
+== fn analyze_snapshot_input_to_json$field4/1 origin=lifted(analyze_snapshot_input_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#31, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn analyze_snapshot_input_decoder$some/1 origin=lifted(analyze_snapshot_input_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn analyze_snapshot_input_decoder$0/1 origin=lifted(analyze_snapshot_input_decoder, #1) ==
+  sig: (String) -> Decoder(analyze_snapshot.AnalyzeSnapshotInput)
+  v1 = call_rt aion@awl@codec:float_decoder/0() live_after=[v0]
+  v2 = make_closure analyze_snapshot_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#33, v1, v2)
+== fn analyze_snapshot_input_decoder$1/2 origin=lifted(analyze_snapshot_input_decoder, #2) ==
+  sig: (Float, String) -> Decoder(analyze_snapshot.AnalyzeSnapshotInput)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure analyze_snapshot_input_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#34, v2, v3)
+== fn analyze_snapshot_input_decoder$2/3 origin=lifted(analyze_snapshot_input_decoder, #3) ==
+  sig: (Int, String, Float) -> Decoder(analyze_snapshot.AnalyzeSnapshotInput)
+  v3 = call_local list_string_decoder() live_after=[v0, v1, v2]
+  v4 = make_closure analyze_snapshot_input_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#35, v3, v4)
+== fn analyze_snapshot_input_decoder$3/4 origin=lifted(analyze_snapshot_input_decoder, #4) ==
+  sig: (List(String), String, Float, Int) -> Decoder(analyze_snapshot.AnalyzeSnapshotInput)
+  v4 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3]
+  v5 = make_closure analyze_snapshot_input_decoder$some captures=[]
+  v6 = call_rt gleam@dynamic@decode:map/2(v4, v5) live_after=[v0, v1, v2, v3]
+  v7 = make_closure analyze_snapshot_input_decoder$4 captures=[v1, v2, v3, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#36, 'none', v6, v7)
+== fn analyze_snapshot_input_decoder$4/5 origin=lifted(analyze_snapshot_input_decoder, #5) ==
+  sig: (Option(String), String, Float, Int, List(String)) -> Decoder(analyze_snapshot.AnalyzeSnapshotInput)
+  v5 = record(analyze_snapshot_input, [v1, v2, v3, v4, v0])
+  tail_rt gleam@dynamic@decode:success/1(v5)
 == fn analyze_snapshot_outcome_codec/0 origin=codec_template(UnionTrio, AnalyzeSnapshotOutcome, union#6) ==
   sig: () -> Codec(analyze_snapshot.AnalyzeSnapshotOutcome)
   v0 = make_closure analyze_snapshot_outcome_to_json captures=[]
@@ -159,11 +425,73 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn analyze_snapshot_outcome_to_json/1 origin=codec_template(UnionTrio, AnalyzeSnapshotOutcome, union#6) ==
   sig: (analyze_snapshot.AnalyzeSnapshotOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#37|>awlc.string_to_json, "payload": v1|>report_to_json}
+  return v2
 == fn analyze_snapshot_outcome_decoder/0 origin=codec_template(UnionTrio, AnalyzeSnapshotOutcome, union#6) ==
   sig: () -> Decoder(analyze_snapshot.AnalyzeSnapshotOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure analyze_snapshot_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#38, v0, v1)
+== fn analyze_snapshot_outcome_decoder$outcome/1 origin=lifted(analyze_snapshot_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(analyze_snapshot.AnalyzeSnapshotOutcome)
+  if cmp Eq v0 lit#42:
+    v3 = call_local report_decoder()
+    v4 = make_closure analyze_snapshot_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#43, v3, v4)
+  else:
+    v1 = record(report, [lit#39, lit#40, 0, 'false', nil, 'none', 'none'])
+    v2 = record(passed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#41)
+== fn analyze_snapshot_outcome_decoder$arm0/1 origin=lifted(analyze_snapshot_outcome_decoder, #1) ==
+  sig: (analyze_snapshot.Report) -> Decoder(analyze_snapshot.AnalyzeSnapshotOutcome)
+  v1 = record(passed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn option_list_string_codec/0 origin=codec_template(CompositeTrio, Option(List(String)), composite(nullable(list(string)))) ==
+  sig: () -> Codec(Option(List(String)))
+  v0 = make_closure option_list_string_to_json captures=[]
+  v1 = call_local option_list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_list_string_to_json/1 origin=codec_template(CompositeTrio, Option(List(String)), composite(nullable(list(string)))) ==
+  sig: (Option(List(String))) -> Json
+  v1 = make_closure list_string_to_json captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_list_string_decoder/0 origin=codec_template(CompositeTrio, Option(List(String)), composite(nullable(list(string)))) ==
+  sig: () -> Decoder(Option(List(String)))
+  v0 = call_local list_string_decoder()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
 == fn analyze_activity/5 origin=activity_wrapper(analyze, raw=false) ==
   sig: (String, Float, Int, List(String), Option(String)) -> Activity(analyze_snapshot.AnalyzeInput, analyze_snapshot.Report)
   T-ACT action=analyze input_codec=analyze_input_codec return=report_codec
@@ -175,8 +503,8 @@ exports: run/1, definition/0, execute/1
   T-ACT action=touch input_codec=touch_input_codec return=awlc.nil_codec
 == fn step_probe/5 origin=region(probe) ==
   sig: (String, Float, Option(String), List(String), Int) -> Result(analyze_snapshot.AnalyzeSnapshotOutcome, AwlError)
-  v5 = call_local touch_activity(lit#0) live_after=[v0, v1, v2, v3, v4]
-  v6 = call_rt aion@activity:task_queue/2(v5, lit#1) live_after=[v0, v1, v2, v3, v4]
+  v5 = call_local touch_activity(lit#44) live_after=[v0, v1, v2, v3, v4]
+  v6 = call_rt aion@activity:task_queue/2(v5, lit#45) live_after=[v0, v1, v2, v3, v4]
   v7 = call_rt aion@workflow:run/1(v6) live_after=[v0, v1, v2, v3, v4]
   v8 = call_rt aion@awl@error:map_activity_error/1(v7) live_after=[v0, v1, v2, v3, v4]
   v9 = try_bind v8 live_after=[v0, v1, v2, v3, v4]
@@ -184,7 +512,7 @@ exports: run/1, definition/0, execute/1
 == fn step_analyze/5 origin=chain_step(probe.analyze) ==
   sig: (String, Float, Option(String), List(String), Int) -> Result(analyze_snapshot.AnalyzeSnapshotOutcome, AwlError)
   v5 = call_local analyze_activity(v0, v1, v4, v3, v2)
-  v6 = call_rt aion@activity:task_queue/2(v5, lit#2)
+  v6 = call_rt aion@activity:task_queue/2(v5, lit#46)
   v7 = call_rt aion@workflow:run/1(v6)
   v8 = call_rt aion@awl@error:map_activity_error/1(v7)
   v9 = try_bind v8
@@ -192,16 +520,16 @@ exports: run/1, definition/0, execute/1
   if is_true v10:
     tail_local step_stamp_and_pass(v9)
   else:
-    v11 = record(flagged, [lit#3])
+    v11 = record(flagged, [lit#47])
     v12 = call_local flagged_to_json(v11)
     v13 = call_rt gleam@json:to_string/1(v12)
-    v14 = record(awl_outcome_failure, [lit#4, v13])
+    v14 = record(awl_outcome_failure, [lit#48, v13])
     v15 = record(error, [v14])
     return v15
 == fn step_stamp_and_pass/1 origin=region(stamp_and_pass) ==
   sig: (analyze_snapshot.Report) -> Result(analyze_snapshot.AnalyzeSnapshotOutcome, AwlError)
   v1 = call_local stamp_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#5)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#49)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4

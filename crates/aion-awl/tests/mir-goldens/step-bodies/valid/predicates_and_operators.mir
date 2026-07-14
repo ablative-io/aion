@@ -2,7 +2,7 @@ module predicates_and_operators source=predicates_and_operators.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_decide:
-    aion@activity:task_queue/2 [activities] (v2, lit#0)
+    aion@activity:task_queue/2 [activities] (v2, lit#21)
     aion@workflow:run/1 [activities] (v3)
 == durable families == activities
 == atoms ==
@@ -12,10 +12,59 @@ exports: run/1, definition/0, execute/1
   [3] stamp_input
   [4] predicates_and_operators_input
   [5] shipped_outcome
-  [6] none
-  [7] awl_outcome_failure
-  [8] error
-  [9] ok
+  [6] some
+  [7] none
+  [8] awl_outcome_failure
+  [9] error
+  [10] ok
+== literals ==
+  [0] "name"
+  [1] "score"
+  [2] "age_days"
+  [3] "stale"
+  [4] "veto_note"
+  [5] "name"
+  [6] "score"
+  [7] "age_days"
+  [8] "stale"
+  [9] "veto_note"
+  [10] "name"
+  [11] "name"
+  [12] "reason"
+  [13] "name"
+  [14] "candidate"
+  [15] "shipped"
+  [16] "outcome"
+  [17] ""
+  [18] "PredicatesAndOperatorsOutcome"
+  [19] "shipped"
+  [20] "payload"
+  [21] "gatekeeper"
+  [22] "explicit veto"
+  [23] "held"
+  [24] ""
+  [25] "unnamed candidate"
+  [26] "held"
+  [27] "weak or stale"
+  [28] "held"
+  [29] "weak or stale"
+  [30] "held"
+  [31] "did not qualify"
+  [32] "held"
+  [33] "did not qualify"
+  [34] "held"
+  [35] "did not qualify"
+  [36] "held"
+  [37] "weak or stale"
+  [38] "held"
+  [39] "weak or stale"
+  [40] "held"
+  [41] "did not qualify"
+  [42] "held"
+  [43] "did not qualify"
+  [44] "held"
+  [45] "did not qualify"
+  [46] "held"
 == types ==
   record Candidate tag=candidate
     name: string
@@ -51,15 +100,71 @@ exports: run/1, definition/0, execute/1
 == fn candidate_to_json/1 origin=codec_template(RecordTrio, Candidate, record#0) ==
   sig: (predicates_and_operators.Candidate) -> Json
   v1 = field(v0, 1)
-  v2 = field(v0, 2)
-  v3 = field(v0, 3)
-  v4 = field(v0, 4)
-  v5 = field(v0, 5)
-  v6 = json_obj {"name": v1|>awlc.string_to_json, "score": v2|>awlc.int_to_json, "age_days": v3|>awlc.int_to_json, "stale": v4|>awlc.bool_to_json, "veto_note": v5|>awlc.nil_to_json}
-  return v6
+  v2 = call_rt aion@awl@codec:string_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#0, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_rt aion@awl@codec:int_to_json/1(v5) live_after=[v0, v4]
+  v7 = tuple([lit#1, v6])
+  v8 = list([v7])
+  v9 = field(v0, 3)
+  v10 = call_rt aion@awl@codec:int_to_json/1(v9) live_after=[v0, v4, v8]
+  v11 = tuple([lit#2, v10])
+  v12 = list([v11])
+  v13 = field(v0, 4)
+  v14 = call_rt aion@awl@codec:bool_to_json/1(v13) live_after=[v0, v4, v8, v12]
+  v15 = tuple([lit#3, v14])
+  v16 = list([v15])
+  v17 = field(v0, 5)
+  v18 = call_local candidate_to_json$field4(v17) live_after=[v4, v8, v12, v16]
+  v19 = list([v4, v8, v12, v16, v18])
+  v20 = call_rt gleam@list:flatten/1(v19)
+  tail_rt gleam@json:object/1(v20)
 == fn candidate_decoder/0 origin=codec_template(RecordTrio, Candidate, record#0) ==
   sig: () -> Decoder(predicates_and_operators.Candidate)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure candidate_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn candidate_to_json$field4/1 origin=lifted(candidate_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#4, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn candidate_decoder$some/1 origin=lifted(candidate_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn candidate_decoder$0/1 origin=lifted(candidate_decoder, #1) ==
+  sig: (String) -> Decoder(predicates_and_operators.Candidate)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure candidate_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v1, v2)
+== fn candidate_decoder$1/2 origin=lifted(candidate_decoder, #2) ==
+  sig: (Int, String) -> Decoder(predicates_and_operators.Candidate)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure candidate_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v2, v3)
+== fn candidate_decoder$2/3 origin=lifted(candidate_decoder, #3) ==
+  sig: (Int, String, Int) -> Decoder(predicates_and_operators.Candidate)
+  v3 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure candidate_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+== fn candidate_decoder$3/4 origin=lifted(candidate_decoder, #4) ==
+  sig: (Bool, String, Int, Int) -> Decoder(predicates_and_operators.Candidate)
+  v4 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2, v3]
+  v5 = make_closure candidate_decoder$some captures=[]
+  v6 = call_rt gleam@dynamic@decode:map/2(v4, v5) live_after=[v0, v1, v2, v3]
+  v7 = make_closure candidate_decoder$4 captures=[v1, v2, v3, v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#9, 'none', v6, v7)
+== fn candidate_decoder$4/5 origin=lifted(candidate_decoder, #5) ==
+  sig: (Option(String), String, Int, Int, Bool) -> Decoder(predicates_and_operators.Candidate)
+  v5 = record(candidate, [v1, v2, v3, v4, v0])
+  tail_rt gleam@dynamic@decode:success/1(v5)
 == fn shipped_codec/0 origin=codec_template(RecordTrio, Shipped, record#1) ==
   sig: () -> Codec(predicates_and_operators.Shipped)
   v0 = make_closure shipped_to_json captures=[]
@@ -72,7 +177,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn shipped_decoder/0 origin=codec_template(RecordTrio, Shipped, record#1) ==
   sig: () -> Decoder(predicates_and_operators.Shipped)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure shipped_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn shipped_decoder$0/1 origin=lifted(shipped_decoder, #0) ==
+  sig: (String) -> Decoder(predicates_and_operators.Shipped)
+  v1 = record(shipped, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn held_codec/0 origin=codec_template(RecordTrio, Held, record#2) ==
   sig: () -> Codec(predicates_and_operators.Held)
   v0 = make_closure held_to_json captures=[]
@@ -86,7 +197,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn held_decoder/0 origin=codec_template(RecordTrio, Held, record#2) ==
   sig: () -> Decoder(predicates_and_operators.Held)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure held_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn held_decoder$0/1 origin=lifted(held_decoder, #0) ==
+  sig: (String) -> Decoder(predicates_and_operators.Held)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure held_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v1, v2)
+== fn held_decoder$1/2 origin=lifted(held_decoder, #1) ==
+  sig: (String, String) -> Decoder(predicates_and_operators.Held)
+  v2 = record(held, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn stamp_input_codec/0 origin=codec_template(RecordTrio, StampInput, record#3) ==
   sig: () -> Codec(predicates_and_operators.StampInput)
   v0 = make_closure stamp_input_to_json captures=[]
@@ -99,7 +221,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn stamp_input_decoder/0 origin=codec_template(RecordTrio, StampInput, record#3) ==
   sig: () -> Decoder(predicates_and_operators.StampInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure stamp_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn stamp_input_decoder$0/1 origin=lifted(stamp_input_decoder, #0) ==
+  sig: (String) -> Decoder(predicates_and_operators.StampInput)
+  v1 = record(stamp_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn predicates_and_operators_input_codec/0 origin=codec_template(RecordTrio, PredicatesAndOperatorsInput, record#4) ==
   sig: () -> Codec(predicates_and_operators.PredicatesAndOperatorsInput)
   v0 = make_closure predicates_and_operators_input_to_json captures=[]
@@ -112,7 +240,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn predicates_and_operators_input_decoder/0 origin=codec_template(RecordTrio, PredicatesAndOperatorsInput, record#4) ==
   sig: () -> Decoder(predicates_and_operators.PredicatesAndOperatorsInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local candidate_decoder()
+  v1 = make_closure predicates_and_operators_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v0, v1)
+== fn predicates_and_operators_input_decoder$0/1 origin=lifted(predicates_and_operators_input_decoder, #0) ==
+  sig: (predicates_and_operators.Candidate) -> Decoder(predicates_and_operators.PredicatesAndOperatorsInput)
+  v1 = record(predicates_and_operators_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn predicates_and_operators_outcome_codec/0 origin=codec_template(UnionTrio, PredicatesAndOperatorsOutcome, union#5) ==
   sig: () -> Codec(predicates_and_operators.PredicatesAndOperatorsOutcome)
   v0 = make_closure predicates_and_operators_outcome_to_json captures=[]
@@ -120,11 +254,44 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn predicates_and_operators_outcome_to_json/1 origin=codec_template(UnionTrio, PredicatesAndOperatorsOutcome, union#5) ==
   sig: (predicates_and_operators.PredicatesAndOperatorsOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#15|>awlc.string_to_json, "payload": v1|>shipped_to_json}
+  return v2
 == fn predicates_and_operators_outcome_decoder/0 origin=codec_template(UnionTrio, PredicatesAndOperatorsOutcome, union#5) ==
   sig: () -> Decoder(predicates_and_operators.PredicatesAndOperatorsOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure predicates_and_operators_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#16, v0, v1)
+== fn predicates_and_operators_outcome_decoder$outcome/1 origin=lifted(predicates_and_operators_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(predicates_and_operators.PredicatesAndOperatorsOutcome)
+  if cmp Eq v0 lit#19:
+    v3 = call_local shipped_decoder()
+    v4 = make_closure predicates_and_operators_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#20, v3, v4)
+  else:
+    v1 = record(shipped, [lit#17])
+    v2 = record(shipped_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#18)
+== fn predicates_and_operators_outcome_decoder$arm0/1 origin=lifted(predicates_and_operators_outcome_decoder, #1) ==
+  sig: (predicates_and_operators.Shipped) -> Decoder(predicates_and_operators.PredicatesAndOperatorsOutcome)
+  v1 = record(shipped_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
 == fn stamp_activity/1 origin=activity_wrapper(stamp, raw=false) ==
   sig: (String) -> Activity(predicates_and_operators.StampInput, predicates_and_operators.Shipped)
   T-ACT action=stamp input_codec=stamp_input_codec return=shipped_codec
@@ -132,7 +299,7 @@ exports: run/1, definition/0, execute/1
   sig: (predicates_and_operators.Candidate) -> Result(predicates_and_operators.PredicatesAndOperatorsOutcome, AwlError)
   v1 = field(v0, 1)
   v2 = call_local stamp_activity(v1) live_after=[v0]
-  v3 = call_rt aion@activity:task_queue/2(v2, lit#0) live_after=[v0]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#21) live_after=[v0]
   v4 = call_rt aion@workflow:run/1(v3) live_after=[v0]
   v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v0]
   v6 = try_bind v5 live_after=[v0]
@@ -140,21 +307,21 @@ exports: run/1, definition/0, execute/1
   v7 = cmp Ne v8 'none'
   if is_true v7:
     v9 = field(v0, 1)
-    v10 = record(held, [v9, lit#1])
+    v10 = record(held, [v9, lit#22])
     v11 = call_local held_to_json(v10)
     v12 = call_rt gleam@json:to_string/1(v11)
-    v13 = record(awl_outcome_failure, [lit#2, v12])
+    v13 = record(awl_outcome_failure, [lit#23, v12])
     v14 = record(error, [v13])
     return v14
   else:
     v16 = field(v0, 1)
-    v15 = cmp Eq v16 lit#3
+    v15 = cmp Eq v16 lit#24
     if is_true v15:
       v17 = field(v0, 1)
-      v18 = record(held, [v17, lit#4])
+      v18 = record(held, [v17, lit#25])
       v19 = call_local held_to_json(v18)
       v20 = call_rt gleam@json:to_string/1(v19)
-      v21 = record(awl_outcome_failure, [lit#5, v20])
+      v21 = record(awl_outcome_failure, [lit#26, v20])
       v22 = record(error, [v21])
       return v22
     else:
@@ -174,10 +341,10 @@ exports: run/1, definition/0, execute/1
           v31 = cmp Lt v32 80
           if is_true v31:
             v33 = field(v0, 1)
-            v34 = record(held, [v33, lit#6])
+            v34 = record(held, [v33, lit#27])
             v35 = call_local held_to_json(v34)
             v36 = call_rt gleam@json:to_string/1(v35)
-            v37 = record(awl_outcome_failure, [lit#7, v36])
+            v37 = record(awl_outcome_failure, [lit#28, v36])
             v38 = record(error, [v37])
             return v38
           else:
@@ -185,10 +352,10 @@ exports: run/1, definition/0, execute/1
             v39 = cmp Gt v40 30
             if is_true v39:
               v41 = field(v0, 1)
-              v42 = record(held, [v41, lit#8])
+              v42 = record(held, [v41, lit#29])
               v43 = call_local held_to_json(v42)
               v44 = call_rt gleam@json:to_string/1(v43)
-              v45 = record(awl_outcome_failure, [lit#9, v44])
+              v45 = record(awl_outcome_failure, [lit#30, v44])
               v46 = record(error, [v45])
               return v46
             else:
@@ -198,10 +365,10 @@ exports: run/1, definition/0, execute/1
                 v49 = field(v0, 4)
                 if is_true v49:
                   v50 = field(v0, 1)
-                  v51 = record(held, [v50, lit#10])
+                  v51 = record(held, [v50, lit#31])
                   v52 = call_local held_to_json(v51)
                   v53 = call_rt gleam@json:to_string/1(v52)
-                  v54 = record(awl_outcome_failure, [lit#11, v53])
+                  v54 = record(awl_outcome_failure, [lit#32, v53])
                   v55 = record(error, [v54])
                   return v55
                 else:
@@ -215,18 +382,18 @@ exports: run/1, definition/0, execute/1
                     return v61
                   else:
                     v62 = field(v0, 1)
-                    v63 = record(held, [v62, lit#12])
+                    v63 = record(held, [v62, lit#33])
                     v64 = call_local held_to_json(v63)
                     v65 = call_rt gleam@json:to_string/1(v64)
-                    v66 = record(awl_outcome_failure, [lit#13, v65])
+                    v66 = record(awl_outcome_failure, [lit#34, v65])
                     v67 = record(error, [v66])
                     return v67
               else:
                 v68 = field(v0, 1)
-                v69 = record(held, [v68, lit#14])
+                v69 = record(held, [v68, lit#35])
                 v70 = call_local held_to_json(v69)
                 v71 = call_rt gleam@json:to_string/1(v70)
-                v72 = record(awl_outcome_failure, [lit#15, v71])
+                v72 = record(awl_outcome_failure, [lit#36, v71])
                 v73 = record(error, [v72])
                 return v73
       else:
@@ -234,10 +401,10 @@ exports: run/1, definition/0, execute/1
         v74 = cmp Lt v75 80
         if is_true v74:
           v76 = field(v0, 1)
-          v77 = record(held, [v76, lit#16])
+          v77 = record(held, [v76, lit#37])
           v78 = call_local held_to_json(v77)
           v79 = call_rt gleam@json:to_string/1(v78)
-          v80 = record(awl_outcome_failure, [lit#17, v79])
+          v80 = record(awl_outcome_failure, [lit#38, v79])
           v81 = record(error, [v80])
           return v81
         else:
@@ -245,10 +412,10 @@ exports: run/1, definition/0, execute/1
           v82 = cmp Gt v83 30
           if is_true v82:
             v84 = field(v0, 1)
-            v85 = record(held, [v84, lit#18])
+            v85 = record(held, [v84, lit#39])
             v86 = call_local held_to_json(v85)
             v87 = call_rt gleam@json:to_string/1(v86)
-            v88 = record(awl_outcome_failure, [lit#19, v87])
+            v88 = record(awl_outcome_failure, [lit#40, v87])
             v89 = record(error, [v88])
             return v89
           else:
@@ -258,10 +425,10 @@ exports: run/1, definition/0, execute/1
               v92 = field(v0, 4)
               if is_true v92:
                 v93 = field(v0, 1)
-                v94 = record(held, [v93, lit#20])
+                v94 = record(held, [v93, lit#41])
                 v95 = call_local held_to_json(v94)
                 v96 = call_rt gleam@json:to_string/1(v95)
-                v97 = record(awl_outcome_failure, [lit#21, v96])
+                v97 = record(awl_outcome_failure, [lit#42, v96])
                 v98 = record(error, [v97])
                 return v98
               else:
@@ -275,18 +442,18 @@ exports: run/1, definition/0, execute/1
                   return v104
                 else:
                   v105 = field(v0, 1)
-                  v106 = record(held, [v105, lit#22])
+                  v106 = record(held, [v105, lit#43])
                   v107 = call_local held_to_json(v106)
                   v108 = call_rt gleam@json:to_string/1(v107)
-                  v109 = record(awl_outcome_failure, [lit#23, v108])
+                  v109 = record(awl_outcome_failure, [lit#44, v108])
                   v110 = record(error, [v109])
                   return v110
             else:
               v111 = field(v0, 1)
-              v112 = record(held, [v111, lit#24])
+              v112 = record(held, [v111, lit#45])
               v113 = call_local held_to_json(v112)
               v114 = call_rt gleam@json:to_string/1(v113)
-              v115 = record(awl_outcome_failure, [lit#25, v114])
+              v115 = record(awl_outcome_failure, [lit#46, v114])
               v116 = record(error, [v115])
               return v116
 == fn awl$dead_body/1 origin=dead_body ==

@@ -2,9 +2,9 @@ module awl_hello source=awl_hello.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_greet_and_shout:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#11)
     aion@workflow:run/1 [activities] (v2)
-    aion@activity:task_queue/2 [activities] (v7, lit#1)
+    aion@activity:task_queue/2 [activities] (v7, lit#12)
     aion@workflow:run/1 [activities] (v8)
 == durable families == activities
 == atoms ==
@@ -15,6 +15,20 @@ exports: run/1, definition/0, execute/1
   [4] awl_hello_input
   [5] shouted_outcome
   [6] ok
+== literals ==
+  [0] "greeting"
+  [1] "text"
+  [2] "name"
+  [3] "text"
+  [4] "name"
+  [5] "shouted"
+  [6] "outcome"
+  [7] ""
+  [8] "AwlHelloOutcome"
+  [9] "shouted"
+  [10] "payload"
+  [11] "awl_hello"
+  [12] "awl_hello"
 == types ==
   record Greeting tag=greeting
     greeting: string
@@ -49,7 +63,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn greeting_decoder/0 origin=codec_template(RecordTrio, Greeting, record#0) ==
   sig: () -> Decoder(awl_hello.Greeting)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure greeting_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn greeting_decoder$0/1 origin=lifted(greeting_decoder, #0) ==
+  sig: (String) -> Decoder(awl_hello.Greeting)
+  v1 = record(greeting, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn shouted_codec/0 origin=codec_template(RecordTrio, Shouted, record#1) ==
   sig: () -> Codec(awl_hello.Shouted)
   v0 = make_closure shouted_to_json captures=[]
@@ -62,7 +82,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn shouted_decoder/0 origin=codec_template(RecordTrio, Shouted, record#1) ==
   sig: () -> Decoder(awl_hello.Shouted)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure shouted_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn shouted_decoder$0/1 origin=lifted(shouted_decoder, #0) ==
+  sig: (String) -> Decoder(awl_hello.Shouted)
+  v1 = record(shouted, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn greet_input_codec/0 origin=codec_template(RecordTrio, GreetInput, record#2) ==
   sig: () -> Codec(awl_hello.GreetInput)
   v0 = make_closure greet_input_to_json captures=[]
@@ -75,7 +101,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn greet_input_decoder/0 origin=codec_template(RecordTrio, GreetInput, record#2) ==
   sig: () -> Decoder(awl_hello.GreetInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure greet_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn greet_input_decoder$0/1 origin=lifted(greet_input_decoder, #0) ==
+  sig: (String) -> Decoder(awl_hello.GreetInput)
+  v1 = record(greet_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn shout_input_codec/0 origin=codec_template(RecordTrio, ShoutInput, record#3) ==
   sig: () -> Codec(awl_hello.ShoutInput)
   v0 = make_closure shout_input_to_json captures=[]
@@ -88,7 +120,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn shout_input_decoder/0 origin=codec_template(RecordTrio, ShoutInput, record#3) ==
   sig: () -> Decoder(awl_hello.ShoutInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure shout_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn shout_input_decoder$0/1 origin=lifted(shout_input_decoder, #0) ==
+  sig: (String) -> Decoder(awl_hello.ShoutInput)
+  v1 = record(shout_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn awl_hello_input_codec/0 origin=codec_template(RecordTrio, AwlHelloInput, record#4) ==
   sig: () -> Codec(awl_hello.AwlHelloInput)
   v0 = make_closure awl_hello_input_to_json captures=[]
@@ -101,7 +139,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn awl_hello_input_decoder/0 origin=codec_template(RecordTrio, AwlHelloInput, record#4) ==
   sig: () -> Decoder(awl_hello.AwlHelloInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_hello_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn awl_hello_input_decoder$0/1 origin=lifted(awl_hello_input_decoder, #0) ==
+  sig: (String) -> Decoder(awl_hello.AwlHelloInput)
+  v1 = record(awl_hello_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn awl_hello_outcome_codec/0 origin=codec_template(UnionTrio, AwlHelloOutcome, union#5) ==
   sig: () -> Codec(awl_hello.AwlHelloOutcome)
   v0 = make_closure awl_hello_outcome_to_json captures=[]
@@ -109,11 +153,28 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn awl_hello_outcome_to_json/1 origin=codec_template(UnionTrio, AwlHelloOutcome, union#5) ==
   sig: (awl_hello.AwlHelloOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#5|>awlc.string_to_json, "payload": v1|>shouted_to_json}
+  return v2
 == fn awl_hello_outcome_decoder/0 origin=codec_template(UnionTrio, AwlHelloOutcome, union#5) ==
   sig: () -> Decoder(awl_hello.AwlHelloOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_hello_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn awl_hello_outcome_decoder$outcome/1 origin=lifted(awl_hello_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(awl_hello.AwlHelloOutcome)
+  if cmp Eq v0 lit#9:
+    v3 = call_local shouted_decoder()
+    v4 = make_closure awl_hello_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#10, v3, v4)
+  else:
+    v1 = record(shouted, [lit#7])
+    v2 = record(shouted_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#8)
+== fn awl_hello_outcome_decoder$arm0/1 origin=lifted(awl_hello_outcome_decoder, #1) ==
+  sig: (awl_hello.Shouted) -> Decoder(awl_hello.AwlHelloOutcome)
+  v1 = record(shouted_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn greet_activity/1 origin=activity_wrapper(greet, raw=false) ==
   sig: (String) -> Activity(awl_hello.GreetInput, awl_hello.Greeting)
   T-ACT action=greet input_codec=greet_input_codec return=greeting_codec
@@ -123,13 +184,13 @@ exports: run/1, definition/0, execute/1
 == fn step_greet_and_shout/1 origin=region(greet_and_shout) ==
   sig: (String) -> Result(awl_hello.AwlHelloOutcome, AwlError)
   v1 = call_local greet_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#11)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4
   v6 = field(v5, 1)
   v7 = call_local shout_activity(v6)
-  v8 = call_rt aion@activity:task_queue/2(v7, lit#1)
+  v8 = call_rt aion@activity:task_queue/2(v7, lit#12)
   v9 = call_rt aion@workflow:run/1(v8)
   v10 = call_rt aion@awl@error:map_activity_error/1(v9)
   v11 = try_bind v10

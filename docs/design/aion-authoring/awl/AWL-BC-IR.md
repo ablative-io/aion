@@ -106,23 +106,42 @@ the checker/emitter is the law):**
 bounded fix-round, and — per the design — must be blessed against the BC-4
 differential oracle, not frozen as un-executed goldens):**
 
-- **Codec `_decoder` bodies (record/enum/union) and enum/union `_to_json`
-  (§3).** The decoder recipe is continuation-taking: it needs the lifted-closure
-  function inventory (§2.6 item 8, `FnOrigin::LiftedClosure`) and a slot-plan
-  extension reserving `3 + Σ(lifted)` slots per codec type. Until landed, the
-  `_decoder` bodies are visible `decode.success(nil)` placeholders and
-  enum/union `_to_json` are `json.object([])` placeholders — structurally
-  present in goldens, never silently correct.
-- **D4 optional-field `_to_json` omission and composite (list/option) fields.**
-  The reference `[pair]`/`[]` + `gleam@list:flatten` recipe requires MIR ops the
-  closed set does not yet carry (a dynamic JSON-pair-list constructor + flatten
-  path); records with optional or list/option-typed fields therefore keep the
-  current static-`json.object` body. A follow-up either adds those ops or routes
-  such records through `LowerError::Unsupported`.
-- **Composite (list/option) codec trios (§3).** Their `_to_json`/`_decoder`
-  are single-call (no lifted closures) but add codec types to the registry;
-  they land with the decoder increment so the whole codec surface re-baselines
-  once.
+- ~~Codec `_decoder` bodies / enum-union `_to_json` / D4 optional omission /
+  composite trios~~ — **LANDED in BC-2b-5 (typed codecs).** Every trio body
+  now follows the §3 recipe with emitter parity: the slot plan reserves
+  `3 + Σ(lifted)` slots per codec type, decoder continuations/pair fns/`Some`
+  wrappers/leaf item wrappers are real `FnOrigin::LiftedClosure` functions,
+  optional record fields omit-when-absent via the `[pair]`/`[]` +
+  `gleam@list:flatten` recipe, and composites ride `json.array`/`json.nullable`
+  + `decode.list`/`decode.optional` from a stem-ordered registry discovered
+  from every wire root. The registry has NO Nil fallback: an unresolvable
+  codec stem is a lowering error (S1). The first direct-path RUNTIME proof
+  (`tests/runtime_codecs.rs`) executes direct-generated codec functions on
+  beamr and compares their JSON bytes and round-trips against the
+  reference-emitted module compiled by real `gleam build` — codec functions
+  only; whole-workflow execution stays the BC-4 differential oracle. Two
+  registry refusal classes are deliberate HARD errors (`LowerError::Message`,
+  loud in the BC-3 oracle, never absorbed into the refused bucket), pinned
+  two-sided in `mir/codec_tests.rs`: a duplicate codec stem (a declared
+  `ListString` colliding with the `[String]` composite — the reference
+  renders both `fn list_string_codec` definitions and fails downstream at
+  `gleam build`; direct refuses at lower time) and the S5 required-recursive
+  default (the reference's `zero_expr` diagnostic class, matched verbatim).
+  Note: `select` accepts `Stmt::CallClosure` in flow bodies; no product
+  lowering path emits it today — it is currently reachable only from the
+  runtime codec proof's hand-built drivers (`tests/runtime_codecs/drivers.rs`).
+- **Call-site config in fork branches (BC-2b-5 parity note).** The reference
+  emitter ACCEPTS call-site retry/timeout/node on fork branches (collection:
+  `emitter/forks.rs:218-229`; named homogeneous/raw: `:300-336,351-365`,
+  per-key site-over-declaration precedence per `emitter/stmts.rs:28-104`).
+  Direct lowering deliberately refuses both fork forms with the global BC-2
+  `call-site config` scope class (`lower/forks.rs`, `lower/fork_named.rs`) —
+  full support must merge site/declaration config per key across the typed
+  AND raw `activity_value` paths and stays deferred with the global marker.
+  Pinned: `tests/compile.rs::call_site_node_override_yields_the_override`
+  (global class) +
+  `mir/fork_tests.rs::fork_branch_call_site_config_refuses_with_the_scope_class`
+  (both fork forms).
 - **T-DEAD / T-ACTRAW / T-WIT shells.** T-ACT's expansion references a
   `make_fun2(T-DEAD)` dead body (§2.4); the shell lands with BC-3's T-ACT
   expansion so the FunT inventory and sidecar carry it.

@@ -2,7 +2,7 @@ module ping_host source=ping_host.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_check_host:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
+    aion@activity:task_queue/2 [activities] (v1, lit#10)
     aion@workflow:run/1 [activities] (v2)
 == durable families == activities
 == atoms ==
@@ -10,7 +10,20 @@ exports: run/1, definition/0, execute/1
   [1] check_input
   [2] ping_host_input
   [3] reported_outcome
-  [4] ok
+  [4] false
+  [5] ok
+== literals ==
+  [0] "host"
+  [1] "alive"
+  [2] "host"
+  [3] "host"
+  [4] "reported"
+  [5] "outcome"
+  [6] ""
+  [7] "PingHostOutcome"
+  [8] "reported"
+  [9] "payload"
+  [10] "ping"
 == types ==
   record Status tag=status
     host: string
@@ -43,7 +56,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn status_decoder/0 origin=codec_template(RecordTrio, Status, record#0) ==
   sig: () -> Decoder(ping_host.Status)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure status_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn status_decoder$0/1 origin=lifted(status_decoder, #0) ==
+  sig: (String) -> Decoder(ping_host.Status)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure status_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn status_decoder$1/2 origin=lifted(status_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(ping_host.Status)
+  v2 = record(status, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn check_input_codec/0 origin=codec_template(RecordTrio, CheckInput, record#1) ==
   sig: () -> Codec(ping_host.CheckInput)
   v0 = make_closure check_input_to_json captures=[]
@@ -56,7 +80,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn check_input_decoder/0 origin=codec_template(RecordTrio, CheckInput, record#1) ==
   sig: () -> Decoder(ping_host.CheckInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure check_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn check_input_decoder$0/1 origin=lifted(check_input_decoder, #0) ==
+  sig: (String) -> Decoder(ping_host.CheckInput)
+  v1 = record(check_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn ping_host_input_codec/0 origin=codec_template(RecordTrio, PingHostInput, record#2) ==
   sig: () -> Codec(ping_host.PingHostInput)
   v0 = make_closure ping_host_input_to_json captures=[]
@@ -69,7 +99,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn ping_host_input_decoder/0 origin=codec_template(RecordTrio, PingHostInput, record#2) ==
   sig: () -> Decoder(ping_host.PingHostInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ping_host_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn ping_host_input_decoder$0/1 origin=lifted(ping_host_input_decoder, #0) ==
+  sig: (String) -> Decoder(ping_host.PingHostInput)
+  v1 = record(ping_host_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn ping_host_outcome_codec/0 origin=codec_template(UnionTrio, PingHostOutcome, union#3) ==
   sig: () -> Codec(ping_host.PingHostOutcome)
   v0 = make_closure ping_host_outcome_to_json captures=[]
@@ -77,18 +113,35 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn ping_host_outcome_to_json/1 origin=codec_template(UnionTrio, PingHostOutcome, union#3) ==
   sig: (ping_host.PingHostOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>status_to_json}
+  return v2
 == fn ping_host_outcome_decoder/0 origin=codec_template(UnionTrio, PingHostOutcome, union#3) ==
   sig: () -> Decoder(ping_host.PingHostOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ping_host_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn ping_host_outcome_decoder$outcome/1 origin=lifted(ping_host_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(ping_host.PingHostOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local status_decoder()
+    v4 = make_closure ping_host_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(status, [lit#6, 'false'])
+    v2 = record(reported_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn ping_host_outcome_decoder$arm0/1 origin=lifted(ping_host_outcome_decoder, #1) ==
+  sig: (ping_host.Status) -> Decoder(ping_host.PingHostOutcome)
+  v1 = record(reported_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn check_activity/1 origin=activity_wrapper(check, raw=false) ==
   sig: (String) -> Activity(ping_host.CheckInput, ping_host.Status)
   T-ACT action=check input_codec=check_input_codec return=status_codec
 == fn step_check_host/1 origin=region(check_host) ==
   sig: (String) -> Result(ping_host.PingHostOutcome, AwlError)
   v1 = call_local check_activity(v0)
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#10)
   v3 = call_rt aion@workflow:run/1(v2)
   v4 = call_rt aion@awl@error:map_activity_error/1(v3)
   v5 = try_bind v4

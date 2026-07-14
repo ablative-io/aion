@@ -8,8 +8,24 @@ exports: run/1, definition/0, execute/1
   [2] decision
   [3] short_circuit_optional_input
   [4] accepted_outcome
-  [5] none
-  [6] ok
+  [5] some
+  [6] none
+  [7] ok
+== literals ==
+  [0] "detail"
+  [1] "detail"
+  [2] "approved"
+  [3] "path"
+  [4] "candidate"
+  [5] "accepted"
+  [6] "outcome"
+  [7] ""
+  [8] "ShortCircuitOptionalOutcome"
+  [9] "accepted"
+  [10] "payload"
+  [11] "short-circuit"
+  [12] "short-circuit"
+  [13] "fallback"
 == types ==
   record Candidate tag=candidate
     detail: nullable(ref(Detail)) optional
@@ -38,11 +54,35 @@ exports: run/1, definition/0, execute/1
 == fn candidate_to_json/1 origin=codec_template(RecordTrio, Candidate, record#0) ==
   sig: (short_circuit_optional.Candidate) -> Json
   v1 = field(v0, 1)
-  v2 = json_obj {"detail": v1|>awlc.nil_to_json}
-  return v2
+  v2 = call_local candidate_to_json$field0(v1)
+  v3 = list([v2])
+  v4 = call_rt gleam@list:flatten/1(v3)
+  tail_rt gleam@json:object/1(v4)
 == fn candidate_decoder/0 origin=codec_template(RecordTrio, Candidate, record#0) ==
   sig: () -> Decoder(short_circuit_optional.Candidate)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local detail_decoder()
+  v1 = make_closure candidate_decoder$some captures=[]
+  v2 = call_rt gleam@dynamic@decode:map/2(v0, v1)
+  v3 = make_closure candidate_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#1, 'none', v2, v3)
+== fn candidate_to_json$field0/1 origin=lifted(candidate_to_json, #0) ==
+  sig: (Option(short_circuit_optional.Detail)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_local detail_to_json(v1)
+    v3 = tuple([lit#0, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn candidate_decoder$some/1 origin=lifted(candidate_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn candidate_decoder$0/1 origin=lifted(candidate_decoder, #1) ==
+  sig: (Option(short_circuit_optional.Detail)) -> Decoder(short_circuit_optional.Candidate)
+  v1 = record(candidate, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn detail_codec/0 origin=codec_template(RecordTrio, Detail, record#1) ==
   sig: () -> Codec(short_circuit_optional.Detail)
   v0 = make_closure detail_to_json captures=[]
@@ -55,7 +95,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn detail_decoder/0 origin=codec_template(RecordTrio, Detail, record#1) ==
   sig: () -> Decoder(short_circuit_optional.Detail)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure detail_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn detail_decoder$0/1 origin=lifted(detail_decoder, #0) ==
+  sig: (Bool) -> Decoder(short_circuit_optional.Detail)
+  v1 = record(detail, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn decision_codec/0 origin=codec_template(RecordTrio, Decision, record#2) ==
   sig: () -> Codec(short_circuit_optional.Decision)
   v0 = make_closure decision_to_json captures=[]
@@ -68,7 +114,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn decision_decoder/0 origin=codec_template(RecordTrio, Decision, record#2) ==
   sig: () -> Decoder(short_circuit_optional.Decision)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure decision_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn decision_decoder$0/1 origin=lifted(decision_decoder, #0) ==
+  sig: (String) -> Decoder(short_circuit_optional.Decision)
+  v1 = record(decision, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn short_circuit_optional_input_codec/0 origin=codec_template(RecordTrio, ShortCircuitOptionalInput, record#3) ==
   sig: () -> Codec(short_circuit_optional.ShortCircuitOptionalInput)
   v0 = make_closure short_circuit_optional_input_to_json captures=[]
@@ -81,7 +133,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn short_circuit_optional_input_decoder/0 origin=codec_template(RecordTrio, ShortCircuitOptionalInput, record#3) ==
   sig: () -> Decoder(short_circuit_optional.ShortCircuitOptionalInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local candidate_decoder()
+  v1 = make_closure short_circuit_optional_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn short_circuit_optional_input_decoder$0/1 origin=lifted(short_circuit_optional_input_decoder, #0) ==
+  sig: (short_circuit_optional.Candidate) -> Decoder(short_circuit_optional.ShortCircuitOptionalInput)
+  v1 = record(short_circuit_optional_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn short_circuit_optional_outcome_codec/0 origin=codec_template(UnionTrio, ShortCircuitOptionalOutcome, union#4) ==
   sig: () -> Codec(short_circuit_optional.ShortCircuitOptionalOutcome)
   v0 = make_closure short_circuit_optional_outcome_to_json captures=[]
@@ -89,17 +147,47 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn short_circuit_optional_outcome_to_json/1 origin=codec_template(UnionTrio, ShortCircuitOptionalOutcome, union#4) ==
   sig: (short_circuit_optional.ShortCircuitOptionalOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#5|>awlc.string_to_json, "payload": v1|>decision_to_json}
+  return v2
 == fn short_circuit_optional_outcome_decoder/0 origin=codec_template(UnionTrio, ShortCircuitOptionalOutcome, union#4) ==
   sig: () -> Decoder(short_circuit_optional.ShortCircuitOptionalOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure short_circuit_optional_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn short_circuit_optional_outcome_decoder$outcome/1 origin=lifted(short_circuit_optional_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(short_circuit_optional.ShortCircuitOptionalOutcome)
+  if cmp Eq v0 lit#9:
+    v3 = call_local decision_decoder()
+    v4 = make_closure short_circuit_optional_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#10, v3, v4)
+  else:
+    v1 = record(decision, [lit#7])
+    v2 = record(accepted_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#8)
+== fn short_circuit_optional_outcome_decoder$arm0/1 origin=lifted(short_circuit_optional_outcome_decoder, #1) ==
+  sig: (short_circuit_optional.Decision) -> Decoder(short_circuit_optional.ShortCircuitOptionalOutcome)
+  v1 = record(accepted_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn option_detail_codec/0 origin=codec_template(CompositeTrio, Option(Detail), composite(nullable(ref(Detail)))) ==
+  sig: () -> Codec(Option(short_circuit_optional.Detail))
+  v0 = make_closure option_detail_to_json captures=[]
+  v1 = call_local option_detail_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_detail_to_json/1 origin=codec_template(CompositeTrio, Option(Detail), composite(nullable(ref(Detail)))) ==
+  sig: (Option(short_circuit_optional.Detail)) -> Json
+  v1 = make_closure detail_to_json captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_detail_decoder/0 origin=codec_template(CompositeTrio, Option(Detail), composite(nullable(ref(Detail)))) ==
+  sig: () -> Decoder(Option(short_circuit_optional.Detail))
+  v0 = call_local detail_decoder()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
 == fn step_decide/1 origin=region(decide) ==
   sig: (short_circuit_optional.Candidate) -> Result(short_circuit_optional.ShortCircuitOptionalOutcome, AwlError)
   v1 = field(v0, 1)
   v2 = cmp Eq v1 'none'
   if is_true v2:
-    v3 = record(decision, [lit#0])
+    v3 = record(decision, [lit#11])
     v4 = record(accepted_outcome, [v3])
     v5 = record(ok, [v4])
     return v5
@@ -107,12 +195,12 @@ exports: run/1, definition/0, execute/1
     v6 = assert_some v1
     v7 = field(v6, 1)
     if is_true v7:
-      v8 = record(decision, [lit#1])
+      v8 = record(decision, [lit#12])
       v9 = record(accepted_outcome, [v8])
       v10 = record(ok, [v9])
       return v10
     else:
-      v11 = record(decision, [lit#2])
+      v11 = record(decision, [lit#13])
       v12 = record(accepted_outcome, [v11])
       v13 = record(ok, [v12])
       return v13

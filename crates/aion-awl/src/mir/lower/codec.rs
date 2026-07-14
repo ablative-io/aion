@@ -1,61 +1,174 @@
-//! Codec-trio stamping (S8): each reachable record/enum/union expands into
-//! `_codec`/`_to_json`/`_decoder` `FlowFn`s carrying `FnOrigin::CodecTemplate`
-//! provenance and faithful signatures (the sidecar-projection source, S2).
+//! Codec-trio stamping (S8): each reachable record/enum/union/composite
+//! expands into `_codec`/`_to_json`/`_decoder` `FlowFn`s carrying
+//! `FnOrigin::CodecTemplate` provenance and faithful signatures (the
+//! sidecar-projection source, S2), plus its lifted continuation/helper
+//! functions (`FnOrigin::LiftedClosure`).
 //!
-//! BC-2 scope note: the `_codec` composer and record `_to_json` bodies (for
-//! required leaf/`Ref` fields) follow the §3 recipe; enum/union `_to_json` and
-//! every `_decoder` body are structural placeholders (visible in goldens,
-//! never silent) pending the lifted-closure decoder-continuation recipe. See
-//! `AWL-BC-IR.md` "BC-2 implementation status" for the full pending list.
+//! BC-2b-5: every body follows the §3 recipe and the reference emitter
+//! exactly (`emitter/codecs.rs`, `emitter/composites.rs`) — record encode
+//! preserves declaration order and OMITS absent optional fields (D4), record
+//! decode nests `decode.field`/`decode.optional_field` continuations, enums
+//! encode JSON strings and FAIL on unknown variants, the outcome union
+//! encodes `{outcome, payload}` and fails unknown outcomes with an OP-built
+//! typed default (S5), and composites ride `json.array`/`json.nullable` +
+//! `decode.list`/`decode.optional`. No placeholder bodies remain.
 
 use super::super::func::{CodecTemplateKind, FlowFn, FnOrigin, MirFn, TrioParams, TypeShapeRef};
 use super::super::ids::{FnRef, Span, Var};
-use super::super::ops::{Block, JsonVal, Stmt, Tail, ToJsonRef, Value};
-use super::super::shapes::TypeShape;
-use super::super::tydesc::TyDesc;
-use super::build::FnPlan;
+use super::super::ops::{Block, LiveAfter, Stmt, Tail, ToJsonRef, Value};
+use super::super::runtime::RuntimeFn;
+use super::super::shapes::{TypeShape, WireDesc};
+use super::super::tydesc::{Leaf, TyDesc};
+use super::build::{CodecPayload, CodecType, FnPlan};
 use super::ctx::Ctx;
+use super::driver::LowerError;
+use super::{codec_decode as decode, codec_encode as encode};
 
-/// Stamp the three trio functions for one codec type into `functions`.
+/// The lifted-function slots one codec type reserves, in the canonical order
+/// `trio` pushes them:
+/// - record: one optional-field pair fn per optional field (field order),
+///   one shared `Some` wrapper when any field is optional, then one decoder
+///   continuation per field;
+/// - enum: the one `decode.then` continuation;
+/// - union: the outcome continuation, then one payload continuation per arm;
+/// - composite: one leaf `to_json` item wrapper when the inner is a leaf.
+pub(super) fn lifted_count(codec_type: &CodecType, types: &[TypeShape]) -> usize {
+    match (&codec_type.payload, codec_type.shape(types)) {
+        (CodecPayload::Shape(_), Some(TypeShape::Record { fields, .. })) => {
+            let optional = fields.iter().filter(|field| field.optional).count();
+            optional + usize::from(optional > 0) + fields.len()
+        }
+        (CodecPayload::Shape(_), Some(TypeShape::Enum { .. })) => 1,
+        (CodecPayload::Shape(_), Some(TypeShape::Union { arms, .. })) => 1 + arms.len(),
+        (CodecPayload::Composite(desc), _) => match desc {
+            WireDesc::List(inner) | WireDesc::Nullable(inner) => {
+                usize::from(leaf_of_desc(inner).is_some())
+            }
+            _ => 0,
+        },
+        (CodecPayload::Shape(_), None) => 0,
+    }
+}
+
+/// The two halves of one codec function: the trio member itself plus the
+/// lifted helper functions it owns, in their reserved slot order.
+pub(super) struct Stamped {
+    pub(super) main: MirFn,
+    pub(super) lifted: Vec<MirFn>,
+}
+
+/// Stamp the trio + lifted functions for one codec type into `functions`, in
+/// exact slot order (`_codec`, `_to_json`, `_decoder`, encode-side lifted…,
+/// decode-side lifted…).
 pub(super) fn trio(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     types: &[TypeShape],
-    codec_type: &super::build::CodecType,
+    codec_type: &CodecType,
     functions: &mut Vec<MirFn>,
-) {
+) -> Result<(), LowerError> {
     let (_codec_ref, to_json_ref, decoder_ref) = plan.codecs[&codec_type.stem];
     let trio_params = trio_params(codec_type);
-    functions.push(codec_fn(
+    let composer = codec_fn(
         ctx,
         codec_type,
         to_json_ref,
         decoder_ref,
         trio_params.clone(),
-    ));
-    functions.push(to_json_fn(
-        ctx,
-        plan,
-        types,
-        codec_type,
-        trio_params.clone(),
-    ));
-    functions.push(decoder_fn(ctx, codec_type, trio_params));
+    );
+    let lifted_refs = plan
+        .codec_lifted
+        .get(&codec_type.stem)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let (enc, dec) = match &codec_type.payload {
+        CodecPayload::Shape(index) => {
+            let shape = types.get(*index).ok_or_else(|| {
+                LowerError::new(
+                    ctx.emitter.document.span,
+                    format!("codec `{}` references no type shape", codec_type.stem),
+                )
+            })?;
+            match shape {
+                TypeShape::Record { fields, .. } => {
+                    let enc_count = fields.iter().filter(|field| field.optional).count();
+                    let (enc_refs, dec_refs) =
+                        split_lifted(ctx, codec_type, lifted_refs, enc_count)?;
+                    (
+                        encode::record(ctx, plan, codec_type, shape, trio_params, enc_refs)?,
+                        decode::record(ctx, plan, codec_type, shape, dec_refs)?,
+                    )
+                }
+                TypeShape::Enum { .. } => (
+                    encode::enum_shape(ctx, codec_type, shape, trio_params),
+                    decode::enum_shape(ctx, plan, codec_type, shape, lifted_refs)?,
+                ),
+                TypeShape::Union { .. } => (
+                    encode::union(ctx, plan, codec_type, shape, trio_params)?,
+                    super::codec_decode_union::union(
+                        ctx,
+                        plan,
+                        types,
+                        codec_type,
+                        shape,
+                        lifted_refs,
+                    )?,
+                ),
+            }
+        }
+        CodecPayload::Composite(desc) => {
+            let desc = desc.clone();
+            (
+                encode::composite(ctx, plan, codec_type, &desc, trio_params, lifted_refs)?,
+                decode::composite(ctx, plan, codec_type, &desc)?,
+            )
+        }
+    };
+    functions.push(composer);
+    functions.push(enc.main);
+    functions.push(dec.main);
+    functions.extend(enc.lifted);
+    functions.extend(dec.lifted);
+    Ok(())
 }
 
-fn trio_params(codec_type: &super::build::CodecType) -> TrioParams {
-    let shape = TypeShapeRef(u16::try_from(codec_type.shape_index).unwrap_or(u16::MAX));
-    match codec_type.kind {
-        CodecTemplateKind::RecordTrio => TrioParams::Record { shape },
-        CodecTemplateKind::EnumTrio => TrioParams::Enum { shape },
-        CodecTemplateKind::UnionTrio => TrioParams::Union { shape },
-        CodecTemplateKind::CompositeTrio => TrioParams::Composite {
-            desc: super::super::shapes::WireDesc::Nil,
-        },
+/// Split a codec type's reserved lifted slots into the encode-side and
+/// decode-side halves without panicking on a plan mismatch.
+fn split_lifted<'r>(
+    ctx: &Ctx<'_>,
+    codec_type: &CodecType,
+    lifted: &'r [FnRef],
+    enc_count: usize,
+) -> Result<(&'r [FnRef], &'r [FnRef]), LowerError> {
+    if enc_count <= lifted.len() {
+        Ok(lifted.split_at(enc_count))
+    } else {
+        Err(LowerError::new(
+            ctx.emitter.document.span,
+            format!(
+                "codec `{}` reserved {} lifted slots but needs {enc_count} encode-side",
+                codec_type.stem,
+                lifted.len()
+            ),
+        ))
     }
 }
 
-fn origin(codec_type: &super::build::CodecType, params: TrioParams) -> FnOrigin {
+pub(super) fn trio_params(codec_type: &CodecType) -> TrioParams {
+    match &codec_type.payload {
+        CodecPayload::Shape(index) => {
+            let shape = TypeShapeRef(u16::try_from(*index).unwrap_or(u16::MAX));
+            match codec_type.kind {
+                CodecTemplateKind::EnumTrio => TrioParams::Enum { shape },
+                CodecTemplateKind::UnionTrio => TrioParams::Union { shape },
+                _ => TrioParams::Record { shape },
+            }
+        }
+        CodecPayload::Composite(desc) => TrioParams::Composite { desc: desc.clone() },
+    }
+}
+
+pub(super) fn origin(codec_type: &CodecType, params: TrioParams) -> FnOrigin {
     FnOrigin::CodecTemplate {
         kind: codec_type.kind,
         subject: codec_type.subject.clone(),
@@ -63,14 +176,18 @@ fn origin(codec_type: &super::build::CodecType, params: TrioParams) -> FnOrigin 
     }
 }
 
-fn zero_span() -> Span {
+pub(super) fn lifted_origin(host: FnRef, index: u32) -> FnOrigin {
+    FnOrigin::LiftedClosure { host, index }
+}
+
+pub(super) fn zero_span() -> Span {
     Span::zero()
 }
 
 /// `<stem>_codec/0`: `json_codec(<to_json>, <decoder>)` — the §3 composer.
 fn codec_fn(
     ctx: &mut Ctx<'_>,
-    codec_type: &super::build::CodecType,
+    codec_type: &CodecType,
     to_json_ref: FnRef,
     decoder_ref: FnRef,
     params: TrioParams,
@@ -91,7 +208,7 @@ fn codec_fn(
             args: Vec::new(),
             // S14 fills this: `closure` is live across the decoder call
             // (both feed the `json_codec` tail).
-            live_after: super::super::ops::LiveAfter::default(),
+            live_after: LiveAfter::default(),
             span: zero_span(),
         },
     ];
@@ -104,7 +221,7 @@ fn codec_fn(
         body: Block {
             stmts,
             tail: Tail::TailRt {
-                callee: super::super::runtime::RuntimeFn::JsonCodec,
+                callee: RuntimeFn::JsonCodec,
                 args: vec![Value::Var(closure), Value::Var(decoder)],
             },
         },
@@ -113,122 +230,128 @@ fn codec_fn(
     })
 }
 
-/// `<stem>_to_json/1`. Record bodies follow the §3 recipe; enum/union bodies
-/// are structural placeholders (reported).
-fn to_json_fn(
+// ---- shared wire-descriptor helpers -------------------------------------
+
+/// The leaf a wire descriptor resolves to, when it is one.
+pub(super) fn leaf_of_desc(desc: &WireDesc) -> Option<Leaf> {
+    match desc {
+        WireDesc::Bool => Some(Leaf::Bool),
+        WireDesc::Int => Some(Leaf::Int),
+        WireDesc::Float => Some(Leaf::Float),
+        WireDesc::Str => Some(Leaf::Str),
+        WireDesc::Nil => Some(Leaf::Nil),
+        WireDesc::List(_) | WireDesc::Nullable(_) | WireDesc::Ref(_) => None,
+    }
+}
+
+/// The registry stem a non-leaf wire descriptor's trio lives under — the
+/// exact mirror of the reference `TypeEnv::codec_name`.
+pub(super) fn desc_stem(desc: &WireDesc) -> String {
+    match desc {
+        WireDesc::Bool => "bool".to_owned(),
+        WireDesc::Int => "int".to_owned(),
+        WireDesc::Float => "float".to_owned(),
+        WireDesc::Str => "string".to_owned(),
+        WireDesc::Nil => "nil".to_owned(),
+        WireDesc::List(inner) => format!("list_{}", desc_stem(inner)),
+        WireDesc::Nullable(inner) => format!("option_{}", desc_stem(inner)),
+        WireDesc::Ref(name) => crate::emitter::snake(name),
+    }
+}
+
+/// The `TyDesc` a wire descriptor's decoded value carries.
+pub(super) fn desc_tydesc(ctx: &Ctx<'_>, desc: &WireDesc) -> TyDesc {
+    match desc {
+        WireDesc::Bool => TyDesc::Bool,
+        WireDesc::Int => TyDesc::Int,
+        WireDesc::Float => TyDesc::Float,
+        WireDesc::Str => TyDesc::String,
+        WireDesc::Nil => TyDesc::Nil,
+        WireDesc::List(inner) => TyDesc::List(Box::new(desc_tydesc(ctx, inner))),
+        WireDesc::Nullable(inner) => TyDesc::Option(Box::new(desc_tydesc(ctx, inner))),
+        WireDesc::Ref(name) => TyDesc::Custom {
+            module: ctx.module_name.clone(),
+            name: name.clone(),
+            params: Vec::new(),
+        },
+    }
+}
+
+/// The registered trio for a wire descriptor — a miss is a lowering error
+/// (S1), never a Nil fallback.
+pub(super) fn desc_trio(
+    ctx: &Ctx<'_>,
+    plan: &FnPlan,
+    desc: &WireDesc,
+) -> Result<(FnRef, FnRef, FnRef), LowerError> {
+    super::build::registered_codec(plan, ctx, &desc_stem(desc))
+}
+
+/// The `to_json` function a wire descriptor's values flow through.
+pub(super) fn to_json_ref_for(
+    ctx: &Ctx<'_>,
+    plan: &FnPlan,
+    desc: &WireDesc,
+) -> Result<ToJsonRef, LowerError> {
+    match leaf_of_desc(desc) {
+        Some(leaf) => Ok(ToJsonRef::SdkLeaf(leaf)),
+        None => Ok(ToJsonRef::Local(desc_trio(ctx, plan, desc)?.1)),
+    }
+}
+
+/// Emit the statement producing a DECODER VALUE for a wire descriptor
+/// (`awlc.<leaf>_decoder()` or the local trio's `<stem>_decoder()`).
+pub(super) fn decoder_value(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
-    types: &[TypeShape],
-    codec_type: &super::build::CodecType,
-    params: TrioParams,
-) -> MirFn {
-    ctx.reset_vars();
-    let subject = ctx.fresh_var();
-    let shape = &types[codec_type.shape_index];
-    let body = match shape {
-        TypeShape::Record { .. } => record_to_json(ctx, plan, subject, shape),
-        TypeShape::Enum { .. } | TypeShape::Union { .. } => placeholder_json(ctx),
-    };
-    MirFn::Flow(FlowFn {
-        origin: origin(codec_type, params),
-        name: format!("{}_to_json", codec_type.stem),
-        params: vec![subject],
-        param_tys: vec![codec_type.tydesc.clone()],
-        ret_ty: TyDesc::Json,
-        body,
-        span: zero_span(),
-        degraded_parallel: false,
-    })
-}
-
-fn record_to_json(ctx: &mut Ctx<'_>, plan: &FnPlan, subject: Var, shape: &TypeShape) -> Block {
-    let TypeShape::Record { fields, .. } = shape else {
-        return placeholder_json(ctx);
-    };
-    let mut stmts = Vec::new();
-    let mut pairs = Vec::new();
-    for (index, field) in fields.iter().enumerate() {
-        let value = ctx.fresh_var();
-        stmts.push(Stmt::FieldGet {
-            dst: value,
-            base: Value::Var(subject),
-            index: u16::try_from(index + 1).unwrap_or(u16::MAX),
+    desc: &WireDesc,
+    stmts: &mut Vec<Stmt>,
+) -> Result<Var, LowerError> {
+    let dst = ctx.fresh_var();
+    match leaf_of_desc(desc) {
+        Some(leaf) => stmts.push(Stmt::CallRt {
+            dst: Some(dst),
+            callee: RuntimeFn::LeafDecoder(leaf),
+            args: Vec::new(),
+            live_after: LiveAfter::default(),
             span: zero_span(),
-        });
-        pairs.push((
-            field.awl_name.clone(),
-            JsonVal::Encoded {
-                value: Value::Var(value),
-                via: to_json_ref(plan, &field.desc),
-            },
-        ));
-    }
-    let object = ctx.fresh_var();
-    stmts.push(Stmt::JsonObj {
-        dst: object,
-        pairs,
-        span: zero_span(),
-    });
-    Block {
-        stmts,
-        tail: Tail::Return(Value::Var(object)),
-    }
-}
-
-/// A structural `json.object([])` body (BC-2 placeholder for enum/union
-/// `_to_json`, visible in goldens).
-fn placeholder_json(ctx: &mut Ctx<'_>) -> Block {
-    let object = ctx.fresh_var();
-    Block {
-        stmts: vec![Stmt::JsonObj {
-            dst: object,
-            pairs: Vec::new(),
+        }),
+        None => stmts.push(Stmt::CallLocal {
+            dst: Some(dst),
+            callee: desc_trio(ctx, plan, desc)?.2,
+            args: Vec::new(),
+            live_after: LiveAfter::default(),
             span: zero_span(),
-        }],
-        tail: Tail::Return(Value::Var(object)),
+        }),
     }
+    Ok(dst)
 }
 
-/// `<stem>_decoder/0`: a structural `decode.success(Nil)` placeholder (BC-2
-/// scope; the full continuation recipe is reported as deferred).
-fn decoder_fn(
+/// Emit the statement ENCODING one value through a wire descriptor's
+/// `to_json`, returning the JSON var.
+pub(super) fn encode_value(
     ctx: &mut Ctx<'_>,
-    codec_type: &super::build::CodecType,
-    params: TrioParams,
-) -> MirFn {
-    ctx.reset_vars();
-    MirFn::Flow(FlowFn {
-        origin: origin(codec_type, params),
-        name: format!("{}_decoder", codec_type.stem),
-        params: Vec::new(),
-        param_tys: Vec::new(),
-        ret_ty: TyDesc::Decoder(Box::new(codec_type.tydesc.clone())),
-        body: Block {
-            stmts: Vec::new(),
-            tail: Tail::TailRt {
-                callee: super::super::runtime::RuntimeFn::DSuccess,
-                args: vec![Value::Nil],
-            },
-        },
-        span: zero_span(),
-        degraded_parallel: false,
-    })
-}
-
-/// The `to_json` function a field's wire descriptor flows through.
-fn to_json_ref(plan: &FnPlan, desc: &super::super::shapes::WireDesc) -> ToJsonRef {
-    use super::super::shapes::WireDesc;
-    match desc {
-        WireDesc::Bool => ToJsonRef::SdkLeaf(super::super::tydesc::Leaf::Bool),
-        WireDesc::Int => ToJsonRef::SdkLeaf(super::super::tydesc::Leaf::Int),
-        WireDesc::Float => ToJsonRef::SdkLeaf(super::super::tydesc::Leaf::Float),
-        WireDesc::Str => ToJsonRef::SdkLeaf(super::super::tydesc::Leaf::Str),
-        WireDesc::Nil | WireDesc::List(_) | WireDesc::Nullable(_) => {
-            ToJsonRef::SdkLeaf(super::super::tydesc::Leaf::Nil)
-        }
-        WireDesc::Ref(name) => plan.codecs.get(&crate::emitter::snake(name)).map_or(
-            ToJsonRef::SdkLeaf(super::super::tydesc::Leaf::Nil),
-            |trio| ToJsonRef::Local(trio.1),
-        ),
+    plan: &FnPlan,
+    desc: &WireDesc,
+    value: Value,
+    stmts: &mut Vec<Stmt>,
+) -> Result<Var, LowerError> {
+    let dst = ctx.fresh_var();
+    match to_json_ref_for(ctx, plan, desc)? {
+        ToJsonRef::SdkLeaf(leaf) => stmts.push(Stmt::CallRt {
+            dst: Some(dst),
+            callee: RuntimeFn::LeafToJson(leaf),
+            args: vec![value],
+            live_after: LiveAfter::default(),
+            span: zero_span(),
+        }),
+        ToJsonRef::Local(reference) => stmts.push(Stmt::CallLocal {
+            dst: Some(dst),
+            callee: reference,
+            args: vec![value],
+            live_after: LiveAfter::default(),
+            span: zero_span(),
+        }),
     }
+    Ok(dst)
 }

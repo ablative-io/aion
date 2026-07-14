@@ -4,7 +4,7 @@
 use super::super::ids::{FnRef, Var};
 use super::super::ops::{LiveAfter, Value};
 use super::super::runtime::DurableFamily;
-use super::super::shapes::WireDesc;
+use super::super::shapes::{MirLiteral, WireDesc};
 use super::super::tydesc::TyDesc;
 use super::super::unit::MirModule;
 
@@ -27,6 +27,46 @@ pub(super) fn render_wire(desc: &WireDesc) -> String {
         WireDesc::List(inner) => format!("list({})", render_wire(inner)),
         WireDesc::Nullable(inner) => format!("nullable({})", render_wire(inner)),
         WireDesc::Ref(name) => format!("ref({name})"),
+    }
+}
+
+/// Render one literal-pool entry's CONTENT (the R5 codec-identity pin
+/// surface): `lit#N` operands stop being opaque because the module section
+/// prints every pool entry through this.
+pub(super) fn render_literal(module: &MirModule, literal: &MirLiteral) -> String {
+    match literal {
+        MirLiteral::Integer(value) => value.to_string(),
+        MirLiteral::Float { lexeme } => format!("float({lexeme})"),
+        MirLiteral::Atom(atom) => format!("'{}'", module.atom(atom.0).unwrap_or("?")),
+        MirLiteral::Binary(bytes) => {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                format!("{text:?}")
+            } else {
+                use std::fmt::Write as _;
+                let mut hex = String::from("0x");
+                for byte in bytes {
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                hex
+            }
+        }
+        MirLiteral::Nil => "nil".to_owned(),
+        MirLiteral::Tuple(elements) => format!(
+            "#({})",
+            elements
+                .iter()
+                .map(|element| render_literal(module, element))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MirLiteral::List(elements) => format!(
+            "[{}]",
+            elements
+                .iter()
+                .map(|element| render_literal(module, element))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

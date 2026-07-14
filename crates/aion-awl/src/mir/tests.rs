@@ -239,6 +239,105 @@ fn minimal_exercises_core_op_shapes() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+/// Every pool index whose binary literal is exactly `content`, read from the
+/// printed `== literals ==` table (`  [N] "content"` — the pool is
+/// append-only, so one string may occupy several slots).
+fn literal_indices(text: &str, content: &str) -> Vec<usize> {
+    let Some(table) = text.split("== literals ==").nth(1) else {
+        return Vec::new();
+    };
+    let quoted = format!("{content:?}");
+    table
+        .lines()
+        .skip(1)
+        .take_while(|line| line.starts_with("  ["))
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix('[')?;
+            let (index, value) = rest.split_once("] ")?;
+            (value == quoted).then(|| index.parse().ok())?
+        })
+        .collect()
+}
+
+/// True when `text` contains `pattern` with `{lit}` substituted by any of
+/// the given literal-pool indices — content-anchored, position-flexible.
+fn contains_with_lit(text: &str, pattern: &str, indices: &[usize]) -> bool {
+    indices
+        .iter()
+        .any(|index| text.contains(&pattern.replace("{lit}", &index.to_string())))
+}
+
+/// BC-2b-5 typed-codec wire-shape pins, two-sided with
+/// `tests/emitter.rs::codec_bodies_pin_the_same_wire_fragments`: the SAME
+/// fragments (field-name/variant/type-name literal CONTENT included via the
+/// literal table) in the direct MIR that the reference emitter renders in
+/// Gleam — D4 optional omission, nullable-vs-optional-field split, composite
+/// trios, and enum/union decode.failure on unknowns.
+#[test]
+fn typed_codec_bodies_pin_the_wire_shapes() -> Result<(), Box<dyn std::error::Error>> {
+    // Record with an optional field + list field (`Note`).
+    let path = manifest_dir().join("tests/fixtures/rev2/schema-doors/valid/optional_shorthand.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+    let body_lits = literal_indices(&text, "body");
+    assert!(
+        contains_with_lit(
+            &text,
+            "tail_rt gleam@dynamic@decode:optional_field/4(lit#{lit}, 'none', ",
+            &body_lits,
+        ),
+        "optional field must decode via optional_field with the None default \
+         (explicit null fails, D4):\n{text}"
+    );
+    assert!(
+        text.contains("call_rt gleam@list:flatten/1")
+            && text.contains("tail_rt gleam@json:object/1"),
+        "optional-bearing record encode must flatten pair lists (absence \
+         omitted, never null):\n{text}"
+    );
+    assert!(
+        text.contains("== fn list_string_codec/0")
+            && text.contains("tail_rt gleam@dynamic@decode:list/1"),
+        "the reachable [String] composite trio must be registered:\n{text}"
+    );
+    assert!(
+        !text.contains("decode:success/1(nil)"),
+        "no decode.success(Nil) placeholder may survive:\n{text}"
+    );
+
+    // Enum + union (`Category` / `TriageMessageOutcome`).
+    let path = manifest_dir().join("tests/fixtures/rev2/header-types/valid/enum.awl");
+    let module = lower_fixture(&path)??;
+    verify(&module)?;
+    let text = print_mir(&module);
+    let category_lits = literal_indices(&text, "Category");
+    assert!(
+        contains_with_lit(
+            &text,
+            "tail_rt gleam@dynamic@decode:failure/2('urgent', lit#{lit})",
+            &category_lits,
+        ),
+        "unknown enum strings must FAIL with the first variant + type name \
+         (never a silently-chosen default):\n{text}"
+    );
+    let outcome_lits = literal_indices(&text, "outcome");
+    assert!(
+        contains_with_lit(
+            &text,
+            "tail_rt gleam@dynamic@decode:field/3(lit#{lit}, ",
+            &outcome_lits,
+        ),
+        "union decode must dispatch on the `outcome` field:\n{text}"
+    );
+    assert!(
+        text.contains("== fn triage_message_outcome_decoder$outcome/1")
+            && text.contains("tail_rt gleam@dynamic@decode:failure/2("),
+        "unknown union outcomes must FAIL with the typed first-arm default:\n{text}"
+    );
+    Ok(())
+}
+
 #[test]
 fn optional_rhs_is_nested_below_short_circuit_branch() -> Result<(), Box<dyn std::error::Error>> {
     let path =

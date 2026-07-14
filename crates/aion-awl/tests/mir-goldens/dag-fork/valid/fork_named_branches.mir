@@ -2,11 +2,11 @@ module fork_named_branches source=fork_named_branches.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
   step_gather:
-    aion@activity:task_queue/2 [activities] (v1, lit#0)
-    aion@activity:task_queue/2 [activities] (v3, lit#1)
+    aion@activity:task_queue/2 [activities] (v1, lit#18)
+    aion@activity:task_queue/2 [activities] (v3, lit#19)
     aion@workflow:all/1 [activities] (v5)
   step_build_dossier:
-    aion@activity:task_queue/2 [activities] (v4, lit#4)
+    aion@activity:task_queue/2 [activities] (v4, lit#22)
     aion@workflow:run/1 [activities] (v5)
 == durable families == activities
 == atoms ==
@@ -19,9 +19,36 @@ exports: run/1, definition/0, execute/1
   [6] fetch_profile_input
   [7] fork_named_branches_input
   [8] assembled_outcome
-  [9] ok
-  [10] awl_outcome_failure
-  [11] error
+  [9] false
+  [10] ok
+  [11] awl_outcome_failure
+  [12] error
+== literals ==
+  [0] "name"
+  [1] "email"
+  [2] "events"
+  [3] "name"
+  [4] "events"
+  [5] "complete"
+  [6] "reason"
+  [7] "name"
+  [8] "events"
+  [9] "id"
+  [10] "id"
+  [11] "user_id"
+  [12] "assembled"
+  [13] "outcome"
+  [14] ""
+  [15] "ForkNamedBranchesOutcome"
+  [16] "assembled"
+  [17] "payload"
+  [18] "directory"
+  [19] "directory"
+  [20] "fetch_profile"
+  [21] "fetch_history"
+  [22] "directory"
+  [23] "profile or history incomplete"
+  [24] "unusable"
 == types ==
   record Profile tag=profile
     name: string
@@ -67,7 +94,18 @@ exports: run/1, definition/0, execute/1
   return v3
 == fn profile_decoder/0 origin=codec_template(RecordTrio, Profile, record#0) ==
   sig: () -> Decoder(fork_named_branches.Profile)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure profile_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn profile_decoder$0/1 origin=lifted(profile_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.Profile)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure profile_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn profile_decoder$1/2 origin=lifted(profile_decoder, #1) ==
+  sig: (String, String) -> Decoder(fork_named_branches.Profile)
+  v2 = record(profile, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn history_codec/0 origin=codec_template(RecordTrio, History, record#1) ==
   sig: () -> Codec(fork_named_branches.History)
   v0 = make_closure history_to_json captures=[]
@@ -76,11 +114,17 @@ exports: run/1, definition/0, execute/1
 == fn history_to_json/1 origin=codec_template(RecordTrio, History, record#1) ==
   sig: (fork_named_branches.History) -> Json
   v1 = field(v0, 1)
-  v2 = json_obj {"events": v1|>awlc.nil_to_json}
+  v2 = json_obj {"events": v1|>list_string_to_json}
   return v2
 == fn history_decoder/0 origin=codec_template(RecordTrio, History, record#1) ==
   sig: () -> Decoder(fork_named_branches.History)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure history_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn history_decoder$0/1 origin=lifted(history_decoder, #0) ==
+  sig: (List(String)) -> Decoder(fork_named_branches.History)
+  v1 = record(history, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn dossier_codec/0 origin=codec_template(RecordTrio, Dossier, record#2) ==
   sig: () -> Codec(fork_named_branches.Dossier)
   v0 = make_closure dossier_to_json captures=[]
@@ -91,11 +135,27 @@ exports: run/1, definition/0, execute/1
   v1 = field(v0, 1)
   v2 = field(v0, 2)
   v3 = field(v0, 3)
-  v4 = json_obj {"name": v1|>awlc.string_to_json, "events": v2|>awlc.nil_to_json, "complete": v3|>awlc.bool_to_json}
+  v4 = json_obj {"name": v1|>awlc.string_to_json, "events": v2|>list_string_to_json, "complete": v3|>awlc.bool_to_json}
   return v4
 == fn dossier_decoder/0 origin=codec_template(RecordTrio, Dossier, record#2) ==
   sig: () -> Decoder(fork_named_branches.Dossier)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure dossier_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn dossier_decoder$0/1 origin=lifted(dossier_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.Dossier)
+  v1 = call_local list_string_decoder() live_after=[v0]
+  v2 = make_closure dossier_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn dossier_decoder$1/2 origin=lifted(dossier_decoder, #1) ==
+  sig: (List(String), String) -> Decoder(fork_named_branches.Dossier)
+  v2 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0, v1]
+  v3 = make_closure dossier_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v2, v3)
+== fn dossier_decoder$2/3 origin=lifted(dossier_decoder, #2) ==
+  sig: (Bool, String, List(String)) -> Decoder(fork_named_branches.Dossier)
+  v3 = record(dossier, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
 == fn unusable_codec/0 origin=codec_template(RecordTrio, Unusable, record#3) ==
   sig: () -> Codec(fork_named_branches.Unusable)
   v0 = make_closure unusable_to_json captures=[]
@@ -108,7 +168,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn unusable_decoder/0 origin=codec_template(RecordTrio, Unusable, record#3) ==
   sig: () -> Decoder(fork_named_branches.Unusable)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure unusable_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn unusable_decoder$0/1 origin=lifted(unusable_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.Unusable)
+  v1 = record(unusable, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn assemble_input_codec/0 origin=codec_template(RecordTrio, AssembleInput, record#4) ==
   sig: () -> Codec(fork_named_branches.AssembleInput)
   v0 = make_closure assemble_input_to_json captures=[]
@@ -118,11 +184,22 @@ exports: run/1, definition/0, execute/1
   sig: (fork_named_branches.AssembleInput) -> Json
   v1 = field(v0, 1)
   v2 = field(v0, 2)
-  v3 = json_obj {"name": v1|>awlc.string_to_json, "events": v2|>awlc.nil_to_json}
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "events": v2|>list_string_to_json}
   return v3
 == fn assemble_input_decoder/0 origin=codec_template(RecordTrio, AssembleInput, record#4) ==
   sig: () -> Decoder(fork_named_branches.AssembleInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure assemble_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn assemble_input_decoder$0/1 origin=lifted(assemble_input_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.AssembleInput)
+  v1 = call_local list_string_decoder() live_after=[v0]
+  v2 = make_closure assemble_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v1, v2)
+== fn assemble_input_decoder$1/2 origin=lifted(assemble_input_decoder, #1) ==
+  sig: (List(String), String) -> Decoder(fork_named_branches.AssembleInput)
+  v2 = record(assemble_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
 == fn fetch_history_input_codec/0 origin=codec_template(RecordTrio, FetchHistoryInput, record#5) ==
   sig: () -> Codec(fork_named_branches.FetchHistoryInput)
   v0 = make_closure fetch_history_input_to_json captures=[]
@@ -135,7 +212,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fetch_history_input_decoder/0 origin=codec_template(RecordTrio, FetchHistoryInput, record#5) ==
   sig: () -> Decoder(fork_named_branches.FetchHistoryInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_history_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn fetch_history_input_decoder$0/1 origin=lifted(fetch_history_input_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.FetchHistoryInput)
+  v1 = record(fetch_history_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fetch_profile_input_codec/0 origin=codec_template(RecordTrio, FetchProfileInput, record#6) ==
   sig: () -> Codec(fork_named_branches.FetchProfileInput)
   v0 = make_closure fetch_profile_input_to_json captures=[]
@@ -148,7 +231,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fetch_profile_input_decoder/0 origin=codec_template(RecordTrio, FetchProfileInput, record#6) ==
   sig: () -> Decoder(fork_named_branches.FetchProfileInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_profile_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn fetch_profile_input_decoder$0/1 origin=lifted(fetch_profile_input_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.FetchProfileInput)
+  v1 = record(fetch_profile_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fork_named_branches_input_codec/0 origin=codec_template(RecordTrio, ForkNamedBranchesInput, record#7) ==
   sig: () -> Codec(fork_named_branches.ForkNamedBranchesInput)
   v0 = make_closure fork_named_branches_input_to_json captures=[]
@@ -161,7 +250,13 @@ exports: run/1, definition/0, execute/1
   return v2
 == fn fork_named_branches_input_decoder/0 origin=codec_template(RecordTrio, ForkNamedBranchesInput, record#7) ==
   sig: () -> Decoder(fork_named_branches.ForkNamedBranchesInput)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fork_named_branches_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn fork_named_branches_input_decoder$0/1 origin=lifted(fork_named_branches_input_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.ForkNamedBranchesInput)
+  v1 = record(fork_named_branches_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
 == fn fork_named_branches_outcome_codec/0 origin=codec_template(UnionTrio, ForkNamedBranchesOutcome, union#8) ==
   sig: () -> Codec(fork_named_branches.ForkNamedBranchesOutcome)
   v0 = make_closure fork_named_branches_outcome_to_json captures=[]
@@ -169,11 +264,44 @@ exports: run/1, definition/0, execute/1
   tail_rt aion@codec:json_codec/2(v0, v1)
 == fn fork_named_branches_outcome_to_json/1 origin=codec_template(UnionTrio, ForkNamedBranchesOutcome, union#8) ==
   sig: (fork_named_branches.ForkNamedBranchesOutcome) -> Json
-  v1 = json_obj {}
-  return v1
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#12|>awlc.string_to_json, "payload": v1|>dossier_to_json}
+  return v2
 == fn fork_named_branches_outcome_decoder/0 origin=codec_template(UnionTrio, ForkNamedBranchesOutcome, union#8) ==
   sig: () -> Decoder(fork_named_branches.ForkNamedBranchesOutcome)
-  tail_rt gleam@dynamic@decode:success/1(nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fork_named_branches_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn fork_named_branches_outcome_decoder$outcome/1 origin=lifted(fork_named_branches_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fork_named_branches.ForkNamedBranchesOutcome)
+  if cmp Eq v0 lit#16:
+    v3 = call_local dossier_decoder()
+    v4 = make_closure fork_named_branches_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#17, v3, v4)
+  else:
+    v1 = record(dossier, [lit#14, nil, 'false'])
+    v2 = record(assembled_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#15)
+== fn fork_named_branches_outcome_decoder$arm0/1 origin=lifted(fork_named_branches_outcome_decoder, #1) ==
+  sig: (fork_named_branches.Dossier) -> Decoder(fork_named_branches.ForkNamedBranchesOutcome)
+  v1 = record(assembled_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
 == fn assemble_activity/2 origin=activity_wrapper(assemble, raw=false) ==
   sig: (String, List(String)) -> Activity(fork_named_branches.AssembleInput, fork_named_branches.Dossier)
   T-ACT action=assemble input_codec=assemble_input_codec return=dossier_codec
@@ -192,19 +320,19 @@ exports: run/1, definition/0, execute/1
 == fn step_gather/1 origin=region(gather) ==
   sig: (String) -> Result(fork_named_branches.ForkNamedBranchesOutcome, AwlError)
   v1 = call_local fetch_profile_activity_raw(v0) live_after=[v0]
-  v2 = call_rt aion@activity:task_queue/2(v1, lit#0) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#18) live_after=[v0]
   v3 = call_local fetch_history_activity_raw(v0) live_after=[v2]
-  v4 = call_rt aion@activity:task_queue/2(v3, lit#1) live_after=[v2]
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#19) live_after=[v2]
   v5 = list([v2, v4])
   v6 = call_rt aion@workflow:all/1(v5)
   v7 = call_rt aion@awl@error:map_activity_error/1(v6)
   v8 = try_bind v7
   assert_list [v9, v10] = v8
   v11 = call_local profile_codec() live_after=[v9, v10]
-  v12 = call_rt aion@awl@codec:decoded/3(v11, v9, lit#2) live_after=[v10]
+  v12 = call_rt aion@awl@codec:decoded/3(v11, v9, lit#20) live_after=[v10]
   v13 = try_bind v12 live_after=[v10]
   v14 = call_local history_codec() live_after=[v10, v13]
-  v15 = call_rt aion@awl@codec:decoded/3(v14, v10, lit#3) live_after=[v13]
+  v15 = call_rt aion@awl@codec:decoded/3(v14, v10, lit#21) live_after=[v13]
   v16 = try_bind v15 live_after=[v13]
   tail_local step_build_dossier(v16, v13)
 == fn step_build_dossier/2 origin=chain_step(gather.build_dossier) ==
@@ -212,7 +340,7 @@ exports: run/1, definition/0, execute/1
   v2 = field(v1, 1)
   v3 = field(v0, 1)
   v4 = call_local assemble_activity(v2, v3)
-  v5 = call_rt aion@activity:task_queue/2(v4, lit#4)
+  v5 = call_rt aion@activity:task_queue/2(v4, lit#22)
   v6 = call_rt aion@workflow:run/1(v5)
   v7 = call_rt aion@awl@error:map_activity_error/1(v6)
   v8 = try_bind v7
@@ -226,10 +354,10 @@ exports: run/1, definition/0, execute/1
     v15 = record(ok, [v14])
     return v15
   else:
-    v16 = record(unusable, [lit#5])
+    v16 = record(unusable, [lit#23])
     v17 = call_local unusable_to_json(v16)
     v18 = call_rt gleam@json:to_string/1(v17)
-    v19 = record(awl_outcome_failure, [lit#6, v18])
+    v19 = record(awl_outcome_failure, [lit#24, v18])
     v20 = record(error, [v19])
     return v20
 == fn awl$dead_body/1 origin=dead_body ==

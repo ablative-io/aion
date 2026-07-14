@@ -69,7 +69,12 @@ pub enum RuntimeFn {
     JArray,
     JNullable,
     JToString,
-    // gleam@dynamic@decode
+    // gleam@dynamic@decode. NOTE: there is deliberately NO `DString` row —
+    // `decode.string` is a Gleam CONSTANT (inlined at use sites; the module
+    // exports only `decode_string/1`), so a `string/0` import row would be
+    // validator-clean and runtime-undefined. Generated code reaches the
+    // string decoder through `awlc.string_decoder/0` (`LeafDecoder(Str)`),
+    // proven by `tests/runtime_codecs.rs` (BC-2b-5 runtime proof finding).
     DField,
     DOptionalField,
     DSuccess,
@@ -78,7 +83,6 @@ pub enum RuntimeFn {
     DMap,
     DList,
     DOptional,
-    DString,
     // gleam@list
     LFlatten,
     LFilter,
@@ -163,7 +167,6 @@ impl RuntimeFn {
             Self::DMap => ("gleam@dynamic@decode", "map", 2),
             Self::DList => ("gleam@dynamic@decode", "list", 1),
             Self::DOptional => ("gleam@dynamic@decode", "optional", 1),
-            Self::DString => ("gleam@dynamic@decode", "string", 0),
             Self::LFlatten => ("gleam@list", "flatten", 1),
             Self::LFilter => ("gleam@list", "filter", 2),
             Self::LMap => ("gleam@list", "map", 2),

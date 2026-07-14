@@ -117,6 +117,11 @@ fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectErro
             captures,
             ..
         } => lower_make_closure(builder, *dst, *lifted, captures),
+        Stmt::CallClosure { dst, fun, args, .. } => Ok(Step::CallFun {
+            dst: *dst,
+            fun: src(builder, fun)?,
+            args: srcs(builder, args)?,
+        }),
         Stmt::TryBind { dst, result, .. } => Ok(Step::TryBind {
             dst: *dst,
             result: *result,
@@ -332,7 +337,6 @@ fn call_arity(callee: RuntimeFn) -> Result<u8, SelectError> {
 fn unsupported_stmt(stmt: &Stmt) -> SelectError {
     let (what, span) = match stmt {
         Stmt::Bind { span, .. } => ("bind", *span),
-        Stmt::CallClosure { span, .. } => ("call_closure", *span),
         Stmt::WaitTimeoutCase { span, .. } => ("wait_timeout", *span),
         Stmt::Cmp { span, .. } => ("cmp", *span),
         Stmt::BoolOp { span, .. } => ("boolop", *span),
