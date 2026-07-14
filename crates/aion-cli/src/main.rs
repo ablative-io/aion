@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use aion_client::{Client, ClientBuilder, ClientError, ListPage, StartOptions};
+use aion_client::{Client, ClientBuilder, ClientError, ListPage, StartOptions, WorkflowHandle};
 use aion_core::{Payload, WorkflowFilter, WorkflowStatus};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -29,6 +29,7 @@ mod harness;
 mod input;
 mod inspect;
 mod new;
+mod one_motion;
 mod output;
 mod package;
 mod payload;
@@ -212,14 +213,26 @@ enum ClientCommand {
         #[arg(long)]
         build: bool,
     },
-    /// Deploy a built `.aion` archive into a running server (operator API).
+    /// Deploy a `.aion` archive or direct-compile and deploy an `.awl` file (operator API).
     ///
     /// Requires the server's `[deploy]` surface to be enabled and the caller
     /// to hold the deploy grant (`deploy` token claim, or the
     /// `x-aion-deploy` development header the CLI sends automatically).
     Deploy {
-        /// Path to a complete `.aion` archive.
+        /// Path to a complete `.aion` archive or an `.awl` workflow document.
         archive: PathBuf,
+    },
+    /// Compile, deploy, start, and await an AWL workflow in one motion.
+    ///
+    /// The input is validated locally against the compiled workflow contract
+    /// before any deploy connection is made. The global `--namespace` remains
+    /// authoritative for the start operation.
+    Run {
+        /// Path to an `.awl` workflow document.
+        file: PathBuf,
+        /// JSON input payload, validated before deployment.
+        #[arg(long)]
+        input: String,
     },
     /// List every loaded workflow version with its routing flag (operator API).
     Versions {
@@ -435,7 +448,7 @@ async fn main() -> ExitCode {
                 // the taxonomy class, server detail, error type, and hint go
                 // to stderr; the process exits 1.
                 Err(error) => {
-                    eprintln!("{}", render::render_error(&error));
+                    report_client_error(&error);
                     ExitCode::FAILURE
                 }
             }
@@ -460,7 +473,22 @@ async fn run(cli: &Cli, command: &ClientCommand) -> Result<Value> {
             path,
         } => input::run(path, workflow_type),
         ClientCommand::Package { path, out, build } => package::run(path, out.as_deref(), *build),
-        ClientCommand::Deploy { archive } => deploy::deploy(&deploy_target(cli), archive).await,
+        ClientCommand::Deploy { archive } => {
+            if one_motion::is_awl(archive) {
+                let (_, _, bytes) = one_motion::package_file(archive)?;
+                deploy::deploy_bytes(&deploy_target(cli), bytes).await
+            } else {
+                deploy::deploy(&deploy_target(cli), archive).await
+            }
+        }
+        ClientCommand::Run { file, input } => {
+            let prepared = one_motion::prepare_run(file, input)?;
+            deploy::deploy_bytes(&deploy_target(cli), prepared.archive).await?;
+            let client = build_client(cli).await?;
+            let handle =
+                start_workflow_handle(&client, &prepared.workflow_name, prepared.input).await?;
+            one_motion::await_result(handle, &prepared.workflow_name).await
+        }
         ClientCommand::Versions { workflow_type } => {
             deploy::versions(&deploy_target(cli), workflow_type.as_deref()).await
         }
@@ -485,6 +513,16 @@ fn deploy_target(cli: &Cli) -> deploy::DeployTarget {
         cli.subject.clone(),
         deploy::resolve_token(cli.token.clone()),
     )
+}
+
+fn report_client_error(error: &anyhow::Error) {
+    if let Some(diagnostic) = error.downcast_ref::<aion_awl::CompileError>() {
+        eprintln!("{diagnostic}");
+    } else if let Some(refusal) = error.downcast_ref::<one_motion::InputValidationError>() {
+        eprintln!("{refusal}");
+    } else {
+        eprintln!("{}", render::render_error(error));
+    }
 }
 
 async fn build_client(cli: &Cli) -> Result<Client> {
@@ -577,11 +615,19 @@ fn resolve_start_input(input: &str, input_file: Option<&Path>) -> Result<Payload
     }
 }
 
-async fn start_workflow(client: &Client, workflow_type: &str, input: Payload) -> Result<Value> {
-    let handle = client
+async fn start_workflow_handle(
+    client: &Client,
+    workflow_type: &str,
+    input: Payload,
+) -> Result<WorkflowHandle> {
+    client
         .start(workflow_type.to_owned(), input, StartOptions::default())
         .await
-        .context("failed to start workflow")?;
+        .context("failed to start workflow")
+}
+
+async fn start_workflow(client: &Client, workflow_type: &str, input: Payload) -> Result<Value> {
+    let handle = start_workflow_handle(client, workflow_type, input).await?;
     to_value(start_output(&handle))
 }
 
@@ -1294,6 +1340,7 @@ mod tests {
                     | ClientCommand::Input { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
+                    | ClientCommand::Run { .. }
                     | ClientCommand::Versions { .. }
                     | ClientCommand::Route { .. }
                     | ClientCommand::Unload { .. },
@@ -1351,6 +1398,7 @@ mod tests {
                     | ClientCommand::Input { .. }
                     | ClientCommand::Package { .. }
                     | ClientCommand::Deploy { .. }
+                    | ClientCommand::Run { .. }
                     | ClientCommand::Versions { .. }
                     | ClientCommand::Route { .. }
                     | ClientCommand::Unload { .. },

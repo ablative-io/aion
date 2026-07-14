@@ -96,6 +96,7 @@ version = "0.8.0"
 dependencies = [
  "aion-awl",
  "aion-awl-lsp",
+ "aion-awl-package",
  "aion-client",
  "aion-core",
  "aion-integration-norn",
@@ -111,6 +112,7 @@ dependencies = [
  "chrono",
  "clap",
  "fs4",
+ "jsonschema",
  "notify",
  "prost 0.14.3",
  "serde",

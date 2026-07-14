@@ -79,10 +79,16 @@ fn resolve_token_from(flag: Option<String>, env: Option<String>) -> Option<Strin
     flag.or_else(|| env.filter(|token| !token.is_empty()))
 }
 
-/// `aion-cli deploy <archive.aion>`: uploads a complete archive.
+/// `aion-cli deploy <archive.aion>`: reads and uploads a complete archive.
 pub(crate) async fn deploy(target: &DeployTarget, archive_path: &Path) -> Result<Value> {
     let archive = std::fs::read(archive_path)
         .with_context(|| format!("failed to read archive `{}`", archive_path.display()))?;
+    deploy_bytes(target, archive).await
+}
+
+/// Uploads complete package bytes through the one operator deploy path shared
+/// by `.aion` archives and direct-compiled `.awl` documents.
+pub(crate) async fn deploy_bytes(target: &DeployTarget, archive: Vec<u8>) -> Result<Value> {
     let mut client = target.client().await?;
     let response = client
         .load_package(target.request(generated::LoadPackageRequest { archive })?)
