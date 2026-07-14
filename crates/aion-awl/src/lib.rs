@@ -33,8 +33,8 @@ pub use ast::{
     CombinatorKind, Comment, ConfigLine, ConfigValue, DocLine, Document, DurationLiteral,
     EnumVariant, Expr, FieldDecl, ForkHeader, ForkStmt, Guard, InputDecl, JoinLine, Lead, LoopStmt,
     LoopTail, OnFailure, OutcomeClause, OutcomeDecl, ParamDecl, PipeEnd, PipeStage, PipeStmt,
-    PredicateKind, RetrySpec, RouteDirection, RouteStmt, RouteTarget, SignalDecl, SleepStmt,
-    SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
+    PredicateKind, Quantifier, RetrySpec, RouteDirection, RouteStmt, RouteTarget, SignalDecl,
+    SleepStmt, SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
 };
 pub use checker::{CheckError, check, check_in};
 pub use compile::{

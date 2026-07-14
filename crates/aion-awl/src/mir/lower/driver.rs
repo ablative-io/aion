@@ -82,6 +82,7 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
 
     let mut ctx = Ctx::new(&emitter, &plan, module_name.clone());
     let mut skeleton = build::skeleton(&mut ctx)?;
+    ctx.set_predicate_start(skeleton.plan.predicate_start);
     let mut slots = super::slots::Slots {
         loops: super::loops::LoopSlots::new(skeleton.plan.loops.clone()),
         forks: super::slots::ForkSlots::new(skeleton.plan.forks.clone()),
@@ -103,6 +104,9 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
     }
     if skeleton.plan.child_witness.is_some() {
         skeleton.functions.push(build::child_witness_shell());
+    }
+    for predicate in ctx.take_predicates()? {
+        skeleton.functions.push(predicate);
     }
 
     let mut module = MirModule {

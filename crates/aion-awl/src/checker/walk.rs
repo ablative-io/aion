@@ -9,9 +9,10 @@ use crate::Span;
 use crate::ast::{CallStmt, PipeEnd, PipeStmt, RetrySpec, SpawnStmt, Statement, Step, WaitStmt};
 use crate::semantic::DeclarationKind;
 
+use super::args::check_args;
 use super::blocks::{walk_fork, walk_loop};
 use super::context::Ctx;
-use super::exprs::{View, check_args};
+use super::exprs::View;
 use super::graph::StepGraph;
 use super::outcomes::{Env, check_clauses, check_route};
 use super::stages::walk_pipe;
@@ -239,6 +240,7 @@ fn walk_statement(
             let view = View {
                 vars: scope,
                 narrow: None,
+                accessor: None,
             };
             check_route(w, view, &route.target, env, None);
             None
@@ -335,6 +337,7 @@ fn walk_call(w: &mut Walker<'_, '_>, scope: &mut Scope, call: &CallStmt) -> Ty {
     let view = View {
         vars: scope,
         narrow: None,
+        accessor: None,
     };
     let name = &call.call.name;
     let returns = match w.ctx.callable(name).cloned() {
@@ -407,6 +410,7 @@ fn walk_spawn(w: &mut Walker<'_, '_>, scope: &mut Scope, spawn: &SpawnStmt) -> O
     let view = View {
         vars: scope,
         narrow: None,
+        accessor: None,
     };
     let name = &spawn.call.name;
     if let Some(child) = w.ctx.children.get(name).cloned() {

@@ -153,6 +153,14 @@ fn rename_expr(expr: &mut Expr, spans: &BTreeSet<(usize, usize)>, to: &str) {
             rename_expr(right, spans, to);
         }
         Expr::Predicate { subject, .. } => rename_expr(subject, spans, to),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            ..
+        } => {
+            rename_expr(collection, spans, to);
+            rename_expr(predicate, spans, to);
+        }
         Expr::Ref { .. }
         | Expr::String { .. }
         | Expr::Int { .. }
@@ -160,6 +168,7 @@ fn rename_expr(expr: &mut Expr, spans: &BTreeSet<(usize, usize)>, to: &str) {
         | Expr::Bool { .. }
         | Expr::Duration(_)
         | Expr::Variant { .. }
+        | Expr::Workflow { .. }
         | Expr::Accessor { .. } => {}
     }
 }

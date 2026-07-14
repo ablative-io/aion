@@ -1,0 +1,22 @@
+//! Evaluate existential and universal predicates entirely in the workflow VM.
+workflow collection_predicates
+  input findings: [Finding]
+  input rounds: [Round]
+  outcome accepted: type Verdict, route success
+  outcome rejected: type Verdict, route failure
+
+type Finding { severity: String, blocking: Bool }
+type Round   { findings: [Finding] }
+type Verdict { nested_blocker: Bool, all_consistent: Bool, empty_truth: Bool }
+
+step decide
+  findings |> any(.blocking and .severity == "blocker") -> has_blocker
+  findings |> all(not .blocking or .severity == "blocker") -> all_consistent
+  rounds |> any(.findings |> any(.severity == "blocker")) -> nested_blocker
+
+  outcome accept: when nested_blocker and has_blocker and all_consistent,
+    route accepted(nested_blocker: nested_blocker, all_consistent: all_consistent,
+      empty_truth: [] |> all(true) and not [] |> any(true))
+  outcome reject: otherwise,
+    route rejected(nested_blocker: nested_blocker, all_consistent: all_consistent,
+      empty_truth: [] |> all(true) and not [] |> any(true))

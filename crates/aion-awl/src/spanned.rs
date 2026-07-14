@@ -15,6 +15,7 @@ impl Spanned for Expr {
             | Self::Bool { span, .. }
             | Self::List { span, .. }
             | Self::Ref { span, .. }
+            | Self::Workflow { span }
             | Self::Variant { span, .. }
             | Self::Record { span, .. }
             | Self::Field { span, .. }
@@ -22,7 +23,8 @@ impl Spanned for Expr {
             | Self::Accessor { span, .. }
             | Self::Not { span, .. }
             | Self::Binary { span, .. }
-            | Self::Predicate { span, .. } => *span,
+            | Self::Predicate { span, .. }
+            | Self::CollectionPredicate { span, .. } => *span,
             Self::Duration(duration) => duration.span,
         }
     }

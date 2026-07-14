@@ -8,7 +8,8 @@ use crate::ast::{BinaryOp, Expr, Guard, PredicateKind, RouteTarget, Statement, S
 use crate::semantic::DeclarationKind;
 use crate::spanned::Spanned;
 
-use super::exprs::{View, check_args, type_of};
+use super::args::check_args;
+use super::exprs::{View, type_of};
 use super::types::{Ty, assignable, resolve};
 use super::walk::{Scope, Walker};
 
@@ -306,6 +307,7 @@ pub(super) fn check_clauses(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step, 
                 let view = View {
                     vars: scope,
                     narrow: None,
+                    accessor: None,
                 };
                 let ty = type_of(w, view, expr);
                 if !matches!(resolve(&ty, &w.ctx.types), Ty::Bool | Ty::Unknown) {
@@ -329,6 +331,7 @@ pub(super) fn check_clauses(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step, 
         let view = View {
             vars: scope,
             narrow: narrow.as_ref(),
+            accessor: None,
         };
         check_route(w, view, &clause.route, env, None);
     }
@@ -471,6 +474,7 @@ fn enum_totality_gap(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step) -> Opti
     let view = View {
         vars: scope,
         narrow: None,
+        accessor: None,
     };
     let subject_ty = w.silently(|w| type_of(w, view, subject));
     let Ty::Enum(spec) = resolve(&subject_ty, &w.ctx.types) else {

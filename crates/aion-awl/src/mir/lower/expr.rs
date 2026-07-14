@@ -9,7 +9,10 @@ use crate::ast::{Arg, BinaryOp, Expr, PredicateKind};
 use crate::emitter::{GType, snake};
 
 use super::super::ids::{Span, Var};
-use super::super::ops::{BoolBin, CmpOp, Stmt, Value};
+use super::super::ops::{BoolBin, CmpOp, LiveAfter, Stmt, Value};
+use super::super::runtime::RuntimeFn;
+use super::activity::call_rt;
+use super::collection_predicate::{lower_accessor, lower_collection_predicate};
 use super::ctx::Ctx;
 use super::driver::LowerError;
 
@@ -54,6 +57,7 @@ pub(super) fn lower_expr(
             let _ = span;
             Ok((Value::Lit(lit), GType::Float))
         }
+        Expr::List { items, span } => lower_list_literal(ctx, items, *span, stmts),
         Expr::Variant { name, .. } => {
             let atom = ctx.atom(&snake(name));
             let ty = ctx.variant_enum(name).unwrap_or(GType::Unknown);
@@ -65,12 +69,34 @@ pub(super) fn lower_expr(
             })?;
             Ok((Value::Var(binding.var), binding.ty.clone()))
         }
+        Expr::Workflow { span } => Err(LowerError::new(
+            *span,
+            "`workflow` is a namespace, not a value",
+        )),
         Expr::Field {
             base,
             name,
             name_span,
             ..
         } => {
+            if matches!(base.as_ref(), Expr::Workflow { .. }) && name == "id" {
+                let result = call_rt(ctx, RuntimeFn::WfId, Vec::new(), stmts, *name_span);
+                let mapped = call_rt(
+                    ctx,
+                    RuntimeFn::MapEngineError,
+                    vec![Value::Var(result)],
+                    stmts,
+                    *name_span,
+                );
+                let dst = ctx.fresh_var();
+                stmts.push(Stmt::TryBind {
+                    dst,
+                    result: mapped,
+                    live_after: LiveAfter::default(),
+                    span: span_of(*name_span),
+                });
+                return Ok((Value::Var(dst), GType::Str));
+            }
             let (base_value, base_ty) = lower_expr(ctx, base, scope, stmts)?;
             let (index, field_ty) = ctx.field_index(&base_ty, name, *name_span)?;
             let dst = ctx.fresh_var();
@@ -88,11 +114,38 @@ pub(super) fn lower_expr(
             args,
             span,
         } => lower_record(ctx, name, *name_span, args, scope, stmts, *span),
+        Expr::Accessor { span, name } => lower_accessor(ctx, *span, name, scope, stmts),
+        Expr::CollectionPredicate {
+            collection,
+            quantifier,
+            predicate,
+            span,
+        } => {
+            lower_collection_predicate(ctx, collection, *quantifier, predicate, *span, scope, stmts)
+        }
         Expr::Not { .. } | Expr::Binary { .. } | Expr::Predicate { .. } => {
             lower_logic(ctx, expr, scope, stmts)
         }
         other => Err(LowerError::unsupported("expression", expr_span(other))),
     }
+}
+
+fn lower_list_literal(
+    ctx: &mut Ctx<'_>,
+    items: &[Expr],
+    span: crate::Span,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(Value, GType), LowerError> {
+    if !items.is_empty() {
+        return Err(LowerError::unsupported("non-empty list literal", span));
+    }
+    let dst = ctx.fresh_var();
+    stmts.push(Stmt::ListNew {
+        dst,
+        items: Vec::new(),
+        span: span_of(span),
+    });
+    Ok((Value::Var(dst), GType::List(Box::new(GType::Unknown))))
 }
 
 fn lower_logic(
@@ -131,9 +184,15 @@ fn lower_logic(
                     rhs,
                     span: span_of(*span),
                 }),
-                BinaryOp::Concat => {
+                BinaryOp::Concat if !contains_workflow_id(left) && !contains_workflow_id(right) => {
                     return Err(LowerError::unsupported("string concatenation", *span));
                 }
+                BinaryOp::Concat => stmts.push(Stmt::Concat {
+                    dst,
+                    lhs,
+                    rhs,
+                    span: span_of(*span),
+                }),
                 comparison => stmts.push(Stmt::Cmp {
                     dst,
                     op: cmp_op(*comparison, &lhs_ty),
@@ -167,7 +226,18 @@ fn lower_logic(
         }
         _ => unreachable!("lower_logic called for a non-logical expression"),
     }
-    Ok((Value::Var(dst), GType::Bool))
+    let ty = if matches!(
+        expr,
+        Expr::Binary {
+            op: BinaryOp::Concat,
+            ..
+        }
+    ) {
+        GType::Str
+    } else {
+        GType::Bool
+    };
+    Ok((Value::Var(dst), ty))
 }
 
 fn cmp_op(op: BinaryOp, lhs_ty: &GType) -> CmpOp {
@@ -205,6 +275,22 @@ pub(super) fn lower_arg_for(
         stmts,
         expr_span(expr),
     ))
+}
+
+fn contains_workflow_id(expr: &Expr) -> bool {
+    match expr {
+        Expr::Field { base, name, .. } => {
+            (name == "id" && matches!(base.as_ref(), Expr::Workflow { .. }))
+                || contains_workflow_id(base)
+        }
+        Expr::Binary { left, right, .. } => {
+            contains_workflow_id(left) || contains_workflow_id(right)
+        }
+        Expr::Not { expr, .. } | Expr::Predicate { subject: expr, .. } => {
+            contains_workflow_id(expr)
+        }
+        _ => false,
+    }
 }
 
 /// Wrap a present value in `Some` (`{some, V}`) when the slot is `Option` and
@@ -289,6 +375,7 @@ fn expr_span(expr: &Expr) -> crate::Span {
         | Expr::Float { span, .. }
         | Expr::Bool { span, .. }
         | Expr::Ref { span, .. }
+        | Expr::Workflow { span }
         | Expr::Variant { span, .. }
         | Expr::Record { span, .. }
         | Expr::Field { span, .. }
@@ -297,7 +384,8 @@ fn expr_span(expr: &Expr) -> crate::Span {
         | Expr::Not { span, .. }
         | Expr::Binary { span, .. }
         | Expr::List { span, .. }
-        | Expr::Predicate { span, .. } => *span,
+        | Expr::Predicate { span, .. }
+        | Expr::CollectionPredicate { span, .. } => *span,
         Expr::Duration(duration) => duration.span,
     }
 }
@@ -315,7 +403,7 @@ impl Ctx<'_> {
     }
 
     /// The 1-based tuple element index and type of a record field.
-    fn field_index(
+    pub(super) fn field_index(
         &self,
         base_ty: &GType,
         field: &str,

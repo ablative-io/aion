@@ -415,6 +415,8 @@ fn every_rev2_keyword_lexes_as_a_keyword() -> TestResult {
         ("success", Keyword::Success),
         ("filter", Keyword::Filter),
         ("map", Keyword::Map),
+        ("any", Keyword::Any),
+        ("all", Keyword::All),
         ("sort", Keyword::Sort),
         ("count", Keyword::Count),
         ("is", Keyword::Is),

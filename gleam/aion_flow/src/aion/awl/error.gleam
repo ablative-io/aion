@@ -1,5 +1,5 @@
 //// The fixed AWL workflow-error taxonomy: the `AwlError` type every generated
-//// AWL module returns, its wire codec, and the five engine-error mappers.
+//// AWL module returns, its wire codec, and the six runtime-error mappers.
 ////
 //// Hoisted out of the emitted surface by AWL-BC-0 (hoist-only): the codec and
 //// the mappers are workflow-independent fixed glue, identical across every
@@ -167,5 +167,17 @@ pub fn map_timer_error(
   case result {
     Ok(value) -> Ok(value)
     Error(_) -> Error(AwlTimerFailed("timer failed"))
+  }
+}
+
+/// Collapse a workflow-context lookup failure to the language's generic
+/// workflow failure. The context lookup is normally infallible for registered
+/// workflow code; retaining the `Result` keeps misuse outside that context loud.
+pub fn map_engine_error(
+  result: Result(a, error.EngineError),
+) -> Result(a, AwlError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(AwlFailed)
   }
 }

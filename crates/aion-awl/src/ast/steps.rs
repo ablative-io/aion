@@ -151,6 +151,10 @@ pub enum CombinatorKind {
     Sort,
     /// `count` — number of items.
     Count,
+    /// `any(pred)` — whether at least one item matches.
+    Any,
+    /// `all(pred)` — whether every item matches.
+    All,
 }
 
 /// One combinator invocation in a pipe chain.

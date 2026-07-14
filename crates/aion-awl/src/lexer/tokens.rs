@@ -121,6 +121,10 @@ pub enum Keyword {
     Sort,
     /// `count`.
     Count,
+    /// `any`.
+    Any,
+    /// `all`.
+    All,
     /// `is`.
     Is,
     /// `empty`.
@@ -182,6 +186,8 @@ impl Keyword {
             Self::Map => "map",
             Self::Sort => "sort",
             Self::Count => "count",
+            Self::Any => "any",
+            Self::All => "all",
             Self::Is => "is",
             Self::Empty => "empty",
             Self::Present => "present",
@@ -234,6 +240,8 @@ impl Keyword {
             "map" => Some(Self::Map),
             "sort" => Some(Self::Sort),
             "count" => Some(Self::Count),
+            "any" => Some(Self::Any),
+            "all" => Some(Self::All),
             "is" => Some(Self::Is),
             "empty" => Some(Self::Empty),
             "present" => Some(Self::Present),

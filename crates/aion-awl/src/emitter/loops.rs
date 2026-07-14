@@ -145,13 +145,19 @@ fn first_unbound_ref(expr: &Expr, scope: &Scope) -> Option<(String, Span)> {
             first_unbound_ref(left, scope).or_else(|| first_unbound_ref(right, scope))
         }
         Expr::Predicate { subject, .. } => first_unbound_ref(subject, scope),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            ..
+        } => first_unbound_ref(collection, scope).or_else(|| first_unbound_ref(predicate, scope)),
         Expr::String { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }
         | Expr::Duration(_)
         | Expr::Variant { .. }
-        | Expr::Accessor { .. } => None,
+        | Expr::Accessor { .. }
+        | Expr::Workflow { .. } => None,
     }
 }
 

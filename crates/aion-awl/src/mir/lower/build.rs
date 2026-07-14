@@ -77,6 +77,9 @@ pub(super) struct FnPlan {
     /// The fixed child witness function passed to string-name child spawns,
     /// present exactly when a reachable child collection fork needs it.
     pub(super) child_witness: Option<FnRef>,
+    /// First dynamically allocated collection-predicate closure, after all
+    /// fixed helpers so existing modules retain byte-identical function refs.
+    pub(super) predicate_start: FnRef,
 }
 
 /// The assembled module skeleton, ready for region-body filling.
@@ -220,12 +223,8 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
             }
         }
     }
-    // T-DEAD is appended before T-WIT in `driver`; account for its slot when
-    // both kinds of fixed helper are present without perturbing prior refs.
-    let child_witness = child_witness_needed.then(|| {
-        let dead_offset = u32::from(!activities.is_empty());
-        FnRef(next + dead_offset)
-    });
+    let (child_witness, predicate_start) =
+        fixed_helper_refs(next, !activities.is_empty(), child_witness_needed);
 
     let plan = FnPlan {
         run: FnRef(0),
@@ -240,6 +239,7 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         loops,
         forks,
         child_witness,
+        predicate_start,
     };
 
     // Build functions in slot order.
@@ -271,6 +271,19 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         functions,
         exports,
     })
+}
+
+/// T-DEAD precedes T-WIT; dynamically generated predicates follow both. This
+/// preserves every existing function reference when a module has no predicate.
+fn fixed_helper_refs(
+    next: u32,
+    has_activity: bool,
+    child_witness_needed: bool,
+) -> (Option<FnRef>, FnRef) {
+    let dead_offset = u32::from(has_activity);
+    let child_witness = child_witness_needed.then_some(FnRef(next + dead_offset));
+    let fixed_count = dead_offset + u32::from(child_witness_needed);
+    (child_witness, FnRef(next + fixed_count))
 }
 
 fn zero_span() -> Span {

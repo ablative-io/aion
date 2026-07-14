@@ -1,0 +1,12 @@
+//! Resolve the durable workflow id inside existential and universal predicates.
+workflow fallible_collection_predicates
+  input findings: [Finding]
+  outcome decided: type Verdict, route success
+
+type Finding { owner_id: String }
+type Verdict { any_owned: Bool, all_owned: Bool }
+
+step decide
+  findings |> any(.owner_id == workflow.id) -> any_owned
+  findings |> all(.owner_id == workflow.id) -> all_owned
+  route decided(any_owned: any_owned, all_owned: all_owned)

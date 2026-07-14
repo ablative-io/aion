@@ -1,0 +1,8 @@
+//! Reject the workflow namespace when used without a field.
+workflow bare_workflow
+  outcome done: type Result, route success
+
+type Result { id: String }
+
+step decide
+  outcome bad: otherwise, route done(id: workflow)

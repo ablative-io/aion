@@ -34,6 +34,7 @@ pub(super) fn walk_fork(
             let view = View {
                 vars: scope,
                 narrow: None,
+                accessor: None,
             };
             let collection_ty = type_of(w, view, collection);
             let element = match resolve(&collection_ty, &w.ctx.types) {
@@ -146,10 +147,7 @@ pub(super) fn walk_loop(
     owner: &Step,
     env: &Env<'_>,
 ) -> Option<Ty> {
-    let view = View {
-        vars: scope,
-        narrow: None,
-    };
+    let view = View::plain(scope);
     let counter_collides = looped
         .counter
         .as_ref()
@@ -177,10 +175,7 @@ pub(super) fn walk_loop(
     });
     let mut body_scope = scope.clone();
     walk_statements(w, &mut body_scope, &looped.body, owner, env);
-    let body_view = View {
-        vars: &body_scope,
-        narrow: None,
-    };
+    let body_view = View::plain(&body_scope);
     match &looped.until {
         Some(tail) => {
             let ty = type_of(w, body_view, &tail.expr);
@@ -210,10 +205,7 @@ pub(super) fn walk_loop(
                     ),
                 );
             } else {
-                let pre_view = View {
-                    vars: &pre_loop,
-                    narrow: None,
-                };
+                let pre_view = View::plain(&pre_loop);
                 let ty = type_of(w, pre_view, &tail.expr);
                 if !matches!(resolve(&ty, &w.ctx.types), Ty::Int | Ty::Unknown) {
                     w.err(
@@ -269,7 +261,8 @@ fn loop_local_ref(expr: &Expr, looped: &LoopStmt) -> Option<(String, Span)> {
         | Expr::Bool { .. }
         | Expr::Duration(_)
         | Expr::Variant { .. }
-        | Expr::Accessor { .. } => None,
+        | Expr::Accessor { .. }
+        | Expr::Workflow { .. } => None,
         Expr::List { items, .. } => items.iter().find_map(|item| loop_local_ref(item, looped)),
         Expr::Record { args, .. } => args
             .iter()
@@ -280,5 +273,10 @@ fn loop_local_ref(expr: &Expr, looped: &LoopStmt) -> Option<(String, Span)> {
             loop_local_ref(left, looped).or_else(|| loop_local_ref(right, looped))
         }
         Expr::Predicate { subject, .. } => loop_local_ref(subject, looped),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            ..
+        } => loop_local_ref(collection, looped).or_else(|| loop_local_ref(predicate, looped)),
     }
 }

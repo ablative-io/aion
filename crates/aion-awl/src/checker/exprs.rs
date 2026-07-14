@@ -17,9 +17,20 @@ pub(super) struct View<'s> {
     pub(super) vars: &'s Scope,
     /// The one narrowed binding, if the surrounding arm narrows.
     pub(super) narrow: Option<&'s (String, Ty)>,
+    /// Element type bound to `.field` inside an `any`/`all` predicate.
+    pub(super) accessor: Option<&'s Ty>,
 }
 
 impl View<'_> {
+    /// A top-level expression view with no narrowing or predicate item.
+    pub(super) const fn plain(vars: &Scope) -> View<'_> {
+        View {
+            vars,
+            narrow: None,
+            accessor: None,
+        }
+    }
+
     fn get(&self, name: &str) -> Option<Ty> {
         if let Some((narrowed, ty)) = self.narrow
             && narrowed == name
@@ -48,6 +59,13 @@ fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
         Expr::Duration(_) => Ty::Duration,
         Expr::List { items, .. } => type_list(w, view, items),
         Expr::Ref { span, name } => type_ref(w, view, *span, name),
+        Expr::Workflow { span } => {
+            w.err(
+                *span,
+                "`workflow` is a builtin namespace, not a value — use `workflow.id`",
+            );
+            Ty::Unknown
+        }
         Expr::Variant { span, name } => {
             w.err(
                 *span,
@@ -69,10 +87,7 @@ fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
             name,
             name_span,
             ..
-        } => {
-            let base_ty = type_of(w, view, base);
-            field_access(w, &base_ty, Some(base), name, *name_span)
-        }
+        } => type_field(w, view, base, name, *name_span),
         Expr::Index { span, base, .. } => {
             let base_ty = type_of(w, view, base);
             match resolve(&base_ty, &w.ctx.types) {
@@ -88,11 +103,15 @@ fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
             }
         }
         Expr::Accessor { span, name } => {
-            w.err(
-                *span,
-                format!("a bare `.{name}` accessor is only a combinator argument"),
-            );
-            Ty::Unknown
+            if let Some(element) = view.accessor {
+                field_access(w, element, None, name, *span)
+            } else {
+                w.err(
+                    *span,
+                    format!("a bare `.{name}` accessor is only a combinator argument"),
+                );
+                Ty::Unknown
+            }
         }
         Expr::Not { span, expr: inner } => {
             let ty = type_of(w, view, inner);
@@ -112,7 +131,40 @@ fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
             subject,
             kind,
         } => type_predicate(w, view, *span, subject, *kind),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            quantifier,
+            ..
+        } => super::collections::type_collection_predicate(
+            w,
+            view,
+            collection,
+            predicate,
+            *quantifier,
+        ),
     }
+}
+
+fn type_field(
+    w: &mut Walker<'_, '_>,
+    view: View<'_>,
+    base: &Expr,
+    name: &str,
+    name_span: Span,
+) -> Ty {
+    if matches!(base, Expr::Workflow { .. }) {
+        if name == "id" {
+            return Ty::Str;
+        }
+        w.err(
+            name_span,
+            format!("unknown workflow builtin `workflow.{name}` — only `workflow.id` is available"),
+        );
+        return Ty::Unknown;
+    }
+    let base_ty = type_of(w, view, base);
+    field_access(w, &base_ty, Some(base), name, name_span)
 }
 
 fn is_bool(ty: &Ty, w: &Walker<'_, '_>) -> bool {
@@ -189,7 +241,7 @@ fn type_record(
                 .iter()
                 .map(|field| (field.name.clone(), field.ty.clone()))
                 .collect();
-            check_args(
+            super::args::check_args(
                 w,
                 view,
                 args,
@@ -304,6 +356,7 @@ fn type_binary(
             let right_view = View {
                 vars: view.vars,
                 narrow: narrow.as_ref().or(view.narrow),
+                accessor: view.accessor,
             };
             let right_ty = type_of(w, right_view, right);
             if !is_bool(&right_ty, w) {
@@ -447,74 +500,4 @@ fn type_predicate(
         }
     }
     Ty::Bool
-}
-
-/// Check a value expression against an expected type, resolving bare enum
-/// variants against an expected enum.
-pub(super) fn check_value(
-    w: &mut Walker<'_, '_>,
-    view: View<'_>,
-    expr: &Expr,
-    expected: &Ty,
-    describe: impl FnOnce(&Ty) -> String,
-) {
-    if let Expr::Variant { span, name } = expr {
-        match resolve(expected, &w.ctx.types) {
-            Ty::Enum(spec) => {
-                if !spec.variants.contains(name) {
-                    let enum_name = spec.name.clone().unwrap_or_else(|| "the enum".to_owned());
-                    w.err(*span, format!("enum `{enum_name}` has no variant `{name}`"));
-                }
-                return;
-            }
-            Ty::Unknown => return,
-            _ => {}
-        }
-    }
-    let actual = type_of(w, view, expr);
-    if !assignable(&actual, expected, &w.ctx.types) {
-        w.err(expr.span(), describe(&actual));
-    }
-}
-
-/// Check named arguments against a parameter/field list: exact names,
-/// no duplicates, no omissions (optional-typed entries may be omitted),
-/// every value assignable.
-pub(super) fn check_args(
-    w: &mut Walker<'_, '_>,
-    view: View<'_>,
-    args: &[crate::ast::Arg],
-    params: &[(String, Ty)],
-    owner: &str,
-    term: &str,
-    anchor: Span,
-) {
-    let mut seen: Vec<&str> = Vec::new();
-    for arg in args {
-        if seen.contains(&arg.name.as_str()) {
-            w.err(arg.name_span, format!("duplicate {term} `{}`", arg.name));
-            continue;
-        }
-        seen.push(arg.name.as_str());
-        let Some((name, expected)) = params.iter().find(|(name, _)| *name == arg.name) else {
-            w.err(
-                arg.name_span,
-                format!("{owner} has no {term} `{}`", arg.name),
-            );
-            continue;
-        };
-        let (name, owner) = (name.clone(), owner.to_owned());
-        let expected = expected.clone();
-        check_value(w, view, &arg.value, &expected, |actual| {
-            format!("{term} `{name}` of {owner} expects {expected}, found {actual}")
-        });
-    }
-    for (name, expected) in params {
-        if matches!(expected, Ty::Optional(_)) {
-            continue;
-        }
-        if !args.iter().any(|arg| arg.name == *name) {
-            w.err(anchor, format!("missing {term} `{name}` in {owner}"));
-        }
-    }
 }

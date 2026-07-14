@@ -207,6 +207,8 @@ fn stage_text(stage: &PipeStage) -> String {
                 CombinatorKind::Map => "map",
                 CombinatorKind::Sort => "sort",
                 CombinatorKind::Count => "count",
+                CombinatorKind::Any => "any",
+                CombinatorKind::All => "all",
             };
             match &combinator.arg {
                 Some(arg) => format!("{name}({})", expr_text(arg)),

@@ -117,6 +117,58 @@ pub(crate) fn gleam_build(modules: &[(&str, &str)]) -> Result<Vec<PathBuf>, Box<
     Ok(ebins)
 }
 
+/// Build a test-only `aion_flow_ffi` whose workflow context lookup fails. Load
+/// this ebin before the SDK test double to exercise the real `EngineError` path.
+pub(crate) fn workflow_id_error_ebin() -> Result<PathBuf, Box<dyn Error>> {
+    workflow_id_ebin(
+        "error",
+        "workflow_id() -> {error, <<\"missing workflow context\">>}.\n",
+    )
+}
+
+/// First lookup succeeds; a second lookup in the same process fails. A
+/// correctly short-circuited predicate never reaches that poisoned lookup.
+pub(crate) fn workflow_id_poison_ebin() -> Result<PathBuf, Box<dyn Error>> {
+    workflow_id_ebin(
+        "poison",
+        "workflow_id() -> case get(awl_workflow_id_seen) of undefined -> put(awl_workflow_id_seen, true), {ok, <<\"test-workflow-id\">>}; _ -> {error, <<\"poisoned workflow context\">>} end.\n",
+    )
+}
+
+fn workflow_id_ebin(label: &str, implementation: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "aion_awl_workflow_id_{label}_{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir)?;
+    let source = dir.join("aion_flow_ffi.erl");
+    fs::write(
+        &source,
+        format!("-module(aion_flow_ffi).\n-export([workflow_id/0]).\n{implementation}"),
+    )?;
+    let output = Command::new("erlc")
+        .arg("-o")
+        .arg(&dir)
+        .arg(&source)
+        .output()
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("erlc is required for the workflow-id error proof: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "erlc failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(dir)
+}
+
 // ---- embedded VM ----------------------------------------------------------
 
 pub(crate) struct Vm {

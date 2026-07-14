@@ -282,6 +282,23 @@ fn every_studio_operation_returns_byte_canonical_source() -> Result<(), String> 
 }
 
 #[test]
+fn workflow_id_does_not_count_as_an_unrelated_schema_field_use() -> Result<(), String> {
+    let source = "//! Builtin fields are not schema fields.\nworkflow builtin_field\n  outcome done: type Identity, route success\n\ntype Identity { value: String }\ntype Unrelated { id: String, keep: String }\n\nstep finish\n  route done(value: workflow.id)\n";
+    let response = apply(
+        source,
+        EditOperation::RemoveTypeField {
+            type_name: "Unrelated".to_owned(),
+            name: "id".to_owned(),
+        },
+    );
+    let edited = success_source(response)?;
+    assert!(edited.contains("type Unrelated { keep: String }"));
+    assert!(edited.contains("route done(value: workflow.id)"));
+    assert_eq!(aion_awl::print(&parse_source(&edited)?), edited);
+    Ok(())
+}
+
+#[test]
 fn studio_operations_return_specific_typed_refusals() -> Result<(), String> {
     assert_refusal(
         apply(

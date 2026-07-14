@@ -28,8 +28,13 @@ use aion_awl::mir::{
     Block, FlowFn, FnOrigin, FnRef, MirFn, MirModule, Span, Stmt, Tail, TyDesc, Value, select,
 };
 
-use drivers::{Body, lowered, note_drivers, triage_drivers};
-use harness::{build_vm, gleam_build, reference_module};
+use drivers::{
+    Body, collection_predicate_drivers, lowered, note_drivers, production_execute_driver,
+    triage_drivers,
+};
+use harness::{
+    build_vm, gleam_build, reference_module, workflow_id_error_ebin, workflow_id_poison_ebin,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -124,6 +129,169 @@ pub fn awl_rt_union_unknown_fails() -> Bool {
   }
 }
 "#;
+
+/// A reference-side driver over the exact record shapes and nested predicates
+/// used by the collection-predicate fixture.
+const REF_COLLECTION_PREDICATE_DRIVER: &str = r#"
+fn findings() -> List(Finding) {
+  let blocking = Finding(severity: "blocker", blocking: True)
+  let non_blocking = Finding(severity: "warning", blocking: False)
+  [blocking, non_blocking]
+}
+
+pub fn awl_rt_any() -> Bool {
+  list.any(findings(), fn(finding) {
+    finding.blocking && finding.severity == "blocker"
+  })
+}
+
+pub fn awl_rt_all() -> Bool {
+  list.all(findings(), fn(finding) {
+    !finding.blocking || finding.severity == "blocker"
+  })
+}
+
+pub fn awl_rt_nested_any() -> Bool {
+  let blocking = Finding(severity: "blocker", blocking: True)
+  let non_blocking = Finding(severity: "warning", blocking: False)
+  let rounds = [Round(findings: [non_blocking, blocking])]
+  list.any(rounds, fn(round) {
+    list.any(round.findings, fn(finding) {
+      finding.severity == "blocker"
+    })
+  })
+}
+
+pub fn awl_rt_empty_all() -> Bool {
+  let empty: List(Finding) = []
+  list.all(empty, fn(finding) { finding.blocking })
+}
+
+pub fn awl_rt_empty_any() -> Bool {
+  let empty: List(Finding) = []
+  list.any(empty, fn(finding) { finding.blocking })
+}
+"#;
+
+const REF_EXECUTE_BOTH: &str = r#"
+pub fn awl_rt_execute() {
+  execute(FallibleCollectionPredicatesInput(findings: [Finding(owner_id: "test-workflow-id")]))
+}
+"#;
+
+const REF_EXECUTE_ANY: &str = r#"
+pub fn awl_rt_execute() {
+  execute(FallibleAnyShortCircuitInput(findings: [Finding(owner_id: "test-workflow-id"), Finding(owner_id: "poison")]))
+}
+"#;
+
+const REF_EXECUTE_ALL: &str = r#"
+pub fn awl_rt_execute() {
+  execute(FallibleAllShortCircuitInput(findings: [Finding(owner_id: "other"), Finding(owner_id: "poison")]))
+}
+"#;
+
+#[test]
+fn nested_collection_predicates_execute_with_reference_parity() -> TestResult {
+    let reference = reference_module(
+        "step-bodies/valid/collection_predicates.awl",
+        REF_COLLECTION_PREDICATE_DRIVER,
+    )?;
+    let ebins = gleam_build(&[("ref_collection_predicates", &reference)])?;
+
+    let mut direct = lowered("step-bodies/valid/collection_predicates.awl")?;
+    collection_predicate_drivers(&mut direct)?;
+    let direct_bytes = select(&direct)?;
+    let vm = build_vm(&ebins, &[direct_bytes])?;
+
+    let cases = [
+        ("any", "true"),
+        ("all", "true"),
+        ("nested_any", "true"),
+        ("empty_all", "true"),
+        ("empty_any", "false"),
+    ];
+    for (name, expected) in cases {
+        let direct_result = vm.call0("collection_predicates", &format!("awl$rt_{name}"))?;
+        let reference_result = vm.call0("ref_collection_predicates", &format!("awl_rt_{name}"))?;
+        assert_eq!(direct_result, reference_result, "{name} parity");
+        assert_eq!(direct_result, expected, "{name} semantics");
+    }
+    Ok(())
+}
+
+#[test]
+fn fallible_predicates_execute_through_production_hosts_with_parity() -> TestResult {
+    let success_reference = reference_module(
+        "step-bodies/valid/fallible_collection_predicates.awl",
+        REF_EXECUTE_BOTH,
+    )?;
+    let mut direct = lowered("step-bodies/valid/fallible_collection_predicates.awl")?;
+    production_execute_driver(&mut direct, &["test-workflow-id"]);
+    let direct_bytes = select(&direct)?;
+    let success_ebins = gleam_build(&[("ref_fallible_collection_predicates", &success_reference)])?;
+    let vm = build_vm(&success_ebins, std::slice::from_ref(&direct_bytes))?;
+    let direct_success = vm.call0("fallible_collection_predicates", "awl$rt_execute")?;
+    let reference_success = vm.call0("ref_fallible_collection_predicates", "awl_rt_execute")?;
+    assert_eq!(
+        direct_success, reference_success,
+        "successful execute parity"
+    );
+    assert!(direct_success.starts_with("{ok,"));
+
+    let mut error_ebins = success_ebins;
+    error_ebins.push(workflow_id_error_ebin()?);
+    let vm = build_vm(&error_ebins, &[direct_bytes])?;
+    let direct_error = vm.call0("fallible_collection_predicates", "awl$rt_execute")?;
+    let reference_error = vm.call0("ref_fallible_collection_predicates", "awl_rt_execute")?;
+    assert_eq!(direct_error, reference_error, "execute error parity");
+    assert_eq!(direct_error, "{error, awl_failed}");
+
+    let any_reference = reference_module(
+        "step-bodies/valid/fallible_any_short_circuit.awl",
+        REF_EXECUTE_ANY,
+    )?;
+    let all_reference = reference_module(
+        "step-bodies/valid/fallible_all_short_circuit.awl",
+        REF_EXECUTE_ALL,
+    )?;
+    let ebins = gleam_build(&[
+        ("ref_fallible_any_short_circuit", &any_reference),
+        ("ref_fallible_all_short_circuit", &all_reference),
+    ])?;
+    let mut any_direct = lowered("step-bodies/valid/fallible_any_short_circuit.awl")?;
+    production_execute_driver(&mut any_direct, &["test-workflow-id", "poison"]);
+    let mut all_direct = lowered("step-bodies/valid/fallible_all_short_circuit.awl")?;
+    production_execute_driver(&mut all_direct, &["other", "poison"]);
+    let direct_modules = [select(&any_direct)?, select(&all_direct)?];
+
+    let mut forced_error_ebins = ebins.clone();
+    forced_error_ebins.push(workflow_id_error_ebin()?);
+    let vm = build_vm(&forced_error_ebins, &direct_modules)?;
+    for module in ["fallible_any_short_circuit", "fallible_all_short_circuit"] {
+        let direct_result = vm.call0(module, "awl$rt_execute")?;
+        let reference_result = vm.call0(&format!("ref_{module}"), "awl_rt_execute")?;
+        assert_eq!(direct_result, reference_result, "{module} error parity");
+        assert_eq!(direct_result, "{error, awl_failed}");
+    }
+
+    let mut poisoned_ebins = ebins;
+    poisoned_ebins.push(workflow_id_poison_ebin()?);
+    let vm = build_vm(&poisoned_ebins, &direct_modules)?;
+    for (module, expected) in [
+        ("fallible_any_short_circuit", "true"),
+        ("fallible_all_short_circuit", "false"),
+    ] {
+        let direct_result = vm.call0(module, "awl$rt_execute")?;
+        let reference_result = vm.call0(&format!("ref_{module}"), "awl_rt_execute")?;
+        assert_eq!(direct_result, reference_result, "{module} parity");
+        assert!(
+            direct_result.contains(expected),
+            "{module}: {direct_result}"
+        );
+    }
+    Ok(())
+}
 
 /// The full differential runtime proof: direct-selected codec functions and
 /// reference-emitted (gleam-built) codec functions execute on ONE beamr VM;

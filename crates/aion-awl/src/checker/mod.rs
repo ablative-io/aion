@@ -3,8 +3,10 @@
 //! exhaustiveness, guard-dependent optionality, and schema projection.
 
 mod anchor;
+mod args;
 mod avail;
 mod blocks;
+mod collections;
 mod context;
 mod decls;
 mod entry;

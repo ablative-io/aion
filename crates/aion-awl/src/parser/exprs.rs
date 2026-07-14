@@ -1,8 +1,11 @@
 //! Expression parsing: precedence-climbing over the fixed rev-2 vocabulary
 //! (`or`/`and`/`not`, comparisons, `is` predicates, string `+`, field
-//! access, literal-only indexing, literals, record construction).
+//! access, literal-only indexing, collection predicates, literals, record
+//! construction, and the `workflow` builtin namespace).
 
-use crate::ast::{Arg, BinaryOp, Binding, DurationLiteral, Expr, PredicateKind, join_span};
+use crate::ast::{
+    Arg, BinaryOp, Binding, DurationLiteral, Expr, PredicateKind, Quantifier, join_span,
+};
 use crate::{Keyword, TokenKind};
 
 use super::ParseError;
@@ -134,6 +137,34 @@ fn parse_postfix(stream: &mut Stream) -> Result<Expr, ParseError> {
                 }
                 _ => {}
             }
+            if matches!(token.kind, TokenKind::Pipe)
+                && let Some(next) = stream.peek_second()
+                && let TokenKind::Keyword(keyword @ (Keyword::Any | Keyword::All)) = next.kind
+            {
+                let quantifier = if matches!(keyword, Keyword::Any) {
+                    Quantifier::Any
+                } else {
+                    Quantifier::All
+                };
+                stream.next();
+                stream.next();
+                stream.expect(
+                    &TokenKind::LeftParen,
+                    "expected `(` after the collection predicate",
+                )?;
+                let predicate = parse_expr(stream)?;
+                let close = stream.expect(
+                    &TokenKind::RightParen,
+                    "expected `)` to close the collection predicate",
+                )?;
+                expr = Expr::CollectionPredicate {
+                    span: join_span(expr_span(&expr), close.span),
+                    collection: Box::new(expr),
+                    quantifier,
+                    predicate: Box::new(predicate),
+                };
+                continue;
+            }
         }
         return Ok(expr);
     }
@@ -220,6 +251,10 @@ fn parse_primary(stream: &mut Stream) -> Result<Expr, ParseError> {
             let name = name.clone();
             stream.next();
             Ok(Expr::Ref { span, name })
+        }
+        TokenKind::Keyword(Keyword::Workflow) => {
+            stream.next();
+            Ok(Expr::Workflow { span })
         }
         TokenKind::TypeIdentifier(name) => {
             let name = name.clone();
@@ -418,6 +453,7 @@ pub(super) fn expr_span(expr: &Expr) -> crate::Span {
         | Expr::Bool { span, .. }
         | Expr::List { span, .. }
         | Expr::Ref { span, .. }
+        | Expr::Workflow { span }
         | Expr::Variant { span, .. }
         | Expr::Record { span, .. }
         | Expr::Field { span, .. }
@@ -425,7 +461,8 @@ pub(super) fn expr_span(expr: &Expr) -> crate::Span {
         | Expr::Accessor { span, .. }
         | Expr::Not { span, .. }
         | Expr::Binary { span, .. }
-        | Expr::Predicate { span, .. } => *span,
+        | Expr::Predicate { span, .. }
+        | Expr::CollectionPredicate { span, .. } => *span,
         Expr::Duration(duration) => duration.span,
     }
 }

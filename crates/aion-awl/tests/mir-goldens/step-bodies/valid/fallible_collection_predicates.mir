@@ -1,0 +1,184 @@
+module fallible_collection_predicates source=fallible_collection_predicates.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families == 
+== atoms ==
+  [0] finding
+  [1] verdict
+  [2] fallible_collection_predicates_input
+  [3] decided_outcome
+  [4] false
+  [5] ok
+  [6] true
+== literals ==
+  [0] "owner_id"
+  [1] "any_owned"
+  [2] "all_owned"
+  [3] "findings"
+  [4] "decided"
+  [5] "outcome"
+  [6] "FallibleCollectionPredicatesOutcome"
+  [7] "decided"
+  [8] "payload"
+== types ==
+  record Finding tag=finding
+    owner_id: string
+  record Verdict tag=verdict
+    any_owned: bool
+    all_owned: bool
+  record FallibleCollectionPredicatesInput tag=fallible_collection_predicates_input
+    findings: list(ref(Finding))
+  union FallibleCollectionPredicatesOutcome
+    decided -> decided_outcome(ref(Verdict))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fallible_collection_predicates_input_codec output=fallible_collection_predicates_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fallible_collection_predicates.FallibleCollectionPredicatesInput, fallible_collection_predicates.FallibleCollectionPredicatesOutcome, AwlError)
+  T-DEF name="fallible_collection_predicates" input=fallible_collection_predicates_input_codec output=fallible_collection_predicates_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fallible_collection_predicates.FallibleCollectionPredicatesInput) -> Result(fallible_collection_predicates.FallibleCollectionPredicatesOutcome, AwlError)
+  T-EXEC fields=[findings:List(fallible_collection_predicates.Finding)] entry=step_decide args=[0]
+== fn finding_codec/0 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: () -> Codec(fallible_collection_predicates.Finding)
+  v0 = make_closure finding_to_json captures=[]
+  v1 = call_local finding_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn finding_to_json/1 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: (fallible_collection_predicates.Finding) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"owner_id": v1|>awlc.string_to_json}
+  return v2
+== fn finding_decoder/0 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: () -> Decoder(fallible_collection_predicates.Finding)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure finding_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn finding_decoder$0/1 origin=lifted(finding_decoder, #0) ==
+  sig: (String) -> Decoder(fallible_collection_predicates.Finding)
+  v1 = record(finding, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Codec(fallible_collection_predicates.Verdict)
+  v0 = make_closure verdict_to_json captures=[]
+  v1 = call_local verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verdict_to_json/1 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: (fallible_collection_predicates.Verdict) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"any_owned": v1|>awlc.bool_to_json, "all_owned": v2|>awlc.bool_to_json}
+  return v3
+== fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Decoder(fallible_collection_predicates.Verdict)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (Bool) -> Decoder(fallible_collection_predicates.Verdict)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure verdict_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v1, v2)
+== fn verdict_decoder$1/2 origin=lifted(verdict_decoder, #1) ==
+  sig: (Bool, Bool) -> Decoder(fallible_collection_predicates.Verdict)
+  v2 = record(verdict, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn fallible_collection_predicates_input_codec/0 origin=codec_template(RecordTrio, FallibleCollectionPredicatesInput, record#2) ==
+  sig: () -> Codec(fallible_collection_predicates.FallibleCollectionPredicatesInput)
+  v0 = make_closure fallible_collection_predicates_input_to_json captures=[]
+  v1 = call_local fallible_collection_predicates_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fallible_collection_predicates_input_to_json/1 origin=codec_template(RecordTrio, FallibleCollectionPredicatesInput, record#2) ==
+  sig: (fallible_collection_predicates.FallibleCollectionPredicatesInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"findings": v1|>list_finding_to_json}
+  return v2
+== fn fallible_collection_predicates_input_decoder/0 origin=codec_template(RecordTrio, FallibleCollectionPredicatesInput, record#2) ==
+  sig: () -> Decoder(fallible_collection_predicates.FallibleCollectionPredicatesInput)
+  v0 = call_local list_finding_decoder()
+  v1 = make_closure fallible_collection_predicates_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn fallible_collection_predicates_input_decoder$0/1 origin=lifted(fallible_collection_predicates_input_decoder, #0) ==
+  sig: (List(fallible_collection_predicates.Finding)) -> Decoder(fallible_collection_predicates.FallibleCollectionPredicatesInput)
+  v1 = record(fallible_collection_predicates_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fallible_collection_predicates_outcome_codec/0 origin=codec_template(UnionTrio, FallibleCollectionPredicatesOutcome, union#3) ==
+  sig: () -> Codec(fallible_collection_predicates.FallibleCollectionPredicatesOutcome)
+  v0 = make_closure fallible_collection_predicates_outcome_to_json captures=[]
+  v1 = call_local fallible_collection_predicates_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fallible_collection_predicates_outcome_to_json/1 origin=codec_template(UnionTrio, FallibleCollectionPredicatesOutcome, union#3) ==
+  sig: (fallible_collection_predicates.FallibleCollectionPredicatesOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>verdict_to_json}
+  return v2
+== fn fallible_collection_predicates_outcome_decoder/0 origin=codec_template(UnionTrio, FallibleCollectionPredicatesOutcome, union#3) ==
+  sig: () -> Decoder(fallible_collection_predicates.FallibleCollectionPredicatesOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fallible_collection_predicates_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn fallible_collection_predicates_outcome_decoder$outcome/1 origin=lifted(fallible_collection_predicates_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fallible_collection_predicates.FallibleCollectionPredicatesOutcome)
+  if cmp Eq v0 lit#7:
+    v3 = call_local verdict_decoder()
+    v4 = make_closure fallible_collection_predicates_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+  else:
+    v1 = record(verdict, ['false', 'false'])
+    v2 = record(decided_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#6)
+== fn fallible_collection_predicates_outcome_decoder$arm0/1 origin=lifted(fallible_collection_predicates_outcome_decoder, #1) ==
+  sig: (fallible_collection_predicates.Verdict) -> Decoder(fallible_collection_predicates.FallibleCollectionPredicatesOutcome)
+  v1 = record(decided_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_finding_codec/0 origin=codec_template(CompositeTrio, List(Finding), composite(list(ref(Finding)))) ==
+  sig: () -> Codec(List(fallible_collection_predicates.Finding))
+  v0 = make_closure list_finding_to_json captures=[]
+  v1 = call_local list_finding_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_finding_to_json/1 origin=codec_template(CompositeTrio, List(Finding), composite(list(ref(Finding)))) ==
+  sig: (List(fallible_collection_predicates.Finding)) -> Json
+  v1 = make_closure finding_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_finding_decoder/0 origin=codec_template(CompositeTrio, List(Finding), composite(list(ref(Finding)))) ==
+  sig: () -> Decoder(List(fallible_collection_predicates.Finding))
+  v0 = call_local finding_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn step_decide/1 origin=region(decide) ==
+  sig: (List(fallible_collection_predicates.Finding)) -> Result(fallible_collection_predicates.FallibleCollectionPredicatesOutcome, AwlError)
+  v1 = make_closure awl_predicate_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, 'false', v1) live_after=[v0]
+  v3 = try_bind v2 live_after=[v0]
+  v4 = make_closure awl_predicate_1 captures=[]
+  v5 = call_rt gleam@list:try_fold/3(v0, 'true', v4) live_after=[v3]
+  v6 = try_bind v5 live_after=[v3]
+  v7 = record(verdict, [v3, v6])
+  v8 = record(decided_outcome, [v7])
+  v9 = record(ok, [v8])
+  return v9
+== fn awl_predicate_0/2 origin=lifted(execute, #0) ==
+  sig: (Bool, fallible_collection_predicates.Finding) -> Result(Bool, AwlError)
+  if is_true v0:
+    v8 = record(ok, [v0])
+    return v8
+  else:
+    v3 = field(v1, 1)
+    v4 = call_rt aion@workflow:id/0() live_after=[v3]
+    v5 = call_rt aion@awl@error:map_engine_error/1(v4) live_after=[v3]
+    v6 = try_bind v5 live_after=[v3]
+    v2 = cmp Eq v3 v6
+    v7 = record(ok, [v2])
+    return v7
+== fn awl_predicate_1/2 origin=lifted(execute, #1) ==
+  sig: (Bool, fallible_collection_predicates.Finding) -> Result(Bool, AwlError)
+  if is_true v0:
+    v3 = field(v1, 1)
+    v4 = call_rt aion@workflow:id/0() live_after=[v3]
+    v5 = call_rt aion@awl@error:map_engine_error/1(v4) live_after=[v3]
+    v6 = try_bind v5 live_after=[v3]
+    v2 = cmp Eq v3 v6
+    v7 = record(ok, [v2])
+    return v7
+  else:
+    v8 = record(ok, [v0])
+    return v8

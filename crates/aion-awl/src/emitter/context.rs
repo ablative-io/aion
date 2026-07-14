@@ -58,6 +58,8 @@ pub(crate) struct Emitter<'a> {
     pub(crate) loop_fns: Vec<String>,
     /// Monotonic counter for generated loop-function names.
     pub(crate) loop_counter: usize,
+    /// Monotonic counter for nested collection-predicate item names.
+    pub(crate) predicate_counter: usize,
     pub(crate) out: String,
     pub(crate) indent: usize,
 }
@@ -149,6 +151,7 @@ impl<'a> Emitter<'a> {
             flags: Flags::default(),
             loop_fns: Vec::new(),
             loop_counter: 0,
+            predicate_counter: 0,
             out: String::new(),
             indent: 0,
         })

@@ -256,13 +256,21 @@ fn parse_pipe_stage(stream: &mut Stream, pipe_span: Span) -> Result<PipeStage, P
             Ok(PipeStage::Field { span, name })
         }
         TokenKind::Keyword(
-            keyword @ (Keyword::Filter | Keyword::Map | Keyword::Sort | Keyword::Count),
+            keyword @ (Keyword::Filter
+            | Keyword::Map
+            | Keyword::Sort
+            | Keyword::Count
+            | Keyword::Any
+            | Keyword::All),
         ) => {
             let kind = match keyword {
                 Keyword::Filter => CombinatorKind::Filter,
                 Keyword::Map => CombinatorKind::Map,
                 Keyword::Sort => CombinatorKind::Sort,
-                _ => CombinatorKind::Count,
+                Keyword::Any => CombinatorKind::Any,
+                Keyword::All => CombinatorKind::All,
+                Keyword::Count => CombinatorKind::Count,
+                _ => return Err(ParseError::new(span, "unknown collection combinator")),
             };
             stream.next();
             let mut full = span;

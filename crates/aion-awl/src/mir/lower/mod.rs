@@ -7,6 +7,7 @@ mod codec;
 mod codec_decode;
 mod codec_decode_union;
 mod codec_encode;
+mod collection_predicate;
 mod ctx;
 mod driver;
 mod expr;

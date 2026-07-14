@@ -1,0 +1,9 @@
+//! Attach the replay-stable workflow execution id to the terminal record.
+workflow workflow_id
+  outcome recorded: type Identity, route success
+
+type Identity { id: String, label: String }
+
+step identify
+  outcome done: otherwise,
+    route recorded(id: workflow.id, label: "workflow-" + workflow.id)

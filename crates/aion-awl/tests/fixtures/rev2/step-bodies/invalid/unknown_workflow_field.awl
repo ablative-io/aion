@@ -1,0 +1,8 @@
+//! Reject workflow namespace fields not defined by the language.
+workflow unknown_workflow_field
+  outcome done: type Result, route success
+
+type Result { id: String }
+
+step decide
+  outcome bad: otherwise, route done(id: workflow.foo)

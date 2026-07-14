@@ -127,6 +127,17 @@ fn lower_stmt(builder: &mut Builder<'_>, stmt: &Stmt) -> Result<Step, SelectErro
             result: *result,
             ok_atom: builder.atom("ok"),
         }),
+        Stmt::Concat { dst, lhs, rhs, .. } => {
+            let callee = RuntimeFn::StrAppend;
+            let import = builder.import(callee)?;
+            let arity = call_arity(callee)?;
+            Ok(Step::CallImport {
+                dst: Some(*dst),
+                import,
+                arity,
+                args: vec![src(builder, lhs)?, src(builder, rhs)?],
+            })
+        }
         Stmt::JsonObj { dst, pairs, .. } => lower_json_obj(builder, *dst, pairs),
         Stmt::Cmp {
             dst, op, lhs, rhs, ..

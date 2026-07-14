@@ -1,5 +1,6 @@
 mod bindings;
 mod codecs;
+mod collection_predicates;
 mod composites;
 mod context;
 mod entry;
@@ -27,6 +28,7 @@ pub use error::EmitError;
 // (`crate::mir`). Widening these to `pub(crate)` is the anti-drift lever of
 // AWL-BC-IR.md §4: the bytecode `lower` reuses the emitter's exact passes and
 // type environment rather than re-deriving them.
+pub(crate) use collection_predicates::is_fallible as predicate_is_fallible;
 pub(crate) use context::Emitter;
 pub(crate) use entry::prepare;
 pub(crate) use graph::{Plan, expr_refs};

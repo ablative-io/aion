@@ -21,7 +21,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// Pinned digest of the committed SDK closure (names, lengths, bytes, in
 /// canonical order). A silent edit to the embedded bundle fails here; a
 /// deliberate regeneration updates this pin in the same commit.
-const BUNDLE_CHECKSUM: &str = "51d9de48df712fa056b862557040fe721cde6e501779f10e8d13a8c4402c4b41";
+const BUNDLE_CHECKSUM: &str = "aecf79296bf8d66d64795d9282ce6f052257926e48c29a681c643273fae62ac2";
 const BUNDLE_MODULE_COUNT: usize = 45;
 const BUNDLE_SDK_VERSION: &str = "0.6.0";
 
@@ -89,7 +89,7 @@ fn assembling_twice_yields_byte_identical_archives() -> TestResult {
 /// closure regeneration updates this pin in the same commit, exactly like
 /// `BUNDLE_CHECKSUM`.
 const FIXED_INPUT_ARCHIVE_SHA256: &str =
-    "c152e1dafa449065da171f329470b18a2949e9c69eb0c79c1ab681ecfc25cac8";
+    "cd2e692134817e60826d76f5e17895f6fca71f85ef18bb192f51ea51c360f3b3";
 
 /// Proof 1b — cross-process determinism: a fully fixed input assembles to
 /// pinned archive bytes.

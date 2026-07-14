@@ -99,8 +99,13 @@ const COVERED: &[&str] = &[
     "schema-doors/valid/optional_shorthand",
     "schema-doors/valid/short_circuit_optional",
     "step-bodies/valid/calls_and_side_effects",
+    "step-bodies/valid/collection_predicates",
+    "step-bodies/valid/fallible_all_short_circuit",
+    "step-bodies/valid/fallible_any_short_circuit",
+    "step-bodies/valid/fallible_collection_predicates",
     "step-bodies/valid/pipe_chain_stages",
     "step-bodies/valid/predicates_and_operators",
+    "step-bodies/valid/workflow_id",
 ];
 
 /// Compare `contents` against the on-disk golden. A MISSING golden is a hard

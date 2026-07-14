@@ -420,6 +420,7 @@ pub(crate) fn expr_refs(expr: &Expr, refs: &mut BTreeSet<String>) {
         | Expr::Bool { .. }
         | Expr::Duration(_)
         | Expr::Variant { .. }
+        | Expr::Workflow { .. }
         | Expr::Accessor { .. } => {}
         Expr::List { items, .. } => {
             for item in items {
@@ -441,5 +442,13 @@ pub(crate) fn expr_refs(expr: &Expr, refs: &mut BTreeSet<String>) {
             expr_refs(right, refs);
         }
         Expr::Predicate { subject, .. } => expr_refs(subject, refs),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            ..
+        } => {
+            expr_refs(collection, refs);
+            expr_refs(predicate, refs);
+        }
     }
 }

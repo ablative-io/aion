@@ -7,8 +7,8 @@ use std::error::Error;
 use std::fs;
 
 use aion_awl::mir::{
-    AtomRef, Block, FlowFn, FnOrigin, FnRef, LitRef, MirFn, MirLiteral, MirModule, Span, Stmt,
-    Tail, Test, TyDesc, Value, Var, lower,
+    AtomRef, Block, FlowFn, FnOrigin, FnRef, LitRef, MirFn, MirLiteral, MirModule, RuntimeFn, Span,
+    Stmt, Tail, Test, TyDesc, Value, Var, lower,
 };
 use aion_awl::parse;
 
@@ -94,6 +94,29 @@ impl Body {
     pub(crate) fn call_local(&mut self, callee: FnRef, args: Vec<Value>) -> Var {
         let dst = self.var();
         self.stmts.push(Stmt::CallLocal {
+            dst: Some(dst),
+            callee,
+            args,
+            live_after: aion_awl::mir::LiveAfter::default(),
+            span: sp(),
+        });
+        dst
+    }
+
+    pub(crate) fn closure(&mut self, lifted: FnRef) -> Var {
+        let dst = self.var();
+        self.stmts.push(Stmt::MakeClosure {
+            dst,
+            lifted,
+            captures: Vec::new(),
+            span: sp(),
+        });
+        dst
+    }
+
+    pub(crate) fn call_rt(&mut self, callee: RuntimeFn, args: Vec<Value>) -> Var {
+        let dst = self.var();
+        self.stmts.push(Stmt::CallRt {
             dst: Some(dst),
             callee,
             args,
@@ -317,6 +340,101 @@ pub(crate) fn triage_drivers(module: &mut MirModule) -> Result<(), Box<dyn Error
         decode_is_error(union_codec, bogus_union, error, true_atom, false_atom),
     );
     Ok(())
+}
+
+fn finding_list(
+    body: &mut Body,
+    finding: AtomRef,
+    blocker: LitRef,
+    warning: LitRef,
+    true_atom: AtomRef,
+    false_atom: AtomRef,
+) -> Var {
+    let blocking = body.record(finding, vec![Value::Lit(blocker), Value::Atom(true_atom)]);
+    let non_blocking = body.record(finding, vec![Value::Lit(warning), Value::Atom(false_atom)]);
+    body.list(vec![Value::Var(blocking), Value::Var(non_blocking)])
+}
+
+fn list_predicate_tail(mut body: Body, list: Var, predicate: FnRef, runtime: RuntimeFn) -> Block {
+    let fun = body.closure(predicate);
+    let result = body.call_rt(runtime, vec![Value::Var(list), Value::Var(fun)]);
+    Block {
+        stmts: body.stmts,
+        tail: Tail::Return(Value::Var(result)),
+    }
+}
+
+/// Execute the lowered fixture's own lifted predicates through the same
+/// `gleam/list` runtime calls selected for production workflow code.
+pub(crate) fn collection_predicate_drivers(module: &mut MirModule) -> Result<(), Box<dyn Error>> {
+    let any_finding = fn_by_name(module, "awl_predicate_0")?;
+    let all_finding = fn_by_name(module, "awl_predicate_1")?;
+    let any_round = fn_by_name(module, "awl_predicate_2")?;
+    let finding = atom_ref(module, "finding");
+    let round = atom_ref(module, "round");
+    let true_atom = atom_ref(module, "true");
+    let false_atom = atom_ref(module, "false");
+    let blocker = lit_ref(module, "blocker");
+    let warning = lit_ref(module, "warning");
+
+    // Keep one runtime call per driver. This mirrors generated region bodies
+    // and avoids making test-only assertions about cross-call liveness.
+    let mut body = Body::new();
+    let findings = finding_list(&mut body, finding, blocker, warning, true_atom, false_atom);
+    let block = list_predicate_tail(body, findings, any_finding, RuntimeFn::LAny);
+    push_driver(module, "awl$rt_any", block);
+
+    let mut body = Body::new();
+    let findings = finding_list(&mut body, finding, blocker, warning, true_atom, false_atom);
+    let block = list_predicate_tail(body, findings, all_finding, RuntimeFn::LAll);
+    push_driver(module, "awl$rt_all", block);
+
+    let mut body = Body::new();
+    let round_findings = finding_list(&mut body, finding, blocker, warning, true_atom, false_atom);
+    let round_value = body.record(round, vec![Value::Var(round_findings)]);
+    let rounds = body.list(vec![Value::Var(round_value)]);
+    let block = list_predicate_tail(body, rounds, any_round, RuntimeFn::LAny);
+    push_driver(module, "awl$rt_nested_any", block);
+
+    let mut body = Body::new();
+    let empty = body.list(Vec::new());
+    let block = list_predicate_tail(body, empty, all_finding, RuntimeFn::LAll);
+    push_driver(module, "awl$rt_empty_all", block);
+
+    let mut body = Body::new();
+    let empty = body.list(Vec::new());
+    let block = list_predicate_tail(body, empty, any_finding, RuntimeFn::LAny);
+    push_driver(module, "awl$rt_empty_any", block);
+    Ok(())
+}
+
+/// Export a zero-arity test shim that constructs only the input value, then
+/// calls the production-generated `execute/1` host unchanged.
+pub(crate) fn production_execute_driver(module: &mut MirModule, owners: &[&str]) {
+    let input_name = format!("{}_input", module.name);
+    let input = atom_ref(module, &input_name);
+    let finding = atom_ref(module, "finding");
+    let owner_literals = owners
+        .iter()
+        .map(|owner| lit_ref(module, owner))
+        .collect::<Vec<_>>();
+    let mut body = Body::new();
+    let mut values = Vec::new();
+    for owner in owner_literals {
+        let item = body.record(finding, vec![Value::Lit(owner)]);
+        values.push(Value::Var(item));
+    }
+    let findings = body.list(values);
+    let input_value = body.record(input, vec![Value::Var(findings)]);
+    let result = body.call_local(FnRef(2), vec![Value::Var(input_value)]);
+    push_driver(
+        module,
+        "awl$rt_execute",
+        Block {
+            stmts: body.stmts,
+            tail: Tail::Return(Value::Var(result)),
+        },
+    );
 }
 
 /// `case codec.decode(json) { Error(_) -> true _ -> false }` as a driver body.

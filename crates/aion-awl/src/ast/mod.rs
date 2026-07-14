@@ -11,7 +11,7 @@ pub use document::{
     WorkerDecl,
 };
 pub(crate) use expr::join_span;
-pub use expr::{Arg, BinaryOp, DurationLiteral, Expr, PredicateKind};
+pub use expr::{Arg, BinaryOp, DurationLiteral, Expr, PredicateKind, Quantifier};
 pub use steps::{
     AfterRef, Binding, Call, CallStmt, CombinatorCall, CombinatorKind, ForkHeader, ForkStmt, Guard,
     JoinLine, LoopStmt, LoopTail, OnFailure, OutcomeClause, PipeEnd, PipeStage, PipeStmt,

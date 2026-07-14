@@ -1,0 +1,11 @@
+//! Stop a fallible universal predicate after its first non-matching item.
+workflow fallible_all_short_circuit
+  input findings: [Finding]
+  outcome decided: type Verdict, route success
+
+type Finding { owner_id: String }
+type Verdict { matched: Bool }
+
+step decide
+  findings |> all(.owner_id == workflow.id) -> matched
+  route decided(matched: matched)

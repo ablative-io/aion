@@ -61,6 +61,15 @@ pub enum PredicateKind {
     Absent,
 }
 
+/// Boolean collection predicate selected by a collection pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantifier {
+    /// `collection |> any(predicate)` — at least one item satisfies the predicate.
+    Any,
+    /// `collection |> all(predicate)` — every item satisfies the predicate.
+    All,
+}
+
 /// Expression tree used in guards, arguments, seeds, bounds, and pipes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -107,6 +116,11 @@ pub enum Expr {
         span: Span,
         /// Referenced name.
         name: String,
+    },
+    /// The reserved `workflow` builtin namespace. It is not a value by itself.
+    Workflow {
+        /// Source span covering `workflow`.
+        span: Span,
     },
     /// Bare `TitleCase` enum-variant reference (`result.category == Urgent`).
     Variant {
@@ -182,6 +196,17 @@ pub enum Expr {
         subject: Box<Expr>,
         /// Which predicate is applied.
         kind: PredicateKind,
+    },
+    /// Boolean collection pipeline: `collection |> any|all(predicate)`.
+    CollectionPredicate {
+        /// Source span from the collection through the closing parenthesis.
+        span: Span,
+        /// Expression producing the list to inspect.
+        collection: Box<Expr>,
+        /// Whether existential or universal quantification is requested.
+        quantifier: Quantifier,
+        /// Predicate evaluated with `.field` accessors bound to each item.
+        predicate: Box<Expr>,
     },
 }
 

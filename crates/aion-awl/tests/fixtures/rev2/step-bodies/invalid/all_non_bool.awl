@@ -1,0 +1,11 @@
+//! Reject collection predicates whose item expression is not Bool.
+workflow all_non_bool
+  input items: [Item]
+  outcome done: type Result, route success
+
+type Item   { name: String }
+type Result { ok: Bool }
+
+step decide
+  outcome bad: when items |> all(.name), route done(ok: false)
+  outcome fallback: otherwise, route done(ok: true)

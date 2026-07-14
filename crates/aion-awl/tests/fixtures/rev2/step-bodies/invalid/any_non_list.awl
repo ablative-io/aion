@@ -1,0 +1,10 @@
+//! Reject collection predicates over non-list values.
+workflow any_non_list
+  input value: String
+  outcome done: type Result, route success
+
+type Result { ok: Bool }
+
+step decide
+  outcome bad: when value |> any(true), route done(ok: false)
+  outcome fallback: otherwise, route done(ok: true)

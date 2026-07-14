@@ -2,7 +2,9 @@
 //! arguments — the leaf vocabulary shared by every printed construct.
 
 use crate::DurationUnit;
-use crate::ast::{Arg, BinaryOp, DurationLiteral, Expr, PredicateKind, RetrySpec, TypeRef};
+use crate::ast::{
+    Arg, BinaryOp, DurationLiteral, Expr, PredicateKind, Quantifier, RetrySpec, TypeRef,
+};
 
 pub(super) fn expr_text(expr: &Expr) -> String {
     match expr {
@@ -16,6 +18,7 @@ pub(super) fn expr_text(expr: &Expr) -> String {
             format!("[{}]", items.join(", "))
         }
         Expr::Ref { name, .. } | Expr::Variant { name, .. } => name.clone(),
+        Expr::Workflow { .. } => "workflow".to_owned(),
         Expr::Record { name, args, .. } => format!("{name}({})", args_text(args)),
         Expr::Field { base, name, .. } => format!("{}.{name}", expr_text(base)),
         Expr::Index { base, index, .. } => format!("{}[{index}]", expr_text(base)),
@@ -37,6 +40,20 @@ pub(super) fn expr_text(expr: &Expr) -> String {
                 PredicateKind::Present => "present",
                 PredicateKind::Absent => "absent",
             }
+        ),
+        Expr::CollectionPredicate {
+            collection,
+            quantifier,
+            predicate,
+            ..
+        } => format!(
+            "{} |> {}({})",
+            expr_text(collection),
+            match quantifier {
+                Quantifier::Any => "any",
+                Quantifier::All => "all",
+            },
+            expr_text(predicate)
         ),
     }
 }

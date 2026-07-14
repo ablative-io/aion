@@ -1,0 +1,11 @@
+//! Stop a fallible existential predicate after its first matching item.
+workflow fallible_any_short_circuit
+  input findings: [Finding]
+  outcome decided: type Verdict, route success
+
+type Finding { owner_id: String }
+type Verdict { matched: Bool }
+
+step decide
+  findings |> any(.owner_id == workflow.id) -> matched
+  route decided(matched: matched)

@@ -8,6 +8,7 @@ use crate::ast::{CombinatorCall, CombinatorKind, Expr, PipeEnd, PipeStage, PipeS
 use crate::semantic::DeclarationKind;
 use crate::spanned::Spanned;
 
+use super::collections::check_element_predicate;
 use super::exprs::{View, field_access, type_of};
 use super::outcomes::{Env, check_route};
 use super::types::{Ty, assignable, resolve};
@@ -24,10 +25,11 @@ pub(super) fn walk_pipe(
     let view = View {
         vars: scope,
         narrow: None,
+        accessor: None,
     };
     let mut ty = type_of(w, view, &pipe.head);
     for stage in &pipe.stages {
-        ty = pipe_stage(w, ty, stage);
+        ty = pipe_stage(w, view, ty, stage);
     }
     match &pipe.end {
         PipeEnd::Bind(bind) => {
@@ -38,6 +40,7 @@ pub(super) fn walk_pipe(
             let view = View {
                 vars: scope,
                 narrow: None,
+                accessor: None,
             };
             check_route(w, view, target, env, Some(ty));
             None
@@ -45,7 +48,7 @@ pub(super) fn walk_pipe(
     }
 }
 
-fn pipe_stage(w: &mut Walker<'_, '_>, incoming: Ty, stage: &PipeStage) -> Ty {
+fn pipe_stage(w: &mut Walker<'_, '_>, view: View<'_>, incoming: Ty, stage: &PipeStage) -> Ty {
     match stage {
         PipeStage::Action { span, name } => {
             let Some(callable) = w.ctx.callable(name).cloned() else {
@@ -85,11 +88,16 @@ fn pipe_stage(w: &mut Walker<'_, '_>, incoming: Ty, stage: &PipeStage) -> Ty {
             callable.returns
         }
         PipeStage::Field { span, name } => field_access(w, &incoming, None, name, *span),
-        PipeStage::Combinator(combinator) => combinator_stage(w, incoming, combinator),
+        PipeStage::Combinator(combinator) => combinator_stage(w, view, incoming, combinator),
     }
 }
 
-fn combinator_stage(w: &mut Walker<'_, '_>, incoming: Ty, combinator: &CombinatorCall) -> Ty {
+fn combinator_stage(
+    w: &mut Walker<'_, '_>,
+    view: View<'_>,
+    incoming: Ty,
+    combinator: &CombinatorCall,
+) -> Ty {
     let element = match resolve(&incoming, &w.ctx.types) {
         Ty::List(inner) => (*inner).clone(),
         Ty::Unknown => Ty::Unknown,
@@ -134,6 +142,17 @@ fn combinator_stage(w: &mut Walker<'_, '_>, incoming: Ty, combinator: &Combinato
             Some(field_ty) => Ty::List(Rc::new(field_ty)),
             None => Ty::List(Rc::new(Ty::Unknown)),
         },
+        CombinatorKind::Any | CombinatorKind::All => {
+            let noun = combinator_name(combinator.kind);
+            match combinator.arg.as_ref() {
+                Some(predicate) => check_element_predicate(w, view, predicate, &element, noun),
+                None => w.err(
+                    combinator.span,
+                    format!("`{noun}` needs a Bool predicate argument"),
+                ),
+            }
+            Ty::Bool
+        }
     }
 }
 
@@ -143,6 +162,8 @@ const fn combinator_name(kind: CombinatorKind) -> &'static str {
         CombinatorKind::Map => "map",
         CombinatorKind::Sort => "sort",
         CombinatorKind::Count => "count",
+        CombinatorKind::Any => "any",
+        CombinatorKind::All => "all",
     }
 }
 

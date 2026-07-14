@@ -25,7 +25,7 @@ pub(super) fn compute(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     }
     // Each pass can only add bindings; the surface is finite.
     loop {
-        let scope = emitter.bindings.clone();
+        let scope = Scope::from_vars(emitter.bindings.clone());
         let mut discovered: Vec<(String, GType, Span)> = Vec::new();
         for step in &emitter.document.steps {
             collect_step(emitter, step, &scope, &mut discovered);

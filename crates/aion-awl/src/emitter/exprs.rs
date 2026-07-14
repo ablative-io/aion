@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::ops::{Deref, DerefMut};
 
 use crate::ast::{Arg, BinaryOp, Expr, PredicateKind};
 use crate::spanned::Spanned;
@@ -19,7 +20,47 @@ use super::names::{ident, string_lit};
 use super::types::{GType, NamedDef};
 
 /// Bindings in scope during rendering, with their types.
-pub(super) type Scope = BTreeMap<String, GType>;
+#[derive(Clone, Default)]
+pub(super) struct Scope {
+    vars: BTreeMap<String, GType>,
+    accessor: Option<(String, GType)>,
+}
+
+impl Scope {
+    pub(super) const fn new() -> Self {
+        Self {
+            vars: BTreeMap::new(),
+            accessor: None,
+        }
+    }
+
+    pub(super) fn from_vars(vars: BTreeMap<String, GType>) -> Self {
+        Self {
+            vars,
+            accessor: None,
+        }
+    }
+
+    pub(super) fn with_accessor(&self, name: String, ty: GType) -> Self {
+        let mut nested = self.clone();
+        nested.accessor = Some((name, ty));
+        nested
+    }
+}
+
+impl Deref for Scope {
+    type Target = BTreeMap<String, GType>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.vars
+    }
+}
+
+impl DerefMut for Scope {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.vars
+    }
+}
 
 pub(super) fn duration_ms(duration: &crate::ast::DurationLiteral) -> u64 {
     match duration.unit {
@@ -44,7 +85,10 @@ pub(super) fn expr_type(
         Expr::String { .. } => Ok(GType::Str),
         Expr::Int { .. } => Ok(GType::Int),
         Expr::Float { .. } => Ok(GType::Float),
-        Expr::Bool { .. } | Expr::Not { .. } | Expr::Predicate { .. } => Ok(GType::Bool),
+        Expr::Bool { .. }
+        | Expr::Not { .. }
+        | Expr::Predicate { .. }
+        | Expr::CollectionPredicate { .. } => Ok(GType::Bool),
         Expr::Duration(_) => Ok(GType::Duration),
         Expr::List { items, .. } => match items.first() {
             Some(first) => Ok(GType::List(Box::new(expr_type(emitter, first, scope)?))),
@@ -56,6 +100,10 @@ pub(super) fn expr_type(
                 format!("`{name}` has no binding with a known type in scope"),
             )
         }),
+        Expr::Workflow { span } => Err(EmitError::new(
+            *span,
+            "`workflow` is a namespace, not a value",
+        )),
         Expr::Variant { span, name } => {
             for candidate in &emitter.env.order {
                 if let Some(NamedDef::Enum(variants)) = emitter.env.get(candidate)
@@ -76,6 +124,9 @@ pub(super) fn expr_type(
             name_span,
             ..
         } => {
+            if matches!(base.as_ref(), Expr::Workflow { .. }) && name == "id" {
+                return Ok(GType::Str);
+            }
             let base_ty = expr_type(emitter, base, scope)?;
             field_type(emitter, &base_ty, name, *name_span)
         }
@@ -92,10 +143,13 @@ pub(super) fn expr_type(
                 )),
             }
         }
-        Expr::Accessor { span, .. } => Err(EmitError::new(
-            *span,
-            "a bare `.field` accessor is only meaningful as a combinator argument",
-        )),
+        Expr::Accessor { span, name } => match &scope.accessor {
+            Some((_, element)) => field_type(emitter, element, name, *span),
+            None => Err(EmitError::new(
+                *span,
+                "a bare `.field` accessor is only meaningful as a combinator argument",
+            )),
+        },
         Expr::Binary { op, .. } => Ok(match op {
             BinaryOp::Concat => GType::Str,
             _ => GType::Bool,
@@ -161,6 +215,10 @@ pub(super) fn render_expr(
             Ok(format!("[{rendered}]"))
         }
         Expr::Ref { name, .. } => Ok(ident(name)),
+        Expr::Workflow { span } => Err(EmitError::new(
+            *span,
+            "`workflow` is a namespace, not a value",
+        )),
         Expr::Variant { name, .. } => Ok(name.clone()),
         Expr::Record {
             span,
@@ -169,6 +227,13 @@ pub(super) fn render_expr(
             args,
         } => render_record(emitter, *span, name, *name_span, args, scope, prelude),
         Expr::Field { base, name, .. } => {
+            if matches!(base.as_ref(), Expr::Workflow { .. }) && name == "id" {
+                let fresh = format!("awl_workflow_id_{}", prelude.len());
+                prelude.push(format!(
+                    "use {fresh} <- result.try(workflow.id() |> awl_error.map_engine_error)"
+                ));
+                return Ok(fresh);
+            }
             let base = render_expr(emitter, base, scope, prelude)?;
             Ok(format!("{base}.{}", ident(name)))
         }
@@ -184,52 +249,20 @@ pub(super) fn render_expr(
             ));
             Ok(fresh)
         }
-        Expr::Accessor { span, .. } => Err(EmitError::new(
-            *span,
-            "a bare `.field` accessor is only meaningful as a combinator argument",
-        )),
+        Expr::Accessor { span, name } => match &scope.accessor {
+            Some((item, _)) => Ok(format!("{}.{}", ident(item), ident(name))),
+            None => Err(EmitError::new(
+                *span,
+                "a bare `.field` accessor is only meaningful as a combinator argument",
+            )),
+        },
         Expr::Not { expr: inner, .. } => {
             let inner = render_parenthesized(emitter, inner, scope, prelude)?;
             Ok(format!("!{inner}"))
         }
         Expr::Binary {
             left, op, right, ..
-        } => {
-            if let Some((name, none_result)) = optional_short_circuit(left, *op) {
-                let option_ty = scope.get(name).ok_or_else(|| {
-                    EmitError::new(left.span(), format!("`{name}` is not in scope"))
-                })?;
-                let GType::Option(inner) = emitter.env.resolve(option_ty) else {
-                    return Err(EmitError::new(
-                        left.span(),
-                        format!("`{name}` is not optional"),
-                    ));
-                };
-                let mut rhs_scope = scope.clone();
-                rhs_scope.insert(name.to_owned(), *inner);
-                let mut rhs_prelude = Vec::new();
-                let rhs = render_expr(emitter, right, &rhs_scope, &mut rhs_prelude)?;
-                let name = ident(name);
-                let mut some_branch = String::new();
-                if rhs_prelude.is_empty() {
-                    some_branch.push_str(&rhs);
-                } else {
-                    some_branch.push_str("{\n");
-                    for line in rhs_prelude {
-                        let _ = writeln!(some_branch, "    {line}");
-                    }
-                    let _ = write!(some_branch, "    {rhs}\n  }}");
-                }
-                return Ok(format!(
-                    "case {name} {{\n  Some({name}) -> {some_branch}\n  None -> {}\n}}",
-                    if none_result { "True" } else { "False" }
-                ));
-            }
-            let symbol = operator_for(emitter, *op, left, right, scope);
-            let left = render_parenthesized(emitter, left, scope, prelude)?;
-            let right = render_parenthesized(emitter, right, scope, prelude)?;
-            Ok(format!("{left} {symbol} {right}"))
-        }
+        } => render_binary(emitter, left, *op, right, scope, prelude),
         Expr::Predicate { subject, kind, .. } => {
             let subject = render_parenthesized(emitter, subject, scope, prelude)?;
             Ok(match kind {
@@ -241,7 +274,65 @@ pub(super) fn render_expr(
                 PredicateKind::Absent => format!("option.is_none({subject})"),
             })
         }
+        Expr::CollectionPredicate {
+            span,
+            collection,
+            quantifier,
+            predicate,
+        } => super::collection_predicates::render_collection_predicate(
+            emitter,
+            *span,
+            collection,
+            *quantifier,
+            predicate,
+            scope,
+            prelude,
+        ),
     }
+}
+
+fn render_binary(
+    emitter: &mut Emitter<'_>,
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    scope: &Scope,
+    prelude: &mut Vec<String>,
+) -> Result<String, EmitError> {
+    if let Some((name, none_result)) = optional_short_circuit(left, op) {
+        let option_ty = scope
+            .get(name)
+            .ok_or_else(|| EmitError::new(left.span(), format!("`{name}` is not in scope")))?;
+        let GType::Option(inner) = emitter.env.resolve(option_ty) else {
+            return Err(EmitError::new(
+                left.span(),
+                format!("`{name}` is not optional"),
+            ));
+        };
+        let mut rhs_scope = scope.clone();
+        rhs_scope.insert(name.to_owned(), *inner);
+        let mut rhs_prelude = Vec::new();
+        let rhs = render_expr(emitter, right, &rhs_scope, &mut rhs_prelude)?;
+        let name = ident(name);
+        let mut some_branch = String::new();
+        if rhs_prelude.is_empty() {
+            some_branch.push_str(&rhs);
+        } else {
+            some_branch.push_str("{\n");
+            for line in rhs_prelude {
+                let _ = writeln!(some_branch, "    {line}");
+            }
+            let _ = write!(some_branch, "    {rhs}\n  }}");
+        }
+        return Ok(format!(
+            "case {name} {{\n  Some({name}) -> {some_branch}\n  None -> {}\n}}",
+            if none_result { "True" } else { "False" }
+        ));
+    }
+    let symbol = operator_for(emitter, op, left, right, scope);
+    let left = render_parenthesized(emitter, left, scope, prelude)?;
+    let right = render_parenthesized(emitter, right, scope, prelude)?;
+    Ok(format!("{left} {symbol} {right}"))
 }
 
 /// Recognize the optional predicates whose short-circuit edge proves the RHS

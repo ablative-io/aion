@@ -1,0 +1,115 @@
+module workflow_id source=workflow_id.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+== durable families == 
+== atoms ==
+  [0] identity
+  [1] workflow_id_input
+  [2] recorded_outcome
+  [3] ok
+== literals ==
+  [0] "id"
+  [1] "label"
+  [2] "recorded"
+  [3] "outcome"
+  [4] ""
+  [5] ""
+  [6] "WorkflowIdOutcome"
+  [7] "recorded"
+  [8] "payload"
+  [9] "workflow-"
+== types ==
+  record Identity tag=identity
+    id: string
+    label: string
+  record WorkflowIdInput tag=workflow_id_input
+  union WorkflowIdOutcome
+    recorded -> recorded_outcome(ref(Identity))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=workflow_id_input_codec output=workflow_id_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(workflow_id.WorkflowIdInput, workflow_id.WorkflowIdOutcome, AwlError)
+  T-DEF name="workflow_id" input=workflow_id_input_codec output=workflow_id_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (workflow_id.WorkflowIdInput) -> Result(workflow_id.WorkflowIdOutcome, AwlError)
+  T-EXEC fields=[] entry=step_identify args=[]
+== fn identity_codec/0 origin=codec_template(RecordTrio, Identity, record#0) ==
+  sig: () -> Codec(workflow_id.Identity)
+  v0 = make_closure identity_to_json captures=[]
+  v1 = call_local identity_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn identity_to_json/1 origin=codec_template(RecordTrio, Identity, record#0) ==
+  sig: (workflow_id.Identity) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"id": v1|>awlc.string_to_json, "label": v2|>awlc.string_to_json}
+  return v3
+== fn identity_decoder/0 origin=codec_template(RecordTrio, Identity, record#0) ==
+  sig: () -> Decoder(workflow_id.Identity)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure identity_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn identity_decoder$0/1 origin=lifted(identity_decoder, #0) ==
+  sig: (String) -> Decoder(workflow_id.Identity)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure identity_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn identity_decoder$1/2 origin=lifted(identity_decoder, #1) ==
+  sig: (String, String) -> Decoder(workflow_id.Identity)
+  v2 = record(identity, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn workflow_id_input_codec/0 origin=codec_template(RecordTrio, WorkflowIdInput, record#1) ==
+  sig: () -> Codec(workflow_id.WorkflowIdInput)
+  v0 = make_closure workflow_id_input_to_json captures=[]
+  v1 = call_local workflow_id_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn workflow_id_input_to_json/1 origin=codec_template(RecordTrio, WorkflowIdInput, record#1) ==
+  sig: (workflow_id.WorkflowIdInput) -> Json
+  v1 = json_obj {}
+  return v1
+== fn workflow_id_input_decoder/0 origin=codec_template(RecordTrio, WorkflowIdInput, record#1) ==
+  sig: () -> Decoder(workflow_id.WorkflowIdInput)
+  tail_rt gleam@dynamic@decode:success/1('workflow_id_input')
+== fn workflow_id_outcome_codec/0 origin=codec_template(UnionTrio, WorkflowIdOutcome, union#2) ==
+  sig: () -> Codec(workflow_id.WorkflowIdOutcome)
+  v0 = make_closure workflow_id_outcome_to_json captures=[]
+  v1 = call_local workflow_id_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn workflow_id_outcome_to_json/1 origin=codec_template(UnionTrio, WorkflowIdOutcome, union#2) ==
+  sig: (workflow_id.WorkflowIdOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#2|>awlc.string_to_json, "payload": v1|>identity_to_json}
+  return v2
+== fn workflow_id_outcome_decoder/0 origin=codec_template(UnionTrio, WorkflowIdOutcome, union#2) ==
+  sig: () -> Decoder(workflow_id.WorkflowIdOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure workflow_id_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn workflow_id_outcome_decoder$outcome/1 origin=lifted(workflow_id_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(workflow_id.WorkflowIdOutcome)
+  if cmp Eq v0 lit#7:
+    v3 = call_local identity_decoder()
+    v4 = make_closure workflow_id_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+  else:
+    v1 = record(identity, [lit#4, lit#5])
+    v2 = record(recorded_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#6)
+== fn workflow_id_outcome_decoder$arm0/1 origin=lifted(workflow_id_outcome_decoder, #1) ==
+  sig: (workflow_id.Identity) -> Decoder(workflow_id.WorkflowIdOutcome)
+  v1 = record(recorded_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn step_identify/0 origin=region(identify) ==
+  sig: () -> Result(workflow_id.WorkflowIdOutcome, AwlError)
+  v0 = call_rt aion@workflow:id/0()
+  v1 = call_rt aion@awl@error:map_engine_error/1(v0)
+  v2 = try_bind v1
+  v4 = call_rt aion@workflow:id/0() live_after=[v2]
+  v5 = call_rt aion@awl@error:map_engine_error/1(v4) live_after=[v2]
+  v6 = try_bind v5 live_after=[v2]
+  v3 = concat lit#9 v6
+  v7 = record(identity, [v2, v3])
+  v8 = record(recorded_outcome, [v7])
+  v9 = record(ok, [v8])
+  return v9

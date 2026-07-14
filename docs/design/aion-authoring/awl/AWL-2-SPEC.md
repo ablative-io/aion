@@ -55,7 +55,7 @@ Three concerns, in file order:
 2. **Operations** — the things that happen:
    - *actions*: non-deterministic, worker-executed, world-touching;
    - *transformations/selections*: deterministic combinators over data,
-     executed in the workflow VM (`filter`, `map`, `sort`, `count`);
+     executed in the workflow VM (`filter`, `map`, `sort`, `count`, `any`, `all`);
    - *decisions*: conditional outcomes that route the flow;
    - *delegation*: child workflows.
 3. **Flow** — steps and how they connect: sequence (fall-through), DAG
@@ -101,6 +101,10 @@ parallelism, and repetition are each visibly marked — never inferred.
 - `.field` after a value is field access; a bare `.field` inside a
   combinator call is the accessor shorthand (`filter(.blocking)` ≡ keep
   items whose `blocking` is true; `map(.reject_reason)` ≡ project the field).
+- `workflow.id` is the current workflow execution's identifier as a `String`.
+  It comes from the durable workflow context, so replay returns the same value;
+  a child sees its own execution id. `workflow` is a namespace, not a value,
+  and `id` is its only field.
 
 ## Document grammar
 
@@ -291,9 +295,22 @@ step <name> [after <step>[, <step>…]]
   `route <outcome>` (the piped value is the payload).
 - **Combinators** (deterministic, VM-executed — the transformations and
   selections vocabulary): `filter(pred)`, `map(proj)`, `sort(key)`,
-  `count`, plus the predicates `is empty`, `is present` / `is absent` (for
+  `count`, `any(pred)`, `all(pred)`, plus the predicates `is empty`,
+  `is present` / `is absent` (for
   `T?` values) and comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean
   `not/and/or`, string `+`. Arguments are `.field` accessors or literals.
+  `any` and `all` use the same collection pipeline surface as the other
+  combinators and produce `Bool` values wherever a Bool expression is legal:
+
+  ```awl
+  findings |> any(.severity == "blocker") -> blocked
+  rounds |> any(.findings |> all(.approved)) -> every_finding_approved
+  ```
+
+  Their predicate is the ordinary expression grammar with `.field` bound to
+  the current item, so comparisons, field access, and boolean logic compose;
+  nested `any`/`all` rebind `.field` to the nested item. `any` is false for an
+  empty list; `all` is true (vacuous truth).
   This is a **fixed vocabulary, not an expression language**: no closures,
   no user functions, no arithmetic beyond comparison and string `+`.
   Computation heavier than plumbing lives in actions. (This deliberately
@@ -431,7 +448,7 @@ after a committed fixture exercises them** — no untested grammar.
 | document | `workflow` `input` `signal` `outcome` `type` `schema` `worker` `action` `child` `step` |
 | step surface | `after` `fork` `join` `loop` `counting` `until` `max` `sequential` `spawn` `wait` `sleep` `timeout` `retry` `every` `backoff` `node` `on` `failure` |
 | outcomes/routing | `when` `otherwise` `route` `success` `failure` |
-| combinators/predicates | `filter` `map` `sort` `count` `is` `empty` `present` `absent` |
+| combinators/predicates | `filter` `map` `sort` `count` `any` `all` `is` `empty` `present` `absent` |
 | operators | `->` `\|>` `not` `and` `or` `==` `!=` `<` `<=` `>` `>=` `+` `?` |
 | literals | `true` `false` durations |
 

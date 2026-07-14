@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use crate::Span;
 use crate::ast::{CombinatorKind, Expr, PipeStage, PipeStmt};
 
+use super::collection_predicates::render_predicate_over;
 use super::context::Emitter;
 use super::error::EmitError;
 use super::exprs::{Scope, duration_expr, expr_type, field_type, render_expr};
@@ -68,6 +69,10 @@ pub(super) fn stage_type(
                     let projected = field_type(emitter, &elem, name, *span)?;
                     Ok(GType::List(Box::new(projected)))
                 }
+                CombinatorKind::Any | CombinatorKind::All => {
+                    elem()?;
+                    Ok(GType::Bool)
+                }
             }
         }
     }
@@ -79,6 +84,8 @@ fn render_combinator(
     current: &str,
     current_ty: &GType,
     combinator: &crate::ast::CombinatorCall,
+    scope: &Scope,
+    prelude: &mut Vec<String>,
 ) -> Result<String, EmitError> {
     emitter.flags.uses_list_module = true;
     let accessor = || -> Result<String, EmitError> {
@@ -144,6 +151,28 @@ fn render_combinator(
                  }})"
             ))
         }
+        CombinatorKind::Any | CombinatorKind::All => {
+            let element = match emitter.env.resolve(current_ty) {
+                GType::List(inner) => *inner,
+                other => {
+                    return Err(EmitError::new(
+                        combinator.span,
+                        format!("collection predicate needs a list, found {other:?}"),
+                    ));
+                }
+            };
+            let predicate = combinator.arg.as_ref().ok_or_else(|| {
+                EmitError::new(combinator.span, "collection predicate needs an argument")
+            })?;
+            let quantifier = if matches!(combinator.kind, CombinatorKind::Any) {
+                crate::ast::Quantifier::Any
+            } else {
+                crate::ast::Quantifier::All
+            };
+            render_predicate_over(
+                emitter, current, element, quantifier, predicate, scope, prelude,
+            )
+        }
     }
 }
 
@@ -169,7 +198,16 @@ pub(super) fn lower_pipe_value(
                 emitter.line(&format!("let {fresh} = {current}.{}", ident(name)));
             }
             PipeStage::Combinator(combinator) => {
-                let rendered = render_combinator(emitter, &current, &current_ty, combinator)?;
+                let mut prelude = Vec::new();
+                let rendered = render_combinator(
+                    emitter,
+                    &current,
+                    &current_ty,
+                    combinator,
+                    scope,
+                    &mut prelude,
+                )?;
+                flush_prelude(emitter, prelude);
                 emitter.line(&format!("let {fresh} = {rendered}"));
             }
         }

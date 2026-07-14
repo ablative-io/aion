@@ -396,6 +396,7 @@ fn expr_uses_field(expr: &Expr, name: &str) -> bool {
         Expr::Record { args, .. } => args
             .iter()
             .any(|argument| argument.name == name || expr_uses_field(&argument.value, name)),
+        Expr::Field { base, .. } if matches!(base.as_ref(), Expr::Workflow { .. }) => false,
         Expr::Field {
             base, name: field, ..
         } => field == name || expr_uses_field(base, name),
@@ -406,12 +407,18 @@ fn expr_uses_field(expr: &Expr, name: &str) -> bool {
             expr_uses_field(left, name) || expr_uses_field(right, name)
         }
         Expr::Predicate { subject, .. } => expr_uses_field(subject, name),
+        Expr::CollectionPredicate {
+            collection,
+            predicate,
+            ..
+        } => expr_uses_field(collection, name) || expr_uses_field(predicate, name),
         Expr::String { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }
         | Expr::Duration(_)
         | Expr::Ref { .. }
+        | Expr::Workflow { .. }
         | Expr::Variant { .. } => false,
     }
 }
