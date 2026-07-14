@@ -7,7 +7,10 @@
 //! source file, confining every write inside the project's `src/` directory
 //! so a network-facing submission can never escape the root.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 use crate::error::ToolchainError;
 
@@ -35,6 +38,10 @@ struct EntryWorkflow {
 #[derive(serde::Deserialize)]
 struct GleamProjectConfig {
     name: String,
+    #[serde(default)]
+    dependencies: BTreeMap<String, toml::Value>,
+    #[serde(default, rename = "dev-dependencies")]
+    dev_dependencies: BTreeMap<String, toml::Value>,
 }
 
 /// Validates that `root` is a usable Gleam workflow project: it must contain
@@ -104,6 +111,27 @@ pub fn single_entry_module(root: &Path) -> Result<String, ToolchainError> {
     }
 }
 
+/// Validates and canonicalizes a supported Gleam logical module name.
+///
+/// Source-style `/` nesting and BEAM-style `@` nesting are accepted at the API
+/// boundary. Canonical identity always uses `@`, matching Gleam's compiled BEAM
+/// name and the value `aion-package` discovers.
+///
+/// # Errors
+///
+/// Returns [`ToolchainError::InvalidProject`] when any component does not match
+/// `[a-z][a-z0-9_]*`.
+pub(crate) fn canonical_entry_module(entry_module: &str) -> Result<String, ToolchainError> {
+    if !is_supported_logical_module(entry_module) {
+        return Err(ToolchainError::InvalidProject {
+            message: format!(
+                "entry module `{entry_module}` is not a supported Gleam logical module name (each `/` or `@` separated component must match `[a-z][a-z0-9_]*`)"
+            ),
+        });
+    }
+    Ok(entry_module.replace('/', "@"))
+}
+
 /// Resolves the on-disk source path for `entry_module` under `<root>/src`,
 /// confining it to that directory.
 ///
@@ -120,16 +148,9 @@ pub fn entry_module_source_path(
     root: &Path,
     entry_module: &str,
 ) -> Result<PathBuf, ToolchainError> {
-    if !is_supported_logical_module(entry_module) {
-        return Err(ToolchainError::InvalidProject {
-            message: format!(
-                "entry module `{entry_module}` is not a supported Gleam logical module name (each `/` or `@` separated component must match `[a-z][a-z0-9_]*`)"
-            ),
-        });
-    }
-
+    let canonical = canonical_entry_module(entry_module)?;
     let src_root = root.join("src");
-    let relative: PathBuf = entry_module.split('@').collect::<PathBuf>();
+    let relative: PathBuf = canonical.split('@').collect::<PathBuf>();
     let mut candidate = src_root.join(relative);
     candidate.set_extension("gleam");
 
@@ -177,7 +198,8 @@ pub(crate) fn retarget_single_entry_module(
     root: &Path,
     entry_module: &str,
 ) -> Result<(), ToolchainError> {
-    drop(entry_module_source_path(root, entry_module)?);
+    let entry_module = canonical_entry_module(entry_module)?;
+    drop(entry_module_source_path(root, &entry_module)?);
     let descriptor = root.join(WORKFLOW_CONFIG_FILE);
     let text = std::fs::read_to_string(&descriptor).map_err(|source| ToolchainError::Io {
         path: descriptor.clone(),
@@ -216,10 +238,7 @@ pub(crate) fn retarget_single_entry_module(
                 descriptor.display()
             ),
         })?;
-    table.insert(
-        "entry_module".to_owned(),
-        toml::Value::String(entry_module.to_owned()),
-    );
+    table.insert("entry_module".to_owned(), toml::Value::String(entry_module));
     let adjusted = toml::to_string(&config).map_err(|source| ToolchainError::InvalidProject {
         message: format!("failed to serialize {}: {source}", descriptor.display()),
     })?;
@@ -263,14 +282,66 @@ pub(crate) fn remove_staged_root_build(root: &Path) -> Result<(), ToolchainError
     }
 }
 
+/// Retargets the staged Gleam root package to a document-owned name.
+///
+/// Flat entries use their canonical workflow name directly. Nested `@` module
+/// separators become `__`, producing a deterministic valid Gleam package name
+/// while the workflow manifest retains canonical `@` module identity. A name
+/// already claimed by a dependency is refused rather than shadowing that
+/// dependency in the build graph.
+pub(crate) fn retarget_root_package(root: &Path, entry_module: &str) -> Result<(), ToolchainError> {
+    let canonical = canonical_entry_module(entry_module)?;
+    let package = document_package_name(&canonical);
+    let descriptor = root.join(GLEAM_CONFIG_FILE);
+    let text = std::fs::read_to_string(&descriptor).map_err(|source| ToolchainError::Io {
+        path: descriptor.clone(),
+        source,
+    })?;
+    let project: GleamProjectConfig =
+        toml::from_str(&text).map_err(|source| ToolchainError::InvalidProject {
+            message: format!("failed to parse {}: {source}", descriptor.display()),
+        })?;
+    if project.dependencies.contains_key(&package)
+        || project.dev_dependencies.contains_key(&package)
+    {
+        return Err(ToolchainError::InvalidProject {
+            message: format!(
+                "document package name `{package}` derived from entry module `{canonical}` collides with a Gleam dependency"
+            ),
+        });
+    }
+
+    let mut config: toml::Value =
+        toml::from_str(&text).map_err(|source| ToolchainError::InvalidProject {
+            message: format!("failed to parse {}: {source}", descriptor.display()),
+        })?;
+    let table = config
+        .as_table_mut()
+        .ok_or_else(|| ToolchainError::InvalidProject {
+            message: format!("{} must contain a TOML table", descriptor.display()),
+        })?;
+    table.insert("name".to_owned(), toml::Value::String(package));
+    let adjusted = toml::to_string(&config).map_err(|source| ToolchainError::InvalidProject {
+        message: format!("failed to serialize {}: {source}", descriptor.display()),
+    })?;
+    std::fs::write(&descriptor, adjusted).map_err(|source| ToolchainError::Io {
+        path: descriptor,
+        source,
+    })
+}
+
+fn document_package_name(canonical_entry: &str) -> String {
+    canonical_entry.replace('@', "__")
+}
+
 /// Removes Gleam's generated root-package application bootstrap after a clean
 /// explicit-entry build.
 ///
-/// `<package>@@main.beam` belongs to the frozen `gleam.toml` package shell, not
-/// to the emitted workflow or a runtime dependency. Excluding it prevents the
-/// template package name from entering document version identity. Generic
-/// project compilation retains it; this ruling is specific to document-owned
-/// packages assembled by `compile_source_for_entry`.
+/// The root package is now document-owned, but `<package>@@main.beam` remains a
+/// generated application bootstrap rather than emitted workflow code or a
+/// runtime dependency. Excluding it keeps compiler shell machinery out of the
+/// workflow version. Generic project compilation retains it; this ruling is
+/// specific to document packages assembled by `compile_source_for_entry`.
 pub(crate) fn remove_generated_root_main_beam(root: &Path) -> Result<(), ToolchainError> {
     let package = root_package_name(root)?;
     let artifact = root
@@ -350,138 +421,5 @@ fn is_gleam_name_component(component: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::{Path, PathBuf};
-
-    use super::{
-        entry_module_source_path, is_confined, is_supported_logical_module, single_entry_module,
-        validate_project_root,
-    };
-    use crate::error::ToolchainError;
-
-    fn temp_root(label: &str) -> Result<PathBuf, std::io::Error> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_nanos())
-            .unwrap_or(0);
-        let root = std::env::temp_dir().join(format!("aion-toolchain-{label}-{nanos}"));
-        std::fs::create_dir_all(&root)?;
-        Ok(root)
-    }
-
-    #[test]
-    fn supported_logical_modules_enforce_gleam_grammar_and_nesting() {
-        for valid in ["hello_world", "demo2", "demo@nested", "demo/nested"] {
-            assert!(is_supported_logical_module(valid), "must accept `{valid}`");
-        }
-        for invalid in [
-            "",
-            "Demo",
-            "bad-name",
-            "bad name",
-            "../escape",
-            "demo@..",
-            "/abs",
-            "demo$bad",
-            "demo\\bad",
-            "demo//nested",
-            "demo/Upper",
-        ] {
-            assert!(
-                !is_supported_logical_module(invalid),
-                "must reject `{invalid}`"
-            );
-        }
-    }
-
-    #[test]
-    fn entry_module_path_maps_nested_modules_under_src() -> Result<(), Box<dyn std::error::Error>> {
-        let root = Path::new("/work");
-        let flat = entry_module_source_path(root, "hello_world")?;
-        assert_eq!(flat, PathBuf::from("/work/src/hello_world.gleam"));
-        let nested = entry_module_source_path(root, "demo@nested")?;
-        assert_eq!(nested, PathBuf::from("/work/src/demo/nested.gleam"));
-        let source_style = entry_module_source_path(root, "demo/other")?;
-        assert_eq!(source_style, PathBuf::from("/work/src/demo/other.gleam"));
-        Ok(())
-    }
-
-    #[test]
-    fn entry_module_path_rejects_traversal() {
-        let root = Path::new("/work");
-        let result = entry_module_source_path(root, "../../etc/passwd");
-        assert!(matches!(result, Err(ToolchainError::InvalidProject { .. })));
-    }
-
-    #[test]
-    fn confinement_folds_dotdot_lexically() {
-        let base = Path::new("/work/src");
-        assert!(is_confined(base, Path::new("/work/src/demo.gleam")));
-        assert!(is_confined(base, Path::new("/work/src/demo/nested.gleam")));
-        assert!(!is_confined(base, Path::new("/work/other.gleam")));
-        assert!(!is_confined(base, Path::new("/work/src/../secret.gleam")));
-    }
-
-    #[test]
-    fn validate_project_root_requires_both_manifests() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("validate")?;
-        let cleanup = || {
-            let _ = std::fs::remove_dir_all(&root);
-        };
-
-        let missing_gleam = validate_project_root(&root);
-        assert!(matches!(
-            missing_gleam,
-            Err(ToolchainError::InvalidProject { .. })
-        ));
-
-        std::fs::write(root.join("gleam.toml"), b"name = \"demo\"\n")?;
-        let missing_workflow = validate_project_root(&root);
-        assert!(matches!(
-            missing_workflow,
-            Err(ToolchainError::InvalidProject { .. })
-        ));
-
-        std::fs::write(root.join("workflow.toml"), b"[[workflow]]\n")?;
-        let ok = validate_project_root(&root);
-        cleanup();
-        ok?;
-        Ok(())
-    }
-
-    #[test]
-    fn single_entry_module_reads_the_descriptor() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("single-entry")?;
-        std::fs::write(
-            root.join("workflow.toml"),
-            b"[[workflow]]\nentry_module = \"hello_world\"\nentry_function = \"run\"\ntimeout_seconds = 30\ninput_schema = \"schemas/input.json\"\noutput_schema = \"schemas/output.json\"\nactivities = []\n",
-        )?;
-        let entry = single_entry_module(&root);
-        let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(entry?, "hello_world");
-        Ok(())
-    }
-
-    #[test]
-    fn many_entry_modules_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("many-entry")?;
-        std::fs::write(
-            root.join("workflow.toml"),
-            b"[[workflow]]\nentry_module = \"a\"\n\n[[workflow]]\nentry_module = \"b\"\n",
-        )?;
-        let entry = single_entry_module(&root);
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(matches!(entry, Err(ToolchainError::InvalidProject { .. })));
-        Ok(())
-    }
-
-    #[test]
-    fn zero_entry_modules_are_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let root = temp_root("zero-entry")?;
-        std::fs::write(root.join("workflow.toml"), b"# no workflows declared\n")?;
-        let entry = single_entry_module(&root);
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(matches!(entry, Err(ToolchainError::InvalidProject { .. })));
-        Ok(())
-    }
-}
+#[path = "project_tests.rs"]
+mod tests;

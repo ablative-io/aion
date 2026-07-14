@@ -98,11 +98,12 @@ pub fn compile_source(request: &CompileRequest<'_>) -> Result<CompiledWorkflow, 
 /// The override is applied only inside the per-submission workspace: the
 /// template remains read-only, its other manifest policy is preserved, and the
 /// replaced template entry source is excluded from the resulting package. A
-/// clean root-package build prevents copied compiler output from leaking stale
-/// modules, while retaining already-built dependency output, and Gleam's
-/// template-named root `@@main` bootstrap is removed before packaging
-/// because it is not document runtime code. This is the document-authoring path,
-/// where the parsed document name owns package identity and the routing key.
+/// document-owned root package name prevents the frozen template name from
+/// entering compiled BEAM paths. A clean root-package build prevents copied
+/// output from leaking stale modules while retaining dependency output. The
+/// generated document-package `@@main` bootstrap is removed before packaging
+/// because it is application shell machinery, not workflow runtime code. The
+/// canonical document name therefore owns module identity and the routing key.
 ///
 /// # Errors
 ///
@@ -131,25 +132,33 @@ fn compile_source_with_entry(
     // success path and on every `?` early return alike.
     let workspace = Workspace::stage(request.template_root)?;
     let workspace_root = workspace.root();
-    let explicit_entry = requested_entry.is_some();
-    let entry_module = requested_entry.unwrap_or(&template_entry);
-    if entry_module != template_entry {
+    let canonical_requested = requested_entry
+        .map(project::canonical_entry_module)
+        .transpose()?;
+    let explicit_entry = canonical_requested.is_some();
+    let entry_module = match &canonical_requested {
+        Some(entry) => entry.as_str(),
+        None => template_entry.as_str(),
+    };
+    if explicit_entry {
         project::retarget_single_entry_module(workspace_root, entry_module)?;
         let template_source = project::entry_module_source_path(workspace_root, &template_entry)?;
         project::remove_entry_source(&template_source)?;
-    }
-    if explicit_entry {
         // The staged template may be prebuilt. Gleam does not prune BEAMs for
         // deleted sources, so root-package incremental reuse would retain the
-        // frozen entry. Dependency output is safe to preserve.
+        // frozen entry. Remove the OLD root output before renaming the package;
+        // dependency output is safe to preserve.
         project::remove_staged_root_build(workspace_root)?;
+        // Gleam embeds this package name in the entry BEAM's generated-source
+        // path, so it must be document-owned before the clean root build.
+        project::retarget_root_package(workspace_root, entry_module)?;
     }
     let source_path = project::entry_module_source_path(workspace_root, entry_module)?;
     project::write_entry_source(&source_path, request.source)?;
     if explicit_entry {
         build_project(workspace_root, request.gleam_path)?;
-        // The generated application bootstrap is named for the frozen Gleam
-        // package shell and is neither the document entry nor a dependency.
+        // Even under the document-owned package name, the generated application
+        // bootstrap is neither the workflow entry nor a dependency.
         project::remove_generated_root_main_beam(workspace_root)?;
         package_built_project(workspace_root)
     } else {
