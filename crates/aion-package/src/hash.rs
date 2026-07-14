@@ -74,14 +74,25 @@ pub fn content_hash(beams: &BeamSet) -> ContentHash {
 }
 
 /// Computes an explicit-timeout package version from the canonical BEAM set,
-/// a framed domain separator, and timeout seconds as an eight-byte big-endian integer.
+/// then the framed ASCII domain `aion.package.version.workflow-timeout.v1`,
+/// then exactly 12 timeout bytes: seconds as `u64` big-endian followed by
+/// subsecond nanoseconds as `u32` big-endian.
 #[must_use]
 pub fn content_hash_with_timeout(beams: &BeamSet, timeout: Duration) -> ContentHash {
     let mut digest = Sha256::new();
     update_beams(&mut digest, beams);
     update_framed(&mut digest, WORKFLOW_TIMEOUT_DOMAIN);
     digest.update(timeout.as_secs().to_be_bytes());
+    digest.update(timeout.subsec_nanos().to_be_bytes());
     ContentHash(digest.finalize().into())
+}
+
+pub(crate) fn has_explicit_timeout_identity(
+    beams: &BeamSet,
+    manifest: &Manifest,
+    hash: &ContentHash,
+) -> bool {
+    hash != &content_hash(beams) && hash == &content_hash_with_timeout(beams, manifest.timeout)
 }
 
 pub(crate) fn verified_content_hash(
@@ -234,6 +245,10 @@ mod tests {
         assert_ne!(
             two_hours,
             content_hash_with_timeout(&beams, Duration::from_secs(21_600))
+        );
+        assert_ne!(
+            two_hours,
+            content_hash_with_timeout(&beams, Duration::new(7_200, 500_000_000))
         );
         assert_ne!(two_hours, content_hash(&beams));
         Ok(())

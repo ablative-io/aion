@@ -11,8 +11,11 @@ use zip::{ZipArchive, result::ZipError};
 
 use crate::{
     BeamModule, BeamSet, ContentHash, ExtractionLimits, Manifest, PackageError,
-    builder::is_safe_logical_name, extraction::ExtractionBudget, hash::verified_content_hash,
-    namespace::deployed_name, version::WorkflowVersion,
+    builder::is_safe_logical_name,
+    extraction::ExtractionBudget,
+    hash::{has_explicit_timeout_identity, verified_content_hash},
+    namespace::deployed_name,
+    version::WorkflowVersion,
 };
 
 const MANIFEST_ENTRY: &str = "manifest.json";
@@ -161,10 +164,9 @@ impl Package {
     ///
     /// The deterministic [`crate::PackageBuilder`] write path is used, so the
     /// output round-trips through [`Self::load_from_bytes`] to a package with
-    /// the same content hash (the hash covers the beam set only), the same
-    /// canonical manifest digest, and the same source set. This is the
-    /// persistence form for runtime-deployed packages: the engine stores
-    /// these bytes so a deploy survives restart.
+    /// the same legacy or explicit-timeout content hash, canonical manifest
+    /// digest, and source set. This is the persistence form for runtime-deployed
+    /// packages: the engine stores these bytes so a deploy survives restart.
     ///
     /// # Errors
     ///
@@ -172,12 +174,15 @@ impl Package {
     /// writer failures; the entry module is already proven present by load
     /// validation.
     pub fn to_archive_bytes(&self) -> Result<Vec<u8>, PackageError> {
-        crate::PackageBuilder::with_source(
+        let mut builder = crate::PackageBuilder::with_source(
             self.manifest.clone(),
             self.beams.clone(),
             self.source.clone(),
-        )
-        .write_to_bytes()
+        );
+        if has_explicit_timeout_identity(&self.beams, &self.manifest, &self.content_hash) {
+            builder = builder.with_explicit_timeout_identity();
+        }
+        builder.write_to_bytes()
     }
 
     #[cfg(any(test, feature = "test-support"))]

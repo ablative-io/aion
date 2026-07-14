@@ -314,7 +314,7 @@ fn builder_produced_package_loads_successfully() -> Result<(), PackageError> {
 }
 
 #[test]
-fn to_archive_bytes_round_trips_to_an_identical_package() -> Result<(), PackageError> {
+fn to_archive_bytes_preserves_legacy_identity() -> Result<(), PackageError> {
     let bytes = PackageBuilder::with_source(
         sample_manifest(),
         sample_beams()?,
@@ -334,6 +334,30 @@ fn to_archive_bytes_round_trips_to_an_identical_package() -> Result<(), PackageE
         reloaded.manifest().canonical_digest()?,
         package.manifest().canonical_digest()?
     );
+    Ok(())
+}
+
+#[test]
+fn to_archive_bytes_preserves_explicit_timeout_identity() -> Result<(), PackageError> {
+    let mut manifest = sample_manifest();
+    manifest.timeout = Duration::new(7_200, 500_000_000);
+    let bytes = PackageBuilder::with_source(
+        manifest,
+        sample_beams()?,
+        BTreeMap::from([(
+            "workflow/order".to_owned(),
+            b"pub fn run() { Nil }".to_vec(),
+        )]),
+    )
+    .with_explicit_timeout_identity()
+    .write_to_bytes()?;
+    let package = Package::load_from_bytes(bytes, ExtractionLimits::unbounded())?;
+
+    let reloaded =
+        Package::load_from_bytes(package.to_archive_bytes()?, ExtractionLimits::unbounded())?;
+
+    assert_eq!(reloaded, package);
+    assert_eq!(reloaded.content_hash(), package.content_hash());
     Ok(())
 }
 

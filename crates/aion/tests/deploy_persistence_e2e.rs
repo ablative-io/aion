@@ -11,8 +11,9 @@
 #[path = "common/reload_fixture.rs"]
 mod reload_fixture;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use aion_package::{ExtractionLimits, Package, PackageBuilder};
 use aion_store::{EventStore, InMemoryStore};
 
 use reload_fixture::{
@@ -78,6 +79,43 @@ async fn runtime_deployed_package_survives_restart_and_recovers_runs() -> TestRe
         .signal(&new_id, &new_run, "release", input()?)
         .await?;
     assert_eq!(result_int(&recovered, &new_id, &new_run).await?, 1);
+    recovered.shutdown()?;
+    Ok(())
+}
+
+/// Regression: before timeout identity preservation in `to_archive_bytes`,
+/// the stored archive was silently restamped beams-only and restart skipped
+/// the explicit-timeout version because it no longer matched its store key.
+#[tokio::test]
+async fn explicit_timeout_deploy_survives_restart_under_the_same_store_key() -> TestResult {
+    let legacy = reload_package(&compile_reload_beam(1)?, "run")?;
+    let mut manifest = legacy.manifest().clone();
+    manifest.timeout = Duration::new(7_200, 500_000_000);
+    let archive = PackageBuilder::new(manifest, legacy.beams().clone())
+        .with_explicit_timeout_identity()
+        .write_to_bytes()?;
+    let package = Package::load_from_bytes(archive, ExtractionLimits::unbounded())?;
+    let expected = package.content_hash().clone();
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+
+    let engine = engine_with(&store, vec![]).await?;
+    engine.load_package(package).await?;
+    let persisted = store.list_packages().await?;
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].content_hash, expected.to_string());
+    let stored_package =
+        Package::load_from_bytes(&persisted[0].archive, ExtractionLimits::unbounded())?;
+    assert_eq!(stored_package.content_hash(), &expected);
+    engine.shutdown()?;
+
+    let recovered = engine_with(&store, vec![]).await?;
+    let versions = recovered.list_workflow_versions()?;
+    assert!(
+        versions
+            .iter()
+            .any(|version| version.content_hash == expected),
+        "explicit-timeout version was not restored under its persisted key: {versions:#?}"
+    );
     recovered.shutdown()?;
     Ok(())
 }
