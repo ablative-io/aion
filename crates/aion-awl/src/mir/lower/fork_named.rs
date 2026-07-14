@@ -29,9 +29,6 @@ pub(super) fn lower_named_fork(
     for statement in &fork.body {
         match statement {
             Statement::Call(call) if ctx.emitter.actions.contains_key(call.call.name.as_str()) => {
-                if call.config.is_some() {
-                    return Err(LowerError::unsupported("call-site config", call.span));
-                }
                 branches.push(call);
             }
             Statement::Call(call) if ctx.emitter.children.contains_key(call.call.name.as_str()) => {
@@ -64,7 +61,16 @@ pub(super) fn lower_named_fork(
     let raw = !homogeneous;
     let mut values = Vec::new();
     for branch in &branches {
-        let queued = activity_value(ctx, plan, &branch.call, None, scope, stmts, raw)?;
+        let queued = activity_value(
+            ctx,
+            plan,
+            &branch.call,
+            branch.config.as_ref(),
+            None,
+            scope,
+            stmts,
+            raw,
+        )?;
         values.push(Value::Var(queued));
     }
     let list = ctx.fresh_var();

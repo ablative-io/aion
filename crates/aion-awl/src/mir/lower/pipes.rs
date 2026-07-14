@@ -44,7 +44,9 @@ pub(super) fn lower_pipe_value(
                         name_span: *span,
                         args: Vec::new(),
                     };
-                    let bound = activity_call(ctx, plan, &call, Some((value, ty)), scope, stmts)?;
+                    // Pipe stages carry no call-site config in the AST.
+                    let bound =
+                        activity_call(ctx, plan, &call, None, Some((value, ty)), scope, stmts)?;
                     ty = ctx
                         .emitter
                         .actions

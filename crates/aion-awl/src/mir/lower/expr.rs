@@ -1,7 +1,9 @@
 //! Keel-expression lowering for the BC-2 covered subset: refs, field access,
-//! literals, variants, record construction, general string concatenation, and
-//! the boolean/comparison forms used by outcome guards (`exprs.rs`). Deferred forms return an explicit
-//! `LowerError::unsupported` — visible incompleteness, never silent drift.
+//! literals (including non-empty lists), literal indexing, variants, record
+//! construction, general string concatenation, and the boolean/comparison
+//! forms used by outcome guards (`exprs.rs`). Deferred forms return an
+//! explicit `LowerError::unsupported` — visible incompleteness, never silent
+//! drift.
 
 use std::collections::BTreeMap;
 
@@ -57,7 +59,10 @@ pub(super) fn lower_expr(
             let _ = span;
             Ok((Value::Lit(lit), GType::Float))
         }
-        Expr::List { items, span } => lower_list_literal(ctx, items, *span, stmts),
+        Expr::List { items, span } => lower_list_literal(ctx, items, *span, scope, stmts),
+        Expr::Index {
+            span, base, index, ..
+        } => lower_index(ctx, base, *index, *span, scope, stmts),
         Expr::Variant { name, .. } => {
             let atom = ctx.atom(&snake(name));
             let ty = ctx.variant_enum(name).unwrap_or(GType::Unknown);
@@ -130,22 +135,100 @@ pub(super) fn lower_expr(
     }
 }
 
+/// List literals mirror the reference `render_expr` list arm
+/// (`emitter/exprs.rs:209-216`): each item renders as a plain expression —
+/// never through `render_arg_for`, so no per-item `Some(...)` wrapping —
+/// and the element type is the first item's type (`Unknown` when empty,
+/// `emitter/exprs.rs:93-96`).
 fn lower_list_literal(
     ctx: &mut Ctx<'_>,
     items: &[Expr],
     span: crate::Span,
+    scope: &Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<(Value, GType), LowerError> {
-    if !items.is_empty() {
-        return Err(LowerError::unsupported("non-empty list literal", span));
+    let mut values = Vec::with_capacity(items.len());
+    let mut elem_ty = GType::Unknown;
+    for (position, item) in items.iter().enumerate() {
+        let (value, ty) = lower_expr(ctx, item, scope, stmts)?;
+        if position == 0 {
+            elem_ty = ty;
+        }
+        values.push(value);
     }
     let dst = ctx.fresh_var();
     stmts.push(Stmt::ListNew {
         dst,
-        items: Vec::new(),
+        items: values,
         span: span_of(span),
     });
-    Ok((Value::Var(dst), GType::List(Box::new(GType::Unknown))))
+    Ok((Value::Var(dst), GType::List(Box::new(elem_ty))))
+}
+
+/// Literal-only list indexing through `aion@awl@runtime:index/3` — the MIR
+/// twin of the reference prelude line (`emitter/exprs.rs:240-251`). The
+/// out-of-range message is byte-identical to the reference (a terminal-error
+/// parity surface), anchored on the whole `base[index]` expression's span.
+fn lower_index(
+    ctx: &mut Ctx<'_>,
+    base: &Expr,
+    index: u64,
+    span: crate::Span,
+    scope: &Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(Value, GType), LowerError> {
+    let (base_value, base_ty) = lower_expr(ctx, base, scope, stmts)?;
+    let inner = match ctx.emitter.env.resolve(&base_ty) {
+        GType::List(inner) => *inner,
+        other => {
+            // Checker-caught (`checker/exprs.rs`); mirror the reference
+            // diagnostic defensively for unchecked documents.
+            return Err(LowerError::new(
+                span,
+                format!(
+                    "indexing needs a list, found {}",
+                    ctx.emitter.env.gleam_type(&other)
+                ),
+            ));
+        }
+    };
+    let message = format!(
+        "index {index} out of range at line {}, column {}",
+        span.line, span.column
+    );
+    let msg_lit = ctx.binary(&message);
+    let signed = i64::try_from(index)
+        .map_err(|_| LowerError::unsupported("index literal above i64::MAX", span))?;
+    let result = call_rt(
+        ctx,
+        RuntimeFn::RtIndex,
+        vec![base_value, Value::Int(signed), Value::Lit(msg_lit)],
+        stmts,
+        span,
+    );
+    let dst = ctx.fresh_var();
+    stmts.push(Stmt::TryBind {
+        dst,
+        result,
+        live_after: LiveAfter::default(),
+        span: span_of(span),
+    });
+    Ok((Value::Var(dst), inner))
+}
+
+/// Whether an expression contains a literal index anywhere in its tree —
+/// shared by the parallel-fork prelude refusal (`forks`) and the
+/// outcome-guard refusal (`outcome`), both emitter parity classes.
+pub(super) fn expr_contains_index(expr: &Expr) -> bool {
+    match expr {
+        Expr::Index { .. } => true,
+        Expr::Field { base, .. } | Expr::Not { expr: base, .. } => expr_contains_index(base),
+        Expr::Binary { left, right, .. } => expr_contains_index(left) || expr_contains_index(right),
+        Expr::Predicate { subject, .. } => expr_contains_index(subject),
+        Expr::Record { args, .. } => args.iter().any(|arg| expr_contains_index(&arg.value)),
+        Expr::List { items, .. } => items.iter().any(expr_contains_index),
+        _ => false,
+    }
 }
 
 fn lower_logic(

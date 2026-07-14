@@ -3,19 +3,19 @@
 //! ordered await fold; sequential forks use `spawn_and_wait` in one fold.
 
 use crate::ast::{Call, ForkStmt, Step};
-use crate::emitter::{GType, snake, type_ref_to_g};
+use crate::emitter::{GType, snake};
 
 use super::super::func::{FlowFn, FnOrigin, MirFn};
 use super::super::ids::{FnRef, Span, Var};
-use super::super::ops::{JsonVal, LiveAfter, Stmt, Tail, Value};
+use super::super::ops::{LiveAfter, Stmt, Tail, Value};
 use super::super::runtime::RuntimeFn;
 use super::super::tydesc::TyDesc;
 use super::activity::{call_rt, record_new};
 use super::build::FnPlan;
-use super::child_call::{spawn_wait_args, to_json_ref};
+use super::child_call::{child_input_json, spawn_wait_args};
 use super::ctx::Ctx;
 use super::driver::LowerError;
-use super::expr::{Binding, Scope, lower_arg_for};
+use super::expr::{Binding, Scope};
 use super::slots::Slots;
 
 pub(super) struct ChildFork<'a> {
@@ -406,41 +406,7 @@ fn child_spawn_args(
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<Vec<Value>, LowerError> {
-    let child = ctx
-        .emitter
-        .children
-        .get(fork.call.name.as_str())
-        .ok_or_else(|| LowerError::new(fork.call.name_span, "child declaration disappeared"))?;
-    let params = child.params.clone();
-    let mut pairs = Vec::new();
-    for param in &params {
-        let arg = fork
-            .call
-            .args
-            .iter()
-            .find(|arg| arg.name == param.name)
-            .ok_or_else(|| {
-                LowerError::new(
-                    fork.call.span,
-                    format!("call misses argument `{}`", param.name),
-                )
-            })?;
-        let ty = type_ref_to_g(&param.ty);
-        let value = lower_arg_for(ctx, &arg.value, &ty, scope, stmts)?;
-        pairs.push((
-            param.name.clone(),
-            JsonVal::Encoded {
-                value,
-                via: to_json_ref(ctx, plan, &ty)?,
-            },
-        ));
-    }
-    let input = ctx.fresh_var();
-    stmts.push(Stmt::JsonObj {
-        dst: input,
-        pairs,
-        span: Span::from_source(fork.call.span),
-    });
+    let input = child_input_json(ctx, plan, fork.call, scope, stmts)?;
     spawn_wait_args(
         ctx,
         plan,

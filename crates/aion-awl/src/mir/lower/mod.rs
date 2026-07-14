@@ -24,6 +24,7 @@ mod outcome;
 mod pipes;
 mod registry;
 mod slots;
+mod wait;
 mod wrappers;
 
 pub use driver::{LowerError, lower};

@@ -1,9 +1,12 @@
 //! Shared child-spawn emission: the string-name spawn argument tuple
-//! (witness, codecs, name literal) used by both collection child forks and
-//! pipe child stages, plus the pipe stage itself — the direct twin of the
-//! reference `emitter/pipes.rs` child arm (`workflow.spawn_and_wait` with the
-//! single declared parameter JSON-encoded, `map_child_error`, `TryBind`).
+//! (witness, codecs, name literal) used by collection child forks, pipe
+//! child stages, and the statement-level child forms; the shared JSON-input
+//! builder (`child_input_json`); the awaited child call statement
+//! (`workflow.spawn_and_wait |> map_child_error`, the reference
+//! `emitter/stmts.rs:214-239`); and the fire-and-forget `spawn` statement
+//! (`workflow.spawn |> map_spawn_error`, `emitter/stmts.rs:242-267`).
 
+use crate::ast::{Call, CallStmt, SpawnStmt};
 use crate::emitter::{GType, type_ref_to_g};
 
 use super::super::func::CodecRef;
@@ -15,7 +18,7 @@ use super::activity::call_rt;
 use super::build::{FnPlan, child_output_codec_ref_for, codec_ref_for};
 use super::ctx::Ctx;
 use super::driver::LowerError;
-use super::expr::wrap_optional_value;
+use super::expr::{Binding, Scope, lower_arg_for, wrap_optional_value};
 
 /// The six-argument tail of a string-name child spawn (`spawn`/
 /// `spawn_and_wait`): witness closure, input/output/error codecs, and the
@@ -52,6 +55,178 @@ pub(super) fn spawn_wait_args(
         Value::Var(output_codec),
         Value::Var(error_codec),
     ])
+}
+
+/// Build the JSON input object for a string-name child spawn: declared
+/// parameters matched by name in declared order, each argument lowered for
+/// its slot and encoded through its wire type's `_to_json`, folded into one
+/// `json.object` (the reference `child_spawn_args` input,
+/// `emitter/stmts.rs:160-184`). Shared by collection child forks and the
+/// statement-level child call/spawn forms.
+pub(super) fn child_input_json(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    call: &Call,
+    scope: &Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<Var, LowerError> {
+    let child = ctx
+        .emitter
+        .children
+        .get(call.name.as_str())
+        .ok_or_else(|| LowerError::new(call.name_span, "child declaration disappeared"))?;
+    let params = child.params.clone();
+    let mut pairs = Vec::new();
+    for param in &params {
+        let arg = call
+            .args
+            .iter()
+            .find(|arg| arg.name == param.name)
+            .ok_or_else(|| {
+                LowerError::new(call.span, format!("call misses argument `{}`", param.name))
+            })?;
+        let ty = type_ref_to_g(&param.ty);
+        let value = lower_arg_for(ctx, &arg.value, &ty, scope, stmts)?;
+        pairs.push((
+            param.name.clone(),
+            JsonVal::Encoded {
+                value,
+                via: to_json_ref(ctx, plan, &ty)?,
+            },
+        ));
+    }
+    let input = ctx.fresh_var();
+    stmts.push(Stmt::JsonObj {
+        dst: input,
+        pairs,
+        span: Span::from_source(call.span),
+    });
+    Ok(input)
+}
+
+/// The reference's exact child-config refusal class: `node`/`timeout` cannot
+/// pin a child workflow call (`emitter/stmts.rs:224-229`). Shared with the
+/// collection-fork child branch gate (`forks::collection_branch`).
+pub(super) fn child_config_refusal(span: crate::Span) -> LowerError {
+    LowerError::new(
+        span,
+        "`node`/`timeout` cannot pin a child workflow call — the engine routes children, \
+         not a queue",
+    )
+}
+
+/// Lower an awaited child call statement: `workflow.spawn_and_wait<args> |>
+/// awl_error.map_child_error`, bind = the child's declared return type
+/// (`emitter/stmts.rs:214-239`).
+pub(super) fn lower_child_call_stmt(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    call_stmt: &CallStmt,
+    scope: &mut Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(), LowerError> {
+    if call_stmt.config.is_some() {
+        return Err(child_config_refusal(call_stmt.span));
+    }
+    let call = &call_stmt.call;
+    let returns = ctx
+        .emitter
+        .children
+        .get(call.name.as_str())
+        .map(|child| type_ref_to_g(&child.returns))
+        .ok_or_else(|| LowerError::new(call.name_span, "child declaration disappeared"))?;
+    let input = child_input_json(ctx, plan, call, scope, stmts)?;
+    let args = spawn_wait_args(
+        ctx,
+        plan,
+        &call.name,
+        call.name_span,
+        &returns,
+        input,
+        stmts,
+    )?;
+    let waited = call_rt(ctx, RuntimeFn::WfSpawnAndWait, args, stmts, call.name_span);
+    let mapped = call_rt(
+        ctx,
+        RuntimeFn::MapChildError,
+        vec![Value::Var(waited)],
+        stmts,
+        call.name_span,
+    );
+    let bound = ctx.fresh_var();
+    stmts.push(Stmt::TryBind {
+        dst: bound,
+        result: mapped,
+        live_after: LiveAfter::default(),
+        span: Span::from_source(call.name_span),
+    });
+    if let Some(bind) = &call_stmt.bind {
+        scope.insert(
+            bind.name.clone(),
+            Binding {
+                var: bound,
+                ty: returns,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Lower a fire-and-forget `spawn` statement: `workflow.spawn<args> |>
+/// awl_error.map_spawn_error`, result discarded through the try
+/// (`emitter/stmts.rs:242-267`). A binding parses but is refused with the
+/// reference's message.
+pub(super) fn lower_spawn_stmt(
+    ctx: &mut Ctx<'_>,
+    plan: &FnPlan,
+    spawn: &SpawnStmt,
+    scope: &Scope,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(), LowerError> {
+    if let Some(bind) = &spawn.bind {
+        return Err(LowerError::new(
+            bind.span,
+            "`spawn` is fire-and-forget: binding its result is a check error",
+        ));
+    }
+    let call = &spawn.call;
+    let returns = ctx
+        .emitter
+        .children
+        .get(call.name.as_str())
+        .map(|child| type_ref_to_g(&child.returns))
+        .ok_or_else(|| {
+            LowerError::new(
+                call.name_span,
+                format!("`{}` names no declared child workflow", call.name),
+            )
+        })?;
+    let input = child_input_json(ctx, plan, call, scope, stmts)?;
+    let args = spawn_wait_args(
+        ctx,
+        plan,
+        &call.name,
+        call.name_span,
+        &returns,
+        input,
+        stmts,
+    )?;
+    let spawned = call_rt(ctx, RuntimeFn::WfSpawn, args, stmts, call.name_span);
+    let mapped = call_rt(
+        ctx,
+        RuntimeFn::MapSpawnError,
+        vec![Value::Var(spawned)],
+        stmts,
+        call.name_span,
+    );
+    let discard = ctx.fresh_var();
+    stmts.push(Stmt::TryBind {
+        dst: discard,
+        result: mapped,
+        live_after: LiveAfter::default(),
+        span: Span::from_source(call.name_span),
+    });
+    Ok(())
 }
 
 /// One single-argument child stage of a pipe chain: the piped value threads in

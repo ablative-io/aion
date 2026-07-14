@@ -7,7 +7,7 @@
 //! sidecar-visible, S8 "select never synthesizes a function"), expanded here.
 
 use crate::mir::runtime::RuntimeFn;
-use crate::mir::{CodecRef, FnOrigin, FnRef, MirModule, Span, TemplateFn, TypeShape};
+use crate::mir::{CodecRef, FnOrigin, FnRef, MirModule, TemplateFn, TypeShape};
 
 use super::builder::Builder;
 use super::error::SelectError;
@@ -218,7 +218,10 @@ pub(super) fn lower_shell(
             input_codec,
             ..
         } => shell_activity_raw(builder, action, *input, *input_codec, &header),
-        TemplateFn::SignalRef { .. } => Err(SelectError::unsupported("T-SIG shell", Span::zero())),
+        TemplateFn::SignalRef {
+            signal,
+            payload_codec,
+        } => shell_signal(builder, signal, payload_codec, &header),
         TemplateFn::DeadBody => shell_dead(builder, &header),
         TemplateFn::ChildWitness => Ok(super::child_witness::lower(builder, &header)),
     }
@@ -440,6 +443,26 @@ fn shell_activity_raw(
             Src::Var(raw_return),
             Src::Var(dead_var),
         ],
+    };
+    Ok(shell.finish(tail, header))
+}
+
+/// T-SIG: the signal-ref shell (`emitter/wrappers.rs::signal_refs`): one
+/// payload-codec call, then `call_ext_last signal:new/2` with the declared
+/// signal-name binary — the recipe twin of `signal.new("name", codec())`.
+fn shell_signal(
+    builder: &mut Builder<'_>,
+    signal: &str,
+    payload_codec: &CodecRef,
+    header: &Header,
+) -> Result<Body, SelectError> {
+    let name_lit = builder.binary_literal(signal.as_bytes().to_vec());
+    let mut shell = Shell::new(builder, header.param_count);
+    let codec = shell.codec(payload_codec)?;
+    let tail = TailKind::TailImport {
+        import: shell.builder.import(RuntimeFn::SignalNew)?,
+        arity: 2,
+        args: vec![Src::Lit(name_lit), Src::Var(codec)],
     };
     Ok(shell.finish(tail, header))
 }
