@@ -1,7 +1,7 @@
 module fallible_any_short_circuit source=fallible_any_short_circuit.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
-== durable families == 
+== durable families ==
 == atoms ==
   [0] finding
   [1] verdict

@@ -171,7 +171,7 @@ fn lower_logic(
             span,
         } => {
             let (lhs, lhs_ty) = lower_expr(ctx, left, scope, stmts)?;
-            let (rhs, _) = lower_expr(ctx, right, scope, stmts)?;
+            let (rhs, rhs_ty) = lower_expr(ctx, right, scope, stmts)?;
             match op {
                 BinaryOp::And | BinaryOp::Or => stmts.push(Stmt::BoolOp {
                     dst,
@@ -184,12 +184,17 @@ fn lower_logic(
                     rhs,
                     span: span_of(*span),
                 }),
-                BinaryOp::Concat => stmts.push(Stmt::Concat {
-                    dst,
-                    lhs,
-                    rhs,
-                    span: span_of(*span),
-                }),
+                BinaryOp::Concat => {
+                    if !matches!((&lhs_ty, &rhs_ty), (GType::Str, GType::Str)) {
+                        return Err(LowerError::unsupported("string concatenation", *span));
+                    }
+                    stmts.push(Stmt::Concat {
+                        dst,
+                        lhs,
+                        rhs,
+                        span: span_of(*span),
+                    });
+                }
                 comparison => stmts.push(Stmt::Cmp {
                     dst,
                     op: cmp_op(*comparison, &lhs_ty),

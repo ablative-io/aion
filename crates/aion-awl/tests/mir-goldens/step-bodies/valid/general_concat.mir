@@ -1,7 +1,7 @@
 module general_concat source=general_concat.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
-== durable families == 
+== durable families ==
 == atoms ==
   [0] config
   [1] provisioned

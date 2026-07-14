@@ -1,7 +1,7 @@
 module short_circuit_optional source=short_circuit_optional.awl
 exports: run/1, definition/0, execute/1
 == effect schedule ==
-== durable families == 
+== durable families ==
 == atoms ==
   [0] candidate
   [1] detail

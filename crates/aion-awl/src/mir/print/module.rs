@@ -105,7 +105,11 @@ fn print_capability_summary(module: &MirModule, out: &mut String) {
     used.sort_unstable();
     used.dedup();
     let names: Vec<&str> = used.into_iter().map(family_name).collect();
-    let _ = writeln!(out, "== durable families == {}", names.join(", "));
+    if names.is_empty() {
+        let _ = writeln!(out, "== durable families ==");
+    } else {
+        let _ = writeln!(out, "== durable families == {}", names.join(", "));
+    }
 }
 
 fn gather_families(block: &Block, out: &mut Vec<DurableFamily>) {
