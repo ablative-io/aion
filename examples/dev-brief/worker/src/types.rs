@@ -11,6 +11,72 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Review-finding severity (`codecs.severity_codec`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// Evidence that mechanically rejects the review round.
+    Blocking,
+    /// Recorded evidence that does not itself reject the round.
+    Advisory,
+}
+
+/// A lens's asserted overall (`codecs.overall_codec`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Overall {
+    /// The lens asserts acceptance.
+    Accept,
+    /// The lens asserts rejection.
+    Reject,
+}
+
+/// One concrete finding in a [`LensVerdict`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewFinding {
+    /// Whether this finding is blocking or advisory.
+    pub severity: Severity,
+    /// The concise finding title used in formatted adverse evidence.
+    pub title: String,
+    /// The detailed file/line or command evidence supplied by the lens.
+    pub evidence: String,
+}
+
+/// One review lens's collected verdict (`codecs.lens_verdict_codec`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LensVerdict {
+    /// The configured lens name.
+    pub lens: String,
+    /// The lens's concrete findings.
+    pub findings: Vec<ReviewFinding>,
+    /// The lens's asserted overall.
+    pub overall: Overall,
+    /// Its rejection reason. Both an omitted AWL optional and a Gleam `null`
+    /// deserialize to `None`.
+    #[serde(default)]
+    pub reject_reason: Option<String>,
+}
+
+/// Named-argument input to `format_verdict_evidence`.
+///
+/// The activity boundary deliberately accepts a record, never a bare verdict
+/// list, matching AWL named-argument invocation semantics.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatVerdictEvidenceInput {
+    /// All collected lens verdicts for one review round, in lens order.
+    pub verdicts: Vec<LensVerdict>,
+}
+
+/// Record result from `format_verdict_evidence`.
+///
+/// AWL consumes this as a record field rather than a bare string.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatVerdictEvidenceOutput {
+    /// The Gleam-compatible adverse evidence string. It is empty when the
+    /// round has no adverse verdict evidence.
+    pub evidence: String,
+}
+
 /// Input to `provision_workspace` (`codecs.provision_input_codec`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProvisionInput {

@@ -63,49 +63,55 @@ pub fn load(dir: &Path) -> Result<Profiles, String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::load;
 
-    fn write(dir: &std::path::Path, name: &str, body: &str) {
-        std::fs::write(dir.join(name), body).expect("write profile");
+    fn write(dir: &std::path::Path, name: &str, body: &str) -> std::io::Result<()> {
+        std::fs::write(dir.join(name), body)
     }
 
     #[test]
-    fn loads_both_profiles_verbatim() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn loads_both_profiles_verbatim() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
         write(
             dir.path(),
             "developer.md",
             "# Developer\nimplement the brief",
-        );
+        )?;
         write(
             dir.path(),
             "reviewer.md",
             "# Reviewer\nrefute with evidence",
-        );
+        )?;
 
-        let profiles = load(dir.path()).expect("profiles load");
+        let profiles = load(dir.path()).map_err(anyhow::Error::msg)?;
         assert!(profiles.developer.contains("implement the brief"));
         assert!(profiles.reviewer.contains("refute with evidence"));
+        Ok(())
     }
 
     #[test]
-    fn a_missing_profile_is_a_loud_error_naming_the_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write(dir.path(), "developer.md", "doctrine");
+    fn a_missing_profile_is_a_loud_error_naming_the_file() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "developer.md", "doctrine")?;
         // reviewer.md missing.
-        let error = load(dir.path()).expect_err("must fail");
+        let Err(error) = load(dir.path()) else {
+            anyhow::bail!("profiles unexpectedly loaded without reviewer.md");
+        };
         assert!(error.contains("reviewer.md"), "error was: {error}");
+        Ok(())
     }
 
     #[test]
-    fn an_empty_profile_is_refused() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write(dir.path(), "developer.md", "   \n");
-        write(dir.path(), "reviewer.md", "r");
-        let error = load(dir.path()).expect_err("must fail");
+    fn an_empty_profile_is_refused() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "developer.md", "   \n")?;
+        write(dir.path(), "reviewer.md", "r")?;
+        let Err(error) = load(dir.path()) else {
+            anyhow::bail!("profiles unexpectedly loaded with an empty developer profile");
+        };
         assert!(error.contains("developer"), "error was: {error}");
         assert!(error.contains("empty"), "error was: {error}");
+        Ok(())
     }
 }

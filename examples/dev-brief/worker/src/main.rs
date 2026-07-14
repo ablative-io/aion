@@ -1,6 +1,6 @@
 //! Composition root for the dev-brief worker.
 //!
-//! It serves seven activity types on ONE task queue (`dev_brief`) across
+//! It serves eight activity types on ONE task queue (`dev_brief`) across
 //! THREE liminal connections in this single process, each connection
 //! registered on its OWN node (the third routing dimension: namespace ×
 //! `task_queue` × node) so the server — which routes by those three
@@ -16,7 +16,8 @@
 //!   assembled with the per-run context by the role's ONE prompt function.
 //! - one SHELL connection, registered on node `shell`, serving
 //!   `provision_workspace`, `run_gates`, `reset_workspace`, `verify_gates`,
-//!   and `cleanup_workspace` from a typed registry, with no harness.
+//!   `cleanup_workspace`, and `format_verdict_evidence` from a typed registry,
+//!   with no harness.
 //!
 //! Session isolation falls out of the topology: the developer runs inside
 //! the `dev_brief` workflow (`{workflow_id}-developer` — per brief, resumed
@@ -38,20 +39,25 @@ use std::time::Duration;
 use aion_integration_norn::NornHarness;
 use aion_integrations::{DynAgentHarness, InterventionCapabilities, InterventionPrimitive};
 use aion_worker::{
-    ActivityContext, ActivityRegistry, AgentHarnessConfig, HandlerFuture, RedialTiming,
-    WorkerConfig, WorkerConfigBuildError,
+    ActivityRegistry, AgentHarnessConfig, RedialTiming, WorkerConfig, WorkerConfigBuildError,
 };
 
-use dev_brief_worker::handlers;
 use dev_brief_worker::harness::{PostRunCommit, ProfiledNornHarness};
 use dev_brief_worker::profiles::{self, Profiles};
 use dev_brief_worker::prompts;
 use dev_brief_worker::schemas;
 use dev_brief_worker::shell::Shell;
 
-/// The default liminal listen address the worker dials — the server's
-/// `[outbox] liminal_listen_address`.
-const DEFAULT_ADDRESS: &str = "127.0.0.1:50061";
+#[path = "main_args.rs"]
+mod args;
+#[path = "main_shell_node.rs"]
+mod shell_node;
+
+use args::{Args, parse_args};
+#[cfg(test)]
+use args::{DEFAULT_ADDRESS, parse_args_from};
+use shell_node::shell_registry;
+
 /// The one task queue every dev-brief activity is dispatched on.
 const TASK_QUEUE: &str = "dev_brief";
 /// The node id the SHELL connection registers. The server routes a pushed
@@ -101,18 +107,6 @@ struct Role {
     post_run_commit: Option<PostRunCommit>,
 }
 
-/// Parsed command-line arguments.
-#[derive(Debug)]
-struct Args {
-    candidates: Vec<String>,
-    identity_prefix: String,
-    ready_file: Option<String>,
-    norn_bin: String,
-    /// The directory the two role profiles are loaded from — REQUIRED: this
-    /// package's `worker/profiles/`.
-    profiles_dir: String,
-}
-
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -129,7 +123,7 @@ fn main() -> anyhow::Result<()> {
         norn_bin = %args.norn_bin,
         profiles_dir = %args.profiles_dir,
         task_queue = TASK_QUEUE,
-        "dev-brief-worker starting: 2 driven agent roles + 5 shell activities across 3 connections"
+        "dev-brief-worker starting: 2 driven agent roles + 6 shell activities across 3 connections"
     );
 
     let roles = roles(profiles);
@@ -277,25 +271,7 @@ fn inner_norn_harness(norn_bin: &str, role: &Role) -> NornHarness {
     harness.without_env("OPENAI_API_KEY")
 }
 
-/// The three shell activities as a typed registry — the ONE definition of
-/// what the shell connection (node [`SHELL_NODE`]) serves; the routing tests
-/// read the served set from here so it can never drift from production.
-fn shell_registry(shell: Shell) -> Result<ActivityRegistry, aion_worker::WorkerError> {
-    ActivityRegistry::new()
-        .register_activity(
-            "provision_workspace",
-            blocking(shell.clone(), handlers::provision),
-        )?
-        .register_activity("run_gates", blocking(shell.clone(), handlers::run_gates))?
-        .register_activity("reset_workspace", blocking(shell.clone(), handlers::reset))?
-        .register_activity(
-            "verify_gates",
-            blocking(shell.clone(), handlers::verify_gates),
-        )?
-        .register_activity("cleanup_workspace", blocking(shell, handlers::cleanup))
-}
-
-/// Serve the three shell activities from a typed registry on one connection,
+/// Serve the six shell-node activities from a typed registry on one connection,
 /// registered on the `shell` node so only shell activities are routed here.
 fn serve_shell(args: &Args) -> anyhow::Result<()> {
     let identity = format!("{}-shell", args.identity_prefix);
@@ -317,8 +293,8 @@ fn serve_shell(args: &Args) -> anyhow::Result<()> {
                 tracing::error!(%error, "failed to write worker readiness file");
             }
             tracing::info!(
-                "shell connection registered; serving \
-                 provision/run_gates/reset/verify_gates/cleanup"
+                "shell connection registered; serving provision/run_gates/reset/\
+                 verify_gates/cleanup/format_verdict_evidence"
             );
         },
     )?;
@@ -344,329 +320,6 @@ fn worker_config(identity: &str, node: &str) -> Result<WorkerConfig, WorkerConfi
         .build()
 }
 
-/// Adapt a synchronous, blocking handler body onto the worker SDK's async
-/// handler signature — the shell bodies block on git and the gate commands,
-/// so each invocation moves to the blocking thread pool.
-fn blocking<Input, Output>(
-    shell: Shell,
-    body: fn(&Shell, Input) -> Result<Output, aion_worker::ActivityFailure>,
-) -> impl for<'context> Fn(Input, &'context ActivityContext) -> HandlerFuture<'context, Output>
-+ Send
-+ Sync
-+ 'static
-where
-    Input: Send + 'static,
-    Output: Send + 'static,
-{
-    move |input: Input, _context: &ActivityContext| {
-        let shell = shell.clone();
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || body(&shell, input))
-                .await
-                .map_err(|join_error| {
-                    aion_worker::ActivityFailure::terminal(format!(
-                        "activity handler task did not complete: {join_error}"
-                    ))
-                })?
-        })
-    }
-}
-
-fn parse_args() -> anyhow::Result<Args> {
-    let default_norn_bin = std::env::var("NORN_BIN").unwrap_or_else(|_| "norn".to_owned());
-    parse_args_from(std::env::args().skip(1), default_norn_bin)
-}
-
-/// The argument-parsing core, fed an explicit iterator and defaults so tests
-/// exercise the exact production logic without touching process globals.
-/// `--profiles-dir` is REQUIRED: the roles cannot run without their doctrine,
-/// and a silently-defaulted path would mask an operator omission.
-fn parse_args_from(
-    args: impl IntoIterator<Item = String>,
-    default_norn_bin: String,
-) -> anyhow::Result<Args> {
-    let mut candidates: Vec<String> = Vec::new();
-    let mut identity_prefix = "dev-brief-worker".to_owned();
-    let mut ready_file: Option<String> = None;
-    let mut norn_bin = default_norn_bin;
-    let mut profiles_dir: Option<String> = None;
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--address" => candidates.push(next_value(&mut args, "--address")?),
-            "--identity" => identity_prefix = next_value(&mut args, "--identity")?,
-            "--ready-file" => ready_file = Some(next_value(&mut args, "--ready-file")?),
-            "--norn-bin" => norn_bin = next_value(&mut args, "--norn-bin")?,
-            "--profiles-dir" => profiles_dir = Some(next_value(&mut args, "--profiles-dir")?),
-            other => anyhow::bail!("unknown argument `{other}`"),
-        }
-    }
-    if candidates.is_empty() {
-        candidates.push(DEFAULT_ADDRESS.to_owned());
-    }
-    let profiles_dir = profiles_dir.ok_or_else(|| {
-        anyhow::anyhow!("--profiles-dir is required (point it at this package's worker/profiles/)")
-    })?;
-    Ok(Args {
-        candidates,
-        identity_prefix,
-        ready_file,
-        norn_bin,
-        profiles_dir,
-    })
-}
-
-/// Take the value for a value-taking flag, bailing clearly when it is
-/// missing — a silent default would mask an operator typo.
-fn next_value(args: &mut impl Iterator<Item = String>, flag: &str) -> anyhow::Result<String> {
-    args.next()
-        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))
-}
-
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use super::{
-        DEFAULT_ADDRESS, PostRunCommit, Profiles, Role, SHELL_NODE, Shell, inner_norn_harness,
-        parse_args_from, prompts, roles, shell_registry,
-    };
-
-    fn parse(args: &[&str]) -> anyhow::Result<super::Args> {
-        parse_args_from(
-            args.iter().map(|arg| (*arg).to_owned()),
-            "norn-default".to_owned(),
-        )
-    }
-
-    fn profiles() -> Profiles {
-        Profiles {
-            developer: "dev".to_owned(),
-            reviewer: "rev".to_owned(),
-        }
-    }
-
-    #[test]
-    fn profiles_dir_is_required() {
-        let error = parse(&[]).expect_err("must fail without --profiles-dir");
-        assert!(
-            error.to_string().contains("--profiles-dir"),
-            "error: {error}"
-        );
-    }
-
-    #[test]
-    fn minimal_arguments_yield_the_defaults() -> anyhow::Result<()> {
-        let args = parse(&["--profiles-dir", "/pkg/profiles"])?;
-        assert_eq!(args.candidates, vec![DEFAULT_ADDRESS.to_owned()]);
-        assert_eq!(args.identity_prefix, "dev-brief-worker");
-        assert_eq!(args.ready_file, None);
-        assert_eq!(args.norn_bin, "norn-default");
-        assert_eq!(args.profiles_dir, "/pkg/profiles");
-        Ok(())
-    }
-
-    #[test]
-    fn every_value_taking_flag_bails_when_missing() {
-        for flag in [
-            "--address",
-            "--identity",
-            "--ready-file",
-            "--norn-bin",
-            "--profiles-dir",
-        ] {
-            assert_eq!(
-                parse(&[flag]).err().map(|error| error.to_string()),
-                Some(format!("{flag} requires a value")),
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_argument_bails() {
-        assert_eq!(
-            parse(&["--bogus"]).err().map(|error| error.to_string()),
-            Some("unknown argument `--bogus`".to_owned()),
-        );
-    }
-
-    /// The role wiring: each role carries its own schema, session suffix,
-    /// profile, and tool deny-list. The workspace root is NO LONGER a role
-    /// field — it is per-run data the harness reads from the activity input —
-    /// so the deny-list is the discriminator the reviewer carries and the
-    /// developer does not.
-    #[test]
-    fn roles_bind_schema_session_profile_and_deny_list() {
-        let roles = roles(profiles());
-        let summary: Vec<(&str, &str, Option<&str>)> = roles
-            .iter()
-            .map(|role| {
-                (
-                    role.activity_type,
-                    role.session_suffix,
-                    role.disallowed_tools,
-                )
-            })
-            .collect();
-        assert_eq!(
-            summary,
-            vec![
-                ("developer", "developer", None),
-                ("review_lens", "reviewer", Some("write,edit,apply_patch")),
-            ]
-        );
-        for role in &roles {
-            assert!(role.output_schema.trim_start().starts_with('{'));
-            assert!(!role.profile.is_empty());
-        }
-    }
-
-    /// The reviewer's read-only guarantee at the process boundary: its
-    /// composed Norn command carries `--disallowed-tools` naming exactly the
-    /// file-mutating tools (`write`, `edit`, `apply_patch`), and the developer
-    /// carries no deny-list at all (it must write to implement the brief).
-    #[test]
-    fn the_reviewer_denies_file_mutating_tools_and_the_developer_does_not() {
-        let roles = roles(profiles());
-        for role in &roles {
-            let debug = format!("{:?}", inner_norn_harness("norn", role));
-            match role.activity_type {
-                "review_lens" => {
-                    assert!(
-                        debug.contains("\"--disallowed-tools\", \"write,edit,apply_patch\""),
-                        "the reviewer must deny the file-mutating tools; args were:\n{debug}"
-                    );
-                }
-                "developer" => {
-                    assert!(
-                        !debug.contains("--disallowed-tools"),
-                        "the developer must carry no tool deny-list; args were:\n{debug}"
-                    );
-                }
-                other => panic!("unexpected role {other}"),
-            }
-            // No role bakes a static --workspace-root: it is per-run input data.
-            assert!(
-                !debug.contains("--workspace-root"),
-                "the workspace root is per-run input, never a static harness arg; \
-                 args were:\n{debug}"
-            );
-        }
-    }
-
-    /// The mechanical-git doctrine's wiring, the FULL table: the developer
-    /// commits its round's work (the report's `commits` is rewritten to the
-    /// real head), and no other role's harness may grow a silent git side
-    /// effect.
-    #[test]
-    fn post_run_commits_are_wired_per_role_exactly() {
-        let table: Vec<(&str, Option<PostRunCommit>)> = roles(profiles())
-            .iter()
-            .map(|role| (role.activity_type, role.post_run_commit))
-            .collect();
-        assert_eq!(
-            table,
-            vec![
-                ("developer", Some(PostRunCommit::DevWork)),
-                ("review_lens", None),
-            ]
-        );
-    }
-
-    /// The routing contract this worker's three connections uphold: the
-    /// server routes by (namespace, `task_queue`, node) only, so the node
-    /// table must be INJECTIVE (no two connections share a node) and
-    /// EXHAUSTIVE (every served activity type maps to exactly one node).
-    /// Reads the served sets from the production `roles`/`shell_registry`
-    /// definitions so the guard cannot drift from what actually registers.
-    #[test]
-    fn node_mapping_is_exhaustive_and_injective() {
-        let roles = roles(profiles());
-
-        let mut nodes: BTreeSet<&str> = roles.iter().map(|role| role.node).collect();
-        assert_eq!(nodes.len(), roles.len(), "two agent roles share a node");
-        assert!(
-            nodes.insert(SHELL_NODE),
-            "an agent role reuses the shell connection's node"
-        );
-
-        let registry = shell_registry(Shell::inherited()).expect("the shell registry builds");
-        let mut activity_to_node: BTreeMap<String, &str> = BTreeMap::new();
-        for activity_type in registry.activity_types() {
-            assert!(
-                activity_to_node
-                    .insert(activity_type.clone(), SHELL_NODE)
-                    .is_none(),
-                "shell activity `{activity_type}` registered twice"
-            );
-        }
-        for role in &roles {
-            assert!(
-                activity_to_node
-                    .insert(role.activity_type.to_owned(), role.node)
-                    .is_none(),
-                "activity `{}` is served on two nodes",
-                role.activity_type
-            );
-        }
-        assert_eq!(
-            activity_to_node
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec![
-                "cleanup_workspace",
-                "developer",
-                "provision_workspace",
-                "reset_workspace",
-                "review_lens",
-                "run_gates",
-                "verify_gates",
-            ],
-            "the served activity-type set changed; update the node table \
-             (worker AND src/dev_brief/activities.gleam) together"
-        );
-    }
-
-    /// Pin the exact node-id strings to the workflow-side source of truth
-    /// (`shell_node`/`developer_node`/`reviewer_node` in
-    /// `src/dev_brief/activities.gleam`). The server matches these strings
-    /// blindly; a drift on either side strands activities on handlerless
-    /// connections.
-    #[test]
-    fn node_ids_mirror_the_workflow_constants() {
-        assert_eq!(SHELL_NODE, "shell");
-        let nodes: Vec<&str> = roles(profiles()).iter().map(|role| role.node).collect();
-        assert_eq!(nodes, vec!["developer", "reviewer"]);
-    }
-
-    /// The role's profile doctrine reaches Norn as `--append-system-prompt`
-    /// (which APPENDS to Norn's own system prompt — never `--system-prompt`,
-    /// which would OVERWRITE it), and the profile text follows that flag
-    /// byte-identical. The "profile byte-identical in the prompt" contract
-    /// moved here from the per-turn prompt assembly.
-    #[test]
-    fn the_profile_rides_as_append_system_prompt_byte_identical() {
-        let role = Role {
-            activity_type: "developer",
-            node: "developer",
-            output_schema: "{}",
-            session_suffix: "developer",
-            profile: "MARKER_PROFILE_TEXT".to_owned(),
-            assemble: prompts::developer,
-            disallowed_tools: None,
-            post_run_commit: Some(PostRunCommit::DevWork),
-        };
-        let debug = format!("{:?}", inner_norn_harness("norn", &role));
-        assert!(
-            debug.contains("\"--append-system-prompt\", \"MARKER_PROFILE_TEXT\""),
-            "the profile must ride as the value immediately after \
-             --append-system-prompt, byte-identical; args were:\n{debug}"
-        );
-        assert!(
-            !debug.contains("\"--system-prompt\""),
-            "the doctrine must APPEND, never OVERWRITE Norn's system prompt"
-        );
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

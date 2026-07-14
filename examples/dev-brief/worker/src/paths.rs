@@ -77,115 +77,126 @@ fn canonicalize(path: &str, label: &str) -> Result<PathBuf, ActivityFailure> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{WORKTREES_SUBDIR, guard_destructive_path};
 
     /// A repo with a real dev-brief worktree tree; returns (`repo_root`,
     /// a valid workspace under it). Both are real directories so
     /// canonicalization resolves.
-    fn repo_with_worktree() -> (tempfile::TempDir, String, String) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn repo_with_worktree() -> anyhow::Result<(tempfile::TempDir, String, String)> {
+        let dir = tempfile::tempdir()?;
         let repo = dir.path().join("repo");
         let workspace = repo.join(WORKTREES_SUBDIR).join("wf-1");
-        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
-        (
+        std::fs::create_dir_all(&workspace)?;
+        Ok((
             dir,
             repo.display().to_string(),
             workspace.display().to_string(),
-        )
+        ))
     }
 
     #[test]
-    fn a_workspace_strictly_under_the_worktree_root_is_allowed() {
-        let (_dir, repo, workspace) = repo_with_worktree();
-        guard_destructive_path(&repo, &workspace).expect("a valid worktree is allowed");
+    fn a_workspace_strictly_under_the_worktree_root_is_allowed() -> anyhow::Result<()> {
+        let (_dir, repo, workspace) = repo_with_worktree()?;
+        guard_destructive_path(&repo, &workspace)
+            .map_err(|error| anyhow::anyhow!(error.message().to_owned()))?;
+        Ok(())
     }
 
     #[test]
-    fn the_repo_root_itself_is_refused() {
-        let (_dir, repo, _workspace) = repo_with_worktree();
-        let error =
-            guard_destructive_path(&repo, &repo).expect_err("the repo root must never be a target");
+    fn the_repo_root_itself_is_refused() -> anyhow::Result<()> {
+        let (_dir, repo, _workspace) = repo_with_worktree()?;
+        let Err(error) = guard_destructive_path(&repo, &repo) else {
+            anyhow::bail!("the repo root was accepted as a destructive target");
+        };
         assert!(
             error.message().contains("IS the repo root"),
             "{}",
             error.message()
         );
+        Ok(())
     }
 
     #[test]
-    fn the_worktrees_root_itself_is_refused() {
+    fn the_worktrees_root_itself_is_refused() -> anyhow::Result<()> {
         // The dev-brief root is not a per-run worktree; only strict
         // descendants are.
-        let (_dir, repo, _workspace) = repo_with_worktree();
+        let (_dir, repo, _workspace) = repo_with_worktree()?;
         let worktrees_root = std::path::Path::new(&repo)
             .join(WORKTREES_SUBDIR)
             .display()
             .to_string();
-        let error = guard_destructive_path(&repo, &worktrees_root)
-            .expect_err("the worktrees root is not a per-run worktree");
+        let Err(error) = guard_destructive_path(&repo, &worktrees_root) else {
+            anyhow::bail!("the worktrees root was accepted as a per-run worktree");
+        };
         assert!(
             error.message().contains("strictly under"),
             "{}",
             error.message()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_path_outside_the_repo_is_refused() {
-        let (dir, repo, _workspace) = repo_with_worktree();
+    fn a_path_outside_the_repo_is_refused() -> anyhow::Result<()> {
+        let (dir, repo, _workspace) = repo_with_worktree()?;
         // A sibling directory of the repo, real so it canonicalizes, but
         // nowhere near the guarded tree.
         let outside = dir.path().join("elsewhere");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
-        let error = guard_destructive_path(&repo, &outside.display().to_string())
-            .expect_err("a path outside the repo must be refused");
+        std::fs::create_dir_all(&outside)?;
+        let Err(error) = guard_destructive_path(&repo, &outside.display().to_string()) else {
+            anyhow::bail!("a path outside the repo was accepted");
+        };
         assert!(
             error.message().contains("strictly under"),
             "{}",
             error.message()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_non_existent_target_is_refused_not_attempted() {
-        let (_dir, repo, _workspace) = repo_with_worktree();
+    fn a_non_existent_target_is_refused_not_attempted() -> anyhow::Result<()> {
+        let (_dir, repo, _workspace) = repo_with_worktree()?;
         let missing = std::path::Path::new(&repo)
             .join(WORKTREES_SUBDIR)
             .join("does-not-exist")
             .display()
             .to_string();
-        let error =
-            guard_destructive_path(&repo, &missing).expect_err("an unresolvable target is refused");
+        let Err(error) = guard_destructive_path(&repo, &missing) else {
+            anyhow::bail!("an unresolvable target was accepted");
+        };
         assert!(
             error.message().contains("could not be canonicalized"),
             "{}",
             error.message()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_symlink_escaping_the_guarded_tree_is_refused() {
+    fn a_symlink_escaping_the_guarded_tree_is_refused() -> anyhow::Result<()> {
         // A symlink INSIDE the worktree root pointing OUT of the repo must not
         // let a destructive op escape: canonicalization resolves the link, and
         // the resolved target fails the prefix check.
-        let (dir, repo, _workspace) = repo_with_worktree();
+        let (dir, repo, _workspace) = repo_with_worktree()?;
         let outside = dir.path().join("secret-real-dir");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::create_dir_all(&outside)?;
         let link = std::path::Path::new(&repo)
             .join(WORKTREES_SUBDIR)
             .join("escape");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+        std::os::unix::fs::symlink(&outside, &link)?;
         #[cfg(not(unix))]
-        std::os::windows::fs::symlink_dir(&outside, &link).expect("symlink");
-        let error = guard_destructive_path(&repo, &link.display().to_string())
-            .expect_err("a symlink escaping the guarded tree must be refused");
+        std::os::windows::fs::symlink_dir(&outside, &link)?;
+        let Err(error) = guard_destructive_path(&repo, &link.display().to_string()) else {
+            anyhow::bail!("a symlink escaping the guarded tree was accepted");
+        };
         assert!(
             error.message().contains("strictly under"),
             "{}",
             error.message()
         );
+        Ok(())
     }
 }

@@ -242,7 +242,6 @@ async fn commit_dev_work(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{ProfiledNornHarness, workspace_root_from_input};
     use aion_integration_norn::NornHarness;
@@ -259,25 +258,29 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_root_is_read_from_the_input_workspace_path() {
+    fn the_workspace_root_is_read_from_the_input_workspace_path() -> Result<(), String> {
         let root = workspace_root_from_input(
             "{\"lens\":{},\"workspace_path\":\"/repo/.yggdrasil-worktrees/dev-brief/wf-1\"}",
-        )
-        .expect("a present workspace_path resolves");
+        )?;
         assert_eq!(root, "/repo/.yggdrasil-worktrees/dev-brief/wf-1");
+        Ok(())
     }
 
     #[test]
-    fn a_missing_workspace_path_is_a_loud_error() {
-        let error = workspace_root_from_input("{\"brief\":{\"id\":\"DB-1\"}}")
-            .expect_err("a missing workspace_path must fail loudly");
+    fn a_missing_workspace_path_is_a_loud_error() -> Result<(), String> {
+        let Err(error) = workspace_root_from_input("{\"brief\":{\"id\":\"DB-1\"}}") else {
+            return Err("a missing workspace_path unexpectedly resolved".to_owned());
+        };
         assert!(error.contains("workspace_path"), "error was: {error}");
+        Ok(())
     }
 
     #[test]
-    fn an_empty_workspace_path_is_a_loud_error() {
-        let error = workspace_root_from_input("{\"workspace_path\":\"   \"}")
-            .expect_err("a blank workspace_path must fail loudly, never a silent fallback");
+    fn an_empty_workspace_path_is_a_loud_error() -> Result<(), String> {
+        let Err(error) = workspace_root_from_input("{\"workspace_path\":\"   \"}") else {
+            return Err("a blank workspace_path unexpectedly resolved".to_owned());
+        };
         assert!(error.contains("empty workspace_path"), "error was: {error}");
+        Ok(())
     }
 }

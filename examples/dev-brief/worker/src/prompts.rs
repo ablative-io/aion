@@ -12,27 +12,28 @@
 //! templating engine, no shared cleverness beyond the one context-section
 //! renderer they all read as.
 //!
-//! The context JSON is the workflow's activity input verbatim; nothing is
-//! parsed or re-projected here — a lossy re-rendering would be a second place
-//! for the contract to drift. TWO narrow, deliberate exceptions:
+//! The context JSON is normally the workflow's activity input verbatim. THREE
+//! narrow, deliberate exceptions keep the current Gleam driver and its AWL
+//! successor on one worker:
 //!
-//! 1. The developer's gate-discipline section (task #236, below): pulls the
+//! 1. Developer gate feedback is projected here before rendering: full raw
+//!    `run_gates` output is reduced to failing evidence, while an already
+//!    projected Gleam payload is left byte-identical.
+//! 2. The developer's gate-discipline section (task #236, below): pulls the
 //!    `gates` array back out of that same JSON to print the exact argv a
-//!    second time, prominently, in prose — additive, not a reprojection.
-//! 2. The developer's LOOP-BACK rendering (2026-07-09): the developer runs in
+//!    second time, prominently, in prose.
+//! 3. The developer's LOOP-BACK rendering (2026-07-09): the developer runs in
 //!    a RESUMED norn session (`--session-id {workflow_id}-developer` +
 //!    `--resume-if-exists`), so on every loop-back the role doctrine (the
 //!    `--append-system-prompt` text, which persists for the session), the
 //!    full brief, and round 1's context are ALREADY in the conversation.
 //!    Re-rendering the full context JSON each round buried the one thing the
 //!    round exists for — the new adverse evidence — under kilobytes of
-//!    repetition (observed on the AWL0-REFAC-001 dispatches, runs
-//!    `672b43a4`/`a4b40d8a`). A loop-back round (a prior gate outcome
-//!    and/or lens verdicts present in the context) therefore renders a
-//!    COMPACT prompt: what failed, formatted for reading, plus the standing
-//!    gate-discipline section. A loop-back-shaped context that fails to parse
-//!    falls back to the full verbatim render — degradation is verbose, never
-//!    lossy.
+//!    repetition. A loop-back round (a prior gate outcome and/or lens verdicts
+//!    present in the context) therefore renders a COMPACT prompt: what failed,
+//!    formatted for reading, plus the standing gate-discipline section. A
+//!    loop-back-shaped context that fails to parse falls back to the full
+//!    verbatim render — degradation is verbose, never lossy.
 //!
 //! # Why the gate-discipline section exists (task #236)
 //!
@@ -46,7 +47,10 @@
 //! AND on every loop-back — so running it is the obvious last step of every
 //! turn, not an optional confidence check.
 
+use std::borrow::Cow;
+
 use serde::Deserialize;
+use serde_json::{Map, Value};
 
 use crate::types::GateCommand;
 
@@ -64,6 +68,158 @@ fn context_section(context_title: &str, context_json: &str) -> String {
          Work from these structured artifacts — never from a prose summary of \
          them.\n\n```json\n{context_json}\n```\n"
     )
+}
+
+/// Project either driver shape to the established developer prompt shape.
+///
+/// The live Gleam workflow has already blanked `diff`, `diagnostics`, and the
+/// `output_tail` of passing runs, and has projected `gates` to `{name, argv}`
+/// records. That shape is borrowed unchanged. The AWL successor may pass the
+/// raw `run_gates` result (including run records under `gates`), so this
+/// boundary performs those pure projections before prompt assembly. A missing
+/// optional `gate` is materialized as `null`, matching the live wire shape.
+pub(crate) fn project_developer_context(context_json: &str) -> Cow<'_, str> {
+    let Ok(Value::Object(mut context)) = serde_json::from_str(context_json) else {
+        return Cow::Borrowed(context_json);
+    };
+
+    let mut changed = context.get_mut("gate").is_some_and(project_gate_feedback);
+    changed |= project_gate_commands(&mut context);
+
+    if changed {
+        context.entry("gate").or_insert(Value::Null);
+        return serde_json::to_string(&context)
+            .map(Cow::Owned)
+            .unwrap_or(Cow::Borrowed(context_json));
+    }
+    if !context.contains_key("gate")
+        && let Some(projected) = insert_absent_gate(context_json)
+    {
+        return Cow::Owned(projected);
+    }
+    Cow::Borrowed(context_json)
+}
+
+/// Strip the raw gate fields the resumed developer does not need. Returning a
+/// change bit makes the projection idempotent without reserializing an already
+/// projected payload.
+fn project_gate_feedback(gate: &mut Value) -> bool {
+    let Value::Object(fields) = gate else {
+        return false;
+    };
+    let mut changed = blank_nonempty_string(fields, "diff");
+    changed |= blank_nonempty_string(fields, "diagnostics");
+    if let Some(Value::Array(runs)) = fields.get_mut("runs") {
+        for run in runs {
+            let Value::Object(run_fields) = run else {
+                continue;
+            };
+            if run_fields.get("passed") == Some(&Value::Bool(true)) {
+                changed |= blank_nonempty_string(run_fields, "output_tail");
+            }
+        }
+    }
+    changed
+}
+
+fn blank_nonempty_string(fields: &mut Map<String, Value>, key: &str) -> bool {
+    let Some(Value::String(text)) = fields.get_mut(key) else {
+        return false;
+    };
+    if text.is_empty() {
+        return false;
+    }
+    text.clear();
+    true
+}
+
+/// Project raw gate runs to the configured-command slice consumed by the
+/// standing gate-discipline section. The AWL driver may supply either a run
+/// list or the containing outcome; the current `{name, argv}` list is stable.
+fn project_gate_commands(context: &mut Map<String, Value>) -> bool {
+    let source = context
+        .get("gates")
+        .or_else(|| context.get("gate"))
+        .and_then(gate_run_list);
+    let Some(projected) = source.and_then(project_commands) else {
+        return false;
+    };
+    if context.get("gates") == Some(&projected) {
+        return false;
+    }
+    context.insert("gates".to_owned(), projected);
+    true
+}
+
+fn gate_run_list(value: &Value) -> Option<&[Value]> {
+    match value {
+        Value::Array(runs) => Some(runs),
+        Value::Object(fields) => fields
+            .get("runs")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice),
+        _ => None,
+    }
+}
+
+fn project_commands(runs: &[Value]) -> Option<Value> {
+    runs.iter()
+        .map(|run| {
+            let fields = run.as_object()?;
+            let mut command = Map::new();
+            command.insert("name".to_owned(), fields.get("name")?.clone());
+            command.insert("argv".to_owned(), fields.get("argv")?.clone());
+            Some(Value::Object(command))
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(Value::Array)
+}
+
+/// Insert the AWL absent optional immediately before the required `verdicts`
+/// member. This preserves every byte of the first-round context around the one
+/// wire-level difference, so it renders exactly like the equivalent Gleam
+/// payload containing `"gate":null`.
+fn insert_absent_gate(context_json: &str) -> Option<String> {
+    let offset = top_level_key_offset(context_json, "verdicts")?;
+    let mut projected = String::with_capacity(context_json.len() + 12);
+    projected.push_str(&context_json[..offset]);
+    projected.push_str("\"gate\":null,");
+    projected.push_str(&context_json[offset..]);
+    Some(projected)
+}
+
+fn top_level_key_offset(json: &str, target: &str) -> Option<usize> {
+    let bytes = json.as_bytes();
+    let mut depth = 0_u32;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b'"' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() {
+                    match bytes[index] {
+                        b'\\' => index += 2,
+                        b'"' => break,
+                        _ => index += 1,
+                    }
+                }
+                let end = index.saturating_add(1).min(bytes.len());
+                let is_target = depth == 1
+                    && serde_json::from_str::<String>(&json[start..end])
+                        .is_ok_and(|key| key == target)
+                    && json[end..].trim_start().starts_with(':');
+                if is_target {
+                    return Some(start);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
 }
 
 /// The slice of the developer's context JSON the gate-discipline section
@@ -128,7 +284,7 @@ fn gate_discipline_section(context_json: &str) -> String {
     )
 }
 
-// --- the developer's loop-back rendering (module-doc exception 2) ---------------
+// --- the developer's loop-back rendering (module-doc exception 3) ---------------
 
 /// The slice of the developer's context the loop-back renderer reads. Field
 /// names mirror `codecs.developer_input_codec` on the Gleam side; extra
@@ -199,16 +355,26 @@ impl VerdictSlice {
     }
 }
 
-/// Render the compact loop-back prompt, or `None` when this is a first round
-/// (no prior gate outcome, no verdicts) or the context does not parse as the
-/// expected wire shape (the caller then renders the full verbatim form —
-/// never lossy). The profile is deliberately absent from the signature: a
-/// loop-back never re-injects it, because the resumed session already holds
-/// the doctrine.
-fn loop_back_prompt(context_json: &str) -> Option<String> {
-    let context: DeveloperContext = serde_json::from_str(context_json).ok()?;
+/// Outcome of parsing a projected context for compact loop-back rendering.
+enum LoopBackPrompt {
+    /// A valid loop-back rendered compactly from projected evidence.
+    Compact(String),
+    /// A valid first round that should render the projected full context.
+    FirstRound,
+    /// A malformed context that must render the original, unprojected bytes.
+    Malformed,
+}
+
+/// Render a valid loop-back compactly while distinguishing a valid first round
+/// from malformed input. That distinction is load-bearing: projection may have
+/// stripped raw gate evidence, but malformed fallback remains byte-lossless by
+/// rendering the caller's original input.
+fn loop_back_prompt(context_json: &str) -> LoopBackPrompt {
+    let Ok(context) = serde_json::from_str::<DeveloperContext>(context_json) else {
+        return LoopBackPrompt::Malformed;
+    };
     if context.gate.is_none() && context.verdicts.is_empty() {
-        return None;
+        return LoopBackPrompt::FirstRound;
     }
     let brief_id = context
         .brief
@@ -233,7 +399,7 @@ fn loop_back_prompt(context_json: &str) -> Option<String> {
     }
     prompt.push('\n');
     prompt.push_str(&gate_discipline_section(context_json));
-    Some(prompt)
+    LoopBackPrompt::Compact(prompt)
 }
 
 /// The gate battery's outcome, formatted: one verdict line per command, then
@@ -342,14 +508,17 @@ fn fenced_text(text: &str) -> String {
 /// (module-doc exception 2); the discipline section still rides on every round.
 #[must_use]
 pub fn developer(context_json: &str) -> String {
-    if let Some(rendered) = loop_back_prompt(context_json) {
-        return rendered;
-    }
+    let projected = project_developer_context(context_json);
+    let render_context = match loop_back_prompt(projected.as_ref()) {
+        LoopBackPrompt::Compact(rendered) => return rendered,
+        LoopBackPrompt::FirstRound => projected.as_ref(),
+        LoopBackPrompt::Malformed => context_json,
+    };
     let prompt = context_section(
         "Run context: brief (+ gate/verdict feedback when cycling)",
-        context_json,
+        render_context,
     );
-    let gate_discipline = gate_discipline_section(context_json);
+    let gate_discipline = gate_discipline_section(render_context);
     format!("{prompt}\n{gate_discipline}")
 }
 
@@ -416,348 +585,4 @@ pub fn review_lens(context_json: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    const CONTEXT: &str = "{\"brief\":{\"id\":\"DB-1\"}}";
-
-    /// A first-round developer context: no prior gate outcome (`"gate":
-    /// null`), no verdicts, this run's configured battery present under
-    /// `gates`.
-    const CONTEXT_FIRST_ROUND: &str = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":null,\
-         \"verdicts\":[],\"workspace_path\":\"/tmp/ws\",\"gates\":[\
-         {\"name\":\"fmt\",\"argv\":[\"cargo\",\"fmt\",\"--all\",\"--\",\"--check\"]},\
-         {\"name\":\"clippy\",\"argv\":[\"cargo\",\"clippy\",\"--workspace\",\
-         \"--all-targets\",\"--\",\"-D\",\"warnings\"]}]}";
-
-    /// A loop-back developer context: a prior FAILING gate outcome rides
-    /// alongside the SAME configured `gates` battery — the exact shape a
-    /// fix-cycle round sees.
-    const CONTEXT_LOOP_BACK: &str = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":{\"pass\":false,\
-         \"runs\":[{\"name\":\"fmt\",\"exit_code\":0,\"passed\":true,\
-         \"output_tail\":\"formatted 3 files\"},\
-         {\"name\":\"clippy\",\"exit_code\":101,\"passed\":false,\
-         \"output_tail\":\"warning: used `expect`\"}],\"diff\":\"\",\
-         \"diagnostics\":\"\"},\"verdicts\":[],\
-         \"workspace_path\":\"/tmp/ws\",\"gates\":[\
-         {\"name\":\"fmt\",\"argv\":[\"cargo\",\"fmt\",\"--all\",\"--\",\"--check\"]},\
-         {\"name\":\"clippy\",\"argv\":[\"cargo\",\"clippy\",\"--workspace\",\
-         \"--all-targets\",\"--\",\"-D\",\"warnings\"]}]}";
-
-    /// A review loop-back: gates green, one adverse verdict + one accepting.
-    const CONTEXT_REVIEW_LOOP_BACK: &str = "{\"brief\":{\"id\":\"DB-1\"},\
-         \"gate\":{\"pass\":true,\"runs\":[{\"name\":\"clippy\",\"exit_code\":0,\
-         \"passed\":true,\"output_tail\":\"\"}],\"diff\":\"\",\"diagnostics\":\"\"},\
-         \"verdicts\":[\
-         {\"lens\":\"correctness\",\"findings\":[],\"overall\":\"accept\",\
-         \"reject_reason\":null},\
-         {\"lens\":\"spec_fidelity\",\"findings\":[{\"severity\":\"blocking\",\
-         \"title\":\"R2 span drift\",\"evidence\":\"line 40 offset wrong\"}],\
-         \"overall\":\"reject\",\"reject_reason\":\"R2 not honored\"}],\
-         \"workspace_path\":\"/tmp/ws\",\"gates\":[\
-         {\"name\":\"clippy\",\"argv\":[\"cargo\",\"clippy\"]}]}";
-
-    // --- first-round assembly (context only — doctrine is out-of-band) -------
-
-    /// Every role renders the context JSON verbatim in a fenced block. The
-    /// profile is NOT in the prompt — it rides as the session's
-    /// `--append-system-prompt` text (see `composed_agent_harness`).
-    #[test]
-    fn every_role_renders_the_context_json_fenced() {
-        for assemble in [super::developer, super::review_lens] {
-            let prompt = assemble(CONTEXT);
-            assert!(
-                prompt.contains(CONTEXT),
-                "context present verbatim; prompt was:\n{prompt}"
-            );
-            assert!(
-                prompt.contains("```json"),
-                "context rides in a fenced block"
-            );
-        }
-    }
-
-    #[test]
-    fn first_round_context_json_is_never_reprojected() {
-        // A first-round context containing text that LOOKS like a field must
-        // survive byte-for-byte: assembly is concatenation, not templating.
-        let tricky = "{\"detail\":\"contains {workflow_id} and ```\"}";
-        let prompt = super::developer(tricky);
-        assert!(prompt.contains(tricky));
-    }
-
-    // --- gate discipline (task #236) -----------------------------------------
-
-    /// The developer prompt carries a hard, prominent gate-discipline
-    /// section with THIS run's configured gate argv interpolated verbatim —
-    /// not just buried in the fenced JSON context, but printed out as the
-    /// exact commands.
-    #[test]
-    fn developer_prompt_carries_gate_discipline_with_verbatim_argv() {
-        let prompt = super::developer(CONTEXT_FIRST_ROUND);
-        assert!(
-            prompt.contains("GATE DISCIPLINE"),
-            "must carry a prominent gate-discipline heading; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("cargo fmt --all -- --check"),
-            "the fmt gate's exact argv must be interpolated verbatim"
-        );
-        assert!(
-            prompt.contains("cargo clippy --workspace --all-targets -- -D warnings"),
-            "the clippy gate's exact argv must be interpolated verbatim"
-        );
-        assert!(
-            prompt.contains("MUST run every command below, VERBATIM"),
-            "the instruction must be unambiguous, not a suggestion"
-        );
-        assert!(
-            prompt.contains("CONFIRMATION"),
-            "must state the pipeline's own gate battery is confirmation, not discovery"
-        );
-    }
-
-    /// The concrete failure modes actually observed burning fix cycles
-    /// (AWL-1..AWL-4, task #236) are named so the developer knows exactly
-    /// what a pedantic clippy wall can deny that a diff read will not catch.
-    #[test]
-    fn developer_prompt_names_the_observed_pedantic_clippy_failure_modes() {
-        let prompt = super::developer(CONTEXT_FIRST_ROUND);
-        for failure_mode in [
-            "expect_used",
-            "panic",
-            "manual_let_else",
-            "match_same_arms",
-            "semicolon_if_nothing_returned",
-            "needless_pass_by_value",
-        ] {
-            assert!(
-                prompt.contains(failure_mode),
-                "must name the observed failure mode `{failure_mode}`; prompt was:\n{prompt}"
-            );
-        }
-    }
-
-    /// The gate-discipline section — and the exact argv — appears on the
-    /// first round AND on every loop-back (the loop-back render appends the
-    /// same section).
-    #[test]
-    fn gate_discipline_appears_on_first_round_and_loop_back() {
-        for context in [CONTEXT_FIRST_ROUND, CONTEXT_LOOP_BACK] {
-            let prompt = super::developer(context);
-            assert!(
-                prompt.contains("GATE DISCIPLINE"),
-                "gate discipline must appear whether or not this is a loop-back; \
-                 prompt was:\n{prompt}"
-            );
-            assert!(
-                prompt.contains("cargo fmt --all -- --check"),
-                "the exact argv must appear regardless of round"
-            );
-            assert!(
-                prompt.contains("cargo clippy --workspace --all-targets -- -D warnings"),
-                "the exact argv must appear regardless of round"
-            );
-        }
-    }
-
-    /// An explicit EMPTY gate battery (the operator's documented vacuous
-    /// pass, mirrored from `run_gates`) still gets a discipline section —
-    /// never silently dropped — naming the battery as empty rather than
-    /// listing commands that do not exist.
-    #[test]
-    fn empty_gate_battery_still_renders_a_discipline_section() {
-        let context = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":null,\"verdicts\":[],\
-             \"workspace_path\":\"/tmp/ws\",\"gates\":[]}";
-        let prompt = super::developer(context);
-        assert!(prompt.contains("GATE DISCIPLINE"));
-        assert!(
-            prompt.contains("vacuous pass"),
-            "an empty battery must be named as the operator's explicit choice, \
-             not silently omitted; prompt was:\n{prompt}"
-        );
-    }
-
-    /// A context missing the `gates` key entirely (an older/foreign payload)
-    /// degrades to an empty battery rather than a parse failure — the
-    /// composer must never panic over a rendering concern.
-    #[test]
-    fn missing_gates_key_degrades_to_an_empty_battery() {
-        let prompt = super::developer(CONTEXT);
-        assert!(prompt.contains("GATE DISCIPLINE"));
-        assert!(prompt.contains("vacuous pass"));
-    }
-
-    /// The gate-discipline section is a DEVELOPER-only addition — the
-    /// reviewer lens never touches the workspace and never runs gates
-    /// itself, so its prompt must not carry it.
-    #[test]
-    fn review_lens_prompt_has_no_gate_discipline_section() {
-        let prompt = super::review_lens(CONTEXT_FIRST_ROUND);
-        assert!(
-            !prompt.contains("GATE DISCIPLINE"),
-            "the review lens does not run gates; it must not get this section"
-        );
-    }
-
-    /// The review-lens prompt carries the workspace section: the checkout is
-    /// the session's working directory, the lens is read-only, and the exact
-    /// `git diff <base_commit>` command uses the run's real base commit so a
-    /// truncated diff can be reconstructed.
-    #[test]
-    fn review_lens_prompt_carries_the_read_only_workspace_section() {
-        let context = "{\"lens\":{\"name\":\"correctness\",\"charter\":\"c\"},\
-             \"brief\":{\"id\":\"DB-1\"},\"diff\":\"...\",\
-             \"report\":{\"brief_id\":\"DB-1\"},\"gate_runs\":[],\
-             \"workspace_path\":\"/repo/.yggdrasil-worktrees/dev-brief/wf-1\",\
-             \"base_commit\":\"deadbeefcafe\"}";
-        let prompt = super::review_lens(context);
-        assert!(
-            prompt.contains("YOUR WORKSPACE"),
-            "the lens must be told its cwd is the checkout; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("READ-ONLY"),
-            "the lens must be told it is read-only; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("git diff deadbeefcafe"),
-            "the exact git diff command must carry the run's real base commit; \
-             prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("TRUNCATED"),
-            "the lens must be told a clipped diff is partial, not complete; \
-             prompt was:\n{prompt}"
-        );
-    }
-
-    /// A lens context missing `base_commit` degrades to the `<base_commit>`
-    /// placeholder rather than failing the prompt composer.
-    #[test]
-    fn review_lens_workspace_section_degrades_without_a_base_commit() {
-        let prompt = super::review_lens(CONTEXT);
-        assert!(prompt.contains("YOUR WORKSPACE"));
-        assert!(
-            prompt.contains("git diff <base_commit>"),
-            "a missing base_commit renders the placeholder; prompt was:\n{prompt}"
-        );
-    }
-
-    // --- loop-back rendering (module-doc exception 2) -------------------------
-
-    /// A loop-back round is COMPACT: no raw context JSON dump — the adverse
-    /// evidence is rendered, formatted, instead. (The doctrine never rode in
-    /// the prompt at all; it is the session's `--append-system-prompt` text.)
-    #[test]
-    fn loop_back_omits_the_raw_context_dump() {
-        let prompt = super::developer(CONTEXT_LOOP_BACK);
-        assert!(
-            !prompt.contains("output_tail"),
-            "the raw context JSON must not be dumped on loop-backs; \
-             prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("Loop-back round — brief DB-1"),
-            "the loop-back must name itself and the brief; prompt was:\n{prompt}"
-        );
-    }
-
-    /// Failing gates render a verdict line and their captured output in a
-    /// fenced block; passing gates render ONLY the verdict line — their
-    /// output is noise the round does not need.
-    #[test]
-    fn loop_back_renders_failing_gate_output_and_mutes_passing_output() {
-        let prompt = super::developer(CONTEXT_LOOP_BACK);
-        assert!(
-            prompt.contains("1 of 2 command(s) FAILED"),
-            "the battery headline must count the reds; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("- `clippy` — FAILED (exit 101)"),
-            "the failing gate must carry its exit code; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("warning: used `expect`"),
-            "the failing gate's output must be present; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("- `fmt` — passed"),
-            "the passing gate must render its verdict line; prompt was:\n{prompt}"
-        );
-        assert!(
-            !prompt.contains("formatted 3 files"),
-            "a passing gate's output is noise and must not render; \
-             prompt was:\n{prompt}"
-        );
-    }
-
-    /// A review loop-back (gates green, adverse verdicts) expands every
-    /// adverse verdict with its reason and findings, and reduces accepting
-    /// lenses to one line.
-    #[test]
-    fn review_loop_back_expands_adverse_verdicts_only() {
-        let prompt = super::developer(CONTEXT_REVIEW_LOOP_BACK);
-        assert!(
-            prompt.contains("1 of 2 lens(es) adverse"),
-            "the verdict headline must count the adverse; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("Lens `spec_fidelity` — REJECT"),
-            "the adverse verdict must be expanded; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("Reason: R2 not honored"),
-            "the reject_reason must render; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("- [blocking] R2 span drift"),
-            "findings must render with severity and title; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("- `correctness` — accepted"),
-            "accepting lenses reduce to one line; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("caused by review verdicts"),
-            "a green battery on a review loop-back must say why it is shown; \
-             prompt was:\n{prompt}"
-        );
-    }
-
-    /// Captured gate output containing triple-backtick fences cannot break
-    /// out of the rendering: the fence is always longer than any backtick
-    /// run inside.
-    #[test]
-    fn loop_back_fences_survive_embedded_backticks() {
-        let context = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":{\"pass\":false,\
-             \"runs\":[{\"name\":\"test\",\"exit_code\":1,\"passed\":false,\
-             \"output_tail\":\"before\\n```\\ninjected\\n```\\nafter\"}],\
-             \"diff\":\"\",\"diagnostics\":\"\"},\"verdicts\":[],\"gates\":[]}";
-        let prompt = super::developer(context);
-        assert!(
-            prompt.contains("````text"),
-            "the fence must outgrow the embedded backtick runs; \
-             prompt was:\n{prompt}"
-        );
-        assert!(prompt.contains("injected"));
-    }
-
-    /// A loop-back-shaped context that does NOT parse as the expected wire
-    /// shape falls back to the full verbatim render — degradation is
-    /// verbose, never lossy.
-    #[test]
-    fn malformed_loop_back_context_falls_back_to_the_verbatim_render() {
-        let malformed = "{\"brief\":{\"id\":\"DB-1\"},\"gate\":\"bogus — not an object\",\
-             \"verdicts\":[],\"gates\":[]}";
-        let prompt = super::developer(malformed);
-        assert!(
-            prompt.contains(malformed),
-            "the fallback must carry the context verbatim; prompt was:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("GATE DISCIPLINE"),
-            "the full-render fallback still carries the gate-discipline \
-             section; prompt was:\n{prompt}"
-        );
-    }
-}
+mod tests;

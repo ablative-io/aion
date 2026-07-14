@@ -320,50 +320,55 @@ fn require_git_ok(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{context_from_input, rewrite_report_commits};
 
     #[test]
-    fn context_parses_the_agent_input_wire_shape() {
+    fn context_parses_the_agent_input_wire_shape() -> anyhow::Result<()> {
         // The exact codec wire shape (extra fields present, as on the wire).
         let context = context_from_input(
             "{\"brief\":{\"id\":\"DB-1\",\"objective\":\"o\"},\
              \"gate\":null,\"verdicts\":[],\"workspace_path\":\"/tmp/ws/wf-1\"}",
         )
-        .expect("parses");
+        .map_err(anyhow::Error::msg)?;
         assert_eq!(context.brief.id, "DB-1");
         assert_eq!(context.workspace_path, "/tmp/ws/wf-1");
+        Ok(())
     }
 
     #[test]
-    fn rewrite_replaces_commits_with_the_real_head_in_a_plain_object() {
+    fn rewrite_replaces_commits_with_the_real_head_in_a_plain_object() -> anyhow::Result<()> {
         let rewritten = rewrite_report_commits(
             b"{\"brief_id\":\"DB-1\",\"commits\":[\"fabricated\"],\"summary\":\"s\"}",
             "realhead",
         )
-        .expect("rewrites");
-        let value: serde_json::Value = serde_json::from_slice(&rewritten).expect("json");
+        .map_err(anyhow::Error::msg)?;
+        let value: serde_json::Value = serde_json::from_slice(&rewritten)?;
         assert_eq!(value["commits"], serde_json::json!(["realhead"]));
         assert_eq!(value["summary"], "s");
+        Ok(())
     }
 
     #[test]
-    fn rewrite_preserves_the_double_encoded_envelope() {
+    fn rewrite_preserves_the_double_encoded_envelope() -> anyhow::Result<()> {
         let inner = "{\"brief_id\":\"DB-1\",\"commits\":[],\"summary\":\"s\"}";
-        let outer = serde_json::to_vec(&serde_json::Value::String(inner.to_owned())).unwrap();
-        let rewritten = rewrite_report_commits(&outer, "realhead").expect("rewrites");
-        let value: serde_json::Value = serde_json::from_slice(&rewritten).expect("json");
+        let outer = serde_json::to_vec(&serde_json::Value::String(inner.to_owned()))?;
+        let rewritten = rewrite_report_commits(&outer, "realhead").map_err(anyhow::Error::msg)?;
+        let value: serde_json::Value = serde_json::from_slice(&rewritten)?;
         let serde_json::Value::String(inner_rewritten) = value else {
-            panic!("the double-encoded envelope must be preserved");
+            anyhow::bail!("the double-encoded envelope was not preserved");
         };
-        let inner_value: serde_json::Value = serde_json::from_str(&inner_rewritten).expect("json");
+        let inner_value: serde_json::Value = serde_json::from_str(&inner_rewritten)?;
         assert_eq!(inner_value["commits"], serde_json::json!(["realhead"]));
+        Ok(())
     }
 
     #[test]
-    fn a_missing_commit_context_is_a_loud_wiring_fault() {
-        let error = context_from_input("{\"gate\":null}").expect_err("must fail");
+    fn a_missing_commit_context_is_a_loud_wiring_fault() -> anyhow::Result<()> {
+        let Err(error) = context_from_input("{\"gate\":null}") else {
+            anyhow::bail!("missing commit context unexpectedly parsed");
+        };
         assert!(error.contains("brief.id"), "error was: {error}");
+        Ok(())
     }
 }

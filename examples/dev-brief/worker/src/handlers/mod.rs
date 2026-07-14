@@ -1,7 +1,7 @@
-//! The five SHELL activity handler bodies: `provision_workspace`,
-//! `run_gates`, `reset_workspace`, `verify_gates`, `cleanup_workspace`. Each
-//! shells to real `git` and the brief's configured gate commands through
-//! [`crate::shell::Shell`].
+//! The six SHELL-node activity handler bodies: `provision_workspace`,
+//! `run_gates`, `reset_workspace`, `verify_gates`, `cleanup_workspace`, and
+//! `format_verdict_evidence`. The first five shell to real `git` and configured
+//! gate commands through [`crate::shell::Shell`]; verdict formatting is pure.
 //!
 //! Failure taxonomy (the remediation/pipeline-run discipline, kept): a
 //! command that cannot RUN (missing executable, dead working directory) is
@@ -28,11 +28,13 @@
 mod gates;
 mod reset;
 mod support;
+mod verdicts;
 mod verify;
 mod workspace;
 
 pub use gates::run_gates;
 pub use reset::reset;
 pub use support::clip;
+pub use verdicts::format_verdict_evidence;
 pub use verify::verify_gates;
 pub use workspace::{cleanup, provision};
