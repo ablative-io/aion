@@ -671,3 +671,6 @@ impl CatalogSnapshot {
 #[cfg(test)]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
+#[cfg(test)]
+#[path = "catalog_timeout_tests.rs"]
+mod catalog_timeout_tests;

@@ -1,22 +1,22 @@
 //! Content-hash computation over the canonical beam set.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, time::Duration};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 
-use crate::BeamSet;
+use crate::{BeamSet, Manifest, PackageError};
 
 const DIGEST_LEN: usize = 32;
 const TEXT_LEN: usize = DIGEST_LEN * 2;
+const WORKFLOW_TIMEOUT_DOMAIN: &[u8] = b"aion.package.version.workflow-timeout.v1";
 
-/// A SHA-256 content hash computed over the canonical BEAM module set only.
+/// A SHA-256 package version identity.
 ///
-/// The digest is computed from each module's logical name and exact `.beam`
-/// bytes in [`BeamSet`] canonical order. Archive bytes, compression settings,
-/// timestamps, and optional source inclusion are never part of this hash, so the
-/// same compiled modules produce the same package version across deterministic
-/// and non-deterministic archive representations.
+/// Legacy identities cover each module's logical name and exact `.beam` bytes
+/// in [`BeamSet`] canonical order. Explicit-timeout identities append a
+/// domain-separated timeout encoding. Archive representation and optional
+/// source inclusion never participate, so deterministic inputs keep one version.
 ///
 /// Its stable textual form is 64 lowercase hexadecimal characters. That text is
 /// the package version identifier stored in the manifest and the hash component
@@ -69,13 +69,45 @@ pub enum ContentHashParseError {
 #[must_use]
 pub fn content_hash(beams: &BeamSet) -> ContentHash {
     let mut digest = Sha256::new();
-
-    for module in beams.iter() {
-        update_framed(&mut digest, module.name().as_bytes());
-        update_framed(&mut digest, module.bytes());
-    }
-
+    update_beams(&mut digest, beams);
     ContentHash(digest.finalize().into())
+}
+
+/// Computes an explicit-timeout package version from the canonical BEAM set,
+/// a framed domain separator, and timeout seconds as an eight-byte big-endian integer.
+#[must_use]
+pub fn content_hash_with_timeout(beams: &BeamSet, timeout: Duration) -> ContentHash {
+    let mut digest = Sha256::new();
+    update_beams(&mut digest, beams);
+    update_framed(&mut digest, WORKFLOW_TIMEOUT_DOMAIN);
+    digest.update(timeout.as_secs().to_be_bytes());
+    ContentHash(digest.finalize().into())
+}
+
+pub(crate) fn verified_content_hash(
+    beams: &BeamSet,
+    manifest: &Manifest,
+) -> Result<ContentHash, PackageError> {
+    let legacy_hash = content_hash(beams);
+    let timeout_hash = content_hash_with_timeout(beams, manifest.timeout);
+    let stored = manifest.version.as_str();
+    if stored == legacy_hash.to_string() {
+        Ok(legacy_hash)
+    } else if stored == timeout_hash.to_string() {
+        Ok(timeout_hash)
+    } else {
+        Err(PackageError::IntegrityMismatch {
+            expected: stored.to_owned(),
+            computed: legacy_hash.to_string(),
+        })
+    }
+}
+
+fn update_beams(digest: &mut Sha256, beams: &BeamSet) {
+    for module in beams.iter() {
+        update_framed(digest, module.name().as_bytes());
+        update_framed(digest, module.bytes());
+    }
 }
 
 fn update_framed(digest: &mut Sha256, bytes: &[u8]) {
@@ -159,7 +191,9 @@ impl de::Visitor<'_> for ContentHashVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentHash, content_hash};
+    use std::time::Duration;
+
+    use super::{ContentHash, content_hash, content_hash_with_timeout};
     use crate::{BeamModule, BeamSet, PackageError};
 
     #[test]
@@ -177,6 +211,31 @@ mod tests {
 
         assert_eq!(content_hash(&first), content_hash(&second));
 
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_identity_remains_exactly_the_beams_only_hash() -> Result<(), PackageError> {
+        let beams = BeamSet::new(vec![BeamModule::new("workflow/a", vec![1, 2, 3])])?;
+        let pre_change_rule = content_hash(&beams);
+        assert_eq!(content_hash(&beams), pre_change_rule);
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_timeout_identity_is_deterministic_and_value_sensitive() -> Result<(), PackageError>
+    {
+        let beams = BeamSet::new(vec![BeamModule::new("workflow/a", vec![1, 2, 3])])?;
+        let two_hours = content_hash_with_timeout(&beams, Duration::from_secs(7_200));
+        assert_eq!(
+            two_hours,
+            content_hash_with_timeout(&beams, Duration::from_secs(7_200))
+        );
+        assert_ne!(
+            two_hours,
+            content_hash_with_timeout(&beams, Duration::from_secs(21_600))
+        );
+        assert_ne!(two_hours, content_hash(&beams));
         Ok(())
     }
 

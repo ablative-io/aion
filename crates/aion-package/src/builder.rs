@@ -9,7 +9,9 @@ use std::{
 
 use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 
-use crate::{BeamSet, Manifest, ManifestVersion, PackageError, content_hash};
+use crate::{
+    BeamSet, Manifest, ManifestVersion, PackageError, content_hash, content_hash_with_timeout,
+};
 
 /// Deterministic writer for the `.aion` ZIP container format.
 #[derive(Clone, Debug)]
@@ -17,6 +19,7 @@ pub struct PackageBuilder {
     manifest: Manifest,
     beams: BeamSet,
     source: BTreeMap<String, Vec<u8>>,
+    explicit_timeout_identity: bool,
 }
 
 impl PackageBuilder {
@@ -27,6 +30,7 @@ impl PackageBuilder {
             manifest,
             beams,
             source: BTreeMap::new(),
+            explicit_timeout_identity: false,
         }
     }
 
@@ -45,7 +49,15 @@ impl PackageBuilder {
                 .into_iter()
                 .map(|(name, bytes)| (name.into(), bytes.into()))
                 .collect(),
+            explicit_timeout_identity: false,
         }
+    }
+
+    /// Includes the manifest workflow timeout in the package version identity.
+    #[must_use]
+    pub const fn with_explicit_timeout_identity(mut self) -> Self {
+        self.explicit_timeout_identity = true;
+        self
     }
 
     /// Returns the manifest after stamping the authoritative beam content hash.
@@ -96,7 +108,11 @@ impl PackageBuilder {
             });
         }
 
-        let hash = content_hash(&self.beams);
+        let hash = if self.explicit_timeout_identity {
+            content_hash_with_timeout(&self.beams, self.manifest.timeout)
+        } else {
+            content_hash(&self.beams)
+        };
         let mut manifest = self.manifest.clone();
         manifest.version = ManifestVersion::new(hash.to_string());
         Ok(manifest)

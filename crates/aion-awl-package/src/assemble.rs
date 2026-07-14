@@ -113,7 +113,11 @@ pub fn assemble_awl(
         format_version: CURRENT_FORMAT_VERSION,
     };
 
-    Ok(PackageBuilder::new(manifest, beams).write_to_bytes()?)
+    let mut builder = PackageBuilder::new(manifest, beams);
+    if opts.timeout.is_some() {
+        builder = builder.with_explicit_timeout_identity();
+    }
+    Ok(builder.write_to_bytes()?)
 }
 
 /// Projects the compile output's action requirements onto the manifest's

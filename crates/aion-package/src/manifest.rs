@@ -9,12 +9,11 @@ use crate::PackageError;
 
 /// Canonical SHA-256 digest of one manifest's serialized JSON form.
 ///
-/// The package content hash deliberately covers the canonical beam set only
-/// (`manifest.json` is excluded), so two archives with identical beams but
-/// different manifests carry the same [`crate::ContentHash`]. This digest is
-/// the tripwire that detects exactly that divergence: the engine catalog
-/// retains it per loaded version and refuses an idempotent re-load whose
-/// incoming manifest digest differs.
+/// Legacy package versions cover the canonical beam set only; packages that
+/// opt an explicit workflow timeout into identity additionally cover that
+/// timeout. Other `manifest.json` fields remain excluded, so this digest is the
+/// tripwire for divergent manifests that still carry one version: the engine
+/// catalog retains it and refuses a mismatched idempotent reload.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ManifestDigest([u8; 32]);
 

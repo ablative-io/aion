@@ -145,6 +145,7 @@ pub(crate) fn package_with_options(
         .iter()
         .map(|(name, bytes)| (name.clone(), bytes.clone()));
     let bytes = PackageBuilder::with_source(manifest, package.beams().clone(), source)
+        .with_explicit_timeout_identity()
         .write_to_bytes()
         .map_err(|error| package_options_error(&error))?;
     Package::load_from_bytes(bytes, ExtractionLimits::unbounded())

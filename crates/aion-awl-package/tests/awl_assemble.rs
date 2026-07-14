@@ -189,10 +189,27 @@ fn document_timeout_reaches_the_manifest_and_absence_keeps_the_default() -> Test
             timeout: declared.timeout,
         },
     )?;
-    let declared_package = Package::load_from_bytes(declared_bytes, ExtractionLimits::unbounded())?;
+    let rebuilt_bytes = assemble_awl(
+        &declared,
+        AwlAssembleOptions {
+            timeout: declared.timeout,
+        },
+    )?;
+    assert_eq!(declared_bytes, rebuilt_bytes);
+    let declared_package =
+        Package::load_from_bytes(&declared_bytes, ExtractionLimits::unbounded())?;
+    let rebuilt_package = Package::load_from_bytes(rebuilt_bytes, ExtractionLimits::unbounded())?;
     assert_eq!(
         declared_package.manifest().timeout,
         std::time::Duration::from_secs(21_600)
+    );
+    assert_ne!(
+        plain_package.content_hash(),
+        declared_package.content_hash()
+    );
+    assert_eq!(
+        declared_package.content_hash(),
+        rebuilt_package.content_hash()
     );
     Ok(())
 }
