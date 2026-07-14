@@ -19,6 +19,9 @@ use crate::{CheckError, ParseError, SchemaError, Span};
 pub struct CompiledWorkflow {
     /// Workflow name declared in the AWL document.
     pub workflow_name: String,
+    /// First declared worker, which is the document-derived task queue for
+    /// deploy surfaces; `None` means the caller applies its default queue.
+    pub first_worker: Option<String>,
     /// Document-declared workflow timeout; `None` leaves packaging policy to
     /// the assembler default.
     pub timeout: Option<Duration>,
@@ -169,6 +172,7 @@ pub fn compile(source: &str, schema_root: &Path) -> Result<CompiledWorkflow, Com
         .transpose()?;
     Ok(CompiledWorkflow {
         workflow_name: document.name.clone(),
+        first_worker: document.workers.first().map(|worker| worker.name.clone()),
         timeout,
         beam_bytes,
         input_schema,

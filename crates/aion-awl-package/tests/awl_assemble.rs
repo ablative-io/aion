@@ -379,6 +379,7 @@ fn bundle_is_versioned_pinned_and_carries_the_imported_sdk_modules() -> TestResu
 fn hand_built(name: &str) -> CompiledWorkflow {
     CompiledWorkflow {
         workflow_name: name.to_owned(),
+        first_worker: Some("q".to_owned()),
         timeout: None,
         beam_bytes: b"opaque".to_vec(),
         input_schema: serde_json::json!({ "type": "object" }),

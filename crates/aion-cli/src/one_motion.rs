@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-use aion_awl_package::{AwlAssembleOptions, assemble_awl};
+use aion_awl_package::compile_and_assemble_awl;
 use aion_client::WorkflowHandle;
 use aion_core::{Event, Payload};
 use anyhow::{Context, Result};
@@ -68,16 +68,12 @@ pub(crate) fn prepare_run(path: &Path, input: &str) -> Result<PreparedAwl> {
 
 /// Compiles and assembles source into complete format-v1 package bytes.
 fn package_source(source: &str, schema_root: &Path) -> Result<(String, Value, Vec<u8>)> {
-    let compiled = aion_awl::compile(source, schema_root)?;
-    let workflow_name = compiled.workflow_name.clone();
-    let input_schema = compiled.input_schema.clone();
-    let archive = assemble_awl(
-        &compiled,
-        AwlAssembleOptions {
-            timeout: compiled.timeout,
-        },
-    )?;
-    Ok((workflow_name, input_schema, archive))
+    let prepared = compile_and_assemble_awl(source, schema_root)?;
+    Ok((
+        prepared.compiled.workflow_name,
+        prepared.compiled.input_schema,
+        prepared.archive,
+    ))
 }
 
 /// Mirrors `aion awl check`: schema imports resolve against the document's

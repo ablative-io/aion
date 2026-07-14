@@ -137,30 +137,73 @@ async fn compile_and_load_inner(
     options: AwlAssembleOptions,
     workflow_type: Option<String>,
 ) -> Result<CompileSourceResponse, AuthoringApiError> {
-    authorize_mutation(state, caller, transport)?;
+    admit_mutation(state, caller, transport, "authoring.compile")?;
     let (gleam_path, template_root) = authoring_paths(state)?;
     let expected_workflow_type = workflow_type.clone();
     let mut compiled =
         run_compile(gleam_path, template_root, request.source, workflow_type).await?;
     if let Some(expected) = expected_workflow_type {
-        let actual = &compiled.package.manifest().entry_module;
-        if actual != &expected {
-            return Err(AuthoringApiError::Wire(
-                WireError::backend(format!(
-                    "document compile returned manifest entry module `{actual}` instead of `{expected}`"
-                ))
-                .with_error_type("Toolchain"),
-            ));
-        }
+        validate_document_identity(&compiled.package, &expected)?;
     }
     compiled.package = package_with_options(compiled.package, options)?;
+    load_authorized_package(
+        state,
+        caller,
+        transport,
+        "authoring.compile",
+        compiled.package,
+    )
+    .await
+}
+
+/// Hot-loads a package after the caller has passed [`admit_mutation`].
+///
+/// Authorization is stable in the request's [`CallerIdentity`] and is not
+/// repeated. Drain state is mutable, so it is re-checked immediately before
+/// the engine load to close a drain transition during direct compilation.
+pub(crate) async fn load_admitted_package(
+    state: &ServerState,
+    caller: &CallerIdentity,
+    transport: &'static str,
+    operation: &'static str,
+    package: Package,
+) -> Result<CompileSourceResponse, AuthoringApiError> {
+    ensure_not_draining(state)?;
+    load_authorized_package(state, caller, transport, operation, package).await
+}
+
+/// Verifies document-owned package identity before any engine load can mutate
+/// the catalog or routing table.
+pub(crate) fn validate_document_identity(
+    package: &Package,
+    expected: &str,
+) -> Result<(), AuthoringApiError> {
+    let actual = &package.manifest().entry_module;
+    if actual == expected {
+        return Ok(());
+    }
+    Err(AuthoringApiError::Wire(
+        WireError::backend(format!(
+            "document compile returned manifest entry module `{actual}` instead of `{expected}`"
+        ))
+        .with_error_type("Toolchain"),
+    ))
+}
+
+async fn load_authorized_package(
+    state: &ServerState,
+    caller: &CallerIdentity,
+    transport: &'static str,
+    operation: &'static str,
+    package: Package,
+) -> Result<CompileSourceResponse, AuthoringApiError> {
     let engine = engine_handle(state)?;
-    match engine.load_package(compiled.package).await {
+    match engine.load_package(package).await {
         Ok(outcome) => {
             let workflow_type = outcome.record.workflow_type().to_owned();
             let content_hash = outcome.record.version().to_string();
             tracing::info!(
-                operation = "authoring.compile",
+                operation,
                 subject = caller.subject(),
                 grant_source = caller.grant_source().label(),
                 transport,
@@ -180,7 +223,7 @@ async fn compile_and_load_inner(
                 route_changed: outcome.route_changed,
             })
         }
-        Err(error) => Err(map_load_failure(caller, transport, error)),
+        Err(error) => Err(map_load_failure(caller, transport, operation, error)),
     }
 }
 
@@ -217,16 +260,17 @@ fn package_options_error(error: &aion_package::PackageError) -> AuthoringApiErro
 /// Authorization plus drain gate, reusing the deploy guard: hot-loading new
 /// code is new-work admission, gated exactly like a deploy mutation (ADR-002:
 /// no second authorization mechanism).
-fn authorize_mutation(
+pub(crate) fn admit_mutation(
     state: &ServerState,
     caller: &CallerIdentity,
     transport: &'static str,
+    operation: &'static str,
 ) -> Result<(), AuthoringApiError> {
     let guard = state.deploy_guard();
     if let Err(error) = guard.authorize(caller) {
         let wire = error.to_wire_error();
         tracing::warn!(
-            operation = "authoring.compile",
+            operation,
             subject = caller.subject(),
             grant_source = caller.grant_source().label(),
             transport,
@@ -235,6 +279,10 @@ fn authorize_mutation(
         );
         return Err(AuthoringApiError::Wire(wire));
     }
+    ensure_not_draining(state)
+}
+
+fn ensure_not_draining(state: &ServerState) -> Result<(), AuthoringApiError> {
     if state.drain_state().is_draining() {
         return Err(AuthoringApiError::Unavailable(WireError::backend(
             "server is draining and not accepting authoring submissions",
@@ -322,6 +370,7 @@ fn map_toolchain_error(error: ToolchainError) -> AuthoringApiError {
 fn map_load_failure(
     caller: &CallerIdentity,
     transport: &'static str,
+    operation: &'static str,
     error: EngineError,
 ) -> AuthoringApiError {
     let mapped = match error {
@@ -337,7 +386,7 @@ fn map_load_failure(
         other => AuthoringApiError::Wire(crate::ServerError::from(other).to_wire_error()),
     };
     tracing::info!(
-        operation = "authoring.compile",
+        operation,
         subject = caller.subject(),
         grant_source = caller.grant_source().label(),
         transport,

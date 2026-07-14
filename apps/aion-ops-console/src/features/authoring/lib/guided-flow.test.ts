@@ -27,7 +27,7 @@ describe('guided run boundary', () => {
           deployment,
           steps: [
             { step: 'check', detail: 'green' },
-            { step: 'emit', detail: 'emitted' },
+            { step: 'compile', detail: 'direct BEAM compiled' },
             { step: 'package', detail: 'built' },
             { step: 'deploy', detail: 'loaded' },
           ],
@@ -60,7 +60,12 @@ describe('guided run boundary', () => {
     expect(worker.available).toBe(true);
     expect(status.deployedSource).toBe('deployed');
     expect(status.deployment.contentHash).toBe('a'.repeat(64));
-    expect(shipped.steps.map((step) => step.step)).toEqual(['check', 'emit', 'package', 'deploy']);
+    expect(shipped.steps.map((step) => step.step)).toEqual([
+      'check',
+      'compile',
+      'package',
+      'deploy',
+    ]);
     expect(requests).toEqual([
       'PUT /awl/documents/demo.awl',
       'POST /awl/deploy',

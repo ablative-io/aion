@@ -8,7 +8,7 @@ export type DeploymentRecord = {
   workflowId: string | null;
   runId: string | null;
 };
-export type GuidedStepResult = { step: 'check' | 'emit' | 'package' | 'deploy'; detail: string };
+export type GuidedStepResult = { step: 'check' | 'compile' | 'package' | 'deploy'; detail: string };
 export type GuidedDeployResult = { deployment: DeploymentRecord; steps: GuidedStepResult[] };
 export type WorkerAvailability = {
   available: boolean;
@@ -35,7 +35,7 @@ export function createGuidedFacade(request: Request) {
         steps: expectArray(value.steps).map((item) => {
           const step = expectRecord(item);
           const name = expectString(step.step) as GuidedStepResult['step'];
-          if (!['check', 'emit', 'package', 'deploy'].includes(name)) {
+          if (!['check', 'compile', 'package', 'deploy'].includes(name)) {
             throw new Error('Invalid guided step');
           }
           return { step: name, detail: expectString(step.detail) };

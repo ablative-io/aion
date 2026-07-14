@@ -149,6 +149,7 @@ mod tests {
     fn hand_built(name: &str) -> CompiledWorkflow {
         CompiledWorkflow {
             workflow_name: name.to_owned(),
+            first_worker: Some("q".to_owned()),
             timeout: None,
             beam_bytes: b"opaque-beam-bytes".to_vec(),
             input_schema: json!({ "type": "object" }),

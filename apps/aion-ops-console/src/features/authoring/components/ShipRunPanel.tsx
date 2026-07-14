@@ -12,7 +12,7 @@ import { authoringFacade, type GuidedStepResult, type RunStatus } from '../lib/f
 import { activeStepForActivity, hasRevisionDrift } from '../lib/run-mode';
 import { AuthoringCanvas } from './AuthoringCanvas';
 
-const STEP_NAMES = ['check', 'emit', 'package', 'deploy', 'start', 'watch'] as const;
+const STEP_NAMES = ['check', 'compile', 'package', 'deploy', 'start', 'watch'] as const;
 type StepName = (typeof STEP_NAMES)[number];
 type StepState = { state: 'idle' | 'working' | 'done' | 'failed'; detail?: string };
 type StepMap = Record<StepName, StepState>;
@@ -66,7 +66,7 @@ export function ShipRunPanel({ path, buffer, documents }: ShipRunPanelProps) {
       }
       complete('check', `${checked.steps ?? 0} steps deploy green`);
       const contentHash = await authoringFacade.saveDocument(path, buffer);
-      working('emit');
+      working('compile');
       const deployed = await authoringFacade.deploy(path, contentHash);
       applyServerSteps(deployed.steps);
       working('start');
@@ -168,7 +168,7 @@ export function ShipRunPanel({ path, buffer, documents }: ShipRunPanelProps) {
           <Play className="size-7 text-accent-primary" />
           <h3 className="font-semibold text-foreground">Run mode is bound at deploy</h3>
           <p className="text-muted-foreground text-sm">
-            Check, emit, package, deploy, start, and attach the live stream without leaving this
+            Check, compile, package, deploy, start, and attach the live stream without leaving this
             surface.
           </p>
         </div>
