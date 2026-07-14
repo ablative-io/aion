@@ -12,7 +12,8 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use super::{
     AuthConfig, AuthoringConfig, AutoCreate, DeployConfig, DevConfig, ListenConfig, MetricsConfig,
-    NamespaceConfig, OpsConsoleConfig, OutboxConfig, TlsConfig, WebSocketConfig, WorkerConfig,
+    NamespaceConfig, ObservabilityConfig, OpsConsoleConfig, OutboxConfig, TlsConfig,
+    WebSocketConfig, WorkerConfig,
 };
 
 /// Command-line configuration overrides applied after file and environment values.
@@ -66,6 +67,8 @@ pub struct RuntimeConfig {
     pub dev: DevConfig,
     /// Durable-outbox fan-out dispatcher settings.
     pub outbox: OutboxConfig,
+    /// Agent-observability transcript retention bounds (`[observability]`).
+    pub observability: ObservabilityConfig,
     /// Engine scheduler thread count.
     pub scheduler_threads: usize,
     /// Engine reply deadline for workflow queries. REQUIRED — carried as an

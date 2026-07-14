@@ -23,6 +23,7 @@ use super::schedules::{
     create_schedule, delete_schedule, describe_schedule, list_schedules, pause_schedule,
     resume_schedule, update_schedule,
 };
+use super::transcripts::{fetch_transcript, list_transcript_streams};
 use super::whoami::whoami;
 use super::workflows::{
     cancel_workflow, count_workflows, describe_workflow, get_workflows, list_namespace_records,
@@ -219,6 +220,8 @@ pub fn workflow_router(state: ServerState) -> Router {
         .route("/workflows/describe", post(describe_workflow))
         .route("/workflows/intervene", post(intervene))
         .route("/workflows/attempts", post(list_attempts))
+        .route("/workflows/transcript", post(fetch_transcript))
+        .route("/workflows/transcripts", post(list_transcript_streams))
         .route("/events/stream", get(subscribe_events_socket))
         .route("/cluster/command", post(cluster_command))
         .route("/schedules", post(create_schedule).get(list_schedules))

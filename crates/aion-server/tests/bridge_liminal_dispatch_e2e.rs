@@ -282,6 +282,7 @@ fn runtime_config(heartbeat_window: Duration) -> RuntimeConfig {
             enabled: true,
             ..OutboxConfig::default()
         },
+        observability: aion_server::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),

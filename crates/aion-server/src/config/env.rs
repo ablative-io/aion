@@ -135,6 +135,28 @@ fn overlay_websocket(
         "AION_WEBSOCKET_CLUSTER_BROADCAST_CAPACITY" => {
             config.websocket.cluster_broadcast_capacity = Some(parse_positive_usize(name, value)?);
         }
+        other => overlay_observability(config, other, value)?,
+    }
+    Ok(())
+}
+
+/// Apply the `AION_OBSERVABILITY_*` transcript retention-bound overrides.
+///
+/// Split out so the observability knobs live together and each overlay stays
+/// within the per-function line budget. Unknown names fall through to
+/// [`overlay_outbox`] and ultimately the silent-ignore default.
+fn overlay_observability(
+    config: &mut ServerConfig,
+    name: &str,
+    value: &str,
+) -> Result<(), ServerError> {
+    match name {
+        "AION_OBSERVABILITY_MAX_EVENT_BYTES" => {
+            config.observability.max_event_bytes = parse_positive_usize(name, value)?;
+        }
+        "AION_OBSERVABILITY_MAX_STREAM_EVENTS" => {
+            config.observability.max_stream_events = parse_positive_u64(name, value)?;
+        }
         other => overlay_outbox(config, other, value)?,
     }
     Ok(())

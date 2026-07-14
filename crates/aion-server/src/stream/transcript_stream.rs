@@ -138,25 +138,42 @@ async fn authorize_transcript(
 ) -> Result<ActivityStreamKey, ServerError> {
     let workflow_id = decode_workflow_id(subscription.workflow_id.as_ref())?;
     let activity_id = decode_activity_id(subscription)?;
+    gate_transcript_workflow(state, caller, &subscription.namespace, &workflow_id).await?;
+    Ok(ActivityStreamKey::new(
+        workflow_id,
+        activity_id,
+        subscription.attempt,
+    ))
+}
+
+/// Per-workflow transcript gate shared by the WS subscription and the REST
+/// fetch/enumeration endpoints — byte-identical to the workflow event
+/// subscription's authorization: the caller must hold a grant for `namespace`
+/// AND `workflow_id` must be visible in it (anti-leak `not_found` otherwise).
+pub(crate) async fn gate_transcript_workflow(
+    state: &ServerState,
+    caller: &CallerIdentity,
+    namespace: &str,
+    workflow_id: &aion_core::WorkflowId,
+) -> Result<(), ServerError> {
     let per_workflow = PerWorkflowSubscription {
-        namespace: subscription.namespace.clone(),
+        namespace: namespace.to_owned(),
         workflow_id: Some(ProtoWorkflowId::from(workflow_id.clone())),
         resume_from_seq: None,
     };
-    let target = WorkflowTarget::workflow(&workflow_id);
+    let target = WorkflowTarget::workflow(workflow_id);
     let scope = SubscriptionScope::PerWorkflow(&per_workflow, target);
     let filter = aion::EventFilter {
         workflow_id: Some(workflow_id.clone()),
         ..aion::EventFilter::default()
     };
     let operation = NamespaceOperation::subscribe(scope, &filter);
-    // Guard verdict FIRST: nothing below runs for an unauthorized caller.
-    state.namespace_guard().scope(caller, &operation).await?;
-    Ok(ActivityStreamKey::new(
-        workflow_id,
-        activity_id,
-        subscription.attempt,
-    ))
+    // Guard verdict FIRST: nothing runs for an unauthorized caller. The scoped
+    // engine handle is not needed here — transcripts read the `O` keyspace
+    // through the publisher, never the engine.
+    let scoped = state.namespace_guard().scope(caller, &operation).await?;
+    drop(scoped);
+    Ok(())
 }
 
 fn decode_workflow_id(

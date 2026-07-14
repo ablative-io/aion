@@ -267,6 +267,107 @@ async fn intervenable_attempts_enumerates_only_live_owned_attempts_of_the_workfl
     }
 }
 
+/// Build the durable-transcript tee plumbing: a publisher over an in-memory
+/// observability store, returned with the publisher so the test can replay.
+fn transcript_publisher() -> crate::activity_publisher::ActivityEventPublisher {
+    let store = Arc::new(aion_store::InMemoryObservabilityStore::default());
+    let capacity = std::num::NonZeroUsize::new(8).expect("non-zero capacity");
+    crate::activity_publisher::ActivityEventPublisher::new(store, capacity)
+}
+
+fn stream_key(attempt: u32) -> aion_store::ActivityStreamKey {
+    aion_store::ActivityStreamKey::new(
+        WorkflowId::new(Uuid::nil()),
+        ActivityId::from_sequence_position(3),
+        attempt,
+    )
+}
+
+/// Lane #229: an APPLIED `InjectMessage` is teed into the durable transcript
+/// as an operator `User` message — the retained record holds what the
+/// operator said, attributed to the server-origin nil agent.
+#[tokio::test]
+async fn an_applied_inject_is_retained_as_an_operator_user_message() {
+    let registry = ConnectedWorkerRegistry::default();
+    let (worker_id, _guard) = register_worker(&registry, caps_inject_cancel());
+    let owners = AttemptOwnerIndex::new();
+    owners.bind(key(1), worker_id);
+    let publisher = transcript_publisher();
+    let router = InterventionRouter::new(registry, owners, Arc::new(RecordingTransport::default()))
+        .with_transcript_publisher(publisher.clone());
+
+    let outcome = router.route(inject(1)).await.expect("route succeeds");
+    assert_eq!(outcome, aion_core::InterventionOutcome::Applied);
+
+    let records = publisher
+        .replay_from(&stream_key(1), 0)
+        .await
+        .expect("replay succeeds");
+    assert_eq!(records.len(), 1, "exactly the one operator record");
+    assert_eq!(records[0].store_seq, 0);
+    assert_eq!(records[0].event.store_seq, Some(0));
+    assert_eq!(records[0].event.agent_role, "operator");
+    assert_eq!(records[0].event.agent_id, Uuid::nil());
+    assert!(!records[0].event.ephemeral);
+    assert!(matches!(
+        &records[0].event.kind,
+        aion_core::ActivityEventKind::Message {
+            role: aion_core::MessageRole::User,
+            text,
+        } if text == "steer"
+    ));
+}
+
+/// The tee retains ONLY applied injects: a gated primitive, a stale target,
+/// and an applied non-inject (`Cancel`) each leave the durable stream empty.
+#[tokio::test]
+async fn gated_stale_and_cancel_outcomes_retain_nothing() {
+    let registry = ConnectedWorkerRegistry::default();
+    let (worker_id, _guard) = register_worker(&registry, caps_inject_cancel());
+    let owners = AttemptOwnerIndex::new();
+    owners.bind(key(1), worker_id);
+    let publisher = transcript_publisher();
+    let router = InterventionRouter::new(registry, owners, Arc::new(RecordingTransport::default()))
+        .with_transcript_publisher(publisher.clone());
+
+    // Unadvertised primitive: gated at the server, never sent, never retained.
+    let gated = router
+        .route(command(1, InterventionKind::PauseResume { paused: true }))
+        .await
+        .expect("route returns a gated ack");
+    assert!(matches!(
+        gated,
+        InterventionOutcome::CapabilityNotSupported { .. }
+    ));
+
+    // Unowned attempt: the stale no-op, never retained.
+    let stale = router.route(inject(2)).await.expect("route returns a NACK");
+    assert!(matches!(stale, InterventionOutcome::StaleTarget { .. }));
+
+    // An applied Cancel is NOT an operator message: nothing retained either.
+    let cancel = router
+        .route(command(
+            1,
+            InterventionKind::Cancel {
+                reason: "operator abort".to_owned(),
+            },
+        ))
+        .await
+        .expect("route succeeds");
+    assert_eq!(cancel, InterventionOutcome::Applied);
+
+    for attempt in [1u32, 2] {
+        let records = publisher
+            .replay_from(&stream_key(attempt), 0)
+            .await
+            .expect("replay succeeds");
+        assert!(
+            records.is_empty(),
+            "attempt {attempt} must retain nothing: {records:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn intervenable_attempts_drops_an_attempt_whose_owner_disconnected() {
     // The attempt is bound in the owner index but its worker has since

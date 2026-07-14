@@ -91,6 +91,7 @@ fn test_runtime() -> aion_server::config::RuntimeConfig {
         authoring: AuthoringConfig::default(),
         dev: DevConfig::default(),
         outbox: OutboxConfig::default(),
+        observability: aion_server::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(5_000)),
         default_namespace: "default".to_owned(),

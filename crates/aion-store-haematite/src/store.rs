@@ -43,14 +43,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aion_core::{
-    ActivityEvent, Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus, WorkflowSummary,
-    status_from_events,
+    ActivityEvent, ActivityId, Event, TimerId, WorkflowFilter, WorkflowId, WorkflowStatus,
+    WorkflowSummary, status_from_events,
 };
 use aion_store::{
-    ActivityRecord, ActivityStreamKey, ClaimScope, MintOutcome, NamespaceOrigin,
-    NamespacePlacement, NamespaceRecord, NamespaceStore, ObservabilityStore, OutboxRow,
-    OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore, ReadableEventStore,
-    RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
+    ActivityRecord, ActivityStreamKey, ActivityStreamSummary, ClaimScope, MintOutcome,
+    NamespaceOrigin, NamespacePlacement, NamespaceRecord, NamespaceStore, ObservabilityStore,
+    OutboxRow, OutboxStatus, OutboxStore, PackageRecord, PackageRouteRecord, PackageStore,
+    ReadableEventStore, RunSummary, StoreError, TimerEntry, WritableEventStore, WriteToken,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -1543,6 +1543,64 @@ fn observability_read_blocking(
     Ok(records)
 }
 
+/// Enumerate the retained `O`-streams of one workflow via haematite's
+/// intentionally unindexed stream scan (O(total streams) — an operator read,
+/// never on the hot publish path).
+///
+/// Deliberately NOT `EventStore::scan`: that walks only shards already
+/// MATERIALISED this process lifetime, so on a freshly reopened database it
+/// would enumerate nothing until each stream's shard happened to be touched.
+/// `scan_sequence_keys_for_shards` over every shard materialises (and
+/// WAL-recovers) on demand, so enumeration is restart-correct — the "open it
+/// an hour later" contract this store method exists for.
+fn observability_list_blocking(
+    store: &haematite::EventStore,
+    workflow_id: &WorkflowId,
+) -> Result<Vec<ActivityStreamSummary>, StoreError> {
+    let prefix = keyspace::observability_workflow_prefix(workflow_id);
+    let database = store.database();
+    let all_shards: Vec<usize> = (0..database.shard_count()).collect();
+    let streams = database
+        .scan_sequence_keys_for_shards(&all_shards)
+        .map_err(|error| database_error(&error))?;
+    let mut summaries = Vec::new();
+    for (stream_key, next_seq) in streams {
+        if !stream_key.starts_with(&prefix) {
+            continue;
+        }
+        // A foreign region can never match the 17-byte tagged prefix, but stay
+        // defensive: skip anything that does not decode as a full 29-byte
+        // `O`-region stream key.
+        let Some((activity_seq, attempt)) = keyspace::decode_observability_stream_key(&stream_key)
+        else {
+            continue;
+        };
+        // Match `EventStore::scan`'s live-events guard: a sequence key whose
+        // events were all deleted is not a retained stream.
+        if !database
+            .stream_has_live_events(&stream_key)
+            .map_err(|error| database_error(&error))?
+        {
+            continue;
+        }
+        summaries.push(ActivityStreamSummary {
+            key: ActivityStreamKey::new(
+                workflow_id.clone(),
+                ActivityId::from_sequence_position(activity_seq),
+                attempt,
+            ),
+            head: next_seq,
+        });
+    }
+    summaries.sort_by_key(|summary| {
+        (
+            summary.key.activity_id.sequence_position(),
+            summary.key.attempt,
+        )
+    });
+    Ok(summaries)
+}
+
 /// Insert `rows` into the outbox, ignoring any whose `dispatch_key` already
 /// exists (at-most-once dispatch). Commits before returning.
 fn insert_outbox_rows(store: &haematite::EventStore, rows: &[OutboxRow]) -> Result<(), StoreError> {
@@ -1594,6 +1652,15 @@ impl ObservabilityStore for HaematiteStore {
     ) -> Result<Vec<ActivityRecord>, StoreError> {
         let key = key.clone();
         self.blocking(move |store| observability_read_blocking(store, &key, from_seq))
+            .await
+    }
+
+    async fn list_activity_streams(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<ActivityStreamSummary>, StoreError> {
+        let workflow_id = workflow_id.clone();
+        self.blocking(move |store| observability_list_blocking(store, &workflow_id))
             .await
     }
 }

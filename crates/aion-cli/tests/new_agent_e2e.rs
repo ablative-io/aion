@@ -193,6 +193,10 @@ fn build_worker_binary(project: &Path, grpc_port: u16) -> Result<PathBuf, TestEr
 
     let status = Command::new("cargo")
         .arg("build")
+        // The scaffolded project must build into its OWN target dir: an
+        // inherited `CARGO_TARGET_DIR` (the workspace's shared target pile)
+        // would strand the binary away from the path asserted below.
+        .env_remove("CARGO_TARGET_DIR")
         .current_dir(project.join("worker"))
         .status()
         .map_err(|error| format!("failed to spawn cargo build for the agent worker: {error}"))?;
