@@ -236,9 +236,39 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beamr"
-version = "0.11.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0347be985ae9cc2291819b79f7b2336ec0b2390b6edbbbad57d08239a7f789b6"
+checksum = "0244e6b7f0decb2c29949fa6d0fcf64874661014e6b293d9b329c6218db7bcc4"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
+ "cranelift-native",
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-queue",
+ "dashmap",
+ "flate2",
+ "getrandom 0.4.3",
+ "gleam-types",
+ "io-uring",
+ "libc",
+ "md5",
+ "num_cpus",
+ "rand",
+ "rustix",
+ "tokio",
+ "unicode-segmentation",
+ "web-time",
+ "zstd",
+]
+
+[[package]]
+name = "beamr"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b7d280e5a30ca35e5d7c5989fa7727b2fb3fa656a3cbb092807f0af0237439b"
 dependencies = [
  "base64",
  "cranelift-codegen",
@@ -256,6 +286,7 @@ dependencies = [
  "io-uring",
  "libc",
  "md5",
+ "mio",
  "num_cpus",
  "rand",
  "rustix",
@@ -928,11 +959,11 @@ dependencies = [
 
 [[package]]
 name = "haematite"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4036b108a66180e1fcfbf8802eb570b49def7e96c41f3406d900c37314a001c"
+checksum = "22d88ed035a72046294d2cdeb6ccc59ea14548e5e00f8ad1e954f8ca412a80f7"
 dependencies = [
- "beamr",
+ "beamr 0.13.0",
  "blake3",
  "crc32fast",
  "dashmap",
@@ -1333,17 +1364,18 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "liminal-rs"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb368857f287987e3c8629eaccceac5b88f0390287d545f0bea94fcead2b5110"
+checksum = "daa293ad38a002234710520113956c5b3a2004a76541cedc05cdae275de199f9"
 dependencies = [
  "async-trait",
- "beamr",
+ "beamr 0.14.0",
  "chrono",
  "haematite",
  "jsonschema",
  "rand",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "uuid",
@@ -1351,9 +1383,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b18055c03e8c36f5b266e978f5b32d0d1f81bd2f0b4e306ee2fa5631323be198"
+checksum = "62c1a8ccec19b90dddfba31cf2a6535775dd37484f76318ad96a2c2fa86283b4"
 dependencies = [
  "futures-core",
  "liminal-rs",
@@ -1464,6 +1496,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02bd0af71c67b473010cbbc60715ee815645a4dc942899111f494b4b737d6fda"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]

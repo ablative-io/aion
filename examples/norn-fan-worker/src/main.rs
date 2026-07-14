@@ -49,6 +49,8 @@ use serde_json::Value;
 const FAN_OUT: usize = 4;
 /// The general prompt-taking activity exposed to studio callers.
 const ASK_ACTIVITY_TYPE: &str = "ask";
+/// Fan-in companion to `ask`: joins prior answers under one instruction.
+const SYNTHESIZE_ACTIVITY_TYPE: &str = "synthesize";
 static ASK_INVOCATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The activity types `collect_four` dispatches, one per fan-out ordinal, paired
@@ -301,15 +303,28 @@ fn build_registry(norn_bin: &str, identity: &str) -> anyhow::Result<Arc<Activity
         )?;
     }
 
+    let norn_bin_for_synthesize = norn_bin.to_owned();
+    let identity_for_synthesize = identity.to_owned();
     let norn_bin = norn_bin.to_owned();
     let identity = identity.to_owned();
     registry = registry.register_activity(
         ASK_ACTIVITY_TYPE,
-        move |prompt: FanInput, context: &ActivityContext| -> HandlerFuture<'_, Value> {
+        move |input: Value, context: &ActivityContext| -> HandlerFuture<'_, Value> {
             let norn_bin = norn_bin.clone();
             let session_id = ask_session_id(&identity, context);
             Box::pin(async move {
                 let session_id = session_id?;
+                // AWL action calls arrive as named-argument objects, so the
+                // prompt rides in as {"prompt": "..."} — never a bare string.
+                let prompt = input
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ActivityFailure::terminal(format!(
+                            "ask input must be an object with a string `prompt` field, got: {input}"
+                        ))
+                    })?
+                    .to_owned();
                 tracing::info!(
                     activity = ASK_ACTIVITY_TYPE,
                     session = %session_id,
@@ -323,6 +338,55 @@ fn build_registry(norn_bin: &str, identity: &str) -> anyhow::Result<Arc<Activity
                 );
                 // AWL actions return record types; a bare JSON string cannot
                 // satisfy any declarable return type, so ship an object.
+                Ok(serde_json::json!({ "answer": answer }))
+            })
+        },
+    )?;
+
+    let norn_bin = norn_bin_for_synthesize;
+    let identity = identity_for_synthesize;
+    registry = registry.register_activity(
+        SYNTHESIZE_ACTIVITY_TYPE,
+        move |input: Value, context: &ActivityContext| -> HandlerFuture<'_, Value> {
+            let norn_bin = norn_bin.clone();
+            let session_id = ask_session_id(&identity, context);
+            Box::pin(async move {
+                let session_id = session_id?;
+                let instruction = input
+                    .get("instruction")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ActivityFailure::terminal(format!(
+                            "synthesize input needs a string `instruction` field, got: {input}"
+                        ))
+                    })?;
+                let answers: Vec<&str> = input
+                    .get("answers")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.get("answer").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if answers.is_empty() {
+                    return Err(ActivityFailure::terminal(format!(
+                        "synthesize input needs a non-empty `answers` list of {{answer}} records, got: {input}"
+                    )));
+                }
+                let mut prompt = String::from(instruction);
+                prompt.push_str("\n\nInputs to synthesize:\n");
+                for (ordinal, answer) in answers.iter().enumerate() {
+                    prompt.push_str(&format!("{}. {answer}\n", ordinal + 1));
+                }
+                tracing::info!(
+                    activity = SYNTHESIZE_ACTIVITY_TYPE,
+                    session = %session_id,
+                    inputs = answers.len(),
+                    "serving Norn synthesize dispatch"
+                );
+                let answer = run_norn_step(norn_bin, session_id, prompt).await?;
                 Ok(serde_json::json!({ "answer": answer }))
             })
         },
