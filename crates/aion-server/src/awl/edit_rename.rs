@@ -163,6 +163,9 @@ fn rename_expr(expr: &mut Expr, spans: &BTreeSet<(usize, usize)>, to: &str) {
         }
         Expr::Ref { .. }
         | Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }

@@ -444,3 +444,23 @@ Invalid:
     backstop for unchecked documents. No sidecar re-staging was needed: every sidecar stage
     was already PARSE/CHECK — the old route-in-loop refusal was pinned by an emitter unit
     test, now reframed as the backstop pin.
+
+## ergonomics — flow-vocabulary B1: consts, raw strings, json literals, schema of
+
+Valid:
+- `ergonomics/valid/flow_vocab_b1.awl` — the B1 compile proof: multi-line raw string const,
+  `json { … }` const (brace-in-string description), `schema of Verdict`, const-over-const `+`
+  concatenation, consts consumed as call arguments, and an expression-headed statement
+  (`"run: " + result + …` as a pipe head). Byte-canonical; emits and `gleam build`s
+  (`tests/flow_vocab_compile_proof.rs`); MIR-covered with goldens.
+
+Invalid (all CHECK; the unterminated-raw-string lex refusal is pinned by
+`tests/flow_vocab_ergonomics.rs` because no corpus fixture may die in the lexer):
+- `const_duplicate.awl` — second `const prompt` → CHECK "duplicate const declaration" @7.
+- `const_cycle.awl` — mutually recursive consts → CHECK "defined in terms of itself" @7.
+- `const_unknown_ref.awl` — const value names no const → CHECK "unknown const" @6.
+- `const_not_compile_time.awl` — const value reads a workflow input → CHECK @6.
+- `const_shadowed_binding.awl` — step binding reuses a const name → CHECK @12.
+- `json_invalid_body.awl` — `json { … }` body is not JSON → CHECK "not valid JSON" @8, span
+  INSIDE the body.
+- `schema_of_unknown_type.awl` — `schema of Missing` → CHECK "unknown type" @6.

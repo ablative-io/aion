@@ -58,11 +58,18 @@ step finish
   route done(value: total + "x")
 "#;
 
+// Public `lower` refuses documents that do not check cleanly at the door,
+// so direct lowering of mixed concat now fails with the checker's own
+// diagnostic (the lowering-internal `Unsupported { shape: "string
+// concatenation" }` refusal remains behind the gate as defense in depth).
 fn assert_lower_refuses(source: &str, expected_line: usize) -> TestResult {
     let document = parse(source)?;
     match lower(&document, None) {
-        Err(LowerError::Unsupported { shape, span }) => {
-            assert_eq!(shape, "string concatenation");
+        Err(LowerError::Message { message, span }) => {
+            assert!(
+                message.starts_with("document does not check cleanly: `+` joins strings only"),
+                "unexpected refusal: {message}"
+            );
             assert_eq!(span.line, expected_line);
             Ok(())
         }

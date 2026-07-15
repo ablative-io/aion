@@ -62,6 +62,26 @@ pub(crate) fn prepare<'a>(
 }
 
 fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitError> {
+    // Emission is defined only for documents that check cleanly: fold-time
+    // const substitution is name-based and relies on the checker's
+    // invariants (no shadowed consts, no input/signal collisions), so an
+    // unchecked document could emit code with different semantics from the
+    // checker-resolved program.
+    let diagnostics = match root {
+        Some(root) => crate::checker::check_in(document, root),
+        None => crate::checker::check(document),
+    };
+    if let Some(first) = diagnostics.first() {
+        return Err(EmitError::new(
+            first.span,
+            format!("document does not check cleanly: {}", first.message),
+        ));
+    }
+    // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
+    // `schema of`, const references) down to plain literals first, so the
+    // lowering below only ever sees the vocabulary it already speaks.
+    let document = &crate::fold::fold_document(document, root)
+        .map_err(|error| EmitError::new(error.span, error.message))?;
     let env = build_env(document, root)?;
     let mut emitter = Emitter::new(document, env)?;
     bindings::compute(&mut emitter)?;

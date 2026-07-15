@@ -440,9 +440,10 @@ fn fork_branch_call_site_config_lowers_with_per_key_merge() -> Result<(), Box<dy
     Ok(())
 }
 
-/// A collection fork over a CHILD with branch config refuses with the
-/// reference's child class (`emitter/forks.rs:136-141`) — a hard message,
-/// not an `Unsupported` scope marker.
+/// A collection fork over a CHILD with branch config is already rejected by
+/// the checker, so public `lower` refuses it at the check gate — the
+/// lowering-internal child-class refusal (`mir/lower/child_call.rs`, parity
+/// with `emitter/forks.rs:136-141`) remains as defense in depth behind it.
 #[test]
 fn collection_child_fork_config_refuses_with_the_child_class()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -472,8 +473,9 @@ step gather
         Err(LowerError::Message { message, .. }) => {
             assert_eq!(
                 message,
-                "`node`/`timeout` cannot pin a child workflow call — the engine routes \
-                 children, not a queue"
+                "document does not check cleanly: a child call carries no call-site \
+                 config — `node`/`timeout` pins apply to worker actions, and the engine \
+                 routes children, not a queue (`score_essay` is a child)"
             );
         }
         other => return Err(format!("expected the child-config refusal, got {other:?}").into()),

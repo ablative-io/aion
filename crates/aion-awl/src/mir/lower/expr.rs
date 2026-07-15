@@ -40,11 +40,13 @@ pub(super) fn lower_expr(
     stmts: &mut Vec<Stmt>,
 ) -> Result<(Value, GType), LowerError> {
     match expr {
-        Expr::String { value, span } => {
+        Expr::String { value, span } | Expr::RawString { value, span } => {
             let lit = ctx.binary(value);
             let _ = span;
             Ok((Value::Lit(lit), GType::Str))
         }
+        Expr::Json { body, .. } => Ok((Value::Lit(ctx.binary(body)), GType::Str)),
+        Expr::SchemaOf { span, .. } => Err(LowerError::unsupported("`schema of`", *span)),
         Expr::Int { value, span } => {
             let signed = i64::try_from(*value)
                 .map_err(|_| LowerError::unsupported("integer literal above i64::MAX", *span))?;
@@ -449,6 +451,9 @@ fn lower_record(
 fn expr_span(expr: &Expr) -> crate::Span {
     match expr {
         Expr::String { span, .. }
+        | Expr::RawString { span, .. }
+        | Expr::Json { span, .. }
+        | Expr::SchemaOf { span, .. }
         | Expr::Int { span, .. }
         | Expr::Float { span, .. }
         | Expr::Bool { span, .. }

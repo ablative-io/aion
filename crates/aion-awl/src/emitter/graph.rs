@@ -415,6 +415,9 @@ fn route_names_in<'a>(statements: &'a [Statement], found: &mut Vec<&'a str>) {
 pub(crate) fn expr_refs(expr: &Expr, refs: &mut BTreeSet<String>) {
     match expr {
         Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }

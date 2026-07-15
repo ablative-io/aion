@@ -256,6 +256,9 @@ fn loop_local_ref(expr: &Expr, looped: &LoopStmt) -> Option<(String, Span)> {
     match expr {
         Expr::Ref { span, name } => is_local(name).then(|| (name.clone(), *span)),
         Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }

@@ -413,6 +413,9 @@ fn expr_uses_field(expr: &Expr, name: &str) -> bool {
             ..
         } => expr_uses_field(collection, name) || expr_uses_field(predicate, name),
         Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }

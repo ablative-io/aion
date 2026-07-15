@@ -6,9 +6,9 @@ mod steps;
 mod trivia;
 
 pub use document::{
-    ActionDecl, ChildDecl, ConfigLine, ConfigValue, Document, EnumVariant, FieldDecl, InputDecl,
-    OutcomeDecl, ParamDecl, RetrySpec, RouteDirection, SignalDecl, TypeBody, TypeDecl, TypeRef,
-    WorkerDecl, WorkflowTimeoutDecl,
+    ActionDecl, ChildDecl, ConfigLine, ConfigValue, ConstDecl, Document, EnumVariant, FieldDecl,
+    InputDecl, OutcomeDecl, ParamDecl, RetrySpec, RouteDirection, SignalDecl, TypeBody, TypeDecl,
+    TypeRef, WorkerDecl, WorkflowTimeoutDecl,
 };
 pub(crate) use expr::join_span;
 pub use expr::{Arg, BinaryOp, DurationLiteral, Expr, PredicateKind, Quantifier};

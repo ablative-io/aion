@@ -99,6 +99,37 @@ pub enum Expr {
         /// Decoded string value without source quotes.
         value: String,
     },
+    /// Triple-quoted `"""…"""` raw string literal: the value is the text
+    /// between the delimiters, byte-for-byte — newlines literal, zero escape
+    /// processing — so the printer re-emits the literal verbatim.
+    RawString {
+        /// Source span from the opening `"""` through the closing `"""`.
+        span: Span,
+        /// Raw string value, exactly as written between the delimiters.
+        value: String,
+    },
+    /// A `json { … }` literal. The value is the verbatim brace-balanced body
+    /// text (braces included); its type is `String`. The checker validates
+    /// the body as JSON; the printer re-emits it byte-for-byte.
+    Json {
+        /// Source span from the `json` keyword through the closing `}`.
+        span: Span,
+        /// Verbatim body text, including the enclosing braces.
+        body: String,
+        /// Source span of the braced body alone, for diagnostics that point
+        /// into it.
+        body_span: Span,
+    },
+    /// A `schema of Type` expression: the named type's derived JSON Schema
+    /// as a compile-time `String`.
+    SchemaOf {
+        /// Source span from `schema` through the type name.
+        span: Span,
+        /// The named type whose schema is derived.
+        name: String,
+        /// Source span of the type name.
+        name_span: Span,
+    },
     /// Integer literal.
     Int {
         /// Source span covering the literal.

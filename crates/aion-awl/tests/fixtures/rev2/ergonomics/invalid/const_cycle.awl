@@ -1,0 +1,13 @@
+//! Two consts defined in terms of each other; the cycle is rejected.
+workflow const_cycle
+  input task: String
+  outcome done: type String, route success
+
+const first = second + "!"
+const second = first + "?"
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  task |> stamp |> route done

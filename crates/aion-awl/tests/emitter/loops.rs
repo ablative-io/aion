@@ -62,9 +62,10 @@ fn counterless_loop_uses_the_scalar_result_path() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-/// The checker introduces a named counter only after its loop. Direct emit on
-/// an unchecked document must reject the same illegal in-`until` reference
-/// instead of generating an unbound identifier in the loop function.
+/// The checker introduces a named counter only after its loop, and public
+/// `emit` refuses documents that do not check cleanly at the door — so the
+/// illegal in-`until` counter reference surfaces as the checker's own
+/// diagnostic rather than a generated unbound identifier.
 #[test]
 fn unchecked_counter_is_not_in_until_scope() -> Result<(), Box<dyn Error>> {
     let source = "\
@@ -93,9 +94,10 @@ step run
         .err()
         .ok_or("unchecked emit must reject a counter referenced inside its own loop")?;
     assert!(
-        error
-            .to_string()
-            .contains("`rounds` has no binding with a known type in scope"),
+        error.to_string().contains("does not check cleanly")
+            && error
+                .to_string()
+                .contains("`rounds` is bound on some path but not guaranteed"),
         "unexpected counter-scope error: {error}"
     );
     Ok(())
@@ -185,9 +187,10 @@ step build
 }
 
 /// A loop `max` referencing the loop-threaded value renders at the call
-/// site, where no loop-local exists: the stopgap refuses instead of
-/// emitting Gleam that cannot compile (2026-07-11 emitter panel, blocking
-/// finding; the checker refuses the same shape in the pre-loop scope).
+/// site, where no loop-local exists (2026-07-11 emitter panel, blocking
+/// finding). The checker refuses the shape in the pre-loop scope, and public
+/// `emit` refuses unchecked documents at the door, so that diagnostic is
+/// what surfaces; the emitter's own refusal remains behind the gate.
 #[test]
 fn loop_max_must_be_loop_invariant() -> Result<(), Box<dyn Error>> {
     let source = "\
@@ -214,7 +217,8 @@ step build
     let document = parse(source)?;
     let error = emit(&document).err().ok_or("emit must refuse")?;
     assert!(
-        error.message.contains("before the loop"),
+        error.message.contains("does not check cleanly")
+            && error.message.contains("`max` is the loop's ceiling"),
         "unexpected message: {}",
         error.message
     );

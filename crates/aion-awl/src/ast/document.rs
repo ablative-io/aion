@@ -1,6 +1,6 @@
 use crate::Span;
 
-use super::expr::DurationLiteral;
+use super::expr::{DurationLiteral, Expr};
 use super::steps::Step;
 use super::trivia::{Comment, DocLine, Lead};
 
@@ -27,6 +27,8 @@ pub struct Document {
     pub signals: Vec<SignalDecl>,
     /// Workflow `outcome` declarations in source order (at least one).
     pub outcomes: Vec<OutcomeDecl>,
+    /// `const` declarations in source order.
+    pub consts: Vec<ConstDecl>,
     /// `type` declarations in source order.
     pub types: Vec<TypeDecl>,
     /// `worker` blocks in source order.
@@ -114,6 +116,29 @@ pub struct OutcomeDecl {
     pub ty: TypeRef,
     /// Terminal status the outcome maps to.
     pub direction: RouteDirection,
+}
+
+/// One document-level `const name = <value>` declaration. The value is
+/// restricted to compile-time forms — literals (including raw strings and
+/// `json { … }` bodies), `schema of Type`, list literals of these, `+`
+/// concatenations of these, and references to other consts — and is folded
+/// before lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstDecl {
+    /// Span from the `const` keyword through the value expression.
+    pub span: Span,
+    /// Leading trivia before the declaration.
+    pub lead: Vec<Lead>,
+    /// `///` doc lines attached to the declaration.
+    pub docs: Vec<DocLine>,
+    /// Same-line trailing comment (after the value's last line).
+    pub trailing: Option<Comment>,
+    /// Declared const name.
+    pub name: String,
+    /// Source span of the const name.
+    pub name_span: Span,
+    /// The compile-time value expression.
+    pub value: Expr,
 }
 
 /// Type expression used by declarations, fields, and parameters.

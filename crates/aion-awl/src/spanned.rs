@@ -10,6 +10,9 @@ impl Spanned for Expr {
     fn span(&self) -> Span {
         match self {
             Self::String { span, .. }
+            | Self::RawString { span, .. }
+            | Self::Json { span, .. }
+            | Self::SchemaOf { span, .. }
             | Self::Int { span, .. }
             | Self::Float { span, .. }
             | Self::Bool { span, .. }

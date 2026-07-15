@@ -8,8 +8,10 @@ use crate::ast::{
 use crate::{Keyword, Span, TokenKind, lex};
 
 use super::ParseError;
+use super::exprs::{expr_span, parse_expr};
+use super::hints::gone_keyword_hint;
 use super::steps::parse_step;
-use super::stream::{Stream, describe, gone_keyword_hint};
+use super::stream::{Stream, describe};
 use super::types::{parse_type_decl, parse_type_ref, type_ref_span};
 use super::workers::{expect_duration, parse_child, parse_worker};
 
@@ -68,6 +70,7 @@ pub fn parse(source: &str) -> Result<Document, ParseError> {
         inputs: Vec::new(),
         signals: Vec::new(),
         outcomes: Vec::new(),
+        consts: Vec::new(),
         types: Vec::new(),
         workers: Vec::new(),
         children: Vec::new(),
@@ -326,9 +329,9 @@ fn parse_outcome_decl(
     })
 }
 
-/// Parse the top-level declarations after the header: types, workers,
-/// children, and steps, in any interleaving (the printer canonicalizes the
-/// grammar's order).
+/// Parse the top-level declarations after the header: consts, types,
+/// workers, children, and steps, in any interleaving (the printer
+/// canonicalizes the grammar's order).
 fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<(), ParseError> {
     loop {
         let lead = stream.take_leads()?;
@@ -345,6 +348,12 @@ fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<()
         };
         let span = token.span;
         match &token.kind {
+            TokenKind::Keyword(Keyword::Const) => {
+                stream.next();
+                document
+                    .consts
+                    .push(parse_const_decl(stream, lead, docs, span)?);
+            }
             TokenKind::Keyword(Keyword::Type) => {
                 stream.next();
                 document
@@ -370,7 +379,7 @@ fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<()
             TokenKind::Identifier(word) => {
                 let message = gone_keyword_hint(word).unwrap_or_else(|| {
                     format!(
-                        "expected a `type`, `worker`, `child`, or `step` declaration, \
+                        "expected a `const`, `type`, `worker`, `child`, or `step` declaration, \
                          found `{word}`"
                     )
                 });
@@ -380,11 +389,44 @@ fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<()
                 return Err(ParseError::new(
                     span,
                     format!(
-                        "expected a `type`, `worker`, `child`, or `step` declaration, found {}",
+                        "expected a `const`, `type`, `worker`, `child`, or `step` declaration, \
+                         found {}",
                         describe(other)
                     ),
                 ));
             }
         }
     }
+}
+
+/// Parse one `const name = <value>` declaration after the `const` keyword
+/// (at `const_span`) has been consumed. The value is a general expression
+/// here; the checker restricts it to compile-time forms.
+fn parse_const_decl(
+    stream: &mut Stream,
+    lead: Vec<Lead>,
+    docs: Vec<DocLine>,
+    const_span: Span,
+) -> Result<crate::ast::ConstDecl, ParseError> {
+    let (name, name_span) = stream.expect_name("a const name")?;
+    if stream
+        .eat(|kind| matches!(kind, TokenKind::Equal))
+        .is_none()
+    {
+        return Err(ParseError::new(
+            name_span,
+            format!("a `const` declares its value with `=`: `const {name} = <value>`"),
+        ));
+    }
+    let value = parse_expr(stream)?;
+    let trailing = stream.end_line()?;
+    Ok(crate::ast::ConstDecl {
+        span: join_span(const_span, expr_span(&value)),
+        lead,
+        docs,
+        trailing,
+        name,
+        name_span,
+        value,
+    })
 }

@@ -10,6 +10,8 @@ mod ast;
 mod checker;
 mod compile;
 mod emitter;
+mod fold;
+mod jsontext;
 mod lexer;
 // The AWL-BC bytecode MIR backend (BC-2). Exposed as `#[doc(hidden)] pub` — a
 // tooling/test seam, NOT a supported public API — because the ratified type
@@ -30,12 +32,12 @@ mod spanned;
 
 pub use ast::{
     ActionDecl, AfterRef, Arg, BinaryOp, Binding, Call, CallStmt, ChildDecl, CombinatorCall,
-    CombinatorKind, Comment, ConfigLine, ConfigValue, DocLine, Document, DurationLiteral,
-    EnumVariant, Expr, FieldDecl, ForkHeader, ForkStmt, Guard, InputDecl, JoinLine, Lead, LoopStmt,
-    LoopTail, OnFailure, OutcomeClause, OutcomeDecl, ParamDecl, PipeEnd, PipeStage, PipeStmt,
-    PredicateKind, Quantifier, RetrySpec, RouteDirection, RouteStmt, RouteTarget, SignalDecl,
-    SleepStmt, SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef, WaitStmt, WorkerDecl,
-    WorkflowTimeoutDecl,
+    CombinatorKind, Comment, ConfigLine, ConfigValue, ConstDecl, DocLine, Document,
+    DurationLiteral, EnumVariant, Expr, FieldDecl, ForkHeader, ForkStmt, Guard, InputDecl,
+    JoinLine, Lead, LoopStmt, LoopTail, OnFailure, OutcomeClause, OutcomeDecl, ParamDecl, PipeEnd,
+    PipeStage, PipeStmt, PredicateKind, Quantifier, RetrySpec, RouteDirection, RouteStmt,
+    RouteTarget, SignalDecl, SleepStmt, SpawnStmt, Statement, Step, TypeBody, TypeDecl, TypeRef,
+    WaitStmt, WorkerDecl, WorkflowTimeoutDecl,
 };
 pub use checker::{CheckError, check, check_in};
 pub use compile::{

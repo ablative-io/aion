@@ -1,0 +1,12 @@
+//! A const value references a name that no const declares.
+workflow const_unknown_ref
+  input task: String
+  outcome done: type String, route success
+
+const prompt = missing + "!"
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  task |> stamp |> route done

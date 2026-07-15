@@ -1,0 +1,252 @@
+module flow_vocab_b1 source=flow_vocab_b1.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_run:
+    aion@activity:task_queue/2 [activities] (v2, lit#16)
+    aion@workflow:run/1 [activities] (v3)
+    aion@activity:task_queue/2 [activities] (v7, lit#19)
+    aion@workflow:run/1 [activities] (v8)
+    aion@activity:task_queue/2 [activities] (v15, lit#22)
+    aion@workflow:run/1 [activities] (v16)
+== durable families == activities
+== atoms ==
+  [0] verdict
+  [1] run_agent_input
+  [2] stamp_input
+  [3] flow_vocab_b1_input
+  [4] done_outcome
+  [5] some
+  [6] none
+  [7] ok
+== literals ==
+  [0] "passed"
+  [1] "note"
+  [2] "passed"
+  [3] "note"
+  [4] "prompt"
+  [5] "output_schema"
+  [6] "text"
+  [7] "task"
+  [8] "done"
+  [9] "outcome"
+  [10] ""
+  [11] "FlowVocabB1Outcome"
+  [12] "done"
+  [13] "payload"
+  [14] "\n  Hello from the flow vocabulary.\n   Task follows: "
+  [15] "{\"description\":\"One verdict, minted by the checking agent.\",\"properties\":{\"note\":{\"type\":\"string\"},\"passed\":{\"description\":\"Whether the run passed.\",\"type\":\"boolean\"}},\"required\":[\"passed\"],\"type\":\"object\"}"
+  [16] "vocab"
+  [17] "\n  Hello from the flow vocabulary.\n  "
+  [18] "{\n  \"type\": \"object\",\n  \"properties\": { \"id\": { \"type\": \"string\", \"description\": \"git-ref-safe slug\" } },\n  \"required\": [\"id\"],\n  \"additionalProperties\": false\n}"
+  [19] "vocab"
+  [20] "run: "
+  [21] " extra: "
+  [22] "vocab"
+== types ==
+  record Verdict tag=verdict
+    passed: bool
+    note: nullable(string) optional
+  record RunAgentInput tag=run_agent_input
+    prompt: string
+    output_schema: string
+  record StampInput tag=stamp_input
+    text: string
+  record FlowVocabB1Input tag=flow_vocab_b1_input
+    task: string
+  union FlowVocabB1Outcome
+    done -> done_outcome(string)
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=flow_vocab_b1_input_codec output=flow_vocab_b1_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(flow_vocab_b1.FlowVocabB1Input, flow_vocab_b1.FlowVocabB1Outcome, AwlError)
+  T-DEF name="flow_vocab_b1" input=flow_vocab_b1_input_codec output=flow_vocab_b1_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (flow_vocab_b1.FlowVocabB1Input) -> Result(flow_vocab_b1.FlowVocabB1Outcome, AwlError)
+  T-EXEC fields=[task:String] entry=step_run args=[0]
+== fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#0) ==
+  sig: () -> Codec(flow_vocab_b1.Verdict)
+  v0 = make_closure verdict_to_json captures=[]
+  v1 = call_local verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verdict_to_json/1 origin=codec_template(RecordTrio, Verdict, record#0) ==
+  sig: (flow_vocab_b1.Verdict) -> Json
+  v1 = field(v0, 1)
+  v2 = call_rt aion@awl@codec:bool_to_json/1(v1) live_after=[v0]
+  v3 = tuple([lit#0, v2])
+  v4 = list([v3])
+  v5 = field(v0, 2)
+  v6 = call_local verdict_to_json$field1(v5) live_after=[v4]
+  v7 = list([v4, v6])
+  v8 = call_rt gleam@list:flatten/1(v7)
+  tail_rt gleam@json:object/1(v8)
+== fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#0) ==
+  sig: () -> Decoder(flow_vocab_b1.Verdict)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn verdict_to_json$field1/1 origin=lifted(verdict_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#1, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn verdict_decoder$some/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #1) ==
+  sig: (Bool) -> Decoder(flow_vocab_b1.Verdict)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure verdict_decoder$some captures=[]
+  v3 = call_rt gleam@dynamic@decode:map/2(v1, v2) live_after=[v0]
+  v4 = make_closure verdict_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#3, 'none', v3, v4)
+== fn verdict_decoder$1/2 origin=lifted(verdict_decoder, #2) ==
+  sig: (Option(String), Bool) -> Decoder(flow_vocab_b1.Verdict)
+  v2 = record(verdict, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn run_agent_input_codec/0 origin=codec_template(RecordTrio, RunAgentInput, record#1) ==
+  sig: () -> Codec(flow_vocab_b1.RunAgentInput)
+  v0 = make_closure run_agent_input_to_json captures=[]
+  v1 = call_local run_agent_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn run_agent_input_to_json/1 origin=codec_template(RecordTrio, RunAgentInput, record#1) ==
+  sig: (flow_vocab_b1.RunAgentInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"prompt": v1|>awlc.string_to_json, "output_schema": v2|>awlc.string_to_json}
+  return v3
+== fn run_agent_input_decoder/0 origin=codec_template(RecordTrio, RunAgentInput, record#1) ==
+  sig: () -> Decoder(flow_vocab_b1.RunAgentInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure run_agent_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn run_agent_input_decoder$0/1 origin=lifted(run_agent_input_decoder, #0) ==
+  sig: (String) -> Decoder(flow_vocab_b1.RunAgentInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure run_agent_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn run_agent_input_decoder$1/2 origin=lifted(run_agent_input_decoder, #1) ==
+  sig: (String, String) -> Decoder(flow_vocab_b1.RunAgentInput)
+  v2 = record(run_agent_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn stamp_input_codec/0 origin=codec_template(RecordTrio, StampInput, record#2) ==
+  sig: () -> Codec(flow_vocab_b1.StampInput)
+  v0 = make_closure stamp_input_to_json captures=[]
+  v1 = call_local stamp_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn stamp_input_to_json/1 origin=codec_template(RecordTrio, StampInput, record#2) ==
+  sig: (flow_vocab_b1.StampInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn stamp_input_decoder/0 origin=codec_template(RecordTrio, StampInput, record#2) ==
+  sig: () -> Decoder(flow_vocab_b1.StampInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure stamp_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn stamp_input_decoder$0/1 origin=lifted(stamp_input_decoder, #0) ==
+  sig: (String) -> Decoder(flow_vocab_b1.StampInput)
+  v1 = record(stamp_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn flow_vocab_b1_input_codec/0 origin=codec_template(RecordTrio, FlowVocabB1Input, record#3) ==
+  sig: () -> Codec(flow_vocab_b1.FlowVocabB1Input)
+  v0 = make_closure flow_vocab_b1_input_to_json captures=[]
+  v1 = call_local flow_vocab_b1_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn flow_vocab_b1_input_to_json/1 origin=codec_template(RecordTrio, FlowVocabB1Input, record#3) ==
+  sig: (flow_vocab_b1.FlowVocabB1Input) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"task": v1|>awlc.string_to_json}
+  return v2
+== fn flow_vocab_b1_input_decoder/0 origin=codec_template(RecordTrio, FlowVocabB1Input, record#3) ==
+  sig: () -> Decoder(flow_vocab_b1.FlowVocabB1Input)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure flow_vocab_b1_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn flow_vocab_b1_input_decoder$0/1 origin=lifted(flow_vocab_b1_input_decoder, #0) ==
+  sig: (String) -> Decoder(flow_vocab_b1.FlowVocabB1Input)
+  v1 = record(flow_vocab_b1_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn flow_vocab_b1_outcome_codec/0 origin=codec_template(UnionTrio, FlowVocabB1Outcome, union#4) ==
+  sig: () -> Codec(flow_vocab_b1.FlowVocabB1Outcome)
+  v0 = make_closure flow_vocab_b1_outcome_to_json captures=[]
+  v1 = call_local flow_vocab_b1_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn flow_vocab_b1_outcome_to_json/1 origin=codec_template(UnionTrio, FlowVocabB1Outcome, union#4) ==
+  sig: (flow_vocab_b1.FlowVocabB1Outcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v1|>awlc.string_to_json}
+  return v2
+== fn flow_vocab_b1_outcome_decoder/0 origin=codec_template(UnionTrio, FlowVocabB1Outcome, union#4) ==
+  sig: () -> Decoder(flow_vocab_b1.FlowVocabB1Outcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure flow_vocab_b1_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn flow_vocab_b1_outcome_decoder$outcome/1 origin=lifted(flow_vocab_b1_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(flow_vocab_b1.FlowVocabB1Outcome)
+  if cmp Eq v0 lit#12:
+    v2 = call_rt aion@awl@codec:string_decoder/0()
+    v3 = make_closure flow_vocab_b1_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#13, v2, v3)
+  else:
+    v1 = record(done_outcome, [lit#10])
+    tail_rt gleam@dynamic@decode:failure/2(v1, lit#11)
+== fn flow_vocab_b1_outcome_decoder$arm0/1 origin=lifted(flow_vocab_b1_outcome_decoder, #1) ==
+  sig: (String) -> Decoder(flow_vocab_b1.FlowVocabB1Outcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn run_agent_activity/2 origin=activity_wrapper(run_agent, raw=false) ==
+  sig: (String, String) -> Activity(flow_vocab_b1.RunAgentInput, String)
+  T-ACT action=run_agent input_codec=run_agent_input_codec return=awlc.string_codec
+== fn stamp_activity/1 origin=activity_wrapper(stamp, raw=false) ==
+  sig: (String) -> Activity(flow_vocab_b1.StampInput, String)
+  T-ACT action=stamp input_codec=stamp_input_codec return=awlc.string_codec
+== fn step_run/1 origin=region(run) ==
+  sig: (String) -> Result(flow_vocab_b1.FlowVocabB1Outcome, AwlError)
+  v1 = concat lit#14 v0
+  v2 = call_local run_agent_activity(v1, lit#15)
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#16)
+  v4 = call_rt aion@workflow:run/1(v3)
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4)
+  v6 = try_bind v5
+  v7 = call_local run_agent_activity(lit#17, lit#18) live_after=[v6]
+  v8 = call_rt aion@activity:task_queue/2(v7, lit#19) live_after=[v6]
+  v9 = call_rt aion@workflow:run/1(v8) live_after=[v6]
+  v10 = call_rt aion@awl@error:map_activity_error/1(v9) live_after=[v6]
+  v11 = try_bind v10 live_after=[v6]
+  v14 = concat lit#20 v6
+  v13 = concat v14 lit#21
+  v12 = concat v13 v11
+  v15 = call_local stamp_activity(v12)
+  v16 = call_rt aion@activity:task_queue/2(v15, lit#22)
+  v17 = call_rt aion@workflow:run/1(v16)
+  v18 = call_rt aion@awl@error:map_activity_error/1(v17)
+  v19 = try_bind v18
+  v20 = record(done_outcome, [v19])
+  v21 = record(ok, [v20])
+  return v21
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
