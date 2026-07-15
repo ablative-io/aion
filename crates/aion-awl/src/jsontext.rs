@@ -46,9 +46,17 @@ pub(crate) fn json_error_anchor(
     } else {
         chars_before + 1
     };
+    // With no identifier lexeme under the cursor, cover exactly the next
+    // scalar so `end` stays a character boundary (a bare `+ 1` bisects a
+    // multibyte offending value).
+    let width = if lexeme.is_empty() {
+        line_text[at..].chars().next().map_or(1, char::len_utf8)
+    } else {
+        lexeme.len()
+    };
     let span = Span {
         start,
-        end: start + lexeme.len().max(1),
+        end: start + width,
         line,
         column,
     };

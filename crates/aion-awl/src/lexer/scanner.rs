@@ -345,9 +345,12 @@ enum BracedBody {
 /// literal) whose `{` sits at byte `open` in `source`. Braces inside JSON
 /// strings do not count; string escapes are skipped blind (which covers
 /// `\"`, `\\`, `\uXXXX`, `\/`, and every other JSON escape for balancing
-/// purposes); an unclosed quote ends at its line so a typo cannot swallow
-/// the rest of the document. Returns the byte offset just past the matching
-/// `}` and the number of line feeds crossed.
+/// purposes). Quote state persists across newlines — a raw newline is
+/// illegal inside a JSON string anyway, so the complete region is captured
+/// and the checker's JSON validation reports the defect inside the body
+/// (an unclosed quote that swallows the rest of the document surfaces as
+/// the unterminated-body error at the opener). Returns the byte offset just
+/// past the matching `}` and the number of line feeds crossed.
 ///
 /// # Errors
 ///
@@ -365,16 +368,12 @@ fn scan_braced_body(
     let mut chars = source[open..].char_indices();
     while let Some((at, ch)) = chars.next() {
         match ch {
-            '\n' => {
-                newlines += 1;
-                in_string = false;
-            }
+            '\n' => newlines += 1,
             '\\' if in_string => {
-                if let Some((_, escaped)) = chars.next() {
-                    if escaped == '\n' {
-                        newlines += 1;
-                        in_string = false;
-                    }
+                if let Some((_, escaped)) = chars.next()
+                    && escaped == '\n'
+                {
+                    newlines += 1;
                 }
             }
             '"' => in_string = !in_string,

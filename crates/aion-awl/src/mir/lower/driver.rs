@@ -74,6 +74,19 @@ impl std::error::Error for LowerError {}
 /// that did not check cleanly, and [`LowerError::Unsupported`] for a shape this
 /// BC-2 increment does not yet cover.
 pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, LowerError> {
+    // Lowering is defined only for documents that check cleanly: fold-time
+    // const substitution is name-based and relies on the checker's
+    // invariants (no shadowed consts, no input/signal collisions).
+    let diagnostics = match root {
+        Some(root) => crate::checker::check_in(document, root),
+        None => crate::checker::check(document),
+    };
+    if let Some(first) = diagnostics.first() {
+        return Err(LowerError::Message {
+            message: format!("document does not check cleanly: {}", first.message),
+            span: first.span,
+        });
+    }
     // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
     // `schema of`, const references) down to plain literals first, so the
     // shared planning passes and this lowering only ever see the expression

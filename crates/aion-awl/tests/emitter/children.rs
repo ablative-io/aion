@@ -66,6 +66,7 @@ step inspect
   fork
     inspect(value: value) -> inspected
   join
+  inspected |> route done
 ";
     let error = emit(&parse(source)?).err().ok_or("emit must refuse")?;
     assert_eq!(

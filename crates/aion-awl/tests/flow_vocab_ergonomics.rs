@@ -423,3 +423,157 @@ fn the_semantic_index_declares_consts_with_their_folded_type() -> TestResult {
     assert_eq!(reference.name, "verdict_schema");
     Ok(())
 }
+
+// ---------------------------------------------------------------------
+// Review round: reserved words, lowering gates, scanner and span edges
+// ---------------------------------------------------------------------
+
+#[test]
+fn json_is_a_reserved_word_at_declaration_sites() -> TestResult {
+    let source = "//! Reserved.\n\
+workflow reserved\n\
+\x20 input json: String\n\
+\x20 outcome done: type String, route success\n";
+    let Err(error) = parse(source) else {
+        return Err("expected a parse error".into());
+    };
+    assert_eq!(
+        error.message,
+        "`json` is a reserved keyword and cannot be used as an input name"
+    );
+    assert_eq!((error.span.line, error.span.column), (3, 9));
+    Ok(())
+}
+
+#[test]
+fn of_is_a_reserved_word_at_declaration_sites() -> TestResult {
+    let source = "//! Reserved.\n\
+workflow reserved\n\
+\x20 input of: String\n\
+\x20 outcome done: type String, route success\n";
+    let Err(error) = parse(source) else {
+        return Err("expected a parse error".into());
+    };
+    assert_eq!(
+        error.message,
+        "`of` is a reserved keyword and cannot be used as an input name"
+    );
+    assert_eq!((error.span.line, error.span.column), (3, 9));
+    Ok(())
+}
+
+/// The shadowing document from `bindings_cannot_shadow_consts`: one checker
+/// error, previously emitted anyway with the const substituted for the
+/// runtime binding.
+const SHADOW_DOC: &str = "//! Shadow.\n\
+workflow shadow\n\
+\x20 input task: String\n\
+\x20 outcome done: type String, route success\n\
+\n\
+const prompt = \"fixed\"\n\
+\n\
+worker w\n\
+\x20 action stamp(text: String) -> String\n\
+\n\
+step run\n\
+\x20 stamp(text: task) -> prompt\n\
+\x20 prompt |> stamp |> route done\n";
+
+#[test]
+fn emit_refuses_documents_that_do_not_check_cleanly() -> TestResult {
+    let document = parse(SHADOW_DOC)?;
+    assert_eq!(check(&document).len(), 1);
+    let Err(error) = emit(&document) else {
+        return Err("expected emit to refuse the unchecked document".into());
+    };
+    assert!(
+        error.message.contains("does not check cleanly")
+            && error.message.contains("bindings cannot shadow consts"),
+        "unexpected message: {}",
+        error.message
+    );
+    assert_eq!((error.span.line, error.span.column), (12, 24));
+    Ok(())
+}
+
+#[test]
+fn mir_lower_refuses_documents_that_do_not_check_cleanly() -> TestResult {
+    let document = parse(SHADOW_DOC)?;
+    let Err(error) = aion_awl::mir::lower(&document, None) else {
+        return Err("expected lower to refuse the unchecked document".into());
+    };
+    assert!(
+        error.to_string().contains("does not check cleanly"),
+        "unexpected message: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn malformed_multiline_json_string_is_reported_inside_the_body() -> TestResult {
+    // A raw newline inside a JSON string is malformed JSON, and the `}` on
+    // the next line is still lexically inside the quote: brace capture must
+    // not desynchronize there, so the checker's invalid-JSON diagnostic
+    // (not an unrelated lex error) points into the body.
+    let source = "//! Desync.\n\
+workflow desync\n\
+\x20 outcome done: type String, route success\n\
+\n\
+const shape = json {\n\
+\x20 \"text\": \"unterminated\n\
+} still inside the quote\"\n\
+}\n\
+\n\
+worker w\n\
+\x20 action stamp(text: String) -> String\n\
+\n\
+step run\n\
+\x20 stamp(text: shape) -> out\n\
+\x20 out |> route done\n";
+    let (line, column, message) = first_error(source)?;
+    assert!(
+        message.contains("`json { … }` literal body is not valid JSON"),
+        "unexpected message: {message}"
+    );
+    // `serde_json` stops at the control character's position, reported
+    // inside the body (line 7 is the `}` line that is still lexically
+    // inside the unterminated string).
+    assert_eq!((line, column), (7, 1));
+    Ok(())
+}
+
+#[test]
+fn invalid_json_error_span_stays_on_char_boundaries_for_non_ascii() -> TestResult {
+    let source = "//! Unicode.\n\
+workflow unicode\n\
+\x20 outcome done: type String, route success\n\
+\n\
+const shape = json { \"x\": é }\n\
+\n\
+worker w\n\
+\x20 action stamp(text: String) -> String\n\
+\n\
+step run\n\
+\x20 stamp(text: shape) -> out\n\
+\x20 out |> route done\n";
+    let document = parse(source)?;
+    let errors = check(&document);
+    let error = errors.first().ok_or("expected a check error")?;
+    assert!(
+        error.message.contains("not valid JSON"),
+        "unexpected message: {}",
+        error.message
+    );
+    assert!(
+        source.is_char_boundary(error.span.start),
+        "start {} is not a char boundary",
+        error.span.start
+    );
+    assert!(
+        source.is_char_boundary(error.span.end),
+        "end {} is not a char boundary",
+        error.span.end
+    );
+    assert!(error.span.end > error.span.start);
+    Ok(())
+}

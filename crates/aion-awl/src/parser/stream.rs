@@ -398,7 +398,10 @@ impl Stream {
 /// positions (combinator stages, config lines, `is` predicates) and act as
 /// ordinary names everywhere a name is expected. The corpus pins `count` as
 /// a field name and `retry` as an outcome-arm name; structural keywords
-/// stay reserved everywhere (`input step:` is a parse error).
+/// stay reserved everywhere (`input step:` is a parse error). `json` and
+/// `of` head expression forms (`json { … }`, `schema of Type`) and are
+/// hard-reserved like `schema` — a soft name that can be declared but never
+/// referenced in an expression would be a false promise.
 pub(super) fn soft_keyword(keyword: crate::Keyword) -> bool {
     use crate::Keyword as K;
     matches!(
@@ -415,8 +418,6 @@ pub(super) fn soft_keyword(keyword: crate::Keyword) -> bool {
             | K::Empty
             | K::Present
             | K::Absent
-            | K::Json
-            | K::Of
     )
 }
 
