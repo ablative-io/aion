@@ -1,0 +1,43 @@
+[package]
+name = "general-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "general-worker"
+path = "src/main.rs"
+
+[lib]
+name = "general_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+aion-worker = { path = "../../crates/aion-worker", features = ["liminal-transport"] }
+aion-integrations = { path = "../../crates/aion-integrations" }
+aion-integration-norn = { path = "../../crates/aion-integration-norn" }
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.44", features = ["process", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tempfile = "3.19"
