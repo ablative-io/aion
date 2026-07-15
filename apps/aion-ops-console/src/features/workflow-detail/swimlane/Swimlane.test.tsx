@@ -416,6 +416,29 @@ test('swimlane renders an expand-run affordance only for child lanes', () => {
   expect(markup.match(/expand-child:/g)).toHaveLength(1);
 });
 
+test('the run-expand toggle renders INSIDE the fixed-width label cell (track alignment)', () => {
+  const entries = projectTimeline([activityScheduled(1, 10, 'charge'), childStarted(2, 'child-1')]);
+  const markup = renderToStaticMarkup(
+    <Swimlane
+      entries={entries}
+      onSelect={() => {}}
+      renderChildRun={() => null}
+      selectedSequence={null}
+    />
+  );
+
+  // The 168px label cell nests no <div>, so its first closing </div> ends the
+  // cell. The toggle must sit before that close: rendered as a flex SIBLING of
+  // the cell it would push the child lane's track ~17px right of the SeqAxis
+  // dense-rank columns (every non-child track starts at LANE_LABEL_WIDTH).
+  const toggleAt = markup.indexOf('data-testid="expand-child:child-1"');
+  expect(toggleAt).toBeGreaterThan(-1);
+  const cellStart = markup.lastIndexOf('w-[168px]', toggleAt);
+  expect(cellStart).toBeGreaterThan(-1);
+  const cellEnd = markup.indexOf('</div>', cellStart);
+  expect(toggleAt).toBeLessThan(cellEnd);
+});
+
 test('an initially expanded child lane renders the injected run view beneath the chart', () => {
   const entries = projectTimeline([childStarted(1, 'child-1')]);
   const markup = renderToStaticMarkup(

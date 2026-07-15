@@ -221,33 +221,38 @@ function LaneRow({
 }) {
   return (
     <li className="flex items-stretch">
-      <button
-        aria-expanded={!collapsed}
-        className="flex w-[168px] shrink-0 items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={onToggle}
-        type="button"
-      >
-        <EventIcon kind={lane.kind as EventIconKind} />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-foreground text-xs">{lane.label}</span>
-          <span className="block text-[10px] text-muted-foreground">
-            {lane.bars.length} {lane.bars.length === 1 ? 'event' : 'events'}
-            {collapsed ? ' · collapsed' : ''}
-          </span>
-        </span>
-      </button>
-      {childWorkflowId !== null && onToggleChildRun !== null ? (
+      {/* Label + run-expand toggle share ONE fixed 168px cell so every track —
+          child lanes included — starts at LANE_LABEL_WIDTH and bars stay aligned
+          with the SeqAxis dense-rank columns. */}
+      <div className="flex w-[168px] shrink-0 items-stretch">
         <button
-          aria-expanded={runExpanded}
-          aria-label={`${runExpanded ? 'Collapse' : 'Expand'} child run ${childWorkflowId}`}
-          className="shrink-0 rounded px-1 text-muted-foreground text-xs hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          data-testid={`expand-child:${childWorkflowId}`}
-          onClick={onToggleChildRun}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onToggle}
           type="button"
         >
-          {runExpanded ? '▾' : '▸'}
+          <EventIcon kind={lane.kind as EventIconKind} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-foreground text-xs">{lane.label}</span>
+            <span className="block text-[10px] text-muted-foreground">
+              {lane.bars.length} {lane.bars.length === 1 ? 'event' : 'events'}
+              {collapsed ? ' · collapsed' : ''}
+            </span>
+          </span>
         </button>
-      ) : null}
+        {childWorkflowId !== null && onToggleChildRun !== null ? (
+          <button
+            aria-expanded={runExpanded}
+            aria-label={`${runExpanded ? 'Collapse' : 'Expand'} child run ${childWorkflowId}`}
+            className="shrink-0 rounded px-1 text-muted-foreground text-xs hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid={`expand-child:${childWorkflowId}`}
+            onClick={onToggleChildRun}
+            type="button"
+          >
+            {runExpanded ? '▾' : '▸'}
+          </button>
+        ) : null}
+      </div>
       <div
         className={cn('relative', collapsed && 'opacity-40')}
         style={{ width: trackWidth, height: collapsed ? LANE_HEIGHT / 2 : LANE_HEIGHT }}
