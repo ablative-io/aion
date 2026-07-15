@@ -1,85 +1,61 @@
-import { useMemo } from 'react';
-
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/utils';
 
-import type { TimelineEntry } from '../types';
-import { scrubSequences } from './scrub';
+import { snapGlobalRank } from './scrub';
+import type { AxisLayout, AxisMode } from './timeLayout';
 
 type ScrubberProps = {
-  entries: readonly TimelineEntry[];
-  /** Current cut; `null` is live (handle at the far right). */
-  scrubSeq: number | null;
-  /** Emits the seq the handle maps to, or `null` when released back to live. */
-  onScrub: (scrubSeq: number | null) => void;
+  axis: AxisLayout | null;
+  mode: AxisMode;
+  /** Timestamp in time mode, global rank in stepped mode; null is live. */
+  scrubPosition: number | null;
+  onScrub: (position: number | null) => void;
 };
 
-/**
- * Execution Scrubber (PLAN S5, VISION §4.2). A draggable handle over the workflow
- * time axis: dragging to position N reconstructs the recorded prefix at seq N
- * (faithful projection, no engine replay). The handle's POSITION is the source of
- * truth — it indexes the dense list of recorded sequences, so it lands exactly on
- * real stops (no fabricated in-between values). The far-right stop is "live"; the
- * Live button (and dragging fully right) releases the scrub. State is conveyed by
- * position + a single readout, no chrome (VISION §1).
- */
-function Scrubber({ entries, scrubSeq, onScrub }: ScrubberProps) {
-  const stops = useMemo(() => scrubSequences(entries), [entries]);
-
-  if (stops.length === 0) {
+/** Continuous in time mode and rank-snapped over the visible union in stepped mode. */
+function Scrubber({ axis, mode, scrubPosition, onScrub }: ScrubberProps) {
+  if (axis === null || axis.events.length === 0) {
     return null;
   }
 
-  const lastIndex = stops.length - 1;
-  // null (live) parks the handle at the far-right stop.
-  const activeIndex = scrubSeq === null ? lastIndex : indexForSeq(stops, scrubSeq);
-  const isLive = scrubSeq === null || activeIndex === lastIndex;
+  const minimum = mode === 'time' ? axis.bounds.t0 : 0;
+  const maximum = mode === 'time' ? axis.bounds.tEnd : axis.events.length - 1;
+  const active = scrubPosition === null ? maximum : clampPosition(scrubPosition, minimum, maximum);
+  const isLive = scrubPosition === null || active === maximum;
 
-  function handleChange(rawIndex: number) {
-    const clamped = Math.min(lastIndex, Math.max(0, rawIndex));
-
-    if (clamped === lastIndex) {
-      onScrub(null);
-      return;
-    }
-
-    onScrub(stops[clamped] ?? null);
+  function handleChange(raw: number) {
+    const next =
+      mode === 'stepped'
+        ? snapGlobalRank(raw, axis?.events.length ?? 0)
+        : clampPosition(raw, minimum, maximum);
+    onScrub(next === maximum ? null : next);
   }
 
   return (
     <fieldset
       aria-label="Execution scrubber"
-      className="flex items-center gap-3 rounded-xl border border-border bg-surface-elevated px-4 py-3"
+      className="flex items-center gap-3 border-border border-t bg-surface-base px-4 py-3"
     >
       <span className="shrink-0 text-muted-foreground text-xs uppercase tracking-wide">Scrub</span>
       <input
-        aria-label="Scrub to recorded sequence"
-        aria-valuetext={
-          isLive ? 'Live (latest recorded sequence)' : `Sequence ${stops[activeIndex]}`
-        }
+        aria-label={mode === 'time' ? 'Scrub to recorded time' : 'Scrub to global event rank'}
+        aria-valuetext={isLive ? 'Live' : scrubReadout(mode, active, axis)}
         className={cn(
           'h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-surface-hover',
           'accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
         )}
-        max={lastIndex}
-        min={0}
+        max={maximum}
+        min={minimum}
         onChange={(event) => handleChange(Number(event.target.value))}
-        step={1}
+        step={mode === 'time' ? 1 : 1}
         type="range"
-        value={activeIndex}
+        value={active}
       />
       <output
         aria-live="polite"
-        className="w-28 shrink-0 text-right text-foreground text-xs tabular-nums"
+        className="w-44 shrink-0 text-right text-foreground text-xs tabular-nums"
       >
-        {isLive ? (
-          <span className="text-live">live · seq {stops[lastIndex]}</span>
-        ) : (
-          <span>
-            seq {stops[activeIndex]}{' '}
-            <span className="text-muted-foreground">of {stops[lastIndex]}</span>
-          </span>
-        )}
+        {isLive ? <span className="text-live">live</span> : scrubReadout(mode, active, axis)}
       </output>
       <Button
         aria-pressed={isLive}
@@ -95,17 +71,19 @@ function Scrubber({ entries, scrubSeq, onScrub }: ScrubberProps) {
   );
 }
 
-/** Map a seq to its handle index, snapping up to the next recorded stop. */
-function indexForSeq(stops: readonly number[], seq: number): number {
-  const exact = stops.indexOf(seq);
+function clampPosition(position: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, position));
+}
 
-  if (exact !== -1) {
-    return exact;
+function scrubReadout(mode: AxisMode, position: number, axis: AxisLayout): string {
+  if (mode === 'time') {
+    return new Date(position).toISOString();
   }
-
-  const next = stops.findIndex((stop) => stop >= seq);
-
-  return next === -1 ? stops.length - 1 : next;
+  const rank = snapGlobalRank(position, axis.events.length);
+  const event = axis.events[rank];
+  return event === undefined
+    ? `event ${rank + 1}`
+    : `event ${rank + 1} · ${event.workflowId} seq ${event.sequence}`;
 }
 
 export { Scrubber };

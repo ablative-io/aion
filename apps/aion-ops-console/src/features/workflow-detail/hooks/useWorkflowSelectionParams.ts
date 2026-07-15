@@ -9,7 +9,7 @@ import { useSearchParams } from 'react-router';
  * a history entry, so browser back/forward walks the operator's selections and a
  * link/refresh restores exactly what they were looking at.
  *
- * `scrubSeq` is different: a scrub drag emits a value per tick, so pushing each one
+ * `scrubPosition` is different: a scrub drag emits a value per tick, so pushing each one
  * would make back/forward a tour of every intermediate frame. It is therefore kept
  * as immediate LOCAL state (the slider stays responsive) and mirrored to the URL
  * with a DEBOUNCED REPLACE — the current history entry's URL is updated in place,
@@ -28,8 +28,8 @@ export type WorkflowSelectionParams = {
   setSelectedSequence: (sequence: number | null) => void;
   mode: WorkflowViewMode;
   setMode: (mode: WorkflowViewMode) => void;
-  scrubSeq: number | null;
-  setScrub: (scrubSeq: number | null) => void;
+  scrubPosition: number | null;
+  setScrub: (scrubPosition: number | null) => void;
 };
 
 /** Parse a non-negative integer query value; anything else is "unset" (`null`). */
@@ -90,7 +90,7 @@ export function useWorkflowSelectionParams(): WorkflowSelectionParams {
   // Scrub is local-authoritative for immediate slider feedback; the URL is a
   // debounced, replace-only mirror. It is seeded from the URL once on mount (from
   // the router's params, never `window`, so it is safe under SSR).
-  const [scrubSeq, setScrubLocal] = useState<number | null>(() =>
+  const [scrubPosition, setScrubLocal] = useState<number | null>(() =>
     parseSequence(searchParams.get(SCRUB_PARAM))
   );
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -129,7 +129,14 @@ export function useWorkflowSelectionParams(): WorkflowSelectionParams {
   );
 
   return useMemo(
-    () => ({ selectedSequence, setSelectedSequence, mode, setMode, scrubSeq, setScrub }),
-    [selectedSequence, setSelectedSequence, mode, setMode, scrubSeq, setScrub]
+    () => ({
+      selectedSequence,
+      setSelectedSequence,
+      mode,
+      setMode,
+      scrubPosition,
+      setScrub,
+    }),
+    [selectedSequence, setSelectedSequence, mode, setMode, scrubPosition, setScrub]
   );
 }

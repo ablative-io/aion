@@ -1,30 +1,18 @@
 import { cn } from '@/lib/utils';
 
 import type { BarStatus, SwimlaneBar } from './laneLayout';
+import type { PositionedBar } from './timeLayout';
 
 type LaneBarProps = {
-  bar: SwimlaneBar;
-  /** Column width in px (one dense rank). */
-  columnWidth: number;
+  positioned: PositionedBar;
   selected: boolean;
-  /**
-   * Select this bar. `originX` is the bar's horizontal centre in viewport px, so
-   * the bottom-docked detail sheet can morph out of the clicked bar's rect.
-   */
+  /** Select this bar and preserve its viewport x-origin for the detail morph. */
   onSelect: (bar: SwimlaneBar, originX: number) => void;
 };
 
-/**
- * One bar in a lane. Status is conveyed by COLOR + SHAPE + POSITION only (no
- * gradients/glass — VISION §1). An activity bar with retries is segmented at each
- * `ActivityFailed.attempt`. A child bar carries a drill-link affordance. Markers
- * (lifecycle/signal/generic single-seq points) render as a small node, spans as a
- * bar from startRank→endRank.
- */
-function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
-  const left = bar.startRank * columnWidth;
-  const span = Math.max(1, bar.endRank - bar.startRank + 1);
-  const width = bar.isMarker ? Math.min(columnWidth, 14) : span * columnWidth - 4;
+/** A status/shape encoded bar already resolved onto the active shared axis. */
+function LaneBar({ positioned, selected, onSelect }: LaneBarProps) {
+  const { bar, left, width, marker, attemptOffsets } = positioned;
 
   return (
     <button
@@ -37,7 +25,7 @@ function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
         selected && 'ring-2 ring-primary'
       )}
       data-bar-status={bar.status}
-      data-marker={bar.isMarker ? 'true' : undefined}
+      data-marker={marker ? 'true' : undefined}
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         onSelect(bar, rect.left + rect.width / 2);
@@ -46,39 +34,31 @@ function LaneBar({ bar, columnWidth, selected, onSelect }: LaneBarProps) {
       title={bar.label}
       type="button"
     >
-      {bar.isMarker ? null : <AttemptSegments bar={bar} columnWidth={columnWidth} />}
+      {marker ? null : <AttemptSegments bar={bar} offsets={attemptOffsets} />}
       <span className="relative z-10 truncate px-2 text-[11px] text-foreground">
-        {bar.isMarker ? '' : bar.label}
+        {marker ? '' : bar.label}
         {bar.childWorkflowId ? <span className="ml-1 opacity-70">↳</span> : null}
       </span>
     </button>
   );
 }
 
-/**
- * Render attempt boundaries inside an activity bar as thin dividers so a retried
- * activity reads as segmented attempts (one-based `ActivityFailed.attempt`).
- */
-function AttemptSegments({ bar, columnWidth }: { bar: SwimlaneBar; columnWidth: number }) {
-  if (bar.attemptRanks.length === 0) {
+function AttemptSegments({ bar, offsets }: { bar: SwimlaneBar; offsets: readonly number[] }) {
+  if (offsets.length === 0) {
     return null;
   }
 
   return (
     <>
-      {bar.attemptRanks.map((rank) => {
-        const offset = (rank - bar.startRank) * columnWidth;
-
-        return (
-          <span
-            aria-hidden="true"
-            className="absolute top-0 bottom-0 w-px bg-border"
-            data-attempt-divider="true"
-            key={`${bar.id}:attempt:${rank}`}
-            style={{ left: Math.max(1, offset) }}
-          />
-        );
-      })}
+      {offsets.map((offset, index) => (
+        <span
+          aria-hidden="true"
+          className="absolute top-0 bottom-0 w-px bg-border"
+          data-attempt-divider="true"
+          key={`${bar.id}:attempt:${bar.attemptSequences[index] ?? index}`}
+          style={{ left: Math.max(1, offset) }}
+        />
+      ))}
     </>
   );
 }

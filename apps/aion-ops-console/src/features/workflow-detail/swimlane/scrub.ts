@@ -1,4 +1,9 @@
 import type { TimelineEntry } from '../types';
+import {
+  orderedVisibleEvents,
+  type OrderedTimelineEvent,
+  type VisibleWorkflow,
+} from './timeLayout';
 
 /**
  * Pure prefix-reconstruction for the Execution Scrubber (PLAN S5, VISION §4.2).
@@ -25,6 +30,67 @@ export function scrubSequences(entries: readonly TimelineEntry[]): number[] {
   }
 
   return [...seqs].sort((left, right) => left - right);
+}
+
+export type WorkflowCuts = ReadonlyMap<string, number | null>;
+
+/** Continuous shared timestamp → one honest sequence cut per visible workflow. */
+export function cutsAtTimestamp(
+  workflows: readonly VisibleWorkflow[],
+  timestampMs: number
+): WorkflowCuts {
+  const cuts = new Map<string, number | null>(
+    workflows.map((workflow) => [workflow.workflowId, null])
+  );
+
+  for (const event of orderedVisibleEvents(workflows)) {
+    if (event.recordedAtMs > timestampMs) {
+      break;
+    }
+    const current = cuts.get(event.workflowId);
+    cuts.set(
+      event.workflowId,
+      current === null || current === undefined ? event.sequence : Math.max(current, event.sequence)
+    );
+  }
+
+  return cuts;
+}
+
+/** A stepped scrub includes exactly the globally ordered events through `rank`. */
+export function cutsAtGlobalRank(
+  workflows: readonly VisibleWorkflow[],
+  rank: number
+): WorkflowCuts {
+  const events = orderedVisibleEvents(workflows);
+  return cutsFromOrderedPrefix(workflows, events, snapGlobalRank(rank, events.length));
+}
+
+export function snapGlobalRank(rawRank: number, rankCount: number): number {
+  if (rankCount <= 0) {
+    return 0;
+  }
+  return Math.min(rankCount - 1, Math.max(0, Math.round(rawRank)));
+}
+
+function cutsFromOrderedPrefix(
+  workflows: readonly VisibleWorkflow[],
+  events: readonly OrderedTimelineEvent[],
+  throughRank: number
+): WorkflowCuts {
+  const cuts = new Map<string, number | null>(
+    workflows.map((workflow) => [workflow.workflowId, null])
+  );
+
+  for (const event of events.slice(0, throughRank + 1)) {
+    const current = cuts.get(event.workflowId);
+    cuts.set(
+      event.workflowId,
+      current === null || current === undefined ? event.sequence : Math.max(current, event.sequence)
+    );
+  }
+
+  return cuts;
 }
 
 /**
