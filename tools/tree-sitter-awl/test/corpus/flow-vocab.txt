@@ -1,0 +1,201 @@
+==================
+Const declarations: raw string, json literal, schema of
+==================
+
+const greeting = """
+  Hello from the flow vocabulary.
+  """
+const item_schema = json {
+  "type": "object",
+  "properties": { "id": { "type": "string", "description": "slug {with} braces" } },
+  "required": ["id"]
+}
+const verdict_schema = schema of Verdict
+const prompt_intro = greeting + " Task follows: "
+
+---
+
+(source_file
+  (newline)
+  (const_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (raw_string)
+  (newline)
+  (const_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (json_literal
+    (keyword)
+    (json_body
+      (string)
+      (string)
+      (string)
+      (string)
+      (string)
+      (string)
+      (string)
+      (string)
+      (string)
+      (string)))
+  (newline)
+  (const_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (keyword)
+  (keyword)
+  (type_identifier)
+  (newline)
+  (const_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (identifier)
+  (comparison_operator)
+  (string)
+  (newline))
+
+==================
+Single-line raw string
+==================
+
+const instructions = """You are the coordinator."""
+
+---
+
+(source_file
+  (newline)
+  (const_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (raw_string)
+  (newline))
+
+==================
+Subflow declaration with outcome and max visits
+==================
+
+subflow dev_item(item: WorkItem)
+  outcome out: type ItemVerdict
+
+  step review
+    outcome ok: otherwise, route out(verdict)
+    max 3 visits
+
+---
+
+(source_file
+  (newline)
+  (subflow_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (type_identifier)
+  (punctuation)
+  (newline)
+  (outcome_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (newline)
+  (newline)
+  (step_declaration
+    (keyword)
+    (identifier))
+  (newline)
+  (outcome_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (keyword)
+  (punctuation)
+  (route_statement
+    (keyword))
+  (identifier)
+  (punctuation)
+  (identifier)
+  (punctuation)
+  (newline)
+  (keyword)
+  (integer)
+  (keyword)
+  (newline))
+
+==================
+Distribute and sequence regions with collect
+==================
+
+distribute item in state.items
+sequence host in hosts
+collect verdict? -> results
+collect checked -> attempts
+
+---
+
+(source_file
+  (newline)
+  (distribute_statement
+    (keyword))
+  (identifier)
+  (keyword)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (newline)
+  (sequence_statement
+    (keyword))
+  (identifier)
+  (keyword)
+  (identifier)
+  (newline)
+  (collect_statement
+    (keyword))
+  (identifier)
+  (optional_operator)
+  (bind_operator)
+  (identifier)
+  (newline)
+  (collect_statement
+    (keyword))
+  (identifier)
+  (bind_operator)
+  (identifier)
+  (newline))
+
+==================
+Visits as an expression value
+==================
+
+outcome again: when not checked.ok and visits < 3, route push
+
+---
+
+(source_file
+  (newline)
+  (outcome_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (keyword)
+  (keyword)
+  (identifier)
+  (punctuation)
+  (identifier)
+  (keyword)
+  (keyword)
+  (comparison_operator)
+  (integer)
+  (punctuation)
+  (route_statement
+    (keyword))
+  (identifier)
+  (newline))

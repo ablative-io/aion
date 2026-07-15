@@ -1,5 +1,18 @@
-import { history, historyKeymap } from '@codemirror/commands';
-import { EditorState, RangeSet, StateEffect, StateField } from '@codemirror/state';
+import {
+  history,
+  historyKeymap,
+  indentLess,
+  indentMore,
+  indentWithTab,
+} from '@codemirror/commands';
+import { indentUnit } from '@codemirror/language';
+import {
+  EditorState,
+  RangeSet,
+  type StateCommand,
+  StateEffect,
+  StateField,
+} from '@codemirror/state';
 import {
   Decoration,
   type DecorationSet,
@@ -54,6 +67,45 @@ const guttersField = StateField.define<RangeSet<GutterMarker>>({
   },
 });
 
+/**
+ * AWL indentation is two SPACES per level — the lexer rejects tab characters
+ * in indentation outright ("tabs are not allowed in indentation"), so the
+ * indent unit must never be a tab. `indentWithTab` binds Tab/Shift-Tab to
+ * indent-more/indent-less, which insert/remove this unit. The accessibility
+ * escape hatch CodeMirror documents is untouched: it lives in the view's
+ * keydown path (Escape arms tab-focus mode for two seconds, during which Tab
+ * bypasses keymaps and moves focus), ahead of this binding.
+ */
+const AWL_INDENT_UNIT = '  ';
+const indentation = [indentUnit.of(AWL_INDENT_UNIT), keymap.of([indentWithTab])];
+
+/**
+ * Run one side of the Tab binding over a headless document, exported so the
+ * seam tests can pin the indentation contract without a DOM. `indentWithTab`
+ * binds Tab to `indentMore` and Shift-Tab to `indentLess`; these are the
+ * same command objects the editor installs, run against the same indent-unit
+ * facet value.
+ */
+export function applyTabBindingForTest(
+  content: string,
+  selection: { anchor: number; head?: number },
+  key: 'Tab' | 'Shift-Tab'
+): string {
+  let state = EditorState.create({
+    doc: content,
+    selection,
+    extensions: [indentUnit.of(AWL_INDENT_UNIT)],
+  });
+  const command: StateCommand = key === 'Tab' ? indentMore : indentLess;
+  command({
+    state,
+    dispatch: (transaction) => {
+      state = transaction.state;
+    },
+  });
+  return state.doc.toString();
+}
+
 class TextMarker extends GutterMarker {
   constructor(
     readonly text: string,
@@ -86,6 +138,7 @@ export function createCodeMirrorEditor(
       extensions: [
         history(),
         keymap.of(historyKeymap),
+        indentation,
         highlightsField,
         hostDecorationsField,
         guttersField,

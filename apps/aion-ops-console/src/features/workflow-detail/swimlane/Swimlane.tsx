@@ -6,11 +6,11 @@ import type { WorkflowId } from '@/types';
 
 import type { TimelineEntry } from '../types';
 import { ChildTimelineLoader } from './ChildTimelineLoader';
-import { childNodePath, type ChildTimelineState, flattenLaneTree } from './laneTree';
 import { layoutSwimlane, type SwimlaneBar } from './laneLayout';
+import { type ChildTimelineState, childNodePath, flattenLaneTree } from './laneTree';
 import { Scrubber } from './Scrubber';
-import { cutsAtGlobalRank, cutsAtTimestamp, prefixUpTo } from './scrub';
 import { Axis, ChartToolbar, LaneRow, NoticeRow } from './SwimlaneRows';
+import { cutsAtGlobalRank, cutsAtTimestamp, prefixUpTo, snapGlobalRank } from './scrub';
 import { type AxisMode, buildAxisLayout } from './timeLayout';
 
 export const LANE_LABEL_WIDTH = 168;
@@ -124,6 +124,13 @@ function Swimlane({
       ? cutsAtTimestamp(tree.workflows, scrubPosition)
       : cutsAtGlobalRank(tree.workflows, scrubPosition);
   }, [axisMode, scrubPosition, tree.workflows]);
+  /** The clip cursor in the active axis coordinate: ms in time, rank in stepped. */
+  const scrubCursor =
+    scrubPosition === null || axis === null
+      ? null
+      : axisMode === 'time'
+        ? scrubPosition
+        : snapGlobalRank(scrubPosition, axis.events.length);
 
   const updateChildState = useCallback((path: string, state: ChildTimelineState) => {
     setChildTimelines((current) => {
@@ -206,6 +213,13 @@ function Swimlane({
               if (lane === undefined || axis === null) {
                 return null;
               }
+              const scrubClip =
+                cuts === null || scrubCursor === null
+                  ? null
+                  : {
+                      cursor: scrubCursor,
+                      fullEntriesById: new Map(timeline.map((entry) => [entry.id, entry])),
+                    };
               const childId = row.lane.childWorkflowId;
               const childPath = childId === null ? null : childNodePath(row.path, childId);
               const childExpanded =
@@ -234,6 +248,7 @@ function Swimlane({
                   }
                   onToggle={() => toggleRow(row.id)}
                   onToggleChild={childId === null ? null : () => toggleChild(row.path, childId)}
+                  scrubClip={scrubClip}
                   selectedSequence={selectedSequence}
                   selectedWorkflowId={selectedWorkflowId}
                   trackWidth={trackWidth}
