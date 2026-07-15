@@ -1,0 +1,8 @@
+name = "aion_settled_fixture"
+version = "1.0.0"
+target = "erlang"
+
+[dependencies]
+gleam_stdlib = ">= 0.44.0 and < 3.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+aion_flow = { path = "../../../../../gleam/aion_flow" }

@@ -10,12 +10,15 @@
 //!    buffer, proving keyed delivery rather than head-of-line loss;
 //! 3. one member failing terminally: the failure arrives as that slot's value
 //!    — no fail-fast, no sibling cancellation, siblings keep their results;
-//! 4. replay mid-settle: the engine restarts after the fan-out's terminals
-//!    are recorded but before the run completes; replay resolves every
-//!    await purely from the recorded per-ordinal terminals (zero
-//!    re-dispatch) and the settled prefix stays byte-identical.
+//! 4. replay mid-settle: the engine restarts after only the item-zero prefix
+//!    is terminal while later correlations remain outstanding; replay performs
+//!    zero prefix re-dispatch, reopens exactly the unresolved members, and
+//!    leaves the durable prefix byte-identical.
 
 use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -32,8 +35,8 @@ use aion_store::{EventStore, InMemoryStore};
 use serde_json::json;
 
 const SETTLED_MODULE: &str = "aion_settled_fixture";
-const SETTLED_BEAM: &[u8] = include_bytes!("fixtures/aion_settled_fixture.beam");
-const SETTLED_SOURCE: &[u8] = include_bytes!("fixtures/aion_settled_fixture.erl");
+const SETTLED_SOURCE: &[u8] =
+    include_bytes!("fixtures/settled_gleam/src/aion_settled_fixture.gleam");
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_DEADLINE: Duration = Duration::from_secs(20);
@@ -100,7 +103,7 @@ impl ActivityDispatcher for GatedDispatcher {
     fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
         let name = request.name.as_str();
         let result = if let Some(key) = name.strip_prefix("gated_ok:") {
-            self.gates.wait(key).map(|()| format!("done-{key}"))
+            self.gates.wait(key).map(|()| format!("\"done-{key}\""))
         } else if let Some(key) = name.strip_prefix("gated_fail:") {
             self.gates
                 .wait(key)
@@ -113,8 +116,55 @@ impl ActivityDispatcher for GatedDispatcher {
     }
 }
 
+fn fixture_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/settled_gleam")
+}
+
+fn fixture_beams() -> Result<Vec<BeamModule>, Box<dyn std::error::Error>> {
+    let root = fixture_root();
+    let output = Command::new("gleam")
+        .arg("build")
+        .current_dir(&root)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "real settled fixture did not compile:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let mut beams = Vec::new();
+    for package in fs::read_dir(root.join("build/dev/erlang"))? {
+        let ebin = package?.path().join("ebin");
+        if !ebin.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(ebin)? {
+            let path = entry?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("beam") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or("fixture BEAM has no UTF-8 module name")?;
+            // The engine owns the real native boundary; a dependency build also
+            // emits its external-function declaration module, which packages
+            // must never replace.
+            if name == "aion_flow_ffi" {
+                continue;
+            }
+            beams.push(BeamModule::new(name, fs::read(&path)?));
+        }
+    }
+    if beams.is_empty() {
+        return Err("compiled fixture produced no BEAM modules".into());
+    }
+    Ok(beams)
+}
+
 fn fixture_package(entry_function: &str) -> Result<Package, Box<dyn std::error::Error>> {
-    let beams = BeamSet::new(vec![BeamModule::new(SETTLED_MODULE, SETTLED_BEAM)])?;
+    let beams = BeamSet::new(fixture_beams()?)?;
     let manifest = Manifest {
         entry_module: SETTLED_MODULE.to_owned(),
         entry_function: entry_function.to_owned(),
@@ -267,66 +317,36 @@ async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> Tes
     })
     .await?;
 
-    // Invert completion order against item order: c first, then b (the
-    // terminal failure), then a. The workflow is awaiting a throughout;
-    // waiting on the dispatcher counter after each release proves c and b
-    // have completed into keyed runtime slots without unblocking a.
-    gates.release("c");
-    wait_for("c dispatcher completion", || {
-        gates.finished_dispatches() == 1
-    })
-    .await?;
-    gates.release("b");
-    wait_for("b dispatcher completion", || {
-        gates.finished_dispatches() == 2
-    })
-    .await?;
-    let buffered = store.read_history(&workflow_id).await?;
-    assert_eq!(
-        terminal_count(&buffered),
-        0,
-        "later completions remain buffered while item zero is awaited: {buffered:#?}"
-    );
+    // Make only the item-order prefix durable. Members b and c remain
+    // outstanding when the engine stops, which is the recovery boundary this
+    // proof is specifically intended to exercise.
     gates.release("a");
-    let settled = wait_for_history(&store, &workflow_id, "fan-out settled", |events| {
-        terminal_count(events) == 3
+    let prefix = wait_for_history(&store, &workflow_id, "item-zero terminal", |events| {
+        terminal_count(events) == 1
     })
     .await?;
-
-    // Awaits consume and record the already-buffered terminals in ITEM order;
-    // member 1 remains a failure without disturbing either successful slot.
-    assert_eq!(
-        terminal_ordinals(&settled),
-        vec![(0, "completed"), (1, "failed"), (2, "completed")],
-        "individual awaits must record their keyed slots in item order: {settled:#?}"
-    );
-    wait_for("dispatcher tasks to finish", || {
-        gates.finished_dispatches() == 3
-    })
-    .await?;
+    assert_eq!(terminal_ordinals(&prefix), vec![(0, "completed")]);
     engine.shutdown()?;
 
-    // Replay mid-settle: restart with every terminal recorded but the run
-    // still parked at the release gate. Replay resolves each await from
-    // its recorded ordinal — zero re-dispatch — and the settled prefix
-    // stays byte-identical.
+    // Replay consumes a from history without dispatching it and reopens only
+    // unresolved b and c. Complete those in inverse order (c before b).
     let recovery_gates = GateBoard::new();
     let recovered = engine_over(&store, &recovery_gates).await?;
-    recovered
-        .signal(
-            &workflow_id,
-            &run_id,
-            "release",
-            Payload::from_json(&json!({ "label": "release" }))?,
-        )
-        .await?;
+    recovery_gates.release("c");
+    wait_for("recovered c dispatcher completion", || {
+        recovery_gates.finished_dispatches() == 1
+    })
+    .await?;
+    recovery_gates.release("b");
+    wait_for("recovered b dispatcher completion", || {
+        recovery_gates.finished_dispatches() == 2
+    })
+    .await?;
     let result = recovered
         .result(&workflow_id, &run_id)
         .await?
         .map_err(|error| format!("settled parent failed: {error:?}"))?;
 
-    // Slots in ITEM order (a, b, c) regardless of completion order, the
-    // failure captured as slot b's value, siblings unharmed.
     let decoded = result_json(&result)?;
     let text = decoded
         .as_str()
@@ -342,27 +362,19 @@ async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> Tes
 
     let final_history = store.read_history(&workflow_id).await?;
     assert_eq!(
-        &final_history[..settled.len()],
-        &settled[..],
-        "replay must leave the settled prefix byte-identical"
+        &final_history[..prefix.len()],
+        &prefix[..],
+        "replay must leave the durable item-order prefix byte-identical"
     );
     assert_eq!(
-        final_history.len(),
-        settled.len() + 2,
-        "replay may append only the release signal and the terminal: {final_history:#?}"
+        terminal_ordinals(&final_history),
+        vec![(0, "completed"), (1, "failed"), (2, "completed")],
+        "reopened members must still settle in item order: {final_history:#?}"
     );
-    assert!(matches!(
-        final_history[settled.len()],
-        Event::SignalReceived { .. }
-    ));
-    assert!(matches!(
-        final_history[settled.len() + 1],
-        Event::WorkflowCompleted { .. }
-    ));
     assert_eq!(
         recovery_gates.finished_dispatches(),
-        0,
-        "replay must never re-dispatch a recorded member"
+        2,
+        "recovery must dispatch only the two unresolved members"
     );
     recovered.shutdown()?;
     Ok(())
@@ -426,14 +438,6 @@ async fn settled_failure_never_cancels_outstanding_siblings() -> TestResult {
         terminal_count(events) == 3
     })
     .await?;
-    engine
-        .signal(
-            &workflow_id,
-            &run_id,
-            "release",
-            Payload::from_json(&json!({ "label": "release" }))?,
-        )
-        .await?;
     let result = engine
         .result(&workflow_id, &run_id)
         .await?

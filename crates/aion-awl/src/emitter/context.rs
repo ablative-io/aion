@@ -51,8 +51,12 @@ pub(crate) struct Emitter<'a> {
     /// Subflow name → shaped declaration.
     pub(crate) subflows: BTreeMap<&'a str, &'a SubflowShape>,
     pub(crate) outcomes: BTreeMap<&'a str, OutcomeInfo>,
-    /// Global binding name → type (single-assignment surface).
+    /// Binding types for the host flow only.
     pub(crate) bindings: BTreeMap<String, GType>,
+    /// Independent binding environments for each subflow.
+    pub(crate) subflow_bindings: BTreeMap<String, BTreeMap<String, GType>>,
+    /// Independent binding environments for each extracted region.
+    pub(crate) region_bindings: BTreeMap<usize, BTreeMap<String, GType>>,
     /// Generated input record name (`<Workflow>Input`).
     pub(crate) input_type: String,
     /// Generated outcome union name, `None` when no success outcome exists
@@ -165,6 +169,8 @@ impl<'a> Emitter<'a> {
             subflows,
             outcomes,
             bindings: BTreeMap::new(),
+            subflow_bindings: BTreeMap::new(),
+            region_bindings: BTreeMap::new(),
             input_type,
             union_type,
             action_inputs,

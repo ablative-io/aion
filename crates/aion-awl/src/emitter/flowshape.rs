@@ -98,8 +98,8 @@ pub(crate) struct Shaped {
 }
 
 /// The step's language-owned visit-counter binding name.
-pub(crate) fn visits_counter(step_name: &str) -> String {
-    format!("awl_visits_{}", snake(step_name))
+pub(crate) fn visits_counter(step: &Step) -> String {
+    format!("awl_visits_{}_{}", snake(&step.name), step.name_span.start)
 }
 
 /// Shape a folded document: collapse regions, rewrite `visits` references,
@@ -296,7 +296,7 @@ fn body_routes(body: &[Statement]) -> bool {
 /// to the step's counter binding (checker: readable only there).
 fn rewrite_visits(step: &mut Step) {
     if step.max_visits.is_some() {
-        let counter = visits_counter(&step.name);
+        let counter = visits_counter(step);
         for clause in &mut step.outcomes {
             if let Guard::When { expr, .. } = &mut clause.guard {
                 rewrite_visits_expr(expr, &counter);

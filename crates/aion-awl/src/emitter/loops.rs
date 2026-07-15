@@ -10,8 +10,8 @@ use crate::{Span, Spanned};
 
 use super::context::Emitter;
 use super::error::EmitError;
+use super::expr_refs::expr_refs;
 use super::exprs::{Scope, expr_type, render_expr};
-use super::graph::expr_refs;
 use super::names::{ident, snake};
 use super::stmts::flush_prelude;
 use super::types::GType;

@@ -31,7 +31,7 @@ pub(super) fn emit_sub_chain(
         };
         let params = flow.plan.sub_params(parent_index, position).to_vec();
         let output = flow.output.clone();
-        let mut scope = scope_from_params(emitter, &params, sub)?;
+        let mut scope = scope_from_params(&flow.bindings, &params, sub)?;
         let rendered_params = annotated_params(emitter, &params, &scope);
         let frame = Frame {
             step_name: &sub.name,

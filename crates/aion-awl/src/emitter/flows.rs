@@ -51,6 +51,11 @@ pub(super) fn emit_nested(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Resul
             regions: &shape.flow.regions,
             plan: &nested.plan,
             plans,
+            bindings: emitter
+                .subflow_bindings
+                .get(&shape.name)
+                .cloned()
+                .unwrap_or_default(),
             prefix: format!("awl_sf_{}_", snake(&shape.name)),
             exit: Some(FlowExit {
                 name: shape.outcome_name.clone(),
@@ -68,7 +73,12 @@ pub(super) fn emit_nested(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Resul
                 format!("region {id} lost its shape"),
             ));
         };
-        let Some(item_ty) = emitter.bindings.get(&region.binding).cloned() else {
+        let bindings = emitter
+            .region_bindings
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        let Some(item_ty) = bindings.get(&region.binding).cloned() else {
             return Err(EmitError::new(
                 region.span,
                 format!(
@@ -84,6 +94,7 @@ pub(super) fn emit_nested(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Resul
             regions: &region.members.regions,
             plan: &nested.plan,
             plans,
+            bindings,
             prefix: format!("{}_", region_fn(region)),
             exit: Some(FlowExit {
                 name: region.exit_name.clone(),
@@ -113,7 +124,8 @@ fn emit_wrapper(
             format!("nested flow `{name}` has no steps"),
         ));
     };
-    let scope = super::steps::scope_from_params(emitter, &nested.wrapper_params, entry_step)?;
+    let scope =
+        super::steps::scope_from_params(&flow.bindings, &nested.wrapper_params, entry_step)?;
     let rendered_params = annotated_params(emitter, &nested.wrapper_params, &scope);
     let output = flow.output.clone();
     emitter.line(&format!(
@@ -187,7 +199,7 @@ pub(super) fn emit_fanout(
             format!("step `{step_name}` has no planned member flow"),
         ));
     };
-    let Some(item_ty) = emitter.bindings.get(&region.binding).cloned() else {
+    let Some(item_ty) = flow.bindings.get(&region.binding).cloned() else {
         return Err(EmitError::new(
             region.span,
             format!(
@@ -403,89 +415,13 @@ fn emit_child_fanout(
             }
             emitter.flags.uses_child_module = true;
             if tolerant {
-                emit_child_parallel_tolerant(emitter, &spawn, items, var, bind);
+                super::child_fanout::emit_tolerant(emitter, &spawn, items, var, bind);
             } else {
-                emit_child_parallel_strict(emitter, &spawn, items, var, bind);
+                super::child_fanout::emit_strict(emitter, &spawn, items, var, bind);
             }
         }
     }
     Ok(())
-}
-
-/// Spawn every child, then await each handle in item order; the double
-/// reversal of the two prepend folds restores item order.
-fn emit_child_parallel_strict(
-    emitter: &mut Emitter<'_>,
-    spawn: &str,
-    items: &str,
-    var: &str,
-    bind: &str,
-) {
-    emitter.line(&format!(
-        "use awl_handles_reversed <- result.try(list.try_fold({items}, [], \
-         fn(awl_acc, {var}) {{"
-    ));
-    emitter.indented(|this| {
-        this.line(&format!(
-            "use awl_handle <- result.try(workflow.spawn{spawn} |> awl_error.map_spawn_error)"
-        ));
-        this.line("Ok([awl_handle, ..awl_acc])");
-    });
-    emitter.line("}))");
-    emitter.line(&format!(
-        "use {bind} <- result.try(list.try_fold(awl_handles_reversed, [], \
-         fn(awl_acc, awl_handle) {{"
-    ));
-    emitter.indented(|this| {
-        this.line(
-            "use awl_item <- result.try(child.await(awl_handle) |> awl_error.map_child_error)",
-        );
-        this.line("Ok([awl_item, ..awl_acc])");
-    });
-    emitter.line("}))");
-}
-
-/// The tolerant twin: spawn refusals hold the slot's absence too — a failed
-/// instance never fails the run in the tolerant form.
-fn emit_child_parallel_tolerant(
-    emitter: &mut Emitter<'_>,
-    spawn: &str,
-    items: &str,
-    var: &str,
-    bind: &str,
-) {
-    emitter.line(&format!(
-        "let awl_handles_reversed = list.fold({items}, [], fn(awl_acc, {var}) {{"
-    ));
-    emitter.indented(|this| {
-        this.line(&format!("case workflow.spawn{spawn} {{"));
-        this.indented(|this| {
-            this.line("Ok(awl_handle) -> [Some(awl_handle), ..awl_acc]");
-            this.line("Error(_) -> [None, ..awl_acc]");
-        });
-        this.line("}");
-    });
-    emitter.line("})");
-    emitter.line(&format!(
-        "let {bind} = list.fold(awl_handles_reversed, [], fn(awl_acc, awl_handle) {{"
-    ));
-    emitter.indented(|this| {
-        this.line("case awl_handle {");
-        this.indented(|this| {
-            this.line("Some(awl_live) ->");
-            this.indented(|this| {
-                this.line("case child.await(awl_live) {");
-                this.indented(|this| {
-                    this.line("Ok(awl_item) -> [Some(awl_item), ..awl_acc]");
-                    this.line("Error(_) -> [None, ..awl_acc]");
-                });
-                this.line("}");
-            });
-            this.line("None -> [None, ..awl_acc]");
-        });
-        this.line("}");
-    });
-    emitter.line("})");
 }
 
 /// Fan out a multi-step track through its generated instance function, one

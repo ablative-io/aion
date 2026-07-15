@@ -9,8 +9,9 @@ use crate::ast::{Expr, PipeEnd, RoutePayload, RouteTarget, Statement, Step};
 
 use super::context::Emitter;
 use super::error::EmitError;
+use super::expr_refs::expr_refs;
 use super::flowshape::{RegionShape, visits_counter};
-use super::graph::{Node, Plan, Region, expr_refs, falls_through, substep_split};
+use super::graph::{Node, Plan, Region, falls_through, substep_split};
 
 /// The flow-shape context one flow's liveness runs under: its collapsed
 /// per-item regions (with their already-planned member contracts) and its
@@ -179,7 +180,7 @@ impl Liveness<'_, '_> {
         // A bounded step reads its language-owned visit counter and its
         // bound expression at entry (before any of its defs).
         if let Some(max_visits) = &step.max_visits {
-            let counter = visits_counter(&step.name);
+            let counter = visits_counter(step);
             if !self.nodes[node].defs.contains(&counter) {
                 self.nodes[node].refs.insert(counter);
             }

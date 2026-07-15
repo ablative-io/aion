@@ -183,10 +183,71 @@ pub fn settled_members_take_the_in_vm_wire_and_capture_failures_test() {
         Error(error.Terminal(message: "settled boom", details: "")),
       ])
 
+      observed_config(env, "settled-invm-ok")
+      |> field_value("tier")
+      |> should.equal(Some("in_vm"))
+      observed_config(env, "settled-invm-fail")
+      |> field_value("tier")
+      |> should.equal(Some("in_vm"))
       observed(env, "activity_in_vm:settled-invm-ok:") |> should.be_true
       observed(env, "activity_in_vm:settled-invm-fail:") |> should.be_true
       observed(env, "activity:settled-invm-ok:") |> should.be_false
       observed(env, "activity:settled-invm-fail:") |> should.be_false
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn settled_in_vm_members_with_retry_or_timeout_are_refused_test() {
+  case testing.new() {
+    Ok(env) -> {
+      let retrying =
+        probe_activity("settled-invm-retry")
+        |> activity.execution_tier(activity.InVm)
+        |> activity.retry(activity.RetryPolicy(
+          max_attempts: 3,
+          backoff: activity.Fixed(delay: duration.milliseconds(1)),
+        ))
+      let timed =
+        probe_activity("settled-invm-timeout-policy")
+        |> activity.execution_tier(activity.InVm)
+        |> activity.timeout(duration.milliseconds(10))
+      let refusal =
+        error.ActivityEngineFailure(
+          message: "settled in-VM activities do not support retry or timeout policies on the current arity-4 wire",
+        )
+
+      workflow.all_settled([retrying, timed])
+      |> should.equal([Error(refusal), Error(refusal)])
+      observed(env, "settled-invm-retry") |> should.be_false
+      observed(env, "settled-invm-timeout-policy") |> should.be_false
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn settled_remote_tiers_keep_their_config_values_test() {
+  case testing.new() {
+    Ok(env) -> {
+      let python =
+        probe_activity("settled-remote-python")
+        |> activity.execution_tier(activity.RemotePython)
+      let rust =
+        probe_activity("settled-remote-rust")
+        |> activity.execution_tier(activity.RemoteRust)
+      testing.mock_activity(env, python, fn(input) { Ok(input) })
+      |> should.equal(Ok(env))
+      testing.mock_activity(env, rust, fn(input) { Ok(input) })
+      |> should.equal(Ok(env))
+
+      workflow.all_settled([python, rust])
+      |> should.equal([Ok(Probe(value: "in")), Ok(Probe(value: "in"))])
+      observed_config(env, "settled-remote-python")
+      |> field_value("tier")
+      |> should.equal(Some("remote_python"))
+      observed_config(env, "settled-remote-rust")
+      |> field_value("tier")
+      |> should.equal(Some("remote_rust"))
     }
     Error(_) -> should.fail()
   }

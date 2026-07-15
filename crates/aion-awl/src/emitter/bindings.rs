@@ -24,67 +24,66 @@ use super::pipes::stage_type;
 use super::stmts::action_return;
 use super::types::{GType, type_ref_to_g};
 
-/// Populate `emitter.bindings` with every binding's type, across the host
-/// flow, every subflow, and every per-item region member flow.
+/// Compute independent binding environments for the host and every nested flow.
 pub(super) fn compute(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
+    let mut host = BTreeMap::new();
     for input in &emitter.document.inputs {
-        emitter
-            .bindings
-            .insert(input.name.clone(), type_ref_to_g(&input.ty));
+        host.insert(input.name.clone(), type_ref_to_g(&input.ty));
     }
-    for shape in emitter.subflow_shapes {
-        for param in &shape.params {
-            emitter
-                .bindings
-                .insert(param.name.clone(), type_ref_to_g(&param.ty));
-        }
-    }
-    let document = emitter.document;
-    let subflow_shapes = emitter.subflow_shapes;
-    let host_regions = emitter.host_regions;
-    register_counters(emitter, &document.steps);
-    for shape in subflow_shapes {
-        register_counters(emitter, &shape.flow.steps);
-        register_region_counters(emitter, &shape.flow.regions);
-    }
-    register_region_counters(emitter, host_regions);
+    compute_flow(
+        emitter,
+        &emitter.document.steps,
+        emitter.host_regions,
+        &mut host,
+    )?;
+    emitter.bindings = host.clone();
+    register_region_maps(emitter.host_regions, &host, &mut emitter.region_bindings);
 
-    // Each pass can only add bindings; the surface is finite.
-    loop {
-        let scope = Scope::from_vars(emitter.bindings.clone());
-        let mut discovered: Vec<(String, GType, Span)> = Vec::new();
-        collect_flow(
-            emitter,
-            &emitter.document.steps,
-            emitter.host_regions,
-            &scope,
-            &mut discovered,
-        );
-        for shape in emitter.subflow_shapes {
-            collect_flow(
-                emitter,
-                &shape.flow.steps,
-                &shape.flow.regions,
-                &scope,
-                &mut discovered,
-            );
+    for shape in emitter.subflow_shapes {
+        let mut bindings = BTreeMap::new();
+        for param in &shape.params {
+            bindings.insert(param.name.clone(), type_ref_to_g(&param.ty));
         }
+        compute_flow(
+            emitter,
+            &shape.flow.steps,
+            &shape.flow.regions,
+            &mut bindings,
+        )?;
+        register_region_maps(&shape.flow.regions, &bindings, &mut emitter.region_bindings);
+        emitter
+            .subflow_bindings
+            .insert(shape.name.clone(), bindings);
+    }
+    Ok(())
+}
+
+fn compute_flow(
+    emitter: &Emitter<'_>,
+    steps: &[Step],
+    regions: &BTreeMap<String, RegionShape>,
+    bindings: &mut BTreeMap<String, GType>,
+) -> Result<(), EmitError> {
+    register_counters(bindings, steps);
+    register_region_counters(bindings, regions);
+    loop {
+        let scope = Scope::from_vars(bindings.clone());
+        let mut discovered = Vec::new();
+        collect_flow(emitter, steps, regions, &scope, &mut discovered);
         let mut changed = false;
         for (name, ty, span) in discovered {
-            match emitter.bindings.get(&name) {
+            match bindings.get(&name) {
                 None => {
-                    emitter.bindings.insert(name, ty);
+                    bindings.insert(name, ty);
                     changed = true;
                 }
                 Some(existing) if emitter.env.resolve(existing) != emitter.env.resolve(&ty) => {
                     return Err(EmitError::new(
                         span,
                         format!(
-                            "`{name}` is bound as {} here but as {} elsewhere in the \
-                             workflow — the Gleam stopgap threads one type per binding \
-                             name across branches",
+                            "`{name}` has incompatible types inside one flow: {} and {}",
                             emitter.env.gleam_type(&ty),
-                            emitter.env.gleam_type(existing),
+                            emitter.env.gleam_type(existing)
                         ),
                     ));
                 }
@@ -97,23 +96,35 @@ pub(super) fn compute(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     }
 }
 
+fn register_region_maps(
+    regions: &BTreeMap<String, RegionShape>,
+    bindings: &BTreeMap<String, GType>,
+    maps: &mut BTreeMap<usize, BTreeMap<String, GType>>,
+) {
+    for region in regions.values() {
+        maps.insert(region.id, bindings.clone());
+        register_region_maps(&region.members.regions, bindings, maps);
+    }
+}
+
 /// Register the `Int` visit counter of every bounded step in a step list.
-fn register_counters(emitter: &mut Emitter<'_>, steps: &[Step]) {
+fn register_counters(bindings: &mut BTreeMap<String, GType>, steps: &[Step]) {
     for step in steps {
         if step.max_visits.is_some() {
-            emitter
-                .bindings
-                .insert(visits_counter(&step.name), GType::Int);
+            bindings.insert(visits_counter(step), GType::Int);
         }
     }
 }
 
 /// [`register_counters`] over a region map's member flows, recursively.
-fn register_region_counters(emitter: &mut Emitter<'_>, regions: &BTreeMap<String, RegionShape>) {
+fn register_region_counters(
+    bindings: &mut BTreeMap<String, GType>,
+    regions: &BTreeMap<String, RegionShape>,
+) {
     let mut names = Vec::new();
     region_counter_names(regions, &mut names);
     for name in names {
-        emitter.bindings.insert(name, GType::Int);
+        bindings.insert(name, GType::Int);
     }
 }
 
@@ -121,7 +132,7 @@ fn region_counter_names(regions: &BTreeMap<String, RegionShape>, out: &mut Vec<S
     for region in regions.values() {
         for step in &region.members.steps {
             if step.max_visits.is_some() {
-                out.push(visits_counter(&step.name));
+                out.push(visits_counter(step));
             }
         }
         region_counter_names(&region.members.regions, out);

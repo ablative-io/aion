@@ -51,9 +51,19 @@ const PROVEN: &[(&str, &str)] = &[
         "ordered_tolerant",
     ),
     ("flow-shape/valid/subflow_nested.awl", "nested_subflows"),
+    ("flow-shape/valid/subflow_local_names.awl", "scoped_names"),
+    (
+        "flow-shape/valid/region_pure_decision.awl",
+        "region_decision",
+    ),
+    ("flow-shape/valid/counter_hygiene.awl", "counter_hygiene"),
     (
         "flow-shape/valid/on_failure_route_tail.awl",
         "publish_with_cleanup",
+    ),
+    (
+        "flow-shape/valid/substep_on_failure_route_tail.awl",
+        "substep_cleanup",
     ),
     ("flow-shape/valid/value_route_payload.awl", "value_route"),
     (

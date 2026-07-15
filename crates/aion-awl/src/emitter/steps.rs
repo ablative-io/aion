@@ -32,6 +32,8 @@ pub(super) struct FlowCtx<'f> {
     pub(super) regions: &'f BTreeMap<String, RegionShape>,
     pub(super) plan: &'f Plan,
     pub(super) plans: &'f Plans<'f>,
+    /// Binding/type environment owned by this flow.
+    pub(super) bindings: BTreeMap<String, super::types::GType>,
     pub(super) prefix: String,
     pub(super) exit: Option<FlowExit>,
     /// The rendered Gleam type of this flow's `Ok(...)` result.
@@ -79,6 +81,7 @@ pub(super) fn emit_flow(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Result<
         regions: emitter.host_regions,
         plan: &plans.host,
         plans,
+        bindings: emitter.bindings.clone(),
         prefix: String::new(),
         exit: None,
         output: emitter.output_type(),
@@ -174,7 +177,7 @@ fn emit_region(
     let entry = &flow.steps[region.entry];
     let output = flow.output.clone();
     let params = flow.plan.region_params(region_index).to_vec();
-    let mut scope = scope_from_params(emitter, &params, entry)?;
+    let mut scope = scope_from_params(&flow.bindings, &params, entry)?;
     let rendered_params = annotated_params(emitter, &params, &scope);
     emitter.line(&format!(
         "fn {}({rendered_params}) -> Result({output}, awl_error.AwlError) {{",
@@ -209,13 +212,13 @@ pub(super) fn annotated_params(emitter: &Emitter<'_>, params: &[String], scope: 
 }
 
 pub(super) fn scope_from_params(
-    emitter: &Emitter<'_>,
+    bindings: &BTreeMap<String, super::types::GType>,
     params: &[String],
     anchor: &Step,
 ) -> Result<Scope, EmitError> {
     let mut scope = Scope::new();
     for param in params {
-        let Some(ty) = emitter.bindings.get(param) else {
+        let Some(ty) = bindings.get(param) else {
             return Err(EmitError::new(
                 anchor.name_span,
                 format!(
@@ -474,7 +477,7 @@ fn emit_visits_prologue(
     max_visits: &crate::ast::MaxVisits,
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
-    let counter = ident(&visits_counter(&step.name));
+    let counter = ident(&visits_counter(step));
     let mut prelude = Vec::new();
     let bound = render_expr(emitter, &max_visits.bound, scope, &mut prelude)?;
     if !prelude.is_empty() {
@@ -497,6 +500,6 @@ fn emit_visits_prologue(
         this.line("False -> Ok(Nil)");
     });
     emitter.line("})");
-    scope.insert(visits_counter(&step.name), super::types::GType::Int);
+    scope.insert(visits_counter(step), super::types::GType::Int);
     Ok(())
 }
