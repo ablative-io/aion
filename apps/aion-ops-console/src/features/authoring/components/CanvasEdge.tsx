@@ -1,7 +1,15 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { EdgeProps } from 'reactflow';
 
-export type ParallelEdgeData = { siblingOffset: number };
+import { EDGE_GUTTER_CLEARANCE, edgeLaneSpread, lateralEdgePath } from '../lib/canvas-layout';
+
+export type ParallelEdgeData = {
+  siblingOffset: number;
+  back: boolean;
+  selfLoop: boolean;
+  graphLeft: number;
+  graphRight: number;
+};
 
 type ParallelCanvasEdgeVisualProps = {
   id: string;
@@ -10,6 +18,10 @@ type ParallelCanvasEdgeVisualProps = {
   targetX: number;
   targetY: number;
   siblingOffset: number;
+  back: boolean;
+  selfLoop: boolean;
+  graphLeft: number;
+  graphRight: number;
   label?: ReactNode | undefined;
   markerEnd?: string | undefined;
   style?: CSSProperties | undefined;
@@ -27,17 +39,32 @@ export function ParallelCanvasEdgeVisual({
   targetX,
   targetY,
   siblingOffset,
+  back,
+  selfLoop,
+  graphLeft,
+  graphRight,
   label,
   markerEnd,
   style,
 }: ParallelCanvasEdgeVisualProps) {
-  const direction = targetY >= sourceY ? 1 : -1;
-  const controlDistance = Math.max(40, Math.abs(targetY - sourceY) / 2);
-  const path = `M ${sourceX} ${sourceY} C ${sourceX + siblingOffset} ${
-    sourceY + direction * controlDistance
-  }, ${targetX + siblingOffset} ${targetY - direction * controlDistance}, ${targetX} ${targetY}`;
-  const labelX = (sourceX + targetX) / 2 + siblingOffset;
+  const gutterDistance = EDGE_GUTTER_CLEARANCE + edgeLaneSpread(siblingOffset);
   const labelY = (sourceY + targetY) / 2;
+  let path: string;
+  let labelX: number;
+  if (selfLoop) {
+    labelX = graphRight + gutterDistance;
+    path = lateralEdgePath({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }, labelX);
+  } else if (back) {
+    labelX = graphLeft - gutterDistance;
+    path = lateralEdgePath({ x: sourceX, y: sourceY }, { x: targetX, y: targetY }, labelX);
+  } else {
+    const direction = targetY >= sourceY ? 1 : -1;
+    const controlDistance = Math.max(40, Math.abs(targetY - sourceY) / 2);
+    path = `M ${sourceX} ${sourceY} C ${sourceX + siblingOffset} ${
+      sourceY + direction * controlDistance
+    }, ${targetX + siblingOffset} ${targetY - direction * controlDistance}, ${targetX} ${targetY}`;
+    labelX = (sourceX + targetX) / 2 + siblingOffset;
+  }
   return (
     <>
       <path
@@ -78,9 +105,13 @@ export function ParallelCanvasEdge({
 }: EdgeProps<ParallelEdgeData>) {
   return (
     <ParallelCanvasEdgeVisual
+      back={data?.back ?? false}
+      graphLeft={data?.graphLeft ?? Math.min(sourceX, targetX)}
+      graphRight={data?.graphRight ?? Math.max(sourceX, targetX)}
       id={id}
       label={label}
       markerEnd={markerEnd}
+      selfLoop={data?.selfLoop ?? false}
       siblingOffset={data?.siblingOffset ?? 0}
       sourceX={sourceX}
       sourceY={sourceY}

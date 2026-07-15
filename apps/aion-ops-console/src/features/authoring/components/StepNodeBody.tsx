@@ -2,13 +2,23 @@ import { Timer } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import {
+  EDGE_GUTTER_CLEARANCE,
   EMBED_PADDING,
   edgeLabel,
+  edgeLaneSpread,
+  lateralEdgePath,
   layoutEmbedded,
   parallelEdgeOffsets,
   type PlacedNode,
+  substepGraphPath,
+  substepScopeLabel,
 } from '../lib/canvas-layout';
-import type { GraphProjection, ProjectionEdge, ProjectionStep } from '../lib/projection-types';
+import type {
+  GraphProjection,
+  ProjectionEdge,
+  ProjectionStep,
+  ProjectionSubstepGraph,
+} from '../lib/projection-types';
 
 /**
  * The canvas node vocabulary (AWL-FLOW-VOCABULARY rev 3 §6), free of any
@@ -73,7 +83,9 @@ export function StepNodeBody(props: StepBodyProps) {
         )}
       </button>
       {step.subflow !== null && <SubflowSection {...props} />}
-      {step.substeps !== null && <SubstepSection {...props} />}
+      {step.substeps.map((scoped) => (
+        <SubstepSection {...props} key={`${scoped.scope}:${scoped.index}`} scoped={scoped} />
+      ))}
     </article>
   );
 }
@@ -218,20 +230,27 @@ function SubflowSection({ step, path, expanded, onJumpTo, onToggleSubflow }: Ste
   );
 }
 
-/** Collapsed-by-default parent-owned sibling graph. */
-function SubstepSection({ step, path, expanded, onJumpTo, onToggleSubflow }: StepBodyProps) {
-  const graph = step.substeps;
-  if (graph === null) return null;
-  const isExpanded = expanded.has(path);
+/** One collapsed-by-default statement-list-scoped sibling graph. */
+function SubstepSection({
+  step,
+  path,
+  expanded,
+  onJumpTo,
+  onToggleSubflow,
+  scoped,
+}: StepBodyProps & { scoped: ProjectionSubstepGraph }) {
+  const scopedPath = substepGraphPath(path, scoped);
+  const scopeLabel = substepScopeLabel(scoped);
+  const isExpanded = expanded.has(scopedPath);
   return (
     <div className="border-border border-t px-3 pb-3">
       <span className="mt-2 flex items-center justify-between gap-2">
-        <span className="truncate font-mono text-accent-primary text-xs">substeps</span>
+        <span className="truncate font-mono text-accent-primary text-xs">{scopeLabel}</span>
         <button
           aria-expanded={isExpanded}
-          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} substeps of ${step.name}`}
+          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${scopeLabel} of ${step.name}`}
           className="nodrag shrink-0 rounded-md px-2 py-1 text-muted-foreground text-xs outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-accent-primary"
-          onClick={() => onToggleSubflow(path)}
+          onClick={() => onToggleSubflow(scopedPath)}
           type="button"
         >
           {isExpanded ? 'Collapse' : 'Expand'}
@@ -241,11 +260,11 @@ function SubstepSection({ step, path, expanded, onJumpTo, onToggleSubflow }: Ste
         <div className="mt-2 overflow-auto rounded-lg border border-border border-dashed bg-surface-base p-2">
           <SubflowGraph
             expanded={expanded}
-            graph={graph}
-            label={`Substep graph ${step.name}`}
+            graph={scoped.graph}
+            label={`${scopeLabel} graph of ${step.name}`}
             onJumpTo={onJumpTo}
             onToggleSubflow={onToggleSubflow}
-            path={path}
+            path={scopedPath}
           />
         </div>
       )}
@@ -297,6 +316,8 @@ export function SubflowGraph({
             <EmbeddedEdge
               edge={edge}
               key={edge.id}
+              nodeLeft={layout.nodeLeft}
+              nodeRight={layout.nodeRight}
               siblingOffset={siblingOffsets.get(edge.id) ?? 0}
               source={source}
               target={target}
@@ -329,27 +350,45 @@ export function SubflowGraph({
 
 type EmbeddedEdgeProps = {
   edge: ProjectionEdge;
+  nodeLeft: number;
+  nodeRight: number;
   siblingOffset: number;
   source: PlacedNode;
   target: PlacedNode;
 };
 
-function EmbeddedEdge({ edge, siblingOffset, source, target }: EmbeddedEdgeProps) {
+function EmbeddedEdge({
+  edge,
+  nodeLeft,
+  nodeRight,
+  siblingOffset,
+  source,
+  target,
+}: EmbeddedEdgeProps) {
   const from = { x: source.x + source.width / 2, y: source.y + source.height };
   const to = { x: target.x + target.width / 2, y: target.y };
   const label = edgeLabel(edge);
-  const bendX = Math.min(source.x, target.x) - 24 + siblingOffset;
+  const selfLoop = edge.source === edge.target;
+  const gutterDistance = EDGE_GUTTER_CLEARANCE + edgeLaneSpread(siblingOffset);
   const direction = to.y >= from.y ? 1 : -1;
   const controlDistance = Math.max(24, Math.abs(to.y - from.y) / 2);
-  const d = edge.back
-    ? `M ${from.x} ${from.y} C ${bendX} ${from.y + 24}, ${bendX} ${to.y - 24}, ${to.x} ${to.y}`
-    : `M ${from.x} ${from.y} C ${from.x + siblingOffset} ${from.y + direction * controlDistance}, ${to.x + siblingOffset} ${to.y - direction * controlDistance}, ${to.x} ${to.y}`;
-  const mid = edge.back
-    ? { x: bendX + 12, y: (from.y + to.y) / 2 }
-    : {
-        x: (from.x + to.x) / 2 + siblingOffset + 6,
-        y: (from.y + to.y) / 2,
-      };
+  let d: string;
+  let mid: { x: number; y: number };
+  if (selfLoop) {
+    const laneX = nodeRight + gutterDistance;
+    d = lateralEdgePath(from, to, laneX);
+    mid = { x: laneX, y: (from.y + to.y) / 2 };
+  } else if (edge.back) {
+    const laneX = nodeLeft - gutterDistance;
+    d = lateralEdgePath(from, to, laneX);
+    mid = { x: laneX, y: (from.y + to.y) / 2 };
+  } else {
+    d = `M ${from.x} ${from.y} C ${from.x + siblingOffset} ${from.y + direction * controlDistance}, ${to.x + siblingOffset} ${to.y - direction * controlDistance}, ${to.x} ${to.y}`;
+    mid = {
+      x: (from.x + to.x) / 2 + siblingOffset + 6,
+      y: (from.y + to.y) / 2,
+    };
+  }
   return (
     <g>
       <path

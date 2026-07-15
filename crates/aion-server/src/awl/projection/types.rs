@@ -38,9 +38,8 @@ pub struct ProjectionStep {
     pub collect: Option<ProjectionCollect>,
     /// The invoked subflow of a subflow-call step, with its own graph.
     pub subflow: Option<ProjectionSubflow>,
-    /// Direct sibling `step` statements embedded in this parent step, as
-    /// their own scoped graph.
-    pub substeps: Option<GraphProjection>,
+    /// Sibling `step` groups embedded in statement lists owned by this step.
+    pub substeps: Vec<ProjectionSubstepGraph>,
     /// Canonical text of the step's `max N visits` bound, when written.
     pub visits: Option<String>,
     /// Whether the step carries outcome arms (its decision diamond).
@@ -49,6 +48,31 @@ pub struct ProjectionStep {
     pub waits: bool,
     /// Worker actions and child calls invoked by the step, sorted.
     pub activities: Vec<String>,
+}
+
+/// One sibling-substep graph and the statement-list scope that owns it.
+#[derive(Debug, Serialize)]
+pub struct ProjectionSubstepGraph {
+    /// Statement-list kind containing the sibling `step` declarations.
+    pub scope: ProjectionSubstepScope,
+    /// Zero-based occurrence of this statement-list kind under the owner.
+    pub index: usize,
+    /// The sibling-local graph.
+    pub graph: GraphProjection,
+}
+
+/// Statement-list location of a sibling-substep graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionSubstepScope {
+    /// The owning step's main body.
+    Body,
+    /// The owning step's `on failure` body.
+    Failure,
+    /// A recursively nested `fork` body.
+    Fork,
+    /// A recursively nested `loop` body.
+    Loop,
 }
 
 /// The checker-owned step classification, as drawn on the canvas.

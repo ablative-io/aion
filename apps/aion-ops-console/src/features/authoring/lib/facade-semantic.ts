@@ -9,6 +9,7 @@ import {
 import type {
   GraphProjection,
   ProjectionStep,
+  ProjectionSubstepGraph,
   SemanticDeclaration,
   SemanticEntry,
   SemanticIndex,
@@ -182,10 +183,23 @@ function parseProjectionStep(value: unknown): ProjectionStep {
     distribution: step.distribution === null ? null : parseDistribution(step.distribution),
     collect: step.collect === null ? null : parseCollect(step.collect),
     subflow: step.subflow === null ? null : parseSubflow(step.subflow),
-    substeps: step.substeps === null ? null : parseGraph(step.substeps),
+    substeps: expectArray(step.substeps, 'step.substeps').map(parseSubstepGraph),
     visits: nullableString(step.visits, 'step.visits'),
     decision: expectBoolean(step.decision, 'step.decision'),
     waits: expectBoolean(step.waits, 'step.waits'),
+  };
+}
+
+function parseSubstepGraph(value: unknown): ProjectionSubstepGraph {
+  const record = expectRecord(value);
+  const scope = expectString(record.scope, 'substep.scope');
+  if (scope !== 'body' && scope !== 'failure' && scope !== 'fork' && scope !== 'loop') {
+    throw new Error('Invalid authoring response: substep.scope');
+  }
+  return {
+    scope,
+    index: expectNumber(record.index, 'substep.index'),
+    graph: parseGraph(record.graph),
   };
 }
 

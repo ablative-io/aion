@@ -18,7 +18,7 @@ function step(name: string, extra: Partial<ProjectionStep> = {}): ProjectionStep
     distribution: null,
     collect: null,
     subflow: null,
-    substeps: null,
+    substeps: [],
     visits: null,
     decision: false,
     waits: false,
@@ -237,12 +237,27 @@ describe('flow-vocabulary node rendering', () => {
       distribution: null,
       collect: null,
       subflow: null,
-      substeps: null,
+      substeps: [],
       visits: null,
       decision: false,
       waits: false,
       ...extra,
     });
+    const scopedGraph = {
+      steps: [wireStep('fetch_batch'), wireStep('scrub')],
+      edges: [
+        {
+          id: 'route:fetch_batch:scrub:when:0',
+          source: 'fetch_batch',
+          target: 'scrub',
+          kind: 'route',
+          label: 'when',
+          back: false,
+          visits: null,
+        },
+      ],
+      child_calls: [],
+    };
     const facade = createAuthoringFacade(async () =>
       Response.json({
         ok: true,
@@ -254,21 +269,12 @@ describe('flow-vocabulary node rendering', () => {
           graph: {
             steps: [
               wireStep('prepare', {
-                substeps: {
-                  steps: [wireStep('fetch_batch'), wireStep('scrub')],
-                  edges: [
-                    {
-                      id: 'route:fetch_batch:scrub:when:0',
-                      source: 'fetch_batch',
-                      target: 'scrub',
-                      kind: 'route',
-                      label: 'when',
-                      back: false,
-                      visits: null,
-                    },
-                  ],
-                  child_calls: [],
-                },
+                substeps: [
+                  { scope: 'body', index: 0, graph: scopedGraph },
+                  { scope: 'failure', index: 0, graph: scopedGraph },
+                  { scope: 'fork', index: 0, graph: scopedGraph },
+                  { scope: 'loop', index: 1, graph: scopedGraph },
+                ],
               }),
             ],
             edges: [],
@@ -280,11 +286,23 @@ describe('flow-vocabulary node rendering', () => {
     );
     const result = await facade.check('workflow prepare_dataset');
     const prepare = result.semantic?.graph.steps[0];
-    expect(prepare?.substeps?.steps.map((nested) => nested.name)).toEqual(['fetch_batch', 'scrub']);
+    expect(prepare?.substeps.map((scoped) => [scoped.scope, scoped.index])).toEqual([
+      ['body', 0],
+      ['failure', 0],
+      ['fork', 0],
+      ['loop', 1],
+    ]);
+    expect(prepare?.substeps[1]?.graph.steps.map((nested) => nested.name)).toEqual([
+      'fetch_batch',
+      'scrub',
+    ]);
     if (prepare === undefined) return;
-    const html = render(prepare, new Set(['prepare']));
-    expect(html).toContain('aria-label="Collapse substeps of prepare"');
-    expect(html).toContain('aria-label="Substep graph prepare"');
+    const html = render(prepare, new Set(['prepare/@failure-0']));
+    expect(html).toContain('Body substeps');
+    expect(html).toContain('aria-label="Collapse Failure substeps of prepare"');
+    expect(html).toContain('Fork 1 substeps');
+    expect(html).toContain('Loop 2 substeps');
+    expect(html).toContain('aria-label="Failure substeps graph of prepare"');
     expect(html).toContain('aria-label="Step fetch_batch"');
     expect(html).toContain('aria-label="Step scrub"');
     expect(html).toContain('data-edge-id="route:fetch_batch:scrub:when:0"');
@@ -337,9 +355,13 @@ describe('flow-vocabulary node rendering', () => {
         <title>Root parallel routes</title>
         {parallelRoutes.edges.map((edge) => (
           <ParallelCanvasEdgeVisual
+            back={false}
+            graphLeft={0}
+            graphRight={200}
             id={edge.id}
             key={edge.id}
             label={edge.label}
+            selfLoop={false}
             siblingOffset={offsets.get(edge.id) ?? 0}
             sourceX={100}
             sourceY={100}

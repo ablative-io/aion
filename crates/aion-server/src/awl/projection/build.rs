@@ -13,7 +13,8 @@ use aion_awl::{
 use super::edges::edges;
 use super::types::{
     GraphProjection, ProjectionChildCall, ProjectionCollect, ProjectionDistribution,
-    ProjectionStep, ProjectionStepKind, ProjectionSubflow,
+    ProjectionStep, ProjectionStepKind, ProjectionSubflow, ProjectionSubstepGraph,
+    ProjectionSubstepScope,
 };
 
 /// Projects `document` into the canvas graph, consuming the checker's step
@@ -31,6 +32,12 @@ struct Context<'a> {
     subflows: BTreeMap<&'a str, &'a SubflowDecl>,
     /// Checker classifications keyed by the step's name span.
     kinds: BTreeMap<(usize, usize), &'a StepInfo>,
+}
+
+#[derive(Default)]
+struct ScopeIndices {
+    fork: usize,
+    looped: usize,
 }
 
 impl<'a> Context<'a> {
@@ -141,21 +148,93 @@ impl<'a> Context<'a> {
         Some(ProjectionSubflow { name, graph })
     }
 
-    /// Direct sibling substeps form a graph scoped to and owned by their
-    /// parent step. Nested substeps recurse through each projected sibling.
-    fn substeps(&self, step: &Step, expanding: &mut Vec<String>) -> Option<GraphProjection> {
-        let siblings: Vec<&Step> = step
-            .body
+    /// Collect sibling graphs from every statement list the checker scans:
+    /// the step body, `on failure`, and recursively nested `fork`/`loop`
+    /// bodies. Substeps recurse through their own projected node.
+    fn substeps(&self, step: &Step, expanding: &mut Vec<String>) -> Vec<ProjectionSubstepGraph> {
+        let mut groups = Vec::new();
+        let mut indices = ScopeIndices::default();
+        self.scan_statement_list(
+            &step.body,
+            ProjectionSubstepScope::Body,
+            0,
+            expanding,
+            &mut indices,
+            &mut groups,
+        );
+        if let Some(failure) = &step.on_failure {
+            self.scan_statement_list(
+                &failure.body,
+                ProjectionSubstepScope::Failure,
+                0,
+                expanding,
+                &mut indices,
+                &mut groups,
+            );
+        }
+        groups
+    }
+
+    fn scan_statement_list(
+        &self,
+        statements: &[Statement],
+        scope: ProjectionSubstepScope,
+        index: usize,
+        expanding: &mut Vec<String>,
+        indices: &mut ScopeIndices,
+        groups: &mut Vec<ProjectionSubstepGraph>,
+    ) {
+        let siblings: Vec<&Step> = statements
             .iter()
             .filter_map(|statement| match statement {
                 Statement::SubStep(substep) => Some(substep.as_ref()),
                 _ => None,
             })
             .collect();
-        if siblings.is_empty() {
-            return None;
+        if !siblings.is_empty() {
+            groups.push(ProjectionSubstepGraph {
+                scope,
+                index,
+                graph: self.scoped_flow(&siblings, expanding),
+            });
         }
-        Some(self.scoped_flow(&siblings, expanding))
+        for statement in statements {
+            match statement {
+                Statement::Fork(fork) => {
+                    let index = indices.fork;
+                    indices.fork += 1;
+                    self.scan_statement_list(
+                        &fork.body,
+                        ProjectionSubstepScope::Fork,
+                        index,
+                        expanding,
+                        indices,
+                        groups,
+                    );
+                }
+                Statement::Loop(looped) => {
+                    let index = indices.looped;
+                    indices.looped += 1;
+                    self.scan_statement_list(
+                        &looped.body,
+                        ProjectionSubstepScope::Loop,
+                        index,
+                        expanding,
+                        indices,
+                        groups,
+                    );
+                }
+                Statement::SubStep(_)
+                | Statement::Call(_)
+                | Statement::Spawn(_)
+                | Statement::Pipe(_)
+                | Statement::Wait(_)
+                | Statement::Sleep(_)
+                | Statement::Route(_)
+                | Statement::Distribute(_)
+                | Statement::Collect(_) => {}
+            }
+        }
     }
 }
 

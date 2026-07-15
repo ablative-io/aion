@@ -43,6 +43,12 @@ export type ProjectionStepKind =
 export type ProjectionDistribution = { binding: string; collection: string };
 export type ProjectionCollect = { binding: string; tolerant: boolean; result: string };
 export type ProjectionSubflow = { name: string; graph: GraphProjection | null };
+export type ProjectionSubstepScope = 'body' | 'failure' | 'fork' | 'loop';
+export type ProjectionSubstepGraph = {
+  scope: ProjectionSubstepScope;
+  index: number;
+  graph: GraphProjection;
+};
 export type ProjectionStep = {
   name: string;
   documentation: string;
@@ -52,7 +58,7 @@ export type ProjectionStep = {
   distribution: ProjectionDistribution | null;
   collect: ProjectionCollect | null;
   subflow: ProjectionSubflow | null;
-  substeps: GraphProjection | null;
+  substeps: ProjectionSubstepGraph[];
   visits: string | null;
   decision: boolean;
   waits: boolean;

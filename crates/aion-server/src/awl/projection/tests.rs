@@ -5,7 +5,9 @@
 use aion_awl::semantic;
 
 use super::build;
-use super::types::{GraphProjection, ProjectionEdgeKind, ProjectionStepKind};
+use super::types::{
+    GraphProjection, ProjectionEdgeKind, ProjectionStepKind, ProjectionSubstepScope,
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -14,6 +16,9 @@ const DEV_FLOW: &str =
 const SUBSTEPS_TWO_STAGE: &str = include_str!(
     "../../../../aion-awl/tests/fixtures/rev2/loop-outcomes/valid/substeps_two_stage.awl"
 );
+const SUBSTEPS_IN_FAILURE: &str = include_str!("fixtures/substeps_in_failure.awl");
+const SUBSTEPS_IN_FORK: &str = include_str!("fixtures/substeps_in_fork.awl");
+const SUBSTEPS_IN_LOOP: &str = include_str!("fixtures/substeps_in_loop.awl");
 
 fn project(source: &str) -> Result<GraphProjection, Box<dyn std::error::Error>> {
     let document = aion_awl::parse(source)?;
@@ -156,10 +161,7 @@ fn two_stage_substeps_project_as_the_parent_owned_sibling_graph() -> TestResult 
     let graph = project(SUBSTEPS_TWO_STAGE)?;
     assert_eq!(graph.steps.len(), 1, "one parent workflow step");
     let prepare = step(&graph, "prepare")?;
-    let nested = prepare
-        .substeps
-        .as_ref()
-        .ok_or("prepare did not embed its substeps")?;
+    let nested = substep_graph(prepare, ProjectionSubstepScope::Body, 0)?;
     let nested_steps: Vec<_> = nested
         .steps
         .iter()
@@ -189,6 +191,48 @@ fn two_stage_substeps_project_as_the_parent_owned_sibling_graph() -> TestResult 
         "substep routes do not leak into the parent graph"
     );
     Ok(())
+}
+
+#[test]
+fn failure_statement_list_projects_its_own_sibling_graph() -> TestResult {
+    assert_scoped_fixture(
+        SUBSTEPS_IN_FAILURE,
+        "guarded",
+        ProjectionSubstepScope::Failure,
+        "recover_task",
+        "record_failure",
+    )
+}
+
+#[test]
+fn fork_statement_lists_project_with_stable_occurrence_indices() -> TestResult {
+    let graph = project(SUBSTEPS_IN_FORK)?;
+    assert_eq!(graph.steps.len(), 1, "one parent workflow step");
+    let parent = step(&graph, "forked")?;
+    assert_eq!(parent.substeps.len(), 2, "two fork-local sibling graphs");
+    assert_local_graph(
+        substep_graph(parent, ProjectionSubstepScope::Fork, 0)?,
+        "prepare",
+        "verify",
+    );
+    assert_local_graph(
+        substep_graph(parent, ProjectionSubstepScope::Fork, 1)?,
+        "archive",
+        "publish",
+    );
+    assert!(graph.edges.is_empty(), "local routes stay in their scopes");
+    Ok(())
+}
+
+#[test]
+fn loop_statement_list_projects_its_own_sibling_graph() -> TestResult {
+    assert_scoped_fixture(
+        SUBSTEPS_IN_LOOP,
+        "looped",
+        ProjectionSubstepScope::Loop,
+        "prepare",
+        "verify",
+    )
 }
 
 #[test]
@@ -233,6 +277,46 @@ step start\n\
         "re-entering `ping` stops the expansion"
     );
     Ok(())
+}
+
+fn assert_scoped_fixture(
+    source: &str,
+    parent: &str,
+    scope: ProjectionSubstepScope,
+    first: &str,
+    second: &str,
+) -> TestResult {
+    let graph = project(source)?;
+    assert_eq!(graph.steps.len(), 1, "one parent workflow step");
+    let parent = step(&graph, parent)?;
+    assert_eq!(parent.substeps.len(), 1, "one scoped sibling graph");
+    let nested = substep_graph(parent, scope, 0)?;
+    assert_local_graph(nested, first, second);
+    assert!(graph.edges.is_empty(), "local routes stay in their scope");
+    Ok(())
+}
+
+fn assert_local_graph(nested: &GraphProjection, first: &str, second: &str) {
+    let names: Vec<_> = nested.steps.iter().map(|step| step.name.as_str()).collect();
+    assert_eq!(names, vec![first, second], "every authored step projects");
+    assert_eq!(nested.edges.len(), 1, "one sibling-local route");
+    let edge = &nested.edges[0];
+    assert_eq!(edge.source, first);
+    assert_eq!(edge.target, second);
+    assert!(matches!(edge.kind, ProjectionEdgeKind::Route));
+    assert_eq!(edge.label.as_deref(), Some("otherwise"));
+}
+
+fn substep_graph(
+    step: &super::types::ProjectionStep,
+    scope: ProjectionSubstepScope,
+    index: usize,
+) -> Result<&GraphProjection, String> {
+    step.substeps
+        .iter()
+        .find(|candidate| candidate.scope == scope && candidate.index == index)
+        .map(|candidate| &candidate.graph)
+        .ok_or_else(|| format!("missing {scope:?} substep graph at index {index}"))
 }
 
 fn step<'a>(

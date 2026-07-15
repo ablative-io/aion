@@ -14,7 +14,7 @@ const plain = {
   distribution: null,
   collect: null,
   subflow: null,
-  substeps: null,
+  substeps: [],
   visits: null,
   decision: false,
   waits: false,

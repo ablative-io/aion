@@ -1,0 +1,25 @@
+//! Project sibling steps inside a loop statement list.
+workflow loop_scoped_substeps
+  input max_attempts: Int
+  outcome done: type Result, route success
+
+type Result { value: String }
+
+worker jobs
+  action mark() -> Bool
+
+step looped
+  loop complete = false
+    step prepare
+      outcome next: otherwise, route verify
+
+    step verify
+      mark() -> complete
+
+    until complete
+    max max_attempts
+
+  outcome complete: when complete,
+    route done(value: "loop complete")
+  outcome exhausted: otherwise,
+    route done(value: "loop exhausted")

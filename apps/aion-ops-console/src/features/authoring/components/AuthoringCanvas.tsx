@@ -257,11 +257,14 @@ function projectFlow(
   const dagreGraph = new dagre.graphlib.Graph()
     .setDefaultEdgeLabel(() => ({}))
     .setGraph({ rankdir: 'TB', nodesep: 48, ranksep: 72 });
+  const stepSizes = new Map<string, { width: number; height: number }>();
   for (const step of graph.steps) {
-    dagreGraph.setNode(
-      step.name,
-      nodeSize(step, step.name, expandedSubflows, { width: NODE_WIDTH, height: STEP_HEIGHT })
-    );
+    const size = nodeSize(step, step.name, expandedSubflows, {
+      width: NODE_WIDTH,
+      height: STEP_HEIGHT,
+    });
+    stepSizes.set(step.name, size);
+    dagreGraph.setNode(step.name, size);
   }
   for (const child of graph.childCalls) {
     dagreGraph.setNode(child.id, { width: NODE_WIDTH, height: CHILD_HEIGHT });
@@ -286,6 +289,13 @@ function projectFlow(
       onToggleSubflow
     )
   );
+  const graphLeft = nodes.length === 0 ? 0 : Math.min(...nodes.map((node) => node.position.x));
+  const graphRight =
+    nodes.length === 0
+      ? 0
+      : Math.max(
+          ...nodes.map((node) => node.position.x + (stepSizes.get(node.id)?.width ?? NODE_WIDTH))
+        );
   for (const child of graph.childCalls) {
     const document = documents.find((item) => item.name === child.name);
     const position = topLeft(dagreGraph.node(child.id));
@@ -314,7 +324,13 @@ function projectFlow(
     target: edge.target,
     label: edgeLabel(edge) ?? undefined,
     type: 'parallel',
-    data: { siblingOffset: siblingOffsets.get(edge.id) ?? 0 },
+    data: {
+      siblingOffset: siblingOffsets.get(edge.id) ?? 0,
+      back: edge.back,
+      selfLoop: edge.source === edge.target,
+      graphLeft,
+      graphRight,
+    },
     markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(edge.kind) },
     style: {
       stroke: edgeColor(edge.kind),
