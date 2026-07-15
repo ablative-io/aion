@@ -102,8 +102,13 @@ module.exports = grammar({
       field('body', alias($.json_body, $.schema_body)),
     )),
     json_body: $ => seq('{', repeat($._json_body_item), '}'),
-    _json_body_item: $ => choice($.string, /[^{}"]+/, $._json_nested_braces),
+    _json_body_item: $ => choice(alias($._body_string, $.string), /[^{}"]+/, $._json_nested_braces),
     _json_nested_braces: $ => seq('{', repeat($._json_body_item), '}'),
+    // Quoted content inside a braced body: `scan_braced_body` keeps quote
+    // state across raw newlines (scanner.rs) — braces stay inert until the
+    // closing quote even in a malformed multiline string — unlike top-level
+    // `string`, which ends at a newline.
+    _body_string: _ => token(/"(?:[^"\\]|\\[\s\S])*"/),
 
     doc_comment: _ => token(choice(seq('//!', /[^\n]*/), seq('///', /[^\n]*/))),
     comment: _ => token(seq('//', /[^!\/\n][^\n]*|[^\n]?/)),

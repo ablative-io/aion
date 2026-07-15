@@ -199,3 +199,58 @@ outcome again: when not checked.ok and visits < 3, route push
     (keyword))
   (identifier)
   (newline))
+==================
+Malformed multiline string inside json body keeps braces inert
+==================
+
+const partial = json {
+  "note": "opened but broken
+} still inside the string", "ok": 1
+}
+step after_json
+
+---
+
+(source_file
+  (newline)
+  (const_declaration
+    (keyword)
+    (identifier))
+  (punctuation)
+  (json_literal
+    (keyword)
+    (json_body
+      (string)
+      (string)
+      (string)))
+  (newline)
+  (step_declaration
+    (keyword)
+    (identifier))
+  (newline))
+
+==================
+Malformed multiline string inside schema body keeps braces inert
+==================
+
+type Shape = schema {
+  "description": "line one
+} not a terminator", "type": "object"
+}
+
+---
+
+(source_file
+  (newline)
+  (type_declaration
+    (keyword)
+    (type_identifier))
+  (punctuation)
+  (schema_literal
+    (keyword)
+    (schema_body
+      (string)
+      (string)
+      (string)
+      (string)))
+  (newline))

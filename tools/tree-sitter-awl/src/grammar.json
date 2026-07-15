@@ -743,8 +743,13 @@
       "type": "CHOICE",
       "members": [
         {
-          "type": "SYMBOL",
-          "name": "string"
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_body_string"
+          },
+          "named": true,
+          "value": "string"
         },
         {
           "type": "PATTERN",
@@ -775,6 +780,13 @@
           "value": "}"
         }
       ]
+    },
+    "_body_string": {
+      "type": "TOKEN",
+      "content": {
+        "type": "PATTERN",
+        "value": "\"(?:[^\"\\\\]|\\\\[\\s\\S])*\""
+      }
     },
     "doc_comment": {
       "type": "TOKEN",
