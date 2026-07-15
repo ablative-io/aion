@@ -1,147 +1,120 @@
-# AWL flow vocabulary — design brief (rev 1, folding the operator's tear)
+# AWL flow vocabulary — design brief (rev 2, folding the operator's second tear)
 
-2026-07-15. Rev 0 made the mistake this brief exists to kill: it folded
-the join into the fan-out step as a closing line and drew the fan as a
-container box around the branch. The operator's ruling, twice given, is
-the law of this design: **fan out is a step. Join is a step.** Distinct
-nodes, in sequence, on the canvas and in the text:
+2026-07-15. The law this revision is built on, in the operator's words:
 
+1. **Distribute is its own step** — and it contains nothing else. Not
+   the target, not the join. One step, one split.
+2. **The subflow is its own step.** When a subflow is used, its
+   invocation is a step of the workflow like any other.
+3. **The collect is its own step**, and the action is called
+   `collect` — not `join`; we are collecting the answers.
+4. **The code and the canvas are 1:1.** Every step in the document is a
+   node on the canvas; every node on the canvas is a step in the
+   document. (Rev 1 had four steps in the code and five nodes on the
+   canvas. That inconsistency was the tell that its model was wrong.)
+5. Distribution has two patterns — **parallel** and **sequential**.
+   v1 ships parallel; the word `distribute` covers both.
+
+## 1. The model: distribute opens a per-item region, collect closes it
+
+`distribute` splits the track: everything after it runs once per item,
+until a `collect` step merges the track back to one. The steps between
+are ordinary steps — calls, decisions, loop-backs — they just run per
+instance, with the distributed binding in scope:
+
+```awl
+step wave
+  distribute item in state.items
+
+step develop            // runs once per item
+  run_agent(…item…) -> note
+
+step review             // runs once per item
+  run_agent(…) -> verdict
+  outcome redo: when verdict.verdict == "reject", route develop
+  outcome ok:   otherwise (fall through)
+  max 3 visits
+
+step gather
+  collect verdict -> results
 ```
-plan → fan out → subflow ×N → join (collect) → fold → (back to fan out)
-```
 
-And the naming ruling: the repeatable container is a **subflow** — never
-"flow"; there is a workflow, and inside it there are subflows.
+That is the operator's original description verbatim: "fanned out to
+each of the dev steps, and each of those dev steps is followed by a
+plan step, and each of those is followed by a run-checks step, and they
+can loop back on themselves."
 
-## 1. The elements
+- `distribute <var> in <collection>` — the step's only line. Instances
+  run in parallel (v1). `distribute sequential <var> in <collection>`
+  is the ordered one-at-a-time pattern (named now, built when needed).
+- `collect <binding> -> <name>` — the step's opening line; waits for
+  every instance and gathers each instance's `<binding>` into a list
+  (`[T]`). The step may route or continue like any step. All instances
+  must succeed (today's engine semantics); letting a failed instance
+  arrive as data instead is a later modifier on `collect`, one line,
+  deferred until wanted.
+- Checker: every `distribute` reaches exactly one `collect`
+  downstream; loop-backs inside the region stay inside the region;
+  no route may leave the region except through its `collect`.
 
-The element vocabulary, benchmarked against Salesforce Flow / BPMN / n8n.
-Where AWL stands today:
+## 2. Subflow — a named container, used as a step
 
-| # | Element | BPMN / Salesforce | AWL today | Disposition |
-|---|---------|-------------------|-----------|-------------|
-| 1 | step (do work) | task / Action | `step` + calls ✓ | keep |
-| 2 | sequence | connector | fall-through / `route` ✓ | keep |
-| 3 | decision (one path) | XOR gateway / Decision | `outcome … when … route` ✓ | keep; draw as diamond; body-less step with only outcomes = pure decision node |
-| 4 | **fan out** (split to N parallel) | AND/multi-instance split | intra-step `fork item in xs` (misnamed, buried) | → its **own step kind** (§3) |
-| 5 | **subflow** (repeatable container) | subprocess / Subflow | none inline (only separately-deployed children) | → ADD (§2) |
-| 6 | **join / collect** (converge) | AND-join / Merge | `join ->` line buried inside fork | → its **own step kind** (§4) |
-| 7 | loop | cycle / loop marker | backward `route` ✓ (implemented) + intra-step `loop` | step cycles primary; add `max N visits` (§5) |
-| 8 | wait | timer/message event | `wait signal`, `sleep` ✓ | keep |
-| 9 | failure path | boundary error / Fault | `on failure` grammar ✓ | unchanged here |
-| 10 | static named branches | AND gateway (heterogeneous) | bare `fork` named branches | rename → `branch` when promoted; out of scope here |
-
-The `fork` keyword leaves the language after a deprecation window: in
-English a fork is a decision, and AWL's decisions already have their
-surface (`when`/`otherwise` routing). Nothing else gets to squat on a
-decision word.
-
-## 2. Subflow — the repeatable container
-
-A `subflow` is declared like a workflow — typed inputs, typed outcome,
-its own steps with decisions and bounded loop-backs — and lives in the
-same document. It is the thing a fan out step instantiates once per
-item: each instance follows its own path through the subflow's steps
-("dev step, then plan step, then run-checks step, and they can loop
-back on themselves").
+A `subflow` is declared like a workflow — typed inputs, one typed
+outcome, its own steps with decisions and bounded loop-backs — and
+lives in the same document. Using it is a step:
 
 ```awl
 subflow dev_item(item: WorkItem, notes_dir: String)
   outcome out: type ItemVerdict
-
   step develop
-    run_agent(…, prompt: "Item " + item.id + " — " + item.goal, …) -> note
-
+    run_agent(…) -> note
   step review
     run_agent(…) -> verdict
     outcome redo: when verdict.verdict == "reject", route develop
     outcome ok:   otherwise, route out(verdict)
     max 3 visits
+
+step build
+  dev_item(item: item, notes_dir: notes_dir) -> verdict
 ```
 
-- Compiles inline: no separate deploy, no engine object. Subflows nest
-  (a subflow's steps may fan out over another subflow).
-- v1: exactly one success outcome type per subflow — that type is what
-  the join collects. (Multiple outcome types → union — deferred.)
-- On canvas: its own node, marked ×N, collapsed to one box or expanded
-  to show its internal step graph.
+- One canvas node per use; expandable to show the subflow's own step
+  graph. Collapsed = one box.
+- Compiles inline: no separate deploy, no engine object. Subflows
+  nest, and may contain distribute/collect regions of their own.
+- v1: exactly one success outcome type per subflow — that is the type
+  the invocation binds.
+- Inside a distribute region, a subflow step runs per instance like
+  any other step — that is the common wave shape: distribute → subflow
+  step → collect.
 
-## 3. Fan out — a step
+## 3. Everything already right stays
 
-A fan out step does exactly one thing: split the line. Its body is the
-one statement:
+- **Decisions**: `outcome … when … route` — drawn as diamonds; a
+  body-less step with only outcomes is a pure decision node.
+- **Loops**: backward `route` to an earlier step (implemented). Add
+  `max N visits` as the step-level cycle bound (also closes the
+  checker soundness gap where a decoy `max 1` loop satisfies today's
+  cycle-bound rule) and `visits` readable in outcome guards.
+- **Waits**: `wait signal`, `sleep` — unchanged.
+- **`fork` leaves the language.** In English a fork is a decision.
+  AWL's decisions already have their surface; fan-out is `distribute`.
+  Intra-step `fork`/`join` parse with a deprecation diagnostic through
+  a migration window, then go. Bare named-branch `fork` renames to
+  `branch` when promoted; out of scope here.
 
-```awl
-step wave
-  fan out item in state.items into dev_item(item: item, notes_dir: notes_dir)
-```
+## 4. Authoring ergonomics (rides alongside)
 
-- `fan out <var> in <collection> into <target(args…)>` — the target is
-  a subflow or, for the trivial case, a single action call (no subflow
-  ceremony needed to fan seven `run_agent`s).
-- One instance of the target runs per item, in parallel (`sequential`
-  modifier available).
-- A fan out step contains nothing else — no prep work, no trailing
-  join. That is what keeps the canvas node honest: one node, one split.
-- `fork item in …` (intra-step) parses through a deprecation window,
-  then goes.
-
-## 4. Join — a step
-
-The instances converge at a join step (a collect step):
-
-```awl
-step collect
-  join all -> results
-```
-
-- `join <mode> -> <name>` opens the step; the step may route or carry
-  further statements after it, or just fall through.
-- The parent-level shape is enforced by the checker: a fan out step's
-  successor is its subflow instances, and their completion flows to
-  exactly one join step — written adjacent (fall-through) or named by
-  route. Every fan out has its join; every join has its fan out. The
-  bare form `join <mode>` is unambiguous under adjacency; the explicit
-  form `join <mode> from wave` exists for when graphs grow.
-- Modes:
-  - `join all -> results` — wait for every instance; `results` is
-    `[T]` where `T` is the subflow's outcome type. Today's fail-fast
-    semantics: an instance's terminal failure fails the run. v1.
-  - `join settled -> results` — wait for every instance; failures
-    arrive as data. Element type is the builtin parametric
-    `Settled(T)`: `{ ok: Bool, value: T?, error: String }` (alongside
-    `List(T)` and `T?`). Honesty note: settled needs instance failure
-    captured before engine fail-fast triggers — an engine option on the
-    barrier or lowering through the completed `on failure` path. The
-    one item here that may touch the engine; ships after `all`.
-  - `join first -> result` — race. Named for completeness; not v1.
-
-## 5. Loops — step cycles, honestly bounded
-
-Backward `route` to an earlier step is already implemented as the
-state-machine loop form. Two additions make it the primary loop:
-
-- `max N visits` on a step — the checker accepts a route cycle when a
-  member step carries a visits bound (or an input-derived one). Closes
-  a real soundness gap: today's rule ("some member contains a bounded
-  `loop`") is satisfiable by a decoy `max 1` loop that bounds nothing.
-- `visits` — builtin `Int` readable in that step's outcome guards.
-
-Intra-step `loop` remains for tight value-threading; flow-level loops
-are routes back to earlier steps.
-
-## 6. Authoring ergonomics (rides alongside)
-
-- **`const`** — top-level named literals (prompts, schemas, gate
-  lists): `const dev_instructions = """…"""`. Also fixes the parser
-  wart where a statement cannot start with a string literal.
+- **`const`** — top-level named literals (prompts, schemas):
+  `const dev_instructions = """…"""`. Also fixes the parser wart where
+  a statement cannot start with a string literal.
 - **Raw strings** — triple-quoted `"""…"""`: newlines literal, no
   backslash escaping; JSON pastes in as JSON.
 - **`schema of Type`** — compile-time expression yielding the type's
-  JSON Schema as a `String`. The toolchain already derives schemas from
-  AWL types; this makes it reachable inside a document.
+  JSON Schema as a `String` (the toolchain already derives it; this
+  makes it reachable inside a document).
 
-## 7. The worked example — dev_flow rewritten
+## 5. The worked example — dev_flow
 
 ```awl
 workflow dev_flow
@@ -166,10 +139,13 @@ step plan
   run_agent(instructions: coordinator_instructions, …) -> state
 
 step wave
-  fan out item in state.items into dev_item(item: item, notes_dir: notes_dir)
+  distribute item in state.items
 
-step collect
-  join all -> results
+step build
+  dev_item(item: item, notes_dir: notes_dir) -> verdict
+
+step gather
+  collect verdict -> results
 
 step fold
   run_agent(…resume coordinator…) -> state
@@ -178,67 +154,62 @@ step fold
   max 3 visits
 ```
 
-## 8. What the canvas draws
+Five steps in the code. Five nodes on the canvas.
 
-Distinct nodes in sequence — no container boxes:
+## 6. What the canvas draws
 
 ```
-        ┌───────────┐
-        │   plan    │
-        └─────┬─────┘
-              ▼
-        ┌───────────┐
-        │ wave   ⫴  │  fan out: item in state.items
-        └─────┬─────┘
-              ▼ ×N
-   ┌──────────────────────┐
-   │ dev_item          ×N │  (subflow — expandable)
-   │  ┌─────────┐ ┌─────┐ │
-   │  │ develop │▶│revw │ │
-   │  └─────────┘ └──◇──┘ │
-   │       ▲   redo  │    │
-   │       └─────────┘ ×3 │
-   └──────────┬───────────┘
-              ▼
-        ┌───────────┐
-        │ collect ⫵ │  join all -> results
-        └─────┬─────┘
-              ▼
-        ┌───────────┐
-   ┌──▶ │   fold    │
-   │    └────◇──────┘
-   │ more    │    │ done
-   │ ×3      │    ▼
-   └─────────┘ (success)
+   ┌────────┐
+   │  plan  │
+   └───┬────┘
+       ▼
+   ┌──────────┐
+   │ wave   ⫴ │  distribute item in state.items
+   └───┬──────┘
+       ▼  ×N (one track per item)
+   ┌──────────────┐
+   │ build     ×N │  dev_item — expandable subflow
+   └───┬──────────┘
+       ▼
+   ┌──────────┐
+   │ gather ⫵ │  collect verdict -> results
+   └───┬──────┘
+       ▼
+   ┌────────┐
+┌─▶│  fold  │◇── done ──▶ (success)
+│  └───┬────┘
+└──────┘ more, ×3
 ```
 
-Collapsed, `dev_item` is one ×N box; expanded it shows its own steps,
-decisions, and loop-backs. The projection is served from the **parsed**
-document, so this picture lands as soon as parser + checker +
-projection understand the forms — before emitter work. Canvas relief
-ships first.
+The multi-step-region shape (no subflow) draws the same way — the
+per-item steps simply appear in sequence between the ⫴ and ⫵ nodes,
+each marked ×N, loop-backs included.
 
-## 9. Lowering and compatibility
+The projection is served from the **parsed** document, so this picture
+lands as soon as parser + checker + projection understand the forms —
+before emitter work. Canvas relief ships first.
 
-- No engine change for anything except `join settled` (§4). Fan out /
-  join steps lower to the existing fan-out machinery (direct-compiles
-  since the fork-generality work); subflows lower to inline functions
-  with bounded recursion (continuation nesting — proven emitter
-  technique); step cycles already lower.
-- Existing documents keep compiling through the deprecation window
-  (intra-step `fork`/`join` parse with a deprecation diagnostic).
+## 7. Lowering and compatibility
+
+- No engine change. Distribute/collect regions lower to the existing
+  fan-out machinery (direct-compiles since the fork-generality work);
+  subflows lower to inline functions with bounded recursion
+  (continuation nesting — proven emitter technique); step cycles
+  already lower. The deferred failed-instance-as-data collect modifier
+  is the only future item that may touch the engine.
+- Existing documents keep compiling through the deprecation window.
   staged_rounds / dev_brief migrate as the proof corpus.
-- Workers untouched. `run_agent` and the general worker are unchanged —
-  this is all authoring surface.
+- Workers untouched. `run_agent` and the general worker are unchanged.
 
-## 10. Build sequence
+## 8. Build sequence
 
 1. **Ratify this brief** (operator tear → fold → ratify).
 2. **Ergonomics batch**: `const`, raw strings, `schema of`,
-   literal-statement parser fix. Small, independent, immediate relief.
-3. **Grammar + checker + projection** for `subflow`, fan out steps,
-   join steps (`all`), `max N visits`, decision-node tagging → the
-   canvas draws the real shape (check-only; emitter untouched).
-4. **Emitter lowering** for subflows + fan out/join → direct-compile
-   parity.
-5. **`join settled`**, then `branch` promotion and `fork` retirement.
+   literal-statement parser fix.
+3. **Grammar + checker + projection** for `subflow`, `distribute`,
+   `collect`, `max N visits`, decision-node tagging → the canvas draws
+   the real shape (check-only; emitter untouched).
+4. **Emitter lowering** for subflows + distribute/collect →
+   direct-compile parity.
+5. Deprecation window closes: `fork` retired; `branch` promotion and
+   the collect failure-tolerance modifier when wanted.
