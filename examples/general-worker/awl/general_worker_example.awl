@@ -1,0 +1,42 @@
+//! Exercise all three general-worker activities in one simple sequential run.
+workflow general_worker_example
+  input workspace_path: String
+  outcome completed: type Completed, route success
+
+/// Result schema requested from the agent.
+type AgentResult { summary: String }
+
+/// Exact `run_command` output contract.
+type CommandResult {
+  name: String,
+  argv: [String],
+  exit_code: Int,
+  passed: Bool,
+  stdout: String,
+  output: String,
+  duration_ms: Int,
+}
+
+/// Data-level parser result.
+type ParseResult { ok: Bool, value: String?, error: String? }
+
+/// Final evidence from all three activities.
+type Completed {
+  command: CommandResult,
+  parsed: ParseResult,
+  agent: AgentResult,
+}
+
+worker general
+  action run_agent(instructions: String, prompt: String, output_schema: String, session_key: String?, workspace_path: String, disallowed_tools: String?) -> AgentResult
+    node agent
+  action run_command(workspace_path: String, name: String, argv: [String]) -> CommandResult
+    node shell
+  action parse_output(text: String, mode: String, query: String) -> ParseResult
+    node shell
+
+step exercise_worker
+  run_command(workspace_path: workspace_path, name: "emit example JSON", argv: ["printf", "{\"topic\":\"general-worker\"}\n"]) -> command
+  parse_output(text: command.stdout, mode: "json_path", query: "topic") -> parsed
+  run_agent(instructions: "Return a concise workspace summary that satisfies the supplied schema.", prompt: "Inspect the workspace and summarize what this general-worker example provides.", output_schema: "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"}},\"required\":[\"summary\"],\"additionalProperties\":false}", session_key: workflow.id + "-general-example", workspace_path: workspace_path, disallowed_tools: "write,edit,apply_patch") -> agent
+  route completed(command: command, parsed: parsed, agent: agent)
