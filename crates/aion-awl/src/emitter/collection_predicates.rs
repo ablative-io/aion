@@ -42,7 +42,7 @@ pub(super) fn render_predicate_over(
     scope: &Scope,
     prelude: &mut Vec<String>,
 ) -> Result<String, EmitError> {
-    let item = format!("awl_item_{}", emitter.predicate_counter);
+    let item = emitter.fresh_name(&format!("awl_item_{}", emitter.predicate_counter));
     emitter.predicate_counter += 1;
     let nested_scope = scope.with_accessor(item.clone(), element);
     let fallible = is_fallible(predicate);
@@ -66,13 +66,17 @@ pub(super) fn render_predicate_over(
             "list.{function}({collection}, fn({item}) {{ {body} }})"
         ));
     }
-    let result = format!("awl_predicate_result_{}", emitter.predicate_counter);
+    let result = emitter.fresh_name(&format!(
+        "awl_predicate_result_{}",
+        emitter.predicate_counter
+    ));
+    let acc = emitter.fresh_name("awl_acc");
     let (initial, decisive) = match quantifier {
         Quantifier::Any => ("False", "True"),
         Quantifier::All => ("True", "False"),
     };
     prelude.push(format!(
-        "use {result} <- result.try(list.try_fold({collection}, {initial}, fn(awl_acc, {item}) {{\n  case awl_acc {{\n    {decisive} -> Ok({decisive})\n    _ -> {{\n      {}\n      Ok({predicate})\n    }}\n  }}\n}}))",
+        "use {result} <- result.try(list.try_fold({collection}, {initial}, fn({acc}, {item}) {{\n  case {acc} {{\n    {decisive} -> Ok({decisive})\n    _ -> {{\n      {}\n      Ok({predicate})\n    }}\n  }}\n}}))",
         nested_prelude.join("\n      ")
     ));
     Ok(result)

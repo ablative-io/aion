@@ -53,6 +53,14 @@ const PROVEN: &[(&str, &str)] = &[
     ("flow-shape/valid/subflow_nested.awl", "nested_subflows"),
     ("flow-shape/valid/subflow_local_names.awl", "scoped_names"),
     (
+        "flow-shape/valid/region_sibling_local_reuse.awl",
+        "sibling_region_locals",
+    ),
+    (
+        "flow-shape/valid/region_nested_local_reuse.awl",
+        "nested_region_locals",
+    ),
+    (
         "flow-shape/valid/region_pure_decision.awl",
         "region_decision",
     ),

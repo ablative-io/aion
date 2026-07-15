@@ -9,6 +9,7 @@ use crate::ast::{ActionDecl, ChildDecl, Document, RouteDirection, SignalDecl};
 
 use super::error::EmitError;
 use super::flowshape::{RegionShape, SubflowShape};
+use super::generated_names::GeneratedNames;
 use super::names::pascal;
 use super::types::{GType, TypeEnv};
 
@@ -57,6 +58,8 @@ pub(crate) struct Emitter<'a> {
     pub(crate) subflow_bindings: BTreeMap<String, BTreeMap<String, GType>>,
     /// Independent binding environments for each extracted region.
     pub(crate) region_bindings: BTreeMap<usize, BTreeMap<String, GType>>,
+    /// Persisted counters plus the allocator used for later temporaries.
+    pub(crate) generated_names: GeneratedNames,
     /// Generated input record name (`<Workflow>Input`).
     pub(crate) input_type: String,
     /// Generated outcome union name, `None` when no success outcome exists
@@ -81,6 +84,7 @@ impl<'a> Emitter<'a> {
         env: TypeEnv,
         host_regions: &'a BTreeMap<String, RegionShape>,
         subflow_shapes: &'a [SubflowShape],
+        generated_names: &GeneratedNames,
     ) -> Result<Self, EmitError> {
         let mut env = env;
         let mut actions: BTreeMap<&str, (&str, &ActionDecl)> = BTreeMap::new();
@@ -171,6 +175,7 @@ impl<'a> Emitter<'a> {
             bindings: BTreeMap::new(),
             subflow_bindings: BTreeMap::new(),
             region_bindings: BTreeMap::new(),
+            generated_names: generated_names.clone(),
             input_type,
             union_type,
             action_inputs,
@@ -181,6 +186,11 @@ impl<'a> Emitter<'a> {
             out: String::new(),
             indent: 0,
         })
+    }
+
+    /// Allocate one local identifier that cannot collide with author bindings.
+    pub(crate) fn fresh_name(&mut self, base: &str) -> String {
+        self.generated_names.allocator.fresh(base)
     }
 
     /// The Gleam output type of `execute` (the outcome union, or `Nil` when

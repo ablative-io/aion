@@ -1,0 +1,36 @@
+//! Nested sibling regions may reuse locals at unrelated types.
+workflow nested_region_locals
+  input texts: [String]
+  input numbers: [Int]
+  outcome done: type Int, route success
+
+worker local
+  action keep_text(value: String) -> String
+  action keep_number(value: Int) -> Int
+
+step outer_wave
+  distribute outer in texts
+
+step text_wave
+  distribute item in texts
+
+step text_member
+  keep_text(value: item) -> kept
+
+step text_gather
+  collect kept -> text_rows
+
+step number_wave
+  distribute item in numbers
+
+step number_member
+  keep_number(value: item) -> kept
+
+step number_gather
+  collect kept -> number_rows
+  number_rows |> count -> gathered
+
+step outer_gather
+  collect gathered -> outer_rows
+  outer_rows |> count -> total
+  route done(total)

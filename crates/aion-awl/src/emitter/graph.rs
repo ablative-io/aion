@@ -162,11 +162,11 @@ pub(crate) struct Plans<'a> {
 }
 
 /// The visit counters of one flow's bounded steps, in step order.
-pub(crate) fn flow_counters(steps: &[Step]) -> Vec<String> {
+pub(crate) fn flow_counters(emitter: &Emitter<'_>, steps: &[Step]) -> Vec<String> {
     steps
         .iter()
         .filter(|step| step.max_visits.is_some())
-        .map(visits_counter)
+        .map(|step| visits_counter(step, &emitter.generated_names))
         .collect()
 }
 
@@ -189,7 +189,7 @@ pub(crate) fn plan_all<'a>(emitter: &Emitter<'a>) -> Result<Plans<'a>, EmitError
             &mut region_plans,
             &mut region_shapes,
         )?;
-        let counters = flow_counters(&shape.flow.steps);
+        let counters = flow_counters(emitter, &shape.flow.steps);
         let entry_args = entry_params(&plan, &shape.flow.steps)?.to_vec();
         let wrapper_params: Vec<String> = shape
             .params
@@ -229,7 +229,7 @@ pub(crate) fn plan_all<'a>(emitter: &Emitter<'a>) -> Result<Plans<'a>, EmitError
     )?;
     Ok(Plans {
         host,
-        host_counters: flow_counters(&emitter.document.steps),
+        host_counters: flow_counters(emitter, &emitter.document.steps),
         regions: region_plans,
         region_shapes,
         subflows,
@@ -276,7 +276,7 @@ fn plan_flow<'a>(
             region_plans,
             region_shapes,
         )?;
-        let counters = flow_counters(&region.members.steps);
+        let counters = flow_counters(emitter, &region.members.steps);
         let entry_args = entry_params(&plan, &region.members.steps)?.to_vec();
         let mut wrapper_params = vec![region.var.clone()];
         for name in &entry_args {

@@ -199,7 +199,12 @@ pub(super) fn emit_fanout(
             format!("step `{step_name}` has no planned member flow"),
         ));
     };
-    let Some(item_ty) = flow.bindings.get(&region.binding).cloned() else {
+    let Some(item_ty) = emitter
+        .region_bindings
+        .get(&region.id)
+        .and_then(|bindings| bindings.get(&region.binding))
+        .cloned()
+    else {
         return Err(EmitError::new(
             region.span,
             format!(
@@ -263,6 +268,11 @@ fn emit_activity_fanout(
     var: &str,
     bind: &str,
 ) -> Result<(), EmitError> {
+    let settled = emitter.fresh_name("awl_settled");
+    let slot = emitter.fresh_name("awl_slot");
+    let item = emitter.fresh_name("awl_item");
+    let folded = emitter.fresh_name("awl_folded");
+    let acc = emitter.fresh_name("awl_acc");
     let mut branch_prelude = Vec::new();
     let value = activity_value(
         emitter,
@@ -295,44 +305,44 @@ fn emit_activity_fanout(
                 ));
             }
             emitter.line(&format!(
-                "let awl_settled = workflow.map_settled({items}, fn({var}) {{ {value} }})"
+                "let {settled} = workflow.map_settled({items}, fn({var}) {{ {value} }})"
             ));
             emitter.line(&format!(
-                "let {bind} = list.map(awl_settled, fn(awl_slot) {{ case awl_slot {{ \
-                 Ok(awl_item) -> Some(awl_item) Error(_) -> None }} }})"
+                "let {bind} = list.map({settled}, fn({slot}) {{ case {slot} {{ \
+                 Ok({item}) -> Some({item}) Error(_) -> None }} }})"
             ));
         }
         (DeliveryVerb::Sequence, false) => {
             emitter.line(&format!(
-                "use awl_folded <- result.try(list.try_fold({items}, [], fn(awl_acc, {var}) {{"
+                "use {folded} <- result.try(list.try_fold({items}, [], fn({acc}, {var}) {{"
             ));
             emitter.indented_try(|this| {
                 flush_prelude(this, branch_prelude);
                 this.line(&format!(
-                    "use awl_item <- result.try({value} |> workflow.run |> \
+                    "use {item} <- result.try({value} |> workflow.run |> \
                      awl_error.map_activity_error)"
                 ));
-                this.line("Ok([awl_item, ..awl_acc])");
+                this.line(&format!("Ok([{item}, ..{acc}])"));
                 Ok(())
             })?;
             emitter.line("}))");
-            emitter.line(&format!("let {bind} = list.reverse(awl_folded)"));
+            emitter.line(&format!("let {bind} = list.reverse({folded})"));
         }
         (DeliveryVerb::Sequence, true) => {
             emitter.line(&format!(
-                "let awl_folded = list.fold({items}, [], fn(awl_acc, {var}) {{"
+                "let {folded} = list.fold({items}, [], fn({acc}, {var}) {{"
             ));
             emitter.indented(|this| {
                 flush_prelude(this, branch_prelude);
                 this.line(&format!("case {value} |> workflow.run {{"));
                 this.indented(|this| {
-                    this.line("Ok(awl_item) -> [Some(awl_item), ..awl_acc]");
-                    this.line("Error(_) -> [None, ..awl_acc]");
+                    this.line(&format!("Ok({item}) -> [Some({item}), ..{acc}]"));
+                    this.line(&format!("Error(_) -> [None, ..{acc}]"));
                 });
                 this.line("}");
             });
             emitter.line("})");
-            emitter.line(&format!("let {bind} = list.reverse(awl_folded)"));
+            emitter.line(&format!("let {bind} = list.reverse({folded})"));
         }
     }
     Ok(())
@@ -349,6 +359,10 @@ fn emit_child_fanout(
     var: &str,
     bind: &str,
 ) -> Result<(), EmitError> {
+    let children = emitter.fresh_name("awl_children_reversed");
+    let folded = emitter.fresh_name("awl_folded");
+    let acc = emitter.fresh_name("awl_acc");
+    let item = emitter.fresh_name("awl_item");
     if call.config.is_some() {
         return Err(EmitError::new(
             call.span,
@@ -374,36 +388,36 @@ fn emit_child_fanout(
     match (region.verb, region.tolerant) {
         (DeliveryVerb::Sequence, false) => {
             emitter.line(&format!(
-                "use awl_children_reversed <- result.try(list.try_fold({items}, [], \
-                 fn(awl_acc, {var}) {{"
+                "use {children} <- result.try(list.try_fold({items}, [], \
+                 fn({acc}, {var}) {{"
             ));
             emitter.indented_try(|this| {
                 flush_prelude(this, branch_prelude);
                 this.line(&format!(
-                    "use awl_item <- result.try(workflow.spawn_and_wait{spawn} |> \
+                    "use {item} <- result.try(workflow.spawn_and_wait{spawn} |> \
                      awl_error.map_child_error)"
                 ));
-                this.line("Ok([awl_item, ..awl_acc])");
+                this.line(&format!("Ok([{item}, ..{acc}])"));
                 Ok(())
             })?;
             emitter.line("}))");
-            emitter.line(&format!("let {bind} = list.reverse(awl_children_reversed)"));
+            emitter.line(&format!("let {bind} = list.reverse({children})"));
         }
         (DeliveryVerb::Sequence, true) => {
             emitter.line(&format!(
-                "let awl_folded = list.fold({items}, [], fn(awl_acc, {var}) {{"
+                "let {folded} = list.fold({items}, [], fn({acc}, {var}) {{"
             ));
             emitter.indented(|this| {
                 flush_prelude(this, branch_prelude);
                 this.line(&format!("case workflow.spawn_and_wait{spawn} {{"));
                 this.indented(|this| {
-                    this.line("Ok(awl_item) -> [Some(awl_item), ..awl_acc]");
-                    this.line("Error(_) -> [None, ..awl_acc]");
+                    this.line(&format!("Ok({item}) -> [Some({item}), ..{acc}]"));
+                    this.line(&format!("Error(_) -> [None, ..{acc}]"));
                 });
                 this.line("}");
             });
             emitter.line("})");
-            emitter.line(&format!("let {bind} = list.reverse(awl_folded)"));
+            emitter.line(&format!("let {bind} = list.reverse({folded})"));
         }
         (DeliveryVerb::Distribute, tolerant) => {
             if !branch_prelude.is_empty() {
@@ -435,6 +449,9 @@ fn emit_instance_fanout(
     var: &str,
     bind: &str,
 ) -> Result<(), EmitError> {
+    let gathered = emitter.fresh_name("awl_gathered");
+    let acc = emitter.fresh_name("awl_acc");
+    let item = emitter.fresh_name("awl_item");
     if matches!(region.verb, DeliveryVerb::Distribute) {
         emitter.line("// awl stopgap: this distribute's per-item track is a multi-step flow;");
         emitter.line("// instances run one at a time (the Gleam SDK parallelizes single");
@@ -451,31 +468,31 @@ fn emit_instance_fanout(
     emitter.flags.uses_list_module = true;
     if region.tolerant {
         emitter.line(&format!(
-            "let awl_gathered = list.fold({items}, [], fn(awl_acc, {}) {{",
+            "let {gathered} = list.fold({items}, [], fn({acc}, {}) {{",
             ident(&region.var)
         ));
         emitter.indented(|this| {
             this.line(&format!("case {instance}({args}) {{"));
             this.indented(|this| {
-                this.line("Ok(awl_item) -> [Some(awl_item), ..awl_acc]");
-                this.line("Error(_) -> [None, ..awl_acc]");
+                this.line(&format!("Ok({item}) -> [Some({item}), ..{acc}]"));
+                this.line(&format!("Error(_) -> [None, ..{acc}]"));
             });
             this.line("}");
         });
         emitter.line("})");
-        emitter.line(&format!("let {bind} = list.reverse(awl_gathered)"));
+        emitter.line(&format!("let {bind} = list.reverse({gathered})"));
     } else {
         emitter.line(&format!(
-            "use awl_gathered <- result.try(list.try_fold({items}, [], fn(awl_acc, {}) {{",
+            "use {gathered} <- result.try(list.try_fold({items}, [], fn({acc}, {}) {{",
             ident(&region.var)
         ));
         emitter.indented_try(|this| {
-            this.line(&format!("use awl_item <- result.try({instance}({args}))"));
-            this.line("Ok([awl_item, ..awl_acc])");
+            this.line(&format!("use {item} <- result.try({instance}({args}))"));
+            this.line(&format!("Ok([{item}, ..{acc}])"));
             Ok(())
         })?;
         emitter.line("}))");
-        emitter.line(&format!("let {bind} = list.reverse(awl_gathered)"));
+        emitter.line(&format!("let {bind} = list.reverse({gathered})"));
     }
     Ok(())
 }

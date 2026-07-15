@@ -11,7 +11,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 
-pub type Dispatched(o) {
+pub opaque type Dispatched(o) {
   Dispatched(correlation_id: String, output_codec: codec.Codec(o))
 }
 

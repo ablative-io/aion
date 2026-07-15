@@ -3,9 +3,9 @@
 import aion/activity.{type Activity}
 import aion/codec
 import aion/error
+import aion/internal/activity_dispatch
 import aion/internal/ffi
 import aion/internal/pump
-import aion/workflow/activity_dispatch
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json

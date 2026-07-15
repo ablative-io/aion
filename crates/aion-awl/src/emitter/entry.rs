@@ -73,6 +73,7 @@ pub(crate) fn prepare<'a>(
         env,
         &shaped.host_regions,
         &shaped.subflows,
+        &shaped.generated_names,
     )?;
     bindings::compute(&mut emitter)?;
     let plans = graph::plan_all(&emitter)?;

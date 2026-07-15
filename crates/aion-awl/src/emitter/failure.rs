@@ -50,18 +50,19 @@ pub(super) fn emit_with_failure(
     let mut defs = std::collections::BTreeSet::new();
     statement_defs(attempt_body, &mut defs);
     let mut defs: Vec<String> = defs.into_iter().collect();
-    let carrier = "awl_route_payload";
+    let carrier = emitter.fresh_name("awl_route_payload");
+    let attempt = emitter.fresh_name("awl_attempt");
     let mut piped_ty = None;
     let mut attempt_scope = scope.clone();
-    emitter.line("let awl_attempt = fn() {");
+    emitter.line(&format!("let {attempt} = fn() {{"));
     emitter.indented_try(|this| {
         lower_statements(this, flow, frame, attempt_body, &mut attempt_scope, false)?;
         if let TailRoute::Pipe(pipe) = &tail {
             let (value, ty) = lower_pipe_value(this, pipe, &attempt_scope)?;
             this.line(&format!("let {carrier} = {value}"));
-            attempt_scope.insert(carrier.to_owned(), ty.clone());
+            attempt_scope.insert(carrier.clone(), ty.clone());
             piped_ty = Some(ty);
-            defs.push(carrier.to_owned());
+            defs.push(carrier.clone());
             defs.sort();
         }
         let tuple = render_defs_tuple(&defs);
@@ -70,7 +71,7 @@ pub(super) fn emit_with_failure(
     })?;
     emitter.line("}");
     let pattern = render_defs_tuple(&defs);
-    emitter.line("case awl_attempt() {");
+    emitter.line(&format!("case {attempt}() {{"));
     emitter.indented_try(|this| {
         this.line(&format!("Ok({pattern}) -> {{"));
         this.indented_try(|this| {
@@ -95,7 +96,7 @@ pub(super) fn emit_with_failure(
                         frame,
                         target,
                         scope,
-                        Some((carrier.to_owned(), ty)),
+                        Some((carrier.clone(), ty)),
                     )
                 }
             }

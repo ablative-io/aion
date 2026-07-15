@@ -30,14 +30,15 @@ pub(super) fn compute(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
     for input in &emitter.document.inputs {
         host.insert(input.name.clone(), type_ref_to_g(&input.ty));
     }
+    let mut region_bindings = BTreeMap::new();
     compute_flow(
         emitter,
         &emitter.document.steps,
         emitter.host_regions,
         &mut host,
+        &mut region_bindings,
     )?;
-    emitter.bindings = host.clone();
-    register_region_maps(emitter.host_regions, &host, &mut emitter.region_bindings);
+    emitter.bindings = host;
 
     for shape in emitter.subflow_shapes {
         let mut bindings = BTreeMap::new();
@@ -49,12 +50,13 @@ pub(super) fn compute(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
             &shape.flow.steps,
             &shape.flow.regions,
             &mut bindings,
+            &mut region_bindings,
         )?;
-        register_region_maps(&shape.flow.regions, &bindings, &mut emitter.region_bindings);
         emitter
             .subflow_bindings
             .insert(shape.name.clone(), bindings);
     }
+    emitter.region_bindings = region_bindings;
     Ok(())
 }
 
@@ -63,13 +65,21 @@ fn compute_flow(
     steps: &[Step],
     regions: &BTreeMap<String, RegionShape>,
     bindings: &mut BTreeMap<String, GType>,
+    region_bindings: &mut BTreeMap<usize, BTreeMap<String, GType>>,
 ) -> Result<(), EmitError> {
-    register_counters(bindings, steps);
-    register_region_counters(bindings, regions);
+    register_counters(bindings, steps, &emitter.generated_names);
     loop {
+        compute_region_maps(emitter, steps, regions, bindings, region_bindings)?;
         let scope = Scope::from_vars(bindings.clone());
         let mut discovered = Vec::new();
-        collect_flow(emitter, steps, regions, &scope, &mut discovered);
+        collect_flow(
+            emitter,
+            steps,
+            regions,
+            region_bindings,
+            &scope,
+            &mut discovered,
+        );
         let mut changed = false;
         for (name, ty, span) in discovered {
             match bindings.get(&name) {
@@ -96,46 +106,120 @@ fn compute_flow(
     }
 }
 
-fn register_region_maps(
+/// Compute extracted regions in fresh lexical environments. Region-owned
+/// names shadow the enclosing flow; only each collected list is projected back.
+fn compute_region_maps(
+    emitter: &Emitter<'_>,
+    steps: &[Step],
     regions: &BTreeMap<String, RegionShape>,
-    bindings: &BTreeMap<String, GType>,
+    enclosing: &BTreeMap<String, GType>,
     maps: &mut BTreeMap<usize, BTreeMap<String, GType>>,
+) -> Result<(), EmitError> {
+    let scope = Scope::from_vars(enclosing.clone());
+    for step in steps {
+        let Some(Statement::Distribute(distribute)) = step.body.first() else {
+            continue;
+        };
+        let Some(region) = regions.get(&step.name) else {
+            continue;
+        };
+        let Ok(GType::List(inner)) =
+            expr_type(emitter, &distribute.collection, &scope).map(|ty| emitter.env.resolve(&ty))
+        else {
+            continue;
+        };
+        let mut local = enclosing.clone();
+        remove_region_locals(&mut local, &region.members.steps, &emitter.generated_names);
+        local.insert(region.var.clone(), (*inner).clone());
+        compute_flow(
+            emitter,
+            &region.members.steps,
+            &region.members.regions,
+            &mut local,
+            maps,
+        )?;
+        maps.insert(region.id, local);
+    }
+    Ok(())
+}
+
+/// Drop every region-owned binding from an enclosing seed. The names still
+/// needed by member expressions remain as lexical free bindings.
+fn remove_region_locals(
+    bindings: &mut BTreeMap<String, GType>,
+    steps: &[Step],
+    names: &super::generated_names::GeneratedNames,
 ) {
-    for region in regions.values() {
-        maps.insert(region.id, bindings.clone());
-        register_region_maps(&region.members.regions, bindings, maps);
+    for step in steps {
+        if step.max_visits.is_some() {
+            bindings.remove(&visits_counter(step, names));
+        }
+        remove_statement_locals(bindings, &step.body);
+        if let Some(on_failure) = &step.on_failure {
+            remove_statement_locals(bindings, &on_failure.body);
+        }
+    }
+}
+
+fn remove_statement_locals(bindings: &mut BTreeMap<String, GType>, statements: &[Statement]) {
+    for statement in statements {
+        match statement {
+            Statement::Call(call) => {
+                if let Some(bind) = &call.bind {
+                    bindings.remove(&bind.name);
+                }
+            }
+            Statement::Pipe(pipe) => {
+                if let crate::ast::PipeEnd::Bind(bind) = &pipe.end {
+                    bindings.remove(&bind.name);
+                }
+            }
+            Statement::Wait(wait) => {
+                bindings.remove(&wait.bind.name);
+            }
+            Statement::Fork(fork) => {
+                if let ForkHeader::Collection { var, .. } = &fork.header {
+                    bindings.remove(var);
+                }
+                if let Some(bind) = &fork.join.bind {
+                    bindings.remove(&bind.name);
+                }
+                remove_statement_locals(bindings, &fork.body);
+            }
+            Statement::Loop(looped) => {
+                bindings.remove(&looped.var);
+                if let Some(counter) = &looped.counter {
+                    bindings.remove(&counter.name);
+                }
+                remove_statement_locals(bindings, &looped.body);
+            }
+            Statement::SubStep(sub) => {
+                remove_statement_locals(bindings, &sub.body);
+                if let Some(on_failure) = &sub.on_failure {
+                    remove_statement_locals(bindings, &on_failure.body);
+                }
+            }
+            Statement::Collect(collect) => {
+                bindings.remove(&collect.bind.name);
+            }
+            Statement::Spawn(_)
+            | Statement::Sleep(_)
+            | Statement::Route(_)
+            | Statement::Distribute(_) => {}
+        }
     }
 }
 
 /// Register the `Int` visit counter of every bounded step in a step list.
-fn register_counters(bindings: &mut BTreeMap<String, GType>, steps: &[Step]) {
+fn register_counters(
+    bindings: &mut BTreeMap<String, GType>,
+    steps: &[Step],
+    names: &super::generated_names::GeneratedNames,
+) {
     for step in steps {
         if step.max_visits.is_some() {
-            bindings.insert(visits_counter(step), GType::Int);
+            bindings.insert(visits_counter(step, names), GType::Int);
         }
-    }
-}
-
-/// [`register_counters`] over a region map's member flows, recursively.
-fn register_region_counters(
-    bindings: &mut BTreeMap<String, GType>,
-    regions: &BTreeMap<String, RegionShape>,
-) {
-    let mut names = Vec::new();
-    region_counter_names(regions, &mut names);
-    for name in names {
-        bindings.insert(name, GType::Int);
-    }
-}
-
-fn region_counter_names(regions: &BTreeMap<String, RegionShape>, out: &mut Vec<String>) {
-    for region in regions.values() {
-        for step in &region.members.steps {
-            if step.max_visits.is_some() {
-                out.push(visits_counter(step));
-            }
-        }
-        region_counter_names(&region.members.regions, out);
     }
 }
 
@@ -145,6 +229,7 @@ fn collect_flow(
     emitter: &Emitter<'_>,
     steps: &[Step],
     regions: &BTreeMap<String, RegionShape>,
+    region_bindings: &BTreeMap<usize, BTreeMap<String, GType>>,
     scope: &Scope,
     discovered: &mut Vec<(String, GType, Span)>,
 ) {
@@ -153,40 +238,16 @@ fn collect_flow(
         for (name, ty, _) in discovered.iter() {
             local.entry(name.clone()).or_insert_with(|| ty.clone());
         }
-        if let Some(Statement::Distribute(distribute)) = step.body.first() {
+        if let Some(Statement::Distribute(_)) = step.body.first() {
             let Some(region) = regions.get(&step.name) else {
                 continue;
             };
-            let elem = expr_type(emitter, &distribute.collection, &local)
-                .map(|ty| emitter.env.resolve(&ty));
-            if let Ok(GType::List(inner)) = &elem {
-                // The per-item variable registers globally: member-flow
-                // function parameters annotate through the bindings map.
-                define(
-                    &region.var,
-                    (**inner).clone(),
-                    distribute.var_span,
-                    &mut local,
-                    discovered,
-                );
-            }
-            collect_flow(
-                emitter,
-                &region.members.steps,
-                &region.members.regions,
-                &local,
-                discovered,
-            );
-            // The gathered collection: `[T]`, or `[T?]` for the tolerant
-            // form, where `T` is the collected member binding's type.
-            let mut member_local = local.clone();
-            for (name, ty, _) in discovered.iter() {
-                member_local
-                    .entry(name.clone())
-                    .or_insert_with(|| ty.clone());
-            }
+            // The gathered collection is the sole value projected from the
+            // isolated member environment into this enclosing flow.
             if let Some(Statement::Collect(collect)) = step.body.get(1)
-                && let Some(item_ty) = member_local.get(&region.binding)
+                && let Some(item_ty) = region_bindings
+                    .get(&region.id)
+                    .and_then(|member| member.get(&region.binding))
             {
                 let slot = if region.tolerant {
                     GType::Option(Box::new(item_ty.clone()))

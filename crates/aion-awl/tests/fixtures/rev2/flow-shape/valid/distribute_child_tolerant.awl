@@ -3,6 +3,12 @@
 //! their results.
 workflow fan_children_tolerant
   input jobs: [Job]
+  input awl_handles_reversed: String
+  input awl_results_reversed: String
+  input awl_acc: String
+  input awl_handle: String
+  input awl_item: String
+  input awl_live: String
   outcome done: type Done, route success
 
 type Job     { name: String }

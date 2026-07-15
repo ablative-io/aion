@@ -26,6 +26,7 @@ use crate::ast::{
     DeliveryVerb, Document, Expr, Guard, ParamDecl, Statement, Step, SubflowDecl, TypeRef,
 };
 
+use super::generated_names::GeneratedNames;
 use super::names::snake;
 
 /// A shaping failure. The checker rejects every document that could produce
@@ -95,11 +96,12 @@ pub(crate) struct Shaped {
     pub(crate) document: Document,
     pub(crate) host_regions: BTreeMap<String, RegionShape>,
     pub(crate) subflows: Vec<SubflowShape>,
+    pub(crate) generated_names: GeneratedNames,
 }
 
-/// The step's language-owned visit-counter binding name.
-pub(crate) fn visits_counter(step: &Step) -> String {
-    format!("awl_visits_{}_{}", snake(&step.name), step.name_span.start)
+/// Look up the persisted visit-counter name chosen while shaping.
+pub(crate) fn visits_counter(step: &Step, names: &GeneratedNames) -> String {
+    names.counter(step).to_owned()
 }
 
 /// Shape a folded document: collapse regions, rewrite `visits` references,
@@ -107,10 +109,11 @@ pub(crate) fn visits_counter(step: &Step) -> String {
 /// subflow.
 pub(crate) fn shape(document: &Document) -> Result<Shaped, ShapeError> {
     let mut ids = 0usize;
-    let mut host = shape_flow(document.steps.clone(), &mut ids)?;
+    let mut generated_names = GeneratedNames::new(document);
+    let mut host = shape_flow(document.steps.clone(), &mut ids, &mut generated_names)?;
     let mut subflows = Vec::new();
     for decl in &document.subflows {
-        subflows.push(shape_subflow(decl, &mut ids)?);
+        subflows.push(shape_subflow(decl, &mut ids, &mut generated_names)?);
     }
     let mut shaped_document = document.clone();
     shaped_document.steps = std::mem::take(&mut host.steps);
@@ -118,11 +121,16 @@ pub(crate) fn shape(document: &Document) -> Result<Shaped, ShapeError> {
         document: shaped_document,
         host_regions: host.regions,
         subflows,
+        generated_names,
     })
 }
 
-fn shape_subflow(decl: &SubflowDecl, ids: &mut usize) -> Result<SubflowShape, ShapeError> {
-    let flow = shape_flow(decl.steps.clone(), ids)?;
+fn shape_subflow(
+    decl: &SubflowDecl,
+    ids: &mut usize,
+    names: &mut GeneratedNames,
+) -> Result<SubflowShape, ShapeError> {
+    let flow = shape_flow(decl.steps.clone(), ids, names)?;
     Ok(SubflowShape {
         name: decl.name.clone(),
         params: decl.params.clone(),
@@ -142,10 +150,14 @@ struct Open {
 
 /// Shape one flow's step list: normalize, rewrite `visits`, then collapse
 /// regions by bracket nesting (a `collect` closes the nearest open region).
-fn shape_flow(mut steps: Vec<Step>, ids: &mut usize) -> Result<FlowSteps, ShapeError> {
+fn shape_flow(
+    mut steps: Vec<Step>,
+    ids: &mut usize,
+    names: &mut GeneratedNames,
+) -> Result<FlowSteps, ShapeError> {
     normalize_adjacent_after(&mut steps);
     for step in &mut steps {
-        rewrite_visits(step);
+        rewrite_visits(step, names);
     }
     let mut result = FlowSteps::default();
     let mut open: Vec<Open> = Vec::new();
@@ -294,9 +306,11 @@ fn body_routes(body: &[Statement]) -> bool {
 
 /// Rewrite the builtin `visits` reference in a bounded step's outcome guards
 /// to the step's counter binding (checker: readable only there).
-fn rewrite_visits(step: &mut Step) {
+fn rewrite_visits(step: &mut Step, names: &mut GeneratedNames) {
     if step.max_visits.is_some() {
-        let counter = visits_counter(step);
+        let candidate = format!("awl_visits_{}_{}", snake(&step.name), step.name_span.start);
+        let counter = names.allocator.fresh(&candidate);
+        names.counters.insert(step.name_span.start, counter.clone());
         for clause in &mut step.outcomes {
             if let Guard::When { expr, .. } = &mut clause.guard {
                 rewrite_visits_expr(expr, &counter);
@@ -305,7 +319,7 @@ fn rewrite_visits(step: &mut Step) {
     }
     for statement in &mut step.body {
         if let Statement::SubStep(sub) = statement {
-            rewrite_visits(sub);
+            rewrite_visits(sub, names);
         }
     }
 }

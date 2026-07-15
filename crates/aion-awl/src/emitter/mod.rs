@@ -13,6 +13,7 @@ mod flows;
 mod flowshape;
 mod forks;
 mod frame;
+mod generated_names;
 mod graph;
 mod liveness;
 mod loops;

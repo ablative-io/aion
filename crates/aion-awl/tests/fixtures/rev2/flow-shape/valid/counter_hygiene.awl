@@ -1,8 +1,8 @@
-//! A user binding at the old generated-counter boundary remains untouched.
+//! The allocator skips an exact collision with its first counter candidate.
 workflow counter_hygiene
-  input awl_visits_again: String
+  input awl_visits_again_188: String
   outcome done: type String, route success
 
 step again
-  outcome finish: otherwise, route done(awl_visits_again)
+  outcome finish: otherwise, route done(awl_visits_again_188)
   max 2 visits

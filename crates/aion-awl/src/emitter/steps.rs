@@ -477,7 +477,7 @@ fn emit_visits_prologue(
     max_visits: &crate::ast::MaxVisits,
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
-    let counter = ident(&visits_counter(step));
+    let counter = ident(&visits_counter(step, &emitter.generated_names));
     let mut prelude = Vec::new();
     let bound = render_expr(emitter, &max_visits.bound, scope, &mut prelude)?;
     if !prelude.is_empty() {
@@ -500,6 +500,9 @@ fn emit_visits_prologue(
         this.line("False -> Ok(Nil)");
     });
     emitter.line("})");
-    scope.insert(visits_counter(step), super::types::GType::Int);
+    scope.insert(
+        visits_counter(step, &emitter.generated_names),
+        super::types::GType::Int,
+    );
     Ok(())
 }

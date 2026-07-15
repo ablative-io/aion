@@ -133,6 +133,12 @@ fn lower_collection_child_fork(
     emitter: &mut Emitter<'_>,
     fork: ChildFork<'_>,
 ) -> Result<(), EmitError> {
+    let children_reversed = emitter.fresh_name("awl_children_reversed");
+    let handles_reversed = emitter.fresh_name("awl_handles_reversed");
+    let children = emitter.fresh_name("awl_children");
+    let acc = emitter.fresh_name("awl_acc");
+    let handle = emitter.fresh_name("awl_handle");
+    let item = emitter.fresh_name("awl_item");
     if fork.call.config.is_some() {
         return Err(EmitError::new(
             fork.call.span,
@@ -152,21 +158,21 @@ fn lower_collection_child_fork(
     flush_prelude(emitter, fork.prelude);
     if fork.sequential {
         emitter.line(&format!(
-            "use awl_children_reversed <- result.try(list.try_fold({}, [], fn(awl_acc, {}) {{",
+            "use {children_reversed} <- result.try(list.try_fold({}, [], fn({acc}, {}) {{",
             fork.items,
             ident(fork.var)
         ));
         emitter.indented_try(|this| {
             flush_prelude(this, branch_prelude);
             this.line(&format!(
-                "use awl_item <- result.try(workflow.spawn_and_wait{spawn} |> awl_error.map_child_error)"
+                "use {item} <- result.try(workflow.spawn_and_wait{spawn} |> awl_error.map_child_error)"
             ));
-            this.line("Ok([awl_item, ..awl_acc])");
+            this.line(&format!("Ok([{item}, ..{acc}])"));
             Ok(())
         })?;
         emitter.line("}))");
         emitter.line(&format!(
-            "let {} = list.reverse(awl_children_reversed)",
+            "let {} = list.reverse({children_reversed})",
             fork.binder
         ));
         return Ok(());
@@ -179,28 +185,28 @@ fn lower_collection_child_fork(
     }
     emitter.flags.uses_child_module = true;
     emitter.line(&format!(
-        "use awl_handles_reversed <- result.try(list.try_fold({}, [], fn(awl_acc, {}) {{",
+        "use {handles_reversed} <- result.try(list.try_fold({}, [], fn({acc}, {}) {{",
         fork.items,
         ident(fork.var)
     ));
     emitter.indented(|this| {
         this.line(&format!(
-            "use awl_handle <- result.try(workflow.spawn{spawn} |> awl_error.map_spawn_error)"
+            "use {handle} <- result.try(workflow.spawn{spawn} |> awl_error.map_spawn_error)"
         ));
-        this.line("Ok([awl_handle, ..awl_acc])");
+        this.line(&format!("Ok([{handle}, ..{acc}])"));
     });
     emitter.line("}))");
-    emitter.line(
-        "use awl_children <- result.try(list.try_fold(awl_handles_reversed, [], fn(awl_acc, awl_handle) {",
-    );
+    emitter.line(&format!(
+        "use {children} <- result.try(list.try_fold({handles_reversed}, [], fn({acc}, {handle}) {{"
+    ));
     emitter.indented(|this| {
-        this.line(
-            "use awl_item <- result.try(child.await(awl_handle) |> awl_error.map_child_error)",
-        );
-        this.line("Ok([awl_item, ..awl_acc])");
+        this.line(&format!(
+            "use {item} <- result.try(child.await({handle}) |> awl_error.map_child_error)"
+        ));
+        this.line(&format!("Ok([{item}, ..{acc}])"));
     });
     emitter.line("}))");
-    emitter.line(&format!("let {} = awl_children", fork.binder));
+    emitter.line(&format!("let {} = {children}", fork.binder));
     Ok(())
 }
 
@@ -219,6 +225,9 @@ fn lower_collection_action_fork(
     emitter: &mut Emitter<'_>,
     fork: ActionFork<'_>,
 ) -> Result<(), EmitError> {
+    let folded = emitter.fresh_name("awl_folded");
+    let acc = emitter.fresh_name("awl_acc");
+    let item = emitter.fresh_name("awl_item");
     let mut branch_prelude = Vec::new();
     let value = activity_value(
         emitter,
@@ -231,20 +240,20 @@ fn lower_collection_action_fork(
         emitter.flags.uses_list_module = true;
         flush_prelude(emitter, fork.prelude);
         emitter.line(&format!(
-            "use awl_folded <- result.try(list.try_fold({}, [], fn(awl_acc, {}) {{",
+            "use {folded} <- result.try(list.try_fold({}, [], fn({acc}, {}) {{",
             fork.items,
             ident(fork.var)
         ));
         emitter.indented_try(|this| {
             flush_prelude(this, branch_prelude);
             this.line(&format!(
-                "use awl_item <- result.try({value} |> workflow.run |> awl_error.map_activity_error)"
+                "use {item} <- result.try({value} |> workflow.run |> awl_error.map_activity_error)"
             ));
-            this.line("Ok([awl_item, ..awl_acc])");
+            this.line(&format!("Ok([{item}, ..{acc}])"));
             Ok(())
         })?;
         emitter.line("}))");
-        emitter.line(&format!("let {} = list.reverse(awl_folded)", fork.binder));
+        emitter.line(&format!("let {} = list.reverse({folded})", fork.binder));
     } else {
         if !branch_prelude.is_empty() {
             return Err(EmitError::new(

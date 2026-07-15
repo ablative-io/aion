@@ -2,6 +2,26 @@
 
 use super::context::Emitter;
 
+struct Names {
+    handles: String,
+    results: String,
+    acc: String,
+    handle: String,
+    item: String,
+    live: String,
+}
+
+fn names(emitter: &mut Emitter<'_>) -> Names {
+    Names {
+        handles: emitter.fresh_name("awl_handles_reversed"),
+        results: emitter.fresh_name("awl_results_reversed"),
+        acc: emitter.fresh_name("awl_acc"),
+        handle: emitter.fresh_name("awl_handle"),
+        item: emitter.fresh_name("awl_item"),
+        live: emitter.fresh_name("awl_live"),
+    }
+}
+
 /// Spawn every child, await handles in item order, and restore result order.
 pub(super) fn emit_strict(
     emitter: &mut Emitter<'_>,
@@ -10,29 +30,32 @@ pub(super) fn emit_strict(
     var: &str,
     bind: &str,
 ) {
+    let names = names(emitter);
     emitter.line(&format!(
-        "use awl_handles_reversed <- result.try(list.try_fold({items}, [], \
-         fn(awl_acc, {var}) {{"
+        "use {} <- result.try(list.try_fold({items}, [], fn({}, {var}) {{",
+        names.handles, names.acc
     ));
     emitter.indented(|this| {
         this.line(&format!(
-            "use awl_handle <- result.try(workflow.spawn{spawn} |> awl_error.map_spawn_error)"
+            "use {} <- result.try(workflow.spawn{spawn} |> awl_error.map_spawn_error)",
+            names.handle
         ));
-        this.line("Ok([awl_handle, ..awl_acc])");
+        this.line(&format!("Ok([{}, ..{}])", names.handle, names.acc));
     });
     emitter.line("}))");
-    emitter.line(
-        "use awl_results_reversed <- result.try(list.try_fold(\
-         list.reverse(awl_handles_reversed), [], fn(awl_acc, awl_handle) {",
-    );
+    emitter.line(&format!(
+        "use {} <- result.try(list.try_fold(list.reverse({}), [], fn({}, {}) {{",
+        names.results, names.handles, names.acc, names.handle
+    ));
     emitter.indented(|this| {
-        this.line(
-            "use awl_item <- result.try(child.await(awl_handle) |> awl_error.map_child_error)",
-        );
-        this.line("Ok([awl_item, ..awl_acc])");
+        this.line(&format!(
+            "use {} <- result.try(child.await({}) |> awl_error.map_child_error)",
+            names.item, names.handle
+        ));
+        this.line(&format!("Ok([{}, ..{}])", names.item, names.acc));
     });
     emitter.line("}))");
-    emitter.line(&format!("let {bind} = list.reverse(awl_results_reversed)"));
+    emitter.line(&format!("let {bind} = list.reverse({})", names.results));
 }
 
 /// Tolerant child fan-out preserves one optional slot per input item.
@@ -43,38 +66,46 @@ pub(super) fn emit_tolerant(
     var: &str,
     bind: &str,
 ) {
+    let names = names(emitter);
     emitter.line(&format!(
-        "let awl_handles_reversed = list.fold({items}, [], fn(awl_acc, {var}) {{"
+        "let {} = list.fold({items}, [], fn({}, {var}) {{",
+        names.handles, names.acc
     ));
     emitter.indented(|this| {
         this.line(&format!("case workflow.spawn{spawn} {{"));
         this.indented(|this| {
-            this.line("Ok(awl_handle) -> [Some(awl_handle), ..awl_acc]");
-            this.line("Error(_) -> [None, ..awl_acc]");
+            this.line(&format!(
+                "Ok({}) -> [Some({}), ..{}]",
+                names.handle, names.handle, names.acc
+            ));
+            this.line(&format!("Error(_) -> [None, ..{}]", names.acc));
         });
         this.line("}");
     });
     emitter.line("})");
-    emitter.line(
-        "let awl_results_reversed = list.fold(list.reverse(awl_handles_reversed), [], \
-         fn(awl_acc, awl_handle) {",
-    );
+    emitter.line(&format!(
+        "let {} = list.fold(list.reverse({}), [], fn({}, {}) {{",
+        names.results, names.handles, names.acc, names.handle
+    ));
     emitter.indented(|this| {
-        this.line("case awl_handle {");
+        this.line(&format!("case {} {{", names.handle));
         this.indented(|this| {
-            this.line("Some(awl_live) ->");
+            this.line(&format!("Some({}) ->", names.live));
             this.indented(|this| {
-                this.line("case child.await(awl_live) {");
+                this.line(&format!("case child.await({}) {{", names.live));
                 this.indented(|this| {
-                    this.line("Ok(awl_item) -> [Some(awl_item), ..awl_acc]");
-                    this.line("Error(_) -> [None, ..awl_acc]");
+                    this.line(&format!(
+                        "Ok({}) -> [Some({}), ..{}]",
+                        names.item, names.item, names.acc
+                    ));
+                    this.line(&format!("Error(_) -> [None, ..{}]", names.acc));
                 });
                 this.line("}");
             });
-            this.line("None -> [None, ..awl_acc]");
+            this.line(&format!("None -> [None, ..{}]", names.acc));
         });
         this.line("}");
     });
     emitter.line("})");
-    emitter.line(&format!("let {bind} = list.reverse(awl_results_reversed)"));
+    emitter.line(&format!("let {bind} = list.reverse({})", names.results));
 }

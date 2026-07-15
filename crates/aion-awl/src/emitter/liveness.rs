@@ -180,7 +180,7 @@ impl Liveness<'_, '_> {
         // A bounded step reads its language-owned visit counter and its
         // bound expression at entry (before any of its defs).
         if let Some(max_visits) = &step.max_visits {
-            let counter = visits_counter(step);
+            let counter = visits_counter(step, &self.emitter.generated_names);
             if !self.nodes[node].defs.contains(&counter) {
                 self.nodes[node].refs.insert(counter);
             }

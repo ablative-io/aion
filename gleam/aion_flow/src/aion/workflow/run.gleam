@@ -2,8 +2,8 @@
 
 import aion/activity.{type Activity}
 import aion/error
+import aion/internal/activity_dispatch
 import aion/internal/ffi
-import aion/workflow/activity_dispatch
 import gleam/float
 import gleam/int
 import gleam/option.{None}
