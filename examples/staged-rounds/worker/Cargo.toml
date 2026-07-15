@@ -1,0 +1,74 @@
+# Rust activity worker for the staged-rounds workflow.
+#
+# Standalone (NOT a workspace member) so it builds from a plain `cargo build`
+# in this directory, mirroring the `dev-brief` example worker.
+#
+# It serves SEVEN activity types on ONE task queue (`staged_rounds`):
+#
+# - FOUR DRIVEN AGENT activities (`planner`, `dev_item`, `review_item`,
+#   `remediate`) — each routed through its OWN composed harness: a
+#   `ProfiledNornHarness` that assembles the prompt as {the role's profile
+#   markdown, loaded at startup from `--profiles-dir`} + {the activity's
+#   structured context JSON}, then delegates to a `NornHarness` (driven mode,
+#   jsonrpc) carrying the role's `--output-schema` and a per-run derived
+#   `--session-id`, over the liminal server-push transport
+#   (`serve_with_redial`). One connection per role. The remediator RESUMES
+#   the planner's session (same `--session-id` suffix) — the persistent
+#   coordinator judges its own plan's merge conflicts.
+# - THREE SHELL-NODE activities (`provision_item`, `merge_branches`, and the
+#   pure `fold_phase` boundary) — typed registry handlers for per-item
+#   worktree provisioning, ordered branch merging, and phase-state folding,
+#   on a fifth connection with no harness.
+[package]
+name = "staged-rounds-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Rust worker serving seven staged-rounds activities: four driven Norn agent roles and three shell-node handlers."
+
+[[bin]]
+name = "staged-rounds-worker"
+path = "src/main.rs"
+
+[lib]
+name = "staged_rounds_worker"
+path = "src/lib.rs"
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[dependencies]
+# The `liminal-transport` feature enables the server-push serve path
+# (`serve_with_redial`) the driven agent-harness wiring runs on. The composed
+# agent-harness seam is unpublished, so the aion crates are consumed by PATH.
+aion-worker = { path = "../../../crates/aion-worker", features = ["liminal-transport"] }
+aion-integration-norn = { path = "../../../crates/aion-integration-norn" }
+aion-integrations = { path = "../../../crates/aion-integrations" }
+anyhow = "1"
+async-trait = "0.1"
+# The harness wrapper implements `AgentSession` itself (to run the
+# developer's post-turn commit and the remediator's merge conclusion), whose
+# event stream is a futures BoxStream.
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# The direct-path compile proof drives the same seam `aion deploy` uses.
+aion-awl-package = { path = "../../../crates/aion-awl-package" }
+jsonschema = { version = "0.46.6", default-features = false }
+tempfile = "3"

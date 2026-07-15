@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "item verdict",
+  "description": "One item's adversarial review verdict. DERIVE-AND-CHECK: the fold derives the overall from the findings (any `blocking` finding rejects) and treats a verdict whose asserted overall disagrees as a rejection — consistency is checked, never trusted. A rejection requires a reject_reason AND at least one blocking finding to substantiate it.",
+  "type": "object",
+  "required": ["item_id", "overall", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "item_id": { "type": "string", "minLength": 1 },
+    "overall": {
+      "type": "string",
+      "enum": ["accept", "reject"],
+      "description": "Must agree with what the findings derive: reject iff any blocking finding."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Concrete findings only: a constructed failure scenario or quoted evidence, never a vibe. Empty means the reviewer hunted and found nothing. A scope_out violation is always blocking.",
+      "items": {
+        "type": "object",
+        "required": ["severity", "title", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["blocking", "advisory"],
+            "description": "blocking forces the derived verdict to reject; advisory is recorded evidence."
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "description": "File/line, concrete scenario, or quoted diff demonstrating the finding."
+          }
+        }
+      }
+    },
+    "reject_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required when overall is reject: the one-line substance of the rejection."
+    }
+  },
+  "if": {
+    "properties": { "overall": { "const": "reject" } }
+  },
+  "then": {
+    "required": ["item_id", "overall", "findings", "reject_reason"]
+  }
+}

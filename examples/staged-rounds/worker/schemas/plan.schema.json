@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plan",
+  "description": "The planner agent's typed, phased plan. Items in the same phase run IN PARALLEL in separate worktrees against the same base branch — they must not touch the same files. Build-on and same-file relations MUST be expressed through depends_on: a released dependent's worktree is provisioned with its dependencies' accepted branches merged in, while a bare phase number alone sequences nothing at the git level.",
+  "type": "object",
+  "required": ["summary", "items"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One paragraph: how the material decomposes and why this phasing is parallel-safe."
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "description": "3-10 scope-fenced work items.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "goal",
+          "scope_in",
+          "scope_out",
+          "phase",
+          "depends_on",
+          "feedback"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "description": "Git-ref-safe slug (lowercase [a-z0-9-]); it names the item's branch."
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "goal": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One sentence the dev agent implements."
+          },
+          "scope_in": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Files/dirs the item MAY touch."
+          },
+          "scope_out": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Hard walls the item must never touch."
+          },
+          "phase": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1 = no prerequisites; same-phase items run in parallel. Phase alone does not sequence files — use depends_on for any build-on or same-file relation."
+          },
+          "depends_on": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Ids of items whose MERGED output this item needs; the item's worktree is provisioned with those branches merged in, so it really starts from their work."
+          },
+          "feedback": {
+            "type": "string",
+            "maxLength": 0,
+            "description": "Always the empty string — the machinery fills it when an item cycles."
+          }
+        }
+      }
+    }
+  }
+}
