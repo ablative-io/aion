@@ -1,7 +1,7 @@
 //! Substep-chain lowering: a Gleam function per substep, sibling routes as
 //! tail calls, and the parent's outcome clauses evaluated inline at the
 //! chain's end (the substep group's boundary). `on failure` on a substep
-//! rides the shared attempt-closure shape in `steps::emit_with_failure`,
+//! rides the shared attempt-closure shape in `failure::emit_with_failure`,
 //! body-terminal routes included.
 
 use crate::ast::{Statement, Step};
@@ -9,12 +9,11 @@ use crate::ast::{Statement, Step};
 use super::context::Emitter;
 use super::error::EmitError;
 use super::exprs::Scope;
+use super::failure::{emit_with_failure, lower_statements};
 use super::graph::{body_ends_in_route, falls_through};
 use super::names::ident;
 use super::outcomes::emit_outcomes;
-use super::steps::{
-    FlowCtx, Frame, annotated_params, emit_with_failure, lower_statements, scope_from_params,
-};
+use super::steps::{FlowCtx, Frame, annotated_params, scope_from_params};
 
 /// Emit one substep chain: a function per substep, the parent's outcomes
 /// evaluated inline at the chain's end.
@@ -117,7 +116,10 @@ fn emit_sub_tail(
             .map(|name| ident(name))
             .collect::<Vec<_>>()
             .join(", ");
-        emitter.line(&format!("{}({args})", flow.sub_fn(&parent.name, &next.name)));
+        emitter.line(&format!(
+            "{}({args})",
+            flow.sub_fn(&parent.name, &next.name)
+        ));
         return Ok(());
     }
     // Chain end: the parent's outcomes are the boundary. Their routes

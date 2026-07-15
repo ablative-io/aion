@@ -167,6 +167,56 @@ pub fn in_vm_selection_takes_the_in_vm_wire_and_runs_the_thunk_test() {
   }
 }
 
+pub fn settled_members_take_the_in_vm_wire_and_capture_failures_test() {
+  case testing.new() {
+    Ok(env) -> {
+      let successful =
+        probe_activity("settled-invm-ok")
+        |> activity.execution_tier(activity.InVm)
+      let failed =
+        failing_probe("settled-invm-fail", error.terminal("settled boom"))
+        |> activity.execution_tier(activity.InVm)
+
+      workflow.all_settled_with_default([successful, failed], Some("general"))
+      |> should.equal([
+        Ok(Probe(value: "in")),
+        Error(error.Terminal(message: "settled boom", details: "")),
+      ])
+
+      observed(env, "activity_in_vm:settled-invm-ok:") |> should.be_true
+      observed(env, "activity_in_vm:settled-invm-fail:") |> should.be_true
+      observed(env, "activity:settled-invm-ok:") |> should.be_false
+      observed(env, "activity:settled-invm-fail:") |> should.be_false
+    }
+    Error(_) -> should.fail()
+  }
+}
+
+pub fn map_settled_preserves_item_order_and_empty_lists_test() {
+  case testing.new() {
+    Ok(_env) -> {
+      workflow.map_settled_with_default(
+        ["settled-map-a", "settled-map-b"],
+        fn(name) {
+          probe_activity(name)
+          |> activity.execution_tier(activity.InVm)
+        },
+        None,
+      )
+      |> should.equal([
+        Ok(Probe(value: "in")),
+        Ok(Probe(value: "in")),
+      ])
+
+      workflow.map_settled([], probe_activity)
+      |> should.equal([])
+      workflow.all_settled([])
+      |> should.equal([])
+    }
+    Error(_) -> should.fail()
+  }
+}
+
 pub fn retryable_error_kind_round_trips_through_the_in_vm_wire_test() {
   case testing.new() {
     Ok(_env) -> {

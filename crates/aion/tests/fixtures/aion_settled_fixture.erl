@@ -24,20 +24,14 @@ settled_three(_Input) ->
     SlotB = settle(IdB),
     SlotC = settle(IdC),
     gate_release(),
-    as_json_string(join([SlotA, SlotB, SlotC])).
+    as_json_string(<<SlotA/binary, "|", SlotB/binary, "|", SlotC/binary>>).
 
 %% One member's settled slot: success payload or captured failure, as data.
 settle(Id) ->
     case pumped(fun() -> aion_flow_ffi:await_activity_result(Id) end) of
-        {ok, Payload} -> <<"ok=", (strip_quotes(Payload))/binary>>;
+        {ok, Payload} -> <<"ok=", Payload/binary>>;
         {error, Reason} -> <<"err=", Reason/binary>>
     end.
-
-join([First | Rest]) ->
-    lists:foldl(fun(Slot, Acc) -> <<Acc/binary, "|", Slot/binary>> end, First, Rest).
-
-strip_quotes(Bin) ->
-    binary:replace(Bin, <<"\"">>, <<>>, [global]).
 
 %% Wrap the joined slots as a JSON string result payload.
 as_json_string(Text) ->

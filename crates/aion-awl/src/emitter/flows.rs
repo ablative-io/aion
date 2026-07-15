@@ -154,7 +154,10 @@ fn single_member_call(region: &RegionShape) -> Option<&CallStmt> {
     }
     match step.body.as_slice() {
         [Statement::Call(call)]
-            if call.bind.as_ref().is_some_and(|bind| bind.name == region.binding) =>
+            if call
+                .bind
+                .as_ref()
+                .is_some_and(|bind| bind.name == region.binding) =>
         {
             Some(call)
         }
@@ -187,12 +190,18 @@ pub(super) fn emit_fanout(
     let Some(item_ty) = emitter.bindings.get(&region.binding).cloned() else {
         return Err(EmitError::new(
             region.span,
-            format!("the collected binding `{}` has no established type", region.binding),
+            format!(
+                "the collected binding `{}` has no established type",
+                region.binding
+            ),
         ));
     };
     let mut prelude = Vec::new();
     let items = render_expr(emitter, &region.collection, scope, &mut prelude)?;
-    let elem_ty = match emitter.env.resolve(&expr_type(emitter, &region.collection, scope)?) {
+    let elem_ty = match emitter
+        .env
+        .resolve(&expr_type(emitter, &region.collection, scope)?)
+    {
         GType::List(inner) => *inner,
         other => {
             return Err(EmitError::new(
@@ -342,7 +351,13 @@ fn emit_child_fanout(
         ));
     };
     let mut branch_prelude = Vec::new();
-    let spawn = child_spawn_args(emitter, child, &call.call, branch_scope, &mut branch_prelude)?;
+    let spawn = child_spawn_args(
+        emitter,
+        child,
+        &call.call,
+        branch_scope,
+        &mut branch_prelude,
+    )?;
     emitter.flags.uses_list_module = true;
     match (region.verb, region.tolerant) {
         (DeliveryVerb::Sequence, false) => {
@@ -519,9 +534,7 @@ fn emit_instance_fanout(
             ident(&region.var)
         ));
         emitter.indented_try(|this| {
-            this.line(&format!(
-                "use awl_item <- result.try({instance}({args}))"
-            ));
+            this.line(&format!("use awl_item <- result.try({instance}({args}))"));
             this.line("Ok([awl_item, ..awl_acc])");
             Ok(())
         })?;

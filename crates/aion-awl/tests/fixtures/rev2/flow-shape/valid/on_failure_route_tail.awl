@@ -3,9 +3,9 @@
 //! genuine tail — a routed failure outcome never reads as a step failure.
 workflow publish_with_cleanup
   input target: String
-  outcome shipped:   type Receipt, route success
-  outcome cleaned:   type Failed,  route failure
-  outcome dead_end:  type Failed,  route failure
+  outcome shipped:  type Receipt, route success
+  outcome cleaned:  type Failed,  route failure
+  outcome dead_end: type Failed,  route failure
 
 type Receipt { url: String }
 type Failed  { reason: String }

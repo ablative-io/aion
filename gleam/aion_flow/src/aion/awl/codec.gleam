@@ -116,6 +116,8 @@ pub fn decoded(
 /// child's input record as JSON and never decodes it back.
 pub fn json_value() -> Codec(json.Json) {
   codec.Codec(encode: json.to_string, decode: fn(_) {
-    Error(codec.DecodeError(reason: "child call input is encode-only", path: []))
+    Error(
+      codec.DecodeError(reason: "child call input is encode-only", path: []),
+    )
   })
 }

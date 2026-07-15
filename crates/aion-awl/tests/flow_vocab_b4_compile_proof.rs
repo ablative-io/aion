@@ -33,10 +33,7 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 /// generated Gleam module name (the workflow name).
 const PROVEN: &[(&str, &str)] = &[
     ("flow-shape/valid/dev_flow.awl", "dev_flow"),
-    (
-        "flow-shape/valid/sequence_region_loopback.awl",
-        "rollout",
-    ),
+    ("flow-shape/valid/sequence_region_loopback.awl", "rollout"),
     (
         "flow-shape/valid/distribute_activity_tolerant.awl",
         "fan_scores",
@@ -53,10 +50,7 @@ const PROVEN: &[(&str, &str)] = &[
         "flow-shape/valid/sequence_activity_tolerant.awl",
         "ordered_tolerant",
     ),
-    (
-        "flow-shape/valid/subflow_nested.awl",
-        "nested_subflows",
-    ),
+    ("flow-shape/valid/subflow_nested.awl", "nested_subflows"),
     (
         "flow-shape/valid/on_failure_route_tail.awl",
         "publish_with_cleanup",
@@ -97,13 +91,13 @@ fn b4_flow_shape_fixtures_compile_under_gleam() -> TestResult {
             .parent()
             .ok_or("fixture path has no parent directory")?;
         let errors = check_in(&document, fixture_dir);
-        assert!(
-            errors.is_empty(),
-            "{relative} must check clean: {errors:?}"
-        );
+        assert!(errors.is_empty(), "{relative} must check clean: {errors:?}");
         let generated = emit_in(&document, fixture_dir)
             .map_err(|error| format!("{relative}: emit refused: {}", error.message))?;
-        fs::write(project.join("src").join(format!("{module}.gleam")), generated)?;
+        fs::write(
+            project.join("src").join(format!("{module}.gleam")),
+            generated,
+        )?;
     }
 
     let output = Command::new("gleam")

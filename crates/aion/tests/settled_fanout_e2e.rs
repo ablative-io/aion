@@ -6,10 +6,11 @@
 //! 1. completion order INVERTED against item order: completions buffer in
 //!    the keyed runtime maps and the awaits still resolve per correlation
 //!    id, slots in item order;
-//! 2. one member failing terminally: the failure arrives as that slot's
-//!    value — no fail-fast, no sibling cancellation, siblings keep their
-//!    results;
-//! 3. replay mid-settle: the engine restarts after the fan-out's terminals
+//! 2. the workflow is parked on the item-zero await while later completions
+//!    buffer, proving keyed delivery rather than head-of-line loss;
+//! 3. one member failing terminally: the failure arrives as that slot's value
+//!    — no fail-fast, no sibling cancellation, siblings keep their results;
+//! 4. replay mid-settle: the engine restarts after the fan-out's terminals
 //!    are recorded but before the run completes; replay resolves every
 //!    await purely from the recorded per-ordinal terminals (zero
 //!    re-dispatch) and the settled prefix stays byte-identical.
@@ -99,7 +100,7 @@ impl ActivityDispatcher for GatedDispatcher {
     fn dispatch(&self, request: ActivityDispatch) -> Result<String, String> {
         let name = request.name.as_str();
         let result = if let Some(key) = name.strip_prefix("gated_ok:") {
-            self.gates.wait(key).map(|()| format!("\"done-{key}\""))
+            self.gates.wait(key).map(|()| format!("done-{key}"))
         } else if let Some(key) = name.strip_prefix("gated_fail:") {
             self.gates
                 .wait(key)
@@ -142,7 +143,7 @@ async fn engine_over(
     Ok(EngineBuilder::new()
         .store_arc(Arc::clone(store))
         .in_memory_visibility()
-        .scheduler_threads(1)
+        .scheduler_threads(4)
         .signal_router_factory(|runtime: Arc<RuntimeHandle>, handoff| {
             Arc::new(ConcreteSignalRouter::new(runtime, handoff)) as Arc<dyn SignalRouter>
         })
@@ -222,8 +223,10 @@ fn scheduled_count(history: &[Event]) -> usize {
         .count()
 }
 
-/// `(ordinal, kind)` per activity terminal, in RECORDED order — the proof
-/// hook for inverted completion order.
+/// `(ordinal, kind)` per activity terminal, in recorded order. Single awaits
+/// deliberately record in item/await order even when the completion messages
+/// arrived in the inverse order; the staged dispatcher counter proves the
+/// actual completion order separately.
 fn terminal_ordinals(history: &[Event]) -> Vec<(u64, &'static str)> {
     history
         .iter()
@@ -250,7 +253,7 @@ fn result_json(payload: &Payload) -> Result<serde_json::Value, Box<dyn std::erro
 /// failure captured as a value; then the engine restarts with the fan-out
 /// settled and the run parked at the release gate, and replay resolves all
 /// three awaits purely from the recorded per-ordinal terminals.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> TestResult {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gates = GateBoard::new();
@@ -265,30 +268,37 @@ async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> Tes
     .await?;
 
     // Invert completion order against item order: c first, then b (the
-    // terminal failure), then a. Waiting for each terminal to RECORD
-    // before releasing the next pins the recorded completion order.
+    // terminal failure), then a. The workflow is awaiting a throughout;
+    // waiting on the dispatcher counter after each release proves c and b
+    // have completed into keyed runtime slots without unblocking a.
     gates.release("c");
-    wait_for_history(&store, &workflow_id, "c terminal recorded", |events| {
-        terminal_count(events) == 1
+    wait_for("c dispatcher completion", || {
+        gates.finished_dispatches() == 1
     })
     .await?;
     gates.release("b");
-    wait_for_history(&store, &workflow_id, "b terminal recorded", |events| {
-        terminal_count(events) == 2
+    wait_for("b dispatcher completion", || {
+        gates.finished_dispatches() == 2
     })
     .await?;
+    let buffered = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        terminal_count(&buffered),
+        0,
+        "later completions remain buffered while item zero is awaited: {buffered:#?}"
+    );
     gates.release("a");
     let settled = wait_for_history(&store, &workflow_id, "fan-out settled", |events| {
         terminal_count(events) == 3
     })
     .await?;
 
-    // Recorded terminals arrive in COMPLETION order (2, 1, 0) — the
-    // inversion is real — and member 1 is the terminal failure.
+    // Awaits consume and record the already-buffered terminals in ITEM order;
+    // member 1 remains a failure without disturbing either successful slot.
     assert_eq!(
         terminal_ordinals(&settled),
-        vec![(2, "completed"), (1, "failed"), (0, "completed")],
-        "terminals must record in completion order: {settled:#?}"
+        vec![(0, "completed"), (1, "failed"), (2, "completed")],
+        "individual awaits must record their keyed slots in item order: {settled:#?}"
     );
     wait_for("dispatcher tasks to finish", || {
         gates.finished_dispatches() == 3
@@ -362,7 +372,7 @@ async fn settled_fanout_inverts_completion_captures_failure_and_replays() -> Tes
 /// released, its terminal records while both siblings stay in flight —
 /// scheduled, started, neither cancelled nor resolved — and the run still
 /// completes once they settle.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn settled_failure_never_cancels_outstanding_siblings() -> TestResult {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let gates = GateBoard::new();
@@ -373,25 +383,44 @@ async fn settled_failure_never_cancels_outstanding_siblings() -> TestResult {
         scheduled_count(events) == 3
     })
     .await?;
+
+    // b finishes behind the outstanding a await. Its failure is buffered as
+    // a value; it neither fails the workflow nor cancels a or c.
     gates.release("b");
-    let after_failure =
-        wait_for_history(&store, &workflow_id, "b terminal recorded", |events| {
-            terminal_count(events) == 1
-        })
-        .await?;
+    wait_for("b dispatcher completion", || {
+        gates.finished_dispatches() == 1
+    })
+    .await?;
+    let buffered_failure = store.read_history(&workflow_id).await?;
+    assert_eq!(
+        terminal_count(&buffered_failure),
+        0,
+        "b must remain buffered while a is awaited: {buffered_failure:#?}"
+    );
+    assert!(
+        !buffered_failure
+            .iter()
+            .any(|event| matches!(event, Event::ActivityCancelled { .. })),
+        "a buffered failure must cancel nothing: {buffered_failure:#?}"
+    );
+
+    gates.release("a");
+    let after_failure = wait_for_history(&store, &workflow_id, "b failure consumed", |events| {
+        terminal_count(events) == 2
+    })
+    .await?;
     assert_eq!(
         terminal_ordinals(&after_failure),
-        vec![(1, "failed")],
-        "only the failing member settles: {after_failure:#?}"
+        vec![(0, "completed"), (1, "failed")],
+        "a succeeds and b is captured while c remains outstanding: {after_failure:#?}"
     );
     assert!(
         !after_failure
             .iter()
             .any(|event| matches!(event, Event::ActivityCancelled { .. })),
-        "a settled member's failure must cancel nothing: {after_failure:#?}"
+        "consuming b's failure must not cancel c: {after_failure:#?}"
     );
 
-    gates.release("a");
     gates.release("c");
     wait_for_history(&store, &workflow_id, "fan-out settled", |events| {
         terminal_count(events) == 3

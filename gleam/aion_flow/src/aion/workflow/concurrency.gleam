@@ -170,8 +170,7 @@ fn settled_dispatch(
   let input_codec = activity.input_codec(activity_value)
   let output_codec = activity.output_codec(activity_value)
   let encoded_input = input_codec.encode(activity.input(activity_value))
-  let config =
-    activity_config(activity_value, workflow_default_task_queue)
+  let config = activity_config(activity_value, workflow_default_task_queue)
   let dispatched = case activity.selected_tier(activity_value) {
     Some(activity.InVm) ->
       ffi.dispatch_activity_in_vm(
@@ -191,7 +190,10 @@ fn settled_dispatch(
   }
   case dispatched {
     Ok(correlation_id) ->
-      SettledDispatch(correlation_id: correlation_id, output_codec: output_codec)
+      SettledDispatch(
+        correlation_id: correlation_id,
+        output_codec: output_codec,
+      )
     Error(raw_error) -> SettledRefused(failure: activity_error(raw_error))
   }
 }

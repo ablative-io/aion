@@ -29,10 +29,7 @@ pub(super) struct FlowLive<'f> {
 pub(super) enum ExitLive<'f> {
     /// A per-item region member flow: routing to (or falling into) the close
     /// step returns the collected binding.
-    Region {
-        name: &'f str,
-        binding: &'f str,
-    },
+    Region { name: &'f str, binding: &'f str },
     /// A subflow: routing to the outcome returns its payload.
     Subflow { name: &'f str },
 }

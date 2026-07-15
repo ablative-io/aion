@@ -391,9 +391,7 @@ fn emit_cascade(
             emitter.line(&format!("case {rendered} {{"));
             emitter.indented_try(|this| {
                 this.line("True -> {");
-                this.indented_try(|this| {
-                    emit_arm(this, flow, frame, clause, scope, Some(expr))
-                })?;
+                this.indented_try(|this| emit_arm(this, flow, frame, clause, scope, Some(expr)))?;
                 this.line("}");
                 this.line("False -> {");
                 this.indented_try(|this| emit_cascade(this, flow, frame, rest, scope))?;

@@ -1,8 +1,7 @@
-//! Flow-vocabulary lowering coverage (the retired B2 refusal ratchet):
-//! every rev-3 construct fed to the public emitter now lowers — B4
-//! dismantled the gate construct by construct. Each probe document is the
-//! minimal use of one construct; emission must succeed and carry the
-//! construct's generated shape.
+//! Flow-vocabulary emitter coverage (the retired B2 refusal ratchet): every
+//! rev-3 construct fed to the public source emitter now lowers. MIR parity is
+//! a separate sub-lane; these probes pin only B4's generated-Gleam contract.
+//! Each minimal document must emit and carry its construct's generated shape.
 
 use std::error::Error;
 
@@ -10,18 +9,8 @@ use aion_awl::{check, emit, parse};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn line_col_of(source: &str, needle: &str) -> Result<(usize, usize), Box<dyn Error>> {
-    let start = source
-        .find(needle)
-        .ok_or_else(|| format!("needle {needle:?} not found"))?;
-    let prefix = &source[..start];
-    let line = prefix.matches('\n').count() + 1;
-    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
-    Ok((line, start - line_start + 1))
-}
-
 // ---------------------------------------------------------------------
-// Emitter and MIR refusals: honest, spanned, "not yet lowered"
+// Source-emitter refusal retirement
 // ---------------------------------------------------------------------
 
 /// Every new construct: (name, a check-clean document using it, the line
@@ -123,25 +112,13 @@ fn every_new_construct_emits_with_its_generated_shape() -> TestResult {
             "{name}: the probe document must check clean: {errors:#?}"
         );
         let _ = needle;
-        let generated = emit(&document)
-            .map_err(|error| format!("{name}: emit refused: {}", error.message))?;
+        let generated =
+            emit(&document).map_err(|error| format!("{name}: emit refused: {}", error.message))?;
         let fragment = emitted_fragment(name);
         assert!(
             generated.contains(fragment),
             "{name}: generated module misses `{fragment}`:\n{generated}"
         );
-    }
-    Ok(())
-}
-
-#[test]
-fn every_new_construct_lowers_on_the_direct_path() -> TestResult {
-    for (name, source, needle) in refusal_documents() {
-        let document = parse(&source)?;
-        let _ = needle;
-        let module = aion_awl::mir::lower(&document, None)
-            .map_err(|error| format!("{name}: lower refused: {error}"))?;
-        aion_awl::mir::verify(&module).map_err(|error| format!("{name}: verify: {error}"))?;
     }
     Ok(())
 }

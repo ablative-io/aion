@@ -6,6 +6,7 @@ mod context;
 mod entry;
 mod error;
 mod exprs;
+mod failure;
 mod flows;
 mod flowshape;
 mod forks;

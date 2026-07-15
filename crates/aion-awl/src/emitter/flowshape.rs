@@ -169,8 +169,7 @@ fn shape_flow(mut steps: Vec<Step>, ids: &mut usize) -> Result<FlowSteps, ShapeE
                         .to_owned(),
                 });
             };
-            let Some(Statement::Distribute(distribute)) = frame.opener.body.first().cloned()
-            else {
+            let Some(Statement::Distribute(distribute)) = frame.opener.body.first().cloned() else {
                 return Err(ShapeError {
                     span: frame.opener.name_span,
                     message: "region opener lost its `distribute` statement".to_owned(),
