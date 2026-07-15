@@ -51,6 +51,32 @@ export type PositionedBarItem =
 export const MIN_BAR_WIDTH = 6;
 export const MIN_STEPPED_RANK_WIDTH = 24;
 
+/**
+ * Scrub-cursor clip for one bar. The scrubbed timeline truncates each entry's
+ * events at the per-workflow cut, so a bar whose span STRADDLES the cursor
+ * would otherwise snap back to its last surviving event (or collapse to a
+ * marker) and only pop to full size once the cursor passed its end. Supplying
+ * the bar's UNTRUNCATED entry lets `positionBar` draw the true span clipped at
+ * the cursor: straddling bars flow with the cursor, spans entirely before it
+ * stay fully drawn, and spans entirely after it never reach layout (their
+ * entries are dropped by the prefix cut).
+ */
+export type ScrubClip = {
+  /** Cursor position: recorded-time ms in time mode, global event rank in stepped mode. */
+  cursor: number;
+  /** The bar's untruncated projected entry — carries the true extent past the cut. */
+  fullEntry: TimelineEntry;
+};
+
+/**
+ * Per-lane-row clip payload: the shared cursor plus each bar's untruncated
+ * entry, keyed by entry id (stable across the prefix cut).
+ */
+export type LaneScrubClip = {
+  cursor: number;
+  fullEntriesById: ReadonlyMap<string, TimelineEntry>;
+};
+
 export function eventKey(workflowId: string, sequence: number): string {
   return `${workflowId}:${sequence}`;
 }
@@ -161,9 +187,11 @@ export function positionBar(
   workflowId: string,
   bar: SwimlaneBar,
   axis: AxisLayout,
-  minimumWidth = MIN_BAR_WIDTH
+  minimumWidth = MIN_BAR_WIDTH,
+  clip: ScrubClip | null = null
 ): PositionedBar {
-  const points = bar.entry.events.map((event) => ({
+  const spanEntry = clip === null ? bar.entry : clip.fullEntry;
+  const points = spanEntry.events.map((event) => ({
     sequence: event.data.envelope.seq,
     timestampMs: recordedAtMs(event.data.envelope.recorded_at),
   }));
@@ -174,11 +202,16 @@ export function positionBar(
 
   let rawLeft: number;
   let rawWidth: number;
+  let pointSpan = bar.isMarker;
 
   if (axis.mode === 'time') {
     const timestamps = points.map((point) => point.timestampMs);
     const start = timestamps.length > 0 ? Math.min(...timestamps) : firstPoint.timestampMs;
-    const end = timestamps.length > 0 ? Math.max(...timestamps) : start;
+    let end = timestamps.length > 0 ? Math.max(...timestamps) : start;
+    if (clip !== null) {
+      end = Math.max(start, Math.min(end, clip.cursor));
+      pointSpan = end === start;
+    }
     rawLeft = fractionForTimestamp(start, axis.bounds) * axis.trackWidth;
     rawWidth =
       (fractionForTimestamp(end, axis.bounds) - fractionForTimestamp(start, axis.bounds)) *
@@ -188,12 +221,16 @@ export function positionBar(
       (point) => axis.rankByEvent.get(eventKey(workflowId, point.sequence)) ?? 0
     );
     const startRank = ranks.length > 0 ? Math.min(...ranks) : 0;
-    const endRank = ranks.length > 0 ? Math.max(...ranks) : startRank;
+    let endRank = ranks.length > 0 ? Math.max(...ranks) : startRank;
+    if (clip !== null) {
+      endRank = Math.max(startRank, Math.min(endRank, clip.cursor));
+      pointSpan = endRank === startRank;
+    }
     rawLeft = startRank * axis.rankWidth;
     rawWidth = (endRank - startRank + 1) * axis.rankWidth - 4;
   }
 
-  const marker = bar.isMarker || rawWidth < minimumWidth;
+  const marker = pointSpan || rawWidth < minimumWidth;
   const width = marker
     ? Math.min(
         Math.max(0, axis.trackWidth),

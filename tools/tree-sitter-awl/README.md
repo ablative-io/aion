@@ -1,9 +1,11 @@
 # tree-sitter-awl
 
 Tree-sitter grammar and editor queries for the Aion Workflow Language (AWL)
-rev-2 surface. This parser is a presentation layer for highlighting and
-structural editing; `crates/aion-awl` remains the only parser/checker used for
-diagnostics.
+rev-2 surface plus the B1/B2 flow vocabulary (`const` declarations,
+triple-quoted raw strings, `json { … }` literals, `schema of`, `subflow`,
+`distribute`/`sequence`/`collect` regions, and `max N visits`). This parser
+is a presentation layer for highlighting and structural editing;
+`crates/aion-awl` remains the only parser/checker used for diagnostics.
 
 ## Design
 
@@ -102,6 +104,13 @@ commits. The public standalone repo
 `ablative-io` once the org repo can be public) is the **published mirror**
 that editor toolchains fetch anonymously (Zed grammar fetch,
 nvim-treesitter remote install, web-tree-sitter).
+
+The ops console vendors a compiled copy of this grammar
+(`apps/aion-ops-console/src/features/authoring/assets/awl.wasm`, built with
+`tree-sitter build --wasm`) together with a copy of `queries/highlights.scm`.
+When the grammar or the highlight query changes, both vendored files must be
+refreshed as a pair — a new query against an old wasm can name node types the
+compiled grammar does not know.
 
 **If you change this grammar, you own the mirror push.** And
 **publish-before-pin**: any extension `rev` (editors/zed-awl/extension.toml,

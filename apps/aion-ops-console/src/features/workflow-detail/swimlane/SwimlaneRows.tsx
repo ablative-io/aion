@@ -4,9 +4,16 @@ import { cn } from '@/lib/utils';
 import type { WorkflowId } from '@/types';
 
 import { LaneBar } from './LaneBar';
-import type { LaneTreeRow } from './laneTree';
 import type { SwimlaneBar, SwimlaneLane } from './laneLayout';
-import { type AxisLayout, type AxisMode, clusterPositionedBars, positionBar } from './timeLayout';
+import type { LaneTreeRow } from './laneTree';
+import {
+  type AxisLayout,
+  type AxisMode,
+  clusterPositionedBars,
+  type LaneScrubClip,
+  MIN_BAR_WIDTH,
+  positionBar,
+} from './timeLayout';
 
 const LANE_HEIGHT = 36;
 const DEPTH_INDENT = 16;
@@ -94,6 +101,7 @@ export function LaneRow({
   selectedSequence,
   selectedWorkflowId,
   childExpanded,
+  scrubClip = null,
   onToggle,
   onToggleChild,
   onSelect,
@@ -107,11 +115,28 @@ export function LaneRow({
   selectedSequence: number | null;
   selectedWorkflowId: WorkflowId | null;
   childExpanded: boolean;
+  /** Active scrub cursor + the lane's untruncated entries; null when live. */
+  scrubClip?: LaneScrubClip | null;
   onToggle: () => void;
   onToggleChild: (() => void) | null;
   onSelect: (bar: SwimlaneBar, originX: number, clusterSequences: readonly number[]) => void;
 }) {
-  const items = clusterPositionedBars(lane.bars.map((bar) => positionBar(workflowId, bar, axis)));
+  const items = clusterPositionedBars(
+    lane.bars.map((bar) =>
+      positionBar(
+        workflowId,
+        bar,
+        axis,
+        MIN_BAR_WIDTH,
+        scrubClip === null
+          ? null
+          : {
+              cursor: scrubClip.cursor,
+              fullEntry: scrubClip.fullEntriesById.get(bar.id) ?? bar.entry,
+            }
+      )
+    )
+  );
 
   return (
     <li className="flex items-stretch" data-depth={depth} data-workflow-id={workflowId}>

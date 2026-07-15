@@ -3,11 +3,12 @@
 
 const keywords = [
   'workflow', 'input', 'signal', 'outcome', 'type', 'schema', 'worker',
-  'action', 'child', 'step', 'after', 'fork', 'join', 'loop', 'counting',
-  'until', 'max', 'sequential', 'spawn', 'wait', 'sleep', 'timeout',
-  'retry', 'every', 'backoff', 'node', 'on', 'failure', 'when',
-  'otherwise', 'route', 'success', 'filter', 'map', 'sort', 'count', 'is',
-  'empty', 'present', 'absent', 'not', 'and', 'or', 'in',
+  'action', 'child', 'step', 'subflow', 'after', 'fork', 'join', 'loop',
+  'counting', 'until', 'max', 'visits', 'sequential', 'spawn', 'wait',
+  'sleep', 'timeout', 'retry', 'every', 'backoff', 'node', 'on', 'failure',
+  'when', 'otherwise', 'route', 'success', 'filter', 'map', 'sort', 'count',
+  'any', 'all', 'is', 'empty', 'present', 'absent', 'not', 'and', 'or', 'in',
+  'const', 'json', 'of', 'distribute', 'sequence', 'collect',
 ];
 
 module.exports = grammar({
@@ -24,13 +25,18 @@ module.exports = grammar({
       $.signal_declaration,
       $.outcome_declaration,
       $.type_declaration,
+      $.const_declaration,
       $.worker_declaration,
       $.action_declaration,
       $.child_declaration,
+      $.subflow_declaration,
       $.step_declaration,
       $.fork_statement,
       $.join_statement,
       $.loop_statement,
+      $.distribute_statement,
+      $.sequence_statement,
+      $.collect_statement,
       $.wait_statement,
       $.sleep_statement,
       $.failure_handler,
@@ -39,6 +45,9 @@ module.exports = grammar({
       $.configuration,
       $.doc_comment,
       $.comment,
+      $.json_literal,
+      $.schema_literal,
+      $.raw_string,
       $.string,
       $.duration,
       $.float,
@@ -61,13 +70,18 @@ module.exports = grammar({
     signal_declaration: $ => prec(1, seq(alias('signal', $.keyword), field('name', $.identifier))),
     outcome_declaration: $ => prec(1, seq(alias('outcome', $.keyword), field('name', $.identifier))),
     type_declaration: $ => prec(1, seq(alias('type', $.keyword), field('name', $.type_identifier))),
+    const_declaration: $ => prec(1, seq(alias('const', $.keyword), field('name', $.identifier))),
     worker_declaration: $ => prec(1, seq(alias('worker', $.keyword), field('name', $.identifier))),
     action_declaration: $ => prec(1, seq(alias('action', $.keyword), field('name', $.identifier))),
     child_declaration: $ => prec(1, seq(alias('child', $.keyword), field('name', $.identifier))),
+    subflow_declaration: $ => prec(1, seq(alias('subflow', $.keyword), field('name', $.identifier))),
     step_declaration: $ => prec(1, seq(alias('step', $.keyword), field('name', $.identifier))),
     fork_statement: $ => prec(1, alias('fork', $.keyword)),
     join_statement: $ => prec(1, alias('join', $.keyword)),
     loop_statement: $ => prec(1, alias('loop', $.keyword)),
+    distribute_statement: $ => prec(1, alias('distribute', $.keyword)),
+    sequence_statement: $ => prec(1, alias('sequence', $.keyword)),
+    collect_statement: $ => prec(1, alias('collect', $.keyword)),
     wait_statement: $ => prec(1, alias('wait', $.keyword)),
     sleep_statement: $ => prec(1, alias('sleep', $.keyword)),
     failure_handler: $ => prec(1, seq(alias('on', $.keyword), alias('failure', $.keyword))),
@@ -77,8 +91,34 @@ module.exports = grammar({
       alias('node', $.keyword), alias('timeout', $.keyword), alias('retry', $.keyword),
     )),
 
+    // `json { … }` literal: aion-awl's lexer captures the brace-balanced body
+    // verbatim as one token (braces inside JSON strings do not count toward
+    // balance). Mirrored here as a body node whose strings stay string nodes,
+    // so quoting keeps braces raw exactly like the real tokenization.
+    json_literal: $ => prec(1, seq(alias('json', $.keyword), field('body', $.json_body))),
+    // Inline `schema { … }` type door: same raw brace-balanced capture.
+    schema_literal: $ => prec(1, seq(
+      alias('schema', $.keyword),
+      field('body', alias($.json_body, $.schema_body)),
+    )),
+    json_body: $ => seq('{', repeat($._json_body_item), '}'),
+    _json_body_item: $ => choice(alias($._body_string, $.string), /[^{}"]+/, $._json_nested_braces),
+    _json_nested_braces: $ => seq('{', repeat($._json_body_item), '}'),
+    // Quoted content inside a braced body: `scan_braced_body` keeps quote
+    // state across raw newlines (scanner.rs) — braces stay inert until the
+    // closing quote even in a malformed multiline string — unlike top-level
+    // `string`, which ends at a newline.
+    _body_string: _ => token(/"(?:[^"\\]|\\[\s\S])*"/),
+
     doc_comment: _ => token(choice(seq('//!', /[^\n]*/), seq('///', /[^\n]*/))),
     comment: _ => token(seq('//', /[^!\/\n][^\n]*|[^\n]?/)),
+    // Triple-quoted raw string: verbatim, multi-line, no escapes; the body
+    // ends at the FIRST `"""` after the opener (scanner.rs `scan_raw_string`).
+    raw_string: _ => token(seq(
+      '"""',
+      repeat(choice(/[^"]/, seq('"', /[^"]/), seq('""', /[^"]/))),
+      '"""',
+    )),
     string: _ => token(/"(?:[^"\\\n]|\\.)*"/),
     duration: _ => token(/[0-9]+(?:s|m|h|d)/),
     float: _ => token(/-?(?:[0-9]+\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+)/),

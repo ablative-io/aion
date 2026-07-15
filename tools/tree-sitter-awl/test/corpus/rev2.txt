@@ -91,12 +91,11 @@ type Shared = schema("schemas/shared.json")
     (keyword)
     (type_identifier))
   (punctuation)
-  (keyword)
-  (punctuation)
-  (string)
-  (punctuation)
-  (string)
-  (punctuation)
+  (schema_literal
+    (keyword)
+    (schema_body
+      (string)
+      (string)))
   (newline)
   (type_declaration
     (keyword)
