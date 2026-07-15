@@ -2,8 +2,10 @@ import { Language, Parser, Query } from 'web-tree-sitter';
 import awlWasmUrl from '../assets/awl.wasm?url';
 import highlightQuery from '../assets/highlights.scm?raw';
 
-// Vendored from github.com/tomWhiting/tree-sitter-awl at
-// fa1afb22c756175131d252380fb4ba9e4b68a321 using tree-sitter-cli 0.26.10.
+// Vendored from this repo's tools/tree-sitter-awl (B1+B2 flow-vocab grammar,
+// commit 20f4309b) using tree-sitter-cli 0.26.10. The wasm and highlights.scm
+// in ../assets must always be replaced together. Mirror push to
+// github.com/tomWhiting/tree-sitter-awl is owed after these land.
 let parser: Parser | undefined;
 let query: Query | undefined;
 

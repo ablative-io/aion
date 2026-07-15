@@ -371,8 +371,10 @@
 }
 
 .awl-syntax-string,
+.awl-syntax-string-special,
 .awl-syntax-number,
 .awl-syntax-number-float,
+.awl-syntax-constant,
 .awl-syntax-constant-builtin {
   color: var(--status-success);
 }
