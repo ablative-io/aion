@@ -58,12 +58,12 @@ fn deferred_fixture_errors_cleanly() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A supported collection join followed by exactly one combinator reaches the
-/// post-join `flow.rs` refusal; no second deferred shape can mask it.
+/// The historical post-join combinator refusal, kept as a coverage pin: a
+/// supported collection join followed by exactly one combinator now lowers.
 #[test]
-fn post_join_combinator_refuses_with_its_focused_class() -> Result<(), Box<dyn std::error::Error>> {
+fn post_join_combinator_now_lowers() -> Result<(), Box<dyn std::error::Error>> {
     let source = "\
-//! Focused post-join combinator refusal.
+//! Focused post-join combinator coverage pin.
 workflow post_join_combinator
   input docs: [Doc]
   outcome done: type Done, route success
@@ -83,12 +83,40 @@ step check_all
   verdicts |> count -> total
   route done(count: total)
 ";
+    let module = lower_source(source)??;
+    super::verify(&module)?;
+    Ok(())
+}
+
+/// `sort` over a non-comparable key is the reference emitter's hard gate; the
+/// checker does not constrain key comparability, so a check-clean document
+/// must refuse here with the reference class.
+#[test]
+fn sort_non_comparable_key_refuses_with_the_reference_class()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "\
+//! Focused non-comparable sort-key refusal.
+workflow sort_non_comparable
+  input docs: [Doc]
+  outcome done: type Done, route success
+
+type Inner { note: String }
+type Doc   { inner: Inner }
+type Done  { total: Int }
+
+step order
+  docs |> sort(.inner) |> count -> total
+  route done(total: total)
+";
     match lower_source(source)? {
         Err(LowerError::Unsupported { shape, .. }) => {
-            assert_eq!(shape, "pipe combinator");
+            assert_eq!(
+                shape,
+                "`sort` over a non-comparable key (needs Int, Float, String, Bool)"
+            );
         }
         other => {
-            return Err(format!("expected focused pipe-combinator refusal, got {other:?}").into());
+            return Err(format!("expected the non-comparable sort refusal, got {other:?}").into());
         }
     }
     Ok(())

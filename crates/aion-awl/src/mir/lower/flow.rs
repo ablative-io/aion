@@ -1,19 +1,19 @@
 //! Region-body lowering for the BC-2 covered subset: sequential regions whose
-//! step bodies are action calls, sleeps, and pipe chains (action/field stages)
-//! ending in a route. A multi-step chain lowers as one `FlowFn` per step, each
-//! non-terminal step ending in a tail call to its successor (IR-14) with the
-//! chain-boundary live set (`chain::chain_params`) as arguments. Bounded
-//! loops lower through `loops` (a self-tail-calling `FlowFn(Loop)` per loop).
-//! Forks lower through `forks` (activity fan-out over `workflow.map`/`all` /
-//! `list.try_fold` and child spawn-all/ordered-await fan-out to the reference
-//! emitter's parity contract). Substeps, waits, spawns, `on failure`,
-//! combinators, and dependency-parallel layers are deferred
-//! (`LowerError::unsupported`) —
-//! visible incompleteness, never silent divergence from the reference. The
-//! activity-emission primitives live in `activity`.
+//! step bodies are action calls, sleeps, and pipe chains (action/child/field/
+//! combinator stages — `pipes`) ending in a route. A multi-step chain lowers
+//! as one `FlowFn` per step, each non-terminal step ending in a tail call to
+//! its successor (IR-14) with the chain-boundary live set
+//! (`chain::chain_params`) as arguments. Bounded loops lower through `loops`
+//! (a self-tail-calling `FlowFn(Loop)` per loop). Forks lower through `forks`
+//! (activity fan-out over `workflow.map`/`all` / `list.try_fold` and child
+//! spawn-all/ordered-await fan-out to the reference emitter's parity
+//! contract). Substeps, waits, spawns, `on failure`, and dependency-parallel
+//! layers are deferred (`LowerError::unsupported`) — visible incompleteness,
+//! never silent divergence from the reference. The activity-emission
+//! primitives live in `activity`.
 
 use crate::RouteDirection;
-use crate::ast::{Call, CallStmt, PipeEnd, PipeStage, RouteTarget, Statement, Step};
+use crate::ast::{CallStmt, PipeEnd, RouteTarget, Statement, Step};
 use crate::emitter::{GType, snake, type_ref_to_g};
 
 use super::super::func::{FlowFn, FnOrigin, MirFn};
@@ -26,7 +26,7 @@ use super::build::{FnPlan, output_tydesc};
 use super::chain::chain_params;
 use super::ctx::Ctx;
 use super::driver::LowerError;
-use super::expr::{Binding, Scope, lower_arg_for, lower_expr};
+use super::expr::{Binding, Scope, lower_arg_for};
 use super::forks::lower_fork_stmt;
 use super::loops::lower_loop_stmt;
 use super::outcome::lower_outcomes;
@@ -259,7 +259,8 @@ pub(super) fn lower_statement(
             Ok(None)
         }
         Statement::Pipe(pipe) => {
-            let (value, ty) = lower_pipe_value(ctx, plan, &pipe.head, &pipe.stages, scope, stmts)?;
+            let (value, ty) =
+                super::pipes::lower_pipe_value(ctx, plan, &pipe.head, &pipe.stages, scope, stmts)?;
             match &pipe.end {
                 PipeEnd::Bind(binding) => {
                     let var = as_var(ctx, value, stmts);
@@ -311,74 +312,6 @@ pub(super) fn lower_call(
         scope.insert(bind.name.clone(), Binding { var: bound, ty });
     }
     Ok(())
-}
-
-fn lower_pipe_value(
-    ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
-    head: &crate::ast::Expr,
-    stages: &[PipeStage],
-    scope: &Scope,
-    stmts: &mut Vec<Stmt>,
-) -> Result<(Value, GType), LowerError> {
-    let (mut value, mut ty) = lower_expr(ctx, head, scope, stmts)?;
-    for stage in stages {
-        match stage {
-            PipeStage::Action { name, span } => {
-                let call = Call {
-                    span: *span,
-                    name: name.clone(),
-                    name_span: *span,
-                    args: Vec::new(),
-                };
-                let bound = activity_call(ctx, plan, &call, Some((value, ty)), scope, stmts)?;
-                ty = ctx
-                    .emitter
-                    .actions
-                    .get(name.as_str())
-                    .map_or(GType::Unknown, |&(_, decl)| type_ref_to_g(&decl.returns));
-                value = Value::Var(bound);
-            }
-            PipeStage::Field { name, span } => {
-                let (index, field_ty) = field_index(ctx, &ty, name, *span)?;
-                let dst = ctx.fresh_var();
-                stmts.push(Stmt::FieldGet {
-                    dst,
-                    base: value,
-                    index,
-                    span: Span::from_source(*span),
-                });
-                value = Value::Var(dst);
-                ty = field_ty;
-            }
-            PipeStage::Combinator(combinator) => {
-                return Err(LowerError::unsupported("pipe combinator", combinator.span));
-            }
-        }
-    }
-    Ok((value, ty))
-}
-
-fn field_index(
-    ctx: &Ctx<'_>,
-    base_ty: &GType,
-    field: &str,
-    span: crate::Span,
-) -> Result<(u16, GType), LowerError> {
-    let (_, record) = ctx
-        .emitter
-        .env
-        .record_of(base_ty)
-        .ok_or_else(|| LowerError::new(span, format!("`.{field}` needs a record")))?;
-    let position = record
-        .fields
-        .iter()
-        .position(|candidate| candidate.awl_name == field)
-        .ok_or_else(|| LowerError::new(span, format!("no field `{field}`")))?;
-    Ok((
-        u16::try_from(position + 1).unwrap_or(u16::MAX),
-        record.fields[position].ty.clone(),
-    ))
 }
 
 pub(super) fn route_tail(

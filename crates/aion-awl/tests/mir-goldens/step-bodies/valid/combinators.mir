@@ -1,0 +1,279 @@
+module combinators source=combinators.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_fetch:
+    aion@activity:task_queue/2 [activities] (v1, lit#13)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] finding
+  [1] clean
+  [2] blocked
+  [3] fetch_findings_input
+  [4] combinators_input
+  [5] clean_outcome
+  [6] ok
+  [7] awl_outcome_failure
+  [8] error
+== literals ==
+  [0] "title"
+  [1] "blocking"
+  [2] "severity"
+  [3] "total"
+  [4] "blocker_titles"
+  [5] "blocker_count"
+  [6] "source"
+  [7] "source"
+  [8] "clean"
+  [9] "outcome"
+  [10] "CombinatorsOutcome"
+  [11] "clean"
+  [12] "payload"
+  [13] "registry"
+  [14] "blocked"
+== types ==
+  record Finding tag=finding
+    title: string
+    blocking: bool
+    severity: int
+  record Clean tag=clean
+    total: int
+  record Blocked tag=blocked
+    blocker_titles: list(string)
+    blocker_count: int
+  record FetchFindingsInput tag=fetch_findings_input
+    source: string
+  record CombinatorsInput tag=combinators_input
+    source: string
+  union CombinatorsOutcome
+    clean -> clean_outcome(ref(Clean))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=combinators_input_codec output=combinators_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(combinators.CombinatorsInput, combinators.CombinatorsOutcome, AwlError)
+  T-DEF name="combinators" input=combinators_input_codec output=combinators_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (combinators.CombinatorsInput) -> Result(combinators.CombinatorsOutcome, AwlError)
+  T-EXEC fields=[source:String] entry=step_fetch args=[0]
+== fn finding_codec/0 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: () -> Codec(combinators.Finding)
+  v0 = make_closure finding_to_json captures=[]
+  v1 = call_local finding_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn finding_to_json/1 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: (combinators.Finding) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"title": v1|>awlc.string_to_json, "blocking": v2|>awlc.bool_to_json, "severity": v3|>awlc.int_to_json}
+  return v4
+== fn finding_decoder/0 origin=codec_template(RecordTrio, Finding, record#0) ==
+  sig: () -> Decoder(combinators.Finding)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure finding_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn finding_decoder$0/1 origin=lifted(finding_decoder, #0) ==
+  sig: (String) -> Decoder(combinators.Finding)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure finding_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn finding_decoder$1/2 origin=lifted(finding_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(combinators.Finding)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure finding_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v2, v3)
+== fn finding_decoder$2/3 origin=lifted(finding_decoder, #2) ==
+  sig: (Int, String, Bool) -> Decoder(combinators.Finding)
+  v3 = record(finding, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn clean_codec/0 origin=codec_template(RecordTrio, Clean, record#1) ==
+  sig: () -> Codec(combinators.Clean)
+  v0 = make_closure clean_to_json captures=[]
+  v1 = call_local clean_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn clean_to_json/1 origin=codec_template(RecordTrio, Clean, record#1) ==
+  sig: (combinators.Clean) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"total": v1|>awlc.int_to_json}
+  return v2
+== fn clean_decoder/0 origin=codec_template(RecordTrio, Clean, record#1) ==
+  sig: () -> Decoder(combinators.Clean)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure clean_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn clean_decoder$0/1 origin=lifted(clean_decoder, #0) ==
+  sig: (Int) -> Decoder(combinators.Clean)
+  v1 = record(clean, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn blocked_codec/0 origin=codec_template(RecordTrio, Blocked, record#2) ==
+  sig: () -> Codec(combinators.Blocked)
+  v0 = make_closure blocked_to_json captures=[]
+  v1 = call_local blocked_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn blocked_to_json/1 origin=codec_template(RecordTrio, Blocked, record#2) ==
+  sig: (combinators.Blocked) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"blocker_titles": v1|>list_string_to_json, "blocker_count": v2|>awlc.int_to_json}
+  return v3
+== fn blocked_decoder/0 origin=codec_template(RecordTrio, Blocked, record#2) ==
+  sig: () -> Decoder(combinators.Blocked)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure blocked_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn blocked_decoder$0/1 origin=lifted(blocked_decoder, #0) ==
+  sig: (List(String)) -> Decoder(combinators.Blocked)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure blocked_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn blocked_decoder$1/2 origin=lifted(blocked_decoder, #1) ==
+  sig: (Int, List(String)) -> Decoder(combinators.Blocked)
+  v2 = record(blocked, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn fetch_findings_input_codec/0 origin=codec_template(RecordTrio, FetchFindingsInput, record#3) ==
+  sig: () -> Codec(combinators.FetchFindingsInput)
+  v0 = make_closure fetch_findings_input_to_json captures=[]
+  v1 = call_local fetch_findings_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fetch_findings_input_to_json/1 origin=codec_template(RecordTrio, FetchFindingsInput, record#3) ==
+  sig: (combinators.FetchFindingsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"source": v1|>awlc.string_to_json}
+  return v2
+== fn fetch_findings_input_decoder/0 origin=codec_template(RecordTrio, FetchFindingsInput, record#3) ==
+  sig: () -> Decoder(combinators.FetchFindingsInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fetch_findings_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn fetch_findings_input_decoder$0/1 origin=lifted(fetch_findings_input_decoder, #0) ==
+  sig: (String) -> Decoder(combinators.FetchFindingsInput)
+  v1 = record(fetch_findings_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn combinators_input_codec/0 origin=codec_template(RecordTrio, CombinatorsInput, record#4) ==
+  sig: () -> Codec(combinators.CombinatorsInput)
+  v0 = make_closure combinators_input_to_json captures=[]
+  v1 = call_local combinators_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn combinators_input_to_json/1 origin=codec_template(RecordTrio, CombinatorsInput, record#4) ==
+  sig: (combinators.CombinatorsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"source": v1|>awlc.string_to_json}
+  return v2
+== fn combinators_input_decoder/0 origin=codec_template(RecordTrio, CombinatorsInput, record#4) ==
+  sig: () -> Decoder(combinators.CombinatorsInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure combinators_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn combinators_input_decoder$0/1 origin=lifted(combinators_input_decoder, #0) ==
+  sig: (String) -> Decoder(combinators.CombinatorsInput)
+  v1 = record(combinators_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn combinators_outcome_codec/0 origin=codec_template(UnionTrio, CombinatorsOutcome, union#5) ==
+  sig: () -> Codec(combinators.CombinatorsOutcome)
+  v0 = make_closure combinators_outcome_to_json captures=[]
+  v1 = call_local combinators_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn combinators_outcome_to_json/1 origin=codec_template(UnionTrio, CombinatorsOutcome, union#5) ==
+  sig: (combinators.CombinatorsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v1|>clean_to_json}
+  return v2
+== fn combinators_outcome_decoder/0 origin=codec_template(UnionTrio, CombinatorsOutcome, union#5) ==
+  sig: () -> Decoder(combinators.CombinatorsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure combinators_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn combinators_outcome_decoder$outcome/1 origin=lifted(combinators_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(combinators.CombinatorsOutcome)
+  if cmp Eq v0 lit#11:
+    v3 = call_local clean_decoder()
+    v4 = make_closure combinators_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#12, v3, v4)
+  else:
+    v1 = record(clean, [0])
+    v2 = record(clean_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#10)
+== fn combinators_outcome_decoder$arm0/1 origin=lifted(combinators_outcome_decoder, #1) ==
+  sig: (combinators.Clean) -> Decoder(combinators.CombinatorsOutcome)
+  v1 = record(clean_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_finding_codec/0 origin=codec_template(CompositeTrio, List(Finding), composite(list(ref(Finding)))) ==
+  sig: () -> Codec(List(combinators.Finding))
+  v0 = make_closure list_finding_to_json captures=[]
+  v1 = call_local list_finding_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_finding_to_json/1 origin=codec_template(CompositeTrio, List(Finding), composite(list(ref(Finding)))) ==
+  sig: (List(combinators.Finding)) -> Json
+  v1 = make_closure finding_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_finding_decoder/0 origin=codec_template(CompositeTrio, List(Finding), composite(list(ref(Finding)))) ==
+  sig: () -> Decoder(List(combinators.Finding))
+  v0 = call_local finding_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn fetch_findings_activity/1 origin=activity_wrapper(fetch_findings, raw=false) ==
+  sig: (String) -> Activity(combinators.FetchFindingsInput, List(combinators.Finding))
+  T-ACT action=fetch_findings input_codec=fetch_findings_input_codec return=list_finding_codec
+== fn step_fetch/1 origin=region(fetch) ==
+  sig: (String) -> Result(combinators.CombinatorsOutcome, AwlError)
+  v1 = call_local fetch_findings_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#13)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  tail_local step_tally(v5)
+== fn step_tally/1 origin=chain_step(fetch.tally) ==
+  sig: (List(combinators.Finding)) -> Result(combinators.CombinatorsOutcome, AwlError)
+  v1 = make_closure awl_combinator_0 captures=[]
+  v2 = call_rt gleam@list:filter/2(v0, v1) live_after=[v0]
+  v3 = make_closure awl_combinator_1 captures=[]
+  v4 = call_rt gleam@list:sort/2(v2, v3) live_after=[v0, v2]
+  v5 = make_closure awl_combinator_2 captures=[]
+  v6 = call_rt gleam@list:map/2(v4, v5) live_after=[v0, v2]
+  v7 = call_rt gleam@list:length/1(v2) live_after=[v0, v2, v6]
+  v8 = call_rt gleam@list:length/1(v0) live_after=[v2, v6, v7]
+  v9 = cmp Eq v2 nil
+  if is_true v9:
+    v10 = record(clean, [v8])
+    v11 = record(clean_outcome, [v10])
+    v12 = record(ok, [v11])
+    return v12
+  else:
+    v13 = record(blocked, [v6, v7])
+    v14 = call_local blocked_to_json(v13)
+    v15 = call_rt gleam@json:to_string/1(v14)
+    v16 = record(awl_outcome_failure, [lit#14, v15])
+    v17 = record(error, [v16])
+    return v17
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl_combinator_0/1 origin=lifted(execute, #0) ==
+  sig: (combinators.Finding) -> Bool
+  v1 = field(v0, 2)
+  return v1
+== fn awl_combinator_1/2 origin=lifted(execute, #1) ==
+  sig: (combinators.Finding, combinators.Finding) -> gleam/order.Order
+  v2 = field(v0, 3)
+  v3 = field(v1, 3)
+  tail_rt gleam@int:compare/2(v2, v3)
+== fn awl_combinator_2/1 origin=lifted(execute, #2) ==
+  sig: (combinators.Finding) -> String
+  v1 = field(v0, 1)
+  return v1

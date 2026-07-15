@@ -1,0 +1,13 @@
+//! Pipe-into-child parity: thread one value through a child stage, then project.
+workflow pipe_child
+  input essay: String
+  outcome noted: type Note, route success
+
+type Grade { score: Int, feedback: String }
+type Note { feedback: String }
+
+child score_essay(essay: String) -> Grade
+
+step delegate
+  essay |> score_essay |> .feedback -> feedback
+  route noted(feedback: feedback)

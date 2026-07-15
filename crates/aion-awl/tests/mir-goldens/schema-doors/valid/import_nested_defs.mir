@@ -1,0 +1,373 @@
+module import_nested_defs source=import_nested_defs.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_pack_order:
+    aion@activity:task_queue/2 [activities] (v1, lit#26)
+    aion@workflow:run/1 [activities] (v2)
+== durable families == activities
+== atoms ==
+  [0] order
+  [1] packed
+  [2] no_lines
+  [3] order_customer
+  [4] line
+  [5] pack_input
+  [6] import_nested_defs_input
+  [7] packed_outcome
+  [8] some
+  [9] none
+  [10] awl_outcome_failure
+  [11] error
+  [12] ok
+== literals ==
+  [0] "customer"
+  [1] "id"
+  [2] "lines"
+  [3] "status"
+  [4] "manifest"
+  [5] "reason"
+  [6] "customer"
+  [7] "name"
+  [8] "email"
+  [9] "email"
+  [10] "name"
+  [11] "quantity"
+  [12] "sku"
+  [13] "order"
+  [14] "order"
+  [15] "packed"
+  [16] "outcome"
+  [17] ""
+  [18] "ImportNestedDefsOutcome"
+  [19] "packed"
+  [20] "payload"
+  [21] "shipped"
+  [22] "order already shipped"
+  [23] "no_lines"
+  [24] "no lines on the order"
+  [25] "no_lines"
+  [26] "doors"
+== types ==
+  record Order tag=order
+    customer: ref(OrderCustomer)
+    id: string
+    lines: list(ref(Line))
+    status: string
+  record Packed tag=packed
+    manifest: string
+  record NoLines tag=no_lines
+    reason: string
+    customer: string
+  record OrderCustomer tag=order_customer
+    email: nullable(string) optional
+    name: string
+  record Line tag=line
+    quantity: int
+    sku: string
+  record PackInput tag=pack_input
+    order: ref(Order)
+  record ImportNestedDefsInput tag=import_nested_defs_input
+    order: ref(Order)
+  union ImportNestedDefsOutcome
+    packed -> packed_outcome(ref(Packed))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=import_nested_defs_input_codec output=import_nested_defs_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(import_nested_defs.ImportNestedDefsInput, import_nested_defs.ImportNestedDefsOutcome, AwlError)
+  T-DEF name="import_nested_defs" input=import_nested_defs_input_codec output=import_nested_defs_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (import_nested_defs.ImportNestedDefsInput) -> Result(import_nested_defs.ImportNestedDefsOutcome, AwlError)
+  T-EXEC fields=[order:import_nested_defs.Order] entry=step_tally args=[0]
+== fn order_codec/0 origin=codec_template(RecordTrio, Order, record#0) ==
+  sig: () -> Codec(import_nested_defs.Order)
+  v0 = make_closure order_to_json captures=[]
+  v1 = call_local order_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn order_to_json/1 origin=codec_template(RecordTrio, Order, record#0) ==
+  sig: (import_nested_defs.Order) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = field(v0, 4)
+  v5 = json_obj {"customer": v1|>order_customer_to_json, "id": v2|>awlc.string_to_json, "lines": v3|>list_line_to_json, "status": v4|>awlc.string_to_json}
+  return v5
+== fn order_decoder/0 origin=codec_template(RecordTrio, Order, record#0) ==
+  sig: () -> Decoder(import_nested_defs.Order)
+  v0 = call_local order_customer_decoder()
+  v1 = make_closure order_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn order_decoder$0/1 origin=lifted(order_decoder, #0) ==
+  sig: (import_nested_defs.OrderCustomer) -> Decoder(import_nested_defs.Order)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure order_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn order_decoder$1/2 origin=lifted(order_decoder, #1) ==
+  sig: (String, import_nested_defs.OrderCustomer) -> Decoder(import_nested_defs.Order)
+  v2 = call_local list_line_decoder() live_after=[v0, v1]
+  v3 = make_closure order_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v2, v3)
+== fn order_decoder$2/3 origin=lifted(order_decoder, #2) ==
+  sig: (List(import_nested_defs.Line), import_nested_defs.OrderCustomer, String) -> Decoder(import_nested_defs.Order)
+  v3 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1, v2]
+  v4 = make_closure order_decoder$3 captures=[v1, v2, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v3, v4)
+== fn order_decoder$3/4 origin=lifted(order_decoder, #3) ==
+  sig: (String, import_nested_defs.OrderCustomer, String, List(import_nested_defs.Line)) -> Decoder(import_nested_defs.Order)
+  v4 = record(order, [v1, v2, v3, v0])
+  tail_rt gleam@dynamic@decode:success/1(v4)
+== fn packed_codec/0 origin=codec_template(RecordTrio, Packed, record#1) ==
+  sig: () -> Codec(import_nested_defs.Packed)
+  v0 = make_closure packed_to_json captures=[]
+  v1 = call_local packed_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn packed_to_json/1 origin=codec_template(RecordTrio, Packed, record#1) ==
+  sig: (import_nested_defs.Packed) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"manifest": v1|>awlc.string_to_json}
+  return v2
+== fn packed_decoder/0 origin=codec_template(RecordTrio, Packed, record#1) ==
+  sig: () -> Decoder(import_nested_defs.Packed)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure packed_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn packed_decoder$0/1 origin=lifted(packed_decoder, #0) ==
+  sig: (String) -> Decoder(import_nested_defs.Packed)
+  v1 = record(packed, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn no_lines_codec/0 origin=codec_template(RecordTrio, NoLines, record#2) ==
+  sig: () -> Codec(import_nested_defs.NoLines)
+  v0 = make_closure no_lines_to_json captures=[]
+  v1 = call_local no_lines_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn no_lines_to_json/1 origin=codec_template(RecordTrio, NoLines, record#2) ==
+  sig: (import_nested_defs.NoLines) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"reason": v1|>awlc.string_to_json, "customer": v2|>awlc.string_to_json}
+  return v3
+== fn no_lines_decoder/0 origin=codec_template(RecordTrio, NoLines, record#2) ==
+  sig: () -> Decoder(import_nested_defs.NoLines)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure no_lines_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn no_lines_decoder$0/1 origin=lifted(no_lines_decoder, #0) ==
+  sig: (String) -> Decoder(import_nested_defs.NoLines)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure no_lines_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v1, v2)
+== fn no_lines_decoder$1/2 origin=lifted(no_lines_decoder, #1) ==
+  sig: (String, String) -> Decoder(import_nested_defs.NoLines)
+  v2 = record(no_lines, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn order_customer_codec/0 origin=codec_template(RecordTrio, OrderCustomer, record#3) ==
+  sig: () -> Codec(import_nested_defs.OrderCustomer)
+  v0 = make_closure order_customer_to_json captures=[]
+  v1 = call_local order_customer_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn order_customer_to_json/1 origin=codec_template(RecordTrio, OrderCustomer, record#3) ==
+  sig: (import_nested_defs.OrderCustomer) -> Json
+  v1 = field(v0, 1)
+  v2 = call_local order_customer_to_json$field0(v1) live_after=[v0]
+  v3 = field(v0, 2)
+  v4 = call_rt aion@awl@codec:string_to_json/1(v3) live_after=[v2]
+  v5 = tuple([lit#7, v4])
+  v6 = list([v5])
+  v7 = list([v2, v6])
+  v8 = call_rt gleam@list:flatten/1(v7)
+  tail_rt gleam@json:object/1(v8)
+== fn order_customer_decoder/0 origin=codec_template(RecordTrio, OrderCustomer, record#3) ==
+  sig: () -> Decoder(import_nested_defs.OrderCustomer)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure order_customer_decoder$some captures=[]
+  v2 = call_rt gleam@dynamic@decode:map/2(v0, v1)
+  v3 = make_closure order_customer_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:optional_field/4(lit#9, 'none', v2, v3)
+== fn order_customer_to_json$field0/1 origin=lifted(order_customer_to_json, #0) ==
+  sig: (Option(String)) -> List(#(String, Json))
+  if is_tagged v0 some/2:
+    v1 = field(v0, 1)
+    v2 = call_rt aion@awl@codec:string_to_json/1(v1)
+    v3 = tuple([lit#8, v2])
+    v4 = list([v3])
+    return v4
+  else:
+    return nil
+== fn order_customer_decoder$some/1 origin=lifted(order_customer_decoder, #0) ==
+  sig: (Dynamic) -> Option(Dynamic)
+  v1 = record(some, [v0])
+  return v1
+== fn order_customer_decoder$0/1 origin=lifted(order_customer_decoder, #1) ==
+  sig: (Option(String)) -> Decoder(import_nested_defs.OrderCustomer)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure order_customer_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v1, v2)
+== fn order_customer_decoder$1/2 origin=lifted(order_customer_decoder, #2) ==
+  sig: (String, Option(String)) -> Decoder(import_nested_defs.OrderCustomer)
+  v2 = record(order_customer, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn line_codec/0 origin=codec_template(RecordTrio, Line, record#4) ==
+  sig: () -> Codec(import_nested_defs.Line)
+  v0 = make_closure line_to_json captures=[]
+  v1 = call_local line_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn line_to_json/1 origin=codec_template(RecordTrio, Line, record#4) ==
+  sig: (import_nested_defs.Line) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"quantity": v1|>awlc.int_to_json, "sku": v2|>awlc.string_to_json}
+  return v3
+== fn line_decoder/0 origin=codec_template(RecordTrio, Line, record#4) ==
+  sig: () -> Decoder(import_nested_defs.Line)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure line_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn line_decoder$0/1 origin=lifted(line_decoder, #0) ==
+  sig: (Int) -> Decoder(import_nested_defs.Line)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure line_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v1, v2)
+== fn line_decoder$1/2 origin=lifted(line_decoder, #1) ==
+  sig: (String, Int) -> Decoder(import_nested_defs.Line)
+  v2 = record(line, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn pack_input_codec/0 origin=codec_template(RecordTrio, PackInput, record#5) ==
+  sig: () -> Codec(import_nested_defs.PackInput)
+  v0 = make_closure pack_input_to_json captures=[]
+  v1 = call_local pack_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn pack_input_to_json/1 origin=codec_template(RecordTrio, PackInput, record#5) ==
+  sig: (import_nested_defs.PackInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"order": v1|>order_to_json}
+  return v2
+== fn pack_input_decoder/0 origin=codec_template(RecordTrio, PackInput, record#5) ==
+  sig: () -> Decoder(import_nested_defs.PackInput)
+  v0 = call_local order_decoder()
+  v1 = make_closure pack_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn pack_input_decoder$0/1 origin=lifted(pack_input_decoder, #0) ==
+  sig: (import_nested_defs.Order) -> Decoder(import_nested_defs.PackInput)
+  v1 = record(pack_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn import_nested_defs_input_codec/0 origin=codec_template(RecordTrio, ImportNestedDefsInput, record#6) ==
+  sig: () -> Codec(import_nested_defs.ImportNestedDefsInput)
+  v0 = make_closure import_nested_defs_input_to_json captures=[]
+  v1 = call_local import_nested_defs_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn import_nested_defs_input_to_json/1 origin=codec_template(RecordTrio, ImportNestedDefsInput, record#6) ==
+  sig: (import_nested_defs.ImportNestedDefsInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"order": v1|>order_to_json}
+  return v2
+== fn import_nested_defs_input_decoder/0 origin=codec_template(RecordTrio, ImportNestedDefsInput, record#6) ==
+  sig: () -> Decoder(import_nested_defs.ImportNestedDefsInput)
+  v0 = call_local order_decoder()
+  v1 = make_closure import_nested_defs_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v0, v1)
+== fn import_nested_defs_input_decoder$0/1 origin=lifted(import_nested_defs_input_decoder, #0) ==
+  sig: (import_nested_defs.Order) -> Decoder(import_nested_defs.ImportNestedDefsInput)
+  v1 = record(import_nested_defs_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn import_nested_defs_outcome_codec/0 origin=codec_template(UnionTrio, ImportNestedDefsOutcome, union#7) ==
+  sig: () -> Codec(import_nested_defs.ImportNestedDefsOutcome)
+  v0 = make_closure import_nested_defs_outcome_to_json captures=[]
+  v1 = call_local import_nested_defs_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn import_nested_defs_outcome_to_json/1 origin=codec_template(UnionTrio, ImportNestedDefsOutcome, union#7) ==
+  sig: (import_nested_defs.ImportNestedDefsOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#15|>awlc.string_to_json, "payload": v1|>packed_to_json}
+  return v2
+== fn import_nested_defs_outcome_decoder/0 origin=codec_template(UnionTrio, ImportNestedDefsOutcome, union#7) ==
+  sig: () -> Decoder(import_nested_defs.ImportNestedDefsOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure import_nested_defs_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#16, v0, v1)
+== fn import_nested_defs_outcome_decoder$outcome/1 origin=lifted(import_nested_defs_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(import_nested_defs.ImportNestedDefsOutcome)
+  if cmp Eq v0 lit#19:
+    v3 = call_local packed_decoder()
+    v4 = make_closure import_nested_defs_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#20, v3, v4)
+  else:
+    v1 = record(packed, [lit#17])
+    v2 = record(packed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#18)
+== fn import_nested_defs_outcome_decoder$arm0/1 origin=lifted(import_nested_defs_outcome_decoder, #1) ==
+  sig: (import_nested_defs.Packed) -> Decoder(import_nested_defs.ImportNestedDefsOutcome)
+  v1 = record(packed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_line_codec/0 origin=codec_template(CompositeTrio, List(Line), composite(list(ref(Line)))) ==
+  sig: () -> Codec(List(import_nested_defs.Line))
+  v0 = make_closure list_line_to_json captures=[]
+  v1 = call_local list_line_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_line_to_json/1 origin=codec_template(CompositeTrio, List(Line), composite(list(ref(Line)))) ==
+  sig: (List(import_nested_defs.Line)) -> Json
+  v1 = make_closure line_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_line_decoder/0 origin=codec_template(CompositeTrio, List(Line), composite(list(ref(Line)))) ==
+  sig: () -> Decoder(List(import_nested_defs.Line))
+  v0 = call_local line_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn option_string_codec/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Codec(Option(String))
+  v0 = make_closure option_string_to_json captures=[]
+  v1 = call_local option_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn option_string_to_json/1 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: (Option(String)) -> Json
+  v1 = make_closure option_string_to_json$item captures=[]
+  tail_rt gleam@json:nullable/2(v0, v1)
+== fn option_string_decoder/0 origin=codec_template(CompositeTrio, Option(String), composite(nullable(string))) ==
+  sig: () -> Decoder(Option(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:optional/1(v0)
+== fn option_string_to_json$item/1 origin=lifted(option_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn pack_activity/1 origin=activity_wrapper(pack, raw=false) ==
+  sig: (import_nested_defs.Order) -> Activity(import_nested_defs.PackInput, import_nested_defs.Packed)
+  T-ACT action=pack input_codec=pack_input_codec return=packed_codec
+== fn step_tally/1 origin=region(tally) ==
+  sig: (import_nested_defs.Order) -> Result(import_nested_defs.ImportNestedDefsOutcome, AwlError)
+  v1 = field(v0, 3)
+  v2 = call_rt gleam@list:length/1(v1) live_after=[v0]
+  v4 = field(v0, 4)
+  v3 = cmp Eq v4 lit#21
+  if is_true v3:
+    v5 = field(v0, 1)
+    v6 = field(v5, 2)
+    v7 = record(no_lines, [lit#22, v6])
+    v8 = call_local no_lines_to_json(v7)
+    v9 = call_rt gleam@json:to_string/1(v8)
+    v10 = record(awl_outcome_failure, [lit#23, v9])
+    v11 = record(error, [v10])
+    return v11
+  else:
+    v12 = cmp Eq v2 0
+    if is_true v12:
+      v13 = field(v0, 1)
+      v14 = field(v13, 2)
+      v15 = record(no_lines, [lit#24, v14])
+      v16 = call_local no_lines_to_json(v15)
+      v17 = call_rt gleam@json:to_string/1(v16)
+      v18 = record(awl_outcome_failure, [lit#25, v17])
+      v19 = record(error, [v18])
+      return v19
+    else:
+      tail_local step_pack_order(v0)
+== fn step_pack_order/1 origin=region(pack_order) ==
+  sig: (import_nested_defs.Order) -> Result(import_nested_defs.ImportNestedDefsOutcome, AwlError)
+  v1 = call_local pack_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#26)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(packed_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

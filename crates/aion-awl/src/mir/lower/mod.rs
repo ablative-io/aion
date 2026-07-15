@@ -3,6 +3,7 @@
 mod activity;
 mod build;
 mod chain;
+mod child_call;
 mod codec;
 mod codec_child;
 mod codec_decode;
@@ -20,6 +21,7 @@ mod forks;
 mod liveness;
 mod loops;
 mod outcome;
+mod pipes;
 mod registry;
 mod slots;
 mod wrappers;
