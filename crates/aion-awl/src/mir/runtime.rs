@@ -28,7 +28,6 @@ pub enum RuntimeFn {
     WfRun,
     WfAll,
     WfMap,
-    WfMapSettled,
     WfSpawn,
     WfSpawnAndWait,
     WfReceive,
@@ -95,7 +94,6 @@ pub enum RuntimeFn {
     LSort,
     LLength,
     LTryFold,
-    LFold,
     LReverse,
     LIsEmpty,
     // gleam@option / compares / string
@@ -130,7 +128,6 @@ impl RuntimeFn {
             Self::WfRun => ("aion@workflow", "run", 1),
             Self::WfAll => ("aion@workflow", "all", 1),
             Self::WfMap => ("aion@workflow", "map", 2),
-            Self::WfMapSettled => ("aion@workflow", "map_settled", 2),
             Self::WfSpawn => ("aion@workflow", "spawn", 6),
             Self::WfSpawnAndWait => ("aion@workflow", "spawn_and_wait", 6),
             Self::WfReceive => ("aion@workflow", "receive", 1),
@@ -184,7 +181,6 @@ impl RuntimeFn {
             Self::LSort => ("gleam@list", "sort", 2),
             Self::LLength => ("gleam@list", "length", 1),
             Self::LTryFold => ("gleam@list", "try_fold", 3),
-            Self::LFold => ("gleam@list", "fold", 3),
             Self::LReverse => ("gleam@list", "reverse", 1),
             Self::LIsEmpty => ("gleam@list", "is_empty", 1),
             Self::OIsSome => ("gleam@option", "is_some", 1),
@@ -206,7 +202,6 @@ impl RuntimeFn {
             Self::WfRun
             | Self::WfAll
             | Self::WfMap
-            | Self::WfMapSettled
             | Self::ActNew
             | Self::ActTaskQueue
             | Self::ActRetry

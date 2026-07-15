@@ -34,7 +34,7 @@ mod pipe_tests;
 mod tests;
 
 pub use func::{
-    CodecRef, CodecTemplateKind, ExecArg, FlowFn, FnOrigin, FnSig, MirFn, TemplateFn, TrioParams,
+    CodecRef, CodecTemplateKind, FlowFn, FnOrigin, FnSig, MirFn, TemplateFn, TrioParams,
     TypeShapeRef,
 };
 pub use ids::{AtomRef, FnRef, LitRef, Span, Var};

@@ -20,16 +20,6 @@ pub enum CodecRef {
     SdkLeaf(Leaf),
 }
 
-/// One argument of `execute`'s entry tail call: an input-record field, or the
-/// integer-zero seed of a host-flow `max … visits` counter (the run-once
-/// entry seeds every language-owned counter exactly once, so a backward route
-/// can never reset a bound).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecArg {
-    Field(u16),
-    Zero,
-}
-
 /// A template shell: name-substitution only, BC-3 expands each from a fixed
 /// recipe (AWL-BC-IR.md §2.4). Post-S8 these are the ONLY templated functions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +36,7 @@ pub enum TemplateFn {
     Execute {
         input_fields: Vec<(String, TyDesc)>,
         entry: FnRef,
-        entry_args: Vec<ExecArg>,
+        entry_args: Vec<u16>,
     },
     ActivityWrapper {
         action: String,
@@ -120,18 +110,6 @@ pub enum FnOrigin {
     SubStep {
         parent: String,
         sub: String,
-    },
-    /// A subflow's run-once entry wrapper (`awl_sf_<name>`): seeds the
-    /// subflow's visit counters and tail-calls its entry chain function.
-    SubflowWrapper {
-        subflow: String,
-    },
-    /// A per-item region member flow's run-once entry wrapper
-    /// (`awl_r<id>_<open>`): seeds the member flow's visit counters and
-    /// tail-calls its entry chain function once per instance.
-    RegionWrapper {
-        region: u32,
-        open: String,
     },
     Loop {
         step: String,
