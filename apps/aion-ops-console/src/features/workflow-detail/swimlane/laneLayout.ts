@@ -54,6 +54,8 @@ export type SwimlaneLane = {
   id: string;
   kind: LaneKind;
   label: string;
+  /** Child workflow id for a child lane (the expansion target); null otherwise. */
+  childWorkflowId: string | null;
   bars: SwimlaneBar[];
 };
 
@@ -129,10 +131,16 @@ export function layoutSwimlane(entries: readonly TimelineEntry[]): SwimlaneLayou
         );
         break;
       case 'child':
-        appendBar(childLanes, `child:${entry.childWorkflowId}`, childLabel(entry), {
-          ...spanBar(entry, rankIndex, childStatus(entry.status)),
-          childWorkflowId: entry.childWorkflowId,
-        });
+        appendBar(
+          childLanes,
+          `child:${entry.childWorkflowId}`,
+          childLabel(entry),
+          {
+            ...spanBar(entry, rankIndex, childStatus(entry.status)),
+            childWorkflowId: entry.childWorkflowId,
+          },
+          entry.childWorkflowId
+        );
         break;
       default:
         break;
@@ -142,16 +150,34 @@ export function layoutSwimlane(entries: readonly TimelineEntry[]): SwimlaneLayou
   const lanes: SwimlaneLane[] = [];
 
   if (lifecycleBars.length > 0) {
-    lanes.push({ id: 'lifecycle', kind: 'lifecycle', label: 'Lifecycle', bars: lifecycleBars });
+    lanes.push({
+      id: 'lifecycle',
+      kind: 'lifecycle',
+      label: 'Lifecycle',
+      childWorkflowId: null,
+      bars: lifecycleBars,
+    });
   }
   lanes.push(...sortLanes(activityLanes));
   lanes.push(...sortLanes(timerLanes));
   lanes.push(...sortLanes(childLanes));
   if (signalBars.length > 0) {
-    lanes.push({ id: 'signal', kind: 'signal', label: 'Signals', bars: signalBars });
+    lanes.push({
+      id: 'signal',
+      kind: 'signal',
+      label: 'Signals',
+      childWorkflowId: null,
+      bars: signalBars,
+    });
   }
   if (genericBars.length > 0) {
-    lanes.push({ id: 'generic', kind: 'generic', label: 'Other', bars: genericBars });
+    lanes.push({
+      id: 'generic',
+      kind: 'generic',
+      label: 'Other',
+      childWorkflowId: null,
+      bars: genericBars,
+    });
   }
 
   return { lanes, rankCount: sequences.length, sequences };
@@ -169,9 +195,16 @@ function appendBar(
   lanes: Map<string, SwimlaneLane>,
   id: string,
   label: string,
-  bar: SwimlaneBar
+  bar: SwimlaneBar,
+  childWorkflowId: string | null = null
 ): void {
-  const lane = lanes.get(id) ?? { id, kind: bar.entry.kind as LaneKind, label, bars: [] };
+  const lane = lanes.get(id) ?? {
+    id,
+    kind: bar.entry.kind as LaneKind,
+    label,
+    childWorkflowId,
+    bars: [],
+  };
 
   if (!lanes.has(id)) {
     lanes.set(id, lane);

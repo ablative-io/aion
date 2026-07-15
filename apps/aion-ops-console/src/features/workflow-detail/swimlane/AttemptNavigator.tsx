@@ -10,6 +10,7 @@ import {
   TranscriptPanel,
   useActivityAttempts,
   useInterventionController,
+  useRetainedStreams,
 } from '@/features/transcript';
 import type { AttemptCapabilities } from '@/lib/api';
 import type { TranscriptTarget } from '@/lib/api/transcript-stream';
@@ -56,6 +57,14 @@ export function AttemptNavigator({ workflowId, namespace, timeline }: AttemptNav
   const rows = useMemo(() => deriveAttemptNavigator(timeline), [timeline]);
   const [pickedKey, setPickedKey] = useState<string | null>(null);
   const { attempts: liveAttempts, refresh } = useActivityAttempts({ workflowId, namespace });
+  // Which rows have a RETAINED durable transcript (lane #229 enumeration). Rows
+  // stay timeline-derived; this is a badge source only, never a row source.
+  const retained = useRetainedStreams({ workflowId, namespace });
+  const retainedKeys = useMemo(
+    () =>
+      new Set(retained.streams.map((stream) => attemptRowKey(stream.activityId, stream.attempt))),
+    [retained.streams]
+  );
 
   const selectedRow = resolveSelectedRow(rows, pickedKey);
   const target: TranscriptTarget | null = useMemo(() => {
@@ -108,7 +117,12 @@ export function AttemptNavigator({ workflowId, namespace, timeline }: AttemptNav
           </Button>
         </div>
       </header>
-      <AttemptRowList onSelect={setPickedKey} rows={rows} selectedKey={selectedRow?.key ?? null} />
+      <AttemptRowList
+        onSelect={setPickedKey}
+        retainedKeys={retainedKeys}
+        rows={rows}
+        selectedKey={selectedRow?.key ?? null}
+      />
       <TranscriptPanel target={target} />
       {intervention === null ? null : <InterventionComposer controller={intervention} />}
     </section>
@@ -131,13 +145,15 @@ function resolveSelectedRow(
   return rows.length === 1 ? (rows[0] ?? null) : null;
 }
 
-type AttemptRowListProps = {
+export type AttemptRowListProps = {
   rows: readonly AttemptNavigatorRow[];
   selectedKey: string | null;
   onSelect: (key: string) => void;
+  /** Row keys with a retained durable transcript (the enumeration badge). */
+  retainedKeys: ReadonlySet<string>;
 };
 
-function AttemptRowList({ rows, selectedKey, onSelect }: AttemptRowListProps) {
+export function AttemptRowList({ rows, selectedKey, onSelect, retainedKeys }: AttemptRowListProps) {
   if (rows.length === 0) {
     return (
       <EmptyState
@@ -165,6 +181,14 @@ function AttemptRowList({ rows, selectedKey, onSelect }: AttemptRowListProps) {
             {row.isLegacy
               ? `activity ${row.activityId} · legacy attempt`
               : `activity ${row.activityId} · attempt ${row.attempt}`}
+            {retainedKeys.has(row.key) ? (
+              <span
+                className="text-[10px] text-muted-foreground"
+                data-testid={`retained:${row.key}`}
+              >
+                · retained
+              </span>
+            ) : null}
           </Button>
         </li>
       ))}

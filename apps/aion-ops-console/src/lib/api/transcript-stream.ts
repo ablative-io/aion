@@ -88,6 +88,12 @@ export type TranscriptStreamManagerOptions = {
   scheduler?: Scheduler;
   reconnect?: Partial<ReconnectOptions>;
   warn?: WarningLogger;
+  /**
+   * Resume cursor seeded from a REST backfill: the subscribe frame carries
+   * `after_seq` immediately (on the FIRST connect), so the WS serves only the
+   * live tail past the fetched history.
+   */
+  initialAfterSeq?: number;
 };
 
 export type Unsubscribe = () => void;
@@ -133,6 +139,7 @@ export class AionTranscriptStreamManager {
     };
     this.reconnect = { ...DEFAULT_RECONNECT, ...options.reconnect };
     this.warn = options.warn ?? consoleWarn;
+    this.lastAppliedSeq = options.initialAfterSeq ?? null;
   }
 
   subscribe(listener: TranscriptStreamListener): Unsubscribe {

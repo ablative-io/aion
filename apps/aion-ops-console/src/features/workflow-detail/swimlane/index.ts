@@ -1,3 +1,4 @@
+export { CycleNotice, EmbeddedRunView, isEmbedCycle } from './EmbeddedRunView';
 export { LaneBar } from './LaneBar';
 export {
   type BarStatus,

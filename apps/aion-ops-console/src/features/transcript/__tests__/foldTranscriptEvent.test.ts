@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import type { ActivityEvent } from '@/types';
 
-import { foldTranscriptEvent, type TranscriptEntry } from '../hooks/useTranscript';
+import { backfillEntries, foldTranscriptEvent, type TranscriptEntry } from '../hooks/useTranscript';
 
 const AGENT_A = '00000000-0000-0000-0000-0000000000aa';
 const AGENT_B = '00000000-0000-0000-0000-0000000000bb';
@@ -176,5 +176,24 @@ describe('foldTranscriptEvent', () => {
     const next = foldTranscriptEvent(entries, usage, 1);
     expect(next).toHaveLength(2);
     expect(next[1]?.type).toBe('event');
+  });
+});
+
+describe('backfillEntries', () => {
+  test('folds a retained transcript in order and reports the resume cursor', () => {
+    const { entries, lastSeq } = backfillEntries([
+      message(0),
+      note(1, 'tool_call_delta'),
+      message(2),
+    ]);
+
+    expect(lastSeq).toBe(2);
+    expect(seqs(entries)).toEqual([0, 1, 2]);
+    // The note run candidate folded through the SAME coalescing fold as live.
+    expect(entries[1]?.type).toBe('notes');
+  });
+
+  test('an empty retained transcript reports no cursor (pre-retention run)', () => {
+    expect(backfillEntries([])).toEqual({ entries: [], lastSeq: undefined });
   });
 });

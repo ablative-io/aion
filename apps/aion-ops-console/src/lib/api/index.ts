@@ -34,6 +34,15 @@ export {
   createAionClusterStreamManager,
 } from './cluster-stream';
 export type {
+  RetainedStreamHead,
+  TranscriptFetchParams,
+  TranscriptReadOptions,
+} from './transcript-read';
+export {
+  TRANSCRIPT_READ,
+  TranscriptReadClient,
+} from './transcript-read';
+export type {
   TranscriptStreamListener,
   TranscriptStreamManagerOptions,
   TranscriptTarget,

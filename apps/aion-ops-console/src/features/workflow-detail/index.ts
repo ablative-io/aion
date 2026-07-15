@@ -22,6 +22,9 @@ export { computeReopen, ReopenDiff } from './reopen';
 export {
   type BarStatus,
   buildRankIndex,
+  CycleNotice,
+  EmbeddedRunView,
+  isEmbedCycle,
   LaneBar,
   type LaneKind,
   layoutSwimlane,
