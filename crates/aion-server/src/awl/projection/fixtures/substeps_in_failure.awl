@@ -8,21 +8,20 @@ type Result { value: String }
 
 worker jobs
   action attempt(task: String) -> Result
-  action recover(task: String) -> Result
-  action record(result: Result) -> Result
 
 step guarded
   attempt(task: task) -> result
 
   on failure
-    step recover_task
-      recover(task: task) -> fallback
-      outcome next: otherwise, route record_failure
+    step choose_recovery
+      outcome next: otherwise, route classify_failure
 
-    step record_failure
-      record(result: fallback) -> recorded
+    step classify_failure
+      outcome terminal: otherwise, route failure_terminal
 
-    route failed(value: recorded.value)
+    route failed(value: "compensation complete")
 
+  outcome failure_terminal: when false,
+    route failed(value: "classified failure")
   outcome complete: otherwise,
     route done(value: result.value)

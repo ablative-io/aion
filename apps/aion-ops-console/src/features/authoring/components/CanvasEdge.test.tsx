@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { layoutEmbedded } from '../lib/canvas-layout';
+import { edgeLabel, embeddedEdgeLabelWidth, layoutEmbedded } from '../lib/canvas-layout';
 import type { GraphProjection, ProjectionStep } from '../lib/projection-types';
 import { ParallelCanvasEdgeVisual } from './CanvasEdge';
 import { SubflowGraph } from './StepNodeBody';
@@ -39,6 +39,23 @@ const selfLoopGraph: GraphProjection = {
     },
   ],
   childCalls: [],
+};
+
+const parallelSelfLoopId = 'route:repeat:repeat:when:1';
+const parallelSelfLoopGraph: GraphProjection = {
+  ...selfLoopGraph,
+  edges: [
+    ...selfLoopGraph.edges,
+    {
+      id: parallelSelfLoopId,
+      source: 'repeat',
+      target: 'repeat',
+      kind: 'route',
+      label: 'when',
+      back: true,
+      visits: '12',
+    },
+  ],
 };
 
 const backEdgeId = 'route:later:earlier:when:0';
@@ -106,6 +123,20 @@ function labelX(html: string, edgeId: string): number {
   return Number(renderedAttribute(html, 'text', edgeId, 'x'));
 }
 
+function embeddedSvgWidth(html: string): number {
+  return Number(html.match(/<svg[^>]*\swidth="([^"]+)"/)?.[1]);
+}
+
+function expectRightLabelFits(html: string, edgeId: string, label: string, nodeRight: number) {
+  const x = labelX(html, edgeId);
+  const width = embeddedEdgeLabelWidth(label);
+  const anchor = renderedAttribute(html, 'text', edgeId, 'text-anchor');
+  const left = anchor === 'end' ? x - width : anchor === 'middle' ? x - width / 2 : x;
+  const right = left + width;
+  expect(left).toBeGreaterThan(nodeRight);
+  expect(right).toBeLessThanOrEqual(embeddedSvgWidth(html));
+}
+
 function expectExteriorPath(
   html: string,
   edgeId: string,
@@ -146,8 +177,23 @@ describe('back-edge and self-loop clearance', () => {
     const nodeRight = node.x + node.width;
     const html = renderEmbedded(selfLoopGraph, 'self');
     expectExteriorPath(html, selfLoopId, 'right', nodeRight, node.y + node.height, node.y);
-    expect(labelX(html, selfLoopId)).toBeGreaterThan(nodeRight);
+    expectRightLabelFits(html, selfLoopId, 'otherwise ×3', nodeRight);
     expect(layout.width).toBeGreaterThan(nodeRight);
+  });
+
+  test('embedded parallel self-loop label bounds stay outside the node and inside the SVG', () => {
+    const layout = layoutEmbedded(parallelSelfLoopGraph, new Set(), 'parallel-self');
+    const node = layout.nodes.repeat;
+    expect(node).toBeDefined();
+    if (node === undefined) return;
+    const nodeRight = node.x + node.width;
+    const html = renderEmbedded(parallelSelfLoopGraph, 'parallel-self');
+    for (const edge of parallelSelfLoopGraph.edges) {
+      const label = edgeLabel(edge);
+      expect(label).not.toBeNull();
+      if (label === null) continue;
+      expectRightLabelFits(html, edge.id, label, nodeRight);
+    }
   });
 
   test('embedded later-to-earlier controls and label stay left of every node', () => {

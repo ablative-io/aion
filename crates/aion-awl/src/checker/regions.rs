@@ -410,9 +410,35 @@ fn classify_step(ctx: &mut Ctx<'_>, step: &Step, subflow: Option<&str>, region: 
     };
     ctx.semantic
         .step_kind(step.name_span, &step.name, kind, subflow, region);
-    for statement in &step.body {
-        if let Statement::SubStep(sub) = statement {
-            classify_step(ctx, sub, subflow, region);
+    classify_statement_lists(ctx, step, subflow, region);
+}
+
+/// Visit the same statement-list tree as cycle checking while preserving the
+/// region inherited from the owning top-level step.
+fn classify_statement_lists(
+    ctx: &mut Ctx<'_>,
+    step: &Step,
+    subflow: Option<&str>,
+    region: Option<&str>,
+) {
+    classify_list(ctx, &step.body, subflow, region);
+    if let Some(on_failure) = &step.on_failure {
+        classify_list(ctx, &on_failure.body, subflow, region);
+    }
+}
+
+fn classify_list(
+    ctx: &mut Ctx<'_>,
+    statements: &[Statement],
+    subflow: Option<&str>,
+    region: Option<&str>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::SubStep(substep) => classify_step(ctx, substep, subflow, region),
+            Statement::Fork(fork) => classify_list(ctx, &fork.body, subflow, region),
+            Statement::Loop(looped) => classify_list(ctx, &looped.body, subflow, region),
+            _ => {}
         }
     }
 }

@@ -15,6 +15,8 @@ export const EMBEDDED_SECTION_HEADER_HEIGHT = 36;
 export const PARALLEL_EDGE_GAP = 24;
 /** Clear space between a node boundary and a back/self-loop edge gutter. */
 export const EDGE_GUTTER_CLEARANCE = 32;
+/** Font size shared by embedded edge labels and their width estimate. */
+export const EMBED_EDGE_LABEL_FONT_SIZE = 10;
 
 export type NodeSize = { width: number; height: number };
 export type PlacedNode = { x: number; y: number; width: number; height: number };
@@ -124,7 +126,9 @@ export function layoutEmbedded(
     const selfLoop = edge.source === edge.target;
     if (!(edge.back || selfLoop)) continue;
     needsVerticalGutter = true;
-    const required = EDGE_GUTTER_CLEARANCE + edgeLaneSpread(siblingOffsets.get(edge.id) ?? 0);
+    const pathDistance = EDGE_GUTTER_CLEARANCE + edgeLaneSpread(siblingOffsets.get(edge.id) ?? 0);
+    const labelWidth = embeddedEdgeLabelWidth(edgeLabel(edge));
+    const required = pathDistance + labelWidth;
     if (selfLoop) {
       rightGutter = Math.max(rightGutter, required);
     } else {
@@ -159,6 +163,11 @@ export function edgeLabel(edge: {
     return bound === null ? edge.label : `${edge.label} ${bound}`;
   }
   return edge.label;
+}
+
+/** Conservative rendered-width bound for one semibold embedded edge label. */
+export function embeddedEdgeLabelWidth(label: string | null): number {
+  return label === null ? 0 : Array.from(label).length * EMBED_EDGE_LABEL_FONT_SIZE;
 }
 
 /**

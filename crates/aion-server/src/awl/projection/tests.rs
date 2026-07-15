@@ -19,6 +19,7 @@ const SUBSTEPS_TWO_STAGE: &str = include_str!(
 const SUBSTEPS_IN_FAILURE: &str = include_str!("fixtures/substeps_in_failure.awl");
 const SUBSTEPS_IN_FORK: &str = include_str!("fixtures/substeps_in_fork.awl");
 const SUBSTEPS_IN_LOOP: &str = include_str!("fixtures/substeps_in_loop.awl");
+const SUBSTEPS_IN_REGION_BLOCKS: &str = include_str!("fixtures/substeps_in_region_blocks.awl");
 
 fn project(source: &str) -> Result<GraphProjection, Box<dyn std::error::Error>> {
     let document = aion_awl::parse(source)?;
@@ -194,14 +195,22 @@ fn two_stage_substeps_project_as_the_parent_owned_sibling_graph() -> TestResult 
 }
 
 #[test]
-fn failure_statement_list_projects_its_own_sibling_graph() -> TestResult {
-    assert_scoped_fixture(
-        SUBSTEPS_IN_FAILURE,
-        "guarded",
-        ProjectionSubstepScope::Failure,
-        "recover_task",
-        "record_failure",
-    )
+fn failure_statement_list_preserves_pure_decision_kinds() -> TestResult {
+    let graph = project(SUBSTEPS_IN_FAILURE)?;
+    assert_eq!(graph.steps.len(), 1, "one parent workflow step");
+    let parent = step(&graph, "guarded")?;
+    assert_eq!(parent.substeps.len(), 1, "one failure-local sibling graph");
+    let nested = substep_graph(parent, ProjectionSubstepScope::Failure, 0)?;
+    assert_local_graph(nested, "choose_recovery", "classify_failure");
+    assert!(
+        nested
+            .steps
+            .iter()
+            .all(|step| step.kind == ProjectionStepKind::Decision),
+        "body-less outcome-only failure substeps retain semantic decision kinds"
+    );
+    assert!(graph.edges.is_empty(), "local routes stay in their scope");
+    Ok(())
 }
 
 #[test]
@@ -233,6 +242,38 @@ fn loop_statement_list_projects_its_own_sibling_graph() -> TestResult {
         "prepare",
         "verify",
     )
+}
+
+#[test]
+fn block_nested_substeps_inherit_the_owning_per_item_region() -> TestResult {
+    let graph = project(SUBSTEPS_IN_REGION_BLOCKS)?;
+    let parent = step(&graph, "member")?;
+    assert_eq!(parent.region.as_deref(), Some("wave"));
+    assert_eq!(parent.substeps.len(), 2, "one fork and one loop graph");
+    let scopes = [
+        (ProjectionSubstepScope::Fork, "fork_choose", "fork_finish"),
+        (ProjectionSubstepScope::Loop, "loop_choose", "loop_finish"),
+    ];
+    for (scope, first, second) in scopes {
+        let nested = substep_graph(parent, scope, 0)?;
+        let names: Vec<_> = nested.steps.iter().map(|step| step.name.as_str()).collect();
+        assert_eq!(names, vec![first, second]);
+        assert!(
+            nested
+                .steps
+                .iter()
+                .all(|step| step.region.as_deref() == Some("wave")),
+            "block-nested substeps inherit the `wave` per-item region"
+        );
+        assert!(
+            nested
+                .steps
+                .iter()
+                .all(|step| step.kind == ProjectionStepKind::Decision),
+            "non-call nested probes retain their semantic kinds"
+        );
+    }
+    Ok(())
 }
 
 #[test]

@@ -3,6 +3,7 @@ import { Timer } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   EDGE_GUTTER_CLEARANCE,
+  EMBED_EDGE_LABEL_FONT_SIZE,
   EMBED_PADDING,
   edgeLabel,
   edgeLaneSpread,
@@ -403,8 +404,9 @@ function EmbeddedEdge({
         <text
           data-label-for={edge.id}
           fill="var(--muted-foreground)"
-          fontSize={10}
+          fontSize={EMBED_EDGE_LABEL_FONT_SIZE}
           fontWeight={600}
+          textAnchor={edge.back && !selfLoop ? 'end' : 'start'}
           x={mid.x}
           y={mid.y}
         >
