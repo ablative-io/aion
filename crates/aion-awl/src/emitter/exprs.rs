@@ -82,7 +82,10 @@ pub(super) fn expr_type(
     scope: &Scope,
 ) -> Result<GType, EmitError> {
     match expr {
-        Expr::String { .. } => Ok(GType::Str),
+        Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. } => Ok(GType::Str),
         Expr::Int { .. } => Ok(GType::Int),
         Expr::Float { .. } => Ok(GType::Float),
         Expr::Bool { .. }
@@ -201,7 +204,12 @@ pub(super) fn render_expr(
     prelude: &mut Vec<String>,
 ) -> Result<String, EmitError> {
     match expr {
-        Expr::String { value, .. } => Ok(string_lit(value)),
+        Expr::String { value, .. } | Expr::RawString { value, .. } => Ok(string_lit(value)),
+        Expr::Json { body, .. } => Ok(string_lit(body)),
+        Expr::SchemaOf { span, .. } => Err(EmitError::new(
+            *span,
+            "`schema of` must be folded before emission — this is an emitter defect",
+        )),
         Expr::Int { value, .. } => Ok(value.to_string()),
         Expr::Float { value, .. } => Ok(value.clone()),
         Expr::Bool { value, .. } => Ok(if *value { "True" } else { "False" }.to_owned()),

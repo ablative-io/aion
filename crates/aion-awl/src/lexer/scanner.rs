@@ -11,12 +11,15 @@ use super::{Keyword, LexError, Span, Token, TokenKind};
 /// an ordinary trivia comment, never doc data. Non-blank code lines produce a
 /// trailing `Newline` token when the line has a physical line ending.
 ///
-/// An inline `schema {` type door switches the lexer into raw capture: the
-/// brace-balanced body (braces included) becomes a single
-/// [`TokenKind::SchemaBody`] token, verbatim, however many physical lines it
-/// spans — no `Newline`, `Indent`, or `Dedent` tokens are produced inside it,
-/// and its content is exempt from every AWL lexical rule. One `Newline` is
-/// emitted for the closing-brace line.
+/// An inline `schema {` type door or a `json {` literal switches the lexer
+/// into raw capture: the brace-balanced body (braces included) becomes a
+/// single [`TokenKind::SchemaBody`] / [`TokenKind::JsonBody`] token,
+/// verbatim, however many physical lines it spans — no `Newline`, `Indent`,
+/// or `Dedent` tokens are produced inside it, and its content is exempt from
+/// every AWL lexical rule. One `Newline` is emitted for the closing-brace
+/// line. A triple-quoted `"""…"""` raw string captures the same way: the
+/// text between the delimiters becomes a single [`TokenKind::RawString`]
+/// token, byte-for-byte, with zero escape processing.
 ///
 /// # Errors
 ///
@@ -132,12 +135,39 @@ impl<'src> Lexer<'src> {
                 break;
             }
 
-            if cursor.starts_with("{") && self.last_token_is_schema_keyword() {
+            if cursor.starts_with("{")
+                && let Some(braced) = self.last_braced_body_kind()
+            {
                 let open = cursor.base + cursor.index;
                 let open_span = cursor.span(cursor.index, cursor.index + 1);
-                let (end, newlines) = scan_schema_body(source, open, open_span)?;
+                let (end, newlines) = scan_braced_body(source, open, open_span, braced)?;
+                let body = source[open..end].to_owned();
+                let kind = match braced {
+                    BracedBody::Schema => TokenKind::SchemaBody(body),
+                    BracedBody::Json => TokenKind::JsonBody(body),
+                };
                 self.tokens.push(Token::new(
-                    TokenKind::SchemaBody(source[open..end].to_owned()),
+                    kind,
+                    Span::new(open, end, open_span.line, open_span.column),
+                ));
+                if newlines == 0 {
+                    cursor.index = end - cursor.base;
+                } else {
+                    self.line += newlines;
+                    let close_start = source[..end].rfind('\n').map_or(0, |at| at + 1);
+                    (line_text, terminator_len, has_line_feed) = split_line(source, close_start);
+                    line_start = close_start;
+                    cursor = Cursor::new(line_text, close_start, self.line, end - close_start);
+                }
+                continue;
+            }
+
+            if cursor.starts_with("\"\"\"") {
+                let open = cursor.base + cursor.index;
+                let open_span = cursor.span(cursor.index, cursor.index + 3);
+                let (end, newlines, value) = scan_raw_string(source, open, open_span)?;
+                self.tokens.push(Token::new(
+                    TokenKind::RawString(value),
                     Span::new(open, end, open_span.line, open_span.column),
                 ));
                 if newlines == 0 {
@@ -189,11 +219,15 @@ impl<'src> Lexer<'src> {
         self.offset = line_start + line_text.len() + terminator_len;
     }
 
-    fn last_token_is_schema_keyword(&self) -> bool {
-        matches!(
-            self.tokens.last(),
-            Some(token) if token.kind == TokenKind::Keyword(Keyword::Schema)
-        )
+    /// Whether the previous token opens a raw brace-balanced capture at the
+    /// `{` under the cursor: `schema { … }` (a type door) or `json { … }` (a
+    /// JSON literal).
+    fn last_braced_body_kind(&self) -> Option<BracedBody> {
+        match self.tokens.last().map(|token| &token.kind) {
+            Some(TokenKind::Keyword(Keyword::Schema)) => Some(BracedBody::Schema),
+            Some(TokenKind::Keyword(Keyword::Json)) => Some(BracedBody::Json),
+            _ => None,
+        }
     }
 
     /// Push the token for a whole-line comment or doc line starting at
@@ -298,22 +332,32 @@ fn split_line(source: &str, start: usize) -> (&str, usize, bool) {
     }
 }
 
-/// Scan the brace-balanced inline `schema { … }` body whose `{` sits at byte
-/// `open` in `source`. Braces inside JSON strings do not count; string
-/// escapes are skipped blind (which covers `\"`, `\\`, `\uXXXX`, `\/`, and
-/// every other JSON escape for balancing purposes); an unclosed quote ends at
-/// its line so a typo cannot swallow the rest of the document. Returns the
-/// byte offset just past the matching `}` and the number of line feeds
-/// crossed.
+/// Which raw brace-balanced capture a `{` opens.
+#[derive(Clone, Copy)]
+enum BracedBody {
+    /// An inline `schema { … }` type-door body.
+    Schema,
+    /// A `json { … }` literal body.
+    Json,
+}
+
+/// Scan the brace-balanced body (`schema { … }` type door or `json { … }`
+/// literal) whose `{` sits at byte `open` in `source`. Braces inside JSON
+/// strings do not count; string escapes are skipped blind (which covers
+/// `\"`, `\\`, `\uXXXX`, `\/`, and every other JSON escape for balancing
+/// purposes); an unclosed quote ends at its line so a typo cannot swallow
+/// the rest of the document. Returns the byte offset just past the matching
+/// `}` and the number of line feeds crossed.
 ///
 /// # Errors
 ///
 /// Returns an error spanning the opening `{` when the document ends before
 /// the matching `}`.
-fn scan_schema_body(
+fn scan_braced_body(
     source: &str,
     open: usize,
     open_span: Span,
+    kind: BracedBody,
 ) -> Result<(usize, usize), LexError> {
     let mut depth = 0usize;
     let mut newlines = 0usize;
@@ -344,10 +388,36 @@ fn scan_schema_body(
             _ => {}
         }
     }
-    Err(LexError::new(
-        open_span,
-        "unterminated inline `schema { … }` body",
-    ))
+    let what = match kind {
+        BracedBody::Schema => "unterminated inline `schema { … }` body",
+        BracedBody::Json => "unterminated `json { … }` literal body",
+    };
+    Err(LexError::new(open_span, what))
+}
+
+/// Scan the triple-quoted raw string whose opening `"""` sits at byte `open`
+/// in `source`. The value is everything between the delimiters, verbatim —
+/// newlines literal, zero escape processing. The body ends at the first
+/// `"""` after the opener. Returns the byte offset just past the closing
+/// delimiter, the number of line feeds crossed, and the raw value.
+///
+/// # Errors
+///
+/// Returns an error spanning the opening delimiter when the document ends
+/// before a closing `"""`.
+fn scan_raw_string(
+    source: &str,
+    open: usize,
+    open_span: Span,
+) -> Result<(usize, usize, String), LexError> {
+    let body_start = open + 3;
+    let Some(relative_close) = source[body_start..].find("\"\"\"") else {
+        return Err(LexError::new(open_span, "unterminated raw string literal"));
+    };
+    let close = body_start + relative_close;
+    let value = source[body_start..close].to_owned();
+    let newlines = value.matches('\n').count();
+    Ok((close + 3, newlines, value))
 }
 
 fn count_leading_spaces(line: &str, base: usize, line_no: usize) -> Result<usize, LexError> {

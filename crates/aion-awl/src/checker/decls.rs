@@ -10,7 +10,7 @@ use super::project::project_door;
 use super::types::{EnumTy, FieldTy, RecordTy, Ty};
 
 /// Whether a name is `snake_case` (`[a-z][a-z0-9_]*`).
-fn is_snake_case(name: &str) -> bool {
+pub(super) fn is_snake_case(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|first| first.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')

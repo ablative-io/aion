@@ -9,7 +9,8 @@ use crate::ast::{
 use crate::{Keyword, Span, TokenKind};
 
 use super::ParseError;
-use super::exprs::{expr_span, parse_binding, parse_expr};
+use super::args::parse_binding;
+use super::exprs::{expr_span, parse_expr};
 use super::statements::{parse_route_target, parse_statement, reject_docs};
 use super::stream::{Stream, describe};
 

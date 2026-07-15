@@ -3,12 +3,11 @@
 //! access, literal-only indexing, collection predicates, literals, record
 //! construction, and the `workflow` builtin namespace).
 
-use crate::ast::{
-    Arg, BinaryOp, Binding, DurationLiteral, Expr, PredicateKind, Quantifier, join_span,
-};
+use crate::ast::{BinaryOp, DurationLiteral, Expr, PredicateKind, Quantifier, join_span};
 use crate::{Keyword, TokenKind};
 
 use super::ParseError;
+use super::args::parse_args;
 use super::stream::{Stream, describe};
 
 /// Parse a full expression (lowest precedence: `or`).
@@ -216,6 +215,19 @@ fn parse_primary(stream: &mut Stream) -> Result<Expr, ParseError> {
             stream.next();
             Ok(Expr::String { span, value })
         }
+        TokenKind::RawString(value) => {
+            let value = value.clone();
+            stream.next();
+            Ok(Expr::RawString { span, value })
+        }
+        TokenKind::Keyword(Keyword::Json) => {
+            stream.next();
+            parse_json_literal(stream, span)
+        }
+        TokenKind::Keyword(Keyword::Schema) => {
+            stream.next();
+            parse_schema_of(stream, span)
+        }
         TokenKind::Integer(value) => {
             let value = *value;
             stream.next();
@@ -284,6 +296,78 @@ fn parse_primary(stream: &mut Stream) -> Result<Expr, ParseError> {
     }
 }
 
+/// Parse the body of a `json { … }` literal after the `json` keyword (at
+/// `json_span`) has been consumed. The lexer already captured the balanced
+/// braces as one verbatim token.
+fn parse_json_literal(stream: &mut Stream, json_span: crate::Span) -> Result<Expr, ParseError> {
+    match stream.peek() {
+        Some(token) => {
+            let body_span = token.span;
+            if let TokenKind::JsonBody(body) = &token.kind {
+                let body = body.clone();
+                stream.next();
+                Ok(Expr::Json {
+                    span: join_span(json_span, body_span),
+                    body,
+                    body_span,
+                })
+            } else {
+                Err(ParseError::new(
+                    body_span,
+                    format!(
+                        "a `json` literal opens its body with `{{`, found {}",
+                        describe(&token.kind)
+                    ),
+                ))
+            }
+        }
+        None => Err(ParseError::new(
+            stream.eof_span(),
+            "a `json` literal opens its body with `{`, found end of input",
+        )),
+    }
+}
+
+/// Parse `schema of <Type>` after the `schema` keyword (at `schema_span`)
+/// has been consumed.
+fn parse_schema_of(stream: &mut Stream, schema_span: crate::Span) -> Result<Expr, ParseError> {
+    if stream
+        .eat(|kind| matches!(kind, TokenKind::Keyword(Keyword::Of)))
+        .is_none()
+    {
+        return Err(ParseError::new(
+            stream.peek_span(),
+            "`schema` in an expression takes the form `schema of <Type>`",
+        ));
+    }
+    match stream.peek() {
+        Some(token) => {
+            let name_span = token.span;
+            if let TokenKind::TypeIdentifier(name) = &token.kind {
+                let name = name.clone();
+                stream.next();
+                Ok(Expr::SchemaOf {
+                    span: join_span(schema_span, name_span),
+                    name,
+                    name_span,
+                })
+            } else {
+                Err(ParseError::new(
+                    name_span,
+                    format!(
+                        "`schema of` names a TitleCase type, found {}",
+                        describe(&token.kind)
+                    ),
+                ))
+            }
+        }
+        None => Err(ParseError::new(
+            stream.eof_span(),
+            "`schema of` names a TitleCase type, found end of input",
+        )),
+    }
+}
+
 fn parse_list(stream: &mut Stream, open: crate::Span) -> Result<Expr, ParseError> {
     let mut items = Vec::new();
     loop {
@@ -308,117 +392,6 @@ fn parse_list(stream: &mut Stream, open: crate::Span) -> Result<Expr, ParseError
             span: join_span(open, close.span),
             items,
         });
-    }
-}
-
-/// Parse a named-argument list after its opening parenthesis has been
-/// consumed. Returns the arguments and the closing parenthesis span.
-///
-/// Every argument must be named (`name: expr`); a positional value is
-/// refused at the offending token.
-pub(super) fn parse_args(stream: &mut Stream) -> Result<(Vec<Arg>, crate::Span), ParseError> {
-    let mut args = Vec::new();
-    loop {
-        if let Some(close) = stream.eat(|kind| matches!(kind, TokenKind::RightParen)) {
-            return Ok((args, close.span));
-        }
-        args.push(parse_arg(stream)?);
-        if stream
-            .eat(|kind| matches!(kind, TokenKind::Comma))
-            .is_some()
-        {
-            continue;
-        }
-        let close = stream.expect(
-            &TokenKind::RightParen,
-            "expected `)` to close the argument list",
-        )?;
-        return Ok((args, close.span));
-    }
-}
-
-fn parse_arg(stream: &mut Stream) -> Result<Arg, ParseError> {
-    let (name, name_span) = match stream.peek() {
-        Some(token) => match &token.kind {
-            TokenKind::Identifier(name) => (name.clone(), token.span),
-            TokenKind::Keyword(keyword) if super::stream::soft_keyword(*keyword) => {
-                (keyword.as_word().to_owned(), token.span)
-            }
-            other => {
-                return Err(ParseError::new(
-                    token.span,
-                    format!(
-                        "arguments must be named (`name: value`), found {}",
-                        describe(other)
-                    ),
-                ));
-            }
-        },
-        None => {
-            return Err(ParseError::new(
-                stream.eof_span(),
-                "arguments must be named (`name: value`); expected an argument name",
-            ));
-        }
-    };
-    stream.next();
-    if stream
-        .eat(|kind| matches!(kind, TokenKind::Colon))
-        .is_none()
-    {
-        return Err(ParseError::new(
-            name_span,
-            format!("arguments must be named: write `{name}: <value>`"),
-        ));
-    }
-    let value = parse_expr(stream)?;
-    Ok(Arg {
-        span: join_span(name_span, expr_span(&value)),
-        name,
-        name_span,
-        value,
-    })
-}
-
-/// Parse a `-> name` binding after the arrow has been consumed; `arrow` is
-/// the arrow's span, used to anchor the missing-name diagnostic.
-pub(super) fn parse_binding(
-    stream: &mut Stream,
-    arrow: crate::Span,
-) -> Result<Binding, ParseError> {
-    match stream.peek() {
-        Some(token) => {
-            let span = token.span;
-            match &token.kind {
-                TokenKind::Identifier(name) => {
-                    let name = name.clone();
-                    stream.next();
-                    Ok(Binding { span, name })
-                }
-                TokenKind::Keyword(keyword) => Err(ParseError::new(
-                    span,
-                    format!(
-                        "`->` must be followed by a binding name; `{}` is a reserved keyword",
-                        keyword.as_word()
-                    ),
-                )),
-                other => Err(ParseError::new(
-                    if matches!(other, TokenKind::Newline) {
-                        arrow
-                    } else {
-                        span
-                    },
-                    format!(
-                        "expected a binding name after `->`, found {}",
-                        describe(other)
-                    ),
-                )),
-            }
-        }
-        None => Err(ParseError::new(
-            arrow,
-            "expected a binding name after `->`, found end of input",
-        )),
     }
 }
 
@@ -448,6 +421,9 @@ fn binary(left: Expr, op: BinaryOp, right: Expr) -> Expr {
 pub(super) fn expr_span(expr: &Expr) -> crate::Span {
     match expr {
         Expr::String { span, .. }
+        | Expr::RawString { span, .. }
+        | Expr::Json { span, .. }
+        | Expr::SchemaOf { span, .. }
         | Expr::Int { span, .. }
         | Expr::Float { span, .. }
         | Expr::Bool { span, .. }

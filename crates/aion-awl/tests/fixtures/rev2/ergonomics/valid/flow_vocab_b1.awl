@@ -1,0 +1,33 @@
+//! Flow-vocabulary B1 proof: consts, raw strings, json literals, schema of.
+workflow flow_vocab_b1
+  input task: String
+  outcome done: type String, route success
+
+const greeting = """
+  Hello from the flow vocabulary.
+  """
+const item_schema = json {
+  "type": "object",
+  "properties": { "id": { "type": "string", "description": "git-ref-safe slug" } },
+  "required": ["id"],
+  "additionalProperties": false
+}
+const verdict_schema = schema of Verdict
+const prompt_intro = greeting + " Task follows: "
+
+/// One verdict, minted by the checking agent.
+type Verdict {
+  /// Whether the run passed.
+  passed: Bool,
+  note: String?,
+}
+
+worker vocab
+  action run_agent(prompt: String, output_schema: String) -> String
+  action stamp(text: String) -> String
+
+step run
+  run_agent(prompt: prompt_intro + task, output_schema: verdict_schema) -> result
+  run_agent(prompt: greeting, output_schema: item_schema) -> extra
+  "run: " + result + " extra: " + extra -> summary
+  summary |> stamp |> route done

@@ -74,6 +74,15 @@ impl std::error::Error for LowerError {}
 /// that did not check cleanly, and [`LowerError::Unsupported`] for a shape this
 /// BC-2 increment does not yet cover.
 pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, LowerError> {
+    // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
+    // `schema of`, const references) down to plain literals first, so the
+    // shared planning passes and this lowering only ever see the expression
+    // vocabulary they already speak.
+    let document =
+        &crate::fold::fold_document(document, root).map_err(|error| LowerError::Message {
+            message: error.message,
+            span: error.span,
+        })?;
     let (emitter, plan) = prepare(document, root).map_err(|error| LowerError::Planning {
         message: error.to_string(),
     })?;

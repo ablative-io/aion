@@ -94,6 +94,9 @@ pub(crate) fn is_fallible(expr: &Expr) -> bool {
             ..
         } => is_fallible(collection) || is_fallible(predicate),
         Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }

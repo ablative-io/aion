@@ -9,6 +9,9 @@ use crate::ast::{
 pub(super) fn expr_text(expr: &Expr) -> String {
     match expr {
         Expr::String { value, .. } => string_literal(value),
+        Expr::RawString { value, .. } => format!("\"\"\"{value}\"\"\""),
+        Expr::Json { body, .. } => format!("json {body}"),
+        Expr::SchemaOf { name, .. } => format!("schema of {name}"),
         Expr::Int { value, .. } => value.to_string(),
         Expr::Float { value, .. } => value.clone(),
         Expr::Bool { value, .. } => value.to_string(),

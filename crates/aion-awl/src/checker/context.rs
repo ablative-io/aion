@@ -29,6 +29,16 @@ pub(super) struct Param {
     pub(super) ty: Ty,
 }
 
+/// One checked document-level `const`: its folded value type and the span of
+/// its declared name (for semantic references).
+#[derive(Debug, Clone)]
+pub(super) struct ConstInfo {
+    /// The folded value's type.
+    pub(super) ty: Ty,
+    /// Source span of the const's declared name.
+    pub(super) name_span: crate::Span,
+}
+
 /// The checking context threaded through every pass.
 pub(super) struct Ctx<'a> {
     /// The document being checked.
@@ -43,6 +53,8 @@ pub(super) struct Ctx<'a> {
     pub(super) actions: BTreeMap<String, Callable>,
     /// Child workflows by name.
     pub(super) children: BTreeMap<String, Callable>,
+    /// Document-level consts: name → folded type and declaration site.
+    pub(super) consts: BTreeMap<String, ConstInfo>,
     /// Workflow inputs: name → declared type.
     pub(super) inputs: BTreeMap<String, Ty>,
     /// Declared signals: name → payload type.
@@ -67,6 +79,7 @@ impl<'a> Ctx<'a> {
             types: TypeTable::new(),
             actions: BTreeMap::new(),
             children: BTreeMap::new(),
+            consts: BTreeMap::new(),
             inputs: BTreeMap::new(),
             signals: BTreeMap::new(),
             outcome_types: BTreeMap::new(),

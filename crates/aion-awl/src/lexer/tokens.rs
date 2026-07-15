@@ -143,6 +143,12 @@ pub enum Keyword {
     True,
     /// `false`.
     False,
+    /// `const`.
+    Const,
+    /// `json`.
+    Json,
+    /// `of`.
+    Of,
 }
 
 impl Keyword {
@@ -197,6 +203,9 @@ impl Keyword {
             Self::Or => "or",
             Self::True => "true",
             Self::False => "false",
+            Self::Const => "const",
+            Self::Json => "json",
+            Self::Of => "of",
         }
     }
 
@@ -251,6 +260,9 @@ impl Keyword {
             "or" => Some(Self::Or),
             "true" => Some(Self::True),
             "false" => Some(Self::False),
+            "const" => Some(Self::Const),
+            "json" => Some(Self::Json),
+            "of" => Some(Self::Of),
             _ => None,
         }
     }
@@ -284,6 +296,12 @@ pub enum TokenKind {
     FieldAccessor(String),
     /// A string literal after escape processing.
     String(String),
+    /// A triple-quoted `"""…"""` raw string literal: the payload is the text
+    /// between the delimiters, byte-for-byte — newlines literal, zero escape
+    /// processing — so printing re-emits the literal verbatim. The body ends
+    /// at the first `"""` after the opener, so a raw string cannot contain
+    /// three consecutive double quotes.
+    RawString(String),
     /// An integer literal.
     Integer(u64),
     /// A floating-point literal, holding the exact source lexeme (e.g.
@@ -360,6 +378,12 @@ pub enum TokenKind {
     /// byte-for-byte for the parser to validate as JSON and the printer to
     /// re-emit losslessly ("paste an existing JSON Schema verbatim").
     SchemaBody(String),
+    /// The verbatim body of a `json { … }` literal, including the enclosing
+    /// braces. Captured exactly like [`TokenKind::SchemaBody`]: the lexer
+    /// consumes the brace-balanced region raw (string-aware, so braces inside
+    /// JSON strings do not count) and never tokenizes it; the checker
+    /// validates it as JSON and the printer re-emits it byte-for-byte.
+    JsonBody(String),
     /// Increase in two-space indentation level.
     Indent,
     /// Decrease in two-space indentation level.

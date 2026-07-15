@@ -62,6 +62,11 @@ pub(crate) fn prepare<'a>(
 }
 
 fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitError> {
+    // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
+    // `schema of`, const references) down to plain literals first, so the
+    // lowering below only ever sees the vocabulary it already speaks.
+    let document = &crate::fold::fold_document(document, root)
+        .map_err(|error| EmitError::new(error.span, error.message))?;
     let env = build_env(document, root)?;
     let mut emitter = Emitter::new(document, env)?;
     bindings::compute(&mut emitter)?;

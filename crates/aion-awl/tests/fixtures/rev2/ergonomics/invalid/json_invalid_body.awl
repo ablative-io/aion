@@ -1,0 +1,15 @@
+//! A json literal whose body is not valid JSON; the span points into it.
+workflow json_invalid_body
+  input task: String
+  outcome done: type String, route success
+
+const item_schema = json {
+  "type": "object",
+  "properties": nope
+}
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  task |> stamp |> route done

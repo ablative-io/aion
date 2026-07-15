@@ -1,0 +1,12 @@
+//! A const value tries to read a workflow input; consts are compile-time.
+workflow const_not_compile_time
+  input task: String
+  outcome done: type String, route success
+
+const prompt = task + "!"
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  task |> stamp |> route done

@@ -1,0 +1,3 @@
+CHECK
+bindings cannot shadow consts
+12

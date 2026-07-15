@@ -283,6 +283,32 @@ worker probe\n\
 step one\n\
 \x20 token |> make |> route done\n";
 
+    /// A canonical document using the B1 flow vocabulary: a multi-line raw
+    /// string, a `json { … }` literal, `schema of`, const folding, and an
+    /// expression-headed statement.
+    const VOCAB_DOC: &str = "//! Vocabulary probe.\n\
+workflow vocab_probe\n\
+\x20 input task: String\n\
+\x20 outcome done: type String, route success\n\
+\n\
+const greeting = \"\"\"\n\
+\x20 Hello from the vocabulary.\n\
+\x20 \"\"\"\n\
+const item_schema = json { \"type\": \"object\" }\n\
+const verdict_schema = schema of Verdict\n\
+const prompt = greeting + \" Task: \"\n\
+\n\
+type Verdict { passed: Bool }\n\
+\n\
+worker probe\n\
+\x20 action make(prompt: String, output_schema: String) -> String\n\
+\n\
+step one\n\
+\x20 make(prompt: prompt + task, output_schema: verdict_schema) -> made\n\
+\x20 make(prompt: greeting, output_schema: item_schema) -> extra\n\
+\x20 \"made: \" + made + extra -> summary\n\
+\x20 summary |> route done\n";
+
     /// Well-formed rev-2 source whose route names no declared outcome or
     /// step — a typecheck error, not a parse error.
     const BROKEN_ROUTE_DOC: &str = "//! Probe with a dangling route.\n\
@@ -353,6 +379,45 @@ step one\n\
         let formatted = format_source(Path::new("probe.awl"), VALID_DOC)
             .map_err(|d| anyhow::anyhow!("unexpected diagnostics: {d:?}"))?;
         assert_eq!(formatted, VALID_DOC);
+        Ok(())
+    }
+
+    /// `aion awl check` accepts the B1 flow vocabulary (raw strings,
+    /// `json { … }`, `schema of`, consts, expression-headed statements).
+    #[test]
+    fn check_source_accepts_the_flow_vocabulary() {
+        let steps = check_source(Path::new("vocab.awl"), VOCAB_DOC);
+        assert_eq!(steps, Ok(1));
+    }
+
+    /// `aion awl fmt` is idempotent on the B1 flow vocabulary: the document
+    /// is already canonical, and formatting the formatted output changes
+    /// nothing.
+    #[test]
+    fn format_source_is_idempotent_on_the_flow_vocabulary() -> anyhow::Result<()> {
+        let once = format_source(Path::new("vocab.awl"), VOCAB_DOC)
+            .map_err(|d| anyhow::anyhow!("unexpected diagnostics: {d:?}"))?;
+        assert_eq!(once, VOCAB_DOC);
+        let twice = format_source(Path::new("vocab.awl"), &once)
+            .map_err(|d| anyhow::anyhow!("unexpected diagnostics: {d:?}"))?;
+        assert_eq!(twice, once);
+        Ok(())
+    }
+
+    /// `aion awl emit` folds the vocabulary before lowering: the emitted
+    /// Gleam carries the folded strings, never a const name.
+    #[test]
+    fn emit_source_folds_the_flow_vocabulary() -> anyhow::Result<()> {
+        let generated = emit_source(Path::new("vocab.awl"), VOCAB_DOC)
+            .map_err(|d| anyhow::anyhow!("unexpected diagnostics: {d:?}"))?;
+        assert!(
+            generated.contains("Hello from the vocabulary."),
+            "raw string content missing: {generated}"
+        );
+        assert!(
+            !generated.contains("verdict_schema"),
+            "unfolded const reference leaked: {generated}"
+        );
         Ok(())
     }
 

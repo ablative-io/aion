@@ -3,10 +3,11 @@
 //! boolean operators, string concatenation, indexing, and `is` predicates.
 
 use crate::Span;
-use crate::ast::{BinaryOp, Expr, PredicateKind};
+use crate::ast::Expr;
 use crate::spanned::Spanned;
 
-use super::types::{Ty, assignable, equality_comparable, resolve};
+use super::operators::{is_bool, type_binary, type_predicate};
+use super::types::{Ty, assignable, resolve};
 use super::walk::{Scope, Walker};
 
 /// A read-only view of the bindings in scope, with at most one
@@ -31,7 +32,7 @@ impl View<'_> {
         }
     }
 
-    fn get(&self, name: &str) -> Option<Ty> {
+    pub(super) fn get(&self, name: &str) -> Option<Ty> {
         if let Some((narrowed, ty)) = self.narrow
             && narrowed == name
         {
@@ -52,7 +53,13 @@ pub(super) fn type_of(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty
 
 fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
     match expr {
-        Expr::String { .. } => Ty::Str,
+        Expr::String { .. } | Expr::RawString { .. } => Ty::Str,
+        Expr::Json {
+            body, body_span, ..
+        } => type_json(w, body, *body_span),
+        Expr::SchemaOf {
+            name, name_span, ..
+        } => type_schema_of(w, name, *name_span),
         Expr::Int { .. } => Ty::Int,
         Expr::Float { .. } => Ty::Float,
         Expr::Bool { .. } => Ty::Bool,
@@ -146,6 +153,24 @@ fn type_of_inner(w: &mut Walker<'_, '_>, view: View<'_>, expr: &Expr) -> Ty {
     }
 }
 
+/// Type a `json { … }` literal: the value is its verbatim body text, and
+/// the body must be valid JSON (the diagnostic points into the body).
+fn type_json(w: &mut Walker<'_, '_>, body: &str, body_span: Span) -> Ty {
+    if let Some((span, message)) = super::consts::json_literal_error(body, body_span) {
+        w.err(span, message);
+    }
+    Ty::Str
+}
+
+/// Type a `schema of <Type>` expression: a compile-time `String` whose type
+/// operand must resolve.
+fn type_schema_of(w: &mut Walker<'_, '_>, name: &str, name_span: Span) -> Ty {
+    if w.emit {
+        super::consts::check_schema_of_target(w.ctx, name, name_span);
+    }
+    Ty::Str
+}
+
 fn type_field(
     w: &mut Walker<'_, '_>,
     view: View<'_>,
@@ -165,10 +190,6 @@ fn type_field(
     }
     let base_ty = type_of(w, view, base);
     field_access(w, &base_ty, Some(base), name, name_span)
-}
-
-fn is_bool(ty: &Ty, w: &Walker<'_, '_>) -> bool {
-    matches!(resolve(ty, &w.ctx.types), Ty::Bool | Ty::Unknown)
 }
 
 fn type_list(w: &mut Walker<'_, '_>, view: View<'_>, items: &[Expr]) -> Ty {
@@ -200,6 +221,14 @@ fn type_ref(w: &mut Walker<'_, '_>, view: View<'_>, span: Span, name: &str) -> T
         if w.emit {
             let declaration = view.vars.get(name).and_then(|value| value.declaration);
             w.ctx.semantic.reference_to(span, declaration);
+        }
+        return ty;
+    }
+    if let Some(info) = w.ctx.consts.get(name) {
+        let ty = info.ty.clone();
+        let declaration = info.name_span;
+        if w.emit {
+            w.ctx.semantic.reference_to(span, Some(declaration));
         }
         return ty;
     }
@@ -310,194 +339,4 @@ pub(super) fn field_access(
             Ty::Unknown
         }
     }
-}
-
-fn type_binary(
-    w: &mut Walker<'_, '_>,
-    view: View<'_>,
-    span: Span,
-    left: &Expr,
-    op: BinaryOp,
-    right: &Expr,
-) -> Ty {
-    match op {
-        BinaryOp::And | BinaryOp::Or => {
-            let word = if matches!(op, BinaryOp::And) {
-                "and"
-            } else {
-                "or"
-            };
-            let left_ty = type_of(w, view, left);
-            if !is_bool(&left_ty, w) {
-                w.err(
-                    left.span(),
-                    format!("`{word}` needs Bool operands, found {left_ty}"),
-                );
-            }
-            let narrowed_kind = match op {
-                BinaryOp::And => PredicateKind::Present,
-                BinaryOp::Or => PredicateKind::Absent,
-                _ => unreachable!(),
-            };
-            let narrow = match left {
-                Expr::Predicate { subject, kind, .. } if *kind == narrowed_kind => {
-                    match subject.as_ref() {
-                        Expr::Ref { name, .. } => view.get(name).and_then(|ty| {
-                            let Ty::Optional(inner) = resolve(&ty, &w.ctx.types) else {
-                                return None;
-                            };
-                            Some((name.clone(), inner.as_ref().clone()))
-                        }),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            let right_view = View {
-                vars: view.vars,
-                narrow: narrow.as_ref().or(view.narrow),
-                accessor: view.accessor,
-            };
-            let right_ty = type_of(w, right_view, right);
-            if !is_bool(&right_ty, w) {
-                w.err(
-                    right.span(),
-                    format!("`{word}` needs Bool operands, found {right_ty}"),
-                );
-            }
-            Ty::Bool
-        }
-        BinaryOp::Concat => {
-            let left_ty = type_of(w, view, left);
-            let right_ty = type_of(w, view, right);
-            let joinable = |ty: &Ty| matches!(resolve(ty, &w.ctx.types), Ty::Str | Ty::Unknown);
-            if !joinable(&left_ty) || !joinable(&right_ty) {
-                w.err(
-                    span,
-                    format!(
-                        "`+` joins strings only — arithmetic is not in the language \
-                         (found {left_ty} and {right_ty})"
-                    ),
-                );
-            }
-            Ty::Str
-        }
-        BinaryOp::Eq | BinaryOp::Ne => {
-            let symbol = if matches!(op, BinaryOp::Eq) {
-                "=="
-            } else {
-                "!="
-            };
-            type_equality(w, view, span, left, right, symbol);
-            Ty::Bool
-        }
-        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            let symbol = match op {
-                BinaryOp::Lt => "<",
-                BinaryOp::Le => "<=",
-                BinaryOp::Gt => ">",
-                _ => ">=",
-            };
-            let left_ty = resolve(&type_of(w, view, left), &w.ctx.types);
-            let right_ty = resolve(&type_of(w, view, right), &w.ctx.types);
-            let ordered = matches!(
-                (&left_ty, &right_ty),
-                (Ty::Int, Ty::Int) | (Ty::Float, Ty::Float) | (Ty::Unknown, _) | (_, Ty::Unknown)
-            );
-            if !ordered {
-                w.err(
-                    span,
-                    format!(
-                        "`{symbol}` needs matching numeric operands, found {left_ty} \
-                         and {right_ty}"
-                    ),
-                );
-            }
-            Ty::Bool
-        }
-    }
-}
-
-fn type_equality(
-    w: &mut Walker<'_, '_>,
-    view: View<'_>,
-    span: Span,
-    left: &Expr,
-    right: &Expr,
-    symbol: &str,
-) {
-    let variant_side = match (left, right) {
-        (Expr::Variant { span, name }, other) | (other, Expr::Variant { span, name }) => {
-            Some((*span, name.clone(), other))
-        }
-        _ => None,
-    };
-    if let Some((variant_span, variant, subject)) = variant_side {
-        let subject_ty = type_of(w, view, subject);
-        match resolve(&subject_ty, &w.ctx.types) {
-            Ty::Enum(spec) => {
-                if !spec.variants.contains(&variant) {
-                    let name = spec.name.clone().unwrap_or_else(|| "the enum".to_owned());
-                    w.err(
-                        variant_span,
-                        format!("enum `{name}` has no variant `{variant}`"),
-                    );
-                }
-            }
-            Ty::Unknown => {}
-            other => {
-                w.err(
-                    variant_span,
-                    format!(
-                        "`{symbol}` compares variant `{variant}` against {other}, \
-                         which is not an enum"
-                    ),
-                );
-            }
-        }
-        return;
-    }
-    let left_ty = type_of(w, view, left);
-    let right_ty = type_of(w, view, right);
-    if !equality_comparable(&left_ty, &right_ty, &w.ctx.types) {
-        w.err(
-            span,
-            format!("`{symbol}` needs matching operands, found {left_ty} and {right_ty}"),
-        );
-    }
-}
-
-fn type_predicate(
-    w: &mut Walker<'_, '_>,
-    view: View<'_>,
-    span: Span,
-    subject: &Expr,
-    kind: PredicateKind,
-) -> Ty {
-    let subject_ty = type_of(w, view, subject);
-    let resolved = resolve(&subject_ty, &w.ctx.types);
-    match kind {
-        PredicateKind::Empty => {
-            if !matches!(resolved, Ty::List(_) | Ty::Unknown) {
-                w.err(
-                    span,
-                    format!("`is empty` applies to lists, found {subject_ty}"),
-                );
-            }
-        }
-        PredicateKind::Present | PredicateKind::Absent => {
-            let word = if matches!(kind, PredicateKind::Present) {
-                "is present"
-            } else {
-                "is absent"
-            };
-            if !matches!(resolved, Ty::Optional(_) | Ty::Unknown) {
-                w.err(
-                    span,
-                    format!("`{word}` applies to optional (`?`) values, found plain {subject_ty}"),
-                );
-            }
-        }
-    }
-    Ty::Bool
 }

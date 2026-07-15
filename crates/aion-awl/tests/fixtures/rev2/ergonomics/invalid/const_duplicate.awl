@@ -1,0 +1,13 @@
+//! Two consts claim the same name; the second declaration is rejected.
+workflow const_duplicate
+  input task: String
+  outcome done: type String, route success
+
+const prompt = "first"
+const prompt = "second"
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  task |> stamp |> route done

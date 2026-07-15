@@ -151,6 +151,9 @@ fn first_unbound_ref(expr: &Expr, scope: &Scope) -> Option<(String, Span)> {
             ..
         } => first_unbound_ref(collection, scope).or_else(|| first_unbound_ref(predicate, scope)),
         Expr::String { .. }
+        | Expr::RawString { .. }
+        | Expr::Json { .. }
+        | Expr::SchemaOf { .. }
         | Expr::Int { .. }
         | Expr::Float { .. }
         | Expr::Bool { .. }

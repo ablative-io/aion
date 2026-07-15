@@ -274,6 +274,14 @@ pub(super) fn insert_binding(
     if w.emit {
         w.ctx.semantic.binding(span, name, &ty.to_string());
     }
+    // Consts resolve anywhere an expression is legal; a binding of the same
+    // name would make the reference ambiguous (and the fold unsound).
+    if w.ctx.consts.contains_key(name) {
+        w.err(
+            span,
+            format!("`{name}` is a document-level `const` — bindings cannot shadow consts"),
+        );
+    }
     // A bind inside a collection-fork branch never rebinds a loop's
     // threaded value: branch bindings do not escape the branch, so the
     // loop would still carry its old value into the next pass.

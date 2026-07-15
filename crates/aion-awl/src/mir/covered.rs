@@ -25,6 +25,7 @@ pub(super) const COVERED: &[&str] = &[
     "declarations/valid/worker_retry_backoff",
     "declarations/valid/worker_single_action",
     "declarations/valid/workers_multiple",
+    "ergonomics/valid/flow_vocab_b1",
     "flagship/valid/awl_hello",
     "header-types/valid/builtins",
     "header-types/valid/combined",

@@ -1,0 +1,12 @@
+//! A schema of expression names a type nobody declared.
+workflow schema_of_unknown_type
+  input task: String
+  outcome done: type String, route success
+
+const verdict_schema = schema of Missing
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  task |> stamp |> route done

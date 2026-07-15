@@ -102,6 +102,9 @@ fn print_document(printer: &mut Printer, document: &Document) {
         );
     }
     print_outcome_decls(printer, &document.outcomes);
+    for decl in &document.consts {
+        print_const_decl(printer, decl);
+    }
     print_type_decls(printer, &document.types);
     for worker in &document.workers {
         print_worker(printer, worker);
@@ -113,6 +116,23 @@ fn print_document(printer: &mut Printer, document: &Document) {
         print_step(printer, 0, step);
     }
     printer.leads(0, &document.epilogue);
+}
+
+/// Print one `const name = <value>` declaration. The value renders through
+/// the shared expression printer, so raw strings and `json { … }` bodies
+/// re-emit verbatim (they may span multiple physical lines).
+fn print_const_decl(printer: &mut Printer, decl: &crate::ast::ConstDecl) {
+    printer.leads(0, &decl.lead);
+    printer.docs(0, &decl.docs);
+    printer.line(
+        0,
+        &format!(
+            "const {} = {}",
+            decl.name,
+            super::exprs::expr_text(&decl.value)
+        ),
+        decl.trailing.as_ref(),
+    );
 }
 
 /// Print header outcomes with group alignment: within a run of outcome

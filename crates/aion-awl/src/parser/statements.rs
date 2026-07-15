@@ -10,9 +10,11 @@ use crate::ast::{
 use crate::{Keyword, Span, TokenKind};
 
 use super::ParseError;
-use super::exprs::{parse_args, parse_binding, parse_expr};
+use super::args::{parse_args, parse_binding};
+use super::exprs::parse_expr;
+use super::hints::gone_keyword_hint;
 use super::steps::{parse_fork, parse_loop, parse_step};
-use super::stream::{Stream, describe, gone_keyword_hint};
+use super::stream::{Stream, describe};
 use super::workers::{expect_duration, parse_config_block};
 
 pub(super) fn reject_docs(docs: &[DocLine], what: &str) -> Result<(), ParseError> {
@@ -119,11 +121,42 @@ pub(super) fn parse_statement(
             let name = name.clone();
             parse_value_statement(stream, lead, span, &name)
         }
+        // A statement may start with any expression: a literal (including
+        // raw strings, `json { … }`, and `schema of`), a list, a record
+        // construction or variant, or the `workflow` namespace — the chain
+        // still has to end in `-> <name>` or `route <target>`.
+        other if starts_expression(other) => {
+            reject_docs(&docs, "a statement")?;
+            parse_pipe_statement(stream, lead, span)
+        }
         other => Err(ParseError::new(
             span,
             format!("expected a statement, found {}", describe(other)),
         )),
     }
+}
+
+/// Whether a token kind can begin an expression-headed statement (a pipe
+/// chain whose head is not a plain identifier).
+const fn starts_expression(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::String(_)
+            | TokenKind::RawString(_)
+            | TokenKind::Integer(_)
+            | TokenKind::Float(_)
+            | TokenKind::Duration { .. }
+            | TokenKind::LeftBracket
+            | TokenKind::TypeIdentifier(_)
+            | TokenKind::Keyword(
+                Keyword::True
+                    | Keyword::False
+                    | Keyword::Json
+                    | Keyword::Schema
+                    | Keyword::Workflow
+                    | Keyword::Not,
+            )
+    )
 }
 
 /// Parse a statement starting with an identifier: a call (`name(…)`), a

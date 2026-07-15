@@ -1,0 +1,13 @@
+//! A step binding tries to reuse a const's name; shadowing is rejected.
+workflow const_shadowed_binding
+  input task: String
+  outcome done: type String, route success
+
+const prompt = "fixed"
+
+worker vocab
+  action stamp(text: String) -> String
+
+step run
+  stamp(text: task) -> prompt
+  prompt |> stamp |> route done

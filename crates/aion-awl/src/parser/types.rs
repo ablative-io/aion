@@ -7,7 +7,8 @@ use crate::ast::{
 use crate::{Keyword, Span, TokenKind};
 
 use super::ParseError;
-use super::stream::{Stream, describe, gone_type_hint};
+use super::hints::gone_type_hint;
+use super::stream::{Stream, describe};
 
 /// Parse a `type` declaration; the `type` keyword has been consumed and its
 /// span is `keyword_span`.
@@ -134,47 +135,7 @@ fn validate_inline_schema(body: &str, body_span: Span) -> Result<(), ParseError>
     let Err(error) = serde_json::from_str::<serde_json::Value>(body) else {
         return Ok(());
     };
-    let (line_in_body, column_in_body) = (error.line().max(1), error.column().max(1));
-    let line = body_span.line + line_in_body - 1;
-    let line_start: usize = body
-        .split_inclusive('\n')
-        .take(line_in_body - 1)
-        .map(str::len)
-        .sum();
-    let line_text = body[line_start..].split('\n').next().unwrap_or_default();
-    // serde_json's column counts BYTES; clamp to a char boundary for
-    // slicing, keep `start`/`end` byte-true, and report the crate's
-    // contract-mandated CHARACTER column.
-    let mut at = column_in_body.saturating_sub(1).min(line_text.len());
-    while at > 0 && !line_text.is_char_boundary(at) {
-        at -= 1;
-    }
-    let lexeme: String = line_text[at..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-        .collect();
-    let start = if line_in_body == 1 {
-        body_span.start + at
-    } else {
-        body_span.start + line_start + at
-    };
-    let chars_before = line_text[..at].chars().count();
-    let column = if line_in_body == 1 {
-        body_span.column + chars_before
-    } else {
-        chars_before + 1
-    };
-    let span = Span {
-        start,
-        end: start + lexeme.len().max(1),
-        line,
-        column,
-    };
-    let detail = if lexeme.is_empty() {
-        error.to_string()
-    } else {
-        format!("unexpected `{lexeme}`")
-    };
+    let (span, detail) = crate::jsontext::json_error_anchor(body, body_span, &error);
     Err(ParseError::new(
         span,
         format!("inline schema body is not valid JSON: {detail}"),

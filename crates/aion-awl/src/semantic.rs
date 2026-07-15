@@ -21,6 +21,8 @@ pub enum DeclarationKind {
     Signal,
     /// A workflow outcome.
     Outcome,
+    /// A document-level `const`.
+    Const,
     /// A named type.
     Type,
     /// A field of a declared record type.
@@ -50,6 +52,7 @@ impl DeclarationKind {
             Self::Input => "input",
             Self::Signal => "signal",
             Self::Outcome => "outcome",
+            Self::Const => "const",
             Self::Type => "type",
             Self::Field => "field",
             Self::Variant => "variant",
@@ -181,6 +184,7 @@ impl Builder {
                 &[],
             );
         }
+        builder.const_decls(document);
         for declared in &document.types {
             builder.declare(
                 declared.name_span,
@@ -251,6 +255,17 @@ impl Builder {
             builder.steps(step);
         }
         builder
+    }
+
+    fn const_decls(&mut self, document: &Document) {
+        for declared in &document.consts {
+            self.declare(
+                declared.name_span,
+                &declared.name,
+                DeclarationKind::Const,
+                &declared.docs,
+            );
+        }
     }
 
     fn steps(&mut self, step: &Step) {
