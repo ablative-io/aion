@@ -67,7 +67,7 @@ fn compute_flow(
     bindings: &mut BTreeMap<String, GType>,
     region_bindings: &mut BTreeMap<usize, BTreeMap<String, GType>>,
 ) -> Result<(), EmitError> {
-    register_counters(bindings, steps, &emitter.generated_names);
+    register_counters(bindings, steps, &emitter.generated_names)?;
     loop {
         compute_region_maps(emitter, steps, regions, bindings, region_bindings)?;
         let scope = Scope::from_vars(bindings.clone());
@@ -129,7 +129,7 @@ fn compute_region_maps(
             continue;
         };
         let mut local = enclosing.clone();
-        remove_region_locals(&mut local, &region.members.steps, &emitter.generated_names);
+        remove_region_locals(&mut local, &region.members.steps, &emitter.generated_names)?;
         local.insert(region.var.clone(), (*inner).clone());
         compute_flow(
             emitter,
@@ -149,16 +149,17 @@ fn remove_region_locals(
     bindings: &mut BTreeMap<String, GType>,
     steps: &[Step],
     names: &super::generated_names::GeneratedNames,
-) {
+) -> Result<(), EmitError> {
     for step in steps {
         if step.max_visits.is_some() {
-            bindings.remove(&visits_counter(step, names));
+            bindings.remove(&visits_counter(step, names)?);
         }
         remove_statement_locals(bindings, &step.body);
         if let Some(on_failure) = &step.on_failure {
             remove_statement_locals(bindings, &on_failure.body);
         }
     }
+    Ok(())
 }
 
 fn remove_statement_locals(bindings: &mut BTreeMap<String, GType>, statements: &[Statement]) {
@@ -215,12 +216,13 @@ fn register_counters(
     bindings: &mut BTreeMap<String, GType>,
     steps: &[Step],
     names: &super::generated_names::GeneratedNames,
-) {
+) -> Result<(), EmitError> {
     for step in steps {
         if step.max_visits.is_some() {
-            bindings.insert(visits_counter(step, names), GType::Int);
+            bindings.insert(visits_counter(step, names)?, GType::Int);
         }
     }
+    Ok(())
 }
 
 /// Walk one flow's steps, discovering binding types (recursing into region

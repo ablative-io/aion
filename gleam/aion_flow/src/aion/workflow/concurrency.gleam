@@ -125,11 +125,7 @@ pub fn all_settled_with_default(
   activities: List(Activity(i, o)),
   workflow_default_task_queue: option.Option(String),
 ) -> List(Result(o, error.ActivityError)) {
-  let dispatched =
-    list.map(activities, fn(activity_value) {
-      settled_dispatch(activity_value, workflow_default_task_queue)
-    })
-  list.map(dispatched, settled_await)
+  activity_dispatch.all_settled(activities, workflow_default_task_queue)
 }
 
 /// Dynamically produce one activity per input element, then settle like
@@ -152,37 +148,6 @@ pub fn map_settled_with_default(
   items
   |> list.map(to_activity)
   |> all_settled_with_default(workflow_default_task_queue)
-}
-
-/// One settled member mid-flight, or an explicit per-slot refusal.
-type SettledDispatch(o) {
-  SettledDispatch(dispatched: activity_dispatch.Dispatched(o))
-  SettledRefused(failure: error.ActivityError)
-}
-
-fn settled_dispatch(
-  activity_value: Activity(i, o),
-  workflow_default_task_queue: option.Option(String),
-) -> SettledDispatch(o) {
-  case activity_dispatch.settled_policy_supported(activity_value) {
-    False -> SettledRefused(failure: activity_dispatch.settled_policy_error())
-    True ->
-      case
-        activity_dispatch.dispatch(activity_value, workflow_default_task_queue)
-      {
-        Ok(dispatched) -> SettledDispatch(dispatched: dispatched)
-        Error(failure) -> SettledRefused(failure: failure)
-      }
-  }
-}
-
-fn settled_await(
-  dispatched: SettledDispatch(o),
-) -> Result(o, error.ActivityError) {
-  case dispatched {
-    SettledRefused(failure) -> Error(failure)
-    SettledDispatch(dispatched) -> activity_dispatch.await(dispatched)
-  }
 }
 
 /// Dynamically produce one activity per input element, then collect like `all`.

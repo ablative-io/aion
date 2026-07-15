@@ -21,10 +21,11 @@ impl GeneratedNames {
         }
     }
 
-    pub(crate) fn counter(&self, step: &Step) -> &str {
-        self.counters
-            .get(&step.name_span.start)
-            .map_or("awl_missing_visit_counter", String::as_str)
+    pub(crate) fn counter(&self, step: &Step) -> Option<&str> {
+        step.max_visits
+            .as_ref()
+            .and_then(|bound| self.counters.get(&bound.span.start))
+            .map(String::as_str)
     }
 }
 

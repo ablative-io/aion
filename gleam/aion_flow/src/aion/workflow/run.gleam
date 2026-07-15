@@ -7,7 +7,6 @@ import aion/internal/ffi
 import gleam/float
 import gleam/int
 import gleam/option.{None}
-import gleam/result
 
 /// A timestamp supplied by AD's determinism context.
 ///
@@ -46,11 +45,7 @@ pub fn run_with_default(
   activity_value: Activity(i, o),
   workflow_default_task_queue: option.Option(String),
 ) -> Result(o, error.ActivityError) {
-  use dispatched <- result.try(activity_dispatch.dispatch(
-    activity_value,
-    workflow_default_task_queue,
-  ))
-  activity_dispatch.await(dispatched)
+  activity_dispatch.run(activity_value, workflow_default_task_queue)
 }
 
 /// Return AD's recorded deterministic timestamp.

@@ -100,8 +100,18 @@ pub(crate) struct Shaped {
 }
 
 /// Look up the persisted visit-counter name chosen while shaping.
-pub(crate) fn visits_counter(step: &Step, names: &GeneratedNames) -> String {
-    names.counter(step).to_owned()
+pub(crate) fn visits_counter(
+    step: &Step,
+    names: &GeneratedNames,
+) -> Result<String, super::error::EmitError> {
+    names.counter(step).map(str::to_owned).ok_or_else(|| {
+        super::error::EmitError::new(
+            step.max_visits
+                .as_ref()
+                .map_or(step.name_span, |bound| bound.span),
+            "bounded step lost its persisted visit-counter identity",
+        )
+    })
 }
 
 /// Shape a folded document: collapse regions, rewrite `visits` references,
@@ -310,7 +320,12 @@ fn rewrite_visits(step: &mut Step, names: &mut GeneratedNames) {
     if step.max_visits.is_some() {
         let candidate = format!("awl_visits_{}_{}", snake(&step.name), step.name_span.start);
         let counter = names.allocator.fresh(&candidate);
-        names.counters.insert(step.name_span.start, counter.clone());
+        names.counters.insert(
+            step.max_visits
+                .as_ref()
+                .map_or(step.name_span.start, |bound| bound.span.start),
+            counter.clone(),
+        );
         for clause in &mut step.outcomes {
             if let Guard::When { expr, .. } = &mut clause.guard {
                 rewrite_visits_expr(expr, &counter);

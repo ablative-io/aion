@@ -420,11 +420,15 @@ fn emit_parallel_layer(
             );
         }
     }
+    let layer_result = emitter.fresh_name("awl_layer");
     emitter.line(&format!(
-        "use awl_layer <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
+        "use {layer_result} <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
         values.join(", ")
     ));
-    emitter.line(&format!("let assert [{}] = awl_layer", patterns.join(", ")));
+    emitter.line(&format!(
+        "let assert [{}] = {layer_result}",
+        patterns.join(", ")
+    ));
     emit_layers(emitter, flow, layers, layer + 1, 0, region_last, scope)
 }
 
@@ -477,7 +481,7 @@ fn emit_visits_prologue(
     max_visits: &crate::ast::MaxVisits,
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
-    let counter = ident(&visits_counter(step, &emitter.generated_names));
+    let counter = ident(&visits_counter(step, &emitter.generated_names)?);
     let mut prelude = Vec::new();
     let bound = render_expr(emitter, &max_visits.bound, scope, &mut prelude)?;
     if !prelude.is_empty() {
@@ -501,7 +505,7 @@ fn emit_visits_prologue(
     });
     emitter.line("})");
     scope.insert(
-        visits_counter(step, &emitter.generated_names),
+        visits_counter(step, &emitter.generated_names)?,
         super::types::GType::Int,
     );
     Ok(())

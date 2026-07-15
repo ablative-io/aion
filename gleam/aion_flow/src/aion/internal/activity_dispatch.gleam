@@ -9,14 +9,57 @@ import aion/internal/pump
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 
+@internal
 pub opaque type Dispatched(o) {
   Dispatched(correlation_id: String, output_codec: codec.Codec(o))
 }
 
+type SettledDispatch(o) {
+  SettledDispatch(Dispatched(o))
+  SettledRefused(error.ActivityError)
+}
+
+@internal
+pub fn run(
+  activity_value: Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> Result(o, error.ActivityError) {
+  use dispatched <- result.try(dispatch(
+    activity_value,
+    workflow_default_task_queue,
+  ))
+  await(dispatched)
+}
+
+@internal
+pub fn all_settled(
+  activities: List(Activity(i, o)),
+  workflow_default_task_queue: option.Option(String),
+) -> List(Result(o, error.ActivityError)) {
+  let dispatched =
+    list.map(activities, fn(activity_value) {
+      case settled_policy_supported(activity_value) {
+        False -> SettledRefused(settled_policy_error())
+        True ->
+          case dispatch(activity_value, workflow_default_task_queue) {
+            Ok(value) -> SettledDispatch(value)
+            Error(failure) -> SettledRefused(failure)
+          }
+      }
+    })
+  list.map(dispatched, fn(value) {
+    case value {
+      SettledDispatch(dispatched) -> await(dispatched)
+      SettledRefused(failure) -> Error(failure)
+    }
+  })
+}
+
 /// Encode, configure, and dispatch one activity on its selected tier.
-pub fn dispatch(
+fn dispatch(
   activity_value: Activity(i, o),
   workflow_default_task_queue: option.Option(String),
 ) -> Result(Dispatched(o), error.ActivityError) {
@@ -46,7 +89,7 @@ pub fn dispatch(
 }
 
 /// Await and decode one previously dispatched activity.
-pub fn await(dispatched: Dispatched(o)) -> Result(o, error.ActivityError) {
+fn await(dispatched: Dispatched(o)) -> Result(o, error.ActivityError) {
   let Dispatched(correlation_id, output_codec) = dispatched
   case
     pump.run(fn() { pump.shield(ffi.await_activity_result(correlation_id)) })
@@ -65,6 +108,7 @@ pub fn await(dispatched: Dispatched(o)) -> Result(o, error.ActivityError) {
 /// The current arity-4 engine wire runs one attempt and owns no timeout. A
 /// settled combinator must refuse policy-bearing in-VM members rather than
 /// silently discard their retry or timeout contract.
+@internal
 pub fn settled_policy_supported(activity_value: Activity(i, o)) -> Bool {
   case activity.selected_tier(activity_value) {
     Some(activity.InVm) ->
@@ -79,12 +123,14 @@ pub fn settled_policy_supported(activity_value: Activity(i, o)) -> Bool {
   }
 }
 
+@internal
 pub fn settled_policy_error() -> error.ActivityError {
   error.ActivityEngineFailure(
     message: "settled in-VM activities do not support retry or timeout policies on the current arity-4 wire",
   )
 }
 
+@internal
 pub fn parse_error(raw: String) -> error.ActivityError {
   case string.starts_with(raw, "retryable:") {
     True -> error.Retryable(message: string.drop_start(raw, 10), details: "")
@@ -149,6 +195,7 @@ fn encode_error(runner_error: error.ActivityError) -> String {
   }
 }
 
+@internal
 pub fn config(
   activity_value: Activity(i, o),
   workflow_default_task_queue: option.Option(String),
