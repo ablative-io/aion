@@ -209,19 +209,24 @@ pub fn conclude_merge(shell: &Shell, workspace_path: &str) -> Result<ConcludeOut
 /// reads) whose worktree content still contains conflict markers. A file
 /// deleted from the worktree is a resolution (the delete side was chosen),
 /// not a marker hit.
+///
+/// The listing uses `-z` (NUL-separated, quoting disabled): without it,
+/// git C-quotes unusual pathnames (non-ASCII under the default
+/// `core.quotepath=true`, plus quotes/backslashes/control chars), the
+/// quoted string never exists on disk, and the scan would misread the
+/// file as resolved-by-deletion — committing its literal conflict markers.
 fn unresolved_marker_paths(shell: &Shell, workspace_path: &str) -> Result<Vec<String>, String> {
     let conflicted = require_git_ok(
         shell,
         workspace_path,
-        &["diff", "--name-only", "--diff-filter=U"],
+        &["diff", "--name-only", "--diff-filter=U", "-z"],
         "git diff --diff-filter=U (conclusion marker scan)",
     )?;
     let mut unresolved = Vec::new();
     for path in conflicted
         .stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .split('\0')
+        .filter(|path| !path.is_empty())
     {
         let absolute = std::path::Path::new(workspace_path).join(path);
         if !absolute.exists() {

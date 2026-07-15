@@ -147,6 +147,10 @@ fn conflicted_repo_over(files: &[&str]) -> anyhow::Result<(tempfile::TempDir, St
     git(&root, &["init", "-b", "main"])?;
     git(&root, &["config", "user.name", "test"])?;
     git(&root, &["config", "user.email", "test@example.com"])?;
+    // Pin git's DEFAULT pathname quoting on, so these repos exhibit the
+    // C-quoted non-ASCII listings the marker scan must survive even when a
+    // host gitconfig turns quoting off.
+    git(&root, &["config", "core.quotepath", "true"])?;
     for (content, commit_message, branch_cmd) in [
         ("base\n", "base", Some(["checkout", "-b", "side"])),
         ("side\n", "side", Some(["checkout", "main", "--"])),
@@ -264,6 +268,50 @@ fn conclude_merge_refuses_a_partial_resolution_naming_the_unresolved_file() -> a
         anyhow::bail!("expected the fully-resolved merge to conclude, got {outcome:?}");
     };
     assert!(!commit.is_empty());
+    Ok(())
+}
+
+#[test]
+fn conclude_merge_refuses_markers_in_a_git_quoted_non_ascii_filename() -> anyhow::Result<()> {
+    // Under default core.quotepath=true, `git diff --name-only` prints this
+    // path as the C-quoted literal "caf\303\251.txt" — a string that does
+    // not exist on disk. A scan parsing that output as a literal path would
+    // misread the file as resolved-by-deletion and COMMIT its markers.
+    let (dir, root) = conflicted_repo_over(&["café.txt"])?;
+
+    let Err(error) = conclude_merge(&Shell::inherited(), &root) else {
+        anyhow::bail!("a quoted-pathname conflict was concluded — markers would be committed");
+    };
+    assert!(error.contains("café.txt"), "error was: {error}");
+
+    // Proven by execution: the merge is still in progress and HEAD carries
+    // no markers.
+    let shell = Shell::inherited();
+    let probe = shell
+        .run("git", &["rev-parse", "-q", "--verify", "MERGE_HEAD"], &root)
+        .map_err(|failure| anyhow::anyhow!(failure.message()))?;
+    assert!(probe.succeeded(), "MERGE_HEAD must survive the refusal");
+    let committed = shell
+        .run("git", &["show", "HEAD:café.txt"], &root)
+        .map_err(|failure| anyhow::anyhow!(failure.message()))?;
+    assert!(
+        !committed.stdout.contains("<<<<<<<"),
+        "HEAD must not carry conflict markers: {}",
+        committed.stdout
+    );
+
+    // Resolving the file makes the SAME conclusion succeed — the exists()
+    // deletion check still sees the real on-disk path through -z output.
+    std::fs::write(dir.path().join("café.txt"), "resolved\n")?;
+    let outcome = conclude_merge(&Shell::inherited(), &root).map_err(anyhow::Error::msg)?;
+    let ConcludeOutcome::Concluded { commit } = outcome else {
+        anyhow::bail!("expected the resolved merge to conclude, got {outcome:?}");
+    };
+    assert!(!commit.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("café.txt"))?,
+        "resolved\n"
+    );
     Ok(())
 }
 
