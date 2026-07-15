@@ -1,5 +1,7 @@
 //! Region-body lowering for the BC-2 covered subset: sequential regions whose
-//! step bodies are action calls, sleeps, and pipe chains (action/child/field/
+//! step bodies are action calls (with per-key call-site config merge), awaited
+//! child calls and fire-and-forget spawns (`child_call`), waits with and
+//! without timeouts (`wait`), sleeps, and pipe chains (action/child/field/
 //! combinator stages — `pipes`) ending in a route. A multi-step chain lowers
 //! as one `FlowFn` per step, each non-terminal step ending in a tail call to
 //! its successor (IR-14) with the chain-boundary live set
@@ -7,10 +9,54 @@
 //! (a self-tail-calling `FlowFn(Loop)` per loop). Forks lower through `forks`
 //! (activity fan-out over `workflow.map`/`all` / `list.try_fold` and child
 //! spawn-all/ordered-await fan-out to the reference emitter's parity
-//! contract). Substeps, waits, spawns, `on failure`, and dependency-parallel
-//! layers are deferred (`LowerError::unsupported`) — visible incompleteness,
-//! never silent divergence from the reference. The activity-emission
-//! primitives live in `activity`.
+//! contract).
+//!
+//! Still deferred (`LowerError::unsupported`, visible incompleteness — never
+//! silent divergence from the reference):
+//! - substeps: mechanical but large (per-substep fns over the shared plan's
+//!   `sub_params`/`sub_node`, sibling/parent route frames, `on failure`
+//!   interaction — reference `emitter/subs.rs:20-60`, shape gates
+//!   `emitter/graph.rs:73-116`) against one valid-fixture pressure point
+//!   (`loop-outcomes/valid/substeps_two_stage.awl`) — `FnOrigin::SubStep`
+//!   already exists;
+//! - `on failure`: needs the reserved `Stmt::Attempt` select emission —
+//!   instruction selection refuses it (`select/flow.rs::unsupported_stmt`),
+//!   so support is select-surface work (attempt closure call + defs-tuple
+//!   threading mirroring `emitter/steps.rs:301-354`), beyond lowering scope;
+//!   the lowering sketch: lift the attempt body to a `FlowFn` returning
+//!   `Ok(defs-tuple)`, host does `CallLocal` + `Tail::If IsTagged(ok, arity
+//!   2)` with the compensation block (which must end in a route,
+//!   `emitter/steps.rs:485-501`) in the else arm — reconvergence is
+//!   impossible, so the success continuation nests in the then-arm; refuse
+//!   the body-terminal-route combination with the emitter's class
+//!   (`emitter/steps.rs:302-311`). Fixture pressure:
+//!   `on_failure_compensation.awl`, `ship_release_combined.awl`;
+//! - dependency-parallel region layers (`parallel region`). The reference is
+//!   richer twice over (`emitter/steps.rs`): single-bare-call layers (every
+//!   member = one unbound declared-action call, no outcomes/on-failure —
+//!   `layer_calls`) dispatch as ONE `workflow.all`, typed when homogeneous,
+//!   raw twins + per-position decode when heterogeneous
+//!   (`lower_hetero_parallel`); richer layers degrade to WRITTEN ORDER with
+//!   a generated visibility comment. Design if implemented: flatten
+//!   `region.layers` into the emitter's step walk; for a multi-member layer
+//!   first try the single-call-layer gate, lowering the typed/raw
+//!   `workflow.all` by reusing `fork_named`'s machinery (`AssertList` binds
+//!   plus `bind_branches` per-position decode); otherwise lower members
+//!   sequentially and set `degraded_parallel: true` on the region `FlowFn`
+//!   (the MIR twin of the emitter's comment, printed as S13). Planning
+//!   impact: `chain_params`/`plan.chains` assume one member per layer — the
+//!   flattened order must be identical at plan and lower time; hetero
+//!   layers need raw twins planned, so `forks::raw_action_inventory` must
+//!   also scan multi-member layers. Fixtures unlocked: after multi diamond
+//!   (all-layer); release pipeline combined + flagship dev brief (degraded).
+//!
+//! Parity refusals (the reference emitter refuses these too — a language
+//! boundary, not a direct-path gap): mid-chain routes (the shared `Plan`
+//! refuses step-level routes to non-entry steps, `emitter/graph.rs:331-345` /
+//! `emitter/outcomes.rs:91-95` — `route_tail`'s `region_of_entry` miss),
+//! indexing inside outcome guards (`outcome::lower_outcomes`), and the fork
+//! boundaries named in `forks`. The activity-emission primitives live in
+//! `activity`.
 
 use crate::RouteDirection;
 use crate::ast::{CallStmt, PipeEnd, RouteTarget, Statement, Step};
@@ -277,8 +323,14 @@ pub(super) fn lower_statement(
             let tail = route_tail(ctx, plan, &route.target, scope, None, stmts)?;
             Ok(Some(tail))
         }
-        Statement::Spawn(spawn) => Err(LowerError::unsupported("spawn", spawn.span)),
-        Statement::Wait(wait) => Err(LowerError::unsupported("wait", wait.span)),
+        Statement::Spawn(spawn) => {
+            super::child_call::lower_spawn_stmt(ctx, plan, spawn, scope, stmts)?;
+            Ok(None)
+        }
+        Statement::Wait(wait) => {
+            super::wait::lower_wait_stmt(ctx, plan, step, wait, scope, stmts, slots)?;
+            Ok(None)
+        }
         Statement::Fork(fork) => {
             lower_fork_stmt(ctx, plan, step, fork, scope, stmts, slots)?;
             Ok(None)
@@ -298,17 +350,36 @@ pub(super) fn lower_call(
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<(), LowerError> {
-    if call.config.is_some() {
-        return Err(LowerError::unsupported("call-site config", call.span));
+    // An awaited child call dispatches through the string-name spawn form;
+    // config on a child call refuses with the reference's class
+    // (`child_call::lower_child_call_stmt`).
+    if ctx.emitter.children.contains_key(call.call.name.as_str()) {
+        return super::child_call::lower_child_call_stmt(ctx, plan, call, scope, stmts);
     }
-    let bound = activity_call(ctx, plan, &call.call, None, scope, stmts)?;
+    let bound = activity_call(
+        ctx,
+        plan,
+        &call.call,
+        call.config.as_ref(),
+        None,
+        scope,
+        stmts,
+    )?;
     if let Some(bind) = &call.bind {
         let ty = ctx
             .emitter
             .actions
             .get(call.call.name.as_str())
             .map(|&(_, decl)| type_ref_to_g(&decl.returns))
-            .ok_or_else(|| LowerError::unsupported("child call", call.call.name_span))?;
+            .ok_or_else(|| {
+                LowerError::new(
+                    call.call.name_span,
+                    format!(
+                        "`{}` names neither a declared action nor a child workflow",
+                        call.call.name
+                    ),
+                )
+            })?;
         scope.insert(bind.name.clone(), Binding { var: bound, ty });
     }
     Ok(())

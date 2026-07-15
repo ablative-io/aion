@@ -1,0 +1,509 @@
+module release_pipeline source=release_pipeline.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_build:
+    aion@activity:retry/2 [activities] (v2, v5)
+    aion@activity:timeout/2 [activities] (v6, v7)
+    aion@activity:task_queue/2 [activities] (v8, lit#29)
+    aion@activity:node/2 [activities] (v9, lit#30)
+    aion@workflow:run/1 [activities] (v10)
+    aion@activity:retry/2 [activities] (v14, v18)
+    aion@activity:timeout/2 [activities] (v19, v20)
+    aion@activity:task_queue/2 [activities] (v21, lit#33)
+    aion@activity:node/2 [activities] (v22, lit#34)
+    aion@workflow:run/1 [activities] (v23)
+  step_changelog:
+    aion@workflow:spawn_and_wait/6 [children] (lit#37, v4, v3, v5, v6, v7)
+    aion@activity:timeout/2 [activities] (v12, v13)
+    aion@activity:task_queue/2 [activities] (v14, lit#38)
+    aion@activity:node/2 [activities] (v15, lit#39)
+    aion@workflow:run/1 [activities] (v16)
+    aion@activity:retry/2 [activities] (v20, v23)
+    aion@activity:task_queue/2 [activities] (v24, lit#40)
+    aion@workflow:run/1 [activities] (v25)
+    aion@workflow:spawn/6 [children] (lit#41, v30, v29, v31, v32, v33)
+== durable families == activities, children
+== atoms ==
+  [0] build
+  [1] changelog
+  [2] release
+  [3] abort
+  [4] announce_input
+  [5] cut_build_input
+  [6] sign_artifact_input
+  [7] tag_release_input
+  [8] release_pipeline_input
+  [9] released_outcome
+  [10] fixed
+  [11] retry_policy
+  [12] exponential
+  [13] awl_outcome_failure
+  [14] error
+  [15] ok
+== literals ==
+  [0] "artifact"
+  [1] "ok"
+  [2] "text"
+  [3] "entries"
+  [4] "version"
+  [5] "artifact"
+  [6] "changelog"
+  [7] "reason"
+  [8] "text"
+  [9] "repo"
+  [10] "version"
+  [11] "artifact"
+  [12] "version"
+  [13] "version"
+  [14] "repo"
+  [15] "released"
+  [16] "outcome"
+  [17] ""
+  [18] ""
+  [19] ""
+  [20] "ReleasePipelineOutcome"
+  [21] "released"
+  [22] "payload"
+  [23] "child"
+  [24] "outcome"
+  [25] "payload"
+  [26] "child"
+  [27] "outcome"
+  [28] "payload"
+  [29] "release"
+  [30] "shell"
+  [31] "release build finished"
+  [32] float(2.0)
+  [33] "release"
+  [34] "chat"
+  [35] "build failed"
+  [36] "aborted"
+  [37] "write_changelog"
+  [38] "release"
+  [39] "signer_hsm"
+  [40] "release"
+  [41] "archive_run"
+  [42] "signing failed"
+  [43] "aborted"
+== types ==
+  record Build tag=build
+    artifact: string
+    ok: bool
+  record Changelog tag=changelog
+    text: string
+    entries: int
+  record Release tag=release
+    version: string
+    artifact: string
+    changelog: string
+  record Abort tag=abort
+    reason: string
+  record AnnounceInput tag=announce_input
+    text: string
+  record CutBuildInput tag=cut_build_input
+    repo: string
+    version: string
+  record SignArtifactInput tag=sign_artifact_input
+    artifact: string
+  record TagReleaseInput tag=tag_release_input
+    version: string
+  record ReleasePipelineInput tag=release_pipeline_input
+    version: string
+    repo: string
+  union ReleasePipelineOutcome
+    released -> released_outcome(ref(Release))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=release_pipeline_input_codec output=release_pipeline_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(release_pipeline.ReleasePipelineInput, release_pipeline.ReleasePipelineOutcome, AwlError)
+  T-DEF name="release_pipeline" input=release_pipeline_input_codec output=release_pipeline_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (release_pipeline.ReleasePipelineInput) -> Result(release_pipeline.ReleasePipelineOutcome, AwlError)
+  T-EXEC fields=[version:String, repo:String] entry=step_build args=[1, 0]
+== fn build_codec/0 origin=codec_template(RecordTrio, Build, record#0) ==
+  sig: () -> Codec(release_pipeline.Build)
+  v0 = make_closure build_to_json captures=[]
+  v1 = call_local build_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn build_to_json/1 origin=codec_template(RecordTrio, Build, record#0) ==
+  sig: (release_pipeline.Build) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"artifact": v1|>awlc.string_to_json, "ok": v2|>awlc.bool_to_json}
+  return v3
+== fn build_decoder/0 origin=codec_template(RecordTrio, Build, record#0) ==
+  sig: () -> Decoder(release_pipeline.Build)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure build_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn build_decoder$0/1 origin=lifted(build_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.Build)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure build_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn build_decoder$1/2 origin=lifted(build_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(release_pipeline.Build)
+  v2 = record(build, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn changelog_codec/0 origin=codec_template(RecordTrio, Changelog, record#1) ==
+  sig: () -> Codec(release_pipeline.Changelog)
+  v0 = make_closure changelog_to_json captures=[]
+  v1 = call_local changelog_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn changelog_to_json/1 origin=codec_template(RecordTrio, Changelog, record#1) ==
+  sig: (release_pipeline.Changelog) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"text": v1|>awlc.string_to_json, "entries": v2|>awlc.int_to_json}
+  return v3
+== fn changelog_decoder/0 origin=codec_template(RecordTrio, Changelog, record#1) ==
+  sig: () -> Decoder(release_pipeline.Changelog)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure changelog_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn changelog_decoder$0/1 origin=lifted(changelog_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.Changelog)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure changelog_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn changelog_decoder$1/2 origin=lifted(changelog_decoder, #1) ==
+  sig: (Int, String) -> Decoder(release_pipeline.Changelog)
+  v2 = record(changelog, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn release_codec/0 origin=codec_template(RecordTrio, Release, record#2) ==
+  sig: () -> Codec(release_pipeline.Release)
+  v0 = make_closure release_to_json captures=[]
+  v1 = call_local release_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn release_to_json/1 origin=codec_template(RecordTrio, Release, record#2) ==
+  sig: (release_pipeline.Release) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"version": v1|>awlc.string_to_json, "artifact": v2|>awlc.string_to_json, "changelog": v3|>awlc.string_to_json}
+  return v4
+== fn release_decoder/0 origin=codec_template(RecordTrio, Release, record#2) ==
+  sig: () -> Decoder(release_pipeline.Release)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure release_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn release_decoder$0/1 origin=lifted(release_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.Release)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure release_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn release_decoder$1/2 origin=lifted(release_decoder, #1) ==
+  sig: (String, String) -> Decoder(release_pipeline.Release)
+  v2 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0, v1]
+  v3 = make_closure release_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v2, v3)
+== fn release_decoder$2/3 origin=lifted(release_decoder, #2) ==
+  sig: (String, String, String) -> Decoder(release_pipeline.Release)
+  v3 = record(release, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn abort_codec/0 origin=codec_template(RecordTrio, Abort, record#3) ==
+  sig: () -> Codec(release_pipeline.Abort)
+  v0 = make_closure abort_to_json captures=[]
+  v1 = call_local abort_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn abort_to_json/1 origin=codec_template(RecordTrio, Abort, record#3) ==
+  sig: (release_pipeline.Abort) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn abort_decoder/0 origin=codec_template(RecordTrio, Abort, record#3) ==
+  sig: () -> Decoder(release_pipeline.Abort)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure abort_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn abort_decoder$0/1 origin=lifted(abort_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.Abort)
+  v1 = record(abort, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn announce_input_codec/0 origin=codec_template(RecordTrio, AnnounceInput, record#4) ==
+  sig: () -> Codec(release_pipeline.AnnounceInput)
+  v0 = make_closure announce_input_to_json captures=[]
+  v1 = call_local announce_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn announce_input_to_json/1 origin=codec_template(RecordTrio, AnnounceInput, record#4) ==
+  sig: (release_pipeline.AnnounceInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"text": v1|>awlc.string_to_json}
+  return v2
+== fn announce_input_decoder/0 origin=codec_template(RecordTrio, AnnounceInput, record#4) ==
+  sig: () -> Decoder(release_pipeline.AnnounceInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure announce_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn announce_input_decoder$0/1 origin=lifted(announce_input_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.AnnounceInput)
+  v1 = record(announce_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn cut_build_input_codec/0 origin=codec_template(RecordTrio, CutBuildInput, record#5) ==
+  sig: () -> Codec(release_pipeline.CutBuildInput)
+  v0 = make_closure cut_build_input_to_json captures=[]
+  v1 = call_local cut_build_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn cut_build_input_to_json/1 origin=codec_template(RecordTrio, CutBuildInput, record#5) ==
+  sig: (release_pipeline.CutBuildInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"repo": v1|>awlc.string_to_json, "version": v2|>awlc.string_to_json}
+  return v3
+== fn cut_build_input_decoder/0 origin=codec_template(RecordTrio, CutBuildInput, record#5) ==
+  sig: () -> Decoder(release_pipeline.CutBuildInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure cut_build_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn cut_build_input_decoder$0/1 origin=lifted(cut_build_input_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.CutBuildInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure cut_build_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v1, v2)
+== fn cut_build_input_decoder$1/2 origin=lifted(cut_build_input_decoder, #1) ==
+  sig: (String, String) -> Decoder(release_pipeline.CutBuildInput)
+  v2 = record(cut_build_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn sign_artifact_input_codec/0 origin=codec_template(RecordTrio, SignArtifactInput, record#6) ==
+  sig: () -> Codec(release_pipeline.SignArtifactInput)
+  v0 = make_closure sign_artifact_input_to_json captures=[]
+  v1 = call_local sign_artifact_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn sign_artifact_input_to_json/1 origin=codec_template(RecordTrio, SignArtifactInput, record#6) ==
+  sig: (release_pipeline.SignArtifactInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"artifact": v1|>awlc.string_to_json}
+  return v2
+== fn sign_artifact_input_decoder/0 origin=codec_template(RecordTrio, SignArtifactInput, record#6) ==
+  sig: () -> Decoder(release_pipeline.SignArtifactInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure sign_artifact_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn sign_artifact_input_decoder$0/1 origin=lifted(sign_artifact_input_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.SignArtifactInput)
+  v1 = record(sign_artifact_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn tag_release_input_codec/0 origin=codec_template(RecordTrio, TagReleaseInput, record#7) ==
+  sig: () -> Codec(release_pipeline.TagReleaseInput)
+  v0 = make_closure tag_release_input_to_json captures=[]
+  v1 = call_local tag_release_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn tag_release_input_to_json/1 origin=codec_template(RecordTrio, TagReleaseInput, record#7) ==
+  sig: (release_pipeline.TagReleaseInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"version": v1|>awlc.string_to_json}
+  return v2
+== fn tag_release_input_decoder/0 origin=codec_template(RecordTrio, TagReleaseInput, record#7) ==
+  sig: () -> Decoder(release_pipeline.TagReleaseInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure tag_release_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v0, v1)
+== fn tag_release_input_decoder$0/1 origin=lifted(tag_release_input_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.TagReleaseInput)
+  v1 = record(tag_release_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn release_pipeline_input_codec/0 origin=codec_template(RecordTrio, ReleasePipelineInput, record#8) ==
+  sig: () -> Codec(release_pipeline.ReleasePipelineInput)
+  v0 = make_closure release_pipeline_input_to_json captures=[]
+  v1 = call_local release_pipeline_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn release_pipeline_input_to_json/1 origin=codec_template(RecordTrio, ReleasePipelineInput, record#8) ==
+  sig: (release_pipeline.ReleasePipelineInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"version": v1|>awlc.string_to_json, "repo": v2|>awlc.string_to_json}
+  return v3
+== fn release_pipeline_input_decoder/0 origin=codec_template(RecordTrio, ReleasePipelineInput, record#8) ==
+  sig: () -> Decoder(release_pipeline.ReleasePipelineInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure release_pipeline_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn release_pipeline_input_decoder$0/1 origin=lifted(release_pipeline_input_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.ReleasePipelineInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure release_pipeline_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v1, v2)
+== fn release_pipeline_input_decoder$1/2 origin=lifted(release_pipeline_input_decoder, #1) ==
+  sig: (String, String) -> Decoder(release_pipeline.ReleasePipelineInput)
+  v2 = record(release_pipeline_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn release_pipeline_outcome_codec/0 origin=codec_template(UnionTrio, ReleasePipelineOutcome, union#9) ==
+  sig: () -> Codec(release_pipeline.ReleasePipelineOutcome)
+  v0 = make_closure release_pipeline_outcome_to_json captures=[]
+  v1 = call_local release_pipeline_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn release_pipeline_outcome_to_json/1 origin=codec_template(UnionTrio, ReleasePipelineOutcome, union#9) ==
+  sig: (release_pipeline.ReleasePipelineOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#15|>awlc.string_to_json, "payload": v1|>release_to_json}
+  return v2
+== fn release_pipeline_outcome_decoder/0 origin=codec_template(UnionTrio, ReleasePipelineOutcome, union#9) ==
+  sig: () -> Decoder(release_pipeline.ReleasePipelineOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure release_pipeline_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#16, v0, v1)
+== fn release_pipeline_outcome_decoder$outcome/1 origin=lifted(release_pipeline_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.ReleasePipelineOutcome)
+  if cmp Eq v0 lit#21:
+    v3 = call_local release_decoder()
+    v4 = make_closure release_pipeline_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#22, v3, v4)
+  else:
+    v1 = record(release, [lit#17, lit#18, lit#19])
+    v2 = record(released_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#20)
+== fn release_pipeline_outcome_decoder$arm0/1 origin=lifted(release_pipeline_outcome_decoder, #1) ==
+  sig: (release_pipeline.Release) -> Decoder(release_pipeline.ReleasePipelineOutcome)
+  v1 = record(released_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn awl_child_output_changelog_codec/0 origin=codec_template(ChildEnvelopeTrio, Changelog, child_envelope(ref(Changelog))) ==
+  sig: () -> Codec(release_pipeline.Changelog)
+  v0 = make_closure awl_child_output_changelog_to_json captures=[]
+  v1 = call_local awl_child_output_changelog_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_changelog_to_json/1 origin=codec_template(ChildEnvelopeTrio, Changelog, child_envelope(ref(Changelog))) ==
+  sig: (release_pipeline.Changelog) -> Json
+  v1 = json_obj {"outcome": lit#23|>awlc.string_to_json, "payload": v0|>changelog_to_json}
+  return v1
+== fn awl_child_output_changelog_decoder/0 origin=codec_template(ChildEnvelopeTrio, Changelog, child_envelope(ref(Changelog))) ==
+  sig: () -> Decoder(release_pipeline.Changelog)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_changelog_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#24, v0, v1)
+== fn awl_child_output_changelog_decoder$outcome/1 origin=lifted(awl_child_output_changelog_decoder, #0) ==
+  sig: (String) -> Decoder(release_pipeline.Changelog)
+  v1 = call_local changelog_decoder()
+  v2 = make_closure awl_child_output_changelog_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#25, v1, v2)
+== fn awl_child_output_changelog_decoder$payload/1 origin=lifted(awl_child_output_changelog_decoder, #1) ==
+  sig: (release_pipeline.Changelog) -> Decoder(release_pipeline.Changelog)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn awl_child_output_nil_codec/0 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: () -> Codec(Nil)
+  v0 = make_closure awl_child_output_nil_to_json captures=[]
+  v1 = call_local awl_child_output_nil_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_nil_to_json/1 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: (Nil) -> Json
+  v1 = json_obj {"outcome": lit#26|>awlc.string_to_json, "payload": v0|>awlc.nil_to_json}
+  return v1
+== fn awl_child_output_nil_decoder/0 origin=codec_template(ChildEnvelopeTrio, Nil, child_envelope(nil)) ==
+  sig: () -> Decoder(Nil)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_nil_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#27, v0, v1)
+== fn awl_child_output_nil_decoder$outcome/1 origin=lifted(awl_child_output_nil_decoder, #0) ==
+  sig: (String) -> Decoder(Nil)
+  v1 = call_rt aion@awl@codec:nil_decoder/0()
+  v2 = make_closure awl_child_output_nil_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#28, v1, v2)
+== fn awl_child_output_nil_decoder$payload/1 origin=lifted(awl_child_output_nil_decoder, #1) ==
+  sig: (Nil) -> Decoder(Nil)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn announce_activity/1 origin=activity_wrapper(announce, raw=false) ==
+  sig: (String) -> Activity(release_pipeline.AnnounceInput, Nil)
+  T-ACT action=announce input_codec=announce_input_codec return=awlc.nil_codec
+== fn cut_build_activity/2 origin=activity_wrapper(cut_build, raw=false) ==
+  sig: (String, String) -> Activity(release_pipeline.CutBuildInput, release_pipeline.Build)
+  T-ACT action=cut_build input_codec=cut_build_input_codec return=build_codec
+== fn sign_artifact_activity/1 origin=activity_wrapper(sign_artifact, raw=false) ==
+  sig: (String) -> Activity(release_pipeline.SignArtifactInput, release_pipeline.Build)
+  T-ACT action=sign_artifact input_codec=sign_artifact_input_codec return=build_codec
+== fn tag_release_activity/1 origin=activity_wrapper(tag_release, raw=false) ==
+  sig: (String) -> Activity(release_pipeline.TagReleaseInput, Nil)
+  T-ACT action=tag_release input_codec=tag_release_input_codec return=awlc.nil_codec
+== fn step_build/2 origin=region(build) ==
+  sig: (String, String) -> Result(release_pipeline.ReleasePipelineOutcome, AwlError)
+  v2 = call_local cut_build_activity(v0, v1) live_after=[v0, v1]
+  v3 = call_rt aion@duration:milliseconds/1(120000) live_after=[v0, v1, v2]
+  v4 = record(fixed, [v3])
+  v5 = record(retry_policy, [2, v4])
+  v6 = call_rt aion@activity:retry/2(v2, v5) live_after=[v0, v1]
+  v7 = call_rt aion@duration:milliseconds/1(2700000) live_after=[v0, v1, v6]
+  v8 = call_rt aion@activity:timeout/2(v6, v7) live_after=[v0, v1]
+  v9 = call_rt aion@activity:task_queue/2(v8, lit#29) live_after=[v0, v1]
+  v10 = call_rt aion@activity:node/2(v9, lit#30) live_after=[v0, v1]
+  v11 = call_rt aion@workflow:run/1(v10) live_after=[v0, v1]
+  v12 = call_rt aion@awl@error:map_activity_error/1(v11) live_after=[v0, v1]
+  v13 = try_bind v12 live_after=[v0, v1]
+  v14 = call_local announce_activity(lit#31) live_after=[v0, v1, v13]
+  v15 = call_rt aion@duration:milliseconds/1(5000) live_after=[v0, v1, v13, v14]
+  v16 = call_rt aion@duration:milliseconds/1(120000) live_after=[v0, v1, v13, v14, v15]
+  v17 = record(exponential, [v15, lit#32, v16])
+  v18 = record(retry_policy, [4, v17])
+  v19 = call_rt aion@activity:retry/2(v14, v18) live_after=[v0, v1, v13]
+  v20 = call_rt aion@duration:milliseconds/1(30000) live_after=[v0, v1, v13, v19]
+  v21 = call_rt aion@activity:timeout/2(v19, v20) live_after=[v0, v1, v13]
+  v22 = call_rt aion@activity:task_queue/2(v21, lit#33) live_after=[v0, v1, v13]
+  v23 = call_rt aion@activity:node/2(v22, lit#34) live_after=[v0, v1, v13]
+  v24 = call_rt aion@workflow:run/1(v23) live_after=[v0, v1, v13]
+  v25 = call_rt aion@awl@error:map_activity_error/1(v24) live_after=[v0, v1, v13]
+  v26 = try_bind v25 live_after=[v0, v1, v13]
+  v27 = field(v13, 2)
+  if is_true v27:
+    tail_local step_changelog(v13, v0, v1)
+  else:
+    v28 = record(abort, [lit#35])
+    v29 = call_local abort_to_json(v28)
+    v30 = call_rt gleam@json:to_string/1(v29)
+    v31 = record(awl_outcome_failure, [lit#36, v30])
+    v32 = record(error, [v31])
+    return v32
+== fn step_changelog/3 origin=region(changelog) ==
+  sig: (release_pipeline.Build, String, String) -> Result(release_pipeline.ReleasePipelineOutcome, AwlError)
+  v3 = json_obj {"repo": v1|>awlc.string_to_json, "version": v2|>awlc.string_to_json}
+  v4 = make_closure awl$child_witness captures=[]
+  v5 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v2, v3, v4]
+  v6 = call_local awl_child_output_changelog_codec() live_after=[v0, v2, v3, v4, v5]
+  v7 = call_rt aion@awl@error:codec/0() live_after=[v0, v2, v3, v4, v5, v6]
+  v8 = call_rt aion@workflow:spawn_and_wait/6(lit#37, v4, v3, v5, v6, v7) live_after=[v0, v2]
+  v9 = call_rt aion@awl@error:map_child_error/1(v8) live_after=[v0, v2]
+  v10 = try_bind v9 live_after=[v0, v2]
+  v11 = field(v0, 1)
+  v12 = call_local sign_artifact_activity(v11) live_after=[v2, v10]
+  v13 = call_rt aion@duration:milliseconds/1(600000) live_after=[v2, v10, v12]
+  v14 = call_rt aion@activity:timeout/2(v12, v13) live_after=[v2, v10]
+  v15 = call_rt aion@activity:task_queue/2(v14, lit#38) live_after=[v2, v10]
+  v16 = call_rt aion@activity:node/2(v15, lit#39) live_after=[v2, v10]
+  v17 = call_rt aion@workflow:run/1(v16) live_after=[v2, v10]
+  v18 = call_rt aion@awl@error:map_activity_error/1(v17) live_after=[v2, v10]
+  v19 = try_bind v18 live_after=[v2, v10]
+  v20 = call_local tag_release_activity(v2) live_after=[v2, v10, v19]
+  v21 = call_rt aion@duration:milliseconds/1(20000) live_after=[v2, v10, v19, v20]
+  v22 = record(fixed, [v21])
+  v23 = record(retry_policy, [3, v22])
+  v24 = call_rt aion@activity:retry/2(v20, v23) live_after=[v2, v10, v19]
+  v25 = call_rt aion@activity:task_queue/2(v24, lit#40) live_after=[v2, v10, v19]
+  v26 = call_rt aion@workflow:run/1(v25) live_after=[v2, v10, v19]
+  v27 = call_rt aion@awl@error:map_activity_error/1(v26) live_after=[v2, v10, v19]
+  v28 = try_bind v27 live_after=[v2, v10, v19]
+  v29 = json_obj {"version": v2|>awlc.string_to_json}
+  v30 = make_closure awl$child_witness captures=[]
+  v31 = call_rt aion@awl@codec:json_value/0() live_after=[v2, v10, v19, v29, v30]
+  v32 = call_local awl_child_output_nil_codec() live_after=[v2, v10, v19, v29, v30, v31]
+  v33 = call_rt aion@awl@error:codec/0() live_after=[v2, v10, v19, v29, v30, v31, v32]
+  v34 = call_rt aion@workflow:spawn/6(lit#41, v30, v29, v31, v32, v33) live_after=[v2, v10, v19]
+  v35 = call_rt aion@awl@error:map_spawn_error/1(v34) live_after=[v2, v10, v19]
+  v36 = try_bind v35 live_after=[v2, v10, v19]
+  v37 = field(v19, 2)
+  if is_true v37:
+    v38 = field(v19, 1)
+    v39 = field(v10, 1)
+    v40 = record(release, [v2, v38, v39])
+    v41 = record(released_outcome, [v40])
+    v42 = record(ok, [v41])
+    return v42
+  else:
+    v43 = record(abort, [lit#42])
+    v44 = call_local abort_to_json(v43)
+    v45 = call_rt gleam@json:to_string/1(v44)
+    v46 = record(awl_outcome_failure, [lit#43, v45])
+    v47 = record(error, [v46])
+    return v47
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

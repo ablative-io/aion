@@ -1,0 +1,21 @@
+//! Fan reviews over the pool, pinning every branch to the edge host.
+workflow fork_config
+  input halves: [Half]
+  outcome reviewed: type Reviewed, route success
+
+type Half     { name: String }
+type Report   { name: String, ok: Bool }
+type Reviewed { count: Int }
+
+worker review
+  action review_half(half: Half) -> Report
+    node decl_host, timeout 20m
+
+step fan_out
+  fork half in halves
+    review_half(half: half)
+      node edge01, timeout 5m
+  join -> reports
+
+  reports |> count -> total
+  route reviewed(count: total)

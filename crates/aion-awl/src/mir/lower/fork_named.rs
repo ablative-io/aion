@@ -12,7 +12,7 @@ use crate::emitter::type_ref_to_g;
 use super::super::ids::{Span, Var};
 use super::super::ops::{LiveAfter, Stmt, Value};
 use super::super::runtime::RuntimeFn;
-use super::activity::{activity_value, call_rt};
+use super::activity::{ActivityForm, activity_value, call_rt};
 use super::build::{FnPlan, codec_ref_for};
 use super::ctx::Ctx;
 use super::driver::LowerError;
@@ -29,9 +29,6 @@ pub(super) fn lower_named_fork(
     for statement in &fork.body {
         match statement {
             Statement::Call(call) if ctx.emitter.actions.contains_key(call.call.name.as_str()) => {
-                if call.config.is_some() {
-                    return Err(LowerError::unsupported("call-site config", call.span));
-                }
                 branches.push(call);
             }
             Statement::Call(call) if ctx.emitter.children.contains_key(call.call.name.as_str()) => {
@@ -64,7 +61,18 @@ pub(super) fn lower_named_fork(
     let raw = !homogeneous;
     let mut values = Vec::new();
     for branch in &branches {
-        let queued = activity_value(ctx, plan, &branch.call, None, scope, stmts, raw)?;
+        let queued = activity_value(
+            ctx,
+            plan,
+            &branch.call,
+            ActivityForm {
+                site_config: branch.config.as_ref(),
+                piped: None,
+                raw,
+            },
+            scope,
+            stmts,
+        )?;
         values.push(Value::Var(queued));
     }
     let list = ctx.fresh_var();

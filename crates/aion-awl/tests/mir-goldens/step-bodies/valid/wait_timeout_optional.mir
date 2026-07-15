@@ -1,0 +1,293 @@
+module wait_timeout_optional source=wait_timeout_optional.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_request:
+    aion@activity:task_queue/2 [activities] (v1, lit#15)
+    aion@workflow:run/1 [activities] (v2)
+  step_hold_for_signoff:
+    aion@workflow:with_timeout/2 [timers] (v1, v2)
+  hold_for_signoff_wait_0_receive:
+    aion@workflow:receive/1 [signals] (v0)
+== durable families == timers, activities, signals
+== atoms ==
+  [0] signoff
+  [1] ack
+  [2] shipped
+  [3] escalated
+  [4] request_signoff_input
+  [5] wait_timeout_optional_input
+  [6] shipped_outcome
+  [7] ok
+  [8] some
+  [9] none
+  [10] error
+  [11] timed_out_error
+  [12] inner_error
+  [13] awl_timer_failed
+  [14] awl_outcome_failure
+== literals ==
+  [0] "reviewer"
+  [1] "requested"
+  [2] "change_id"
+  [3] "reviewer"
+  [4] "change_id"
+  [5] "reason"
+  [6] "change_id"
+  [7] "change_id"
+  [8] "shipped"
+  [9] "outcome"
+  [10] ""
+  [11] ""
+  [12] "WaitTimeoutOptionalOutcome"
+  [13] "shipped"
+  [14] "payload"
+  [15] "review_desk"
+  [16] "sign-off window lapsed"
+  [17] "escalated"
+== types ==
+  record Signoff tag=signoff
+    reviewer: string
+  record Ack tag=ack
+    requested: bool
+  record Shipped tag=shipped
+    change_id: string
+    reviewer: string
+  record Escalated tag=escalated
+    change_id: string
+    reason: string
+  record RequestSignoffInput tag=request_signoff_input
+    change_id: string
+  record WaitTimeoutOptionalInput tag=wait_timeout_optional_input
+    change_id: string
+  union WaitTimeoutOptionalOutcome
+    shipped -> shipped_outcome(ref(Shipped))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=wait_timeout_optional_input_codec output=wait_timeout_optional_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(wait_timeout_optional.WaitTimeoutOptionalInput, wait_timeout_optional.WaitTimeoutOptionalOutcome, AwlError)
+  T-DEF name="wait_timeout_optional" input=wait_timeout_optional_input_codec output=wait_timeout_optional_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (wait_timeout_optional.WaitTimeoutOptionalInput) -> Result(wait_timeout_optional.WaitTimeoutOptionalOutcome, AwlError)
+  T-EXEC fields=[change_id:String] entry=step_request args=[0]
+== fn signoff_codec/0 origin=codec_template(RecordTrio, Signoff, record#0) ==
+  sig: () -> Codec(wait_timeout_optional.Signoff)
+  v0 = make_closure signoff_to_json captures=[]
+  v1 = call_local signoff_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn signoff_to_json/1 origin=codec_template(RecordTrio, Signoff, record#0) ==
+  sig: (wait_timeout_optional.Signoff) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reviewer": v1|>awlc.string_to_json}
+  return v2
+== fn signoff_decoder/0 origin=codec_template(RecordTrio, Signoff, record#0) ==
+  sig: () -> Decoder(wait_timeout_optional.Signoff)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure signoff_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn signoff_decoder$0/1 origin=lifted(signoff_decoder, #0) ==
+  sig: (String) -> Decoder(wait_timeout_optional.Signoff)
+  v1 = record(signoff, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn ack_codec/0 origin=codec_template(RecordTrio, Ack, record#1) ==
+  sig: () -> Codec(wait_timeout_optional.Ack)
+  v0 = make_closure ack_to_json captures=[]
+  v1 = call_local ack_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ack_to_json/1 origin=codec_template(RecordTrio, Ack, record#1) ==
+  sig: (wait_timeout_optional.Ack) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"requested": v1|>awlc.bool_to_json}
+  return v2
+== fn ack_decoder/0 origin=codec_template(RecordTrio, Ack, record#1) ==
+  sig: () -> Decoder(wait_timeout_optional.Ack)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure ack_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn ack_decoder$0/1 origin=lifted(ack_decoder, #0) ==
+  sig: (Bool) -> Decoder(wait_timeout_optional.Ack)
+  v1 = record(ack, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn shipped_codec/0 origin=codec_template(RecordTrio, Shipped, record#2) ==
+  sig: () -> Codec(wait_timeout_optional.Shipped)
+  v0 = make_closure shipped_to_json captures=[]
+  v1 = call_local shipped_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn shipped_to_json/1 origin=codec_template(RecordTrio, Shipped, record#2) ==
+  sig: (wait_timeout_optional.Shipped) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"change_id": v1|>awlc.string_to_json, "reviewer": v2|>awlc.string_to_json}
+  return v3
+== fn shipped_decoder/0 origin=codec_template(RecordTrio, Shipped, record#2) ==
+  sig: () -> Decoder(wait_timeout_optional.Shipped)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure shipped_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn shipped_decoder$0/1 origin=lifted(shipped_decoder, #0) ==
+  sig: (String) -> Decoder(wait_timeout_optional.Shipped)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure shipped_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn shipped_decoder$1/2 origin=lifted(shipped_decoder, #1) ==
+  sig: (String, String) -> Decoder(wait_timeout_optional.Shipped)
+  v2 = record(shipped, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn escalated_codec/0 origin=codec_template(RecordTrio, Escalated, record#3) ==
+  sig: () -> Codec(wait_timeout_optional.Escalated)
+  v0 = make_closure escalated_to_json captures=[]
+  v1 = call_local escalated_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn escalated_to_json/1 origin=codec_template(RecordTrio, Escalated, record#3) ==
+  sig: (wait_timeout_optional.Escalated) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"change_id": v1|>awlc.string_to_json, "reason": v2|>awlc.string_to_json}
+  return v3
+== fn escalated_decoder/0 origin=codec_template(RecordTrio, Escalated, record#3) ==
+  sig: () -> Decoder(wait_timeout_optional.Escalated)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure escalated_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn escalated_decoder$0/1 origin=lifted(escalated_decoder, #0) ==
+  sig: (String) -> Decoder(wait_timeout_optional.Escalated)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure escalated_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v1, v2)
+== fn escalated_decoder$1/2 origin=lifted(escalated_decoder, #1) ==
+  sig: (String, String) -> Decoder(wait_timeout_optional.Escalated)
+  v2 = record(escalated, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn request_signoff_input_codec/0 origin=codec_template(RecordTrio, RequestSignoffInput, record#4) ==
+  sig: () -> Codec(wait_timeout_optional.RequestSignoffInput)
+  v0 = make_closure request_signoff_input_to_json captures=[]
+  v1 = call_local request_signoff_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn request_signoff_input_to_json/1 origin=codec_template(RecordTrio, RequestSignoffInput, record#4) ==
+  sig: (wait_timeout_optional.RequestSignoffInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"change_id": v1|>awlc.string_to_json}
+  return v2
+== fn request_signoff_input_decoder/0 origin=codec_template(RecordTrio, RequestSignoffInput, record#4) ==
+  sig: () -> Decoder(wait_timeout_optional.RequestSignoffInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure request_signoff_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn request_signoff_input_decoder$0/1 origin=lifted(request_signoff_input_decoder, #0) ==
+  sig: (String) -> Decoder(wait_timeout_optional.RequestSignoffInput)
+  v1 = record(request_signoff_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn wait_timeout_optional_input_codec/0 origin=codec_template(RecordTrio, WaitTimeoutOptionalInput, record#5) ==
+  sig: () -> Codec(wait_timeout_optional.WaitTimeoutOptionalInput)
+  v0 = make_closure wait_timeout_optional_input_to_json captures=[]
+  v1 = call_local wait_timeout_optional_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn wait_timeout_optional_input_to_json/1 origin=codec_template(RecordTrio, WaitTimeoutOptionalInput, record#5) ==
+  sig: (wait_timeout_optional.WaitTimeoutOptionalInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"change_id": v1|>awlc.string_to_json}
+  return v2
+== fn wait_timeout_optional_input_decoder/0 origin=codec_template(RecordTrio, WaitTimeoutOptionalInput, record#5) ==
+  sig: () -> Decoder(wait_timeout_optional.WaitTimeoutOptionalInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure wait_timeout_optional_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn wait_timeout_optional_input_decoder$0/1 origin=lifted(wait_timeout_optional_input_decoder, #0) ==
+  sig: (String) -> Decoder(wait_timeout_optional.WaitTimeoutOptionalInput)
+  v1 = record(wait_timeout_optional_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn wait_timeout_optional_outcome_codec/0 origin=codec_template(UnionTrio, WaitTimeoutOptionalOutcome, union#6) ==
+  sig: () -> Codec(wait_timeout_optional.WaitTimeoutOptionalOutcome)
+  v0 = make_closure wait_timeout_optional_outcome_to_json captures=[]
+  v1 = call_local wait_timeout_optional_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn wait_timeout_optional_outcome_to_json/1 origin=codec_template(UnionTrio, WaitTimeoutOptionalOutcome, union#6) ==
+  sig: (wait_timeout_optional.WaitTimeoutOptionalOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v1|>shipped_to_json}
+  return v2
+== fn wait_timeout_optional_outcome_decoder/0 origin=codec_template(UnionTrio, WaitTimeoutOptionalOutcome, union#6) ==
+  sig: () -> Decoder(wait_timeout_optional.WaitTimeoutOptionalOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure wait_timeout_optional_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn wait_timeout_optional_outcome_decoder$outcome/1 origin=lifted(wait_timeout_optional_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(wait_timeout_optional.WaitTimeoutOptionalOutcome)
+  if cmp Eq v0 lit#13:
+    v3 = call_local shipped_decoder()
+    v4 = make_closure wait_timeout_optional_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#14, v3, v4)
+  else:
+    v1 = record(shipped, [lit#10, lit#11])
+    v2 = record(shipped_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#12)
+== fn wait_timeout_optional_outcome_decoder$arm0/1 origin=lifted(wait_timeout_optional_outcome_decoder, #1) ==
+  sig: (wait_timeout_optional.Shipped) -> Decoder(wait_timeout_optional.WaitTimeoutOptionalOutcome)
+  v1 = record(shipped_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn request_signoff_activity/1 origin=activity_wrapper(request_signoff, raw=false) ==
+  sig: (String) -> Activity(wait_timeout_optional.RequestSignoffInput, wait_timeout_optional.Ack)
+  T-ACT action=request_signoff input_codec=request_signoff_input_codec return=ack_codec
+== fn signoff_signal/0 origin=signal_ref(signoff) ==
+  sig: () -> Signal(wait_timeout_optional.Signoff)
+  T-SIG signal=signoff payload=signoff_codec
+== fn step_request/1 origin=region(request) ==
+  sig: (String) -> Result(wait_timeout_optional.WaitTimeoutOptionalOutcome, AwlError)
+  v1 = call_local request_signoff_activity(v0) live_after=[v0]
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#15) live_after=[v0]
+  v3 = call_rt aion@workflow:run/1(v2) live_after=[v0]
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3) live_after=[v0]
+  v5 = try_bind v4 live_after=[v0]
+  tail_local step_hold_for_signoff(v0)
+== fn step_hold_for_signoff/1 origin=chain_step(request.hold_for_signoff) ==
+  sig: (String) -> Result(wait_timeout_optional.WaitTimeoutOptionalOutcome, AwlError)
+  v1 = make_closure hold_for_signoff_wait_0_receive captures=[]
+  v2 = call_rt aion@duration:milliseconds/1(172800000) live_after=[v0, v1]
+  v3 = call_rt aion@workflow:with_timeout/2(v1, v2) live_after=[v0]
+  v4 = call_local hold_for_signoff_wait_0_case(v3) live_after=[v0]
+  v5 = try_bind v4 live_after=[v0]
+  v6 = cmp Ne v5 'none'
+  if is_true v6:
+    v7 = assert_some v5
+    v8 = field(v7, 1)
+    v9 = record(shipped, [v0, v8])
+    v10 = record(shipped_outcome, [v9])
+    v11 = record(ok, [v10])
+    return v11
+  else:
+    v12 = record(escalated, [v0, lit#16])
+    v13 = call_local escalated_to_json(v12)
+    v14 = call_rt gleam@json:to_string/1(v13)
+    v15 = record(awl_outcome_failure, [lit#17, v14])
+    v16 = record(error, [v15])
+    return v16
+== fn hold_for_signoff_wait_0_receive/0 origin=wait(hold_for_signoff#0) ==
+  sig: () -> Result(wait_timeout_optional.Signoff, AwlError)
+  v0 = call_local signoff_signal()
+  v1 = call_rt aion@workflow:receive/1(v0)
+  tail_rt aion@awl@error:map_receive_error/1(v1)
+== fn hold_for_signoff_wait_0_case/1 origin=wait(hold_for_signoff#1) ==
+  sig: (Result(wait_timeout_optional.Signoff, aion/error.TimeoutResultError(AwlError))) -> Result(Option(wait_timeout_optional.Signoff), AwlError)
+  if is_tagged v0 ok/2:
+    v1 = field(v0, 1)
+    v2 = record(some, [v1])
+    v3 = record(ok, [v2])
+    return v3
+  else:
+    v7 = field(v0, 1)
+    if is_tagged v7 timed_out_error/2:
+      v4 = record(ok, ['none'])
+      return v4
+    else:
+      if is_tagged v7 inner_error/2:
+        v5 = field(v7, 1)
+        v6 = record(error, [v5])
+        return v6
+      else:
+        v8 = field(v7, 1)
+        v9 = record(awl_timer_failed, [v8])
+        v10 = record(error, [v9])
+        return v10
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

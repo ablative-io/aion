@@ -1,0 +1,502 @@
+module step_bodies_combined source=step_bodies_combined.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_gather:
+    aion@activity:task_queue/2 [activities] (v2, lit#24)
+    aion@workflow:run/1 [activities] (v3)
+  step_page_lead:
+    aion@activity:task_queue/2 [activities] (v6, lit#29)
+    aion@workflow:run/1 [activities] (v7)
+    aion@workflow:sleep/1 [timers] (v11)
+  step_hold_for_ack:
+    aion@workflow:with_timeout/2 [timers] (v3, v4)
+  hold_for_ack_wait_0_receive:
+    aion@workflow:receive/1 [signals] (v0)
+== durable families == timers, activities, signals
+== atoms ==
+  [0] reading
+  [1] diagnostics
+  [2] page_ack
+  [3] page_sent
+  [4] resolved
+  [5] escalated
+  [6] gather_input
+  [7] page_input
+  [8] step_bodies_combined_input
+  [9] resolved_outcome
+  [10] ok
+  [11] some
+  [12] none
+  [13] error
+  [14] timed_out_error
+  [15] inner_error
+  [16] awl_timer_failed
+  [17] awl_outcome_failure
+== literals ==
+  [0] "name"
+  [1] "severity"
+  [2] "anomalous"
+  [3] "incident_id"
+  [4] "readings"
+  [5] "responder"
+  [6] "pager_id"
+  [7] "incident_id"
+  [8] "responder"
+  [9] "anomaly_count"
+  [10] "incident_id"
+  [11] "reason"
+  [12] "incident_id"
+  [13] "responder"
+  [14] "message"
+  [15] "incident_id"
+  [16] "responders"
+  [17] "resolved"
+  [18] "outcome"
+  [19] ""
+  [20] ""
+  [21] "StepBodiesCombinedOutcome"
+  [22] "resolved"
+  [23] "payload"
+  [24] "ops"
+  [25] "nobody"
+  [26] "nobody"
+  [27] "index 0 out of range at line 34, column 19"
+  [28] "incident "
+  [29] "ops"
+  [30] "no ack from "
+  [31] "index 0 out of range at line 44, column 72"
+  [32] "escalated"
+== types ==
+  record Reading tag=reading
+    name: string
+    severity: int
+    anomalous: bool
+  record Diagnostics tag=diagnostics
+    incident_id: string
+    readings: list(ref(Reading))
+  record PageAck tag=page_ack
+    responder: string
+  record PageSent tag=page_sent
+    pager_id: string
+  record Resolved tag=resolved
+    incident_id: string
+    responder: string
+    anomaly_count: int
+  record Escalated tag=escalated
+    incident_id: string
+    reason: string
+  record GatherInput tag=gather_input
+    incident_id: string
+  record PageInput tag=page_input
+    responder: string
+    message: string
+  record StepBodiesCombinedInput tag=step_bodies_combined_input
+    incident_id: string
+    responders: list(string)
+  union StepBodiesCombinedOutcome
+    resolved -> resolved_outcome(ref(Resolved))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=step_bodies_combined_input_codec output=step_bodies_combined_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(step_bodies_combined.StepBodiesCombinedInput, step_bodies_combined.StepBodiesCombinedOutcome, AwlError)
+  T-DEF name="step_bodies_combined" input=step_bodies_combined_input_codec output=step_bodies_combined_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (step_bodies_combined.StepBodiesCombinedInput) -> Result(step_bodies_combined.StepBodiesCombinedOutcome, AwlError)
+  T-EXEC fields=[incident_id:String, responders:List(String)] entry=step_gather args=[0, 1]
+== fn reading_codec/0 origin=codec_template(RecordTrio, Reading, record#0) ==
+  sig: () -> Codec(step_bodies_combined.Reading)
+  v0 = make_closure reading_to_json captures=[]
+  v1 = call_local reading_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn reading_to_json/1 origin=codec_template(RecordTrio, Reading, record#0) ==
+  sig: (step_bodies_combined.Reading) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"name": v1|>awlc.string_to_json, "severity": v2|>awlc.int_to_json, "anomalous": v3|>awlc.bool_to_json}
+  return v4
+== fn reading_decoder/0 origin=codec_template(RecordTrio, Reading, record#0) ==
+  sig: () -> Decoder(step_bodies_combined.Reading)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure reading_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn reading_decoder$0/1 origin=lifted(reading_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.Reading)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure reading_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn reading_decoder$1/2 origin=lifted(reading_decoder, #1) ==
+  sig: (Int, String) -> Decoder(step_bodies_combined.Reading)
+  v2 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0, v1]
+  v3 = make_closure reading_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v2, v3)
+== fn reading_decoder$2/3 origin=lifted(reading_decoder, #2) ==
+  sig: (Bool, String, Int) -> Decoder(step_bodies_combined.Reading)
+  v3 = record(reading, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn diagnostics_codec/0 origin=codec_template(RecordTrio, Diagnostics, record#1) ==
+  sig: () -> Codec(step_bodies_combined.Diagnostics)
+  v0 = make_closure diagnostics_to_json captures=[]
+  v1 = call_local diagnostics_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn diagnostics_to_json/1 origin=codec_template(RecordTrio, Diagnostics, record#1) ==
+  sig: (step_bodies_combined.Diagnostics) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"incident_id": v1|>awlc.string_to_json, "readings": v2|>list_reading_to_json}
+  return v3
+== fn diagnostics_decoder/0 origin=codec_template(RecordTrio, Diagnostics, record#1) ==
+  sig: () -> Decoder(step_bodies_combined.Diagnostics)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure diagnostics_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn diagnostics_decoder$0/1 origin=lifted(diagnostics_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.Diagnostics)
+  v1 = call_local list_reading_decoder() live_after=[v0]
+  v2 = make_closure diagnostics_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v1, v2)
+== fn diagnostics_decoder$1/2 origin=lifted(diagnostics_decoder, #1) ==
+  sig: (List(step_bodies_combined.Reading), String) -> Decoder(step_bodies_combined.Diagnostics)
+  v2 = record(diagnostics, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn page_ack_codec/0 origin=codec_template(RecordTrio, PageAck, record#2) ==
+  sig: () -> Codec(step_bodies_combined.PageAck)
+  v0 = make_closure page_ack_to_json captures=[]
+  v1 = call_local page_ack_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn page_ack_to_json/1 origin=codec_template(RecordTrio, PageAck, record#2) ==
+  sig: (step_bodies_combined.PageAck) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"responder": v1|>awlc.string_to_json}
+  return v2
+== fn page_ack_decoder/0 origin=codec_template(RecordTrio, PageAck, record#2) ==
+  sig: () -> Decoder(step_bodies_combined.PageAck)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure page_ack_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn page_ack_decoder$0/1 origin=lifted(page_ack_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.PageAck)
+  v1 = record(page_ack, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn page_sent_codec/0 origin=codec_template(RecordTrio, PageSent, record#3) ==
+  sig: () -> Codec(step_bodies_combined.PageSent)
+  v0 = make_closure page_sent_to_json captures=[]
+  v1 = call_local page_sent_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn page_sent_to_json/1 origin=codec_template(RecordTrio, PageSent, record#3) ==
+  sig: (step_bodies_combined.PageSent) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"pager_id": v1|>awlc.string_to_json}
+  return v2
+== fn page_sent_decoder/0 origin=codec_template(RecordTrio, PageSent, record#3) ==
+  sig: () -> Decoder(step_bodies_combined.PageSent)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure page_sent_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn page_sent_decoder$0/1 origin=lifted(page_sent_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.PageSent)
+  v1 = record(page_sent, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn resolved_codec/0 origin=codec_template(RecordTrio, Resolved, record#4) ==
+  sig: () -> Codec(step_bodies_combined.Resolved)
+  v0 = make_closure resolved_to_json captures=[]
+  v1 = call_local resolved_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn resolved_to_json/1 origin=codec_template(RecordTrio, Resolved, record#4) ==
+  sig: (step_bodies_combined.Resolved) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = field(v0, 3)
+  v4 = json_obj {"incident_id": v1|>awlc.string_to_json, "responder": v2|>awlc.string_to_json, "anomaly_count": v3|>awlc.int_to_json}
+  return v4
+== fn resolved_decoder/0 origin=codec_template(RecordTrio, Resolved, record#4) ==
+  sig: () -> Decoder(step_bodies_combined.Resolved)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure resolved_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn resolved_decoder$0/1 origin=lifted(resolved_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.Resolved)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure resolved_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v1, v2)
+== fn resolved_decoder$1/2 origin=lifted(resolved_decoder, #1) ==
+  sig: (String, String) -> Decoder(step_bodies_combined.Resolved)
+  v2 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0, v1]
+  v3 = make_closure resolved_decoder$2 captures=[v1, v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v2, v3)
+== fn resolved_decoder$2/3 origin=lifted(resolved_decoder, #2) ==
+  sig: (Int, String, String) -> Decoder(step_bodies_combined.Resolved)
+  v3 = record(resolved, [v1, v2, v0])
+  tail_rt gleam@dynamic@decode:success/1(v3)
+== fn escalated_codec/0 origin=codec_template(RecordTrio, Escalated, record#5) ==
+  sig: () -> Codec(step_bodies_combined.Escalated)
+  v0 = make_closure escalated_to_json captures=[]
+  v1 = call_local escalated_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn escalated_to_json/1 origin=codec_template(RecordTrio, Escalated, record#5) ==
+  sig: (step_bodies_combined.Escalated) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"incident_id": v1|>awlc.string_to_json, "reason": v2|>awlc.string_to_json}
+  return v3
+== fn escalated_decoder/0 origin=codec_template(RecordTrio, Escalated, record#5) ==
+  sig: () -> Decoder(step_bodies_combined.Escalated)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure escalated_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn escalated_decoder$0/1 origin=lifted(escalated_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.Escalated)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure escalated_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v1, v2)
+== fn escalated_decoder$1/2 origin=lifted(escalated_decoder, #1) ==
+  sig: (String, String) -> Decoder(step_bodies_combined.Escalated)
+  v2 = record(escalated, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn gather_input_codec/0 origin=codec_template(RecordTrio, GatherInput, record#6) ==
+  sig: () -> Codec(step_bodies_combined.GatherInput)
+  v0 = make_closure gather_input_to_json captures=[]
+  v1 = call_local gather_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn gather_input_to_json/1 origin=codec_template(RecordTrio, GatherInput, record#6) ==
+  sig: (step_bodies_combined.GatherInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"incident_id": v1|>awlc.string_to_json}
+  return v2
+== fn gather_input_decoder/0 origin=codec_template(RecordTrio, GatherInput, record#6) ==
+  sig: () -> Decoder(step_bodies_combined.GatherInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure gather_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v0, v1)
+== fn gather_input_decoder$0/1 origin=lifted(gather_input_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.GatherInput)
+  v1 = record(gather_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn page_input_codec/0 origin=codec_template(RecordTrio, PageInput, record#7) ==
+  sig: () -> Codec(step_bodies_combined.PageInput)
+  v0 = make_closure page_input_to_json captures=[]
+  v1 = call_local page_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn page_input_to_json/1 origin=codec_template(RecordTrio, PageInput, record#7) ==
+  sig: (step_bodies_combined.PageInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"responder": v1|>awlc.string_to_json, "message": v2|>awlc.string_to_json}
+  return v3
+== fn page_input_decoder/0 origin=codec_template(RecordTrio, PageInput, record#7) ==
+  sig: () -> Decoder(step_bodies_combined.PageInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure page_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#13, v0, v1)
+== fn page_input_decoder$0/1 origin=lifted(page_input_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.PageInput)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure page_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#14, v1, v2)
+== fn page_input_decoder$1/2 origin=lifted(page_input_decoder, #1) ==
+  sig: (String, String) -> Decoder(step_bodies_combined.PageInput)
+  v2 = record(page_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn step_bodies_combined_input_codec/0 origin=codec_template(RecordTrio, StepBodiesCombinedInput, record#8) ==
+  sig: () -> Codec(step_bodies_combined.StepBodiesCombinedInput)
+  v0 = make_closure step_bodies_combined_input_to_json captures=[]
+  v1 = call_local step_bodies_combined_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn step_bodies_combined_input_to_json/1 origin=codec_template(RecordTrio, StepBodiesCombinedInput, record#8) ==
+  sig: (step_bodies_combined.StepBodiesCombinedInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"incident_id": v1|>awlc.string_to_json, "responders": v2|>list_string_to_json}
+  return v3
+== fn step_bodies_combined_input_decoder/0 origin=codec_template(RecordTrio, StepBodiesCombinedInput, record#8) ==
+  sig: () -> Decoder(step_bodies_combined.StepBodiesCombinedInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure step_bodies_combined_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#15, v0, v1)
+== fn step_bodies_combined_input_decoder$0/1 origin=lifted(step_bodies_combined_input_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.StepBodiesCombinedInput)
+  v1 = call_local list_string_decoder() live_after=[v0]
+  v2 = make_closure step_bodies_combined_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#16, v1, v2)
+== fn step_bodies_combined_input_decoder$1/2 origin=lifted(step_bodies_combined_input_decoder, #1) ==
+  sig: (List(String), String) -> Decoder(step_bodies_combined.StepBodiesCombinedInput)
+  v2 = record(step_bodies_combined_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn step_bodies_combined_outcome_codec/0 origin=codec_template(UnionTrio, StepBodiesCombinedOutcome, union#9) ==
+  sig: () -> Codec(step_bodies_combined.StepBodiesCombinedOutcome)
+  v0 = make_closure step_bodies_combined_outcome_to_json captures=[]
+  v1 = call_local step_bodies_combined_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn step_bodies_combined_outcome_to_json/1 origin=codec_template(UnionTrio, StepBodiesCombinedOutcome, union#9) ==
+  sig: (step_bodies_combined.StepBodiesCombinedOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#17|>awlc.string_to_json, "payload": v1|>resolved_to_json}
+  return v2
+== fn step_bodies_combined_outcome_decoder/0 origin=codec_template(UnionTrio, StepBodiesCombinedOutcome, union#9) ==
+  sig: () -> Decoder(step_bodies_combined.StepBodiesCombinedOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure step_bodies_combined_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#18, v0, v1)
+== fn step_bodies_combined_outcome_decoder$outcome/1 origin=lifted(step_bodies_combined_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(step_bodies_combined.StepBodiesCombinedOutcome)
+  if cmp Eq v0 lit#22:
+    v3 = call_local resolved_decoder()
+    v4 = make_closure step_bodies_combined_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#23, v3, v4)
+  else:
+    v1 = record(resolved, [lit#19, lit#20, 0])
+    v2 = record(resolved_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#21)
+== fn step_bodies_combined_outcome_decoder$arm0/1 origin=lifted(step_bodies_combined_outcome_decoder, #1) ==
+  sig: (step_bodies_combined.Resolved) -> Decoder(step_bodies_combined.StepBodiesCombinedOutcome)
+  v1 = record(resolved_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_reading_codec/0 origin=codec_template(CompositeTrio, List(Reading), composite(list(ref(Reading)))) ==
+  sig: () -> Codec(List(step_bodies_combined.Reading))
+  v0 = make_closure list_reading_to_json captures=[]
+  v1 = call_local list_reading_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_reading_to_json/1 origin=codec_template(CompositeTrio, List(Reading), composite(list(ref(Reading)))) ==
+  sig: (List(step_bodies_combined.Reading)) -> Json
+  v1 = make_closure reading_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_reading_decoder/0 origin=codec_template(CompositeTrio, List(Reading), composite(list(ref(Reading)))) ==
+  sig: () -> Decoder(List(step_bodies_combined.Reading))
+  v0 = call_local reading_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn gather_activity/1 origin=activity_wrapper(gather, raw=false) ==
+  sig: (String) -> Activity(step_bodies_combined.GatherInput, step_bodies_combined.Diagnostics)
+  T-ACT action=gather input_codec=gather_input_codec return=diagnostics_codec
+== fn page_activity/2 origin=activity_wrapper(page, raw=false) ==
+  sig: (String, String) -> Activity(step_bodies_combined.PageInput, step_bodies_combined.PageSent)
+  T-ACT action=page input_codec=page_input_codec return=page_sent_codec
+== fn ack_signal/0 origin=signal_ref(ack) ==
+  sig: () -> Signal(step_bodies_combined.PageAck)
+  T-SIG signal=ack payload=page_ack_codec
+== fn step_gather/2 origin=region(gather) ==
+  sig: (String, List(String)) -> Result(step_bodies_combined.StepBodiesCombinedOutcome, AwlError)
+  v2 = call_local gather_activity(v0) live_after=[v0, v1]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#24) live_after=[v0, v1]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v0, v1]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v0, v1]
+  v6 = try_bind v5 live_after=[v0, v1]
+  tail_local step_sift(v6, v0, v1)
+== fn step_sift/3 origin=chain_step(gather.sift) ==
+  sig: (step_bodies_combined.Diagnostics, String, List(String)) -> Result(step_bodies_combined.StepBodiesCombinedOutcome, AwlError)
+  v3 = field(v0, 2)
+  v4 = make_closure awl_combinator_0 captures=[]
+  v5 = call_rt gleam@list:filter/2(v3, v4) live_after=[v1, v2]
+  v6 = make_closure awl_combinator_1 captures=[]
+  v7 = call_rt gleam@list:sort/2(v5, v6) live_after=[v1, v2]
+  v8 = call_rt gleam@list:length/1(v7) live_after=[v1, v2, v7]
+  v9 = cmp Eq v7 nil
+  if is_true v9:
+    v10 = record(resolved, [v1, lit#25, v8])
+    v11 = record(resolved_outcome, [v10])
+    v12 = record(ok, [v11])
+    return v12
+  else:
+    v13 = cmp Le v8 2
+    if is_true v13:
+      v14 = record(resolved, [v1, lit#26, v8])
+      v15 = record(resolved_outcome, [v14])
+      v16 = record(ok, [v15])
+      return v16
+    else:
+      tail_local step_page_lead(v8, v1, v2)
+== fn step_page_lead/3 origin=region(page_lead) ==
+  sig: (Int, String, List(String)) -> Result(step_bodies_combined.StepBodiesCombinedOutcome, AwlError)
+  v3 = call_rt aion@awl@runtime:index/3(v2, 0, lit#27) live_after=[v0, v1, v2]
+  v4 = try_bind v3 live_after=[v0, v1, v2]
+  v5 = concat lit#28 v1
+  v6 = call_local page_activity(v4, v5) live_after=[v0, v1, v2]
+  v7 = call_rt aion@activity:task_queue/2(v6, lit#29) live_after=[v0, v1, v2]
+  v8 = call_rt aion@workflow:run/1(v7) live_after=[v0, v1, v2]
+  v9 = call_rt aion@awl@error:map_activity_error/1(v8) live_after=[v0, v1, v2]
+  v10 = try_bind v9 live_after=[v0, v1, v2]
+  v11 = call_rt aion@duration:milliseconds/1(30000) live_after=[v0, v1, v2]
+  v12 = call_rt aion@workflow:sleep/1(v11) live_after=[v0, v1, v2]
+  v13 = call_rt aion@awl@error:map_timer_error/1(v12) live_after=[v0, v1, v2]
+  v14 = try_bind v13 live_after=[v0, v1, v2]
+  tail_local step_hold_for_ack(v0, v1, v2)
+== fn step_hold_for_ack/3 origin=chain_step(page_lead.hold_for_ack) ==
+  sig: (Int, String, List(String)) -> Result(step_bodies_combined.StepBodiesCombinedOutcome, AwlError)
+  v3 = make_closure hold_for_ack_wait_0_receive captures=[]
+  v4 = call_rt aion@duration:milliseconds/1(300000) live_after=[v0, v1, v2, v3]
+  v5 = call_rt aion@workflow:with_timeout/2(v3, v4) live_after=[v0, v1, v2]
+  v6 = call_local hold_for_ack_wait_0_case(v5) live_after=[v0, v1, v2]
+  v7 = try_bind v6 live_after=[v0, v1, v2]
+  v8 = cmp Ne v7 'none'
+  if is_true v8:
+    v9 = assert_some v7
+    v10 = field(v9, 1)
+    v11 = record(resolved, [v1, v10, v0])
+    v12 = record(resolved_outcome, [v11])
+    v13 = record(ok, [v12])
+    return v13
+  else:
+    v15 = call_rt aion@awl@runtime:index/3(v2, 0, lit#31) live_after=[v1]
+    v16 = try_bind v15 live_after=[v1]
+    v14 = concat lit#30 v16
+    v17 = record(escalated, [v1, v14])
+    v18 = call_local escalated_to_json(v17)
+    v19 = call_rt gleam@json:to_string/1(v18)
+    v20 = record(awl_outcome_failure, [lit#32, v19])
+    v21 = record(error, [v20])
+    return v21
+== fn hold_for_ack_wait_0_receive/0 origin=wait(hold_for_ack#0) ==
+  sig: () -> Result(step_bodies_combined.PageAck, AwlError)
+  v0 = call_local ack_signal()
+  v1 = call_rt aion@workflow:receive/1(v0)
+  tail_rt aion@awl@error:map_receive_error/1(v1)
+== fn hold_for_ack_wait_0_case/1 origin=wait(hold_for_ack#1) ==
+  sig: (Result(step_bodies_combined.PageAck, aion/error.TimeoutResultError(AwlError))) -> Result(Option(step_bodies_combined.PageAck), AwlError)
+  if is_tagged v0 ok/2:
+    v1 = field(v0, 1)
+    v2 = record(some, [v1])
+    v3 = record(ok, [v2])
+    return v3
+  else:
+    v7 = field(v0, 1)
+    if is_tagged v7 timed_out_error/2:
+      v4 = record(ok, ['none'])
+      return v4
+    else:
+      if is_tagged v7 inner_error/2:
+        v5 = field(v7, 1)
+        v6 = record(error, [v5])
+        return v6
+      else:
+        v8 = field(v7, 1)
+        v9 = record(awl_timer_failed, [v8])
+        v10 = record(error, [v9])
+        return v10
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl_combinator_0/1 origin=lifted(execute, #0) ==
+  sig: (step_bodies_combined.Reading) -> Bool
+  v1 = field(v0, 3)
+  return v1
+== fn awl_combinator_1/2 origin=lifted(execute, #1) ==
+  sig: (step_bodies_combined.Reading, step_bodies_combined.Reading) -> gleam/order.Order
+  v2 = field(v0, 2)
+  v3 = field(v1, 2)
+  tail_rt gleam@int:compare/2(v2, v3)

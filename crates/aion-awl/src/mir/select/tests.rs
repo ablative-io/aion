@@ -72,7 +72,10 @@ fn every_lowered_fixture_emits_and_validates() -> Result<(), Box<dyn std::error:
                 })?;
                 emitted += 1;
             }
-            Err(LowerError::Unsupported { .. } | LowerError::Planning { .. }) => refused += 1,
+            Err(error @ (LowerError::Unsupported { .. } | LowerError::Planning { .. })) => {
+                refused += 1;
+                println!("BC-3 refused: {} — {error}", fixture.display());
+            }
             Err(other) => return Err(Box::new(other)),
         }
     }

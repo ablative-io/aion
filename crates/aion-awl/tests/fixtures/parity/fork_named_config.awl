@@ -1,0 +1,21 @@
+//! Probe two regions in one dispatch, each pinned to its own node.
+workflow fork_named_config
+  input primary: String
+  input secondary: String
+  outcome compared: type Compared, route success
+
+type Snapshot { region: String, healthy: Bool }
+type Compared { first: Snapshot, second: Snapshot }
+
+worker probe
+  action probe_region(region: String) -> Snapshot
+
+step gather
+  fork
+    probe_region(region: primary) -> first_probe
+      node east01
+    probe_region(region: secondary) -> second_probe
+      node west01
+  join
+
+  route compared(first: first_probe, second: second_probe)

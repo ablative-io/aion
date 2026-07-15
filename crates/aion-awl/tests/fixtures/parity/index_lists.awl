@@ -1,0 +1,10 @@
+//! Address the kickoff to the roster lead with a fixed tag list.
+workflow index_lists
+  input roster: Roster
+  outcome sent: type Receipt, route success
+
+type Roster  { reviewers: [String] }
+type Receipt { to: String, tags: [String] }
+
+step address
+  route sent(to: roster.reviewers[0] + "!", tags: ["kickoff", "urgent"])

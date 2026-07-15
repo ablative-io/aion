@@ -1,0 +1,14 @@
+//! Score the essay through the child, spawning a detached audit copy first.
+workflow child_call
+  input essay: String
+  outcome done: type Done, route success
+
+type Grade { score: Int, feedback: String }
+type Done  { score: Int, feedback: String }
+
+child score_essay(essay: String) -> Grade
+
+step delegate
+  spawn score_essay(essay: essay)
+  score_essay(essay: essay) -> grade
+  route done(score: grade.score, feedback: grade.feedback)

@@ -248,9 +248,9 @@ fn awl_hello_actions_are_the_two_unpinned_requirements() -> TestResult {
 }
 
 /// Obligation 4: a call-site `node` override yields the override in the
-/// requirement derivation. The direct lowering still refuses call-site
-/// config (`flow.rs` — a BC-2 scope marker), so `compile` on this document
-/// is pinned as that exact refusal rather than a success.
+/// requirement derivation, AND the document now compiles — direct lowering
+/// applies the per-key site-over-declaration config merge
+/// (`lower/activity.rs::apply_action_config`).
 #[test]
 fn call_site_node_override_yields_the_override() -> TestResult {
     let source = "\
@@ -288,14 +288,11 @@ step handoff
         )]
     );
 
-    match compile(source, Path::new(".")) {
-        Err(CompileError::Unsupported { shape, .. }) => {
-            assert_eq!(shape, "call-site config");
-        }
-        other => {
-            return Err(format!("expected the call-site config refusal, got {other:?}").into());
-        }
-    }
+    let compiled = compile(source, Path::new(".")).map_err(|error| error.to_string())?;
+    assert!(
+        !compiled.beam_bytes.is_empty(),
+        "the pinned-fetch document must compile to a non-empty BEAM artifact"
+    );
     Ok(())
 }
 
@@ -345,10 +342,10 @@ step second_pass
 /// structured fields and rendered prose both identical.
 #[test]
 fn refusal_passthrough_is_lossless() -> TestResult {
-    let (source, root) = read(&fixture("loop-outcomes/valid/guard_optional_wait.awl"))?;
+    let (source, root) = read(&fixture("loop-outcomes/valid/on_failure_compensation.awl"))?;
     let document = aion_awl::parse(&source)?;
     let Err(mir_error) = lower(&document, Some(&root)) else {
-        return Err("guard_optional_wait now lowers; pick a refused fixture".into());
+        return Err("on_failure_compensation now lowers; pick a refused fixture".into());
     };
     let LowerError::Unsupported { shape, span } = &mir_error else {
         return Err(format!("expected an unsupported refusal, got {mir_error:?}").into());
@@ -370,7 +367,7 @@ fn refusal_passthrough_is_lossless() -> TestResult {
                 }
             }
         }
-        Ok(_) => return Err("guard_optional_wait unexpectedly compiled".into()),
+        Ok(_) => return Err("on_failure_compensation unexpectedly compiled".into()),
     }
     Ok(())
 }

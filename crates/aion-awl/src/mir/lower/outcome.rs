@@ -20,6 +20,21 @@ pub(super) fn lower_outcomes(
     clauses: &[OutcomeClause],
     scope: &Scope,
 ) -> Result<Block, LowerError> {
+    // Emitter parity: indexing inside an outcome guard is refused by the
+    // reference (`emitter/outcomes.rs` — a non-empty guard prelude errors),
+    // so direct must not silently out-support it. The scan covers both the
+    // cascade guards and the enum-total subject (the subject is the left
+    // side of a `when` guard).
+    for clause in clauses {
+        if let Guard::When { expr, span } = &clause.guard
+            && super::expr::expr_contains_index(expr)
+        {
+            return Err(LowerError::unsupported(
+                "indexing inside an outcome guard",
+                *span,
+            ));
+        }
+    }
     if let Some((subject, arms)) = enum_total_form(clauses) {
         let mut stmts = Vec::new();
         let (subject, _) = lower_expr(ctx, &subject, scope, &mut stmts)?;

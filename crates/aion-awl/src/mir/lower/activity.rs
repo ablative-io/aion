@@ -1,8 +1,9 @@
 //! Activity-call emission for the BC-2 covered subset: the wrapper call, the
-//! action-declared config pipe (retry/timeout/`task_queue`/node), the durable
-//! `workflow.run` + `map_activity_error` + `TryBind`, `sleep`, and the shared
-//! emission primitives (`call_rt`, `record_new`, JSON encode) the routing
-//! side of `flow` reuses.
+//! config pipe (retry/timeout/`task_queue`/node — merged per key, call-site
+//! override over the action declaration, the reference `stmts.rs:84-104`),
+//! the durable `workflow.run` + `map_activity_error` + `TryBind`, `sleep`,
+//! and the shared emission primitives (`call_rt`, `record_new`, JSON encode)
+//! the routing side of `flow` reuses.
 
 use crate::ast::Call;
 use crate::emitter::{GType, type_ref_to_g};
@@ -30,21 +31,36 @@ fn zero_src() -> crate::Span {
     }
 }
 
+/// How one activity value is formed at its call site: the call-site config
+/// override line (merged per key over the declaration by
+/// `apply_action_config`), the piped single argument (a pipe stage;
+/// otherwise arguments come from `call.args`), and whether the value rides
+/// the wire-identical raw wrapper twin (`Activity(String, String)`)
+/// heterogeneous named forks dispatch through.
+pub(super) struct ActivityForm<'a> {
+    pub(super) site_config: Option<&'a crate::ast::ConfigLine>,
+    pub(super) piped: Option<(Value, GType)>,
+    pub(super) raw: bool,
+}
+
 /// Build the UNRUN configured activity value: `<action>_activity(args) |>
 /// config` (retry/timeout/`task_queue`/node), without `workflow.run`. This is
-/// the value `workflow.map`/`workflow.all` fan-outs take directly; `raw`
-/// selects the wire-identical raw wrapper twin (`Activity(String, String)`)
-/// heterogeneous named forks dispatch through. `piped` supplies the single
-/// argument for a pipe stage; otherwise arguments come from `call.args`.
+/// the value `workflow.map`/`workflow.all` fan-outs take directly; the
+/// call-site shape (config override, piped argument, raw twin) rides in
+/// [`ActivityForm`].
 pub(super) fn activity_value(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     call: &Call,
-    piped: Option<(Value, GType)>,
+    form: ActivityForm<'_>,
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
-    raw: bool,
 ) -> Result<Var, LowerError> {
+    let ActivityForm {
+        site_config,
+        piped,
+        raw,
+    } = form;
     let Some(&(queue, decl)) = ctx.emitter.actions.get(call.name.as_str()) else {
         return Err(LowerError::unsupported(
             "child call or unknown action",
@@ -98,6 +114,7 @@ pub(super) fn activity_value(
     });
     apply_action_config(
         ctx,
+        site_config,
         config.as_ref(),
         activity,
         &queue,
@@ -113,11 +130,23 @@ pub(super) fn activity_call(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     call: &Call,
+    site_config: Option<&crate::ast::ConfigLine>,
     piped: Option<(Value, GType)>,
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<Var, LowerError> {
-    let queued = activity_value(ctx, plan, call, piped, scope, stmts, false)?;
+    let queued = activity_value(
+        ctx,
+        plan,
+        call,
+        ActivityForm {
+            site_config,
+            piped,
+            raw: false,
+        },
+        scope,
+        stmts,
+    )?;
     let ran = call_rt(
         ctx,
         RuntimeFn::WfRun,
@@ -142,20 +171,25 @@ pub(super) fn activity_call(
     Ok(bound)
 }
 
-/// Apply action-declared config in the reference's order (`stmts.rs:84-104`):
-/// retry, timeout, `task_queue` (always), node. Call-site config is refused
-/// upstream, so only the declaration config participates. Returns the final
-/// activity value to hand to `workflow.run`.
+/// Apply config in the reference's per-key merge and order
+/// (`stmts.rs:84-104`): `site.retry.or(decl.retry)`, then
+/// `site.timeout.or(decl.timeout)`, then `task_queue` (always), then
+/// `site.node.or(decl.node)`. Returns the final activity value to hand to
+/// `workflow.run`.
 fn apply_action_config(
     ctx: &mut Ctx<'_>,
-    config: Option<&crate::ast::ConfigLine>,
+    site: Option<&crate::ast::ConfigLine>,
+    decl: Option<&crate::ast::ConfigLine>,
     activity: Var,
     queue: &str,
     stmts: &mut Vec<Stmt>,
     span: crate::Span,
 ) -> Result<Var, LowerError> {
     let mut current = activity;
-    if let Some(retry) = config.and_then(|config| config.retry.as_ref()) {
+    let retry = site
+        .and_then(|config| config.retry.as_ref())
+        .or_else(|| decl.and_then(|config| config.retry.as_ref()));
+    if let Some(retry) = retry {
         let policy = build_retry_policy(ctx, retry, stmts, span)?;
         current = call_rt(
             ctx,
@@ -165,7 +199,10 @@ fn apply_action_config(
             span,
         );
     }
-    if let Some(timeout) = config.and_then(|config| config.timeout.as_ref()) {
+    let timeout = site
+        .and_then(|config| config.timeout.as_ref())
+        .or_else(|| decl.and_then(|config| config.timeout.as_ref()));
+    if let Some(timeout) = timeout {
         let dur = duration_var(ctx, timeout.magnitude, timeout.unit, stmts, span);
         current = call_rt(
             ctx,
@@ -184,7 +221,10 @@ fn apply_action_config(
         live_after: LiveAfter::default(),
         span: Span::from_source(span),
     });
-    if let Some(node) = config.and_then(|config| config.node.as_ref()) {
+    let node = site
+        .and_then(|config| config.node.as_ref())
+        .or_else(|| decl.and_then(|config| config.node.as_ref()));
+    if let Some(node) = node {
         let node_lit = ctx.binary(&node.name);
         queued = call_rt(
             ctx,
@@ -318,7 +358,7 @@ pub(super) fn lower_sleep(
     });
 }
 
-fn duration_ms(magnitude: u64, unit: crate::DurationUnit) -> i64 {
+pub(super) fn duration_ms(magnitude: u64, unit: crate::DurationUnit) -> i64 {
     let ms = match unit {
         crate::DurationUnit::Seconds => magnitude.saturating_mul(1_000),
         crate::DurationUnit::Minutes => magnitude.saturating_mul(60_000),

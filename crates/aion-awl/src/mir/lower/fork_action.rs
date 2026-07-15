@@ -10,7 +10,7 @@ use super::super::ids::{Span, Var};
 use super::super::ops::{LiveAfter, Stmt, Tail, Value};
 use super::super::runtime::RuntimeFn;
 use super::super::tydesc::TyDesc;
-use super::activity::{activity_value, call_rt, record_new};
+use super::activity::{ActivityForm, activity_value, call_rt, record_new};
 use super::build::FnPlan;
 use super::ctx::Ctx;
 use super::driver::LowerError;
@@ -22,6 +22,7 @@ pub(super) struct ActionFork<'a> {
     pub(super) step: &'a Step,
     pub(super) fork: &'a ForkStmt,
     pub(super) call: &'a Call,
+    pub(super) config: Option<&'a crate::ast::ConfigLine>,
     pub(super) var: &'a str,
     pub(super) items: Value,
     pub(super) elem_ty: &'a GType,
@@ -42,6 +43,7 @@ pub(super) fn lower_action_collection(
         plan: fork.plan,
         step: fork.step,
         call: fork.call,
+        config: fork.config,
         var: fork.var,
         elem_ty: fork.elem_ty,
         returns: fork.returns,
@@ -150,6 +152,7 @@ struct ForkBuild<'a> {
     plan: &'a FnPlan,
     step: &'a Step,
     call: &'a Call,
+    config: Option<&'a crate::ast::ConfigLine>,
     var: &'a str,
     elem_ty: &'a GType,
     returns: &'a GType,
@@ -232,7 +235,16 @@ fn build_map_body(ctx: &mut Ctx<'_>, build: &ForkBuild<'_>) -> Result<FlowFn, Lo
     );
     let mut stmts = Vec::new();
     let queued = activity_value(
-        ctx, build.plan, build.call, None, &fn_scope, &mut stmts, false,
+        ctx,
+        build.plan,
+        build.call,
+        ActivityForm {
+            site_config: build.config,
+            piped: None,
+            raw: false,
+        },
+        &fn_scope,
+        &mut stmts,
     )?;
     let input_name = ctx.emitter.action_inputs[build.call.name.as_str()].clone();
     let ret_ty = TyDesc::Activity(
@@ -272,7 +284,16 @@ fn build_fold_body(ctx: &mut Ctx<'_>, build: &ForkBuild<'_>) -> Result<FlowFn, L
     );
     let mut stmts = Vec::new();
     let queued = activity_value(
-        ctx, build.plan, build.call, None, &fn_scope, &mut stmts, false,
+        ctx,
+        build.plan,
+        build.call,
+        ActivityForm {
+            site_config: build.config,
+            piped: None,
+            raw: false,
+        },
+        &fn_scope,
+        &mut stmts,
     )?;
     let ran = call_rt(
         ctx,

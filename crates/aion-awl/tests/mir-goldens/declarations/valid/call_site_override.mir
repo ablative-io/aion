@@ -1,0 +1,176 @@
+module render_scene source=render_scene.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_render:
+    aion@activity:timeout/2 [activities] (v1, v2)
+    aion@activity:task_queue/2 [activities] (v3, lit#10)
+    aion@activity:node/2 [activities] (v4, lit#11)
+    aion@workflow:run/1 [activities] (v5)
+== durable families == activities
+== atoms ==
+  [0] render
+  [1] render_input
+  [2] render_scene_input
+  [3] rendered_outcome
+  [4] ok
+  [5] awl_outcome_failure
+  [6] error
+== literals ==
+  [0] "output_path"
+  [1] "frames"
+  [2] "scene_path"
+  [3] "scene_path"
+  [4] "rendered"
+  [5] "outcome"
+  [6] ""
+  [7] "RenderSceneOutcome"
+  [8] "rendered"
+  [9] "payload"
+  [10] "renderer"
+  [11] "gpu_large"
+  [12] "no_frames"
+== types ==
+  record Render tag=render
+    output_path: string
+    frames: int
+  record RenderInput tag=render_input
+    scene_path: string
+  record RenderSceneInput tag=render_scene_input
+    scene_path: string
+  union RenderSceneOutcome
+    rendered -> rendered_outcome(ref(Render))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=render_scene_input_codec output=render_scene_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(render_scene.RenderSceneInput, render_scene.RenderSceneOutcome, AwlError)
+  T-DEF name="render_scene" input=render_scene_input_codec output=render_scene_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (render_scene.RenderSceneInput) -> Result(render_scene.RenderSceneOutcome, AwlError)
+  T-EXEC fields=[scene_path:String] entry=step_render args=[0]
+== fn render_codec/0 origin=codec_template(RecordTrio, Render, record#0) ==
+  sig: () -> Codec(render_scene.Render)
+  v0 = make_closure render_to_json captures=[]
+  v1 = call_local render_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn render_to_json/1 origin=codec_template(RecordTrio, Render, record#0) ==
+  sig: (render_scene.Render) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"output_path": v1|>awlc.string_to_json, "frames": v2|>awlc.int_to_json}
+  return v3
+== fn render_decoder/0 origin=codec_template(RecordTrio, Render, record#0) ==
+  sig: () -> Decoder(render_scene.Render)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure render_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn render_decoder$0/1 origin=lifted(render_decoder, #0) ==
+  sig: (String) -> Decoder(render_scene.Render)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure render_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn render_decoder$1/2 origin=lifted(render_decoder, #1) ==
+  sig: (Int, String) -> Decoder(render_scene.Render)
+  v2 = record(render, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn render_input_codec/0 origin=codec_template(RecordTrio, RenderInput, record#1) ==
+  sig: () -> Codec(render_scene.RenderInput)
+  v0 = make_closure render_input_to_json captures=[]
+  v1 = call_local render_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn render_input_to_json/1 origin=codec_template(RecordTrio, RenderInput, record#1) ==
+  sig: (render_scene.RenderInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"scene_path": v1|>awlc.string_to_json}
+  return v2
+== fn render_input_decoder/0 origin=codec_template(RecordTrio, RenderInput, record#1) ==
+  sig: () -> Decoder(render_scene.RenderInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure render_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn render_input_decoder$0/1 origin=lifted(render_input_decoder, #0) ==
+  sig: (String) -> Decoder(render_scene.RenderInput)
+  v1 = record(render_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn render_scene_input_codec/0 origin=codec_template(RecordTrio, RenderSceneInput, record#2) ==
+  sig: () -> Codec(render_scene.RenderSceneInput)
+  v0 = make_closure render_scene_input_to_json captures=[]
+  v1 = call_local render_scene_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn render_scene_input_to_json/1 origin=codec_template(RecordTrio, RenderSceneInput, record#2) ==
+  sig: (render_scene.RenderSceneInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"scene_path": v1|>awlc.string_to_json}
+  return v2
+== fn render_scene_input_decoder/0 origin=codec_template(RecordTrio, RenderSceneInput, record#2) ==
+  sig: () -> Decoder(render_scene.RenderSceneInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure render_scene_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn render_scene_input_decoder$0/1 origin=lifted(render_scene_input_decoder, #0) ==
+  sig: (String) -> Decoder(render_scene.RenderSceneInput)
+  v1 = record(render_scene_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn render_scene_outcome_codec/0 origin=codec_template(UnionTrio, RenderSceneOutcome, union#3) ==
+  sig: () -> Codec(render_scene.RenderSceneOutcome)
+  v0 = make_closure render_scene_outcome_to_json captures=[]
+  v1 = call_local render_scene_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn render_scene_outcome_to_json/1 origin=codec_template(UnionTrio, RenderSceneOutcome, union#3) ==
+  sig: (render_scene.RenderSceneOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>render_to_json}
+  return v2
+== fn render_scene_outcome_decoder/0 origin=codec_template(UnionTrio, RenderSceneOutcome, union#3) ==
+  sig: () -> Decoder(render_scene.RenderSceneOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure render_scene_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn render_scene_outcome_decoder$outcome/1 origin=lifted(render_scene_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(render_scene.RenderSceneOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local render_decoder()
+    v4 = make_closure render_scene_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(render, [lit#6, 0])
+    v2 = record(rendered_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn render_scene_outcome_decoder$arm0/1 origin=lifted(render_scene_outcome_decoder, #1) ==
+  sig: (render_scene.Render) -> Decoder(render_scene.RenderSceneOutcome)
+  v1 = record(rendered_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn render_activity/1 origin=activity_wrapper(render, raw=false) ==
+  sig: (String) -> Activity(render_scene.RenderInput, render_scene.Render)
+  T-ACT action=render input_codec=render_input_codec return=render_codec
+== fn step_render/1 origin=region(render) ==
+  sig: (String) -> Result(render_scene.RenderSceneOutcome, AwlError)
+  v1 = call_local render_activity(v0)
+  v2 = call_rt aion@duration:milliseconds/1(10800000) live_after=[v1]
+  v3 = call_rt aion@activity:timeout/2(v1, v2)
+  v4 = call_rt aion@activity:task_queue/2(v3, lit#10)
+  v5 = call_rt aion@activity:node/2(v4, lit#11)
+  v6 = call_rt aion@workflow:run/1(v5)
+  v7 = call_rt aion@awl@error:map_activity_error/1(v6)
+  v8 = try_bind v7
+  v10 = field(v8, 2)
+  v9 = cmp Gt v10 0
+  if is_true v9:
+    v11 = field(v8, 1)
+    v12 = field(v8, 2)
+    v13 = record(render, [v11, v12])
+    v14 = record(rendered_outcome, [v13])
+    v15 = record(ok, [v14])
+    return v15
+  else:
+    v16 = field(v8, 1)
+    v17 = field(v8, 2)
+    v18 = record(render, [v16, v17])
+    v19 = call_local render_to_json(v18)
+    v20 = call_rt gleam@json:to_string/1(v19)
+    v21 = record(awl_outcome_failure, [lit#12, v20])
+    v22 = record(error, [v21])
+    return v22
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

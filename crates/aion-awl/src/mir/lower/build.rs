@@ -75,8 +75,18 @@ pub(super) struct FnPlan {
     /// pre-order discipline as `loops`, descending into loop bodies). All
     /// fork slots follow every loop slot.
     pub(super) forks: Vec<FnRef>,
+    /// Signal name to its signal-ref shell (T-SIG) function ref, one per
+    /// declared signal in sorted-name order — the slots the shells have
+    /// always occupied; `wait` lowering calls them.
+    pub(super) signals: BTreeMap<String, FnRef>,
+    /// One reserved slot pair per timeout wait (receive fn, then case fn),
+    /// in the exact traversal order lowering encounters them
+    /// (`wait::count_wait_fns` — the same pre-order discipline as `forks`,
+    /// descending into loop bodies). All wait slots follow every fork slot,
+    /// so modules without timeout waits keep byte-identical refs.
+    pub(super) waits: Vec<FnRef>,
     /// The fixed child witness function passed to string-name child spawns,
-    /// present exactly when a reachable child collection fork needs it.
+    /// present exactly when a reachable child spawn form needs it.
     pub(super) child_witness: Option<FnRef>,
     /// First dynamically allocated collection-predicate closure, after all
     /// fixed helpers so existing modules retain byte-identical function refs.
@@ -190,45 +200,16 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
     }
     let mut signals: Vec<String> = emitter.signals.keys().map(|k| (*k).to_owned()).collect();
     signals.sort();
-    // Signal-ref shells occupy one slot each; nothing references them until a
-    // `wait` lowers (deferred), so only the slot count matters here.
-    next += u32::try_from(signals.len()).unwrap_or(0);
-    let mut regions = Vec::new();
-    let mut chains = Vec::new();
-    for region in &ctx.plan.regions {
-        regions.push(FnRef(next));
-        let slots = region.layers.len().max(1);
-        let mut chain = Vec::with_capacity(slots);
-        for _ in 0..slots {
-            chain.push(FnRef(next));
-            next += 1;
-        }
-        chains.push(chain);
+    // Signal-ref shells occupy one slot each (the slots they have always
+    // occupied — no layout change); `wait` lowering calls them by ref.
+    let mut signal_refs = BTreeMap::new();
+    for signal in &signals {
+        signal_refs.insert(signal.clone(), FnRef(next));
+        next += 1;
     }
-    let mut loops = Vec::new();
-    for region in &ctx.plan.regions {
-        for step_index in region.layers.iter().flatten() {
-            let step = &emitter.document.steps[*step_index];
-            for _ in 0..super::loops::count_loops(&step.body) {
-                loops.push(FnRef(next));
-                next += 1;
-            }
-        }
-    }
-    let mut forks = Vec::new();
-    let mut child_witness_needed = false;
-    for region in &ctx.plan.regions {
-        for step_index in region.layers.iter().flatten() {
-            let step = &emitter.document.steps[*step_index];
-            child_witness_needed |= super::forks::needs_child_witness(&step.body, emitter);
-            for _ in 0..super::forks::count_fork_fns(&step.body, emitter) {
-                forks.push(FnRef(next));
-                next += 1;
-            }
-        }
-    }
+    let slots = plan_flow_slots(ctx, &mut next);
     let (child_witness, predicate_start) =
-        fixed_helper_refs(next, !activities.is_empty(), child_witness_needed);
+        fixed_helper_refs(next, !activities.is_empty(), slots.child_witness_needed);
 
     let plan = FnPlan {
         run: FnRef(0),
@@ -238,10 +219,12 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         codec_lifted,
         activities,
         raw_activities,
-        regions,
-        chains,
-        loops,
-        forks,
+        regions: slots.regions,
+        chains: slots.chains,
+        loops: slots.loops,
+        forks: slots.forks,
+        signals: signal_refs,
+        waits: slots.waits,
         child_witness,
         predicate_start,
     };
@@ -275,6 +258,78 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         functions,
         exports,
     })
+}
+
+/// The flow-function slot inventory: region chains, then loop slots, then
+/// fork slots, then wait slots (split from `skeleton` for the function-size
+/// law).
+struct FlowSlots {
+    regions: Vec<FnRef>,
+    chains: Vec<Vec<FnRef>>,
+    loops: Vec<FnRef>,
+    forks: Vec<FnRef>,
+    waits: Vec<FnRef>,
+    child_witness_needed: bool,
+}
+
+/// Reserve region-chain, loop, fork, and wait slots in the canonical order.
+/// Wait-lifted slots (two per timeout wait) follow every fork slot and
+/// precede the fixed helpers, so modules without timeout waits keep
+/// byte-identical function refs.
+fn plan_flow_slots(ctx: &Ctx<'_>, next: &mut u32) -> FlowSlots {
+    let emitter = ctx.emitter;
+    let mut regions = Vec::new();
+    let mut chains = Vec::new();
+    for region in &ctx.plan.regions {
+        regions.push(FnRef(*next));
+        let slots = region.layers.len().max(1);
+        let mut chain = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            chain.push(FnRef(*next));
+            *next += 1;
+        }
+        chains.push(chain);
+    }
+    let mut loops = Vec::new();
+    for region in &ctx.plan.regions {
+        for step_index in region.layers.iter().flatten() {
+            let step = &emitter.document.steps[*step_index];
+            for _ in 0..super::loops::count_loops(&step.body) {
+                loops.push(FnRef(*next));
+                *next += 1;
+            }
+        }
+    }
+    let mut forks = Vec::new();
+    let mut child_witness_needed = false;
+    for region in &ctx.plan.regions {
+        for step_index in region.layers.iter().flatten() {
+            let step = &emitter.document.steps[*step_index];
+            child_witness_needed |= super::forks::needs_child_witness(&step.body, emitter);
+            for _ in 0..super::forks::count_fork_fns(&step.body, emitter) {
+                forks.push(FnRef(*next));
+                *next += 1;
+            }
+        }
+    }
+    let mut waits = Vec::new();
+    for region in &ctx.plan.regions {
+        for step_index in region.layers.iter().flatten() {
+            let step = &emitter.document.steps[*step_index];
+            for _ in 0..super::wait::count_wait_fns(&step.body) {
+                waits.push(FnRef(*next));
+                *next += 1;
+            }
+        }
+    }
+    FlowSlots {
+        regions,
+        chains,
+        loops,
+        forks,
+        waits,
+        child_witness_needed,
+    }
 }
 
 /// T-DEAD precedes T-WIT; dynamically generated predicates follow both. This

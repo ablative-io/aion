@@ -22,7 +22,8 @@ fn lower_source(source: &str) -> Result<Result<MirModule, LowerError>, Box<dyn s
 
 /// The two combined fixtures advance to their next honest refusal instead of
 /// silently claiming coverage: `dev_brief` refuses at its dependency-parallel
-/// layer, while `ship_release_combined` refuses at `wait`.
+/// layer, while `ship_release_combined` (waits now lower) refuses at
+/// `on failure`.
 #[test]
 fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let dev_brief = manifest_dir().join("tests/fixtures/rev2/flagship/valid/dev_brief.awl");
@@ -37,24 +38,26 @@ fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn st
     match lower_fixture(&ship)? {
         Err(LowerError::Unsupported { shape, .. }) => {
             assert_eq!(
-                shape, "wait",
-                "ship_release refusal must advance past the loop"
+                shape, "on failure",
+                "ship_release refusal must advance past the wait"
             );
         }
-        other => return Err(format!("ship_release must refuse at wait: {other:?}").into()),
+        other => {
+            return Err(format!("ship_release must refuse at on failure: {other:?}").into());
+        }
     }
     Ok(())
 }
 
+/// `guard_optional_wait` was the wait-deferral pin; timeout waits now lower,
+/// so it flips to a lowering + verify coverage pin (the same promotion as
+/// `post_join_combinator_now_lowers`).
 #[test]
-fn deferred_fixture_errors_cleanly() -> Result<(), Box<dyn std::error::Error>> {
+fn guard_optional_wait_now_lowers() -> Result<(), Box<dyn std::error::Error>> {
     let path =
         manifest_dir().join("tests/fixtures/rev2/loop-outcomes/valid/guard_optional_wait.awl");
-    let result = lower_fixture(&path)?;
-    assert!(matches!(
-        result,
-        Err(LowerError::Unsupported { .. } | LowerError::Planning { .. })
-    ));
+    let module = lower_fixture(&path)??;
+    super::verify(&module)?;
     Ok(())
 }
 
@@ -85,6 +88,28 @@ step check_all
 ";
     let module = lower_source(source)??;
     super::verify(&module)?;
+    Ok(())
+}
+
+/// A document whose ONLY child-spawn forms are STATEMENT-LEVEL (an awaited
+/// child call, or a fire-and-forget `spawn`) must still plan the T-WIT
+/// witness — `needs_child_witness` covers `Statement::Call`/`Statement::Spawn`,
+/// not just collection forks and pipe stages. The salvage defect was a
+/// `child spawn has no planned witness` Planning error at lower time.
+#[test]
+fn statement_level_child_forms_plan_the_witness() -> Result<(), Box<dyn std::error::Error>> {
+    for fixture in [
+        "tests/fixtures/rev2/declarations/valid/child_call_awaited.awl",
+        "tests/fixtures/rev2/declarations/valid/spawn_detached.awl",
+    ] {
+        let module = lower_fixture(&manifest_dir().join(fixture))??;
+        super::verify(&module)?;
+        let printed = format!("{module:?}");
+        assert!(
+            printed.contains("ChildWitness"),
+            "{fixture} must carry the planned T-WIT function"
+        );
+    }
     Ok(())
 }
 
@@ -122,15 +147,18 @@ step order
     Ok(())
 }
 
-/// An otherwise-supported ordinary action call whose only deferred expression
-/// is `docs[0]` must refuse at `lower/expr.rs`, anchored to that exact slice.
+/// An ordinary action call whose argument indexes (`docs[0]`) now lowers
+/// through `aion@awl@runtime:index/3`. The span-anchoring intent of the old
+/// refusal pin survives as the byte-identical out-of-range message literal
+/// (line 13, column 18 — the exact `docs[0]` slice), which must appear among
+/// the module literals alongside the `RtIndex` runtime call.
 /// The parallel-fork indexing-prelude class remains separately pinned in
 /// `fork_tests::stopgap_refusals_match_the_reference_classes`.
 #[test]
-fn ordinary_call_index_refuses_as_expression_at_the_index_span()
+fn ordinary_call_index_lowers_with_the_anchored_runtime_message()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = "\
-//! Focused ordinary-call index refusal.
+//! Focused ordinary-call index coverage pin.
 workflow ordinary_index
   input docs: [Doc]
   outcome done: type Done, route success
@@ -145,20 +173,21 @@ step check_one
   check_doc(doc: docs[0]) -> checked
   route done(title: checked.title)
 ";
-    match lower_source(source)? {
-        Err(LowerError::Unsupported { shape, span }) => {
-            assert_eq!(shape, "expression");
-            assert_eq!(span.line, 13, "index refusal moved off the call argument");
-            assert_eq!(span.column, 18, "index refusal column drifted");
-            assert_eq!(
-                source.get(span.start..span.end),
-                Some("docs[0]"),
-                "refusal must anchor the complete offending index expression"
-            );
-        }
-        other => {
-            return Err(format!("expected focused index-expression refusal, got {other:?}").into());
-        }
-    }
+    let module = lower_source(source)??;
+    super::verify(&module)?;
+    let printed = format!("{module:?}");
+    assert!(
+        printed.contains("RtIndex"),
+        "index lowering must ride aion@awl@runtime:index/3"
+    );
+    let message: Vec<u8> = b"index 0 out of range at line 13, column 18".to_vec();
+    let anchored = module
+        .literals
+        .iter()
+        .any(|literal| matches!(literal, super::MirLiteral::Binary(bytes) if *bytes == message));
+    assert!(
+        anchored,
+        "the out-of-range message must stay anchored to line 13, column 18"
+    );
     Ok(())
 }

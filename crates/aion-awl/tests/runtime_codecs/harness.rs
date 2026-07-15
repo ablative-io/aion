@@ -279,6 +279,84 @@ pub(crate) fn dispatch_refused_ebin() -> Result<PathBuf, Box<dyn Error>> {
     Ok(dir)
 }
 
+/// Build a test-only `aion_flow_ffi` collection collector that records the
+/// joined specs in the WORKFLOW PROCESS dictionary (key `awl_ffi_echo`) and
+/// refuses dispatch. Every `workflow.all`/`workflow.map` fan-out funnels
+/// through `ffi.collect_all(id, specs)` where each spec is a JSON object
+/// embedding `correlation` (input order), `name`, the codec-encoded `input`,
+/// and the full merged `config` JSON (`concurrency.gleam::activity_spec`).
+/// The AWL error mapper deliberately collapses activity errors
+/// (`awl/error.gleam::map_activity_error` → `AwlActivityFailed("activity
+/// failed")`), so the wire bytes are observed through the recorded echo (an
+/// in-process runner reads it back after the run — the echo-runner pattern
+/// in `fork_generality.rs`), not through the workflow result.
+/// `label` keys the scratch dir per TEST: concurrent tests must never share
+/// one stub dir, or one test's `erlc` re-compile races another's VM load
+/// (best-effort loading silently skips a mid-write `.beam`).
+pub(crate) fn collect_echo_ebin(label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    ffi_stub_ebin(
+        &format!("collect_echo_{label}"),
+        "-module(aion_flow_ffi).\n-export([collect_all/2]).\n\
+         collect_all(_Id, Specs) ->\n\
+         erlang:put(awl_ffi_echo, join(Specs, <<>>)),\n\
+         {error, <<\"terminal:collect\">>}.\n\
+         join([], Acc) -> Acc;\n\
+         join([Spec | Rest], Acc) -> join(Rest, <<Acc/binary, Spec/binary>>).\n",
+    )
+}
+
+/// The per-item wire twin of [`collect_echo_ebin`] for sequential folds and
+/// plain calls: `dispatch_activity` records `name|input|config`
+/// (`run.gleam::dispatch`) under the same process-dictionary key, then
+/// refuses.
+/// `label` keys the scratch dir per test (see [`collect_echo_ebin`]).
+pub(crate) fn dispatch_echo_ebin(label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    ffi_stub_ebin(
+        &format!("dispatch_echo_{label}"),
+        "-module(aion_flow_ffi).\n-export([dispatch_activity/3]).\n\
+         dispatch_activity(Name, Input, Config) ->\n\
+         erlang:put(awl_ffi_echo, <<Name/binary, \"|\", Input/binary, \"|\", \
+         Config/binary>>),\n\
+         {error, <<\"terminal:dispatch\">>}.\n",
+    )
+}
+
+/// A wait-driving `aion_flow_ffi`: `receive_signal` and `with_timeout` stubs
+/// whose bodies the caller supplies, exercising the 4-arm timeout case
+/// (`timer.gleam::with_timeout` — `Ok(Op())` completes, `timeout:`-prefixed
+/// errors are the deadline arm, anything else is the engine-failure arm).
+pub(crate) fn wait_ffi_ebin(label: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
+    ffi_stub_ebin(&format!("wait_{label}"), body)
+}
+
+/// Compile one hand-written stub module into its own ebin directory.
+fn ffi_stub_ebin(label: &str, source_text: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = scratch_build_dir(&format!("ffi_stub_{label}"));
+    fs::create_dir_all(&dir)?;
+    let source = dir.join("aion_flow_ffi.erl");
+    fs::write(&source, source_text)?;
+    let output = Command::new("erlc")
+        .arg("-o")
+        .arg(&dir)
+        .arg(&source)
+        .output()
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("erlc is required for the ffi stub proof: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "ffi stub erlc failed for {label}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(dir)
+}
+
 fn workflow_id_ebin(label: &str, implementation: &str) -> Result<PathBuf, Box<dyn Error>> {
     let dir = scratch_build_dir(&format!("workflow_id_{label}"));
     fs::create_dir_all(&dir)?;
@@ -441,6 +519,27 @@ impl Vm {
             .and_then(BinaryRef::new)
             .map(|binary| binary.as_bytes().to_vec());
         (reason, formatted, payload)
+    }
+
+    /// Run one side (`direct`/`ref`) of an echo-runner proof: spawn
+    /// `aion_awl_echo_runner:run(side)`, which executes the target driver in
+    /// its own workflow-sized process and returns `{Result, Echo}` — the
+    /// collapsed workflow result AND the raw wire bytes the ffi echo stub
+    /// recorded in that process's dictionary.
+    pub(crate) fn call_echo(&self, side: &str) -> Result<String, Box<dyn Error>> {
+        let runner = self.atoms.intern("aion_awl_echo_runner");
+        let run = self.atoms.intern("run");
+        let side_atom = self.atoms.intern(side);
+        let pid = self
+            .scheduler
+            .spawn(runner, run, vec![Term::atom(side_atom)])
+            .map_err(|error| error.format_with_atoms(&self.atoms))?;
+        let (reason, formatted, _payload) = self.finish_call(pid);
+        if reason == ExitReason::Normal {
+            Ok(formatted)
+        } else {
+            Err(format!("echo runner ({side}) exited {reason:?}: {formatted}").into())
+        }
     }
 
     /// A round-trip driver's `#(encoded, equal)` pair: the encoded JSON

@@ -24,14 +24,16 @@
 //! multi-statement/bound collection bodies, parallel indexing preludes,
 //! named-child branches, non-action named branches.
 //!
-//! ONE deliberate parity exception (BC-2b-5, recorded in AWL-BC-IR.md): the
-//! reference emitter passes call-site config on fork branches through
-//! `activity_value` (`emitter/forks.rs:218-229,300-336,351-365`), while
-//! direct lowering refuses it with the global BC-2 `call-site config` scope
-//! class — full support needs per-key site/declaration merge across the
-//! typed and raw call paths and stays deferred with the global marker
-//! (`tests/compile.rs::call_site_node_override_yields_the_override`;
-//! fork-form pins in `mir/fork_tests.rs`).
+//! Call-site config on fork branches lowers (BC-2b-5 CLOSED): action
+//! branches — collection and named, typed and raw — pass the branch config
+//! through `activity_value`, which merges it per key over the action
+//! declaration (site retry, then timeout, then `task_queue` always, then
+//! node — `apply_action_config`, the reference
+//! `emitter/forks.rs:218-229,300-336,351-365` over `stmts.rs:84-104`).
+//! Child branches keep the reference's child-config refusal class
+//! (`child_config_refusal`, `emitter/forks.rs:136-141`). Pins:
+//! `mir/fork_tests.rs::fork_branch_call_site_config_lowers_with_per_key_merge`;
+//! `tests/compile.rs::call_site_node_override_yields_the_override`.
 
 use std::collections::BTreeSet;
 
@@ -86,13 +88,20 @@ fn fork_fn_count(fork: &ForkStmt, emitter: &Emitter<'_>) -> u32 {
     }
 }
 
-/// Whether reachable lowering traversal contains a child collection fork or a
-/// child-naming pipe stage and therefore needs the one module-local T-WIT
-/// function. A route-ended pipe checks its own stages BEFORE honoring the
-/// early stop.
+/// Whether reachable lowering traversal contains any child-spawn form — a
+/// child collection fork, a child-naming pipe stage, a statement-level child
+/// call (awaited), or a fire-and-forget `spawn` — and therefore needs the one
+/// module-local T-WIT function. A route-ended pipe checks its own stages
+/// BEFORE honoring the early stop.
 pub(super) fn needs_child_witness(statements: &[Statement], emitter: &Emitter<'_>) -> bool {
     for statement in statements {
         match statement {
+            Statement::Call(call) if emitter.children.contains_key(call.call.name.as_str()) => {
+                return true;
+            }
+            Statement::Spawn(spawn) if emitter.children.contains_key(spawn.call.name.as_str()) => {
+                return true;
+            }
             Statement::Fork(fork) if matches!(fork.header, ForkHeader::Collection { .. }) => {
                 if single_unbound_call(&fork.body)
                     .is_some_and(|call| emitter.children.contains_key(call.call.name.as_str()))
@@ -252,6 +261,7 @@ fn lower_collection_fork(
                 step: fork.step,
                 fork: fork.fork,
                 call: branch.call,
+                config: branch.config,
                 var: fork.var,
                 returns: &branch.returns,
                 items: items_value,
@@ -302,14 +312,18 @@ enum CollectionKind {
 
 struct CollectionBranch<'a> {
     call: &'a crate::ast::Call,
+    config: Option<&'a crate::ast::ConfigLine>,
     returns: GType,
     kind: CollectionKind,
 }
 
 /// The reference stopgap gate for a collection fork body: exactly one
 /// unbound action or child call — everything else refuses with the emitter's
-/// diagnostic class (multi-statement/bound bodies, call-site config, parallel
-/// indexing preludes).
+/// diagnostic class (multi-statement/bound bodies, child-branch config,
+/// parallel indexing preludes). Action branches CARRY their call-site config
+/// into the fan-out (per-key site-over-declaration merge, the reference
+/// `emitter/forks.rs:218-229`); child branches refuse config with the child
+/// class (`emitter/forks.rs:136-141`).
 fn collection_branch<'f>(
     ctx: &Ctx<'_>,
     fork: &'f ForkStmt,
@@ -322,9 +336,6 @@ fn collection_branch<'f>(
             fork.span,
         ));
     };
-    if branch.config.is_some() {
-        return Err(LowerError::unsupported("call-site config", branch.span));
-    }
     let call = &branch.call;
     let (kind, returns) = if let Some(&(_, decl)) = ctx.emitter.actions.get(call.name.as_str()) {
         (CollectionKind::Action, type_ref_to_g(&decl.returns))
@@ -339,6 +350,10 @@ fn collection_branch<'f>(
             ),
         ));
     };
+    if matches!(kind, CollectionKind::Child) && branch.config.is_some() {
+        // The reference's exact child-config class (`emitter/forks.rs:136-141`).
+        return Err(super::child_call::child_config_refusal(branch.span));
+    }
     if !sequential && args_contain_index(call) {
         // The reference refuses indexing preludes inside a PARALLEL branch.
         return Err(LowerError::unsupported(
@@ -348,6 +363,7 @@ fn collection_branch<'f>(
     }
     Ok(CollectionBranch {
         call,
+        config: branch.config.as_ref(),
         returns,
         kind,
     })
@@ -367,17 +383,7 @@ pub(super) fn branch_free_names(call: &crate::ast::Call, var: &str, scope: &Scop
 }
 
 fn args_contain_index(call: &crate::ast::Call) -> bool {
-    call.args.iter().any(|arg| expr_contains_index(&arg.value))
-}
-
-fn expr_contains_index(expr: &Expr) -> bool {
-    match expr {
-        Expr::Index { .. } => true,
-        Expr::Field { base, .. } | Expr::Not { expr: base, .. } => expr_contains_index(base),
-        Expr::Binary { left, right, .. } => expr_contains_index(left) || expr_contains_index(right),
-        Expr::Predicate { subject, .. } => expr_contains_index(subject),
-        Expr::Record { args, .. } => args.iter().any(|arg| expr_contains_index(&arg.value)),
-        Expr::List { items, .. } => items.iter().any(expr_contains_index),
-        _ => false,
-    }
+    call.args
+        .iter()
+        .any(|arg| super::expr::expr_contains_index(&arg.value))
 }

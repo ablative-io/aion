@@ -122,6 +122,13 @@ pub enum FnOrigin {
         step: String,
         index: u32,
     },
+    /// A timeout-wait lifted function (the receive thunk or the 4-arm case
+    /// fn), reserved in the same slot inventory discipline as forks
+    /// (`lower/wait.rs`). `index` is the wait slot ordinal (two per wait).
+    Wait {
+        step: String,
+        index: u32,
+    },
     ActivityWrapper {
         action: String,
         raw: bool,

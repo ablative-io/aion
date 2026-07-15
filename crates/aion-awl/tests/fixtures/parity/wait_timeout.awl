@@ -1,0 +1,18 @@
+//! Hold for sign-off; ship on approval, escalate when the window lapses.
+workflow wait_timeout
+  input change_id: String
+  signal signoff: Signoff
+  outcome shipped:   type Shipped,   route success
+  outcome escalated: type Escalated, route failure
+
+type Signoff   { reviewer: String }
+type Shipped   { change_id: String, reviewer: String }
+type Escalated { change_id: String, reason: String }
+
+step hold
+  wait signoff timeout 2d -> decision
+
+  outcome approved: when decision is present,
+    route shipped(change_id: change_id, reviewer: decision.reviewer)
+  outcome lapsed: otherwise,
+    route escalated(change_id: change_id, reason: "sign-off window lapsed")

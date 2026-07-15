@@ -130,18 +130,25 @@ differential oracle, not frozen as un-executed goldens):**
   Note: `select` accepts `Stmt::CallClosure` in flow bodies; no product
   lowering path emits it today — it is currently reachable only from the
   runtime codec proof's hand-built drivers (`tests/runtime_codecs/drivers.rs`).
-- **Call-site config in fork branches (BC-2b-5 parity note).** The reference
+- **Call-site config in fork branches (BC-2b-5 — LANDED).** The reference
   emitter ACCEPTS call-site retry/timeout/node on fork branches (collection:
   `emitter/forks.rs:218-229`; named homogeneous/raw: `:300-336,351-365`,
   per-key site-over-declaration precedence per `emitter/stmts.rs:28-104`).
-  Direct lowering deliberately refuses both fork forms with the global BC-2
-  `call-site config` scope class (`lower/forks.rs`, `lower/fork_named.rs`) —
-  full support must merge site/declaration config per key across the typed
-  AND raw `activity_value` paths and stays deferred with the global marker.
-  Pinned: `tests/compile.rs::call_site_node_override_yields_the_override`
-  (global class) +
-  `mir/fork_tests.rs::fork_branch_call_site_config_refuses_with_the_scope_class`
-  (both fork forms).
+  Direct lowering now matches: `activity_value` carries the site config and
+  `apply_action_config` merges it per key over the declaration (site retry,
+  then timeout, then `task_queue` always, then node) across the typed AND
+  raw paths (`lower/activity.rs`), threaded through the collection fan-out
+  (`lower/forks.rs::collection_branch` → `fork_action::ForkBuild`) and both
+  named-fork paths (`lower/fork_named.rs`). Child branches keep the
+  reference's child-config class (`child_call::child_config_refusal` ↔
+  `emitter/forks.rs:136-141`). Pinned:
+  `tests/compile.rs::call_site_node_override_yields_the_override` (compiles
+  + requirement rows),
+  `mir/fork_tests.rs::fork_branch_call_site_config_lowers_with_per_key_merge`
+  + `::collection_child_fork_config_refuses_with_the_child_class` (MIR
+  print), and execution parity on the embedded VM against the reference
+  (`tests/runtime_codecs/fork_generality.rs` — parallel/sequential
+  collection, named homogeneous/heterogeneous, and the plain-call merge).
 - **T-DEAD / T-ACTRAW / T-WIT shells.** T-ACT's expansion references a
   `make_fun2(T-DEAD)` dead body (§2.4); the shell lands with BC-3's T-ACT
   expansion so the FunT inventory and sidecar carry it.

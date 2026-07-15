@@ -1,0 +1,12 @@
+//! Hold for the reviewer's ruling, then report it against the change.
+workflow wait_signal
+  input change_id: String
+  signal ruling: Ruling
+  outcome done: type Done, route success
+
+type Ruling { note: String }
+type Done   { change_id: String, note: String }
+
+step hold
+  wait ruling -> decision
+  route done(change_id: change_id, note: decision.note)

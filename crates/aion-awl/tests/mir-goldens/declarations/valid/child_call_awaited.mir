@@ -1,0 +1,179 @@
+module grade_essay source=grade_essay.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_delegate:
+    aion@workflow:spawn_and_wait/6 [children] (lit#13, v3, v2, v4, v5, v6)
+== durable families == children
+== atoms ==
+  [0] grade
+  [1] grade_essay_input
+  [2] passed_outcome
+  [3] ok
+  [4] awl_outcome_failure
+  [5] error
+== literals ==
+  [0] "score"
+  [1] "feedback"
+  [2] "essay"
+  [3] "pass_mark"
+  [4] "passed"
+  [5] "outcome"
+  [6] ""
+  [7] "GradeEssayOutcome"
+  [8] "passed"
+  [9] "payload"
+  [10] "child"
+  [11] "outcome"
+  [12] "payload"
+  [13] "score_essay"
+  [14] "failed"
+== types ==
+  record Grade tag=grade
+    score: int
+    feedback: string
+  record GradeEssayInput tag=grade_essay_input
+    essay: string
+    pass_mark: int
+  union GradeEssayOutcome
+    passed -> passed_outcome(ref(Grade))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=grade_essay_input_codec output=grade_essay_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(grade_essay.GradeEssayInput, grade_essay.GradeEssayOutcome, AwlError)
+  T-DEF name="grade_essay" input=grade_essay_input_codec output=grade_essay_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (grade_essay.GradeEssayInput) -> Result(grade_essay.GradeEssayOutcome, AwlError)
+  T-EXEC fields=[essay:String, pass_mark:Int] entry=step_delegate args=[0, 1]
+== fn grade_codec/0 origin=codec_template(RecordTrio, Grade, record#0) ==
+  sig: () -> Codec(grade_essay.Grade)
+  v0 = make_closure grade_to_json captures=[]
+  v1 = call_local grade_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn grade_to_json/1 origin=codec_template(RecordTrio, Grade, record#0) ==
+  sig: (grade_essay.Grade) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"score": v1|>awlc.int_to_json, "feedback": v2|>awlc.string_to_json}
+  return v3
+== fn grade_decoder/0 origin=codec_template(RecordTrio, Grade, record#0) ==
+  sig: () -> Decoder(grade_essay.Grade)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure grade_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn grade_decoder$0/1 origin=lifted(grade_decoder, #0) ==
+  sig: (Int) -> Decoder(grade_essay.Grade)
+  v1 = call_rt aion@awl@codec:string_decoder/0() live_after=[v0]
+  v2 = make_closure grade_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn grade_decoder$1/2 origin=lifted(grade_decoder, #1) ==
+  sig: (String, Int) -> Decoder(grade_essay.Grade)
+  v2 = record(grade, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn grade_essay_input_codec/0 origin=codec_template(RecordTrio, GradeEssayInput, record#1) ==
+  sig: () -> Codec(grade_essay.GradeEssayInput)
+  v0 = make_closure grade_essay_input_to_json captures=[]
+  v1 = call_local grade_essay_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn grade_essay_input_to_json/1 origin=codec_template(RecordTrio, GradeEssayInput, record#1) ==
+  sig: (grade_essay.GradeEssayInput) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"essay": v1|>awlc.string_to_json, "pass_mark": v2|>awlc.int_to_json}
+  return v3
+== fn grade_essay_input_decoder/0 origin=codec_template(RecordTrio, GradeEssayInput, record#1) ==
+  sig: () -> Decoder(grade_essay.GradeEssayInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure grade_essay_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn grade_essay_input_decoder$0/1 origin=lifted(grade_essay_input_decoder, #0) ==
+  sig: (String) -> Decoder(grade_essay.GradeEssayInput)
+  v1 = call_rt aion@awl@codec:int_decoder/0() live_after=[v0]
+  v2 = make_closure grade_essay_input_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn grade_essay_input_decoder$1/2 origin=lifted(grade_essay_input_decoder, #1) ==
+  sig: (Int, String) -> Decoder(grade_essay.GradeEssayInput)
+  v2 = record(grade_essay_input, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn grade_essay_outcome_codec/0 origin=codec_template(UnionTrio, GradeEssayOutcome, union#2) ==
+  sig: () -> Codec(grade_essay.GradeEssayOutcome)
+  v0 = make_closure grade_essay_outcome_to_json captures=[]
+  v1 = call_local grade_essay_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn grade_essay_outcome_to_json/1 origin=codec_template(UnionTrio, GradeEssayOutcome, union#2) ==
+  sig: (grade_essay.GradeEssayOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>grade_to_json}
+  return v2
+== fn grade_essay_outcome_decoder/0 origin=codec_template(UnionTrio, GradeEssayOutcome, union#2) ==
+  sig: () -> Decoder(grade_essay.GradeEssayOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure grade_essay_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn grade_essay_outcome_decoder$outcome/1 origin=lifted(grade_essay_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(grade_essay.GradeEssayOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local grade_decoder()
+    v4 = make_closure grade_essay_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(grade, [0, lit#6])
+    v2 = record(passed_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn grade_essay_outcome_decoder$arm0/1 origin=lifted(grade_essay_outcome_decoder, #1) ==
+  sig: (grade_essay.Grade) -> Decoder(grade_essay.GradeEssayOutcome)
+  v1 = record(passed_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn awl_child_output_grade_codec/0 origin=codec_template(ChildEnvelopeTrio, Grade, child_envelope(ref(Grade))) ==
+  sig: () -> Codec(grade_essay.Grade)
+  v0 = make_closure awl_child_output_grade_to_json captures=[]
+  v1 = call_local awl_child_output_grade_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_grade_to_json/1 origin=codec_template(ChildEnvelopeTrio, Grade, child_envelope(ref(Grade))) ==
+  sig: (grade_essay.Grade) -> Json
+  v1 = json_obj {"outcome": lit#10|>awlc.string_to_json, "payload": v0|>grade_to_json}
+  return v1
+== fn awl_child_output_grade_decoder/0 origin=codec_template(ChildEnvelopeTrio, Grade, child_envelope(ref(Grade))) ==
+  sig: () -> Decoder(grade_essay.Grade)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_grade_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v0, v1)
+== fn awl_child_output_grade_decoder$outcome/1 origin=lifted(awl_child_output_grade_decoder, #0) ==
+  sig: (String) -> Decoder(grade_essay.Grade)
+  v1 = call_local grade_decoder()
+  v2 = make_closure awl_child_output_grade_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#12, v1, v2)
+== fn awl_child_output_grade_decoder$payload/1 origin=lifted(awl_child_output_grade_decoder, #1) ==
+  sig: (grade_essay.Grade) -> Decoder(grade_essay.Grade)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn step_delegate/2 origin=region(delegate) ==
+  sig: (String, Int) -> Result(grade_essay.GradeEssayOutcome, AwlError)
+  v2 = json_obj {"essay": v0|>awlc.string_to_json}
+  v3 = make_closure awl$child_witness captures=[]
+  v4 = call_rt aion@awl@codec:json_value/0() live_after=[v1, v2, v3]
+  v5 = call_local awl_child_output_grade_codec() live_after=[v1, v2, v3, v4]
+  v6 = call_rt aion@awl@error:codec/0() live_after=[v1, v2, v3, v4, v5]
+  v7 = call_rt aion@workflow:spawn_and_wait/6(lit#13, v3, v2, v4, v5, v6) live_after=[v1]
+  v8 = call_rt aion@awl@error:map_child_error/1(v7) live_after=[v1]
+  v9 = try_bind v8 live_after=[v1]
+  v11 = field(v9, 1)
+  v10 = cmp Ge v11 v1
+  if is_true v10:
+    v12 = field(v9, 1)
+    v13 = field(v9, 2)
+    v14 = record(grade, [v12, v13])
+    v15 = record(passed_outcome, [v14])
+    v16 = record(ok, [v15])
+    return v16
+  else:
+    v17 = field(v9, 1)
+    v18 = field(v9, 2)
+    v19 = record(grade, [v17, v18])
+    v20 = call_local grade_to_json(v19)
+    v21 = call_rt gleam@json:to_string/1(v20)
+    v22 = record(awl_outcome_failure, [lit#14, v21])
+    v23 = record(error, [v22])
+    return v23
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT
