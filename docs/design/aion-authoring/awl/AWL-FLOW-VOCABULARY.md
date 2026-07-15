@@ -1,155 +1,147 @@
-# AWL flow vocabulary — design brief (rev 0, for the operator's tear)
+# AWL flow vocabulary — design brief (rev 1, folding the operator's tear)
 
-2026-07-15. Operator ruling that triggered this: the authoring canvas must
-show fan-out / fan-in / loops as first-class flow structure, and the
-language's control-flow vocabulary is wrong — "a fork is a split in the
-road": in plain English **fork means decision**, yet AWL uses `fork` for
-parallel fan-out (and for static parallel branches too — one keyword,
-two concepts, neither of them a decision). The operator's benchmark: the
-visual flow languages (Salesforce Flow, BPMN, n8n) whose element
-vocabulary users already understand.
+2026-07-15. Rev 0 made the mistake this brief exists to kill: it folded
+the join into the fan-out step as a closing line and drew the fan as a
+container box around the branch. The operator's ruling, twice given, is
+the law of this design: **fan out is a step. Join is a step.** Distinct
+nodes, in sequence, on the canvas and in the text:
 
-This brief fixes the vocabulary, adds the constructs a flow language
-needs, and keeps one principle above all: **what you author is what the
-canvas draws** — flow structure lives at step level, not buried inside
-step bodies.
+```
+plan → fan out → subflow ×N → join (collect) → fold → (back to fan out)
+```
 
-## 1. The concept inventory
+And the naming ruling: the repeatable container is a **subflow** — never
+"flow"; there is a workflow, and inside it there are subflows.
 
-Every visual flow language converges on the same small set. Where AWL
-stands today:
+## 1. The elements
 
-| # | Concept | Plain name | BPMN / Salesforce | AWL today | Disposition |
-|---|---------|-----------|-------------------|-----------|-------------|
-| 1 | Do a unit of work | action | task / Action | `call(…) -> x` ✓ | keep |
-| 2 | Then | sequence | arrow / connector | statements; step fall-through ✓ | keep |
-| 3 | Decide (one path taken) | **decision** | XOR gateway / Decision | `outcome … when … route` ✓ | keep; draw as a diamond; a body-less step with only outcomes is a pure decision node |
-| 4 | Do different things at once | **branch** | AND gateway | bare `fork` named branches (misnamed; direct-compile refused) | rename → `branch`; promote later |
-| 5 | Do the same thing per item | **fan out** | multi-instance subprocess / Loop-over-collection | `fork item in list` (misnamed, intra-step, body = statement list only) | replace → fan-out **steps** over **flows** (§3) |
-| 6 | Come back together | **join** | AND-join / Merge | `join -> x`, all-or-fail-fast only | keep word; add modes (§5) |
-| 7 | Go around again | **loop** | loop marker / cycle | `loop … until … max` intra-step; backward `route` between steps ✓ (implemented) | prefer step cycles; add `max N visits` bound (§6) |
-| 8 | A flow within a flow | **flow** (subflow) | subprocess / Subflow | only separately-deployed child workflows | ADD — the missing keystone (§2) |
-| 9 | Wait for the world | wait | timer/message events | `wait signal`, `sleep` ✓ | keep |
-| 10 | When it goes wrong | failure path | boundary error event / Fault path | `on failure` grammar ✓ (direct-compile pending) | unchanged here |
+The element vocabulary, benchmarked against Salesforce Flow / BPMN / n8n.
+Where AWL stands today:
 
-Three real gaps: **flows (8)**, **fan-out as a step over a flow (5)**,
-**join modes (6)** — plus the vocabulary correction and the `visits`
-bound. Everything else exists.
+| # | Element | BPMN / Salesforce | AWL today | Disposition |
+|---|---------|-------------------|-----------|-------------|
+| 1 | step (do work) | task / Action | `step` + calls ✓ | keep |
+| 2 | sequence | connector | fall-through / `route` ✓ | keep |
+| 3 | decision (one path) | XOR gateway / Decision | `outcome … when … route` ✓ | keep; draw as diamond; body-less step with only outcomes = pure decision node |
+| 4 | **fan out** (split to N parallel) | AND/multi-instance split | intra-step `fork item in xs` (misnamed, buried) | → its **own step kind** (§3) |
+| 5 | **subflow** (repeatable container) | subprocess / Subflow | none inline (only separately-deployed children) | → ADD (§2) |
+| 6 | **join / collect** (converge) | AND-join / Merge | `join ->` line buried inside fork | → its **own step kind** (§4) |
+| 7 | loop | cycle / loop marker | backward `route` ✓ (implemented) + intra-step `loop` | step cycles primary; add `max N visits` (§5) |
+| 8 | wait | timer/message event | `wait signal`, `sleep` ✓ | keep |
+| 9 | failure path | boundary error / Fault | `on failure` grammar ✓ | unchanged here |
+| 10 | static named branches | AND gateway (heterogeneous) | bare `fork` named branches | rename → `branch` when promoted; out of scope here |
 
-## 2. Flows — the keystone
+The `fork` keyword leaves the language after a deprecation window: in
+English a fork is a decision, and AWL's decisions already have their
+surface (`when`/`otherwise` routing). Nothing else gets to squat on a
+decision word.
 
-The operator's shape: "send it out to seven agents in parallel, each one
-follows a path of its own — dev step, then plan step, then run-checks
-step, and they can loop back on themselves." A fanned-out branch is not
-a statement list; it is a **flow**: steps, decisions, and bounded loops
-of its own.
+## 2. Subflow — the repeatable container
+
+A `subflow` is declared like a workflow — typed inputs, typed outcome,
+its own steps with decisions and bounded loop-backs — and lives in the
+same document. It is the thing a fan out step instantiates once per
+item: each instance follows its own path through the subflow's steps
+("dev step, then plan step, then run-checks step, and they can loop
+back on themselves").
 
 ```awl
-flow dev_item(item: WorkItem, notes_dir: String)
+subflow dev_item(item: WorkItem, notes_dir: String)
   outcome out: type ItemVerdict
 
   step develop
-    run_agent(instructions: dev_instructions, prompt: "Item " + item.id + …) -> note
+    run_agent(…, prompt: "Item " + item.id + " — " + item.goal, …) -> note
 
   step review
-    run_agent(instructions: review_instructions, prompt: …) -> verdict
+    run_agent(…) -> verdict
     outcome redo: when verdict.verdict == "reject", route develop
     outcome ok:   otherwise, route out(verdict)
     max 3 visits
 ```
 
-- **One anatomy at every scale.** A `flow` is declared exactly like a
-  `workflow`: typed inputs, typed outcomes, steps. A workflow is the
-  deployable scale; a flow is the in-document scale; a child workflow is
-  a flow that happens to be deployed separately. Nothing new to learn.
-- Flows nest: a flow's step may itself fan out over another flow.
-- Flows compile **inline** (no separate deploy, no engine object). The
-  emitter already proves the needed techniques (continuation nesting,
-  bounded recursion).
-- On canvas: collapsed = one node; expanded = its own step graph inside
-  the parent node (box-in-box, BPMN subprocess style).
+- Compiles inline: no separate deploy, no engine object. Subflows nest
+  (a subflow's steps may fan out over another subflow).
+- v1: exactly one success outcome type per subflow — that type is what
+  the join collects. (Multiple outcome types → union — deferred.)
+- On canvas: its own node, marked ×N, collapsed to one box or expanded
+  to show its internal step graph.
 
-## 3. Fan out — a step, not a statement
+## 3. Fan out — a step
 
-Fan-out is flow structure, so it is a **step kind**, visible at the top
-level of the document and on the canvas:
+A fan out step does exactly one thing: split the line. Its body is the
+one statement:
 
 ```awl
-step wave fans out item in state.items
-  dev_item(item: item, notes_dir: notes_dir)
+step wave
+  fan out item in state.items into dev_item(item: item, notes_dir: notes_dir)
+```
+
+- `fan out <var> in <collection> into <target(args…)>` — the target is
+  a subflow or, for the trivial case, a single action call (no subflow
+  ceremony needed to fan seven `run_agent`s).
+- One instance of the target runs per item, in parallel (`sequential`
+  modifier available).
+- A fan out step contains nothing else — no prep work, no trailing
+  join. That is what keeps the canvas node honest: one node, one split.
+- `fork item in …` (intra-step) parses through a deprecation window,
+  then goes.
+
+## 4. Join — a step
+
+The instances converge at a join step (a collect step):
+
+```awl
+step collect
   join all -> results
 ```
 
-- The body names ONE flow call (or one action call for the trivial
-  case). Per item, one instance of that flow runs; instances run in
-  parallel (`sequential` stays available as a modifier).
-- **The join is the step's boundary.** `join … -> name` is the last line
-  of a fan step; the collected results flow to whatever the step routes
-  or falls through to. On canvas the join renders as an explicit
-  fan-in bar — the operator's "when they join together, that should be
-  a step" — and the next node receives it.
-- `fork item in …` (intra-step) is superseded. Grammar keeps parsing it
-  through a deprecation window; the canvas-first surface is fan steps.
-  The keyword `fork` then leaves the language — in English a fork is a
-  decision, and AWL's decisions already have the right surface
-  (`when`/`otherwise` outcome routing).
-- Bare `fork` (heterogeneous named branches) renames to `branch` when it
-  is promoted to the direct path — same reasoning, right word.
+- `join <mode> -> <name>` opens the step; the step may route or carry
+  further statements after it, or just fall through.
+- The parent-level shape is enforced by the checker: a fan out step's
+  successor is its subflow instances, and their completion flows to
+  exactly one join step — written adjacent (fall-through) or named by
+  route. Every fan out has its join; every join has its fan out. The
+  bare form `join <mode>` is unambiguous under adjacency; the explicit
+  form `join <mode> from wave` exists for when graphs grow.
+- Modes:
+  - `join all -> results` — wait for every instance; `results` is
+    `[T]` where `T` is the subflow's outcome type. Today's fail-fast
+    semantics: an instance's terminal failure fails the run. v1.
+  - `join settled -> results` — wait for every instance; failures
+    arrive as data. Element type is the builtin parametric
+    `Settled(T)`: `{ ok: Bool, value: T?, error: String }` (alongside
+    `List(T)` and `T?`). Honesty note: settled needs instance failure
+    captured before engine fail-fast triggers — an engine option on the
+    barrier or lowering through the completed `on failure` path. The
+    one item here that may touch the engine; ships after `all`.
+  - `join first -> result` — race. Named for completeness; not v1.
 
-## 4. Decisions — already right, now drawn right
+## 5. Loops — step cycles, honestly bounded
 
-A step whose body is empty (only `outcome` lines over existing bindings)
-is a **pure decision node**. No new syntax; the projection tags it and
-the canvas draws the diamond with one labeled edge per arm. Mixed steps
-(work + outcomes) draw as a node with a trailing diamond.
+Backward `route` to an earlier step is already implemented as the
+state-machine loop form. Two additions make it the primary loop:
 
-## 5. Join modes
+- `max N visits` on a step — the checker accepts a route cycle when a
+  member step carries a visits bound (or an input-derived one). Closes
+  a real soundness gap: today's rule ("some member contains a bounded
+  `loop`") is satisfiable by a decoy `max 1` loop that bounds nothing.
+- `visits` — builtin `Int` readable in that step's outcome guards.
 
-Today's join is wait-all + engine-owned fail-fast: one branch's terminal
-failure fails the run. Waves of agents need a gentler mode:
+Intra-step `loop` remains for tight value-threading; flow-level loops
+are routes back to earlier steps.
 
-- `join all -> results` — today's semantics. v1 default, unchanged.
-- `join settled -> results` — wait for every branch; failures arrive as
-  data. Result element type is the builtin parametric `Settled(T)`:
-  `{ ok: Bool, value: T?, error: String }` (joins `List(T)` and `T?` as
-  the third builtin parametric).
-- `join first -> result` — race; named for completeness, not in v1.
+## 6. Authoring ergonomics (rides alongside)
 
-Honesty note: `all` is pure compiler work. `settled` needs the branch
-failure captured before engine fail-fast triggers — either an engine
-option on the fan-out barrier or lowering through the completed
-`on failure` path. It is the ONE item in this brief that may touch the
-engine; it ships after `all`, not with it.
-
-## 6. Loops — step cycles, honestly bounded
-
-Backward `route` to an earlier step is already the implemented
-"state machine" loop form. Two additions make it the primary form:
-
-- `max N visits` — a step-level bound; the checker accepts a route
-  cycle when at least one member step carries a visits bound (or an
-  input-derived one). Closes a real soundness gap: today's rule ("some
-  member contains a bounded `loop`") is satisfiable by a decoy
-  `max 1` loop that bounds nothing.
-- `visits` — a builtin `Int` readable in that step's outcome guards
-  (`when verdict.overall == "reject" and visits < 3`).
-
-Intra-step `loop` remains for tight value-threading iteration; flow
-loops are step cycles.
-
-## 7. Authoring ergonomics (rides alongside)
-
-- **`const`** — top-level named literals (prompts, schemas, gate lists):
-  `const dev_instructions = """…"""`. Also fixes the parser wart where a
-  statement cannot START with a string literal.
-- **Raw strings** — triple-quoted `"""…"""`: newlines literal, no escape
-  backslashes; JSON pastes in as JSON.
+- **`const`** — top-level named literals (prompts, schemas, gate
+  lists): `const dev_instructions = """…"""`. Also fixes the parser
+  wart where a statement cannot start with a string literal.
+- **Raw strings** — triple-quoted `"""…"""`: newlines literal, no
+  backslash escaping; JSON pastes in as JSON.
 - **`schema of Type`** — compile-time expression yielding the type's
   JSON Schema as a `String`. The toolchain already derives schemas from
-  AWL types; this makes it reachable from inside a document. Hand-written
-  escaped-JSON schemas disappear.
+  AWL types; this makes it reachable inside a document.
 
-## 8. The worked example — dev_flow rewritten
+## 7. The worked example — dev_flow rewritten
 
 ```awl
 workflow dev_flow
@@ -160,10 +152,10 @@ workflow dev_flow
 const agent_schema = schema of AgentOut
 const coordinator_instructions = """You are the coordinator…"""
 
-flow dev_item(item: WorkItem, notes_dir: String)
+subflow dev_item(item: WorkItem, notes_dir: String)
   outcome out: type ItemVerdict
   step develop
-    run_agent(…, prompt: "Item " + item.id + " — " + item.goal, …) -> note
+    run_agent(…) -> note
   step review
     run_agent(…) -> verdict
     outcome redo: when verdict.verdict == "reject", route develop
@@ -173,8 +165,10 @@ flow dev_item(item: WorkItem, notes_dir: String)
 step plan
   run_agent(instructions: coordinator_instructions, …) -> state
 
-step wave fans out item in state.items
-  dev_item(item: item, notes_dir: notes_dir)
+step wave
+  fan out item in state.items into dev_item(item: item, notes_dir: notes_dir)
+
+step collect
   join all -> results
 
 step fold
@@ -184,70 +178,67 @@ step fold
   max 3 visits
 ```
 
-## 9. What the canvas draws
+## 8. What the canvas draws
 
-Node vocabulary:
-
-```
- ┌────────┐    ◇ when/otherwise     ═══╦═══  branch split
- │ step   │      decision diamond      ║     (later)
- └────────┘
- ╔═[⫴ fan out: item in xs]═╗   ──▶  sequence / route
- ║   (flow graph inside)   ║   ↩    cycle back-edge, ×N bound
- ╚═══════[join all]════════╝
-```
-
-dev_flow on the canvas:
+Distinct nodes in sequence — no container boxes:
 
 ```
-            ┌───────────┐
-            │   plan    │
-            │ run_agent │
-            └─────┬─────┘
-                  ▼
- ╔═[⫴ fan out: item in state.items]══╗
- ║  ┌─────────┐      ┌──────────┐    ║
- ║  │ develop │ ───▶ │  review  │    ║
- ║  │run_agent│      │run_agent │    ║
- ║  └─────────┘      └───◇──────┘    ║
- ║       ▲       redo    │           ║
- ║       └───────────────┘  ×3       ║
- ╚═════════════[join all]════════════╝
-                  ▼
-            ┌───────────┐
-      ┌───▶ │   fold    │
-      │     │ run_agent │
-      │     └────◇──────┘
-      │ items    │      │ done
-      │ left ×3  │      ▼
-      └──────────┘   (success)
+        ┌───────────┐
+        │   plan    │
+        └─────┬─────┘
+              ▼
+        ┌───────────┐
+        │ wave   ⫴  │  fan out: item in state.items
+        └─────┬─────┘
+              ▼ ×N
+   ┌──────────────────────┐
+   │ dev_item          ×N │  (subflow — expandable)
+   │  ┌─────────┐ ┌─────┐ │
+   │  │ develop │▶│revw │ │
+   │  └─────────┘ └──◇──┘ │
+   │       ▲   redo  │    │
+   │       └─────────┘ ×3 │
+   └──────────┬───────────┘
+              ▼
+        ┌───────────┐
+        │ collect ⫵ │  join all -> results
+        └─────┬─────┘
+              ▼
+        ┌───────────┐
+   ┌──▶ │   fold    │
+   │    └────◇──────┘
+   │ more    │    │ done
+   │ ×3      │    ▼
+   └─────────┘ (success)
 ```
 
-Projection note: the canvas is served from the parsed document, not the
-compiled one — so the correct picture lands as soon as **parser +
-checker + projection** understand these forms, before the emitter does.
-Canvas value ships first.
+Collapsed, `dev_item` is one ×N box; expanded it shows its own steps,
+decisions, and loop-backs. The projection is served from the **parsed**
+document, so this picture lands as soon as parser + checker +
+projection understand the forms — before emitter work. Canvas relief
+ships first.
 
-## 10. Lowering and compatibility
+## 9. Lowering and compatibility
 
-- No engine change for everything except `join settled` (§5). Fan steps
-  lower to the existing fan-out machinery (direct-compiles since the
-  fork-generality work); flows lower to inline functions with bounded
-  recursion; step cycles already lower.
+- No engine change for anything except `join settled` (§4). Fan out /
+  join steps lower to the existing fan-out machinery (direct-compiles
+  since the fork-generality work); subflows lower to inline functions
+  with bounded recursion (continuation nesting — proven emitter
+  technique); step cycles already lower.
 - Existing documents keep compiling through the deprecation window
-  (`fork`/intra-step forms parse with a deprecation diagnostic).
-  staged_rounds / dev_brief / examples migrate as the proof corpus.
-- Workers unchanged. `run_agent` and the general worker are untouched —
+  (intra-step `fork`/`join` parse with a deprecation diagnostic).
+  staged_rounds / dev_brief migrate as the proof corpus.
+- Workers untouched. `run_agent` and the general worker are unchanged —
   this is all authoring surface.
 
-## 11. Build sequence
+## 10. Build sequence
 
 1. **Ratify this brief** (operator tear → fold → ratify).
-2. **Ergonomics batch**: `const`, raw strings, `schema of`, literal-
-   statement parser fix. Small, independent, immediate relief.
-3. **Grammar + checker + projection** for `flow`, fan steps,
-   `join all`, `max N visits`, decision-node tagging → canvas draws the
-   real shape (check-only; emitter untouched).
-4. **Emitter lowering** for flows + fan steps → direct-compile parity.
-5. **`join settled`** (engine-option or on-failure route), then
-   `branch` promotion and `fork` retirement.
+2. **Ergonomics batch**: `const`, raw strings, `schema of`,
+   literal-statement parser fix. Small, independent, immediate relief.
+3. **Grammar + checker + projection** for `subflow`, fan out steps,
+   join steps (`all`), `max N visits`, decision-node tagging → the
+   canvas draws the real shape (check-only; emitter untouched).
+4. **Emitter lowering** for subflows + fan out/join → direct-compile
+   parity.
+5. **`join settled`**, then `branch` promotion and `fork` retirement.
