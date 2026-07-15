@@ -15,7 +15,7 @@ use super::exprs::View;
 use super::graph::StepGraph;
 use super::outcomes::{Env, check_clauses, check_route};
 use super::stages::walk_pipe;
-use super::types::{Ty, assignable};
+use super::types::{Ty, assignable, same_ty};
 
 /// A checker-scoped value and its uniquely resolved declaration.
 #[derive(Clone)]
@@ -68,6 +68,8 @@ pub(super) struct Walker<'c, 'a> {
     /// Region-local names that fall out of scope at the current step's
     /// `collect` (set only on collect steps).
     pub(super) collect_mask: Option<BTreeSet<String>>,
+    /// The top-level step currently being walked (merge diagnostics).
+    pub(super) step_name: String,
 }
 
 impl Walker<'_, '_> {
@@ -104,6 +106,7 @@ pub(super) fn run<'a>(ctx: &mut Ctx<'a>, flow: &Flow<'a>, graph: &StepGraph) {
             step_base: BTreeSet::new(),
             rebound: BTreeSet::new(),
             collect_mask: None,
+            step_name: String::new(),
         };
         for (position, step) in flow.steps.iter().enumerate() {
             walk_step(&mut walker, graph, position, step);
@@ -136,6 +139,7 @@ fn walk_step(w: &mut Walker<'_, '_>, graph: &StepGraph, position: usize, step: &
     w.step_base = base.keys().cloned().collect();
     w.rebound.clear();
     w.collect_mask = graph.collect_masks.get(&position).cloned();
+    w.step_name.clone_from(&step.name);
     check_max_visits(w, step);
     let mut scope = base.clone();
     walk_statements(w, &mut scope, &step.body, step, &Env::Top);
@@ -288,6 +292,7 @@ fn walk_statement(
                 parent: owner,
                 siblings,
             };
+            check_max_visits(w, sub);
             walk_statements(w, scope, &sub.body, sub, &inner);
             check_clauses(w, scope, sub, &inner);
             None
@@ -377,7 +382,7 @@ pub(super) fn insert_binding(
                 declaration: Some(span),
             };
             scope.insert(name.to_owned(), kept.clone());
-            record_next(w, name, kept);
+            record_next(w, name, kept, span);
             return;
         }
         w.err(
@@ -394,14 +399,31 @@ pub(super) fn insert_binding(
         declaration: Some(span),
     };
     scope.insert(name.to_owned(), value.clone());
-    record_next(w, name, value);
+    record_next(w, name, value, span);
 }
 
-/// Fold a binding into the cross-pass name table, merging colliding
-/// declarations conservatively.
-fn record_next(w: &mut Walker<'_, '_>, name: &str, value: ScopedTy) {
-    match w.next.get(name) {
+/// Fold a binding into the cross-pass name table. Colliding declarations
+/// with the SAME type merge losslessly; two concrete, structurally
+/// different types for one name are a defect — paths that rejoin would
+/// disagree on the binding's type — reported at the later write instead of
+/// silently degrading to `Unknown`.
+fn record_next(w: &mut Walker<'_, '_>, name: &str, value: ScopedTy, span: Span) {
+    match w.next.get(name).cloned() {
         Some(existing) if existing.ty != value.ty || existing.declaration != value.declaration => {
+            let both_concrete =
+                !matches!(existing.ty, Ty::Unknown) && !matches!(value.ty, Ty::Unknown);
+            if both_concrete && !same_ty(&existing.ty, &value.ty, &w.ctx.types) {
+                let step = w.step_name.clone();
+                w.err(
+                    span,
+                    format!(
+                        "`{name}` is bound as {} on one path and as {} on another — \
+                         one type per binding name across a flow's paths (this \
+                         rebinding is in step `{step}`)",
+                        existing.ty, value.ty
+                    ),
+                );
+            }
             let merged = if existing.ty == value.ty {
                 value.ty
             } else {

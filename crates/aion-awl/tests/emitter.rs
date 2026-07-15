@@ -457,7 +457,10 @@ fn sequential_layer_fallback_is_announced() -> Result<(), Box<dyn Error>> {
 /// One binding name bound with two different types in disjoint route
 /// branches is refused: a name-keyed first-wins map would annotate the
 /// other branch's region parameters wrongly and emit non-compiling Gleam
-/// (2026-07-11 emitter panel, blocking finding).
+/// (2026-07-11 emitter panel, blocking finding). Since the B2 review round
+/// the CHECKER owns this rule (one type per binding name, reported at the
+/// second write), so emit's refusal is the check-gate refusal carrying the
+/// same phrase and span.
 #[test]
 fn conflicting_binding_types_across_branches_are_refused() -> Result<(), Box<dyn Error>> {
     let source = "\

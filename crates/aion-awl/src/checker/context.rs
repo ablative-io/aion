@@ -24,6 +24,8 @@ pub(super) struct Flow<'a> {
     pub(super) input_origins: Vec<(String, Span)>,
     /// Route-targetable outcomes of this flow.
     pub(super) outcomes: BTreeMap<String, Ty>,
+    /// Declaration span of each outcome's name (semantic references).
+    pub(super) outcome_spans: BTreeMap<String, Span>,
     /// `None` for the workflow's own steps; the subflow's name otherwise.
     pub(super) subflow: Option<String>,
 }
@@ -31,6 +33,12 @@ pub(super) struct Flow<'a> {
 impl<'a> Flow<'a> {
     /// The workflow's own flow view.
     pub(super) fn workflow(ctx: &Ctx<'a>) -> Self {
+        let mut outcome_spans = BTreeMap::new();
+        for outcome in &ctx.doc.outcomes {
+            outcome_spans
+                .entry(outcome.name.clone())
+                .or_insert(outcome.name_span);
+        }
         Self {
             steps: &ctx.doc.steps,
             inputs: ctx.inputs.clone(),
@@ -41,6 +49,7 @@ impl<'a> Flow<'a> {
                 .map(|input| (input.name.clone(), input.name_span))
                 .collect(),
             outcomes: ctx.outcome_types.clone(),
+            outcome_spans,
             subflow: None,
         }
     }
@@ -51,11 +60,13 @@ impl<'a> Flow<'a> {
         let mut inputs = BTreeMap::new();
         let mut input_origins = Vec::new();
         let mut outcomes = BTreeMap::new();
+        let mut outcome_spans = BTreeMap::new();
         if let Some(info) = ctx.subflows.get(&decl.name) {
             for param in &info.params {
                 inputs.insert(param.name.clone(), param.ty.clone());
             }
             outcomes.insert(decl.outcome.name.clone(), info.returns.clone());
+            outcome_spans.insert(decl.outcome.name.clone(), decl.outcome.name_span);
         }
         for param in &decl.params {
             input_origins.push((param.name.clone(), param.name_span));
@@ -65,6 +76,7 @@ impl<'a> Flow<'a> {
             inputs,
             input_origins,
             outcomes,
+            outcome_spans,
             subflow: Some(decl.name.clone()),
         }
     }

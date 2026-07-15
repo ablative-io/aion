@@ -11,7 +11,7 @@ use crate::Span;
 use crate::ast::{ForkHeader, PipeEnd, Statement, Step};
 
 use super::context::Flow;
-use super::graph::RouteEdge;
+use super::graph::{Provenance, RouteEdge};
 
 /// Every name a step's surface binds for later steps.
 pub(super) fn defined_names(step: &Step) -> BTreeSet<String> {
@@ -20,7 +20,7 @@ pub(super) fn defined_names(step: &Step) -> BTreeSet<String> {
     names
 }
 
-fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>) {
+pub(super) fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>) {
     for statement in statements {
         match statement {
             Statement::Call(call) => {
@@ -80,7 +80,7 @@ fn defined_origins(step: &Step) -> Origins {
     origins
 }
 
-fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
+pub(super) fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
     for statement in statements {
         match statement {
             Statement::Call(call) => {
@@ -177,7 +177,17 @@ pub(super) fn availability(
                 merge(arming);
             }
             for edge in routes.iter().filter(|edge| edge.target == position) {
-                merge(&avail_out[edge.source]);
+                match &edge.provenance {
+                    Provenance::Success => merge(&avail_out[edge.source]),
+                    // Compensation runs from the failed step's ENTRY set —
+                    // the body's bindings never happened on this path — plus
+                    // whatever the compensation bound before the route.
+                    Provenance::Failure { defines, .. } => {
+                        let mut contribution = avail_in[edge.source].clone();
+                        contribution.extend(defines.iter().cloned());
+                        merge(&contribution);
+                    }
+                }
             }
             if let Some(pred) = fall_pred[position] {
                 merge(&avail_out[pred]);
@@ -254,7 +264,10 @@ fn origin_availability(
                 routes,
                 fall_pred,
                 &inputs,
-                &origins_out,
+                &OriginFlows {
+                    ins: &origins_in,
+                    outs: &origins_out,
+                },
             );
             incoming.retain(|name, _| avail_in[position].contains(name));
             if after_unknown[position] {
@@ -285,6 +298,12 @@ fn origin_availability(
     origins_in
 }
 
+/// The per-step origin sets of the running fixpoint, borrowed together.
+struct OriginFlows<'a> {
+    ins: &'a [Origins],
+    outs: &'a [Origins],
+}
+
 fn merge_disjunctive(
     incoming: &mut Origins,
     position: usize,
@@ -292,20 +311,27 @@ fn merge_disjunctive(
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
     inputs: &Origins,
-    origins_out: &[Origins],
+    flows: &OriginFlows<'_>,
 ) {
-    let mut paths: Vec<&Origins> = Vec::new();
+    let mut paths: Vec<Origins> = Vec::new();
     if position == 0 {
-        paths.push(inputs);
+        paths.push(inputs.clone());
     }
     if let Some(arming) = arming {
-        paths.push(arming);
+        paths.push(arming.clone());
     }
     for edge in routes.iter().filter(|edge| edge.target == position) {
-        paths.push(&origins_out[edge.source]);
+        match &edge.provenance {
+            Provenance::Success => paths.push(flows.outs[edge.source].clone()),
+            Provenance::Failure { origins, .. } => {
+                let mut contribution = flows.ins[edge.source].clone();
+                merge_origins(&mut contribution, origins);
+                paths.push(contribution);
+            }
+        }
     }
     if let Some(predecessor) = fall_pred[position] {
-        paths.push(&origins_out[predecessor]);
+        paths.push(flows.outs[predecessor].clone());
     }
     let Some(first_path) = paths.first() else {
         return;

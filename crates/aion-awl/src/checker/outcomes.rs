@@ -104,9 +104,11 @@ pub(super) fn check_route(
                 .reference_to(target.name_span, sibling_span(env, &target.name));
         }
         RouteKind::Outcome(name, ty) => {
-            w.ctx
-                .semantic
-                .reference(target.name_span, DeclarationKind::Outcome, name);
+            // Resolve to THIS flow's outcome declaration by span — a global
+            // (kind, name) lookup goes ambiguous the moment two subflows
+            // declare same-named outcomes.
+            let declaration = w.flow.outcome_spans.get(name).copied();
+            w.ctx.semantic.reference_to(target.name_span, declaration);
             w.ctx.semantic.ty(target.name_span, &ty.to_string());
         }
         RouteKind::ParentArm | RouteKind::Escapes(_) | RouteKind::Unknown => {}

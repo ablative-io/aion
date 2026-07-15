@@ -50,6 +50,29 @@ pub(super) fn run(ctx: &mut Ctx<'_>) {
                 ),
             );
         }
+        // Subflow parameters are the subflow's inputs: the same ambiguity —
+        // the checker would resolve the parameter while the fold would
+        // substitute the const. Anchored on whichever is textually second.
+        for subflow in &doc.subflows {
+            for param in &subflow.params {
+                if param.name == decl.name {
+                    let span = if param.name_span.start > decl.name_span.start {
+                        param.name_span
+                    } else {
+                        decl.name_span
+                    };
+                    ctx.error(
+                        span,
+                        format!(
+                            "const `{}` collides with a parameter of subflow `{}` — \
+                             const names must be unambiguous everywhere an expression \
+                             is legal",
+                            decl.name, subflow.name
+                        ),
+                    );
+                }
+            }
+        }
         if firsts.contains_key(decl.name.as_str()) {
             ctx.error(
                 decl.name_span,

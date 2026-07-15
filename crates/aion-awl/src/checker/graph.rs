@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::Span;
 use crate::ast::{PipeEnd, Statement, Step};
 
-use super::avail::{Origins, availability, universe};
+use super::avail::{Origins, availability, defined_in_statements, origins_in_statements, universe};
 use super::context::{Ctx, Flow};
 use super::{cycles, regions};
 
@@ -23,6 +23,36 @@ pub(super) struct RouteEdge {
     pub(super) target: usize,
     /// Span of the route target name.
     pub(super) span: Span,
+    /// What is available where this route fires.
+    pub(super) provenance: Provenance,
+}
+
+/// The binding set a route edge carries into its target: a successful
+/// completion carries the step's full outgoing set; an `on failure` route
+/// carries the step's ENTRY set plus the compensation bindings established
+/// before the route — compensation runs from the pre-step base, never from
+/// the failed body's bindings.
+pub(super) enum Provenance {
+    /// A body statement or outcome clause of a successfully completed step.
+    Success,
+    /// An `on failure` compensation route, with the compensation bindings
+    /// established before it (names and their declaration spans).
+    Failure {
+        /// Names bound by compensation statements preceding the route.
+        defines: BTreeSet<String>,
+        /// Declaration origins of those names.
+        origins: Origins,
+    },
+}
+
+/// One written route with its provenance, before target resolution.
+pub(super) struct RouteRef<'a> {
+    /// Route target name.
+    pub(super) name: &'a str,
+    /// Span of the route target name.
+    pub(super) span: Span,
+    /// `None` for success-path routes; the compensation prefix otherwise.
+    pub(super) failure: Option<(BTreeSet<String>, Origins)>,
 }
 
 /// The analyzed step graph handed to the flow walk.
@@ -102,22 +132,7 @@ pub(super) fn build(ctx: &mut Ctx<'_>, flow: &Flow<'_>) -> StepGraph {
         };
     }
 
-    // Collect top-level route edges (routes inside substeps stay inside
-    // their parent; the parent's own outcome clauses carry the exits).
-    let mut routes: Vec<RouteEdge> = Vec::new();
-    for (position, step) in steps.iter().enumerate() {
-        for (name, span) in collect_route_names(step) {
-            if let Some(&target) = index.get(name) {
-                ctx.semantic
-                    .reference_to(span, Some(steps[target].name_span));
-                routes.push(RouteEdge {
-                    source: position,
-                    target,
-                    span,
-                });
-            }
-        }
-    }
+    let routes = collect_edges(ctx, steps, &index);
     let mut route_targeted = vec![false; count];
     for edge in &routes {
         route_targeted[edge.target] = true;
@@ -138,7 +153,9 @@ pub(super) fn build(ctx: &mut Ctx<'_>, flow: &Flow<'_>) -> StepGraph {
 
     check_reachability(ctx, flow, &after, &after_unknown, &routes, &fall_pred);
     check_successors(ctx, steps, &after, &fall_pred);
-    let cyclic = cycles::check_route_cycles(ctx, steps, &after, &routes, &fall_pred);
+    let step_refs: Vec<&Step> = steps.iter().collect();
+    let cyclic = cycles::check_route_cycles(ctx, &step_refs, &after, &routes, &fall_pred);
+    cycles::check_substep_cycles(ctx, steps);
     regions::check_edges(ctx, flow, &formed);
 
     let (avail_in, origins_in) = availability(
@@ -157,6 +174,35 @@ pub(super) fn build(ctx: &mut Ctx<'_>, flow: &Flow<'_>) -> StepGraph {
         cyclic,
         collect_masks,
     }
+}
+
+/// Collect the top-level route edges of one flow with their provenance
+/// (routes inside substeps stay inside their parent; the parent's own
+/// outcome clauses carry the exits).
+fn collect_edges(
+    ctx: &mut Ctx<'_>,
+    steps: &[Step],
+    index: &BTreeMap<&str, usize>,
+) -> Vec<RouteEdge> {
+    let mut routes: Vec<RouteEdge> = Vec::new();
+    for (position, step) in steps.iter().enumerate() {
+        for route in collect_route_refs(step) {
+            if let Some(&target) = index.get(route.name) {
+                ctx.semantic
+                    .reference_to(route.span, Some(steps[target].name_span));
+                routes.push(RouteEdge {
+                    source: position,
+                    target,
+                    span: route.span,
+                    provenance: match route.failure {
+                        None => Provenance::Success,
+                        Some((defines, origins)) => Provenance::Failure { defines, origins },
+                    },
+                });
+            }
+        }
+    }
+    routes
 }
 
 /// Whether a step can complete and hand control to the step below it: it has
@@ -180,27 +226,67 @@ pub(super) fn body_ends_in_route(body: &[Statement]) -> bool {
 /// (recursing through forks and loops), the `on failure` block, and outcome
 /// clauses. Substeps are excluded — their routes resolve within the parent.
 pub(super) fn collect_route_names(step: &Step) -> Vec<(&str, Span)> {
+    collect_route_refs(step)
+        .into_iter()
+        .map(|route| (route.name, route.span))
+        .collect()
+}
+
+/// Every route in a step's own surface, with provenance: body and outcome
+/// routes are success-path routes; an `on failure` route carries the
+/// compensation bindings established by the statements preceding it (a
+/// route nested inside a compensation block statement conservatively
+/// carries only the completed statements before that block).
+pub(super) fn collect_route_refs(step: &Step) -> Vec<RouteRef<'_>> {
     let mut found = Vec::new();
-    collect_from_statements(&step.body, &mut found);
+    {
+        let mut sink = |name, span| {
+            found.push(RouteRef {
+                name,
+                span,
+                failure: None,
+            });
+        };
+        collect_from_statements(&step.body, &mut sink);
+    }
     if let Some(on_failure) = &step.on_failure {
-        collect_from_statements(&on_failure.body, &mut found);
+        let mut defines = BTreeSet::new();
+        let mut origins = Origins::new();
+        for statement in &on_failure.body {
+            let snapshot_defines = defines.clone();
+            let snapshot_origins = origins.clone();
+            let mut sink = |name, span| {
+                found.push(RouteRef {
+                    name,
+                    span,
+                    failure: Some((snapshot_defines.clone(), snapshot_origins.clone())),
+                });
+            };
+            collect_from_statements(std::slice::from_ref(statement), &mut sink);
+            defined_in_statements(std::slice::from_ref(statement), &mut defines);
+            origins_in_statements(std::slice::from_ref(statement), &mut origins);
+        }
     }
     for clause in &step.outcomes {
-        found.push((clause.route.name.as_str(), clause.route.name_span));
+        found.push(RouteRef {
+            name: clause.route.name.as_str(),
+            span: clause.route.name_span,
+            failure: None,
+        });
     }
     found
 }
 
-fn collect_from_statements<'a>(statements: &'a [Statement], found: &mut Vec<(&'a str, Span)>) {
+fn collect_from_statements<'a>(statements: &'a [Statement], found: &mut impl FnMut(&'a str, Span)) {
     for statement in statements {
         match statement {
             Statement::Pipe(pipe) => {
                 if let PipeEnd::Route(target) = &pipe.end {
-                    found.push((target.name.as_str(), target.name_span));
+                    found(target.name.as_str(), target.name_span);
                 }
             }
             Statement::Route(route) => {
-                found.push((route.target.name.as_str(), route.target.name_span));
+                found(route.target.name.as_str(), route.target.name_span);
             }
             Statement::Fork(fork) => collect_from_statements(&fork.body, found),
             Statement::Loop(looped) => collect_from_statements(&looped.body, found),
