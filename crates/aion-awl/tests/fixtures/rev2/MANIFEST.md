@@ -275,6 +275,11 @@ diagnostic wording must carry both (e.g. "route cycle without a bound").
 ## loop-outcomes — loop/counting, outcome arms, routing, on failure, substeps
 
 Valid:
+- REV-3 EDITS: `backward_route_bounded_cycle.awl` carries `max max_polish_rounds visits` on
+  `check` (the input-derived-bound witness) and `ship_release_combined.awl` carries
+  `max 3 visits` on `canary` — both required by the rev-3 cycle rule; both now refuse to
+  EMIT/lower with the honest "not yet lowered" flow-shape refusal until B4 (covered → refused
+  regressions recorded in `src/mir/covered.rs` and the emitter compile-proof lists).
 - `loop-outcomes/valid/loop_counting_until_max.awl` — `loop x = seed counting n … until … max`.
 - `loop-outcomes/valid/loop_without_counting.awl` — bounded `loop x = seed … until … max`
   without a public counter (pins the scalar loop result and no-destructure call site).
@@ -392,7 +397,13 @@ Invalid:
   one rule for both argument surfaces). Type compatibility is structural for record shapes so
   a schema-projected record satisfies a declared record with the same fields (dev_brief's
   `config.lenses` items vs the declared `Lens`); display names stay nominal in diagnostics.
-  Route-cycle boundedness accepts a `max`-bounded loop on any step of the control-flow SCC
+  Route-cycle boundedness — SUPERSEDED at flow-vocabulary rev 3 (B2): a cycle is legal iff
+  a member step carries a `max … visits` re-entry bound; a `max`-bounded `loop` inside a
+  member NO LONGER satisfies the rule (the loop bounds its own iteration, not the step's
+  re-entry — the decoy-loop soundness gap, closed by design). `backward_route_bounded_cycle`
+  and `ship_release_combined` gained visits bounds to stay valid; the decoy shape is pinned
+  invalid at `flow-shape/invalid/decoy_loop_cycle.awl`. The pre-rev-3 rule, for the record,
+  accepted a `max`-bounded loop on any step of the control-flow SCC
   (route edges + fall-through edges + `after` edges — CORRECTED at the checker fix round,
   2026-07-11: a dependency's completion re-arms its dependents, so a backward route plus a
   forward `after` edge is as unbounded a cycle as two routes; the earlier narrower SCC
@@ -464,3 +475,41 @@ Invalid (all CHECK; the unterminated-raw-string lex refusal is pinned by
 - `json_invalid_body.awl` — `json { … }` body is not JSON → CHECK "not valid JSON" @8, span
   INSIDE the body.
 - `schema_of_unknown_type.awl` — `schema of Missing` → CHECK "unknown type" @6.
+
+## flow-shape — flow-vocabulary B2: subflow, distribute/sequence, collect, visits
+
+Rev-3 surface (`AWL-FLOW-VOCABULARY.md` rev 3 §1–§3, §5–§6). These fixtures parse, print
+canonically, and CHECK clean, but do NOT lower yet: `emit`/`mir::lower` answer with the honest
+spanned "not yet lowered" refusal until B4 (the corpus emit gate accepts exactly that refusal
+for them, nothing else).
+
+Valid:
+- `flow-shape/valid/dev_flow.awl` — the rev-3 §6 worked example, adapted to checkable AWL
+  (real types/worker/args for the design's ellipses): subflow `dev_item` with an in-subflow
+  bounded review loop-back (`max 3 visits`, value route payload `route out(verdict)`),
+  `distribute` region (`wave after plan` — the opener is route-targeted by `fold`, so it arms
+  via `after`), subflow-call step, tolerant `collect verdict? -> results` (`[ItemVerdict?]`),
+  and the `fold` step rebinding `state` on the visits-bounded wave cycle (the sanctioned
+  cycle-threaded rebinding). Byte-canonical.
+- `flow-shape/valid/sequence_region_loopback.awl` — `sequence` region with an in-region
+  loop-back (`visits` read in a member's guard), strict `collect` with a further statement
+  after it, and a pure decision step (`judge`).
+
+Invalid (all CHECK; one per region rule):
+- `distribute_never_collected.awl` — region opened, never closed → CHECK
+  "never reaches a `collect`" @10 (the opener's line).
+- `collect_without_region.awl` — bare collect, nothing open → CHECK "closes no region" @10.
+- `nested_region_not_closed_inside.awl` — outer + inner opener, ONE collect: bracket nesting
+  pairs it with the INNER region → CHECK "never reaches a `collect`" @14 (the OUTER opener).
+- `route_escapes_region.awl` — member routes past the collect → CHECK
+  "leaves the per-item region" @15 (route target).
+- `route_enters_region.awl` — route from outside targets a member → CHECK
+  "enters the per-item region" @14 (route target).
+- `collect_binding_not_definite.awl` — a member decision skips the producer → CHECK
+  "not definitely assigned on every success path" @27 (the collected binding).
+- `decoy_loop_cycle.awl` — the pre-rev-3 `backward_route_bounded_cycle` shape (cycle bounded
+  only by an inner loop) → CHECK "not a cycle bound" @36 (backward route target).
+- `distribute_not_alone.awl` — distribute + second statement → CHECK
+  "is its step's only line" @10.
+- `collect_not_first.awl` — collect as the second statement → CHECK
+  "`collect` opens its step" @17.

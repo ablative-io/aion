@@ -1,9 +1,13 @@
-//! Property round-trip over the flow-vocabulary B1 syntax: seeded
+//! Property round-trip over the flow-vocabulary syntax. B1: seeded
 //! pseudo-random documents mixing raw strings (single- and multi-line),
 //! `json { … }` literals (brace-in-string included), `schema of`, const
 //! references, `+` concatenations, lists, comments, and trailing comments.
-//! For every case: `print(parse(src)) == src` byte-for-byte, the reparse is
-//! an identical tree (spans included), and printing is idempotent.
+//! B2: documents mixing `subflow` declarations and calls, `distribute`/
+//! `sequence` regions, strict and tolerant `collect`s, chained regions,
+//! `max … visits` self-cycles with `visits` guards, and value route
+//! payloads — comments and trailing comments included. For every case:
+//! `print(parse(src)) == src` byte-for-byte, the reparse is an identical
+//! tree (spans included), and printing is idempotent.
 
 use std::error::Error;
 use std::fmt::Write as _;
@@ -149,6 +153,127 @@ fn document(rng: &mut Rng, case: usize, count: u64) -> String {
     let _ = writeln!(out, "step run");
     let _ = writeln!(out, "  task |> stamp |> route done");
     out
+}
+
+/// Assemble one canonical flow-shape document: an optional subflow (with
+/// an invocation step), one or two per-item regions (random verb, random
+/// tolerance), optional comments and trailing comments, and an optional
+/// `max … visits` self-cycle reading `visits` in a guard.
+fn flow_document(rng: &mut Rng, case: usize) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "//! Flow-shape property case {case}.");
+    let _ = writeln!(out, "workflow flow_case");
+    let _ = writeln!(out, "  input items: [String]");
+    let _ = writeln!(out, "  outcome done: type String, route success");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "worker w");
+    let _ = writeln!(out, "  action work(item: String) -> String");
+    let with_subflow = rng.below(2) == 0;
+    if with_subflow {
+        let _ = writeln!(out);
+        if rng.below(2) == 0 {
+            let _ = writeln!(out, "/// Handle one {}.", word(rng));
+        }
+        let trailing = if rng.below(2) == 0 {
+            format!(" // {}", word(rng))
+        } else {
+            String::new()
+        };
+        let _ = writeln!(out, "subflow handle(item: String){trailing}");
+        let _ = writeln!(out, "  outcome out: type String");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  step run");
+        let _ = writeln!(out, "    work(item: item) -> note");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "    outcome ok: otherwise, route out(note)");
+    }
+    let regions = 1 + rng.below(2);
+    for region in 0..regions {
+        let verb = if rng.below(2) == 0 {
+            "distribute"
+        } else {
+            "sequence"
+        };
+        let tolerant = if rng.below(2) == 0 { "?" } else { "" };
+        let _ = writeln!(out);
+        if rng.below(3) == 0 {
+            let _ = writeln!(out, "// region {region}: {}", word(rng));
+        }
+        let _ = writeln!(out, "step wave_{region}");
+        let trailing = if rng.below(2) == 0 {
+            format!(" // {}", word(rng))
+        } else {
+            String::new()
+        };
+        let _ = writeln!(out, "  {verb} item_{region} in items{trailing}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "step build_{region}");
+        if with_subflow && rng.below(2) == 0 {
+            let _ = writeln!(out, "  handle(item: item_{region}) -> note_{region}");
+        } else {
+            let _ = writeln!(out, "  work(item: item_{region}) -> note_{region}");
+        }
+        let _ = writeln!(out);
+        let _ = writeln!(out, "step gather_{region}");
+        let trailing = if rng.below(2) == 0 {
+            format!(" // {}", word(rng))
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "  collect note_{region}{tolerant} -> notes_{region}{trailing}"
+        );
+    }
+    let _ = writeln!(out);
+    let last = regions - 1;
+    if rng.below(2) == 0 {
+        // A visits-bounded self-cycle reading the builtin counter. The
+        // self-route makes `tail` route-targeted, so it arms via `after`.
+        let _ = writeln!(out, "step tail after gather_{last}");
+        let _ = writeln!(
+            out,
+            "  outcome again: when notes_{last} is empty and visits < 2, route tail"
+        );
+        let _ = writeln!(out, "  outcome finish: otherwise, route done(\"over\")");
+        let _ = writeln!(out, "  max 2 visits");
+    } else {
+        let _ = writeln!(out, "step tail");
+        let _ = writeln!(out, "  \"done\" |> route done");
+    }
+    out
+}
+
+#[test]
+fn generated_flow_shape_documents_round_trip_losslessly() -> TestResult {
+    let mut rng = Rng(0x5eed_b1f1_c0de_0002_u64);
+    for case in 0..150 {
+        let source = flow_document(&mut rng, case);
+        let tree = parse(&source)
+            .map_err(|error| format!("case {case} failed to parse: {error}\n{source}"))?;
+        let printed = print(&tree);
+        assert_eq!(
+            printed, source,
+            "case {case} did not round-trip byte-identically"
+        );
+        let reparsed = parse(&printed)
+            .map_err(|error| format!("case {case} failed to reparse: {error}\n{printed}"))?;
+        assert_eq!(
+            reparsed, tree,
+            "case {case}: parse -> print -> parse changed the tree"
+        );
+        assert_eq!(
+            print(&reparsed),
+            printed,
+            "case {case}: printing is not idempotent"
+        );
+        let errors = check(&tree);
+        assert!(
+            errors.is_empty(),
+            "case {case} did not check clean:\n{source}\n{errors:#?}"
+        );
+    }
+    Ok(())
 }
 
 #[test]

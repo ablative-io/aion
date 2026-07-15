@@ -1,0 +1,28 @@
+//! One success path through the region skips the producer, so the collected
+//! binding is not definitely assigned at the collect.
+workflow skipping
+  input items: [String]
+  outcome done: type String, route success
+
+type Verdict { skip: Bool }
+
+worker w
+  action triage(item: String) -> Verdict
+  action work(item: String) -> String
+
+step wave
+  distribute item in items
+
+step sift
+  triage(item: item) -> verdict
+
+  outcome pass: when verdict.skip, route gather
+  outcome work_it: otherwise, route build
+
+step build after sift
+  work(item: item) -> note
+  route gather
+
+step gather
+  collect note -> notes
+  "done" |> route done

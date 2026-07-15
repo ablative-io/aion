@@ -126,7 +126,14 @@ fn emit_outcome_return(
     }
     let info = emitter.outcomes[target.name.as_str()].clone();
     let mut prelude = Vec::new();
-    let payload = if let Some(args) = &target.payload {
+    if let Some(crate::ast::RoutePayload::Value(value)) = &target.payload {
+        return Err(EmitError::new(
+            crate::spanned::Spanned::span(value),
+            "value route payloads (`route out(<value>)`) are not yet lowered — \
+             flow-vocabulary lowering lands in B4",
+        ));
+    }
+    let payload = if let Some(crate::ast::RoutePayload::Args(args)) = &target.payload {
         // Constructed payload: the outcome type must be a record.
         let Some((gleam_name, record)) = emitter.env.record_of(&info.ty) else {
             return Err(EmitError::new(

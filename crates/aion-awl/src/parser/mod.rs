@@ -5,6 +5,7 @@ mod args;
 mod document;
 mod error;
 mod exprs;
+mod flow;
 mod hints;
 mod statements;
 mod steps;

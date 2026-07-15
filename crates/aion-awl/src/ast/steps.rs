@@ -29,6 +29,23 @@ pub struct Step {
     pub on_failure: Option<OnFailure>,
     /// Outcome clauses, evaluated in written order after the body.
     pub outcomes: Vec<OutcomeClause>,
+    /// Optional `max N visits` re-entry bound (the step-level cycle bound).
+    pub max_visits: Option<MaxVisits>,
+}
+
+/// A `max <bound> visits` step attribute: the ceiling on how many times the
+/// step may run in one workflow execution. Inside the step's outcome guards
+/// the builtin `visits` (an `Int`, 1-based) reads the current visit count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaxVisits {
+    /// Span from `max` through `visits`.
+    pub span: Span,
+    /// Leading trivia before the attribute line.
+    pub lead: Vec<Lead>,
+    /// Same-line trailing comment.
+    pub trailing: Option<Comment>,
+    /// The bound expression (checker: an `Int` over inputs and consts).
+    pub bound: Expr,
 }
 
 /// One name in a step's `after` dependency list.
@@ -61,6 +78,74 @@ pub enum Statement {
     Route(RouteStmt),
     /// A nested substep.
     SubStep(Box<Step>),
+    /// A per-item region opener: `distribute <var> in <collection>` or
+    /// `sequence <var> in <collection>` (its step's only line).
+    Distribute(DistributeStmt),
+    /// The region closer: `collect <binding>[?] -> <name>` (opens its step).
+    Collect(CollectStmt),
+}
+
+/// Delivery order of a per-item region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryVerb {
+    /// `distribute` — instances run in parallel.
+    Distribute,
+    /// `sequence` — one instance at a time, in collection order.
+    Sequence,
+}
+
+impl DeliveryVerb {
+    /// The keyword this verb is written as.
+    #[must_use]
+    pub const fn as_word(self) -> &'static str {
+        match self {
+            Self::Distribute => "distribute",
+            Self::Sequence => "sequence",
+        }
+    }
+}
+
+/// A `distribute <var> in <collection>` / `sequence <var> in <collection>`
+/// statement: opens a per-item region. Everything downstream runs once per
+/// item, with `<var>` bound, until a `collect` step merges the track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DistributeStmt {
+    /// Span from the verb keyword through the collection expression.
+    pub span: Span,
+    /// Leading trivia before the statement.
+    pub lead: Vec<Lead>,
+    /// Same-line trailing comment.
+    pub trailing: Option<Comment>,
+    /// Parallel (`distribute`) or in-order (`sequence`) delivery.
+    pub verb: DeliveryVerb,
+    /// Per-item variable name.
+    pub var: String,
+    /// Source span of the per-item variable.
+    pub var_span: Span,
+    /// Collection expression the region fans out over.
+    pub collection: Expr,
+}
+
+/// A `collect <binding>[?] -> <name>` statement: closes the nearest open
+/// per-item region, gathering each instance's `<binding>` into `<name>`.
+/// The strict form types `[T]` (any instance failing terminally fails the
+/// run); the tolerant `?` form types `[T?]`, slot per item, in item order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectStmt {
+    /// Span from `collect` through the result binding.
+    pub span: Span,
+    /// Leading trivia before the statement.
+    pub lead: Vec<Lead>,
+    /// Same-line trailing comment.
+    pub trailing: Option<Comment>,
+    /// The per-instance binding being gathered.
+    pub binding: String,
+    /// Source span of the gathered binding name.
+    pub binding_span: Span,
+    /// Whether the tolerant `?` form was written.
+    pub tolerant: bool,
+    /// The gathered-collection result binding.
+    pub bind: Binding,
 }
 
 /// An action or child call with arguments: `name(arg: expr, …)`.
@@ -195,7 +280,7 @@ pub struct PipeStmt {
 }
 
 /// A route destination: a step, a sibling/parent target, or a workflow
-/// outcome with an optional constructed payload.
+/// outcome with an optional payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteTarget {
     /// Span from the target name through the payload, when present.
@@ -204,8 +289,31 @@ pub struct RouteTarget {
     pub name: String,
     /// Source span of the target name.
     pub name_span: Span,
-    /// Optional constructed payload arguments.
-    pub payload: Option<Vec<Arg>>,
+    /// Optional payload.
+    pub payload: Option<RoutePayload>,
+}
+
+/// The payload an outcome route carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutePayload {
+    /// Constructed named fields: `route done(value: state.summary)`.
+    Args(Vec<Arg>),
+    /// A single value expression: `route out(verdict)` — the payload is the
+    /// value itself, checked assignable to the outcome's type.
+    Value(Expr),
+}
+
+impl RouteTarget {
+    /// The constructed payload arguments — empty for a bare route and for
+    /// the single-value payload form (which carries an expression, not
+    /// named fields).
+    #[must_use]
+    pub fn payload_args(&self) -> &[Arg] {
+        match &self.payload {
+            Some(RoutePayload::Args(args)) => args,
+            _ => &[],
+        }
+    }
 }
 
 /// A `wait <signal> [timeout D] -> name` statement.

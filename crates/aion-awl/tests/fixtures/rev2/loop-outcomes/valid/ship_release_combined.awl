@@ -44,6 +44,7 @@ step canary
 
   outcome healthy: when confirmation is present, route publish
   outcome unconfirmed: otherwise, route build
+  max 3 visits
 
 step publish
   publish_release(artifact: candidate.artifact) -> receipt

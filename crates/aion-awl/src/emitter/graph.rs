@@ -402,11 +402,14 @@ fn route_names_in<'a>(statements: &'a [Statement], found: &mut Vec<&'a str>) {
             Statement::Route(route) => found.push(route.target.name.as_str()),
             Statement::Fork(fork) => route_names_in(&fork.body, found),
             Statement::Loop(looped) => route_names_in(&looped.body, found),
+            // Region statements carry no routes (their step is the node).
             Statement::Call(_)
             | Statement::Spawn(_)
             | Statement::Wait(_)
             | Statement::Sleep(_)
-            | Statement::SubStep(_) => {}
+            | Statement::SubStep(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }

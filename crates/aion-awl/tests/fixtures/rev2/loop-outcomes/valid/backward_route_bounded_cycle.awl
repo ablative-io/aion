@@ -33,3 +33,4 @@ step check
   outcome approved: when verdict.approved,
     route published(body: draft.body, polish_rounds: polish_rounds)
   outcome rework: otherwise, route compose
+  max max_polish_rounds visits

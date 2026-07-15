@@ -340,6 +340,16 @@ pub(super) fn lower_statement(
             Ok(None)
         }
         Statement::SubStep(sub) => Err(LowerError::unsupported("substep", sub.name_span)),
+        // Defense in depth: the entry gate refuses the rev-3 flow shape
+        // before lowering ever starts.
+        Statement::Distribute(distribute) => Err(LowerError::unsupported(
+            "`distribute`/`sequence` regions — the rev-3 flow shape is not yet lowered (B4)",
+            distribute.span,
+        )),
+        Statement::Collect(collect) => Err(LowerError::unsupported(
+            "`collect` steps — the rev-3 flow shape is not yet lowered (B4)",
+            collect.span,
+        )),
     }
 }
 
@@ -468,7 +478,14 @@ fn outcome_payload(
     piped: Option<(Value, GType)>,
     stmts: &mut Vec<Stmt>,
 ) -> Result<Value, LowerError> {
-    if let Some(args) = &target.payload {
+    if let Some(crate::ast::RoutePayload::Value(value)) = &target.payload {
+        return Err(LowerError::unsupported(
+            "value route payloads (`route out(<value>)`) — the rev-3 flow shape is \
+             not yet lowered (B4)",
+            crate::spanned::Spanned::span(value),
+        ));
+    }
+    if let Some(crate::ast::RoutePayload::Args(args)) = &target.payload {
         let Some((gleam_name, record)) = ctx.emitter.env.record_of(outcome_ty) else {
             return Err(LowerError::new(
                 target.name_span,

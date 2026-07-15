@@ -268,6 +268,13 @@ fn parse_primary(stream: &mut Stream) -> Result<Expr, ParseError> {
             stream.next();
             Ok(Expr::Workflow { span })
         }
+        // The builtin visit counter: a reserved word that reads as a value
+        // (an `Int`) in the outcome guards of a `max … visits` step. It
+        // parses as a reference; the checker owns where it is readable.
+        TokenKind::Keyword(Keyword::Visits) => {
+            stream.next();
+            Ok(super::flow::visits_expr(span))
+        }
         TokenKind::TypeIdentifier(name) => {
             let name = name.clone();
             stream.next();

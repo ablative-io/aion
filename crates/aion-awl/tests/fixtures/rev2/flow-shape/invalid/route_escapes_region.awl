@@ -1,0 +1,22 @@
+//! A member routes past the collect: the region's only exit is its collect.
+workflow escape
+  input items: [String]
+  outcome done: type String, route success
+
+worker w
+  action work(item: String) -> String
+
+step wave
+  distribute item in items
+
+step build
+  work(item: item) -> note
+
+  outcome skip: when note == "", route after_region
+  outcome keep: otherwise, route gather
+
+step gather
+  collect note -> notes
+
+step after_region
+  "done" |> route done

@@ -1,0 +1,15 @@
+//! Distribute is its step's only line; a second statement is illegal.
+workflow crowded
+  input items: [String]
+  outcome done: type String, route success
+
+worker w
+  action work(item: String) -> String
+
+step wave
+  distribute item in items
+  work(item: item) -> note
+
+step gather
+  collect note -> notes
+  "done" |> route done

@@ -1,14 +1,16 @@
 //! Guaranteed-bindings dataflow: which names a step's surface defines, and
 //! the descending Kleene iteration that computes what is available on every
 //! path into each step (`after` dependencies contribute conjunctively,
-//! routing and fall-through predecessors disjunctively).
+//! routing and fall-through predecessors disjunctively). A `collect` step
+//! masks its region's per-instance names on the way out: only the collected
+//! result crosses the region boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Span;
 use crate::ast::{ForkHeader, PipeEnd, Statement, Step};
 
-use super::context::Ctx;
+use super::context::Flow;
 use super::graph::RouteEdge;
 
 /// Every name a step's surface binds for later steps.
@@ -48,15 +50,21 @@ fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>)
                     names.insert(counter.name.clone());
                 }
             }
+            Statement::Distribute(distribute) => {
+                names.insert(distribute.var.clone());
+            }
+            Statement::Collect(collect) => {
+                names.insert(collect.bind.name.clone());
+            }
             Statement::SubStep(sub) => defined_in_statements(&sub.body, names),
             Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
         }
     }
 }
 
-pub(super) fn universe(ctx: &Ctx<'_>) -> BTreeSet<String> {
-    let mut names: BTreeSet<String> = ctx.inputs.keys().cloned().collect();
-    for step in &ctx.doc.steps {
+pub(super) fn universe(flow: &Flow<'_>) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = flow.inputs.keys().cloned().collect();
+    for step in flow.steps {
         names.extend(defined_names(step));
     }
     names
@@ -100,6 +108,12 @@ fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
                     insert_origin(origins, &counter.name, counter.span);
                 }
             }
+            Statement::Distribute(distribute) => {
+                insert_origin(origins, &distribute.var, distribute.var_span);
+            }
+            Statement::Collect(collect) => {
+                insert_origin(origins, &collect.bind.name, collect.bind.span);
+            }
             Statement::SubStep(substep) => origins_in_statements(&substep.body, origins),
             Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
         }
@@ -119,17 +133,20 @@ fn insert_origin(origins: &mut Origins, name: &str, span: Span) {
 }
 
 /// Descending Kleene iteration for the guaranteed-bindings dataflow.
+/// `masks` subtracts a `collect` step's region-local names from its
+/// outgoing set (the per-item track is merged there).
 pub(super) fn availability(
-    ctx: &Ctx<'_>,
+    flow: &Flow<'_>,
     after: &[Vec<usize>],
     after_unknown: &[bool],
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
+    masks: &BTreeMap<usize, BTreeSet<String>>,
 ) -> (Vec<BTreeSet<String>>, Vec<Origins>) {
-    let steps = &ctx.doc.steps;
+    let steps = flow.steps;
     let count = steps.len();
-    let inputs: BTreeSet<String> = ctx.inputs.keys().cloned().collect();
-    let all = universe(ctx);
+    let inputs: BTreeSet<String> = flow.inputs.keys().cloned().collect();
+    let all = universe(flow);
     let defined: Vec<BTreeSet<String>> = steps.iter().map(defined_names).collect();
     let mut avail_in: Vec<BTreeSet<String>> = vec![all.clone(); count];
     let mut avail_out: Vec<BTreeSet<String>> = vec![all.clone(); count];
@@ -141,6 +158,11 @@ pub(super) fn availability(
             for &dep in &after[position] {
                 incoming.extend(avail_out[dep].iter().cloned());
             }
+            // An `after`-armed step has a first arrival carrying only its
+            // dependencies' guarantees: that arming is one of the paths the
+            // disjunctive meet ranges over, so a backward route into the
+            // step cannot smuggle its bindings onto the first pass.
+            let arming = (!after[position].is_empty()).then(|| incoming.clone());
             let mut disjunctive: Option<BTreeSet<String>> = None;
             let mut merge = |set: &BTreeSet<String>| {
                 disjunctive = Some(match disjunctive.take() {
@@ -150,6 +172,9 @@ pub(super) fn availability(
             };
             if position == 0 {
                 merge(&inputs);
+            }
+            if let Some(arming) = &arming {
+                merge(arming);
             }
             for edge in routes.iter().filter(|edge| edge.target == position) {
                 merge(&avail_out[edge.source]);
@@ -163,7 +188,13 @@ pub(super) fn availability(
             if after_unknown[position] {
                 incoming.clone_from(&all);
             }
-            let outgoing: BTreeSet<String> = incoming.union(&defined[position]).cloned().collect();
+            let mut passed = incoming.clone();
+            if let Some(mask) = masks.get(&position) {
+                for name in mask {
+                    passed.remove(name);
+                }
+            }
+            let outgoing: BTreeSet<String> = passed.union(&defined[position]).cloned().collect();
             if incoming != avail_in[position] {
                 avail_in[position] = incoming;
                 changed = true;
@@ -174,24 +205,33 @@ pub(super) fn availability(
             }
         }
     }
-    let origins = origin_availability(ctx, after, after_unknown, routes, fall_pred, &avail_in);
+    let origins = origin_availability(
+        flow,
+        after,
+        after_unknown,
+        routes,
+        fall_pred,
+        masks,
+        &avail_in,
+    );
     (avail_in, origins)
 }
 
 fn origin_availability(
-    ctx: &Ctx<'_>,
+    flow: &Flow<'_>,
     after: &[Vec<usize>],
     after_unknown: &[bool],
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
+    masks: &BTreeMap<usize, BTreeSet<String>>,
     avail_in: &[BTreeSet<String>],
 ) -> Vec<Origins> {
-    let count = ctx.doc.steps.len();
+    let count = flow.steps.len();
     let mut inputs = Origins::new();
-    for input in &ctx.doc.inputs {
-        insert_origin(&mut inputs, &input.name, input.name_span);
+    for (name, span) in &flow.input_origins {
+        insert_origin(&mut inputs, name, *span);
     }
-    let defined: Vec<Origins> = ctx.doc.steps.iter().map(defined_origins).collect();
+    let defined: Vec<Origins> = flow.steps.iter().map(defined_origins).collect();
     let mut origins_in: Vec<Origins> = avail_in
         .iter()
         .map(|names| names.iter().map(|name| (name.clone(), None)).collect())
@@ -205,9 +245,12 @@ fn origin_availability(
             for &dependency in &after[position] {
                 merge_origins(&mut incoming, &origins_out[dependency]);
             }
+            // The `after` arming path, mirroring `availability`.
+            let arming = (!after[position].is_empty()).then(|| incoming.clone());
             merge_disjunctive(
                 &mut incoming,
                 position,
+                arming.as_ref(),
                 routes,
                 fall_pred,
                 &inputs,
@@ -221,6 +264,11 @@ fn origin_availability(
                     .collect();
             }
             let mut outgoing = incoming.clone();
+            if let Some(mask) = masks.get(&position) {
+                for name in mask {
+                    outgoing.remove(name);
+                }
+            }
             for (name, origin) in &defined[position] {
                 outgoing.insert(name.clone(), *origin);
             }
@@ -240,6 +288,7 @@ fn origin_availability(
 fn merge_disjunctive(
     incoming: &mut Origins,
     position: usize,
+    arming: Option<&Origins>,
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
     inputs: &Origins,
@@ -248,6 +297,9 @@ fn merge_disjunctive(
     let mut paths: Vec<&Origins> = Vec::new();
     if position == 0 {
         paths.push(inputs);
+    }
+    if let Some(arming) = arming {
+        paths.push(arming);
     }
     for edge in routes.iter().filter(|edge| edge.target == position) {
         paths.push(&origins_out[edge.source]);

@@ -1,17 +1,16 @@
 //! Flow walk: statements checked in written order, bindings threaded along
-//! the graph. The walk runs three passes — two silent passes seed the global
-//! binding-type map (backward routes may read bindings declared later in the
-//! file), the final pass emits diagnostics.
+//! the graph. The walk runs three passes per flow — two silent passes seed
+//! the global binding-type map (backward routes may read bindings declared
+//! later in the file), the final pass emits diagnostics.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Span;
-use crate::ast::{CallStmt, PipeEnd, PipeStmt, RetrySpec, SpawnStmt, Statement, Step, WaitStmt};
-use crate::semantic::DeclarationKind;
+use crate::ast::{PipeEnd, PipeStmt, Statement, Step};
 
-use super::args::check_args;
-use super::blocks::{walk_fork, walk_loop};
-use super::context::Ctx;
+use super::blocks::{walk_collect, walk_distribute, walk_fork, walk_loop};
+use super::calls::{check_max_visits, walk_call, walk_spawn, walk_wait};
+use super::context::{Ctx, Flow};
 use super::exprs::View;
 use super::graph::StepGraph;
 use super::outcomes::{Env, check_clauses, check_route};
@@ -46,6 +45,8 @@ pub(super) struct LoopFrame {
 pub(super) struct Walker<'c, 'a> {
     /// Shared checking context and tables.
     pub(super) ctx: &'c mut Ctx<'a>,
+    /// The flow being walked (its steps, inputs, and outcomes).
+    pub(super) flow: &'c Flow<'a>,
     /// Bindings from the previous pass.
     pub(super) prior: Scope,
     /// Bindings collected this pass.
@@ -56,6 +57,17 @@ pub(super) struct Walker<'c, 'a> {
     pub(super) loops: Vec<LoopFrame>,
     /// Current collection-fork branch nesting depth.
     pub(super) fork_depth: usize,
+    /// Whether the step being walked is a member of a route cycle: such a
+    /// step may rebind a name that enters the cycle (the step-cycle
+    /// analogue of the loop's threaded value), keeping its type.
+    pub(super) cycle_member: bool,
+    /// Names guaranteed INTO the current step (rebind candidates).
+    pub(super) step_base: BTreeSet<String>,
+    /// Names already rebound by the current step (once per step).
+    pub(super) rebound: BTreeSet<String>,
+    /// Region-local names that fall out of scope at the current step's
+    /// `collect` (set only on collect steps).
+    pub(super) collect_mask: Option<BTreeSet<String>>,
 }
 
 impl Walker<'_, '_> {
@@ -76,20 +88,24 @@ impl Walker<'_, '_> {
     }
 }
 
-/// Run the flow walk over every step.
-pub(super) fn run(ctx: &mut Ctx<'_>, graph: &StepGraph) {
+/// Run the flow walk over every step of one flow.
+pub(super) fn run<'a>(ctx: &mut Ctx<'a>, flow: &Flow<'a>, graph: &StepGraph) {
     let mut prior = Scope::new();
     for pass in 0..3 {
         let mut walker = Walker {
             ctx,
+            flow,
             prior,
             next: Scope::new(),
             emit: pass == 2,
             loops: Vec::new(),
             fork_depth: 0,
+            cycle_member: false,
+            step_base: BTreeSet::new(),
+            rebound: BTreeSet::new(),
+            collect_mask: None,
         };
-        let doc = walker.ctx.doc;
-        for (position, step) in doc.steps.iter().enumerate() {
+        for (position, step) in flow.steps.iter().enumerate() {
             walk_step(&mut walker, graph, position, step);
         }
         prior = walker.next;
@@ -101,7 +117,7 @@ fn walk_step(w: &mut Walker<'_, '_>, graph: &StepGraph, position: usize, step: &
     if let Some(avail) = graph.avail_in.get(position) {
         for name in avail {
             let ty = w
-                .ctx
+                .flow
                 .inputs
                 .get(name)
                 .cloned()
@@ -116,6 +132,11 @@ fn walk_step(w: &mut Walker<'_, '_>, graph: &StepGraph, position: usize, step: &
             base.insert(name.clone(), ScopedTy { ty, declaration });
         }
     }
+    w.cycle_member = graph.cyclic.get(position).copied().unwrap_or(false);
+    w.step_base = base.keys().cloned().collect();
+    w.rebound.clear();
+    w.collect_mask = graph.collect_masks.get(&position).cloned();
+    check_max_visits(w, step);
     let mut scope = base.clone();
     walk_statements(w, &mut scope, &step.body, step, &Env::Top);
     if let Some(on_failure) = &step.on_failure {
@@ -217,6 +238,8 @@ fn statement_span(statement: &Statement) -> Span {
         Statement::Loop(looped) => looped.span,
         Statement::Route(route) => route.span,
         Statement::SubStep(sub) => sub.span,
+        Statement::Distribute(distribute) => distribute.span,
+        Statement::Collect(collect) => collect.span,
     }
 }
 
@@ -236,6 +259,14 @@ fn walk_statement(
         Statement::Sleep(_) => None,
         Statement::Fork(fork) => walk_fork(w, scope, fork, owner, env),
         Statement::Loop(looped) => walk_loop(w, scope, looped, owner, env),
+        Statement::Distribute(distribute) => {
+            walk_distribute(w, scope, distribute);
+            None
+        }
+        Statement::Collect(collect) => {
+            walk_collect(w, scope, collect);
+            None
+        }
         Statement::Route(route) => {
             let view = View {
                 vars: scope,
@@ -311,26 +342,75 @@ pub(super) fn insert_binding(
         );
         return;
     }
-    if scope.contains_key(name) {
+    if let Some(existing) = scope.get(name).cloned() {
+        // The second sanctioned rebinding: a step on a `max … visits` route
+        // cycle rebinds a name that enters the cycle — each visit threads
+        // the value forward (rev-3 §6: `fold` rebinds `state` and routes
+        // back to `wave`). The type must survive the cycle re-entry: the
+        // reference type is the value's type at step entry, falling back to
+        // the upstream writer seen earlier this pass (the entry type merges
+        // to `Unknown` across passes exactly when the types disagree).
+        let sanctioned = w.cycle_member && w.step_base.contains(name) && !w.rebound.contains(name);
+        if sanctioned {
+            let reference = if matches!(existing.ty, Ty::Unknown) {
+                w.next
+                    .get(name)
+                    .map(|entry| entry.ty.clone())
+                    .filter(|entry| !matches!(entry, Ty::Unknown))
+            } else {
+                Some(existing.ty.clone())
+            };
+            if let Some(reference) = &reference
+                && !assignable(&ty, reference, &w.ctx.types)
+            {
+                w.err(
+                    span,
+                    format!(
+                        "rebinding `{name}` on a route cycle must keep its type: the \
+                         cycle re-enters with {reference}, found {ty}"
+                    ),
+                );
+            }
+            w.rebound.insert(name.to_owned());
+            let kept = ScopedTy {
+                ty: reference.unwrap_or(ty),
+                declaration: Some(span),
+            };
+            scope.insert(name.to_owned(), kept.clone());
+            record_next(w, name, kept);
+            return;
+        }
         w.err(
             span,
             format!(
                 "`{name}` is already bound — bindings are single-assignment per scope \
-                 (the loop threaded value is the one sanctioned rebinding)"
+                 (the loop threaded value and a route-cycle step's re-entry rebinding \
+                 are the two sanctioned exceptions)"
             ),
         );
     }
     let value = ScopedTy {
-        ty: ty.clone(),
+        ty,
         declaration: Some(span),
     };
     scope.insert(name.to_owned(), value.clone());
+    record_next(w, name, value);
+}
+
+/// Fold a binding into the cross-pass name table, merging colliding
+/// declarations conservatively.
+fn record_next(w: &mut Walker<'_, '_>, name: &str, value: ScopedTy) {
     match w.next.get(name) {
-        Some(existing) if existing.ty != ty || existing.declaration != Some(span) => {
+        Some(existing) if existing.ty != value.ty || existing.declaration != value.declaration => {
+            let merged = if existing.ty == value.ty {
+                value.ty
+            } else {
+                Ty::Unknown
+            };
             w.next.insert(
                 name.to_owned(),
                 ScopedTy {
-                    ty: if existing.ty == ty { ty } else { Ty::Unknown },
+                    ty: merged,
                     declaration: None,
                 },
             );
@@ -339,159 +419,4 @@ pub(super) fn insert_binding(
             w.next.insert(name.to_owned(), value);
         }
     }
-}
-
-fn walk_call(w: &mut Walker<'_, '_>, scope: &mut Scope, call: &CallStmt) -> Ty {
-    let view = View {
-        vars: scope,
-        narrow: None,
-        accessor: None,
-    };
-    let name = &call.call.name;
-    let returns = match w.ctx.callable(name).cloned() {
-        None => {
-            w.err(
-                call.call.name_span,
-                format!("no action or child named `{name}` is declared"),
-            );
-            Ty::Unknown
-        }
-        Some(callable) => {
-            let (kind, declaration_kind) = if w.ctx.actions.contains_key(name) {
-                ("action", DeclarationKind::Action)
-            } else {
-                ("child", DeclarationKind::Child)
-            };
-            if w.emit {
-                w.ctx
-                    .semantic
-                    .reference(call.call.name_span, declaration_kind, name);
-                w.ctx
-                    .semantic
-                    .ty(call.call.name_span, &callable.returns.to_string());
-            }
-            let params: Vec<(String, Ty)> = callable
-                .params
-                .iter()
-                .map(|param| (param.name.clone(), param.ty.clone()))
-                .collect();
-            check_args(
-                w,
-                view,
-                &call.call.args,
-                &params,
-                &format!("{kind} `{name}`"),
-                "argument",
-                call.call.name_span,
-            );
-            callable.returns
-        }
-    };
-    if let Some(config) = &call.config {
-        if w.ctx.children.contains_key(name) {
-            w.err(
-                config.span,
-                format!(
-                    "a child call carries no call-site config — `node`/`timeout` pins \
-                     apply to worker actions, and the engine routes children, not a \
-                     queue (`{name}` is a child)"
-                ),
-            );
-        } else if let Some(retry) = &config.retry {
-            let span = match retry {
-                RetrySpec::Every { span, .. } | RetrySpec::Backoff { span, .. } => *span,
-            };
-            w.err(
-                span,
-                "a call site may pin `node` and `timeout` only — `retry` stays on the \
-                 action declaration",
-            );
-        }
-    }
-    if let Some(bind) = &call.bind {
-        insert_binding(w, scope, &bind.name, returns.clone(), bind.span);
-    }
-    returns
-}
-
-fn walk_spawn(w: &mut Walker<'_, '_>, scope: &mut Scope, spawn: &SpawnStmt) -> Option<Ty> {
-    let view = View {
-        vars: scope,
-        narrow: None,
-        accessor: None,
-    };
-    let name = &spawn.call.name;
-    if let Some(child) = w.ctx.children.get(name).cloned() {
-        if w.emit {
-            w.ctx
-                .semantic
-                .reference(spawn.call.name_span, DeclarationKind::Child, name);
-            w.ctx
-                .semantic
-                .ty(spawn.call.name_span, &child.returns.to_string());
-        }
-        let params: Vec<(String, Ty)> = child
-            .params
-            .iter()
-            .map(|param| (param.name.clone(), param.ty.clone()))
-            .collect();
-        check_args(
-            w,
-            view,
-            &spawn.call.args,
-            &params,
-            &format!("child `{name}`"),
-            "argument",
-            spawn.call.name_span,
-        );
-    } else if w.ctx.actions.contains_key(name) {
-        w.err(
-            spawn.call.name_span,
-            format!(
-                "`{name}` is a worker action — `spawn` starts a declared child \
-                 workflow; call the action directly instead"
-            ),
-        );
-    } else {
-        w.err(
-            spawn.call.name_span,
-            format!("`spawn` names an undeclared child workflow `{name}`"),
-        );
-    }
-    if let Some(bind) = &spawn.bind {
-        w.err(
-            bind.span,
-            "`spawn` is fire-and-forget — a spawned child cannot bind a result \
-             (`->` after `spawn` is an error)",
-        );
-    }
-    None
-}
-
-fn walk_wait(w: &mut Walker<'_, '_>, scope: &mut Scope, wait: &WaitStmt) -> Ty {
-    let ty = if let Some(payload) = w.ctx.signals.get(&wait.signal).cloned() {
-        if w.emit {
-            w.ctx
-                .semantic
-                .reference(wait.signal_span, DeclarationKind::Signal, &wait.signal);
-            w.ctx.semantic.ty(wait.signal_span, &payload.to_string());
-        }
-        payload
-    } else {
-        w.err(
-            wait.signal_span,
-            format!(
-                "no signal named `{}` is declared in the workflow header",
-                wait.signal
-            ),
-        );
-        Ty::Unknown
-    };
-    let bound = if wait.timeout.is_some() {
-        ty.optional()
-    } else {
-        ty
-    };
-    insert_binding(w, scope, &wait.bind.name, bound.clone(), wait.bind.span);
-    bound
 }

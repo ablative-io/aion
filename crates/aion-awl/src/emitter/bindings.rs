@@ -71,22 +71,23 @@ fn collect_step(
     collect_statements(emitter, &step.body, &mut local, discovered);
 }
 
+fn define(
+    name: &str,
+    ty: GType,
+    span: Span,
+    local: &mut Scope,
+    discovered: &mut Vec<(String, GType, Span)>,
+) {
+    local.entry(name.to_owned()).or_insert_with(|| ty.clone());
+    discovered.push((name.to_owned(), ty, span));
+}
+
 fn collect_statements(
     emitter: &Emitter<'_>,
     statements: &[Statement],
     local: &mut Scope,
     discovered: &mut Vec<(String, GType, Span)>,
 ) {
-    fn define(
-        name: &str,
-        ty: GType,
-        span: Span,
-        local: &mut Scope,
-        discovered: &mut Vec<(String, GType, Span)>,
-    ) {
-        local.entry(name.to_owned()).or_insert_with(|| ty.clone());
-        discovered.push((name.to_owned(), ty, span));
-    }
     for statement in statements {
         match statement {
             Statement::Call(call) => {
@@ -176,7 +177,13 @@ fn collect_statements(
             Statement::SubStep(sub) => {
                 collect_statements(emitter, &sub.body, local, discovered);
             }
-            Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
+            // Rev-3 region statements never reach the emitter (refused at
+            // the entry gate before planning).
+            Statement::Spawn(_)
+            | Statement::Sleep(_)
+            | Statement::Route(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }

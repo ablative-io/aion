@@ -74,6 +74,7 @@ pub fn parse(source: &str) -> Result<Document, ParseError> {
         types: Vec::new(),
         workers: Vec::new(),
         children: Vec::new(),
+        subflows: Vec::new(),
         steps: Vec::new(),
         epilogue: Vec::new(),
     };
@@ -372,6 +373,12 @@ fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<()
                     .children
                     .push(parse_child(stream, lead, docs, span)?);
             }
+            TokenKind::Keyword(Keyword::Subflow) => {
+                stream.next();
+                document
+                    .subflows
+                    .push(super::flow::parse_subflow(stream, lead, docs, span)?);
+            }
             TokenKind::Keyword(Keyword::Step) => {
                 stream.next();
                 document.steps.push(parse_step(stream, lead, docs, span)?);
@@ -379,8 +386,8 @@ fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<()
             TokenKind::Identifier(word) => {
                 let message = gone_keyword_hint(word).unwrap_or_else(|| {
                     format!(
-                        "expected a `const`, `type`, `worker`, `child`, or `step` declaration, \
-                         found `{word}`"
+                        "expected a `const`, `type`, `worker`, `child`, `subflow`, or `step` \
+                         declaration, found `{word}`"
                     )
                 });
                 return Err(ParseError::new(span, message));
@@ -389,8 +396,8 @@ fn parse_declarations(stream: &mut Stream, document: &mut Document) -> Result<()
                 return Err(ParseError::new(
                     span,
                     format!(
-                        "expected a `const`, `type`, `worker`, `child`, or `step` declaration, \
-                         found {}",
+                        "expected a `const`, `type`, `worker`, `child`, `subflow`, or `step` \
+                         declaration, found {}",
                         describe(other)
                     ),
                 ));

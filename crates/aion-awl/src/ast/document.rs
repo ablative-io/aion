@@ -35,6 +35,8 @@ pub struct Document {
     pub workers: Vec<WorkerDecl>,
     /// `child` workflow declarations in source order.
     pub children: Vec<ChildDecl>,
+    /// `subflow` declarations in source order.
+    pub subflows: Vec<SubflowDecl>,
     /// `step` declarations in source order.
     pub steps: Vec<Step>,
     /// Trailing trivia at the very end of the document.
@@ -351,6 +353,51 @@ pub enum RetrySpec {
         /// Maximum backoff delay.
         max: DurationLiteral,
     },
+}
+
+/// A `subflow name(params…)` declaration: a named flow container with the
+/// same anatomy as a workflow — typed inputs (the parameters), exactly one
+/// success outcome, and its own steps. Used, it is one step; it compiles
+/// inline and captures nothing from the enclosing flow (parameters only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubflowDecl {
+    /// Span covering the `subflow` header line.
+    pub span: Span,
+    /// Leading trivia before the declaration.
+    pub lead: Vec<Lead>,
+    /// `///` doc lines attached to the declaration.
+    pub docs: Vec<DocLine>,
+    /// Same-line trailing comment on the header.
+    pub trailing: Option<Comment>,
+    /// Subflow name.
+    pub name: String,
+    /// Source span of the subflow name.
+    pub name_span: Span,
+    /// Typed parameters in source order.
+    pub params: Vec<ParamDecl>,
+    /// The single success outcome the subflow's steps route to.
+    pub outcome: SubflowOutcome,
+    /// `step` declarations in source order.
+    pub steps: Vec<Step>,
+}
+
+/// The one `outcome name: type T` declaration of a subflow. Unlike a
+/// workflow outcome it carries no `route success|failure` direction: the
+/// invocation site binds the payload and the enclosing flow routes on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubflowOutcome {
+    /// Span covering the declaration line.
+    pub span: Span,
+    /// Leading trivia before the declaration.
+    pub lead: Vec<Lead>,
+    /// Same-line trailing comment.
+    pub trailing: Option<Comment>,
+    /// Outcome name.
+    pub name: String,
+    /// Source span of the outcome name.
+    pub name_span: Span,
+    /// Payload type the outcome carries.
+    pub ty: TypeRef,
 }
 
 /// A `child name(params…) -> Type` workflow delegation declaration.

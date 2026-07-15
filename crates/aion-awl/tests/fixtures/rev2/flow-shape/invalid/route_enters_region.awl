@@ -1,0 +1,25 @@
+//! A route from outside the region enters it mid-track: the only entry is
+//! the distribute step.
+workflow intrude
+  input items: [String]
+  outcome done: type String, route success
+
+worker w
+  action check(note: String) -> String
+  action work(item: String) -> String
+
+step plan
+  check(note: "x") -> extra
+
+  outcome jump: when extra == "", route build
+  outcome go: otherwise, route wave
+
+step wave
+  distribute item in items
+
+step build after wave
+  work(item: item) -> note
+
+step gather
+  collect note -> notes
+  "done" |> route done

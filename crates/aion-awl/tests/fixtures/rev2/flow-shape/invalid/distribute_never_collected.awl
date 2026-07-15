@@ -1,0 +1,14 @@
+//! A region opened and never closed: every region ends in a collect.
+workflow leak
+  input items: [String]
+  outcome done: type String, route success
+
+worker w
+  action work(item: String) -> String
+
+step wave
+  distribute item in items
+
+step build
+  work(item: item) -> note
+  note |> route done

@@ -47,10 +47,17 @@ pub(super) fn parse_step(
     let mut body = Vec::new();
     let mut on_failure = None;
     let mut outcomes = Vec::new();
+    let mut max_visits = None;
     let outer_leads = stream.take_leads()?;
     if stream.open_block() {
         stream.push_back_leads(outer_leads);
-        parse_step_block(stream, &mut body, &mut on_failure, &mut outcomes)?;
+        parse_step_block(
+            stream,
+            &mut body,
+            &mut on_failure,
+            &mut outcomes,
+            &mut max_visits,
+        )?;
         let stray = stream.take_leads()?;
         stream.consume_block_dedent();
         stream.push_back_leads(stray);
@@ -69,6 +76,7 @@ pub(super) fn parse_step(
         body,
         on_failure,
         outcomes,
+        max_visits,
     })
 }
 
@@ -78,6 +86,7 @@ fn parse_step_block(
     body: &mut Vec<Statement>,
     on_failure: &mut Option<OnFailure>,
     outcomes: &mut Vec<OutcomeClause>,
+    max_visits: &mut Option<crate::ast::MaxVisits>,
 ) -> Result<(), ParseError> {
     loop {
         let lead = stream.take_leads()?;
@@ -96,6 +105,17 @@ fn parse_step_block(
                 reject_docs(&docs, "an outcome clause")?;
                 stream.next();
                 outcomes.push(parse_outcome_clause(stream, lead, token_span)?);
+            }
+            TokenKind::Keyword(Keyword::Max) => {
+                reject_docs(&docs, "a `max … visits` bound")?;
+                stream.next();
+                if max_visits.is_some() {
+                    return Err(ParseError::new(
+                        token_span,
+                        "a step declares `max … visits` once",
+                    ));
+                }
+                *max_visits = Some(super::flow::parse_max_visits(stream, lead, token_span)?);
             }
             TokenKind::Keyword(Keyword::On) => {
                 reject_docs(&docs, "an `on failure` block")?;

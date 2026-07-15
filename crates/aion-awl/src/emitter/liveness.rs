@@ -215,10 +215,8 @@ impl Liveness<'_, '_> {
             .find(|clause| clause.name == target.name)
         {
             let mut refs = BTreeSet::new();
-            if let Some(payload) = &clause.route.payload {
-                for arg in payload {
-                    expr_refs(&arg.value, &mut refs);
-                }
+            for arg in clause.route.payload_args() {
+                expr_refs(&arg.value, &mut refs);
             }
             for name in refs {
                 if !self.nodes[sub_id].defs.contains(&name) {
@@ -245,10 +243,8 @@ impl Liveness<'_, '_> {
         if let crate::ast::Guard::When { expr, .. } = &clause.guard {
             expr_refs(expr, &mut refs);
         }
-        if let Some(payload) = &clause.route.payload {
-            for arg in payload {
-                expr_refs(&arg.value, &mut refs);
-            }
+        for arg in clause.route.payload_args() {
+            expr_refs(&arg.value, &mut refs);
         }
         if clause.route.payload.is_none()
             && self
@@ -314,7 +310,12 @@ impl Liveness<'_, '_> {
                 Statement::Fork(fork) => self.collect_fork(fork, node, defined),
                 Statement::Loop(looped) => self.collect_loop(looped, node, defined),
                 Statement::Route(route) => self.collect_route(route, node, defined),
-                Statement::Sleep(_) | Statement::SubStep(_) => {}
+                // Rev-3 region statements never reach the emitter (refused
+                // at the entry gate before planning).
+                Statement::Sleep(_)
+                | Statement::SubStep(_)
+                | Statement::Distribute(_)
+                | Statement::Collect(_) => {}
             }
         }
         // Names defined here are defs of the node.
@@ -342,10 +343,8 @@ impl Liveness<'_, '_> {
                 defined.insert(binding.name.clone());
             }
             PipeEnd::Route(target) => {
-                if let Some(payload) = &target.payload {
-                    for arg in payload {
-                        self.add_expr(&arg.value, node, defined);
-                    }
+                for arg in target.payload_args() {
+                    self.add_expr(&arg.value, node, defined);
                 }
                 if let Some(callee) = self.resolver.step_route(&target.name) {
                     self.nodes[node].callees.insert(callee);
@@ -409,10 +408,8 @@ impl Liveness<'_, '_> {
         node: usize,
         defined: &mut BTreeSet<String>,
     ) {
-        if let Some(payload) = &route.target.payload {
-            for arg in payload {
-                self.add_expr(&arg.value, node, defined);
-            }
+        for arg in route.target.payload_args() {
+            self.add_expr(&arg.value, node, defined);
         }
         if route.target.payload.is_none()
             && self
@@ -447,7 +444,9 @@ fn collect_route_targets<'a>(
             | Statement::Spawn(_)
             | Statement::Wait(_)
             | Statement::Sleep(_)
-            | Statement::SubStep(_) => {}
+            | Statement::SubStep(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }

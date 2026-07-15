@@ -134,7 +134,7 @@ pub(super) fn parse_child(
     })
 }
 
-fn parse_params(stream: &mut Stream, what: &str) -> Result<Vec<ParamDecl>, ParseError> {
+pub(super) fn parse_params(stream: &mut Stream, what: &str) -> Result<Vec<ParamDecl>, ParseError> {
     stream.expect(
         &TokenKind::LeftParen,
         "expected `(` to open the parameter list",

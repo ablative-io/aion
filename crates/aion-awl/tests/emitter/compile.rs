@@ -28,17 +28,23 @@ fn flagship_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
     )
 }
 
-/// Loop/fork-heavy compile proof: the combined fixtures exercising loops,
-/// counters, forks in all three forms, waits, routes, and compensation all
-/// build under real `gleam build`.
+/// Loop/fork-heavy compile proof: fixtures exercising loops, counters,
+/// forks in all three forms, waits, and routes all build under real
+/// `gleam build`. (`ship_release_combined` left this set at rev 3: its
+/// build/canary cycle now carries a `max … visits` bound, which refuses to
+/// emit until B4 lowers the flow shape.)
 #[test]
 fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
     compile_generated_modules(
         "loop_fork",
         &[
             (
-                "ship_release",
-                emitted_fixture("loop-outcomes/valid/ship_release_combined.awl")?,
+                "guard_optional_wait",
+                emitted_fixture("loop-outcomes/valid/guard_optional_wait.awl")?,
+            ),
+            (
+                "loop_counting_until_max",
+                emitted_fixture("loop-outcomes/valid/loop_counting_until_max.awl")?,
             ),
             (
                 "release_pipeline",
@@ -65,10 +71,9 @@ fn loop_and_fork_fixtures_compile_under_gleam() -> Result<(), Box<dyn Error>> {
                 emitted_fixture("dag-fork/valid/fork_named_homogeneous.awl")?,
             ),
             ("archived_awl_exam", emitted_archived_exam()?),
-            (
-                "backward_route",
-                emitted_fixture("loop-outcomes/valid/backward_route_bounded_cycle.awl")?,
-            ),
+            // `backward_route_bounded_cycle` left this set at rev 3 with
+            // `ship_release_combined`: its cycle now carries the
+            // `max … visits` bound, which refuses to emit until B4.
             (
                 "compound_until_nested",
                 emitted_fixture("loop-outcomes/valid/loop_compound_until_nested.awl")?,

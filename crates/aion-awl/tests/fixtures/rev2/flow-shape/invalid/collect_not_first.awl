@@ -1,0 +1,18 @@
+//! Collect opens its step: it must be the first statement.
+workflow late
+  input items: [String]
+  outcome done: type String, route success
+
+worker w
+  action work(item: String) -> String
+
+step wave
+  distribute item in items
+
+step build
+  work(item: item) -> note
+
+step gather
+  work(item: "x") -> extra
+  collect note -> notes
+  "done" |> route done
