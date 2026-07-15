@@ -1,5 +1,5 @@
 /// A byte and display-position range in the source document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Span {
     /// Zero-based byte offset where the span starts.
     pub start: usize,

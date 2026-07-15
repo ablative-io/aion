@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ast::{Statement, Step};
 
 use super::context::Ctx;
-use super::graph::{Provenance, RouteEdge, collect_route_names, falls_through};
+use super::graph::{
+    Provenance, RouteEdge, collect_route_names, falls_through, find_after_cycle, report_after_cycle,
+};
 
 /// Report unbounded cycles; returns per-step membership of ANY cycle (used
 /// by the flow walk to sanction cycle-threaded rebinding).
@@ -204,6 +206,32 @@ fn check_sibling_group(ctx: &mut Ctx<'_>, siblings: &[&Step]) {
     for (position, sibling) in siblings.iter().enumerate() {
         index.entry(sibling.name.as_str()).or_insert(position);
     }
+    // Resolve `after` targets within the sibling scope, exactly as the
+    // top-level graph pass does — unknown names are defects, and the
+    // dependency edges join the cycle analysis below.
+    let mut after: Vec<Vec<usize>> = vec![Vec::new(); siblings.len()];
+    for (position, sibling) in siblings.iter().enumerate() {
+        for dependency in &sibling.after {
+            if let Some(&target) = index.get(dependency.name.as_str()) {
+                ctx.semantic
+                    .reference_to(dependency.span, Some(siblings[target].name_span));
+                after[position].push(target);
+            } else {
+                ctx.error(
+                    dependency.span,
+                    format!(
+                        "step `{}` declares `after {}`, but no step named `{}` exists \
+                         among its sibling substeps",
+                        sibling.name, dependency.name, dependency.name
+                    ),
+                );
+            }
+        }
+    }
+    if let Some(cycle) = find_after_cycle(&after) {
+        report_after_cycle(ctx, siblings, &cycle);
+        return;
+    }
     let mut routes: Vec<RouteEdge> = Vec::new();
     for (position, sibling) in siblings.iter().enumerate() {
         for (name, span) in collect_route_names(sibling) {
@@ -223,11 +251,13 @@ fn check_sibling_group(ctx: &mut Ctx<'_>, siblings: &[&Step]) {
     }
     let mut fall_pred: Vec<Option<usize>> = vec![None; siblings.len()];
     for position in 1..siblings.len() {
-        if !route_targeted[position] && falls_through(siblings[position - 1]) {
+        if after[position].is_empty()
+            && !route_targeted[position]
+            && falls_through(siblings[position - 1])
+        {
             fall_pred[position] = Some(position - 1);
         }
     }
-    let after: Vec<Vec<usize>> = vec![Vec::new(); siblings.len()];
     check_route_cycles(ctx, siblings, &after, &routes, &fall_pred);
 }
 

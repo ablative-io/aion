@@ -56,7 +56,12 @@ fn statements_unlowered(statements: &[Statement]) -> Option<(Span, &'static str)
             },
             Statement::Fork(fork) => statements_unlowered(&fork.body),
             Statement::Loop(looped) => statements_unlowered(&looped.body),
-            Statement::SubStep(sub) => step_unlowered(sub),
+            Statement::SubStep(sub) => match sub.after.first() {
+                // The emitter drops nested `after` on the floor today —
+                // refusing is honest; lowering it faithfully is future work.
+                Some(dependency) => Some((dependency.span, "`after` dependencies on substeps")),
+                None => step_unlowered(sub),
+            },
             Statement::Call(_) | Statement::Spawn(_) | Statement::Wait(_) | Statement::Sleep(_) => {
                 None
             }

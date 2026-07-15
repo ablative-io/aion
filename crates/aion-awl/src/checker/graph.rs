@@ -122,7 +122,8 @@ pub(super) fn build(ctx: &mut Ctx<'_>, flow: &Flow<'_>) -> StepGraph {
     }
 
     if let Some(cycle) = find_after_cycle(&after) {
-        report_after_cycle(ctx, steps, &cycle);
+        let step_refs: Vec<&Step> = steps.iter().collect();
+        report_after_cycle(ctx, &step_refs, &cycle);
         return StepGraph {
             avail_in: vec![universe(flow); count],
             origins_in: vec![Origins::new(); count],
@@ -301,7 +302,7 @@ fn collect_from_statements<'a>(statements: &'a [Statement], found: &mut impl FnM
     }
 }
 
-fn find_after_cycle(after: &[Vec<usize>]) -> Option<Vec<usize>> {
+pub(super) fn find_after_cycle(after: &[Vec<usize>]) -> Option<Vec<usize>> {
     // Three-color depth-first search over the `after` edges.
     const WHITE: u8 = 0;
     const GRAY: u8 = 1;
@@ -340,7 +341,7 @@ fn find_after_cycle(after: &[Vec<usize>]) -> Option<Vec<usize>> {
     None
 }
 
-fn report_after_cycle(ctx: &mut Ctx<'_>, steps: &[Step], cycle: &[usize]) {
+pub(super) fn report_after_cycle(ctx: &mut Ctx<'_>, steps: &[&Step], cycle: &[usize]) {
     let Some(&anchor) = cycle.iter().min() else {
         return;
     };

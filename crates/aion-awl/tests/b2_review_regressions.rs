@@ -379,10 +379,13 @@ step build_a after sift\n\
 step gather\n\
 \x20 collect value -> values\n\
 \x20 \"done\" |> route done\n";
+    // The two `value` writes JOIN at `gather` (both branches route there),
+    // so the round-2 join-aware rule reports the conflict at the joining
+    // step rather than at the second write.
     assert_error_at(
         source,
-        "one type per binding name",
-        "value\n\x20 route gather\n\nstep gather",
+        "paths that join must agree on a binding's type",
+        "gather\n\x20 collect",
     )
 }
 

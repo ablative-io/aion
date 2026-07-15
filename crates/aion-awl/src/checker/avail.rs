@@ -70,9 +70,44 @@ pub(super) fn universe(flow: &Flow<'_>) -> BTreeSet<String> {
     names
 }
 
-/// Unique declaration origins for names; `None` represents a merge of
-/// distinct declarations with the same name.
-pub(super) type Origins = BTreeMap<String, Option<Span>>;
+/// Where a name's value can come from at a program point: the set of
+/// declaration sites still distinguishable, or `Unknown` when the origin is
+/// unrecoverable (ambiguous writes within one step, unresolved `after`
+/// resets, fixpoint seeds). A `Known` set with several members marks a real
+/// graph join of distinct declarations — the walk reconciles their types
+/// there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OriginSet {
+    /// The declaration sites this name can arrive from.
+    Known(BTreeSet<Span>),
+    /// Ambiguous beyond recovery; absorbs every merge.
+    Unknown,
+}
+
+impl OriginSet {
+    fn single(span: Span) -> Self {
+        Self::Known(BTreeSet::from([span]))
+    }
+
+    /// The unique declaration site, when exactly one remains.
+    pub(super) fn unique(&self) -> Option<Span> {
+        match self {
+            Self::Known(spans) if spans.len() == 1 => spans.first().copied(),
+            _ => None,
+        }
+    }
+
+    /// The distinguishable declaration sites at a join (two or more).
+    pub(super) fn joined(&self) -> Option<&BTreeSet<Span>> {
+        match self {
+            Self::Known(spans) if spans.len() > 1 => Some(spans),
+            _ => None,
+        }
+    }
+}
+
+/// Declaration origins for names in scope at a program point.
+pub(super) type Origins = BTreeMap<String, OriginSet>;
 
 fn defined_origins(step: &Step) -> Origins {
     let mut origins = Origins::new();
@@ -121,13 +156,15 @@ pub(super) fn origins_in_statements(statements: &[Statement], origins: &mut Orig
 }
 
 fn insert_origin(origins: &mut Origins, name: &str, span: Span) {
+    // Two writes of one name WITHIN a step are sequential (last wins), not
+    // a graph join — the origin is ambiguous, never a reconciliation site.
     match origins.get(name) {
-        Some(Some(existing)) if *existing == span => {}
+        Some(OriginSet::Known(spans)) if spans.len() == 1 && spans.contains(&span) => {}
         Some(_) => {
-            origins.insert(name.to_owned(), None);
+            origins.insert(name.to_owned(), OriginSet::Unknown);
         }
         None => {
-            origins.insert(name.to_owned(), Some(span));
+            origins.insert(name.to_owned(), OriginSet::single(span));
         }
     }
 }
@@ -244,7 +281,12 @@ fn origin_availability(
     let defined: Vec<Origins> = flow.steps.iter().map(defined_origins).collect();
     let mut origins_in: Vec<Origins> = avail_in
         .iter()
-        .map(|names| names.iter().map(|name| (name.clone(), None)).collect())
+        .map(|names| {
+            names
+                .iter()
+                .map(|name| (name.clone(), OriginSet::Unknown))
+                .collect()
+        })
         .collect();
     let mut origins_out = origins_in.clone();
     let mut changed = true;
@@ -273,7 +315,7 @@ fn origin_availability(
             if after_unknown[position] {
                 incoming = avail_in[position]
                     .iter()
-                    .map(|name| (name.clone(), None))
+                    .map(|name| (name.clone(), OriginSet::Unknown))
                     .collect();
             }
             let mut outgoing = incoming.clone();
@@ -283,7 +325,7 @@ fn origin_availability(
                 }
             }
             for (name, origin) in &defined[position] {
-                outgoing.insert(name.clone(), *origin);
+                outgoing.insert(name.clone(), origin.clone());
             }
             if incoming != origins_in[position] {
                 origins_in[position] = incoming;
@@ -337,30 +379,46 @@ fn merge_disjunctive(
         return;
     };
     for name in first_path.keys() {
-        if paths[1..].iter().all(|path| path.contains_key(name)) {
-            let first = first_path.get(name).copied().flatten();
-            let same = paths[1..]
-                .iter()
-                .all(|path| path.get(name).copied().flatten() == first);
-            merge_origin(incoming, name, if same { first } else { None });
+        if !paths[1..].iter().all(|path| path.contains_key(name)) {
+            continue;
         }
+        // Union the declaration sites across the alternative paths; any
+        // ambiguous contribution makes the whole join ambiguous.
+        let mut union = OriginSet::Known(BTreeSet::new());
+        for path in &paths {
+            union = match (&union, path.get(name)) {
+                (OriginSet::Known(existing), Some(OriginSet::Known(incoming))) => {
+                    let mut spans = existing.clone();
+                    spans.extend(incoming.iter().copied());
+                    OriginSet::Known(spans)
+                }
+                _ => OriginSet::Unknown,
+            };
+            if union == OriginSet::Unknown {
+                break;
+            }
+        }
+        merge_origin(incoming, name, &union);
     }
 }
 
 fn merge_origins(target: &mut Origins, source: &Origins) {
     for (name, origin) in source {
-        merge_origin(target, name, *origin);
+        merge_origin(target, name, origin);
     }
 }
 
-fn merge_origin(target: &mut Origins, name: &str, origin: Option<Span>) {
-    match target.get(name) {
-        Some(existing) if *existing != origin => {
-            target.insert(name.to_owned(), None);
+fn merge_origin(target: &mut Origins, name: &str, origin: &OriginSet) {
+    match (target.get_mut(name), origin) {
+        (Some(OriginSet::Known(existing)), OriginSet::Known(incoming)) => {
+            existing.extend(incoming.iter().copied());
         }
-        Some(_) => {}
-        None => {
-            target.insert(name.to_owned(), origin);
+        (Some(existing @ OriginSet::Known(_)), OriginSet::Unknown) => {
+            *existing = OriginSet::Unknown;
+        }
+        (Some(OriginSet::Unknown), _) => {}
+        (None, _) => {
+            target.insert(name.to_owned(), origin.clone());
         }
     }
 }

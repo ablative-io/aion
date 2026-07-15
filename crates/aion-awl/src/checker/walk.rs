@@ -51,6 +51,10 @@ pub(super) struct Walker<'c, 'a> {
     pub(super) prior: Scope,
     /// Bindings collected this pass.
     pub(super) next: Scope,
+    /// Every write's type keyed by its declaration site — the join
+    /// reconciliation reads incoming types per origin, so disjoint reuses
+    /// of one name never contaminate each other.
+    pub(super) by_decl: BTreeMap<(String, Span), Ty>,
     /// Whether diagnostics are recorded (final pass only).
     pub(super) emit: bool,
     /// Stack of active loops.
@@ -93,12 +97,14 @@ impl Walker<'_, '_> {
 /// Run the flow walk over every step of one flow.
 pub(super) fn run<'a>(ctx: &mut Ctx<'a>, flow: &Flow<'a>, graph: &StepGraph) {
     let mut prior = Scope::new();
+    let mut by_decl: BTreeMap<(String, Span), Ty> = BTreeMap::new();
     for pass in 0..3 {
         let mut walker = Walker {
             ctx,
             flow,
             prior,
             next: Scope::new(),
+            by_decl,
             emit: pass == 2,
             loops: Vec::new(),
             fork_depth: 0,
@@ -112,6 +118,7 @@ pub(super) fn run<'a>(ctx: &mut Ctx<'a>, flow: &Flow<'a>, graph: &StepGraph) {
             walk_step(&mut walker, graph, position, step);
         }
         prior = walker.next;
+        by_decl = walker.by_decl;
     }
 }
 
@@ -119,19 +126,18 @@ fn walk_step(w: &mut Walker<'_, '_>, graph: &StepGraph, position: usize, step: &
     let mut base = Scope::new();
     if let Some(avail) = graph.avail_in.get(position) {
         for name in avail {
+            let origin = graph
+                .origins_in
+                .get(position)
+                .and_then(|origins| origins.get(name));
+            let declaration = origin.and_then(super::avail::OriginSet::unique);
             let ty = w
                 .flow
                 .inputs
                 .get(name)
                 .cloned()
-                .or_else(|| w.prior.get(name).map(|value| value.ty.clone()))
+                .or_else(|| entry_ty(w, step, name, origin, declaration))
                 .unwrap_or(Ty::Unknown);
-            let declaration = graph
-                .origins_in
-                .get(position)
-                .and_then(|origins| origins.get(name))
-                .copied()
-                .flatten();
             base.insert(name.clone(), ScopedTy { ty, declaration });
         }
     }
@@ -402,33 +408,77 @@ pub(super) fn insert_binding(
     record_next(w, name, value, span);
 }
 
-/// Fold a binding into the cross-pass name table. Colliding declarations
-/// with the SAME type merge losslessly; two concrete, structurally
-/// different types for one name are a defect — paths that rejoin would
-/// disagree on the binding's type — reported at the later write instead of
-/// silently degrading to `Unknown`.
-fn record_next(w: &mut Walker<'_, '_>, name: &str, value: ScopedTy, span: Span) {
-    match w.next.get(name).cloned() {
-        Some(existing) if existing.ty != value.ty || existing.declaration != value.declaration => {
-            let both_concrete =
-                !matches!(existing.ty, Ty::Unknown) && !matches!(value.ty, Ty::Unknown);
-            if both_concrete && !same_ty(&existing.ty, &value.ty, &w.ctx.types) {
-                let step = w.step_name.clone();
+/// The type a name carries INTO a step, resolved per declaration origin.
+/// A unique origin reads its own write's type (disjoint reuses of one name
+/// never contaminate each other); a genuine graph join reconciles the
+/// incoming origins' types — structurally equal types keep a concrete
+/// representative, incompatible concrete types are a defect reported at the
+/// joining step.
+fn entry_ty(
+    w: &mut Walker<'_, '_>,
+    step: &Step,
+    name: &str,
+    origin: Option<&super::avail::OriginSet>,
+    declaration: Option<Span>,
+) -> Option<Ty> {
+    if let Some(declaration) = declaration {
+        return w
+            .by_decl
+            .get(&(name.to_owned(), declaration))
+            .cloned()
+            .or_else(|| w.prior.get(name).map(|value| value.ty.clone()));
+    }
+    if let Some(joined) = origin.and_then(super::avail::OriginSet::joined) {
+        let incoming: Vec<Ty> = joined
+            .iter()
+            .filter_map(|site| w.by_decl.get(&(name.to_owned(), *site)).cloned())
+            .filter(|ty| !matches!(ty, Ty::Unknown))
+            .collect();
+        if let Some(first) = incoming.first() {
+            if let Some(conflicting) = incoming
+                .iter()
+                .find(|candidate| !same_ty(candidate, first, &w.ctx.types))
+            {
+                let step_name = step.name.clone();
                 w.err(
-                    span,
+                    step.name_span,
                     format!(
-                        "`{name}` is bound as {} on one path and as {} on another — \
-                         one type per binding name across a flow's paths (this \
-                         rebinding is in step `{step}`)",
-                        existing.ty, value.ty
+                        "`{name}` reaches step `{step_name}` as {first} on one path \
+                         and as {conflicting} on another — paths that join must \
+                         agree on a binding's type"
                     ),
                 );
+                return Some(Ty::Unknown);
             }
-            let merged = if existing.ty == value.ty {
-                value.ty
-            } else {
-                Ty::Unknown
-            };
+            return Some(first.clone());
+        }
+    }
+    w.prior.get(name).map(|value| value.ty.clone())
+}
+
+/// Fold a binding into the cross-pass name table — a conservative fallback
+/// for names whose origin is ambiguous; per-origin types live in `by_decl`
+/// and joins reconcile through `entry_ty`.
+fn record_next(w: &mut Walker<'_, '_>, name: &str, value: ScopedTy, span: Span) {
+    let _ = span;
+    if let Some(declaration) = value.declaration {
+        w.by_decl
+            .insert((name.to_owned(), declaration), value.ty.clone());
+    }
+    match w.next.get(name).cloned() {
+        Some(existing) if existing.ty != value.ty || existing.declaration != value.declaration => {
+            // The flow-wide cache is a conservative fallback only — real
+            // reconciliation happens per origin at graph joins (`entry_ty`).
+            // Structurally equal spellings keep a concrete representative;
+            // genuinely different types degrade to `Unknown` here without a
+            // diagnostic, because disjoint paths may legally reuse a name
+            // (single assignment is per SCOPE, joined only by graph flow).
+            let merged =
+                if existing.ty == value.ty || same_ty(&existing.ty, &value.ty, &w.ctx.types) {
+                    existing.ty
+                } else {
+                    Ty::Unknown
+                };
             w.next.insert(
                 name.to_owned(),
                 ScopedTy {
