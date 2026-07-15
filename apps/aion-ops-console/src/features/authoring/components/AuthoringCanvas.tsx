@@ -12,6 +12,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
+import { edgeLabel, nodeSize } from '../lib/canvas-layout';
 import type { AwlDiagnostic, AwlDocument, EditResult, GestureOperation } from '../lib/facade';
 import { authoringFacade } from '../lib/facade';
 import { diagnosticsByStep } from '../lib/projection';
@@ -50,6 +51,7 @@ export function AuthoringCanvas({
   mode = 'edit',
 }: AuthoringCanvasProps) {
   const [layout, setLayout] = useState<LayoutRecord>({ positions: {} });
+  const [expandedSubflows, setExpandedSubflows] = useState<ReadonlySet<string>>(new Set());
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [gestureError, setGestureError] = useState<string | null>(null);
   const [gestureWorking, setGestureWorking] = useState(false);
@@ -91,6 +93,20 @@ export function AuthoringCanvas({
     [migrateStepLayout, onGesture]
   );
 
+  const toggleSubflow = useCallback((path: string) => {
+    setExpandedSubflows((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        for (const open of next) {
+          if (open === path || open.startsWith(`${path}/`)) next.delete(open);
+        }
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+
   const projected = useMemo(
     () =>
       projectFlow(
@@ -104,7 +120,9 @@ export function AuthoringCanvas({
         proseEditingStep,
         setProseEditingStep,
         performGesture,
-        mode
+        mode,
+        expandedSubflows,
+        toggleSubflow
       ),
     [
       diagnosticTones,
@@ -117,6 +135,8 @@ export function AuthoringCanvas({
       proseEditingStep,
       selectedStep,
       mode,
+      expandedSubflows,
+      toggleSubflow,
     ]
   );
   const [nodes, setNodes] = useState(projected.nodes);
@@ -227,13 +247,18 @@ function projectFlow(
   proseEditingStep: string | null,
   onBeginProseEdit: (step: string | null) => void,
   onGesture: (operation: GestureOperation) => Promise<EditResult>,
-  mode: 'edit' | 'run'
+  mode: 'edit' | 'run',
+  expandedSubflows: ReadonlySet<string>,
+  onToggleSubflow: (path: string) => void
 ): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
   const dagreGraph = new dagre.graphlib.Graph()
     .setDefaultEdgeLabel(() => ({}))
     .setGraph({ rankdir: 'TB', nodesep: 48, ranksep: 72 });
   for (const step of graph.steps) {
-    dagreGraph.setNode(step.name, { width: NODE_WIDTH, height: STEP_HEIGHT });
+    dagreGraph.setNode(
+      step.name,
+      nodeSize(step, step.name, expandedSubflows, { width: NODE_WIDTH, height: STEP_HEIGHT })
+    );
   }
   for (const child of graph.childCalls) {
     dagreGraph.setNode(child.id, { width: NODE_WIDTH, height: CHILD_HEIGHT });
@@ -253,7 +278,9 @@ function projectFlow(
       proseEditingStep,
       onBeginProseEdit,
       onGesture,
-      mode
+      mode,
+      expandedSubflows,
+      onToggleSubflow
     )
   );
   for (const child of graph.childCalls) {
@@ -281,7 +308,7 @@ function projectFlow(
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    label: edge.label ?? undefined,
+    label: edgeLabel(edge) ?? undefined,
     type: 'smoothstep',
     markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(edge.kind) },
     style: {
@@ -319,7 +346,9 @@ function stepNode(
   proseEditingStep: string | null,
   onBeginProseEdit: (step: string | null) => void,
   onGesture: (operation: GestureOperation) => Promise<EditResult>,
-  mode: 'edit' | 'run'
+  mode: 'edit' | 'run',
+  expandedSubflows: ReadonlySet<string>,
+  onToggleSubflow: (path: string) => void
 ): Node<CanvasNodeData> {
   return {
     id: step.name,
@@ -332,7 +361,10 @@ function stepNode(
       kind: 'step',
       name: step.name,
       label: step.documentation,
-      markers: step.markers,
+      step,
+      expandedSubflows,
+      onToggleSubflow,
+      onJumpTo: onJumpToSpan,
       diagnostic: tones.get(step.name),
       onActivate: () => onJumpToSpan(step.span.start),
       proseEditing: proseEditingStep === step.name,

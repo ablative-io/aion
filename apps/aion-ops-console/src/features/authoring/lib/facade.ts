@@ -15,6 +15,7 @@ import {
 import type {
   GraphProjection,
   LayoutRecord,
+  ProjectionStep,
   SemanticDeclaration,
   SemanticEntry,
   SemanticIndex,
@@ -381,26 +382,19 @@ function parseSpan(value: unknown): SourceSpan {
   };
 }
 
+const projectionStepKinds: ProjectionStep['kind'][] = [
+  'plain',
+  'distribute',
+  'sequence',
+  'collect',
+  'subflow_call',
+  'decision',
+];
+
 function parseGraph(value: unknown): GraphProjection {
   const record = expectRecord(value);
   return {
-    steps: expectArray(record.steps, 'graph.steps').map((item) => {
-      const step = expectRecord(item);
-      const markers = expectRecord(step.markers);
-      return {
-        name: expectString(step.name, 'step.name'),
-        documentation: expectString(step.documentation, 'step.documentation'),
-        activities: expectArray(step.activities, 'step.activities').map((activity) =>
-          expectString(activity, 'step.activity')
-        ),
-        span: parseSpan(step.span),
-        markers: {
-          looped: expectBoolean(markers.looped, 'markers.looped'),
-          forked: expectBoolean(markers.forked, 'markers.forked'),
-          waits: expectBoolean(markers.waits, 'markers.waits'),
-        },
-      };
-    }),
+    steps: expectArray(record.steps, 'graph.steps').map(parseProjectionStep),
     edges: expectArray(record.edges, 'graph.edges').map((item) => {
       const edge = expectRecord(item);
       const kind = edge.kind;
@@ -413,6 +407,8 @@ function parseGraph(value: unknown): GraphProjection {
         target: expectString(edge.target, 'edge.target'),
         kind,
         label: nullableString(edge.label, 'edge.label'),
+        back: expectBoolean(edge.back, 'edge.back'),
+        visits: nullableString(edge.visits, 'edge.visits'),
       };
     }),
     childCalls: expectArray(record.child_calls, 'graph.child_calls').map((item) => {
@@ -425,5 +421,54 @@ function parseGraph(value: unknown): GraphProjection {
         span: parseSpan(child.span),
       };
     }),
+  };
+}
+
+function parseProjectionStep(value: unknown): ProjectionStep {
+  const step = expectRecord(value);
+  const kind = expectString(step.kind, 'step.kind');
+  if (!projectionStepKinds.includes(kind as ProjectionStep['kind'])) {
+    throw new Error('Invalid authoring response: step.kind');
+  }
+  return {
+    name: expectString(step.name, 'step.name'),
+    documentation: expectString(step.documentation, 'step.documentation'),
+    activities: expectArray(step.activities, 'step.activities').map((activity) =>
+      expectString(activity, 'step.activity')
+    ),
+    span: parseSpan(step.span),
+    kind: kind as ProjectionStep['kind'],
+    region: nullableString(step.region, 'step.region'),
+    distribution: step.distribution === null ? null : parseDistribution(step.distribution),
+    collect: step.collect === null ? null : parseCollect(step.collect),
+    subflow: step.subflow === null ? null : parseSubflow(step.subflow),
+    visits: nullableString(step.visits, 'step.visits'),
+    decision: expectBoolean(step.decision, 'step.decision'),
+    waits: expectBoolean(step.waits, 'step.waits'),
+  };
+}
+
+function parseDistribution(value: unknown): NonNullable<ProjectionStep['distribution']> {
+  const record = expectRecord(value);
+  return {
+    binding: expectString(record.binding, 'distribution.binding'),
+    collection: expectString(record.collection, 'distribution.collection'),
+  };
+}
+
+function parseCollect(value: unknown): NonNullable<ProjectionStep['collect']> {
+  const record = expectRecord(value);
+  return {
+    binding: expectString(record.binding, 'collect.binding'),
+    tolerant: expectBoolean(record.tolerant, 'collect.tolerant'),
+    result: expectString(record.result, 'collect.result'),
+  };
+}
+
+function parseSubflow(value: unknown): NonNullable<ProjectionStep['subflow']> {
+  const record = expectRecord(value);
+  return {
+    name: expectString(record.name, 'subflow.name'),
+    graph: record.graph === null ? null : parseGraph(record.graph),
   };
 }

@@ -48,7 +48,7 @@ pub use compile::{
 pub use emitter::{EmitError, emit, emit_in};
 pub use lexer::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 pub use parser::{ParseError, parse};
-pub use printer::print;
+pub use printer::{expr_text, print};
 pub use schema::{
     SchemaError, schema_for_outcomes, schema_for_outcomes_in, schema_for_type, schema_for_type_in,
     schema_for_workflow, schema_for_workflow_in,

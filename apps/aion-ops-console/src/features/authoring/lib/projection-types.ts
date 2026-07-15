@@ -31,12 +31,28 @@ export type SemanticEntry = {
   declaration: SemanticDeclaration | null;
 };
 
-export type StepMarkers = { looped: boolean; forked: boolean; waits: boolean };
+export type ProjectionStepKind =
+  | 'plain'
+  | 'distribute'
+  | 'sequence'
+  | 'collect'
+  | 'subflow_call'
+  | 'decision';
+export type ProjectionDistribution = { binding: string; collection: string };
+export type ProjectionCollect = { binding: string; tolerant: boolean; result: string };
+export type ProjectionSubflow = { name: string; graph: GraphProjection | null };
 export type ProjectionStep = {
   name: string;
   documentation: string;
   span: SourceSpan;
-  markers: StepMarkers;
+  kind: ProjectionStepKind;
+  region: string | null;
+  distribution: ProjectionDistribution | null;
+  collect: ProjectionCollect | null;
+  subflow: ProjectionSubflow | null;
+  visits: string | null;
+  decision: boolean;
+  waits: boolean;
   activities: string[];
 };
 export type ProjectionEdge = {
@@ -45,6 +61,8 @@ export type ProjectionEdge = {
   target: string;
   kind: 'route' | 'fall_through' | 'after';
   label: string | null;
+  back: boolean;
+  visits: string | null;
 };
 export type ProjectionChildCall = {
   id: string;

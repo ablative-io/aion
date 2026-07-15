@@ -6,7 +6,11 @@ use crate::ast::{
     Arg, BinaryOp, DurationLiteral, Expr, PredicateKind, Quantifier, RetrySpec, TypeRef,
 };
 
-pub(super) fn expr_text(expr: &Expr) -> String {
+/// Renders one expression in canonical printed form — the same text the
+/// canonical printer emits for it. Consumers (projection labels, tooling)
+/// use this instead of re-deriving expression surface syntax.
+#[must_use]
+pub fn expr_text(expr: &Expr) -> String {
     match expr {
         Expr::String { value, .. } => string_literal(value),
         Expr::RawString { value, .. } => format!("\"\"\"{value}\"\"\""),

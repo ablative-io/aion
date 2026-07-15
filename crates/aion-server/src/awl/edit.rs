@@ -239,7 +239,8 @@ fn add_fall_through(
         source_index
     };
     document.steps.insert(adjusted_source + 1, target_step);
-    let projected = super::projection::build(document);
+    let analysis = semantic::analyze(document);
+    let projected = super::projection::build(document, analysis.step_kinds());
     let has_edge = projected.edges.iter().any(|edge| {
         edge.source == source
             && edge.target == target

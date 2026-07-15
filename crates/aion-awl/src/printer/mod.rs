@@ -6,3 +6,4 @@ mod exprs;
 mod steps;
 
 pub use document::print;
+pub use exprs::expr_text;
