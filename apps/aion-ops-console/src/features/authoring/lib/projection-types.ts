@@ -17,6 +17,8 @@ export type SemanticDeclaration = {
     | 'variant'
     | 'worker'
     | 'action'
+    | 'const'
+    | 'subflow'
     | 'child'
     | 'parameter'
     | 'step'
@@ -50,6 +52,7 @@ export type ProjectionStep = {
   distribution: ProjectionDistribution | null;
   collect: ProjectionCollect | null;
   subflow: ProjectionSubflow | null;
+  substeps: GraphProjection | null;
   visits: string | null;
   decision: boolean;
   waits: boolean;

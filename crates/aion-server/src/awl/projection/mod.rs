@@ -5,6 +5,7 @@
 //! the label text and edge geometry the canvas draws.
 
 mod build;
+mod edges;
 mod types;
 
 #[cfg(test)]

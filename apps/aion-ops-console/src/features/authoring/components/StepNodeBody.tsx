@@ -1,8 +1,14 @@
 import { Timer } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { EMBED_PADDING, edgeLabel, layoutEmbedded } from '../lib/canvas-layout';
-import type { GraphProjection, ProjectionStep } from '../lib/projection-types';
+import {
+  EMBED_PADDING,
+  edgeLabel,
+  layoutEmbedded,
+  parallelEdgeOffsets,
+  type PlacedNode,
+} from '../lib/canvas-layout';
+import type { GraphProjection, ProjectionEdge, ProjectionStep } from '../lib/projection-types';
 
 /**
  * The canvas node vocabulary (AWL-FLOW-VOCABULARY rev 3 §6), free of any
@@ -67,6 +73,7 @@ export function StepNodeBody(props: StepBodyProps) {
         )}
       </button>
       {step.subflow !== null && <SubflowSection {...props} />}
+      {step.substeps !== null && <SubstepSection {...props} />}
     </article>
   );
 }
@@ -211,10 +218,47 @@ function SubflowSection({ step, path, expanded, onJumpTo, onToggleSubflow }: Ste
   );
 }
 
+/** Collapsed-by-default parent-owned sibling graph. */
+function SubstepSection({ step, path, expanded, onJumpTo, onToggleSubflow }: StepBodyProps) {
+  const graph = step.substeps;
+  if (graph === null) return null;
+  const isExpanded = expanded.has(path);
+  return (
+    <div className="border-border border-t px-3 pb-3">
+      <span className="mt-2 flex items-center justify-between gap-2">
+        <span className="truncate font-mono text-accent-primary text-xs">substeps</span>
+        <button
+          aria-expanded={isExpanded}
+          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} substeps of ${step.name}`}
+          className="nodrag shrink-0 rounded-md px-2 py-1 text-muted-foreground text-xs outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-accent-primary"
+          onClick={() => onToggleSubflow(path)}
+          type="button"
+        >
+          {isExpanded ? 'Collapse' : 'Expand'}
+        </button>
+      </span>
+      {isExpanded && (
+        <div className="mt-2 overflow-auto rounded-lg border border-border border-dashed bg-surface-base p-2">
+          <SubflowGraph
+            expanded={expanded}
+            graph={graph}
+            label={`Substep graph ${step.name}`}
+            onJumpTo={onJumpTo}
+            onToggleSubflow={onToggleSubflow}
+            path={path}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export type SubflowGraphProps = {
   graph: GraphProjection;
-  /** Expansion path of the subflow-call node this graph renders inside. */
+  /** Expansion path of the owner node this graph renders inside. */
   path: string;
+  /** Accessible graph name; defaults to the historical subflow label. */
+  label?: string;
   expanded: ReadonlySet<string>;
   onJumpTo: (byteOffset: number) => void;
   onToggleSubflow: (path: string) => void;
@@ -228,52 +272,35 @@ export type SubflowGraphProps = {
 export function SubflowGraph({
   graph,
   path,
+  label: graphLabel,
   expanded,
   onJumpTo,
   onToggleSubflow,
 }: SubflowGraphProps) {
   const layout = layoutEmbedded(graph, expanded, path);
+  const siblingOffsets = parallelEdgeOffsets(graph.edges);
   const width = layout.width + EMBED_PADDING;
   const height = layout.height + EMBED_PADDING;
   return (
-    <section aria-label={`Subflow graph ${path}`} className="relative" style={{ width, height }}>
+    <section
+      aria-label={graphLabel ?? `Subflow graph ${path}`}
+      className="relative"
+      style={{ width, height }}
+    >
       <svg aria-hidden="true" className="absolute inset-0" height={height} width={width}>
-        <title>Subflow edges</title>
+        <title>Embedded graph edges</title>
         {graph.edges.map((edge) => {
           const source = layout.nodes[edge.source];
           const target = layout.nodes[edge.target];
           if (source === undefined || target === undefined) return null;
-          const from = { x: source.x + source.width / 2, y: source.y + source.height };
-          const to = { x: target.x + target.width / 2, y: target.y };
-          const label = edgeLabel(edge);
-          const bendX = Math.min(source.x, target.x) - 24;
-          const d = edge.back
-            ? `M ${from.x} ${from.y} C ${bendX} ${from.y + 24}, ${bendX} ${to.y - 24}, ${to.x} ${to.y}`
-            : `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
-          const mid = edge.back
-            ? { x: bendX + 12, y: (from.y + to.y) / 2 }
-            : { x: (from.x + to.x) / 2 + 6, y: (from.y + to.y) / 2 };
           return (
-            <g key={edge.id}>
-              <path
-                d={d}
-                fill="none"
-                stroke={edge.kind === 'route' ? 'var(--accent-primary)' : 'var(--muted-foreground)'}
-                strokeDasharray={edge.kind === 'fall_through' ? '6 5' : undefined}
-                strokeWidth={edge.kind === 'route' ? 1.5 : 1}
-              />
-              {label !== null && (
-                <text
-                  fill="var(--muted-foreground)"
-                  fontSize={10}
-                  fontWeight={600}
-                  x={mid.x}
-                  y={mid.y}
-                >
-                  {label}
-                </text>
-              )}
-            </g>
+            <EmbeddedEdge
+              edge={edge}
+              key={edge.id}
+              siblingOffset={siblingOffsets.get(edge.id) ?? 0}
+              source={source}
+              target={target}
+            />
           );
         })}
       </svg>
@@ -297,5 +324,54 @@ export function SubflowGraph({
         );
       })}
     </section>
+  );
+}
+
+type EmbeddedEdgeProps = {
+  edge: ProjectionEdge;
+  siblingOffset: number;
+  source: PlacedNode;
+  target: PlacedNode;
+};
+
+function EmbeddedEdge({ edge, siblingOffset, source, target }: EmbeddedEdgeProps) {
+  const from = { x: source.x + source.width / 2, y: source.y + source.height };
+  const to = { x: target.x + target.width / 2, y: target.y };
+  const label = edgeLabel(edge);
+  const bendX = Math.min(source.x, target.x) - 24 + siblingOffset;
+  const direction = to.y >= from.y ? 1 : -1;
+  const controlDistance = Math.max(24, Math.abs(to.y - from.y) / 2);
+  const d = edge.back
+    ? `M ${from.x} ${from.y} C ${bendX} ${from.y + 24}, ${bendX} ${to.y - 24}, ${to.x} ${to.y}`
+    : `M ${from.x} ${from.y} C ${from.x + siblingOffset} ${from.y + direction * controlDistance}, ${to.x + siblingOffset} ${to.y - direction * controlDistance}, ${to.x} ${to.y}`;
+  const mid = edge.back
+    ? { x: bendX + 12, y: (from.y + to.y) / 2 }
+    : {
+        x: (from.x + to.x) / 2 + siblingOffset + 6,
+        y: (from.y + to.y) / 2,
+      };
+  return (
+    <g>
+      <path
+        d={d}
+        data-edge-id={edge.id}
+        fill="none"
+        stroke={edge.kind === 'route' ? 'var(--accent-primary)' : 'var(--muted-foreground)'}
+        strokeDasharray={edge.kind === 'fall_through' ? '6 5' : undefined}
+        strokeWidth={edge.kind === 'route' ? 1.5 : 1}
+      />
+      {label !== null && (
+        <text
+          data-label-for={edge.id}
+          fill="var(--muted-foreground)"
+          fontSize={10}
+          fontWeight={600}
+          x={mid.x}
+          y={mid.y}
+        >
+          {label}
+        </text>
+      )}
+    </g>
   );
 }

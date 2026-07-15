@@ -15,6 +15,7 @@ const graph: GraphProjection = {
       distribution: null,
       collect: null,
       subflow: null,
+      substeps: null,
       visits: null,
       decision: false,
       waits: false,

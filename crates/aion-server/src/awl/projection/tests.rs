@@ -11,6 +11,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const DEV_FLOW: &str =
     include_str!("../../../../aion-awl/tests/fixtures/rev2/flow-shape/valid/dev_flow.awl");
+const SUBSTEPS_TWO_STAGE: &str = include_str!(
+    "../../../../aion-awl/tests/fixtures/rev2/loop-outcomes/valid/substeps_two_stage.awl"
+);
 
 fn project(source: &str) -> Result<GraphProjection, Box<dyn std::error::Error>> {
     let document = aion_awl::parse(source)?;
@@ -145,6 +148,46 @@ fn dev_flow_projects_one_back_edge_bounded_times_three() -> TestResult {
         .filter(|edge| !edge.back)
         .all(|edge| edge.visits.is_none());
     assert!(forward, "forward edges carry no visits label");
+    Ok(())
+}
+
+#[test]
+fn two_stage_substeps_project_as_the_parent_owned_sibling_graph() -> TestResult {
+    let graph = project(SUBSTEPS_TWO_STAGE)?;
+    assert_eq!(graph.steps.len(), 1, "one parent workflow step");
+    let prepare = step(&graph, "prepare")?;
+    let nested = prepare
+        .substeps
+        .as_ref()
+        .ok_or("prepare did not embed its substeps")?;
+    let nested_steps: Vec<_> = nested
+        .steps
+        .iter()
+        .map(|step| (step.name.as_str(), step.kind, step.region.as_deref()))
+        .collect();
+    assert_eq!(
+        nested_steps,
+        vec![
+            ("fetch_batch", ProjectionStepKind::Plain, None),
+            ("scrub", ProjectionStepKind::Plain, None),
+        ],
+        "all three authored steps project once across the two graph scopes"
+    );
+    assert_eq!(
+        nested.edges.len(),
+        1,
+        "only the sibling-local route projects"
+    );
+    let route = &nested.edges[0];
+    assert_eq!(route.source, "fetch_batch");
+    assert_eq!(route.target, "scrub");
+    assert!(matches!(route.kind, ProjectionEdgeKind::Route));
+    assert_eq!(route.label.as_deref(), Some("when"));
+    assert!(!route.back);
+    assert!(
+        graph.edges.is_empty(),
+        "substep routes do not leak into the parent graph"
+    );
     Ok(())
 }
 

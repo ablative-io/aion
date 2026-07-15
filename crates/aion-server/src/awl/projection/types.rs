@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use super::super::handlers::SourceSpan;
 
-/// One flow's projected graph: the workflow's own steps, or — nested under
-/// a subflow-call step — a subflow's.
+/// One scoped projected graph: workflow or subflow steps, or sibling
+/// substeps embedded under their owning parent step.
 #[derive(Debug, Serialize)]
 pub struct GraphProjection {
     /// One node per step, in document order.
@@ -38,6 +38,9 @@ pub struct ProjectionStep {
     pub collect: Option<ProjectionCollect>,
     /// The invoked subflow of a subflow-call step, with its own graph.
     pub subflow: Option<ProjectionSubflow>,
+    /// Direct sibling `step` statements embedded in this parent step, as
+    /// their own scoped graph.
+    pub substeps: Option<GraphProjection>,
     /// Canonical text of the step's `max N visits` bound, when written.
     pub visits: Option<String>,
     /// Whether the step carries outcome arms (its decision diamond).

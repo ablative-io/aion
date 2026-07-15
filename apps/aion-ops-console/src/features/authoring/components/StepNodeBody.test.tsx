@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+import { parallelEdgeOffsets } from '../lib/canvas-layout';
+import { createAuthoringFacade } from '../lib/facade';
 import type { GraphProjection, ProjectionStep } from '../lib/projection-types';
+import { ParallelCanvasEdgeVisual } from './CanvasEdge';
 import { StepNodeBody, SubflowGraph } from './StepNodeBody';
 
 function step(name: string, extra: Partial<ProjectionStep> = {}): ProjectionStep {
@@ -15,6 +18,7 @@ function step(name: string, extra: Partial<ProjectionStep> = {}): ProjectionStep
     distribution: null,
     collect: null,
     subflow: null,
+    substeps: null,
     visits: null,
     decision: false,
     waits: false,
@@ -49,6 +53,68 @@ const devItemGraph: GraphProjection = {
   ],
   childCalls: [],
 };
+
+const parallelRoutes: GraphProjection = {
+  steps: [step('decide', { decision: true }), step('finish')],
+  edges: [
+    {
+      id: 'route:decide:finish:when:0',
+      source: 'decide',
+      target: 'finish',
+      kind: 'route',
+      label: 'when',
+      back: false,
+      visits: null,
+    },
+    {
+      id: 'route:decide:finish:otherwise:1',
+      source: 'decide',
+      target: 'finish',
+      kind: 'route',
+      label: 'otherwise',
+      back: false,
+      visits: null,
+    },
+    {
+      id: 'route:decide:finish:failure:2',
+      source: 'decide',
+      target: 'finish',
+      kind: 'route',
+      label: 'failure',
+      back: false,
+      visits: null,
+    },
+  ],
+  childCalls: [],
+};
+
+function renderedAttribute(
+  html: string,
+  element: 'path' | 'text',
+  edgeId: string,
+  attribute: string
+): string | null {
+  const identity = element === 'path' ? 'data-edge-id' : 'data-label-for';
+  const marker = `${identity}="${edgeId}"`;
+  const markerIndex = html.indexOf(marker);
+  if (markerIndex < 0) return null;
+  const tagStart = html.lastIndexOf(`<${element}`, markerIndex);
+  const tagEnd = html.indexOf('>', markerIndex);
+  if (tagStart < 0 || tagEnd < 0) return null;
+  const tag = html.slice(tagStart, tagEnd);
+  const match = tag.match(new RegExp(`${attribute}="([^"]+)"`));
+  return match?.[1] ?? null;
+}
+
+function edgeGeometry(html: string) {
+  const paths = parallelRoutes.edges.map((edge) => renderedAttribute(html, 'path', edge.id, 'd'));
+  const labels = parallelRoutes.edges.map((edge) => {
+    const x = renderedAttribute(html, 'text', edge.id, 'x');
+    const y = renderedAttribute(html, 'text', edge.id, 'y');
+    return `${x},${y}`;
+  });
+  return { paths, labels };
+}
 
 function render(node: ProjectionStep, expanded: ReadonlySet<string> = new Set()) {
   return renderToStaticMarkup(
@@ -159,6 +225,71 @@ describe('flow-vocabulary node rendering', () => {
     expect(html).toContain('when ×3');
   });
 
+  test('parses and expands a parent-owned sibling substep graph', async () => {
+    const span = { start: 0, end: 4, line: 1, column: 1 };
+    const wireStep = (name: string, extra: Record<string, unknown> = {}) => ({
+      name,
+      documentation: '',
+      activities: [],
+      span,
+      kind: 'plain',
+      region: null,
+      distribution: null,
+      collect: null,
+      subflow: null,
+      substeps: null,
+      visits: null,
+      decision: false,
+      waits: false,
+      ...extra,
+    });
+    const facade = createAuthoringFacade(async () =>
+      Response.json({
+        ok: true,
+        deploys_green: true,
+        steps: 3,
+        diagnostics: [],
+        semantic: {
+          entries: [],
+          graph: {
+            steps: [
+              wireStep('prepare', {
+                substeps: {
+                  steps: [wireStep('fetch_batch'), wireStep('scrub')],
+                  edges: [
+                    {
+                      id: 'route:fetch_batch:scrub:when:0',
+                      source: 'fetch_batch',
+                      target: 'scrub',
+                      kind: 'route',
+                      label: 'when',
+                      back: false,
+                      visits: null,
+                    },
+                  ],
+                  child_calls: [],
+                },
+              }),
+            ],
+            edges: [],
+            child_calls: [],
+          },
+          studio: { builtins: [], types: [], workers: [] },
+        },
+      })
+    );
+    const result = await facade.check('workflow prepare_dataset');
+    const prepare = result.semantic?.graph.steps[0];
+    expect(prepare?.substeps?.steps.map((nested) => nested.name)).toEqual(['fetch_batch', 'scrub']);
+    if (prepare === undefined) return;
+    const html = render(prepare, new Set(['prepare']));
+    expect(html).toContain('aria-label="Collapse substeps of prepare"');
+    expect(html).toContain('aria-label="Substep graph prepare"');
+    expect(html).toContain('aria-label="Step fetch_batch"');
+    expect(html).toContain('aria-label="Step scrub"');
+    expect(html).toContain('data-edge-id="route:fetch_batch:scrub:when:0"');
+  });
+
   test('an unexpandable subflow call (invocation cycle guard) offers no toggle', () => {
     const html = render(
       step('build', { kind: 'subflow_call', subflow: { name: 'ping', graph: null } })
@@ -181,5 +312,46 @@ describe('flow-vocabulary node rendering', () => {
     expect(html).toContain('aria-label="Step develop"');
     expect(html).toContain('aria-label="Step review"');
     expect(html).toContain('when ×3');
+  });
+
+  test('embedded outcome and failure siblings render distinct paths and labels', () => {
+    const html = renderToStaticMarkup(
+      <SubflowGraph
+        expanded={new Set()}
+        graph={parallelRoutes}
+        onJumpTo={() => undefined}
+        onToggleSubflow={() => undefined}
+        path="decision"
+      />
+    );
+    const geometry = edgeGeometry(html);
+    expect(geometry.paths.every((path) => path !== null)).toBe(true);
+    expect(new Set(geometry.paths).size).toBe(3);
+    expect(new Set(geometry.labels).size).toBe(3);
+  });
+
+  test('root outcome and failure siblings render distinct paths and labels', () => {
+    const offsets = parallelEdgeOffsets(parallelRoutes.edges);
+    const html = renderToStaticMarkup(
+      <svg>
+        <title>Root parallel routes</title>
+        {parallelRoutes.edges.map((edge) => (
+          <ParallelCanvasEdgeVisual
+            id={edge.id}
+            key={edge.id}
+            label={edge.label}
+            siblingOffset={offsets.get(edge.id) ?? 0}
+            sourceX={100}
+            sourceY={100}
+            targetX={100}
+            targetY={300}
+          />
+        ))}
+      </svg>
+    );
+    const geometry = edgeGeometry(html);
+    expect(geometry.paths.every((path) => path !== null)).toBe(true);
+    expect(new Set(geometry.paths).size).toBe(3);
+    expect(new Set(geometry.labels).size).toBe(3);
   });
 });

@@ -94,6 +94,7 @@ describe('authoring facade parsing', () => {
       distribution: null,
       collect: null,
       subflow: null,
+      substeps: null,
       visits: null,
       decision: false,
       waits: false,
@@ -105,7 +106,28 @@ describe('authoring facade parsing', () => {
       steps: 3,
       diagnostics: [],
       semantic: {
-        entries: [],
+        entries: [
+          {
+            span,
+            type: 'String',
+            declaration: {
+              name: 'coordinator_instructions',
+              kind: 'const',
+              documentation: null,
+              span,
+            },
+          },
+          {
+            span: { ...span, start: 5, end: 13 },
+            type: null,
+            declaration: {
+              name: 'dev_item',
+              kind: 'subflow',
+              documentation: null,
+              span: { ...span, start: 5, end: 13 },
+            },
+          },
+        ],
         graph: {
           steps: [
             wireStep('wave', {
@@ -148,6 +170,10 @@ describe('authoring facade parsing', () => {
     const facade = createAuthoringFacade(async () => Response.json(wire));
     const result = await facade.check('workflow demo {}');
     const graph = result.semantic?.graph;
+    expect(result.semantic?.entries.map((entry) => entry.declaration?.kind)).toEqual([
+      'const',
+      'subflow',
+    ]);
     expect(graph?.steps[0]?.kind).toBe('distribute');
     expect(graph?.steps[0]?.distribution).toEqual({ binding: 'item', collection: 'state.items' });
     expect(graph?.steps[1]?.region).toBe('wave');

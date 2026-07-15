@@ -12,18 +12,20 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { edgeLabel, nodeSize } from '../lib/canvas-layout';
+import { edgeLabel, nodeSize, parallelEdgeOffsets } from '../lib/canvas-layout';
 import type { AwlDiagnostic, AwlDocument, EditResult, GestureOperation } from '../lib/facade';
 import { authoringFacade } from '../lib/facade';
 import { diagnosticsByStep } from '../lib/projection';
 import type { GraphProjection, LayoutRecord, ProjectionStep } from '../lib/projection-types';
 import { CanvasGestureControls } from './CanvasGestureControls';
+import { ParallelCanvasEdge } from './CanvasEdge';
 import { type CanvasNodeData, ChildCanvasNode, StepCanvasNode } from './CanvasNode';
 
 const NODE_WIDTH = 240;
 const STEP_HEIGHT = 140;
 const CHILD_HEIGHT = 120;
 const nodeTypes = { step: StepCanvasNode, child: ChildCanvasNode };
+const edgeTypes = { parallel: ParallelCanvasEdge };
 
 export type AuthoringCanvasProps = {
   path: string;
@@ -199,6 +201,7 @@ export function AuthoringCanvas({
       <ReactFlow
         aria-label="AWL workflow graph"
         edges={projected.edges}
+        edgeTypes={edgeTypes}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodeTypes={nodeTypes}
@@ -304,12 +307,14 @@ function projectFlow(
     });
   }
 
+  const siblingOffsets = parallelEdgeOffsets(graph.edges);
   const edges: Edge[] = graph.edges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
     label: edgeLabel(edge) ?? undefined,
-    type: 'smoothstep',
+    type: 'parallel',
+    data: { siblingOffset: siblingOffsets.get(edge.id) ?? 0 },
     markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(edge.kind) },
     style: {
       stroke: edgeColor(edge.kind),
@@ -317,8 +322,6 @@ function projectFlow(
       strokeDasharray:
         edge.kind === 'fall_through' ? '6 5' : edge.kind === 'after' ? '2 5' : undefined,
     },
-    labelStyle: { fill: 'var(--muted-foreground)', fontSize: 11, fontWeight: 600 },
-    labelBgStyle: { fill: 'var(--surface-base)', fillOpacity: 0.9 },
   }));
   for (const child of graph.childCalls) {
     edges.push({

@@ -6,13 +6,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aion_awl::semantic::{StepInfo, StepKind};
 use aion_awl::{
-    ChildDecl, CollectStmt, DistributeStmt, Document, Guard, PipeEnd, PipeStage, Statement, Step,
-    SubflowDecl, TypeRef, expr_text,
+    ChildDecl, CollectStmt, DistributeStmt, Document, PipeStage, Statement, Step, SubflowDecl,
+    TypeRef, expr_text,
 };
 
+use super::edges::edges;
 use super::types::{
     GraphProjection, ProjectionChildCall, ProjectionCollect, ProjectionDistribution,
-    ProjectionEdge, ProjectionEdgeKind, ProjectionStep, ProjectionStepKind, ProjectionSubflow,
+    ProjectionStep, ProjectionStepKind, ProjectionSubflow,
 };
 
 /// Projects `document` into the canvas graph, consuming the checker's step
@@ -63,6 +64,14 @@ impl<'a> Context<'a> {
     /// names currently being expanded: a subflow invocation cycle is a
     /// checker error, but the projection guards it so it always terminates.
     fn flow(&self, steps: &[Step], expanding: &mut Vec<String>) -> GraphProjection {
+        let steps: Vec<&Step> = steps.iter().collect();
+        self.scoped_flow(&steps, expanding)
+    }
+
+    /// Projects references to one scoped sibling list. References let nested
+    /// `Statement::SubStep` nodes reuse the same graph machinery without
+    /// cloning the parsed AST.
+    fn scoped_flow(&self, steps: &[&Step], expanding: &mut Vec<String>) -> GraphProjection {
         let projected = steps
             .iter()
             .map(|step| self.step(step, expanding))
@@ -93,6 +102,7 @@ impl<'a> Context<'a> {
                 result: collect.bind.name.clone(),
             }),
             subflow: self.subflow_call(step, kind, expanding),
+            substeps: self.substeps(step, expanding),
             visits: step
                 .max_visits
                 .as_ref()
@@ -130,6 +140,23 @@ impl<'a> Context<'a> {
         });
         Some(ProjectionSubflow { name, graph })
     }
+
+    /// Direct sibling substeps form a graph scoped to and owned by their
+    /// parent step. Nested substeps recurse through each projected sibling.
+    fn substeps(&self, step: &Step, expanding: &mut Vec<String>) -> Option<GraphProjection> {
+        let siblings: Vec<&Step> = step
+            .body
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::SubStep(substep) => Some(substep.as_ref()),
+                _ => None,
+            })
+            .collect();
+        if siblings.is_empty() {
+            return None;
+        }
+        Some(self.scoped_flow(&siblings, expanding))
+    }
 }
 
 const fn projection_kind(kind: StepKind) -> ProjectionStepKind {
@@ -159,86 +186,6 @@ fn collect_of(step: &Step) -> Option<&CollectStmt> {
     })
 }
 
-/// Every control edge of one flow: written routes, `after` dependencies,
-/// and written-order fall-throughs. Backward routes (document order) are
-/// marked as cycle back-edges carrying the source step's visits bound.
-fn edges(steps: &[Step]) -> Vec<ProjectionEdge> {
-    let step_names: BTreeSet<_> = steps.iter().map(|step| step.name.as_str()).collect();
-    let positions: BTreeMap<&str, usize> = steps
-        .iter()
-        .enumerate()
-        .map(|(index, step)| (step.name.as_str(), index))
-        .collect();
-    let mut edges = Vec::new();
-    let mut route_targets = BTreeSet::new();
-    for step in steps {
-        collect_step_routes(step, &step_names, &mut route_targets, &mut edges);
-    }
-    for edge in &mut edges {
-        let (Some(&source), Some(&target)) = (
-            positions.get(edge.source.as_str()),
-            positions.get(edge.target.as_str()),
-        ) else {
-            continue;
-        };
-        if target <= source {
-            edge.back = true;
-            edge.visits = steps[source]
-                .max_visits
-                .as_ref()
-                .map(|visits| expr_text(&visits.bound));
-        }
-    }
-    for step in steps {
-        for dependency in &step.after {
-            if step_names.contains(dependency.name.as_str()) {
-                edges.push(edge(
-                    format!("after:{}:{}", dependency.name, step.name),
-                    &dependency.name,
-                    &step.name,
-                    ProjectionEdgeKind::After,
-                    Some("after".to_owned()),
-                ));
-            }
-        }
-    }
-    for pair in steps.windows(2) {
-        let previous = &pair[0];
-        let current = &pair[1];
-        if current.after.is_empty()
-            && !route_targets.contains(current.name.as_str())
-            && falls_through(previous)
-        {
-            edges.push(edge(
-                format!("fall:{}:{}", previous.name, current.name),
-                &previous.name,
-                &current.name,
-                ProjectionEdgeKind::FallThrough,
-                None,
-            ));
-        }
-    }
-    edges
-}
-
-fn edge(
-    id: String,
-    source: &str,
-    target: &str,
-    kind: ProjectionEdgeKind,
-    label: Option<String>,
-) -> ProjectionEdge {
-    ProjectionEdge {
-        id,
-        source: source.to_owned(),
-        target: target.to_owned(),
-        kind,
-        label,
-        back: false,
-        visits: None,
-    }
-}
-
 fn documentation(lines: &[aion_awl::DocLine]) -> String {
     lines
         .iter()
@@ -264,11 +211,11 @@ fn collect_waits(statements: &[Statement], found: &mut bool) {
             Statement::Wait(_) | Statement::Sleep(_) => *found = true,
             Statement::Fork(fork) => collect_waits(&fork.body, found),
             Statement::Loop(looped) => collect_waits(&looped.body, found),
-            Statement::SubStep(step) => collect_waits(&step.body, found),
             Statement::Call(_)
             | Statement::Spawn(_)
             | Statement::Pipe(_)
             | Statement::Route(_)
+            | Statement::SubStep(_)
             | Statement::Distribute(_)
             | Statement::Collect(_) => {}
         }
@@ -295,93 +242,10 @@ fn collect_activities(statements: &[Statement], names: &mut BTreeSet<String>) {
             }
             Statement::Fork(fork) => collect_activities(&fork.body, names),
             Statement::Loop(looped) => collect_activities(&looped.body, names),
-            Statement::SubStep(step) => collect_activities(&step.body, names),
             Statement::Pipe(_)
             | Statement::Wait(_)
             | Statement::Sleep(_)
             | Statement::Route(_)
-            | Statement::Distribute(_)
-            | Statement::Collect(_) => {}
-        }
-    }
-}
-
-fn collect_step_routes(
-    step: &Step,
-    step_names: &BTreeSet<&str>,
-    targets: &mut BTreeSet<String>,
-    edges: &mut Vec<ProjectionEdge>,
-) {
-    collect_statement_routes(&step.name, &step.body, "route", step_names, targets, edges);
-    if let Some(failure) = &step.on_failure {
-        collect_statement_routes(
-            &step.name,
-            &failure.body,
-            "failure",
-            step_names,
-            targets,
-            edges,
-        );
-    }
-    for (index, outcome) in step.outcomes.iter().enumerate() {
-        let label = match outcome.guard {
-            Guard::When { .. } => "when",
-            Guard::Otherwise { .. } => "otherwise",
-        };
-        push_route(
-            &step.name,
-            &outcome.route.name,
-            label,
-            index,
-            step_names,
-            targets,
-            edges,
-        );
-    }
-}
-
-fn collect_statement_routes(
-    source: &str,
-    statements: &[Statement],
-    label: &str,
-    step_names: &BTreeSet<&str>,
-    targets: &mut BTreeSet<String>,
-    edges: &mut Vec<ProjectionEdge>,
-) {
-    for (index, statement) in statements.iter().enumerate() {
-        match statement {
-            Statement::Route(route) => push_route(
-                source,
-                &route.target.name,
-                label,
-                index,
-                step_names,
-                targets,
-                edges,
-            ),
-            Statement::Pipe(pipe) => {
-                if let PipeEnd::Route(target) = &pipe.end {
-                    push_route(
-                        source,
-                        &target.name,
-                        label,
-                        index,
-                        step_names,
-                        targets,
-                        edges,
-                    );
-                }
-            }
-            Statement::Fork(fork) => {
-                collect_statement_routes(source, &fork.body, label, step_names, targets, edges);
-            }
-            Statement::Loop(looped) => {
-                collect_statement_routes(source, &looped.body, label, step_names, targets, edges);
-            }
-            Statement::Call(_)
-            | Statement::Spawn(_)
-            | Statement::Wait(_)
-            | Statement::Sleep(_)
             | Statement::SubStep(_)
             | Statement::Distribute(_)
             | Statement::Collect(_) => {}
@@ -389,38 +253,7 @@ fn collect_statement_routes(
     }
 }
 
-fn push_route(
-    source: &str,
-    target: &str,
-    label: &str,
-    index: usize,
-    step_names: &BTreeSet<&str>,
-    targets: &mut BTreeSet<String>,
-    edges: &mut Vec<ProjectionEdge>,
-) {
-    if !step_names.contains(target) {
-        return;
-    }
-    targets.insert(target.to_owned());
-    edges.push(edge(
-        format!("route:{source}:{target}:{label}:{index}"),
-        source,
-        target,
-        ProjectionEdgeKind::Route,
-        Some(label.to_owned()),
-    ));
-}
-
-fn falls_through(step: &Step) -> bool {
-    step.outcomes.is_empty()
-        && !matches!(step.body.last(), Some(Statement::Route(_)))
-        && !matches!(
-            step.body.last(),
-            Some(Statement::Pipe(pipe)) if matches!(pipe.end, PipeEnd::Route(_))
-        )
-}
-
-fn child_calls(steps: &[Step], children: &BTreeMap<&str, &ChildDecl>) -> Vec<ProjectionChildCall> {
+fn child_calls(steps: &[&Step], children: &BTreeMap<&str, &ChildDecl>) -> Vec<ProjectionChildCall> {
     let mut found = Vec::new();
     for step in steps {
         collect_child_calls(&step.name, &step.body, children, &mut found);
@@ -470,12 +303,10 @@ fn collect_child_calls(
             Statement::Loop(looped) => {
                 collect_child_calls(parent_step, &looped.body, children, found);
             }
-            Statement::SubStep(step) => {
-                collect_child_calls(parent_step, &step.body, children, found);
-            }
             Statement::Wait(_)
             | Statement::Sleep(_)
             | Statement::Route(_)
+            | Statement::SubStep(_)
             | Statement::Distribute(_)
             | Statement::Collect(_) => {}
         }

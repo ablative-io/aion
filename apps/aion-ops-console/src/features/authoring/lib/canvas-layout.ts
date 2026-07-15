@@ -2,15 +2,17 @@ import dagre from 'dagre';
 
 import type { GraphProjection, ProjectionStep } from './projection-types';
 
-/** Base box of one embedded (subflow-graph) node. */
+/** Base box of one embedded graph node. */
 export const EMBED_NODE_WIDTH = 200;
 export const EMBED_NODE_HEIGHT = 88;
 /** Square box of a pure-decision diamond node. */
 export const DECISION_NODE_SIZE = 160;
-/** Padding around an embedded subflow graph inside its node. */
+/** Padding around an embedded graph inside its node. */
 export const EMBED_PADDING = 16;
-/** Height of a subflow-call node's own header above its expanded graph. */
-export const SUBFLOW_HEADER_HEIGHT = 128;
+/** Height of a parent node's own header above its expanded graph. */
+export const EMBEDDED_HEADER_HEIGHT = 128;
+/** Lateral distance between parallel edge siblings. */
+export const PARALLEL_EDGE_GAP = 24;
 
 export type NodeSize = { width: number; height: number };
 export type PlacedNode = { x: number; y: number; width: number; height: number };
@@ -22,8 +24,8 @@ export type EmbeddedLayout = {
 
 /**
  * The drawn size of one step node, growing when the node is an expanded
- * subflow call (its own graph renders in place) and squaring when it is a
- * pure decision diamond. `path` is the node's expansion path — the
+ * subflow or substep owner (its graph renders in place) and squaring when it
+ * is a pure decision diamond. `path` is the node's expansion path — the
  * `/`-joined chain of step names from the canvas root.
  */
 export function nodeSize(
@@ -35,19 +37,19 @@ export function nodeSize(
   if (step.kind === 'decision') {
     return { width: DECISION_NODE_SIZE, height: DECISION_NODE_SIZE };
   }
-  const graph = step.subflow?.graph ?? null;
+  const graph = step.subflow?.graph ?? step.substeps;
   if (graph === null || !expanded.has(path)) return base;
   const inner = layoutEmbedded(graph, expanded, path);
   return {
     width: Math.max(base.width, inner.width + EMBED_PADDING * 2),
-    height: SUBFLOW_HEADER_HEIGHT + inner.height + EMBED_PADDING,
+    height: EMBEDDED_HEADER_HEIGHT + inner.height + EMBED_PADDING,
   };
 }
 
 /**
- * Lays out one embedded subflow graph with dagre (top-to-bottom), returning
- * top-left positions in local coordinates plus the drawn extent. Nested
- * expanded subflow calls grow their nodes recursively.
+ * Lays out one embedded graph with dagre (top-to-bottom), returning top-left
+ * positions in local coordinates plus the drawn extent. Nested expanded
+ * graphs grow their owner nodes recursively.
  */
 export function layoutEmbedded(
   graph: GraphProjection,
@@ -100,4 +102,28 @@ export function edgeLabel(edge: {
     return bound === null ? edge.label : `${edge.label} ${bound}`;
   }
   return edge.label;
+}
+
+/**
+ * Stable lateral offsets for edges sharing an endpoint pair. Sorting by wire
+ * id makes the assignment independent of response ordering.
+ */
+export function parallelEdgeOffsets(
+  edges: readonly { id: string; source: string; target: string }[]
+): ReadonlyMap<string, number> {
+  const groups = new Map<string, { id: string }[]>();
+  for (const edge of edges) {
+    const key = `${edge.source}\u0000${edge.target}`;
+    const group = groups.get(key) ?? [];
+    group.push(edge);
+    groups.set(key, group);
+  }
+  const offsets = new Map<string, number>();
+  for (const group of groups.values()) {
+    group.sort((left, right) => left.id.localeCompare(right.id));
+    for (const [index, edge] of group.entries()) {
+      offsets.set(edge.id, (index - (group.length - 1) / 2) * PARALLEL_EDGE_GAP);
+    }
+  }
+  return offsets;
 }
