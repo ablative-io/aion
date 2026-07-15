@@ -23,10 +23,14 @@ mod concat;
 mod drivers;
 #[path = "runtime_codecs/fix_cycle.rs"]
 mod fix_cycle;
+#[path = "runtime_codecs/fork_generality.rs"]
+mod fork_generality;
 #[path = "runtime_codecs/harness.rs"]
 mod harness;
 #[path = "runtime_codecs/pipes.rs"]
 mod pipes;
+#[path = "runtime_codecs/stmt_parity.rs"]
+mod stmt_parity;
 
 use std::error::Error;
 

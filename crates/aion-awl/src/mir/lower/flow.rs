@@ -15,14 +15,42 @@
 //! silent divergence from the reference):
 //! - substeps: mechanical but large (per-substep fns over the shared plan's
 //!   `sub_params`/`sub_node`, sibling/parent route frames, `on failure`
-//!   interaction) — `FnOrigin::SubStep` already exists;
-//! - `on failure`: needs the reserved `Stmt::Attempt` select emission
-//!   (attempt closure + defs-tuple threading, `emitter/steps.rs:301-354`);
-//!   sketch: lift the attempt body to a `FlowFn` returning `Ok(defs-tuple)`,
-//!   host does `CallLocal` + `Tail::If IsTagged(ok)` with the compensation
-//!   block (which must end in a route) in the else arm — reconvergence is
-//!   impossible, so the success continuation lives inside the then-arm;
-//! - dependency-parallel region layers (`parallel region`).
+//!   interaction — reference `emitter/subs.rs:20-60`, shape gates
+//!   `emitter/graph.rs:73-116`) against one valid-fixture pressure point
+//!   (`loop-outcomes/valid/substeps_two_stage.awl`) — `FnOrigin::SubStep`
+//!   already exists;
+//! - `on failure`: needs the reserved `Stmt::Attempt` select emission —
+//!   instruction selection refuses it (`select/flow.rs::unsupported_stmt`),
+//!   so support is select-surface work (attempt closure call + defs-tuple
+//!   threading mirroring `emitter/steps.rs:301-354`), beyond lowering scope;
+//!   the lowering sketch: lift the attempt body to a `FlowFn` returning
+//!   `Ok(defs-tuple)`, host does `CallLocal` + `Tail::If IsTagged(ok, arity
+//!   2)` with the compensation block (which must end in a route,
+//!   `emitter/steps.rs:485-501`) in the else arm — reconvergence is
+//!   impossible, so the success continuation nests in the then-arm; refuse
+//!   the body-terminal-route combination with the emitter's class
+//!   (`emitter/steps.rs:302-311`). Fixture pressure:
+//!   `on_failure_compensation.awl`, `ship_release_combined.awl`;
+//! - dependency-parallel region layers (`parallel region`). The reference is
+//!   richer twice over (`emitter/steps.rs`): single-bare-call layers (every
+//!   member = one unbound declared-action call, no outcomes/on-failure —
+//!   `layer_calls`) dispatch as ONE `workflow.all`, typed when homogeneous,
+//!   raw twins + per-position decode when heterogeneous
+//!   (`lower_hetero_parallel`); richer layers degrade to WRITTEN ORDER with
+//!   a generated visibility comment. Design if implemented: flatten
+//!   `region.layers` into the emitter's step walk; for a multi-member layer
+//!   first try the single-call-layer gate, lowering the typed/raw
+//!   `workflow.all` by reusing `fork_named`'s machinery (`AssertList` binds
+//!   + `bind_branches` per-position decode); otherwise lower members
+//!   sequentially and set `degraded_parallel: true` on the region `FlowFn`
+//!   (the MIR twin of the emitter's comment, printed as S13). Planning
+//!   impact: `chain_params`/`plan.chains` assume one member per layer — the
+//!   flattened order must be identical at plan and lower time; hetero layers
+//!   need raw twins planned, so `forks::raw_action_inventory` must also scan
+//!   multi-member layers. Fixtures unlocked:
+//!   `dag-fork/valid/after_multi_diamond.awl` (all-layer),
+//!   `dag-fork/valid/release_pipeline_combined.awl` +
+//!   `flagship/valid/dev_brief.awl` (degraded).
 //!
 //! Parity refusals (the reference emitter refuses these too — a language
 //! boundary, not a direct-path gap): mid-chain routes (the shared `Plan`

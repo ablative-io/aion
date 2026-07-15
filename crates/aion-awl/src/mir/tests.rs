@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::covered::COVERED;
 use super::{LowerError, MirModule, lower, print_mir, project_sidecar, verify};
 
 fn manifest_dir() -> PathBuf {
@@ -59,76 +60,6 @@ fn hex(bytes: &[u8]) -> String {
     }
     out
 }
-
-/// The exact set of `valid/` fixtures this BC-2 increment lowers, pinned so a
-/// regression from covered → refused (or a newly-covered fixture) fails the
-/// ratchet instead of being silently absorbed by the deferred bucket. Paths
-/// are relative to `tests/fixtures/rev2`, without the `.awl` extension.
-const COVERED: &[&str] = &[
-    "dag-fork/valid/after_single",
-    "dag-fork/valid/child_collection_fork",
-    "dag-fork/valid/child_collection_fork_sequential",
-    "dag-fork/valid/fall_through_chain",
-    "dag-fork/valid/fork_action_fanout",
-    "dag-fork/valid/fork_collection_join",
-    "dag-fork/valid/fork_named_branches",
-    "dag-fork/valid/fork_named_homogeneous",
-    "dag-fork/valid/fork_sequential",
-    "dag-fork/valid/fork_sequential_route",
-    "dag-fork/valid/sit_one",
-    "declarations/valid/call_site_override",
-    "declarations/valid/child_call_awaited",
-    "declarations/valid/declarations_combined",
-    "declarations/valid/spawn_detached",
-    "declarations/valid/worker_action_config_lines",
-    "declarations/valid/worker_retry_backoff",
-    "declarations/valid/worker_single_action",
-    "declarations/valid/workers_multiple",
-    "flagship/valid/awl_hello",
-    "header-types/valid/builtins",
-    "header-types/valid/combined",
-    "header-types/valid/doc_comments",
-    "header-types/valid/enum",
-    "header-types/valid/line_width",
-    "header-types/valid/minimal",
-    "header-types/valid/noncanonical_commas",
-    "header-types/valid/signal_wait",
-    "header-types/valid/workflow_timeout",
-    "header-types/valid/zero_inputs",
-    "loop-outcomes/valid/backward_route_bounded_cycle",
-    "loop-outcomes/valid/enum_when_totality",
-    "loop-outcomes/valid/float_threshold_guard",
-    "loop-outcomes/valid/fork_in_loop_live_ins",
-    "loop-outcomes/valid/guard_optional_wait",
-    "loop-outcomes/valid/loop_after_fall_through",
-    "loop-outcomes/valid/loop_compound_until_nested",
-    "loop-outcomes/valid/loop_counting_until_max",
-    "loop-outcomes/valid/loop_without_counting",
-    "loop-outcomes/valid/route_outcome_by_name",
-    "schema-doors/valid/import_constraints",
-    "schema-doors/valid/import_nested_defs",
-    "schema-doors/valid/import_ticket",
-    "schema-doors/valid/inline_schema_round",
-    "schema-doors/valid/inline_verbatim_constraints",
-    "schema-doors/valid/mixed_doors",
-    "schema-doors/valid/optional_shorthand",
-    "schema-doors/valid/short_circuit_optional",
-    "step-bodies/valid/calls_and_side_effects",
-    "step-bodies/valid/collection_predicates",
-    "step-bodies/valid/combinators",
-    "step-bodies/valid/fallible_all_short_circuit",
-    "step-bodies/valid/fallible_any_short_circuit",
-    "step-bodies/valid/fallible_collection_predicates",
-    "step-bodies/valid/general_concat",
-    "step-bodies/valid/index_and_concat",
-    "step-bodies/valid/literal_forms",
-    "step-bodies/valid/pipe_chain_stages",
-    "step-bodies/valid/predicates_and_operators",
-    "step-bodies/valid/step_bodies_combined",
-    "step-bodies/valid/wait_and_sleep",
-    "step-bodies/valid/wait_timeout_optional",
-    "step-bodies/valid/workflow_id",
-];
 
 /// Compare `contents` against the on-disk golden. A MISSING golden is a hard
 /// failure (a covered fixture must have a committed golden) unless

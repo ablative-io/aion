@@ -1,0 +1,22 @@
+//! Fetch profile and history in parallel; pin only the history fetch.
+workflow fork_named_hetero_config
+  input user_id: String
+  outcome assembled: type Dossier, route success
+
+type Profile { name: String }
+type History { events: [String] }
+type Dossier { name: String, count: Int }
+
+worker directory
+  action fetch_profile(id: String) -> Profile
+  action fetch_history(id: String) -> History
+
+step gather
+  fork
+    fetch_profile(id: user_id) -> profile
+    fetch_history(id: user_id) -> history
+      node archive01
+  join
+
+  history.events |> count -> total
+  route assembled(name: profile.name, count: total)

@@ -1,0 +1,22 @@
+//! Review the lead half once per revision, strictly in order.
+workflow fork_config_seq
+  input halves: [Half]
+  input revisions: [String]
+  outcome reviewed: type Reviewed, route success
+
+type Half     { name: String }
+type Report   { name: String, ok: Bool }
+type Reviewed { count: Int }
+
+worker review
+  action review_half(half: Half, revision: String) -> Report
+    node decl_host
+
+step fan_out
+  fork revision in revisions sequential
+    review_half(half: halves[0], revision: revision)
+      timeout 5m
+  join -> reports
+
+  reports |> count -> total
+  route reviewed(count: total)

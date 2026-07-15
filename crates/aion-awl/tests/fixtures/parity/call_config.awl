@@ -1,0 +1,15 @@
+//! Fetch a report, pinning the call to the edge host over the declared node.
+workflow call_config
+  input url: String
+  outcome fetched: type Report, route success
+
+type Report { body: String }
+
+worker fetcher
+  action fetch(url: String) -> Report
+    node decl_host, timeout 20m, retry 3 every 45s
+
+step fetch_report
+  fetch(url: url) -> report
+    node edge01
+  report |> route fetched

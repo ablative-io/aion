@@ -91,6 +91,28 @@ step check_all
     Ok(())
 }
 
+/// A document whose ONLY child-spawn forms are STATEMENT-LEVEL (an awaited
+/// child call, or a fire-and-forget `spawn`) must still plan the T-WIT
+/// witness — `needs_child_witness` covers `Statement::Call`/`Statement::Spawn`,
+/// not just collection forks and pipe stages. The salvage defect was a
+/// `child spawn has no planned witness` Planning error at lower time.
+#[test]
+fn statement_level_child_forms_plan_the_witness() -> Result<(), Box<dyn std::error::Error>> {
+    for fixture in [
+        "tests/fixtures/rev2/declarations/valid/child_call_awaited.awl",
+        "tests/fixtures/rev2/declarations/valid/spawn_detached.awl",
+    ] {
+        let module = lower_fixture(&manifest_dir().join(fixture))??;
+        super::verify(&module)?;
+        let printed = format!("{module:?}");
+        assert!(
+            printed.contains("ChildWitness"),
+            "{fixture} must carry the planned T-WIT function"
+        );
+    }
+    Ok(())
+}
+
 /// `sort` over a non-comparable key is the reference emitter's hard gate; the
 /// checker does not constrain key comparability, so a check-clean document
 /// must refuse here with the reference class.
