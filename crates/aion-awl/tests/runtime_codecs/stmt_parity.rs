@@ -19,6 +19,9 @@ use super::harness::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+/// One timeout-case arm's semantic expectation on the shared result string.
+type ArmCheck = fn(&str) -> bool;
+
 // ---- ride-alongs 4+5: index over a field base + non-empty list literals ----
 
 const REF_INDEX_LISTS_DRIVER: &str = r#"
@@ -285,7 +288,7 @@ fn wait_timeout_arms_execute_with_reference_parity() -> TestResult {
     let direct_bytes = select(&direct)?;
 
     // (label, ffi body, expectation on the shared result)
-    let arms: &[(&str, &str, fn(&str) -> bool)] = &[
+    let arms: &[(&str, &str, ArmCheck)] = &[
         (
             "completes",
             "-module(aion_flow_ffi).\n\

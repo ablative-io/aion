@@ -25,7 +25,7 @@ use crate::ast::{Statement, Step, WaitStmt};
 use crate::emitter::{GType, snake, type_ref_to_g};
 
 use super::super::func::{FlowFn, FnOrigin, MirFn};
-use super::super::ids::Span;
+use super::super::ids::{Span, Var};
 use super::super::ops::{Block, LiveAfter, Stmt, Tail, Test, Value};
 use super::super::runtime::RuntimeFn;
 use super::super::tydesc::TyDesc;
@@ -84,42 +84,7 @@ pub(super) fn lower_wait_stmt(
             })?;
     match &wait.timeout {
         None => {
-            let sig = ctx.fresh_var();
-            stmts.push(Stmt::CallLocal {
-                dst: Some(sig),
-                callee: signal_ref,
-                args: Vec::new(),
-                live_after: LiveAfter::default(),
-                span: Span::from_source(wait.signal_span),
-            });
-            let received = call_rt(
-                ctx,
-                RuntimeFn::WfReceive,
-                vec![Value::Var(sig)],
-                stmts,
-                wait.span,
-            );
-            let mapped = call_rt(
-                ctx,
-                RuntimeFn::MapReceiveError,
-                vec![Value::Var(received)],
-                stmts,
-                wait.span,
-            );
-            let bound = ctx.fresh_var();
-            stmts.push(Stmt::TryBind {
-                dst: bound,
-                result: mapped,
-                live_after: LiveAfter::default(),
-                span: Span::from_source(wait.span),
-            });
-            scope.insert(
-                wait.bind.name.clone(),
-                Binding {
-                    var: bound,
-                    ty: payload_ty,
-                },
-            );
+            lower_plain_wait(ctx, wait, signal_ref, payload_ty, scope, stmts);
             Ok(())
         }
         Some(timeout) => {
@@ -180,6 +145,54 @@ pub(super) fn lower_wait_stmt(
     }
 }
 
+/// The no-timeout form: `workflow.receive({snake}_signal()) |>
+/// map_receive_error` + `TryBind`, bind = the signal payload type.
+fn lower_plain_wait(
+    ctx: &mut Ctx<'_>,
+    wait: &WaitStmt,
+    signal_ref: super::super::ids::FnRef,
+    payload_ty: GType,
+    scope: &mut Scope,
+    stmts: &mut Vec<Stmt>,
+) {
+    let sig = ctx.fresh_var();
+    stmts.push(Stmt::CallLocal {
+        dst: Some(sig),
+        callee: signal_ref,
+        args: Vec::new(),
+        live_after: LiveAfter::default(),
+        span: Span::from_source(wait.signal_span),
+    });
+    let received = call_rt(
+        ctx,
+        RuntimeFn::WfReceive,
+        vec![Value::Var(sig)],
+        stmts,
+        wait.span,
+    );
+    let mapped = call_rt(
+        ctx,
+        RuntimeFn::MapReceiveError,
+        vec![Value::Var(received)],
+        stmts,
+        wait.span,
+    );
+    let bound = ctx.fresh_var();
+    stmts.push(Stmt::TryBind {
+        dst: bound,
+        result: mapped,
+        live_after: LiveAfter::default(),
+        span: Span::from_source(wait.span),
+    });
+    scope.insert(
+        wait.bind.name.clone(),
+        Binding {
+            var: bound,
+            ty: payload_ty,
+        },
+    );
+}
+
 struct TimeoutWait<'a> {
     step: &'a Step,
     wait: &'a WaitStmt,
@@ -200,15 +213,13 @@ fn build_lifted_fns(
     let saved = ctx.swap_var_counter(0);
     let receive_fn = build_receive_fn(ctx, build, signal_ref, receive_ordinal, wait_index);
     ctx.swap_var_counter(saved);
-    slots
-        .waits
-        .finish(receive_ordinal, MirFn::Flow(receive_fn?));
+    slots.waits.finish(receive_ordinal, MirFn::Flow(receive_fn));
 
     let (case_ordinal, case_ref) = slots.waits.take()?;
     let saved = ctx.swap_var_counter(0);
     let case_fn = build_case_fn(ctx, build, case_ordinal, wait_index);
     ctx.swap_var_counter(saved);
-    slots.waits.finish(case_ordinal, MirFn::Flow(case_fn?));
+    slots.waits.finish(case_ordinal, MirFn::Flow(case_fn));
     Ok((receive_ref, case_ref))
 }
 
@@ -220,7 +231,7 @@ fn build_receive_fn(
     signal_ref: super::super::ids::FnRef,
     ordinal: usize,
     wait_index: usize,
-) -> Result<FlowFn, LowerError> {
+) -> FlowFn {
     let wait = build.wait;
     let span = Span::from_source(wait.span);
     let mut stmts = Vec::new();
@@ -239,7 +250,7 @@ fn build_receive_fn(
         &mut stmts,
         wait.span,
     );
-    Ok(FlowFn {
+    FlowFn {
         origin: FnOrigin::Wait {
             step: build.step.name.clone(),
             index: u32::try_from(ordinal).unwrap_or(u32::MAX),
@@ -260,7 +271,7 @@ fn build_receive_fn(
         },
         span,
         degraded_parallel: false,
-    })
+    }
 }
 
 /// `{step}_wait_{k}_case/1`: the 4-arm timeout case as nested `Tail::If`
@@ -270,23 +281,60 @@ fn build_case_fn(
     build: &TimeoutWait<'_>,
     ordinal: usize,
     wait_index: usize,
-) -> Result<FlowFn, LowerError> {
-    let wait = build.wait;
-    let span = Span::from_source(wait.span);
+) -> FlowFn {
+    let span = Span::from_source(build.wait.span);
+    let subject = ctx.fresh_var();
+    let then_block = case_ok_arm(ctx, subject, span);
+    let error_block = case_error_arm(ctx, subject, span);
+    let ok = ctx.atom("ok");
+    let body = Block {
+        stmts: Vec::new(),
+        tail: Tail::If {
+            test: Test::IsTagged {
+                value: Value::Var(subject),
+                tag: ok,
+                arity: 2,
+            },
+            then_block: Box::new(then_block),
+            else_block: Box::new(error_block),
+            span,
+        },
+    };
+    FlowFn {
+        origin: FnOrigin::Wait {
+            step: build.step.name.clone(),
+            index: u32::try_from(ordinal).unwrap_or(u32::MAX),
+        },
+        name: format!("{}_wait_{}_case", snake(&build.step.name), wait_index),
+        params: vec![subject],
+        // The error side is the SDK `TimeoutResultError(AwlError)` nominal;
+        // it projects as the SDK module's custom type.
+        param_tys: vec![TyDesc::Result(
+            Box::new(ctx.tydesc(build.payload_ty)),
+            Box::new(TyDesc::Custom {
+                module: "aion/error".to_owned(),
+                name: "TimeoutResultError".to_owned(),
+                params: vec![TyDesc::AwlError],
+            }),
+        )],
+        ret_ty: TyDesc::Result(
+            Box::new(TyDesc::Option(Box::new(ctx.tydesc(build.payload_ty)))),
+            Box::new(TyDesc::AwlError),
+        ),
+        body,
+        span,
+        degraded_parallel: false,
+    }
+}
+
+/// `Ok(value) -> Ok(Some(value))` — the completed-in-time arm.
+fn case_ok_arm(ctx: &mut Ctx<'_>, subject: Var, span: Span) -> Block {
     let ok = ctx.atom("ok");
     let some = ctx.atom("some");
-    let none = ctx.atom("none");
-    let error = ctx.atom("error");
-    let timed_out = ctx.atom("timed_out_error");
-    let inner_tag = ctx.atom("inner_error");
-    let timer_failed = ctx.atom("awl_timer_failed");
-    let subject = ctx.fresh_var();
-
-    // Ok(value) -> Ok(Some(value))
     let payload = ctx.fresh_var();
     let wrapped = ctx.fresh_var();
     let ok_some = ctx.fresh_var();
-    let then_block = Block {
+    Block {
         stmts: vec![
             Stmt::FieldGet {
                 dst: payload,
@@ -308,7 +356,20 @@ fn build_case_fn(
             },
         ],
         tail: Tail::Return(Value::Var(ok_some)),
-    };
+    }
+}
+
+/// The error side of the case: `Error(error.TimedOutError(_)) -> Ok(None)`,
+/// `Error(error.InnerError(inner)) -> Error(inner)`, and
+/// `Error(error.TimeoutEngineFailure(message)) ->
+/// Error(awl_error.AwlTimerFailed(message))`.
+fn case_error_arm(ctx: &mut Ctx<'_>, subject: Var, span: Span) -> Block {
+    let ok = ctx.atom("ok");
+    let none = ctx.atom("none");
+    let error = ctx.atom("error");
+    let timed_out = ctx.atom("timed_out_error");
+    let inner_tag = ctx.atom("inner_error");
+    let timer_failed = ctx.atom("awl_timer_failed");
 
     // Error(error.TimedOutError(_)) -> Ok(None)
     let ok_none = ctx.fresh_var();
@@ -322,13 +383,9 @@ fn build_case_fn(
         tail: Tail::Return(Value::Var(ok_none)),
     };
 
-    // Error(error.InnerError(inner)) -> Error(inner)
     let inner_payload = ctx.fresh_var();
     let inner_error = ctx.fresh_var();
     let carried = ctx.fresh_var();
-
-    // Error(error.TimeoutEngineFailure(message)) ->
-    // Error(awl_error.AwlTimerFailed(message))
     let message = ctx.fresh_var();
     let failed = ctx.fresh_var();
     let failed_error = ctx.fresh_var();
@@ -372,7 +429,7 @@ fn build_case_fn(
         ],
         tail: Tail::Return(Value::Var(inner_error)),
     };
-    let error_block = Block {
+    Block {
         stmts: vec![Stmt::FieldGet {
             dst: carried,
             base: Value::Var(subject),
@@ -401,44 +458,5 @@ fn build_case_fn(
             }),
             span,
         },
-    };
-
-    let body = Block {
-        stmts: Vec::new(),
-        tail: Tail::If {
-            test: Test::IsTagged {
-                value: Value::Var(subject),
-                tag: ok,
-                arity: 2,
-            },
-            then_block: Box::new(then_block),
-            else_block: Box::new(error_block),
-            span,
-        },
-    };
-    Ok(FlowFn {
-        origin: FnOrigin::Wait {
-            step: build.step.name.clone(),
-            index: u32::try_from(ordinal).unwrap_or(u32::MAX),
-        },
-        name: format!("{}_wait_{}_case", snake(&build.step.name), wait_index),
-        params: vec![subject],
-        // The error side is the SDK `TimeoutResultError(AwlError)` nominal;
-        // it projects as the SDK module's custom type.
-        param_tys: vec![TyDesc::Result(
-            Box::new(ctx.tydesc(build.payload_ty)),
-            Box::new(TyDesc::Custom {
-                module: "aion/error".to_owned(),
-                name: "TimeoutResultError".to_owned(),
-                params: vec![TyDesc::AwlError],
-            }),
-        )],
-        ret_ty: TyDesc::Result(
-            Box::new(TyDesc::Option(Box::new(ctx.tydesc(build.payload_ty)))),
-            Box::new(TyDesc::AwlError),
-        ),
-        body,
-        span,
-        degraded_parallel: false,
-    })
+    }
 }

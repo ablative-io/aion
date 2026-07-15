@@ -41,16 +41,14 @@
 //!   `region.layers` into the emitter's step walk; for a multi-member layer
 //!   first try the single-call-layer gate, lowering the typed/raw
 //!   `workflow.all` by reusing `fork_named`'s machinery (`AssertList` binds
-//!   + `bind_branches` per-position decode); otherwise lower members
+//!   plus `bind_branches` per-position decode); otherwise lower members
 //!   sequentially and set `degraded_parallel: true` on the region `FlowFn`
 //!   (the MIR twin of the emitter's comment, printed as S13). Planning
 //!   impact: `chain_params`/`plan.chains` assume one member per layer — the
-//!   flattened order must be identical at plan and lower time; hetero layers
-//!   need raw twins planned, so `forks::raw_action_inventory` must also scan
-//!   multi-member layers. Fixtures unlocked:
-//!   `dag-fork/valid/after_multi_diamond.awl` (all-layer),
-//!   `dag-fork/valid/release_pipeline_combined.awl` +
-//!   `flagship/valid/dev_brief.awl` (degraded).
+//!   flattened order must be identical at plan and lower time; hetero
+//!   layers need raw twins planned, so `forks::raw_action_inventory` must
+//!   also scan multi-member layers. Fixtures unlocked: after multi diamond
+//!   (all-layer); release pipeline combined + flagship dev brief (degraded).
 //!
 //! Parity refusals (the reference emitter refuses these too — a language
 //! boundary, not a direct-path gap): mid-chain routes (the shared `Plan`

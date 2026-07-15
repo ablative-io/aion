@@ -79,13 +79,15 @@ pub(crate) fn echo_runner_ebin(
              run(ref) -> run_target(ref_target).\n\
              run_target(Target) ->\n\
              Parent = self(),\n\
-             _ = erlang:spawn_opt(?MODULE, Target, [Parent], [{{min_heap_size, 4096}}]),\n\
+             _ = erlang:spawn_opt(?MODULE, Target, [Parent], [{{min_heap_size, 8192}}]),\n\
              receive {{aion_awl_echo_result, Result}} -> Result end.\n\
              direct_target(Parent) ->\n\
-             Result = {direct_module}:'awl$rt_execute'(),\n\
+             Result = try {direct_module}:'awl$rt_execute'()\n\
+             catch Class:Reason -> {{caught, Class, Reason}} end,\n\
              Parent ! {{aion_awl_echo_result, {{Result, echo()}}}}.\n\
              ref_target(Parent) ->\n\
-             Result = {ref_module}:awl_rt_execute(),\n\
+             Result = try {ref_module}:awl_rt_execute()\n\
+             catch Class:Reason -> {{caught, Class, Reason}} end,\n\
              Parent ! {{aion_awl_echo_result, {{Result, echo()}}}}.\n\
              echo() ->\n\
              case erlang:get(awl_ffi_echo) of\n\
@@ -121,7 +123,7 @@ fn plain_call_site_config_merges_per_key_with_reference_parity() -> TestResult {
     let path = parity_fixture("call_config.awl");
     let reference = reference_module_at(&path, REF_CALL_CONFIG_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_call_config", &reference)])?;
-    ebins.push(dispatch_echo_ebin()?);
+    ebins.push(dispatch_echo_ebin("call_config")?);
 
     ebins.push(echo_runner_ebin(
         "call_config",
@@ -173,7 +175,7 @@ fn parallel_action_fork_site_config_dispatches_with_reference_parity() -> TestRe
     let path = parity_fixture("fork_config.awl");
     let reference = reference_module_at(&path, REF_FORK_CONFIG_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_config", &reference)])?;
-    ebins.push(collect_echo_ebin()?);
+    ebins.push(collect_echo_ebin("fork_config")?);
 
     let mut direct = lowered_at(&path)?;
     let input = atom_ref(&mut direct, "fork_config_input");
@@ -226,7 +228,7 @@ fn sequential_fork_site_config_and_index_prelude_dispatch_with_reference_parity(
     let path = parity_fixture("fork_config_seq.awl");
     let reference = reference_module_at(&path, REF_FORK_CONFIG_SEQ_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_config_seq", &reference)])?;
-    ebins.push(dispatch_echo_ebin()?);
+    ebins.push(dispatch_echo_ebin("fork_config_seq")?);
 
     let mut direct = lowered_at(&path)?;
     let input = atom_ref(&mut direct, "fork_config_seq_input");
@@ -279,7 +281,7 @@ fn named_fork_homogeneous_site_config_parity() -> TestResult {
     let path = parity_fixture("fork_named_config.awl");
     let reference = reference_module_at(&path, REF_FORK_NAMED_CONFIG_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_named_config", &reference)])?;
-    ebins.push(collect_echo_ebin()?);
+    ebins.push(collect_echo_ebin("fork_named_config")?);
 
     let mut direct = lowered_at(&path)?;
     let input = atom_ref(&mut direct, "fork_named_config_input");
@@ -324,7 +326,7 @@ fn named_fork_heterogeneous_site_config_parity() -> TestResult {
     let path = parity_fixture("fork_named_hetero_config.awl");
     let reference = reference_module_at(&path, REF_FORK_NAMED_HETERO_DRIVER)?;
     let mut ebins = gleam_build(&[("ref_fork_named_hetero_config", &reference)])?;
-    ebins.push(collect_echo_ebin()?);
+    ebins.push(collect_echo_ebin("fork_named_hetero")?);
 
     let mut direct = lowered_at(&path)?;
     let input = atom_ref(&mut direct, "fork_named_hetero_config_input");
@@ -371,19 +373,28 @@ pub fn awl_rt_execute() {
 }
 "#;
 
-/// The completing collector: `prepare` yields a two-item batch, every
-/// per-pass `workflow.map` collect completes with two DISTINCT verdict
-/// payloads (order-observable), and `fold` echoes its encoded input —
-/// which embeds the joined verdicts in join order — into the process
-/// dictionary, one entry per loop pass.
+/// The completing collector. Plain-call completion is TWO-PHASE
+/// (`run.gleam::dispatch` then `await_activity_result` on the returned
+/// correlation id), so the stub parks each payload in the process dictionary
+/// under its correlation: `prepare` yields a two-item batch, every per-pass
+/// `workflow.map` collect completes with two DISTINCT verdict payloads
+/// (order-observable), and `fold` echoes its encoded input — which embeds
+/// the joined verdicts in join order — one entry per loop pass.
 const FORK_IN_LOOP_FFI: &str = r#"-module(aion_flow_ffi).
--export([dispatch_activity/3, collect_all/2]).
+-export([dispatch_activity/3, await_activity_result/1, collect_all/2]).
 dispatch_activity(<<"prepare">>, _Input, _Config) ->
-    {ok, <<"{\"items\":[\"a\",\"b\"]}">>};
+    erlang:put({awl_pending, <<"prepare">>}, <<"{\"items\":[\"a\",\"b\"]}">>),
+    {ok, <<"prepare">>};
 dispatch_activity(<<"fold">>, Input, _Config) ->
     Prior = case erlang:get(awl_ffi_echo) of undefined -> <<>>; P -> P end,
     erlang:put(awl_ffi_echo, <<Prior/binary, "fold:", Input/binary, ";">>),
-    {ok, <<"{\"complete\":false}">>}.
+    erlang:put({awl_pending, <<"fold">>}, <<"{\"complete\":false}">>),
+    {ok, <<"fold">>}.
+await_activity_result(Correlation) ->
+    case erlang:get({awl_pending, Correlation}) of
+        undefined -> {error, <<"terminal:unknown correlation">>};
+        Payload -> {ok, Payload}
+    end.
 collect_all(_Id, _Specs) ->
     {ok, <<"[\"{\\\"blocking\\\":true}\",\"{\\\"blocking\\\":false}\"]">>}.
 "#;

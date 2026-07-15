@@ -31,24 +31,36 @@ fn zero_src() -> crate::Span {
     }
 }
 
+/// How one activity value is formed at its call site: the call-site config
+/// override line (merged per key over the declaration by
+/// `apply_action_config`), the piped single argument (a pipe stage;
+/// otherwise arguments come from `call.args`), and whether the value rides
+/// the wire-identical raw wrapper twin (`Activity(String, String)`)
+/// heterogeneous named forks dispatch through.
+pub(super) struct ActivityForm<'a> {
+    pub(super) site_config: Option<&'a crate::ast::ConfigLine>,
+    pub(super) piped: Option<(Value, GType)>,
+    pub(super) raw: bool,
+}
+
 /// Build the UNRUN configured activity value: `<action>_activity(args) |>
 /// config` (retry/timeout/`task_queue`/node), without `workflow.run`. This is
-/// the value `workflow.map`/`workflow.all` fan-outs take directly; `raw`
-/// selects the wire-identical raw wrapper twin (`Activity(String, String)`)
-/// heterogeneous named forks dispatch through. `piped` supplies the single
-/// argument for a pipe stage; otherwise arguments come from `call.args`.
-/// `site_config` is the call-site override line, merged per key over the
-/// declaration config (`apply_action_config`).
+/// the value `workflow.map`/`workflow.all` fan-outs take directly; the
+/// call-site shape (config override, piped argument, raw twin) rides in
+/// [`ActivityForm`].
 pub(super) fn activity_value(
     ctx: &mut Ctx<'_>,
     plan: &FnPlan,
     call: &Call,
-    site_config: Option<&crate::ast::ConfigLine>,
-    piped: Option<(Value, GType)>,
+    form: ActivityForm<'_>,
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
-    raw: bool,
 ) -> Result<Var, LowerError> {
+    let ActivityForm {
+        site_config,
+        piped,
+        raw,
+    } = form;
     let Some(&(queue, decl)) = ctx.emitter.actions.get(call.name.as_str()) else {
         return Err(LowerError::unsupported(
             "child call or unknown action",
@@ -123,7 +135,18 @@ pub(super) fn activity_call(
     scope: &Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<Var, LowerError> {
-    let queued = activity_value(ctx, plan, call, site_config, piped, scope, stmts, false)?;
+    let queued = activity_value(
+        ctx,
+        plan,
+        call,
+        ActivityForm {
+            site_config,
+            piped,
+            raw: false,
+        },
+        scope,
+        stmts,
+    )?;
     let ran = call_rt(
         ctx,
         RuntimeFn::WfRun,

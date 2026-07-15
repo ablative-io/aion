@@ -290,9 +290,12 @@ pub(crate) fn dispatch_refused_ebin() -> Result<PathBuf, Box<dyn Error>> {
 /// failed")`), so the wire bytes are observed through the recorded echo (an
 /// in-process runner reads it back after the run — the echo-runner pattern
 /// in `fork_generality.rs`), not through the workflow result.
-pub(crate) fn collect_echo_ebin() -> Result<PathBuf, Box<dyn Error>> {
+/// `label` keys the scratch dir per TEST: concurrent tests must never share
+/// one stub dir, or one test's `erlc` re-compile races another's VM load
+/// (best-effort loading silently skips a mid-write `.beam`).
+pub(crate) fn collect_echo_ebin(label: &str) -> Result<PathBuf, Box<dyn Error>> {
     ffi_stub_ebin(
-        "collect_echo",
+        &format!("collect_echo_{label}"),
         "-module(aion_flow_ffi).\n-export([collect_all/2]).\n\
          collect_all(_Id, Specs) ->\n\
          erlang:put(awl_ffi_echo, join(Specs, <<>>)),\n\
@@ -306,9 +309,10 @@ pub(crate) fn collect_echo_ebin() -> Result<PathBuf, Box<dyn Error>> {
 /// plain calls: `dispatch_activity` records `name|input|config`
 /// (`run.gleam::dispatch`) under the same process-dictionary key, then
 /// refuses.
-pub(crate) fn dispatch_echo_ebin() -> Result<PathBuf, Box<dyn Error>> {
+/// `label` keys the scratch dir per test (see [`collect_echo_ebin`]).
+pub(crate) fn dispatch_echo_ebin(label: &str) -> Result<PathBuf, Box<dyn Error>> {
     ffi_stub_ebin(
-        "dispatch_echo",
+        &format!("dispatch_echo_{label}"),
         "-module(aion_flow_ffi).\n-export([dispatch_activity/3]).\n\
          dispatch_activity(Name, Input, Config) ->\n\
          erlang:put(awl_ffi_echo, <<Name/binary, \"|\", Input/binary, \"|\", \

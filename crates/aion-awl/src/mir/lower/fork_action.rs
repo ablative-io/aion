@@ -10,7 +10,7 @@ use super::super::ids::{Span, Var};
 use super::super::ops::{LiveAfter, Stmt, Tail, Value};
 use super::super::runtime::RuntimeFn;
 use super::super::tydesc::TyDesc;
-use super::activity::{activity_value, call_rt, record_new};
+use super::activity::{ActivityForm, activity_value, call_rt, record_new};
 use super::build::FnPlan;
 use super::ctx::Ctx;
 use super::driver::LowerError;
@@ -238,11 +238,13 @@ fn build_map_body(ctx: &mut Ctx<'_>, build: &ForkBuild<'_>) -> Result<FlowFn, Lo
         ctx,
         build.plan,
         build.call,
-        build.config,
-        None,
+        ActivityForm {
+            site_config: build.config,
+            piped: None,
+            raw: false,
+        },
         &fn_scope,
         &mut stmts,
-        false,
     )?;
     let input_name = ctx.emitter.action_inputs[build.call.name.as_str()].clone();
     let ret_ty = TyDesc::Activity(
@@ -285,11 +287,13 @@ fn build_fold_body(ctx: &mut Ctx<'_>, build: &ForkBuild<'_>) -> Result<FlowFn, L
         ctx,
         build.plan,
         build.call,
-        build.config,
-        None,
+        ActivityForm {
+            site_config: build.config,
+            piped: None,
+            raw: false,
+        },
         &fn_scope,
         &mut stmts,
-        false,
     )?;
     let ran = call_rt(
         ctx,

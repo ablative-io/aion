@@ -131,7 +131,7 @@ pub(super) fn lower_expr(
         Expr::Not { .. } | Expr::Binary { .. } | Expr::Predicate { .. } => {
             lower_logic(ctx, expr, scope, stmts)
         }
-        other => Err(LowerError::unsupported("expression", expr_span(other))),
+        other @ Expr::Duration(_) => Err(LowerError::unsupported("expression", expr_span(other))),
     }
 }
 
