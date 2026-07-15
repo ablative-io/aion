@@ -48,6 +48,8 @@ fn render_origin(module: &MirModule, origin: &FnOrigin) -> String {
         FnOrigin::Region { entry_step } => format!("region({entry_step})"),
         FnOrigin::ChainStep { entry_step, step } => format!("chain_step({entry_step}.{step})"),
         FnOrigin::SubStep { parent, sub } => format!("substep({parent}.{sub})"),
+        FnOrigin::SubflowWrapper { subflow } => format!("subflow_wrapper({subflow})"),
+        FnOrigin::RegionWrapper { region, open } => format!("region_wrapper(r{region}:{open})"),
         FnOrigin::Loop { step, index } => format!("loop({step}#{index})"),
         FnOrigin::Fork { step, index } => format!("fork({step}#{index})"),
         FnOrigin::Wait { step, index } => format!("wait({step}#{index})"),
@@ -109,13 +111,21 @@ fn print_template(module: &MirModule, template: &TemplateFn, out: &mut String) {
             entry,
             entry_args,
         } => format!(
-            "T-EXEC fields=[{}] entry={} args={entry_args:?}",
+            "T-EXEC fields=[{}] entry={} args=[{}]",
             input_fields
                 .iter()
                 .map(|(name, ty)| format!("{name}:{}", render_tydesc(ty)))
                 .collect::<Vec<_>>()
                 .join(", "),
-            fn_name(module, *entry)
+            fn_name(module, *entry),
+            entry_args
+                .iter()
+                .map(|arg| match arg {
+                    super::super::func::ExecArg::Field(index) => index.to_string(),
+                    super::super::func::ExecArg::Zero => "zero".to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         TemplateFn::ActivityWrapper {
             action,
