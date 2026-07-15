@@ -74,7 +74,12 @@ fn exercise_fake_norn(root: &Path) -> TestResult {
     let executable = write_fake_norn(root)?;
     let instructions = "Use literal {workflow_id} and {activity_type} instructions.";
     let prompt = "Return {workflow_id} and {activity_type} in the fake terminal object.";
-    let schema = r#"  {"type":"object","$comment":"literal {workflow_id} {activity_type}","properties":{"summary":{"type":"string"},"items":{"type":"array"}},"required":["summary","items"]}"#;
+    let schema = concat!(
+        "  \n\t",
+        r#"{"type":"object","$comment":"literal {workflow_id} {activity_type}","properties":{"summary":{"type":"string"},"items":{"type":"array"}},"required":["summary","items"]}"#,
+        " \t"
+    );
+    let transported_schema = schema.trim_start();
     let session_key = "session-{workflow_id}-{activity_type}";
     let workspace = root
         .join("workspace-{workflow_id}-{activity_type}")
@@ -108,7 +113,7 @@ fn exercise_fake_norn(root: &Path) -> TestResult {
             "--append-system-prompt",
             instructions,
             "--output-schema",
-            schema,
+            transported_schema,
             "--session-id",
             session_key,
             "--resume-if-exists",
@@ -176,10 +181,11 @@ fn fake_norn_executable_exercises_the_actual_start_and_session_path() -> TestRes
 #[test]
 fn prepares_all_static_and_per_run_arguments_with_default_session() -> TestResult {
     let harness = GeneralNornHarness::new("norn-test");
+    let schema = "  \n\t{\"type\":\"object\",\"$comment\":\"{workflow_id} {activity_type}\"} \t";
     let spec = run_spec(&json!({
         "instructions": "Be literal: {workflow_id} and {activity_type}.",
         "prompt": "Inspect {workflow_id} and {activity_type} exactly.",
-        "output_schema": "  {\"type\":\"object\",\"$comment\":\"{workflow_id} {activity_type}\"}",
+        "output_schema": schema,
         "workspace_path": "/work/{workflow_id}/{activity_type}",
         "disallowed_tools": "write,{workflow_id},{activity_type}"
     }))?;
@@ -197,7 +203,7 @@ fn prepares_all_static_and_per_run_arguments_with_default_session() -> TestResul
             "--append-system-prompt",
             "Be literal: {workflow_id} and {activity_type}.",
             "--output-schema",
-            "  {\"type\":\"object\",\"$comment\":\"{workflow_id} {activity_type}\"}",
+            "{\"type\":\"object\",\"$comment\":\"{workflow_id} {activity_type}\"} \t",
             "--session-id",
             expected_session.as_str(),
             "--resume-if-exists",

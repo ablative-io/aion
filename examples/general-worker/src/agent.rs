@@ -87,12 +87,13 @@ impl GeneralNornHarness {
             }
             None => format!("{}-agent", spec.workflow_id),
         };
+        let output_schema = input.output_schema.trim_start().to_owned();
 
         let mut per_run_arguments = vec![
             "--append-system-prompt".to_owned(),
             input.instructions,
             "--output-schema".to_owned(),
-            input.output_schema,
+            output_schema,
             "--session-id".to_owned(),
             session_key,
             "--resume-if-exists".to_owned(),

@@ -8,7 +8,7 @@ This package is a standalone Rust worker for small workflows that need one drive
 | `run_command` | `shell` | Execute one trusted command and return the completed process as data. |
 | `parse_output` | `shell` | Extract JSON-path, regex, or matching-line data without terminal activity failures. |
 
-The agent connection runs on a spawned OS thread. The shell connection runs on the main thread and writes the optional readiness file after that connection registers. Both use `serve_with_redial`, a `100 ms` initial delay, a `5 s` cap, and `usize::MAX` reconnect attempts.
+The agent connection runs on a spawned OS thread. The shell connection runs on the main thread and writes the optional readiness file after that connection registers. Both use `serve_with_redial`, a shared stop signal, a `100 ms` initial delay, a `5 s` cap, and `usize::MAX` reconnect attempts. A terminal connection error stops the peer loop; the main thread always joins the agent thread and reports both diagnostics if both loops fail.
 
 ## Start manually
 
@@ -48,7 +48,7 @@ CLI behavior:
 }
 ```
 
-Missing fields, malformed activity JSON, non-UTF-8 input, and blank required fields are Norn-harness protocol errors. A supplied blank `session_key` is also a protocol error. An absent `session_key` is computed directly as `<workflow-id>-agent`. An absent or blank `disallowed_tools` value adds no deny-list argument. Every caller-provided argument is passed literally: substrings such as `{workflow_id}` and `{activity_type}` are not treated as templates.
+Missing fields, malformed activity JSON, non-UTF-8 input, and blank required fields are Norn-harness protocol errors. A supplied blank `session_key` is also a protocol error. An absent `session_key` is computed directly as `<workflow-id>-agent`. An absent or blank `disallowed_tools` value adds no deny-list argument. Caller-provided arguments are passed literally: substrings such as `{workflow_id}` and `{activity_type}` are not treated as templates. The sole transport normalization is that leading whitespace is removed from `output_schema`; all remaining schema content is preserved byte-for-byte.
 
 Every Norn child receives these static arguments:
 
@@ -67,7 +67,7 @@ The per-run arguments are appended in this order:
 [--disallowed-tools <disallowed_tools>]
 ```
 
-The schema is passed inline; no schema file is created. Norn `0.1.0` accepts inline JSON when the schema begins with `{`. The worker enforces required/nonblank transport fields but does not reimplement JSON Schema validation; Norn owns interpretation of the supplied schema.
+The schema is passed inline; no schema file is created. Norn `0.1.0` accepts inline JSON when the schema argument begins with `{`, so the worker removes insignificant leading whitespace before passing it. This does not expand reserved substrings or otherwise alter the schema. The worker enforces required/nonblank transport fields but does not reimplement JSON Schema validation; Norn owns interpretation of the supplied schema.
 
 The wrapper replaces the neutral `AgentRunSpec` input with `prompt` encoded as a JSON string. Norn's terminal payload is returned verbatim—there is no post-run validation, reshaping, Git status check, commit, or other workspace mutation. The advertised intervention capabilities are exactly `InjectMessage` and `Cancel`.
 

@@ -1,10 +1,12 @@
-   Compiling general-worker v0.1.0 (/Users/tom/Developer/ablative/aion/examples/general-worker)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.04s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
      Running unittests src/lib.rs (examples/general-worker/target/debug/deps/general_worker-5e6dbbb47666e1ff)
 
-running 0 tests
+running 3 tests
+test runtime::tests::agent_terminal_error_sets_shared_stop_immediately ... ok
+test runtime::tests::shell_failure_joins_agent_and_preserves_both_diagnostics ... ok
+test runtime::tests::unexpected_agent_return_stops_shell_and_is_reported ... ok
 
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running unittests src/main.rs (examples/general-worker/target/debug/deps/general_worker-267dde34f5ab949c)
 
@@ -21,16 +23,16 @@ test prepares_all_static_and_per_run_arguments_with_default_session ... ok
 test missing_and_blank_required_values_are_protocol_errors ... ok
 test fake_norn_executable_exercises_the_actual_start_and_session_path ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
 
      Running tests/composition.rs (examples/general-worker/target/debug/deps/composition-86da933e50f53401)
 
 running 6 tests
-test cli_defaults_are_explicit_and_norn_uses_the_injected_environment_default ... ok
 test cli_rejects_unknown_flags_missing_values_and_blank_values ... ok
-test cli_accepts_repeatable_addresses_and_all_overrides ... ok
 test agent_capabilities_are_exactly_inject_and_cancel ... ok
+test cli_accepts_repeatable_addresses_and_all_overrides ... ok
 test activity_node_map_is_exact ... ok
+test cli_defaults_are_explicit_and_norn_uses_the_injected_environment_default ... ok
 test registries_and_agent_activity_advertisement_are_exact ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -39,8 +41,8 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 11 tests
 test json_path_empty_query_addresses_compact_root ... ok
-test lines_miss_and_unsupported_mode_are_nonterminal_failures ... ok
 test lines_returns_all_substring_matches_in_source_order ... ok
+test lines_miss_and_unsupported_mode_are_nonterminal_failures ... ok
 test json_path_traverses_objects_arrays_and_renders_scalar_types ... ok
 test json_path_reports_malformed_json_and_precise_path_failures ... ok
 test serde_shape_and_success_failure_invariants_are_exact ... ok
@@ -50,7 +52,7 @@ test regex_positional_captures_return_an_array ... ok
 test identical_inputs_produce_identical_outputs ... ok
 test regex_named_captures_are_a_deterministically_ordered_object ... ok
 
-test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/run_command.rs (examples/general-worker/target/debug/deps/run_command-8b592c1353a8af4a)
 
@@ -59,12 +61,12 @@ test empty_argv_is_terminal ... ok
 test missing_executable_is_terminal ... ok
 test missing_working_directory_is_terminal_before_spawn ... ok
 test operating_system_spawn_failure_is_terminal ... ok
-test nonzero_exit_is_successful_result_data ... ok
-test success_preserves_contract_and_separates_stdout_from_stderr ... ok
-test stderr_only_overflow_does_not_modify_short_stdout ... ok
 test stdout_and_combined_output_are_clipped_independently ... ok
+test success_preserves_contract_and_separates_stdout_from_stderr ... ok
+test nonzero_exit_is_successful_result_data ... ok
+test stderr_only_overflow_does_not_modify_short_stdout ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
 
    Doc-tests general_worker
 
