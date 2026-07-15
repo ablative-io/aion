@@ -1,22 +1,30 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import type { Event, Payload } from '@/types';
+import type { Event, Payload, WorkflowId } from '@/types';
 
 import { projectTimeline } from '../lib/timeline';
 import { layoutSwimlane } from './laneLayout';
 import { Scrubber } from './Scrubber';
 import { Swimlane } from './Swimlane';
-import { prefixUpTo, scrubSequences } from './scrub';
+import {
+  cutsAtGlobalRank,
+  cutsAtTimestamp,
+  prefixUpTo,
+  scrubSequences,
+  snapGlobalRank,
+} from './scrub';
+import { buildAxisLayout, type VisibleWorkflow } from './timeLayout';
 
 const WORKFLOW_ID = 'workflow-1';
+const BASE = Date.parse('2026-07-15T00:00:00Z');
 const PAYLOAD: Payload = { content_type: 'Json', bytes: [123, 125] };
 
-function envelope(seq: number) {
+function envelope(seq: number, workflowId = WORKFLOW_ID, second = seq) {
   return {
     seq,
-    recorded_at: `2026-06-29T00:00:${String(seq).padStart(2, '0')}Z`,
-    workflow_id: WORKFLOW_ID,
+    recorded_at: new Date(BASE + second * 1000).toISOString(),
+    workflow_id: workflowId,
   };
 }
 
@@ -34,13 +42,13 @@ function workflowStarted(seq: number): Event {
   };
 }
 
-function activityScheduled(seq: number, id: number, type: string): Event {
+function activityScheduled(seq: number): Event {
   return {
     type: 'ActivityScheduled',
     data: {
       envelope: envelope(seq),
-      activity_id: id,
-      activity_type: type,
+      activity_id: 10,
+      activity_type: 'charge',
       input: PAYLOAD,
       task_queue: 'default',
       node: null,
@@ -48,93 +56,117 @@ function activityScheduled(seq: number, id: number, type: string): Event {
   };
 }
 
-function activityStarted(seq: number, id: number): Event {
+function activityStarted(seq: number): Event {
   return {
     type: 'ActivityStarted',
-    data: { envelope: envelope(seq), activity_id: id, attempt: 1 },
+    data: { envelope: envelope(seq), activity_id: 10, attempt: 1 },
   };
 }
 
-function activityCompleted(seq: number, id: number): Event {
+function activityCompleted(seq: number): Event {
   return {
     type: 'ActivityCompleted',
-    data: { envelope: envelope(seq), activity_id: id, attempt: 1, result: PAYLOAD },
+    data: { envelope: envelope(seq), activity_id: 10, attempt: 1, result: PAYLOAD },
+  };
+}
+
+function signalReceived(seq: number, workflowId: string, second: number): Event {
+  return {
+    type: 'SignalReceived',
+    data: { envelope: envelope(seq, workflowId, second), name: 'child-signal', payload: PAYLOAD },
   };
 }
 
 function fullRun() {
   return projectTimeline([
     workflowStarted(1),
-    activityScheduled(2, 10, 'charge'),
-    activityStarted(3, 10),
-    activityCompleted(4, 10),
+    activityScheduled(2),
+    activityStarted(3),
+    activityCompleted(4),
   ]);
 }
 
-test('scrubSequences lists every recorded seq, ascending and distinct', () => {
+function visibleWorkflows(): VisibleWorkflow[] {
+  return [
+    { workflowId: WORKFLOW_ID, entries: fullRun(), isRunning: false },
+    {
+      workflowId: 'child-1',
+      entries: projectTimeline([signalReceived(50, 'child-1', 2)]),
+      isRunning: false,
+    },
+  ];
+}
+
+test('prefix reconstruction remains sequence-exact and re-derives status', () => {
   expect(scrubSequences(fullRun())).toEqual([1, 2, 3, 4]);
-});
+  expect(prefixUpTo(fullRun(), 1).some((entry) => entry.kind === 'activity')).toBe(false);
 
-test('prefixUpTo(null) is the full live timeline (release returns to live)', () => {
-  const timeline = fullRun();
-  const prefix = prefixUpTo(timeline, null);
-
-  expect(prefix).toHaveLength(timeline.length);
-  expect(scrubSequences(prefix)).toEqual([1, 2, 3, 4]);
-});
-
-test('scrubbing back hides later events (the activity bar disappears)', () => {
-  // At seq 1 only WorkflowStarted is recorded; the activity is not yet scheduled.
-  const prefix = prefixUpTo(fullRun(), 1);
-  const layout = layoutSwimlane(prefix);
-
-  expect(layout.lanes.some((lane) => lane.kind === 'activity')).toBe(false);
-  expect(layout.lanes.some((lane) => lane.kind === 'lifecycle')).toBe(true);
-});
-
-test('prefix re-derives status at the cut: a completed activity reads as started', () => {
-  // Cut at seq 3 (ActivityStarted) — completion at seq 4 is excluded.
   const entry = prefixUpTo(fullRun(), 3).find((candidate) => candidate.kind === 'activity');
-
   if (entry === undefined || entry.kind !== 'activity') {
-    throw new Error('expected an activity entry at the cut');
+    throw new Error('expected activity at the cut');
   }
-
   expect(entry.status).toBe('started');
   expect(entry.completed).toBeNull();
-  // No fabricated values: the bar carries only the events at/below the cut.
-  expect(entry.events.every((event) => event.data.envelope.seq <= 3)).toBe(true);
+  expect(
+    layoutSwimlane(prefixUpTo(fullRun(), 1)).lanes.some((lane) => lane.kind === 'activity')
+  ).toBe(false);
 });
 
-test('handle maps the far-right stop to live; an interior seq stays scrubbed', () => {
-  const timeline = fullRun();
+test('continuous shared time maps to an independent cut for every visible workflow', () => {
+  const cuts = cutsAtTimestamp(visibleWorkflows(), BASE + 2_500);
+  expect(cuts.get(WORKFLOW_ID)).toBe(2);
+  expect(cuts.get('child-1')).toBe(50);
 
-  const live = renderToStaticMarkup(
-    <Scrubber entries={timeline} onScrub={() => {}} scrubSeq={null} />
-  );
-  expect(live).toContain('live · seq 4');
-  // Live button is disabled when already live (no dead control).
-  expect(live).toContain('disabled');
-
-  const scrubbed = renderToStaticMarkup(
-    <Scrubber entries={timeline} onScrub={() => {}} scrubSeq={2} />
-  );
-  expect(scrubbed).toContain('seq 2');
-  expect(scrubbed).toContain('of 4');
+  const plateau = cutsAtTimestamp(visibleWorkflows(), BASE + 2_900);
+  expect(plateau).toEqual(cuts);
 });
 
-test('Swimlane honours scrubSeq and renders only the prefix bars', () => {
-  const timeline = fullRun();
-
-  const scrubbed = renderToStaticMarkup(
-    <Swimlane entries={timeline} onSelect={() => {}} scrubSeq={1} selectedSequence={null} />
-  );
-  // The activity bar (scheduled at seq 2) must not appear at the seq-1 cut.
-  expect(scrubbed).toContain('Workflow swimlane');
-  expect(scrubbed).not.toContain('charge');
+test('stepped scrub snaps and includes the exact global-order prefix', () => {
+  const workflows = visibleWorkflows();
+  // At the shared second, seq 2 precedes child seq 50 by the documented tie-break.
+  const cuts = cutsAtGlobalRank(workflows, 2);
+  expect(cuts.get(WORKFLOW_ID)).toBe(2);
+  expect(cuts.get('child-1')).toBe(50);
+  expect(snapGlobalRank(1.6, 4)).toBe(2);
+  expect(snapGlobalRank(99, 4)).toBe(3);
 });
 
-test('empty timeline yields no scrubber (no fabricated stops)', () => {
-  const markup = renderToStaticMarkup(<Scrubber entries={[]} onScrub={() => {}} scrubSeq={null} />);
+test('scrubber renders continuous time and stepped global-rank readouts', () => {
+  const workflows = visibleWorkflows();
+  const timeAxis = buildAxisLayout(workflows, 'time', 500, BASE + 4_000);
+  const timeMarkup = renderToStaticMarkup(
+    <Scrubber axis={timeAxis} mode="time" onScrub={() => {}} scrubPosition={BASE + 2_500} />
+  );
+  expect(timeMarkup).toContain('Scrub to recorded time');
+  expect(timeMarkup).toContain('2026-07-15T00:00:02.500Z');
+
+  const steppedAxis = buildAxisLayout(workflows, 'stepped', 500, BASE + 4_000);
+  const steppedMarkup = renderToStaticMarkup(
+    <Scrubber axis={steppedAxis} mode="stepped" onScrub={() => {}} scrubPosition={2} />
+  );
+  expect(steppedMarkup).toContain('child-1 seq 50');
+});
+
+test('Swimlane applies the shared time cut to its workflow prefix', () => {
+  const markup = renderToStaticMarkup(
+    <Swimlane
+      entries={fullRun()}
+      isRunning={false}
+      nowMs={BASE + 4_000}
+      onScrubChange={() => {}}
+      onSelect={() => {}}
+      scrubPosition={BASE + 1_000}
+      selectedSequence={null}
+      workflowId={WORKFLOW_ID as WorkflowId}
+    />
+  );
+  expect(markup).toContain('Workflow swimlane');
+  expect(markup).not.toContain('charge');
+});
+
+test('empty axis yields no scrubber', () => {
+  const markup = renderToStaticMarkup(
+    <Scrubber axis={null} mode="time" onScrub={() => {}} scrubPosition={null} />
+  );
   expect(markup).toBe('');
 });

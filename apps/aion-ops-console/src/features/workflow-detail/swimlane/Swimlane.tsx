@@ -1,276 +1,338 @@
-import { type ReactNode, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { EmptyState } from '@/components/EmptyState';
-import { EventIcon, type EventIconKind } from '@/components/EventIcon';
 import { cn } from '@/lib/utils';
+import type { WorkflowId } from '@/types';
 
 import type { TimelineEntry } from '../types';
-import { LaneBar } from './LaneBar';
-import { layoutSwimlane, type SwimlaneBar, type SwimlaneLane } from './laneLayout';
-import { prefixUpTo } from './scrub';
+import { ChildTimelineLoader } from './ChildTimelineLoader';
+import { childNodePath, type ChildTimelineState, flattenLaneTree } from './laneTree';
+import { layoutSwimlane, type SwimlaneBar } from './laneLayout';
+import { Scrubber } from './Scrubber';
+import { cutsAtGlobalRank, cutsAtTimestamp, prefixUpTo } from './scrub';
+import { Axis, ChartToolbar, LaneRow, NoticeRow } from './SwimlaneRows';
+import { type AxisMode, buildAxisLayout } from './timeLayout';
 
-const COLUMN_WIDTH = 80;
-const LANE_LABEL_WIDTH = 168;
-const LANE_HEIGHT = 36;
+export const LANE_LABEL_WIDTH = 168;
 
-type SwimlaneProps = {
-  entries: readonly TimelineEntry[];
-  selectedSequence: number | null;
-  /**
-   * Select a bar by its seq. `origin.x` is the clicked bar's horizontal centre in
-   * viewport px so the bottom-docked detail sheet can morph out of that bar.
-   */
-  onSelect: (sequence: number, origin?: { x: number }) => void;
-  /**
-   * When set (S5 scrubber), the swimlane renders only the recorded prefix at/below
-   * this seq — later bars disappear and re-derived statuses reflect that point in
-   * history. `null` is live (the full timeline). See `scrub.ts`.
-   */
-  scrubSeq?: number | null;
-  /**
-   * Injected renderer for an expanded child lane's embedded run view. When
-   * absent NO expansion affordance renders (pure layout call sites unchanged);
-   * injection (not a direct import) keeps the module graph acyclic.
-   */
-  renderChildRun?: ((childWorkflowId: string) => ReactNode) | undefined;
-  /** Child workflow ids whose run regions start expanded (tests only). */
-  initialExpandedChildren?: readonly string[] | undefined;
+export type SwimlaneSelection = {
+  workflowId: WorkflowId;
+  sequence: number;
+  timeline: readonly TimelineEntry[];
+  clusterSequences: readonly number[];
 };
 
-/** A child lane narrowed to a non-null expansion target. */
-type ExpandableLane = SwimlaneLane & { childWorkflowId: string };
+/** The exact payload emitted by a parent or depth-N bar click. */
+export function selectionForBar(
+  workflowId: WorkflowId,
+  timeline: readonly TimelineEntry[],
+  bar: SwimlaneBar,
+  clusterSequences: readonly number[]
+): SwimlaneSelection {
+  return { workflowId, sequence: bar.sequence, timeline, clusterSequences };
+}
+
+export type SwimlaneProps = {
+  workflowId: WorkflowId;
+  entries: readonly TimelineEntry[];
+  isRunning: boolean;
+  selectedSequence: number | null;
+  selectedWorkflowId?: WorkflowId | null;
+  onSelect: (selection: SwimlaneSelection, origin?: { x: number }) => void;
+  scrubPosition?: number | null;
+  onScrubChange?: (position: number | null) => void;
+  initialAxisMode?: AxisMode;
+  initialExpandedChildren?: readonly string[];
+  /** Seeded child path states keep recursive SSR/pure rendering deterministic in tests. */
+  initialChildTimelines?: ReadonlyMap<string, ChildTimelineState>;
+  /** Production enables hook-backed lazy children; pure SSR tests may explicitly disable it. */
+  loadChildren?: boolean;
+  nowMs?: number;
+};
 
 /**
- * Partial-order swimlane (VISION §4.1). Renders the workflow as concurrent
- * horizontal lanes keyed on `seq` (not a linear list): a lifecycle lane, one lane
- * per activity / timer / child, plus signal + other lanes. Bars are positioned by
- * dense-seq-rank so concurrent work overlaps across lanes. Selecting a bar lifts its
- * seq + x-origin so the bottom-docked detail sheet morphs out of it. Lanes
- * collapse/expand. A child lane additionally offers a run-expand toggle that
- * mounts the injected embedded run view beneath the chart (and unmounts it on
- * collapse, closing its live subscription). This view
- * consumes the S3 `projectTimeline` output ONLY (no event re-parsing, no fabricated
- * data) — it grows in place as live events extend the projected entries.
+ * One shared chart for a workflow tree: time fits the viewport, stepped mode uses
+ * the visible global event order, and expanded child workflows splice true rows
+ * directly beneath their parent child lane.
  */
 function Swimlane({
+  workflowId,
   entries,
+  isRunning,
   selectedSequence,
+  selectedWorkflowId = workflowId,
   onSelect,
-  scrubSeq = null,
-  renderChildRun,
-  initialExpandedChildren,
+  scrubPosition = null,
+  onScrubChange,
+  initialAxisMode = 'time',
+  initialExpandedChildren = [],
+  initialChildTimelines,
+  loadChildren = false,
+  nowMs: nowOverride,
 }: SwimlaneProps) {
-  const layout = useMemo(() => layoutSwimlane(prefixUpTo(entries, scrubSeq)), [entries, scrubSeq]);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
-  const [expandedChildren, setExpandedChildren] = useState<ReadonlySet<string>>(
-    () => new Set(initialExpandedChildren ?? [])
+  const [axisMode, setAxisMode] = useState<AxisMode>(initialAxisMode);
+  const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedPaths, setCollapsedPaths] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedRows, setCollapsedRows] = useState<ReadonlySet<string>>(() => new Set());
+  const [childTimelines, setChildTimelines] = useState<ReadonlyMap<string, ChildTimelineState>>(
+    () => new Map(initialChildTimelines)
   );
+  const initialExpandedIds = useMemo(
+    () => new Set(initialExpandedChildren),
+    [initialExpandedChildren]
+  );
+  const tree = useMemo(
+    () =>
+      flattenLaneTree(
+        { workflowId, entries, isRunning },
+        childTimelines,
+        expandedPaths,
+        initialExpandedIds,
+        collapsedPaths
+      ),
+    [
+      childTimelines,
+      collapsedPaths,
+      entries,
+      expandedPaths,
+      initialExpandedIds,
+      isRunning,
+      workflowId,
+    ]
+  );
+  const containerRef = useRef<HTMLElement | null>(null);
+  const containerWidth = useObservedWidth(containerRef);
+  const nowMs = useCurrentTime(
+    tree.workflows.some((item) => item.isRunning),
+    nowOverride
+  );
+  const axis = useMemo(
+    () =>
+      buildAxisLayout(
+        tree.workflows,
+        axisMode,
+        Math.max(0, containerWidth - LANE_LABEL_WIDTH),
+        nowMs
+      ),
+    [axisMode, containerWidth, nowMs, tree.workflows]
+  );
+  const cuts = useMemo(() => {
+    if (scrubPosition === null) {
+      return null;
+    }
+    return axisMode === 'time'
+      ? cutsAtTimestamp(tree.workflows, scrubPosition)
+      : cutsAtGlobalRank(tree.workflows, scrubPosition);
+  }, [axisMode, scrubPosition, tree.workflows]);
 
-  if (layout.lanes.length === 0) {
+  const updateChildState = useCallback((path: string, state: ChildTimelineState) => {
+    setChildTimelines((current) => {
+      if (current.get(path) === state) {
+        return current;
+      }
+      const next = new Map(current);
+      next.set(path, state);
+      return next;
+    });
+  }, []);
+
+  if (layoutSwimlane(entries).lanes.length === 0) {
     return (
       <EmptyState description="No correlated events to lay out yet." title="Nothing to visualize" />
     );
   }
 
-  const trackWidth = Math.max(COLUMN_WIDTH, layout.rankCount * COLUMN_WIDTH);
+  const trackWidth = axis?.trackWidth ?? 0;
+  const innerWidth =
+    axisMode === 'stepped' ? LANE_LABEL_WIDTH + trackWidth : Math.max(0, containerWidth);
 
-  function toggleLane(id: string) {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+  function setMode(mode: AxisMode) {
+    setAxisMode(mode);
+    onScrubChange?.(null);
   }
 
-  function toggleChildRun(childWorkflowId: string) {
-    setExpandedChildren((current) => {
-      const next = new Set(current);
-      if (next.has(childWorkflowId)) {
-        next.delete(childWorkflowId);
-      } else {
-        next.add(childWorkflowId);
-      }
-      return next;
-    });
+  function toggleRow(id: string) {
+    setCollapsedRows((current) => toggleSetMember(current, id));
   }
 
-  function handleSelect(bar: SwimlaneBar, originX: number) {
-    onSelect(bar.sequence, { x: originX });
+  function toggleChild(parentPath: string, childWorkflowId: string) {
+    const path = childNodePath(parentPath, childWorkflowId);
+    const expanded =
+      !collapsedPaths.has(path) &&
+      (expandedPaths.has(path) || initialExpandedIds.has(childWorkflowId));
+    if (expanded) {
+      setCollapsedPaths((current) => new Set(current).add(path));
+      setExpandedPaths((current) => withoutPathAndDescendants(current, path));
+    } else {
+      setCollapsedPaths((current) => {
+        const next = new Set(current);
+        next.delete(path);
+        return next;
+      });
+      setExpandedPaths((current) => new Set(current).add(path));
+    }
   }
-
-  // The expanded child regions render BENEATH the horizontal-scroll section, not
-  // inside the scrollport: a full run view pinned to the parent's dense-rank
-  // width would be unreadable when the parent is scrolled right (and pathological
-  // at depth) — each embedded run view brings its own overflow-x-auto swimlane.
-  const expandedLanes: ExpandableLane[] =
-    renderChildRun === undefined
-      ? []
-      : layout.lanes.filter(
-          (lane): lane is ExpandableLane =>
-            lane.childWorkflowId !== null && expandedChildren.has(lane.childWorkflowId)
-        );
 
   return (
-    <div className="space-y-2">
+    <>
       <section
         aria-label="Workflow swimlane"
-        className="overflow-x-auto rounded-xl border border-border bg-surface-elevated"
+        className={cn(
+          'rounded-xl border border-border bg-surface-elevated',
+          axisMode === 'stepped' ? 'overflow-x-auto' : 'overflow-x-hidden'
+        )}
+        data-axis-mode={axisMode}
+        ref={containerRef}
       >
-        <div style={{ minWidth: LANE_LABEL_WIDTH + trackWidth }}>
-          <SeqAxis
-            labelWidth={LANE_LABEL_WIDTH}
-            sequences={layout.sequences}
-            trackWidth={trackWidth}
-          />
+        <ChartToolbar axisMode={axisMode} onChange={setMode} />
+        <div style={{ minWidth: innerWidth }}>
+          <Axis axis={axis} labelWidth={LANE_LABEL_WIDTH} />
           <ul aria-label="Lanes" className="divide-y divide-border">
-            {layout.lanes.map((lane) => {
-              const childId = lane.childWorkflowId;
+            {tree.rows.map((row) => {
+              if (row.kind === 'notice') {
+                return <NoticeRow key={row.id} labelWidth={LANE_LABEL_WIDTH} row={row} />;
+              }
+              const timeline = timelineForPath(row.path, workflowId, entries, childTimelines);
+              const cut = cuts?.get(row.workflowId);
+              const visibleEntries =
+                cuts === null
+                  ? timeline
+                  : cut === null || cut === undefined
+                    ? []
+                    : prefixUpTo(timeline, cut);
+              const lane = layoutSwimlane(visibleEntries).lanes.find(
+                (candidate) => candidate.id === row.lane.id
+              );
+              if (lane === undefined || axis === null) {
+                return null;
+              }
+              const childId = row.lane.childWorkflowId;
+              const childPath = childId === null ? null : childNodePath(row.path, childId);
+              const childExpanded =
+                childId !== null &&
+                childPath !== null &&
+                !collapsedPaths.has(childPath) &&
+                (expandedPaths.has(childPath) || initialExpandedIds.has(childId));
               return (
                 <LaneRow
-                  childWorkflowId={childId}
-                  collapsed={collapsed.has(lane.id)}
-                  key={lane.id}
+                  axis={axis}
+                  childExpanded={childExpanded}
+                  collapsed={collapsedRows.has(row.id)}
+                  depth={row.depth}
+                  key={row.id}
                   lane={lane}
-                  onSelectBar={handleSelect}
-                  onToggle={() => toggleLane(lane.id)}
-                  onToggleChildRun={
-                    childId !== null && renderChildRun !== undefined
-                      ? () => toggleChildRun(childId)
-                      : null
+                  onSelect={(bar, originX, clusterSequences) =>
+                    onSelect(
+                      selectionForBar(
+                        row.workflowId as WorkflowId,
+                        timeline,
+                        bar,
+                        clusterSequences
+                      ),
+                      { x: originX }
+                    )
                   }
-                  runExpanded={childId !== null && expandedChildren.has(childId)}
+                  onToggle={() => toggleRow(row.id)}
+                  onToggleChild={childId === null ? null : () => toggleChild(row.path, childId)}
                   selectedSequence={selectedSequence}
+                  selectedWorkflowId={selectedWorkflowId}
                   trackWidth={trackWidth}
+                  workflowId={row.workflowId}
                 />
               );
             })}
           </ul>
         </div>
+        <Scrubber
+          axis={axis}
+          mode={axisMode}
+          onScrub={(position) => onScrubChange?.(position)}
+          scrubPosition={scrubPosition}
+        />
       </section>
-      {expandedLanes.map((lane) => (
-        <section
-          aria-label={`Child run ${lane.childWorkflowId}`}
-          className="rounded-xl border border-border border-l-4 border-l-primary/40 bg-surface-base p-3 pl-4"
-          data-testid={`child-run:${lane.childWorkflowId}`}
-          key={`child-run:${lane.id}`}
-        >
-          {renderChildRun?.(lane.childWorkflowId)}
-        </section>
-      ))}
-    </div>
+      {loadChildren
+        ? tree.requests.map((request) => (
+            <ChildTimelineLoader
+              key={request.path}
+              onState={updateChildState}
+              path={request.path}
+              workflowId={request.workflowId as WorkflowId}
+            />
+          ))
+        : null}
+    </>
   );
 }
 
-function SeqAxis({
-  sequences,
-  trackWidth,
-  labelWidth,
-}: {
-  sequences: number[];
-  trackWidth: number;
-  labelWidth: number;
-}) {
-  return (
-    <div className="flex border-border border-b bg-surface-base">
-      <div
-        className="shrink-0 px-3 py-1 text-muted-foreground text-xs uppercase tracking-wide"
-        style={{ width: labelWidth }}
-      >
-        Lane
-      </div>
-      <div className="relative" style={{ width: trackWidth }}>
-        {sequences.map((seq, rank) => (
-          <span
-            className="absolute top-1 text-[10px] text-muted-foreground tabular-nums"
-            key={`axis:${seq}`}
-            style={{ left: rank * COLUMN_WIDTH + 4 }}
-          >
-            {seq}
-          </span>
-        ))}
-      </div>
-    </div>
+function timelineForPath(
+  path: string,
+  rootWorkflowId: string,
+  rootEntries: readonly TimelineEntry[],
+  children: ReadonlyMap<string, ChildTimelineState>
+): readonly TimelineEntry[] {
+  if (path === rootWorkflowId) {
+    return rootEntries;
+  }
+  return children.get(path)?.entries ?? [];
+}
+
+function toggleSetMember(current: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(current);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  return next;
+}
+
+function withoutPathAndDescendants(
+  current: ReadonlySet<string>,
+  path: string
+): ReadonlySet<string> {
+  return new Set(
+    [...current].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}>`))
   );
 }
 
-function LaneRow({
-  lane,
-  collapsed,
-  trackWidth,
-  selectedSequence,
-  onToggle,
-  onSelectBar,
-  childWorkflowId,
-  runExpanded,
-  onToggleChildRun,
-}: {
-  lane: SwimlaneLane;
-  collapsed: boolean;
-  trackWidth: number;
-  selectedSequence: number | null;
-  onToggle: () => void;
-  onSelectBar: (bar: SwimlaneBar, originX: number) => void;
-  childWorkflowId: string | null;
-  runExpanded: boolean;
-  /** Expand/collapse the child's embedded run view; null = no affordance. */
-  onToggleChildRun: (() => void) | null;
-}) {
-  return (
-    <li className="flex items-stretch">
-      {/* Label + run-expand toggle share ONE fixed 168px cell so every track —
-          child lanes included — starts at LANE_LABEL_WIDTH and bars stay aligned
-          with the SeqAxis dense-rank columns. */}
-      <div className="flex w-[168px] shrink-0 items-stretch">
-        <button
-          aria-expanded={!collapsed}
-          className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={onToggle}
-          type="button"
-        >
-          <EventIcon kind={lane.kind as EventIconKind} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-foreground text-xs">{lane.label}</span>
-            <span className="block text-[10px] text-muted-foreground">
-              {lane.bars.length} {lane.bars.length === 1 ? 'event' : 'events'}
-              {collapsed ? ' · collapsed' : ''}
-            </span>
-          </span>
-        </button>
-        {childWorkflowId !== null && onToggleChildRun !== null ? (
-          <button
-            aria-expanded={runExpanded}
-            aria-label={`${runExpanded ? 'Collapse' : 'Expand'} child run ${childWorkflowId}`}
-            className="shrink-0 rounded px-1 text-muted-foreground text-xs hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            data-testid={`expand-child:${childWorkflowId}`}
-            onClick={onToggleChildRun}
-            type="button"
-          >
-            {runExpanded ? '▾' : '▸'}
-          </button>
-        ) : null}
-      </div>
-      <div
-        className={cn('relative', collapsed && 'opacity-40')}
-        style={{ width: trackWidth, height: collapsed ? LANE_HEIGHT / 2 : LANE_HEIGHT }}
-      >
-        {collapsed
-          ? null
-          : lane.bars.map((bar) => (
-              <LaneBar
-                bar={bar}
-                columnWidth={COLUMN_WIDTH}
-                key={bar.id}
-                onSelect={onSelectBar}
-                selected={selectedSequence === bar.sequence}
-              />
-            ))}
-      </div>
-    </li>
-  );
+function useObservedWidth(ref: { current: HTMLElement | null }): number {
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (element === null || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const observed = entries[0];
+      if (observed !== undefined) {
+        setWidth(observed.contentRect.width);
+      }
+    });
+    observer.observe(element);
+    setWidth(element.getBoundingClientRect().width);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return width;
+}
+
+function useCurrentTime(running: boolean, override: number | undefined): number {
+  const [nowMs, setNowMs] = useState(() => override ?? Date.now());
+
+  useEffect(() => {
+    if (override !== undefined) {
+      setNowMs(override);
+      return;
+    }
+    if (!running) {
+      return;
+    }
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [override, running]);
+
+  return override ?? nowMs;
 }
 
 export { Swimlane };

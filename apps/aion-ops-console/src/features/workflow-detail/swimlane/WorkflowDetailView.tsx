@@ -2,7 +2,6 @@ import { useLiveWorkflowEvents } from '../hooks/useLiveWorkflowEvents';
 import { useWorkflowHistory } from '../hooks/useWorkflowHistory';
 import { useWorkflowSelectionParams } from '../hooks/useWorkflowSelectionParams';
 import type { WorkflowDetailProps } from '../types';
-import { EmbeddedRunView } from './EmbeddedRunView';
 import { WorkflowDetailViewContent } from './WorkflowDetailViewContent';
 
 /**
@@ -15,10 +14,6 @@ import { WorkflowDetailViewContent } from './WorkflowDetailViewContent';
  * wrapper owns them and the presentational content falls back to internal state so
  * it still renders without a router. The AttemptNavigator beneath enumerates
  * the durable attempt list. S0's `/workflows/:id` route renders this wrapper.
- *
- * The wrapper also injects the recursive child embed point: expanding a child
- * lane mounts an {@link EmbeddedRunView} (history backfill + lazy live tail)
- * beneath the lane; collapsing unmounts it and closes its subscription.
  */
 function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
   const historyQuery = useWorkflowHistory({ workflowId });
@@ -46,10 +41,7 @@ function WorkflowDetailView({ workflowId, namespace }: WorkflowDetailProps) {
       onRetry={() => void historyQuery.refetch()}
       onScrubChange={selection.setScrub}
       onSelectSequence={selection.setSelectedSequence}
-      renderChildRun={(childId) => (
-        <EmbeddedRunView ancestry={[workflowId]} namespace={namespace} workflowId={childId} />
-      )}
-      scrubSeq={selection.scrubSeq}
+      scrubPosition={selection.scrubPosition}
       selectedSequence={selection.selectedSequence}
       terminalOutcome={live.terminalOutcome}
       timeline={live.timeline}

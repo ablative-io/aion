@@ -1,11 +1,9 @@
 import { expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { MemoryRouter } from 'react-router';
 
 import type { Event, Payload } from '@/types';
 
 import { projectTimeline } from '../lib/timeline';
-import { CycleNotice, isEmbedCycle } from './EmbeddedRunView';
 import { buildRankIndex, layoutSwimlane } from './laneLayout';
 import { Swimlane } from './Swimlane';
 import { WorkflowDetailViewContent } from './WorkflowDetailView';
@@ -157,7 +155,7 @@ test('attempt segmentation records one rank per ActivityFailed attempt', () => {
 
   const activityLane = layout.lanes.find((lane) => lane.kind === 'activity');
   const bar = activityLane?.bars[0];
-  expect(bar?.attemptRanks).toHaveLength(2);
+  expect(bar?.attemptSequences).toEqual([3, 4]);
   expect(bar?.status).toBe('completed');
 });
 
@@ -192,7 +190,13 @@ test('child bar carries a drill-link target and the swimlane renders it', () => 
   expect(childBar?.childWorkflowId).toBe('child-1');
 
   const markup = renderToStaticMarkup(
-    <Swimlane entries={entries} onSelect={() => {}} selectedSequence={null} />
+    <Swimlane
+      entries={entries}
+      isRunning={false}
+      onSelect={() => {}}
+      selectedSequence={null}
+      workflowId={WORKFLOW_ID}
+    />
   );
   expect(markup).toContain('Workflow swimlane');
   // The child lane renders with its drill affordance (↳) and the bar references
@@ -388,153 +392,4 @@ test('opening the reopen panel mounts ReopenDiff from the live history with an e
   // The commit button is present and enabled (no stale "not yet available" note).
   expect(markup).toContain('reopen-commit');
   expect(markup).not.toContain('not yet available');
-});
-
-test('child lane carries its child workflow id for expansion', () => {
-  const layout = layoutSwimlane(projectTimeline([workflowStarted(1), childStarted(2, 'child-1')]));
-
-  const childLane = layout.lanes.find((lane) => lane.kind === 'child');
-  const lifecycleLane = layout.lanes.find((lane) => lane.kind === 'lifecycle');
-  expect(childLane?.childWorkflowId).toBe('child-1');
-  expect(lifecycleLane?.childWorkflowId).toBeNull();
-});
-
-test('swimlane renders an expand-run affordance only for child lanes', () => {
-  const entries = projectTimeline([activityScheduled(1, 10, 'charge'), childStarted(2, 'child-1')]);
-  const markup = renderToStaticMarkup(
-    <Swimlane
-      entries={entries}
-      onSelect={() => {}}
-      renderChildRun={() => null}
-      selectedSequence={null}
-    />
-  );
-
-  expect(markup).toContain('data-testid="expand-child:child-1"');
-  expect(markup).toContain('aria-label="Expand child run child-1"');
-  // Exactly ONE expand affordance: the activity lane offers none.
-  expect(markup.match(/expand-child:/g)).toHaveLength(1);
-});
-
-test('the run-expand toggle renders INSIDE the fixed-width label cell (track alignment)', () => {
-  const entries = projectTimeline([activityScheduled(1, 10, 'charge'), childStarted(2, 'child-1')]);
-  const markup = renderToStaticMarkup(
-    <Swimlane
-      entries={entries}
-      onSelect={() => {}}
-      renderChildRun={() => null}
-      selectedSequence={null}
-    />
-  );
-
-  // The 168px label cell nests no <div>, so its first closing </div> ends the
-  // cell. The toggle must sit before that close: rendered as a flex SIBLING of
-  // the cell it would push the child lane's track ~17px right of the SeqAxis
-  // dense-rank columns (every non-child track starts at LANE_LABEL_WIDTH).
-  const toggleAt = markup.indexOf('data-testid="expand-child:child-1"');
-  expect(toggleAt).toBeGreaterThan(-1);
-  const cellStart = markup.lastIndexOf('w-[168px]', toggleAt);
-  expect(cellStart).toBeGreaterThan(-1);
-  const cellEnd = markup.indexOf('</div>', cellStart);
-  expect(toggleAt).toBeLessThan(cellEnd);
-});
-
-test('an initially expanded child lane renders the injected run view beneath the chart', () => {
-  const entries = projectTimeline([childStarted(1, 'child-1')]);
-  const markup = renderToStaticMarkup(
-    <Swimlane
-      entries={entries}
-      initialExpandedChildren={['child-1']}
-      onSelect={() => {}}
-      renderChildRun={(id) => <div data-testid={`stub-${id}`}>embedded-stub</div>}
-      selectedSequence={null}
-    />
-  );
-
-  expect(markup).toContain('data-testid="child-run:child-1"');
-  expect(markup).toContain('embedded-stub');
-  // The toggle reads expanded (its aria-label flips to Collapse).
-  expect(markup).toContain('aria-label="Collapse child run child-1"');
-});
-
-test('no expansion affordance renders without a renderChildRun injection', () => {
-  const entries = projectTimeline([childStarted(1, 'child-1')]);
-  const markup = renderToStaticMarkup(
-    <Swimlane
-      entries={entries}
-      initialExpandedChildren={['child-1']}
-      onSelect={() => {}}
-      selectedSequence={null}
-    />
-  );
-
-  expect(markup).not.toContain('expand-child:');
-  expect(markup).not.toContain('child-run:');
-});
-
-test('expanded lanes nest recursively to grandchild depth', () => {
-  const parentEntries = projectTimeline([childStarted(1, 'child-1')]);
-  const grandchildEntries = projectTimeline([childStarted(1, 'grandchild-1')]);
-  const markup = renderToStaticMarkup(
-    <Swimlane
-      entries={parentEntries}
-      initialExpandedChildren={['child-1']}
-      onSelect={() => {}}
-      renderChildRun={() => (
-        <Swimlane
-          entries={grandchildEntries}
-          initialExpandedChildren={['grandchild-1']}
-          onSelect={() => {}}
-          renderChildRun={(id) => <div data-testid={`stub-${id}`}>grandchild-stub</div>}
-          selectedSequence={null}
-        />
-      )}
-      selectedSequence={null}
-    />
-  );
-
-  expect(markup).toContain('data-testid="child-run:child-1"');
-  expect(markup).toContain('data-testid="child-run:grandchild-1"');
-  expect(markup).toContain('grandchild-stub');
-});
-
-test('embedded content renders the ancestry breadcrumb, status, and full-view link', () => {
-  const timeline = projectTimeline([workflowStarted(1), activityScheduled(2, 10, 'charge')]);
-  const markup = renderToStaticMarkup(
-    <MemoryRouter>
-      <WorkflowDetailViewContent
-        ancestry={['parent-1']}
-        embedded
-        error={null}
-        history={[]}
-        isError={false}
-        isLive={true}
-        isLoading={false}
-        isTerminal={false}
-        namespace="default"
-        terminalOutcome={null}
-        timeline={timeline}
-        workflowId="child-1"
-      />
-    </MemoryRouter>
-  );
-
-  expect(markup).toContain('aria-label="Workflow ancestry"');
-  expect(markup).toContain('/workflows/parent-1');
-  expect(markup).toContain('data-testid="open-full-view"');
-  expect(markup).toContain('/workflows/child-1');
-  // The intervention surface (attempt navigator) is present at depth.
-  expect(markup).toContain('Agent attempts');
-  // The page <h1> header does NOT render in embedded mode.
-  expect(markup).not.toContain('Workflow child-1');
-});
-
-test('isEmbedCycle guards ancestor re-entry', () => {
-  expect(isEmbedCycle('a', ['a'])).toBe(true);
-  expect(isEmbedCycle('b', ['a'])).toBe(false);
-  expect(isEmbedCycle('a', [])).toBe(false);
-
-  const markup = renderToStaticMarkup(<CycleNotice workflowId="wf-cycle" />);
-  expect(markup).toContain('data-testid="embed-cycle"');
-  expect(markup).toContain('wf-cycle');
 });

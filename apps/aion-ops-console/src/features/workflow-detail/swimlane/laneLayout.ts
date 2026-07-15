@@ -41,11 +41,11 @@ export type SwimlaneBar = {
   /** Drill-link target for child bars; null otherwise. */
   childWorkflowId: string | null;
   /**
-   * One-based attempt segment boundaries (dense-ranks) for a retried activity, so
-   * `LaneBar` can render segmented attempts (driven by `ActivityFailed.attempt`).
+   * Event sequences for failed-attempt segment boundaries. The active shared axis
+   * resolves them to pixels (driven by `ActivityFailed.attempt`).
    * Empty for non-activity or single-attempt bars.
    */
-  attemptRanks: number[];
+  attemptSequences: number[];
   entry: TimelineEntry;
 };
 
@@ -119,7 +119,7 @@ export function layoutSwimlane(entries: readonly TimelineEntry[]): SwimlaneLayou
       case 'activity':
         appendBar(activityLanes, activityLaneId(entry), entry.activityType ?? entry.activityId, {
           ...spanBar(entry, rankIndex, activityStatus(entry.status)),
-          attemptRanks: attemptRanks(entry, rankIndex),
+          attemptSequences: attemptSequences(entry),
         });
         break;
       case 'timer':
@@ -247,7 +247,7 @@ function spanBar(
     status,
     label: entry.summary,
     childWorkflowId: null,
-    attemptRanks: [],
+    attemptSequences: [],
     entry,
   };
 }
@@ -268,19 +268,17 @@ function markerBar(
     status,
     label: entry.summary,
     childWorkflowId: null,
-    attemptRanks: [],
+    attemptSequences: [],
     entry,
   };
 }
 
-function attemptRanks(entry: ActivityTimelineEntry, rankIndex: Map<number, number>): number[] {
+function attemptSequences(entry: ActivityTimelineEntry): number[] {
   if (entry.failures.length === 0) {
     return [];
   }
 
-  return entry.failures
-    .map((failure) => rankOf(failure.sequence, rankIndex))
-    .sort((left, right) => left - right);
+  return entry.failures.map((failure) => failure.sequence).sort((left, right) => left - right);
 }
 
 function lifecycleStatus(outcome: ActivityTimelineEntry['status'] | string): BarStatus {

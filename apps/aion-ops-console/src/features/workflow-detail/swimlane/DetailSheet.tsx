@@ -16,6 +16,10 @@ import type {
 type DetailSheetProps = {
   /** The selected entry, or `null` to dismiss the sheet. */
   entry: TimelineEntry | null;
+  /** Burst-chip members remain individually reachable from this detail surface. */
+  clusterEntries?: readonly TimelineEntry[];
+  /** Select one member of the currently opened burst chip. */
+  onSelectClusterEntry?: (sequence: number) => void;
   /**
    * The clicked bar's horizontal centre, in px from the timeline container's left
    * edge. The sheet morphs out of that x-origin so the bar reads as "the entity"
@@ -36,7 +40,13 @@ type DetailSheetProps = {
  * selected (summary + status dot + seq) — and it is non-blocking, summon-and-
  * dismiss: dismissing clears the selection. Honors `prefers-reduced-motion`.
  */
-function DetailSheet({ entry, originX, onClose }: DetailSheetProps) {
+function DetailSheet({
+  entry,
+  clusterEntries = [],
+  onSelectClusterEntry,
+  originX,
+  onClose,
+}: DetailSheetProps) {
   const reducedMotion = useReducedMotion() ?? false;
   const transition = degradeToFade(SPRING_SIGNATURE, reducedMotion);
   const transformOrigin = originX === null ? 'center top' : `${originX}px top`;
@@ -57,6 +67,25 @@ function DetailSheet({ entry, originX, onClose }: DetailSheetProps) {
           transition={transition}
         >
           <SheetHeader entry={entry} onClose={onClose} />
+          {clusterEntries.length > 1 && onSelectClusterEntry !== undefined ? (
+            <nav
+              aria-label="Cluster events"
+              className="flex flex-wrap gap-1 border-border border-b px-4 py-2"
+            >
+              {clusterEntries.map((member) => (
+                <Button
+                  aria-pressed={member.sequence === entry.sequence}
+                  className="h-7 px-2 text-xs"
+                  key={member.id}
+                  onClick={() => onSelectClusterEntry(member.sequence)}
+                  type="button"
+                  variant="ghost"
+                >
+                  seq {member.sequence}
+                </Button>
+              ))}
+            </nav>
+          ) : null}
           <div className="max-h-[42vh] overflow-auto px-4 py-4" data-testid="detail-sheet-scroll">
             <DetailPanelBody entry={entry} />
           </div>
