@@ -137,3 +137,27 @@ test('a non-OK transcript read throws the server wire error', async () => {
     expect(error.status).toBe(403);
   }
 });
+
+test('the default fetch is invoked without a client-bound `this` (browser "Illegal invocation" regression)', async () => {
+  // Browsers throw "Illegal invocation" when fetch runs with `this` set to
+  // anything but the global. Simulate that strictness: a global fetch stub
+  // that rejects a foreign `this`, exactly like Chrome does. The pre-fix
+  // client stored the bare reference and died here.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = function stubFetch(this: unknown) {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation');
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ events: [] }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+  } as unknown as typeof fetch;
+  try {
+    const client = new TranscriptReadClient({ baseUrl: 'https://aion.example' });
+    expect(await client.fetchTranscript(target)).toEqual([]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

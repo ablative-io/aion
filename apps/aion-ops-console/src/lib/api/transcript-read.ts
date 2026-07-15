@@ -57,7 +57,11 @@ export class TranscriptReadClient {
 
   constructor(options: TranscriptReadOptions = {}) {
     this.baseUrl = stripTrailingSlash(options.baseUrl ?? '');
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    // The default must close over the global fetch, never store the bare
+    // reference: `this.fetchImpl(...)` would invoke fetch with `this` set to
+    // the client and the browser throws "Illegal invocation" (same trap
+    // ApiClient documents and avoids).
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
     this.credentials = options.credentials;
   }
 
