@@ -8,6 +8,7 @@ use std::path::Path;
 use aion_worker::{ActivityFailure, Classification};
 use general_worker::clip::CLIP_LIMIT_CHARS;
 use general_worker::{CommandInput, Shell, run_command};
+use serde_json::json;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -17,8 +18,12 @@ struct Shims {
 
 impl Shims {
     fn new() -> Result<Self, Box<dyn Error>> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-temp");
+        std::fs::create_dir_all(&root)?;
         Ok(Self {
-            directory: tempfile::tempdir()?,
+            directory: tempfile::Builder::new()
+                .prefix("run-command-")
+                .tempdir_in(root)?,
         })
     }
 
@@ -76,7 +81,7 @@ fn success_preserves_contract_and_separates_stdout_from_stderr() -> TestResult {
     let shims = Shims::new()?;
     shims.write(
         "tool",
-        "printf 'stdout:%s\\n' \"$1\"; printf 'stderr-only\\n' >&2; exit 0",
+        "pwd; /bin/sleep 0.05; printf 'stdout:%s\\n' \"$1\"; printf 'stderr-only\\n' >&2; exit 0",
     )?;
 
     let result = run_command(&shims.shell(), input(&shims, "probe", &["tool", "value"]))
@@ -86,8 +91,44 @@ fn success_preserves_contract_and_separates_stdout_from_stderr() -> TestResult {
     assert_eq!(result.argv, vec!["tool", "value"]);
     assert_eq!(result.exit_code, 0);
     assert!(result.passed);
-    assert_eq!(result.stdout, "stdout:value\n");
-    assert_eq!(result.output, "stdout:value\nstderr-only\n");
+    let reported_cwd = result
+        .stdout
+        .lines()
+        .next()
+        .ok_or("successful command did not print its working directory")?;
+    assert_eq!(
+        std::fs::canonicalize(reported_cwd)?,
+        std::fs::canonicalize(shims.root())?
+    );
+    let expected_stdout = format!("{reported_cwd}\nstdout:value\n");
+    let expected_output = format!("{expected_stdout}stderr-only\n");
+    assert_eq!(result.stdout, expected_stdout);
+    assert_eq!(result.output, expected_output);
+    assert!(
+        result.duration_ms >= 25,
+        "50 ms shim delay must be reflected in duration_ms, got {}",
+        result.duration_ms
+    );
+
+    let wire = serde_json::to_value(&result)?;
+    assert_eq!(
+        wire,
+        json!({
+            "name": "probe",
+            "argv": ["tool", "value"],
+            "exit_code": 0,
+            "passed": true,
+            "stdout": result.stdout,
+            "output": result.output,
+            "duration_ms": result.duration_ms,
+        })
+    );
+    assert_eq!(
+        wire.as_object()
+            .ok_or("serialized CommandOutput must be a JSON object")?
+            .len(),
+        7
+    );
     Ok(())
 }
 

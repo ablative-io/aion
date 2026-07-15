@@ -11,7 +11,7 @@ pub struct RunAgentInput {
     pub prompt: String,
     /// Inline JSON Schema passed to Norn.
     pub output_schema: String,
-    /// Stable Norn session key; defaults to `{workflow_id}-agent`.
+    /// Stable Norn session key; defaults to the workflow ID plus `-agent`.
     pub session_key: Option<String>,
     /// Workspace root made available to Norn.
     pub workspace_path: String,
@@ -65,10 +65,10 @@ pub struct ParseInput {
 pub struct ParseOutput {
     /// Whether the requested value was found and rendered.
     pub ok: bool,
-    /// Rendered value on success, otherwise `null`.
-    pub value: Option<String>,
-    /// Exact diagnostic on failure, otherwise `null`.
-    pub error: Option<String>,
+    /// Rendered value on success, otherwise an empty string.
+    pub value: String,
+    /// Exact diagnostic on failure, otherwise an empty string.
+    pub error: String,
 }
 
 impl ParseOutput {
@@ -77,8 +77,8 @@ impl ParseOutput {
     pub fn success(value: String) -> Self {
         Self {
             ok: true,
-            value: Some(value),
-            error: None,
+            value,
+            error: String::new(),
         }
     }
 
@@ -87,8 +87,8 @@ impl ParseOutput {
     pub fn failure(error: String) -> Self {
         Self {
             ok: false,
-            value: None,
-            error: Some(error),
+            value: String::new(),
+            error,
         }
     }
 }

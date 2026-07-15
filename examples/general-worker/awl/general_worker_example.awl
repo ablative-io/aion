@@ -18,7 +18,7 @@ type CommandResult {
 }
 
 /// Data-level parser result.
-type ParseResult { ok: Bool, value: String?, error: String? }
+type ParseResult { ok: Bool, value: String, error: String }
 
 /// Final evidence from all three activities.
 type Completed {

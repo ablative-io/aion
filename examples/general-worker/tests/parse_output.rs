@@ -3,6 +3,7 @@
 use std::error::Error;
 
 use general_worker::{ParseInput, ParseOutput, parse_output};
+use serde_json::json;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -16,20 +17,62 @@ fn parse(text: &str, mode: &str, query: &str) -> ParseOutput {
 
 fn success_value(output: ParseOutput) -> Result<String, Box<dyn Error>> {
     if !output.ok {
-        return Err(format!("expected success, got error: {:?}", output.error).into());
+        return Err(format!("expected success, got error: {}", output.error).into());
     }
-    output
-        .value
-        .ok_or_else(|| "successful parse must carry a value".into())
+    if !output.error.is_empty() {
+        return Err(format!(
+            "successful parse must have an empty error, got: {}",
+            output.error
+        )
+        .into());
+    }
+    Ok(output.value)
 }
 
 fn failure_error(output: ParseOutput) -> Result<String, Box<dyn Error>> {
     if output.ok {
-        return Err(format!("expected failure, got value: {:?}", output.value).into());
+        return Err(format!("expected failure, got value: {}", output.value).into());
     }
-    output
-        .error
-        .ok_or_else(|| "failed parse must carry an error".into())
+    if !output.value.is_empty() {
+        return Err(format!(
+            "failed parse must have an empty value, got: {}",
+            output.value
+        )
+        .into());
+    }
+    if output.error.is_empty() {
+        return Err("failed parse must carry an error".into());
+    }
+    Ok(output.error)
+}
+
+#[test]
+fn serde_shape_and_success_failure_invariants_are_exact() -> TestResult {
+    let success = parse(r#"{"topic":"general-worker"}"#, "json_path", "topic");
+    assert_eq!(
+        serde_json::to_value(&success)?,
+        json!({
+            "ok": true,
+            "value": "general-worker",
+            "error": "",
+        })
+    );
+    assert_eq!(success_value(success)?, "general-worker");
+
+    let failure = parse("text", "lines", "absent");
+    assert_eq!(
+        serde_json::to_value(&failure)?,
+        json!({
+            "ok": false,
+            "value": "",
+            "error": "lines query `absent` matched no lines",
+        })
+    );
+    assert_eq!(
+        failure_error(failure)?,
+        "lines query `absent` matched no lines"
+    );
+    Ok(())
 }
 
 #[test]

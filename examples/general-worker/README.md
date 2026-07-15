@@ -48,7 +48,7 @@ CLI behavior:
 }
 ```
 
-Missing fields, malformed activity JSON, non-UTF-8 input, and blank required fields are Norn-harness protocol errors. A supplied blank `session_key` is also a protocol error. An absent `session_key` defaults to the literal template `{workflow_id}-agent`; the inner `NornHarness` expands `{workflow_id}` at spawn time. An absent or blank `disallowed_tools` value adds no deny-list argument.
+Missing fields, malformed activity JSON, non-UTF-8 input, and blank required fields are Norn-harness protocol errors. A supplied blank `session_key` is also a protocol error. An absent `session_key` is computed directly as `<workflow-id>-agent`. An absent or blank `disallowed_tools` value adds no deny-list argument. Every caller-provided argument is passed literally: substrings such as `{workflow_id}` and `{activity_type}` are not treated as templates.
 
 Every Norn child receives these static arguments:
 
@@ -61,7 +61,7 @@ The per-run arguments are appended in this order:
 ```text
 --append-system-prompt <instructions>
 --output-schema <output_schema>
---session-id <session_key-or-{workflow_id}-agent>
+--session-id <session-key or workflow-id-agent>
 --resume-if-exists
 --workspace-root <workspace_path>
 [--disallowed-tools <disallowed_tools>]
@@ -75,7 +75,7 @@ The wrapper replaces the neutral `AgentRunSpec` input with `prompt` encoded as a
 
 The default session is isolated by workflow ID and reused by later `run_agent` calls in that workflow. Supplying the same `session_key` deliberately shares Norn history across calls (and potentially across workflows); callers own that trust and concurrency decision. `--resume-if-exists` resumes a matching session and otherwise starts it.
 
-**Operator-confirmed behavior:** Norn applies `--append-system-prompt` when resuming an existing session. This package relies on that confirmed behavior so each call's `instructions` apply to both new and resumed sessions. No real-binary resume experiment was performed as part of this implementation.
+**Operator-confirmed behavior:** Norn applies `--append-system-prompt` when resuming an existing session. This package relies on that confirmed behavior so each call's `instructions` apply to both new and resumed sessions. The operator explicitly waived a duplicate real-binary resume experiment for `GPW-1`; no such experiment was performed as part of this implementation.
 
 ## `run_command`
 
@@ -134,12 +134,20 @@ Every call returns data in this shape:
 ```json
 {
   "ok": true,
-  "value": "rendered value or null",
-  "error": "exact diagnostic or null"
+  "value": "rendered value",
+  "error": ""
 }
 ```
 
-Bad input, a bad query, an unsupported mode, and a miss are never terminal activity failures. They return `ok: false`, `value: null`, and an error that states whether JSON parsing, path traversal, regex compilation, regex matching, line matching, or mode selection failed.
+On success, `value` contains the rendered value and `error` is the empty string. Bad input, a bad query, an unsupported mode, and a miss are never terminal activity failures. They return `ok: false`, an empty `value` string, and an `error` string that states whether JSON parsing, path traversal, regex compilation, regex matching, line matching, or mode selection failed:
+
+```json
+{
+  "ok": false,
+  "value": "",
+  "error": "exact diagnostic"
+}
+```
 
 Modes:
 

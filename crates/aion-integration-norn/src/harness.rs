@@ -30,6 +30,12 @@ use crate::translate::{self, EventIdentity};
 /// The default binary name used when no explicit path is configured: `norn` on `PATH`.
 const DEFAULT_NORN_BINARY: &str = "norn";
 
+#[derive(Clone, Debug)]
+enum NornArgument {
+    Template(String),
+    Literal(String),
+}
+
 /// A harness that runs each activity attempt as a `norn --protocol jsonrpc` child process.
 ///
 /// Holds the harness-specific settings (the binary location and any fixed extra arguments) so the
@@ -37,7 +43,7 @@ const DEFAULT_NORN_BINARY: &str = "norn";
 #[derive(Clone, Debug)]
 pub struct NornHarness {
     binary: PathBuf,
-    extra_args: Vec<String>,
+    extra_args: Vec<NornArgument>,
     env: Vec<(String, String)>,
     env_removed: Vec<String>,
 }
@@ -82,7 +88,14 @@ impl NornHarness {
     /// recognised; any other `{...}` text passes through literally.
     #[must_use]
     pub fn with_arg(mut self, arg: impl Into<String>) -> Self {
-        self.extra_args.push(arg.into());
+        self.extra_args.push(NornArgument::Template(arg.into()));
+        self
+    }
+
+    /// Adds a fixed argument without expanding `{workflow_id}` or `{activity_type}` substrings.
+    #[must_use]
+    pub fn with_literal_arg(mut self, arg: impl Into<String>) -> Self {
+        self.extra_args.push(NornArgument::Literal(arg.into()));
         self
     }
 
@@ -116,10 +129,14 @@ impl NornHarness {
     /// with piped stdin/stdout and inherited stderr.
     fn command(&self, spec: &AgentRunSpec) -> Command {
         let mut command = Command::new(&self.binary);
+        command.arg("--protocol").arg("jsonrpc");
+        for argument in &self.extra_args {
+            match argument {
+                NornArgument::Template(template) => command.arg(expand_arg(template, spec)),
+                NornArgument::Literal(literal) => command.arg(literal),
+            };
+        }
         command
-            .arg("--protocol")
-            .arg("jsonrpc")
-            .args(self.extra_args.iter().map(|arg| expand_arg(arg, spec)))
             .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -310,15 +327,18 @@ impl AgentHarness for NornHarness {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     //! Fast unit tests of the spec-aware argument construction and prompt decoding — no process
     //! is spawned; the built [`Command`]'s argv is inspected directly (that argv is exactly what
     //! a spawn would exec) and [`prompt_from_spec`] is exercised on payloads directly.
 
+    use std::error::Error;
+
     use aion_core::{ActivityId, ContentType, Payload, WorkflowId};
 
     use super::{AgentRunSpec, NornHarness, expand_arg, prompt_from_spec};
+
+    type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
     fn spec() -> AgentRunSpec {
         spec_with_input(Payload::new(ContentType::Json, b"run".to_vec()))
@@ -335,13 +355,14 @@ mod tests {
     }
 
     /// The argv the built command would exec, decoded as UTF-8 strings.
-    fn argv(harness: &NornHarness, spec: &AgentRunSpec) -> Vec<String> {
-        harness
+    fn argv(harness: &NornHarness, spec: &AgentRunSpec) -> TestResult<Vec<String>> {
+        let decoded = harness
             .command(spec)
             .as_std()
             .get_args()
-            .map(|arg| arg.to_str().expect("argv is UTF-8").to_owned())
-            .collect()
+            .map(|arg| arg.to_str().map(str::to_owned).ok_or("argv is not UTF-8"))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(decoded)
     }
 
     #[test]
@@ -390,29 +411,27 @@ mod tests {
     }
 
     #[test]
-    fn json_string_input_unwraps_to_the_exact_inner_text() {
+    fn json_string_input_unwraps_to_the_exact_inner_text() -> TestResult {
         // A String-typed activity input arrives as its JSON encoding: surrounding quotes plus
         // \n / \" escapes. The prompt must be the exact multi-line text, not the encoding.
-        let encoded = serde_json::to_vec(&serde_json::json!("line one\nsay \"hi\"\nline three"))
-            .expect("json string encodes");
+        let encoded = serde_json::to_vec(&serde_json::json!("line one\nsay \"hi\"\nline three"))?;
         let spec = spec_with_input(Payload::new(ContentType::Json, encoded));
-        assert_eq!(
-            prompt_from_spec(&spec).expect("valid UTF-8 JSON string input"),
-            "line one\nsay \"hi\"\nline three"
-        );
+        assert_eq!(prompt_from_spec(&spec)?, "line one\nsay \"hi\"\nline three");
+        Ok(())
     }
 
     #[test]
-    fn json_object_input_passes_through_as_its_json_text() {
+    fn json_object_input_passes_through_as_its_json_text() -> TestResult {
         // A structured payload is a legitimate prompt for some harnesses: a non-string JSON
         // value must reach the agent as its raw JSON text, not be rejected or reshaped.
         let raw = r#"{"task":"build","steps":[1,2]}"#;
         let spec = spec_with_input(Payload::new(ContentType::Json, raw.as_bytes().to_vec()));
-        assert_eq!(prompt_from_spec(&spec).expect("valid UTF-8 input"), raw);
+        assert_eq!(prompt_from_spec(&spec)?, raw);
+        Ok(())
     }
 
     #[test]
-    fn json_tagged_plain_text_input_passes_through_unchanged() {
+    fn json_tagged_plain_text_input_passes_through_unchanged() -> TestResult {
         // Payload is a dumb carrier that does not validate on construction, so JSON-tagged
         // bytes that are NOT valid JSON keep today's UTF-8 pass-through behaviour. (This is
         // also the behaviour every non-JSON content type keeps; ContentType has only `Json`
@@ -421,41 +440,45 @@ mod tests {
             ContentType::Json,
             b"plain prompt, not json".to_vec(),
         ));
-        assert_eq!(
-            prompt_from_spec(&spec).expect("valid UTF-8 input"),
-            "plain prompt, not json"
-        );
+        assert_eq!(prompt_from_spec(&spec)?, "plain prompt, not json");
+        Ok(())
     }
 
     #[test]
-    fn invalid_utf8_input_still_errors() {
+    fn invalid_utf8_input_still_errors() -> TestResult {
         let spec = spec_with_input(Payload::new(ContentType::Json, vec![0xff, 0xfe, 0xfd]));
-        let error = prompt_from_spec(&spec).expect_err("non-UTF-8 input must error");
+        let error = prompt_from_spec(&spec)
+            .err()
+            .ok_or("non-UTF-8 input must error")?;
         assert!(
             error.to_string().contains("not valid UTF-8"),
             "error must name the UTF-8 mismatch, got: {error}"
         );
+        Ok(())
     }
 
     #[test]
-    fn spec_values_land_in_the_spawned_command_args() {
+    fn template_args_expand_and_literal_args_preserve_reserved_substrings() -> TestResult {
         let spec = spec();
         let harness = NornHarness::with_binary("/bin/norn")
             .with_arg("--label")
             .with_arg("{activity_type}/{workflow_id}")
+            .with_literal_arg("{workflow_id}/{activity_type}")
             .with_arg("--model")
             .with_arg("mock-model");
 
         assert_eq!(
-            argv(&harness, &spec),
+            argv(&harness, &spec)?,
             vec![
                 "--protocol".to_owned(),
                 "jsonrpc".to_owned(),
                 "--label".to_owned(),
                 format!("dev/{}", spec.workflow_id),
+                "{workflow_id}/{activity_type}".to_owned(),
                 "--model".to_owned(),
                 "mock-model".to_owned(),
             ]
         );
+        Ok(())
     }
 }

@@ -10,7 +10,6 @@ use tokio::process::{ChildStdin, ChildStdout};
 
 use crate::types::RunAgentInput;
 
-const DEFAULT_SESSION_KEY: &str = "{workflow_id}-agent";
 const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 
 /// A fully validated and prepared Norn invocation.
@@ -47,9 +46,9 @@ impl GeneralNornHarness {
             "high".to_owned(),
         ];
         let base = NornHarness::with_binary(norn_binary)
-            .with_arg("--fast")
-            .with_arg("--reasoning-effort")
-            .with_arg("high")
+            .with_literal_arg("--fast")
+            .with_literal_arg("--reasoning-effort")
+            .with_literal_arg("high")
             .without_env(OPENAI_API_KEY);
         Self {
             base,
@@ -76,7 +75,6 @@ impl GeneralNornHarness {
         validate_required("prompt", &input.prompt)?;
         validate_required("output_schema", &input.output_schema)?;
         validate_required("workspace_path", &input.workspace_path)?;
-        let output_schema = input.output_schema.trim_start().to_owned();
 
         let session_key = match input.session_key {
             Some(value) => {
@@ -87,14 +85,14 @@ impl GeneralNornHarness {
                 }
                 value
             }
-            None => DEFAULT_SESSION_KEY.to_owned(),
+            None => format!("{}-agent", spec.workflow_id),
         };
 
         let mut per_run_arguments = vec![
             "--append-system-prompt".to_owned(),
             input.instructions,
             "--output-schema".to_owned(),
-            output_schema,
+            input.output_schema,
             "--session-id".to_owned(),
             session_key,
             "--resume-if-exists".to_owned(),
@@ -110,7 +108,7 @@ impl GeneralNornHarness {
 
         let mut harness = self.base.clone();
         for argument in &per_run_arguments {
-            harness = harness.with_arg(argument);
+            harness = harness.with_literal_arg(argument);
         }
         let prompt_value = Value::String(input.prompt);
         spec.input = Payload::from_json(&prompt_value).map_err(|source| {
