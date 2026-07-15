@@ -1,0 +1,5 @@
+cargo fmt --manifest-path examples/general-worker/Cargo.toml --all	0
+cargo build --manifest-path examples/general-worker/Cargo.toml	0
+cargo clippy --manifest-path examples/general-worker/Cargo.toml --all-targets -- -D warnings	0
+cargo test --manifest-path examples/general-worker/Cargo.toml	0
+./target/debug/aion awl check examples/general-worker/awl/general_worker_example.awl	0
