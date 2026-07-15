@@ -27,6 +27,7 @@ mod intervene;
 mod payload;
 mod router;
 mod schedules;
+mod transcripts;
 mod visibility;
 mod whoami;
 mod workflows;

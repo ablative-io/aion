@@ -220,6 +220,30 @@ pub(crate) fn observability_stream_key(
     key
 }
 
+/// The 17-byte `O || workflow_uuid` prefix every observability stream key of
+/// one workflow shares (see [`observability_stream_key`] for the full layout).
+///
+/// Handed to a stream-metadata scan predicate (`starts_with`) to enumerate one
+/// workflow's retained transcript streams; the fixed-width layout means the
+/// prefix can never partially match a foreign region's key.
+pub(crate) fn observability_workflow_prefix(workflow_id: &WorkflowId) -> Vec<u8> {
+    let mut prefix = Vec::with_capacity(1 + 16);
+    prefix.push(OBSERVABILITY_TAG);
+    prefix.extend_from_slice(workflow_id.as_uuid().as_bytes());
+    prefix
+}
+
+/// Decode a full 29-byte `O`-region stream key into `(activity_seq, attempt)`.
+/// Returns `None` for any other region/length (scan safety).
+pub(crate) fn decode_observability_stream_key(key: &[u8]) -> Option<(u64, u32)> {
+    if key.len() != 29 || key[0] != OBSERVABILITY_TAG {
+        return None;
+    }
+    let activity_seq = u64::from_be_bytes(key.get(17..25)?.try_into().ok()?);
+    let attempt = u32::from_be_bytes(key.get(25..29)?.try_into().ok()?);
+    Some((activity_seq, attempt))
+}
+
 /// Build a composite key: `prefix` then each field joined by [`FIELD_SEP`].
 fn composite(prefix: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     let mut key = prefix.to_vec();
@@ -351,6 +375,44 @@ mod tests {
         // 17-byte `E`-stream key (the only key shape the replay decoder decodes).
         assert_ne!(key.len(), 17);
         assert_eq!(workflow_id_from_event_stream_key(&key), None);
+    }
+
+    #[test]
+    fn observability_workflow_prefix_is_a_strict_prefix_of_the_full_key() {
+        let workflow_id = WorkflowId::new(Uuid::from_u128(21));
+        let prefix = observability_workflow_prefix(&workflow_id);
+        let full = observability_stream_key(&workflow_id, 7, 2);
+        assert_eq!(prefix.len(), 17);
+        assert!(full.starts_with(&prefix));
+        assert!(full.len() > prefix.len(), "the prefix is strict");
+        // A different workflow's key does not share the prefix.
+        let other = observability_stream_key(&WorkflowId::new(Uuid::from_u128(22)), 7, 2);
+        assert!(!other.starts_with(&prefix));
+    }
+
+    #[test]
+    fn observability_stream_key_encode_decode_round_trips() {
+        let workflow_id = WorkflowId::new(Uuid::from_u128(23));
+        let key = observability_stream_key(&workflow_id, u64::MAX - 3, u32::MAX - 1);
+        assert_eq!(
+            decode_observability_stream_key(&key),
+            Some((u64::MAX - 3, u32::MAX - 1))
+        );
+    }
+
+    #[test]
+    fn decode_observability_stream_key_rejects_foreign_and_truncated_keys() {
+        // A 17-byte `E`-tagged event-stream key is not an `O`-region key.
+        let event_key = event_stream_key(&WorkflowId::new(Uuid::from_u128(24)));
+        assert_eq!(decode_observability_stream_key(&event_key), None);
+        // A truncated `O`-region key (wrong length) decodes to nothing.
+        let mut truncated = observability_stream_key(&WorkflowId::new(Uuid::from_u128(24)), 1, 1);
+        truncated.pop();
+        assert_eq!(decode_observability_stream_key(&truncated), None);
+        // A 29-byte key with the wrong tag byte is rejected.
+        let mut wrong_tag = observability_stream_key(&WorkflowId::new(Uuid::from_u128(24)), 1, 1);
+        wrong_tag[0] = b'X';
+        assert_eq!(decode_observability_stream_key(&wrong_tag), None);
     }
 
     #[test]

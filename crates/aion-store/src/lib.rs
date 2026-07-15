@@ -55,7 +55,8 @@ pub use namespace::{
     NamespaceState, NamespaceStore,
 };
 pub use observability::{
-    ActivityRecord, ActivityStreamKey, InMemoryObservabilityStore, ObservabilityStore,
+    ActivityRecord, ActivityStreamKey, ActivityStreamSummary, InMemoryObservabilityStore,
+    ObservabilityStore,
 };
 pub use outbox::{ClaimScope, DEFAULT_OUTBOX_ROUTE, OutboxRow, OutboxStatus, OutboxStore};
 pub use package::{PackageRecord, PackageRouteRecord, PackageStore};

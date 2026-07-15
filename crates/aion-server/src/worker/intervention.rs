@@ -29,7 +29,8 @@
 //! - **Applied** — the command reached the live session and was applied.
 
 use aion_core::{
-    ActivityId, InterventionCapabilities, InterventionCommand, InterventionOutcome, WorkflowId,
+    ActivityEvent, ActivityEventKind, ActivityId, InterventionCapabilities, InterventionCommand,
+    InterventionKind, InterventionOutcome, MessageRole, WorkflowId,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -161,6 +162,11 @@ pub struct InterventionRouter {
     registry: ConnectedWorkerRegistry,
     owners: AttemptOwnerIndex,
     transport: Arc<dyn InterventionTransport>,
+    /// When installed, an APPLIED `InjectMessage` is teed into the durable
+    /// transcript as an operator `User` message (lane #229): the retained
+    /// record then holds what the operator actually said, not only the
+    /// harness's own output. `None` keeps the pre-retention behaviour.
+    transcript: Option<crate::activity_publisher::ActivityEventPublisher>,
 }
 
 impl std::fmt::Debug for InterventionRouter {
@@ -182,7 +188,22 @@ impl InterventionRouter {
             registry,
             owners,
             transport,
+            transcript: None,
         }
+    }
+
+    /// Install the transcript publisher an applied `InjectMessage` is teed
+    /// into (as an operator `User` message on the target attempt's durable
+    /// stream). Retention here is best-effort at this seam: a publish failure
+    /// is logged and the `Applied` ack still returned, exactly like the
+    /// worker-ingress tap.
+    #[must_use]
+    pub fn with_transcript_publisher(
+        mut self,
+        publisher: crate::activity_publisher::ActivityEventPublisher,
+    ) -> Self {
+        self.transcript = Some(publisher);
+        self
     }
 
     /// The attempt-owner index the router resolves through, so the dispatch path
@@ -228,8 +249,22 @@ impl InterventionRouter {
             return Ok(InterventionOutcome::capability_not_supported(primitive));
         }
 
+        // Capture the injected text BEFORE the command is moved into the
+        // transport, so an APPLIED inject can be teed into the durable
+        // transcript (lane #229) — the retained record must hold what the
+        // operator said, on every transport.
+        let injected = match &command.kind {
+            InterventionKind::InjectMessage { text, .. } => Some((text.clone(), command.issued_at)),
+            _ => None,
+        };
+
         match self.transport.push(&worker, command).await {
-            Ok(outcome) => Ok(outcome),
+            Ok(outcome) => {
+                if let (true, Some((text, issued_at))) = (outcome.is_applied(), injected) {
+                    self.retain_injected_message(&key, text, issued_at).await;
+                }
+                Ok(outcome)
+            }
             // A dropped connection means the owning attempt is unreachable — from
             // the operator's view that is the too-late / gone class, an honest NACK.
             Err(error) if error.is_worker_connection_lost() => {
@@ -238,6 +273,50 @@ impl InterventionRouter {
                 )))
             }
             Err(error) => Err(error),
+        }
+    }
+
+    /// Tee one APPLIED `InjectMessage` into the target attempt's durable
+    /// transcript as an operator `User` message.
+    ///
+    /// `agent_id` is nil — the server-origin operator record. Nil never
+    /// collides with a real agent's delta-stream coalescing in the console
+    /// (which joins deltas on `agent_id`), so the record renders as its own
+    /// turn. Retention is best-effort at this seam: the intervention DID
+    /// apply, so a publish failure is logged and the `Applied` ack still
+    /// returned — the same doctrine as the worker-ingress observability tap.
+    async fn retain_injected_message(
+        &self,
+        key: &AttemptKey,
+        text: String,
+        issued_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let Some(publisher) = &self.transcript else {
+            return;
+        };
+        let event = ActivityEvent {
+            workflow_id: key.workflow_id.clone(),
+            activity_id: key.activity_id.clone(),
+            attempt: key.attempt,
+            agent_id: uuid::Uuid::nil(),
+            agent_role: "operator".to_owned(),
+            emitted_at: issued_at,
+            worker_seq: 0,
+            store_seq: None,
+            ephemeral: false,
+            kind: ActivityEventKind::Message {
+                role: MessageRole::User,
+                text,
+            },
+        };
+        if let Err(error) = publisher.publish(&event).await {
+            tracing::warn!(
+                %error,
+                workflow_id = %key.workflow_id,
+                activity_id = %key.activity_id,
+                attempt = key.attempt,
+                "applied InjectMessage could not be retained in the transcript"
+            );
         }
     }
 

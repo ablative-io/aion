@@ -14,6 +14,9 @@
 //! ```
 
 /// HTTP, gRPC, and worker API handlers.
+/// Transcript retention bounds: per-event size truncation for the durable `O`
+/// keyspace (`[observability]` config).
+pub(crate) mod activity_bounds;
 /// NOI-5 transcript sequencer + live fan-out — commit-allocated `store_seq` over
 /// the durable `O` keyspace, plus the resumable transcript broadcast.
 pub mod activity_publisher;

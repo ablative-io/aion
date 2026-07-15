@@ -309,6 +309,10 @@ impl ServerState {
         namespace_store: Arc<dyn NamespaceStore>,
     ) -> Self {
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
+        // Computed before `runtime` moves into the state: the retention bounds
+        // flow from `[observability]` config on the embedder path too, so a
+        // from-parts server enforces the same truncation/cap as a full boot.
+        let bounds = transcript_bounds(&runtime);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
@@ -332,6 +336,7 @@ impl ServerState {
                 transcript_publisher: build_transcript_publisher(
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                    bounds,
                 ),
                 attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
@@ -368,6 +373,10 @@ impl ServerState {
         jwks_cache: JwksCache,
     ) -> Self {
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
+        // Computed before `runtime` moves into the state: the retention bounds
+        // flow from `[observability]` config on the embedder path too, so a
+        // from-parts server enforces the same truncation/cap as a full boot.
+        let bounds = transcript_bounds(&runtime);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
@@ -391,6 +400,7 @@ impl ServerState {
                 transcript_publisher: build_transcript_publisher(
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                    bounds,
                 ),
                 attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
@@ -422,6 +432,10 @@ impl ServerState {
         jwks_cache: JwksCache,
     ) -> Self {
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
+        // Computed before `runtime` moves into the state: the retention bounds
+        // flow from `[observability]` config on the embedder path too, so a
+        // from-parts server enforces the same truncation/cap as a full boot.
+        let bounds = transcript_bounds(&runtime);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
@@ -449,6 +463,7 @@ impl ServerState {
                 transcript_publisher: build_transcript_publisher(
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                    bounds,
                 ),
                 attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
@@ -475,6 +490,10 @@ impl ServerState {
         worker_registry: ConnectedWorkerRegistry,
     ) -> Self {
         let heartbeat_tracker = HeartbeatTracker::new(runtime.worker.heartbeat_window);
+        // Computed before `runtime` moves into the state: the retention bounds
+        // flow from `[observability]` config on the embedder path too, so a
+        // from-parts server enforces the same truncation/cap as a full boot.
+        let bounds = transcript_bounds(&runtime);
         Self {
             inner: Arc::new(ServerStateInner {
                 namespace_guard: NamespaceGuard::new(namespace_resolver),
@@ -502,6 +521,7 @@ impl ServerState {
                 transcript_publisher: build_transcript_publisher(
                     None,
                     Self::FALLBACK_CLUSTER_BROADCAST_CAPACITY,
+                    bounds,
                 ),
                 attempt_owners: crate::worker::AttemptOwnerIndex::new(),
                 cluster_self_node: None,
@@ -598,6 +618,9 @@ impl ServerState {
             self.inner.attempt_owners.clone(),
             transport,
         )
+        // Lane #229: an APPLIED InjectMessage is teed into the durable
+        // transcript, so the retained record holds the operator's words.
+        .with_transcript_publisher(self.inner.transcript_publisher.clone())
     }
 
     /// This node's configured cluster distribution name for the WS3 snapshot
@@ -1094,13 +1117,21 @@ fn build_real_time_publishers(
     let capacity = required_cluster_broadcast_capacity(runtime)?;
     Ok((
         crate::cluster_publisher::ClusterEventPublisher::new(capacity),
-        build_transcript_publisher(observability_store, capacity),
+        build_transcript_publisher(observability_store, capacity, transcript_bounds(runtime)),
     ))
+}
+
+/// The operator-configured transcript retention bounds from `[observability]`.
+fn transcript_bounds(runtime: &RuntimeConfig) -> crate::activity_bounds::TranscriptBounds {
+    crate::activity_bounds::TranscriptBounds {
+        max_event_bytes: runtime.observability.max_event_bytes,
+        max_stream_events: runtime.observability.max_stream_events,
+    }
 }
 
 /// Build the NOI-5b transcript sequencer over `observability_store` (the durable
 /// `O`-keyspace impl when the backend has one, an in-memory impl otherwise) with
-/// a live-tail buffer of `capacity`.
+/// a live-tail buffer of `capacity` and the `[observability]` retention bounds.
 ///
 /// The publisher is ALWAYS constructed (the transcript channel is served on every
 /// boot); only the durability of the backing store varies by backend. A backend
@@ -1111,10 +1142,11 @@ fn build_real_time_publishers(
 fn build_transcript_publisher(
     observability_store: Option<Arc<dyn aion_store::ObservabilityStore>>,
     capacity: std::num::NonZeroUsize,
+    bounds: crate::activity_bounds::TranscriptBounds,
 ) -> crate::activity_publisher::ActivityEventPublisher {
     let store = observability_store
         .unwrap_or_else(|| Arc::new(aion_store::InMemoryObservabilityStore::default()));
-    crate::activity_publisher::ActivityEventPublisher::new(store, capacity)
+    crate::activity_publisher::ActivityEventPublisher::new(store, capacity).with_bounds(bounds)
 }
 
 /// The request-routing pieces built from the cluster store + peer config.
@@ -1576,6 +1608,7 @@ mod tests {
             authoring: AuthoringConfig::default(),
             dev: DevConfig::default(),
             outbox: OutboxConfig::default(),
+            observability: crate::config::ObservabilityConfig::default(),
             scheduler_threads: 1,
             query_timeout: Some(Duration::from_millis(10_000)),
             default_namespace: "default".to_owned(),

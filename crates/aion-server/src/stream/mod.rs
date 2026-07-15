@@ -26,4 +26,5 @@ pub use socket::{
 pub use subscribe::{
     EventSubscription, MappedSubscription, map_subscription_request, subscribe_events,
 };
+pub(crate) use transcript_stream::gate_transcript_workflow;
 pub use transcript_stream::serve_transcript_socket;

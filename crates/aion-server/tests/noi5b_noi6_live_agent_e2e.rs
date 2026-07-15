@@ -280,6 +280,7 @@ fn runtime_config() -> RuntimeConfig {
         authoring: AuthoringConfig::default(),
         dev: aion_server::config::DevConfig::default(),
         outbox: aion_server::config::OutboxConfig::default(),
+        observability: aion_server::config::ObservabilityConfig::default(),
         scheduler_threads: 1,
         query_timeout: Some(Duration::from_millis(10_000)),
         default_namespace: NAMESPACE.to_owned(),
@@ -519,19 +520,22 @@ async fn assert_durable_tail_and_replay_invisibility(
 ) -> Result<(), TestError> {
     let publisher = server.state.transcript_publisher();
     let deadline = Instant::now() + CONNECT_TIMEOUT;
+    // 4 records: "thinking..." (0), the retained operator inject (1, the lane
+    // #229 tee on GATE 2's applied InjectMessage), then m-1 (2) and m-2 (3).
     while publisher
         .replay_from(&stream_key(), 0)
         .await
         .map_err(test_error)?
         .len()
-        < 3
+        < 4
     {
         if Instant::now() > deadline {
-            return Err(test_error("durable tail did not reach 3 records"));
+            return Err(test_error("durable tail did not reach 4 records"));
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // GATE 4: resume from store_seq 1 replays exactly store_seq 1,2 (no gap, no dup).
+    // GATE 4: resume from store_seq 1 replays exactly store_seq 1,2,3 (no gap,
+    // no dup).
     let resumed = publisher
         .replay_from(&stream_key(), 1)
         .await
@@ -539,8 +543,22 @@ async fn assert_durable_tail_and_replay_invisibility(
     let seqs: Vec<u64> = resumed.iter().map(|r| r.store_seq).collect();
     assert_eq!(
         seqs,
-        vec![1, 2],
+        vec![1, 2, 3],
         "resume-by-store_seq: no gap, no duplicate"
+    );
+    // The lane #229 live-path wiring proof: GATE 2's applied InjectMessage was
+    // teed into the durable stream as an operator User message at store_seq 1.
+    let operator_record = &resumed[0].event;
+    assert_eq!(operator_record.agent_role, "operator");
+    assert!(
+        matches!(
+            &operator_record.kind,
+            ActivityEventKind::Message {
+                role: MessageRole::User,
+                text,
+            } if text == "stop editing that file"
+        ),
+        "the retained operator inject must be a User message with the injected text: {operator_record:?}"
     );
     // GATE 3: the events are observability records only. Byte-level O-vs-E disjointness
     // is proven at the store layer (`aion-store-haematite/tests/observability.rs`);

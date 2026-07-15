@@ -140,6 +140,27 @@ pub(crate) const AUTHORING_GLEAM_PATH_EMPTY: &str = "authoring.gleam_path must n
 /// authoring surface is commissioned.
 pub(crate) const AUTHORING_PROJECT_ROOT_REQUIRED: &str = "authoring.project_root is required and has no default when authoring.gleam_path is set: submitted Gleam source is written into and packaged from a built project, so the operator must provision and name the project root (a directory with gleam.toml, the aion_flow dependency, workflow.toml, and schemas/); set authoring.project_root (or AION_AUTHORING_PROJECT_ROOT)";
 
+/// Default `observability.max_event_bytes`: the ceiling on one persisted
+/// transcript event's serialized size. 256 KiB comfortably holds real
+/// tool-result payloads while bounding what one hostile/verbose harness line
+/// can write to the durable `O` keyspace. Overridable per deployment.
+pub const DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES: usize = 256 * 1024;
+
+/// Default `observability.max_stream_events`: the ceiling on retained events
+/// per `(workflow, activity, attempt)` transcript stream. Past it one marker
+/// record is retained and further events stay live-only. Overridable.
+pub const DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS: u64 = 20_000;
+
+/// Operator-facing message for an explicitly zero `observability.max_event_bytes`
+/// (omitting the key uses [`DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES`]; a zero
+/// ceiling would truncate every transcript event to nothing).
+pub(crate) const OBSERVABILITY_MAX_EVENT_BYTES_REQUIRED: &str = "observability.max_event_bytes must be a positive number of bytes when set (a zero ceiling would truncate every retained transcript event to nothing); omit observability.max_event_bytes (or AION_OBSERVABILITY_MAX_EVENT_BYTES) to use the default, or set it to a positive number of bytes";
+
+/// Operator-facing message for an explicitly zero `observability.max_stream_events`
+/// (omitting the key uses [`DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS`]; a zero
+/// cap would retain no transcript at all).
+pub(crate) const OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED: &str = "observability.max_stream_events must be a positive integer when set (a zero per-stream cap would retain no transcript at all); omit observability.max_stream_events (or AION_OBSERVABILITY_MAX_STREAM_EVENTS) to use the default, or set it to a positive integer";
+
 /// Default haematite data directory for the unconfigured durable backend.
 ///
 /// An empty `[store]` section (or no config file at all) now selects the ablative

@@ -117,6 +117,87 @@ async fn attempts_are_disjoint_streams() -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Enumeration is scoped to ONE workflow's retained streams, ordered by
+/// `(activity, attempt)`, and survives a database reopen — the "open it an hour
+/// later" acceptance at the store layer.
+#[tokio::test(flavor = "multi_thread")]
+async fn list_activity_streams_enumerates_only_the_workflows_streams_and_survives_reopen()
+-> Result<(), StoreError> {
+    let workflow_b = WorkflowId::new(Uuid::from_u128(0xBEEF));
+    let event_for =
+        |workflow: &WorkflowId, activity_seq: u64, attempt: u32, worker_seq: u64| ActivityEvent {
+            workflow_id: workflow.clone(),
+            activity_id: ActivityId::from_sequence_position(activity_seq),
+            ..event(attempt, worker_seq, "listed")
+        };
+    let dir = unique_temp_dir("obs-list");
+    {
+        let store = HaematiteStore::create(&dir)?;
+        // wf-A: two streams (activity 3 attempt 0 with two records; activity 5
+        // attempt 2 with one record). wf-B: one stream that must not leak.
+        store
+            .append_activity_event(0, &event_for(&workflow(), 3, 0, 1))
+            .await?;
+        store
+            .append_activity_event(1, &event_for(&workflow(), 3, 0, 2))
+            .await?;
+        store
+            .append_activity_event(0, &event_for(&workflow(), 5, 2, 3))
+            .await?;
+        store
+            .append_activity_event(0, &event_for(&workflow_b, 3, 0, 1))
+            .await?;
+
+        let summaries = store.list_activity_streams(&workflow()).await?;
+        let listed: Vec<(u64, u32, u64)> = summaries
+            .iter()
+            .map(|summary| {
+                (
+                    summary.key.activity_id.sequence_position(),
+                    summary.key.attempt,
+                    summary.head,
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![(3, 0, 2), (5, 2, 1)],
+            "exactly wf-A's streams, ordered, with correct heads"
+        );
+        store
+            .event_store()
+            .database()
+            .commit()
+            .map_err(|error| StoreError::Backend(format!("commit failed: {error}")))?;
+    }
+    // Reopen the SAME on-disk database: the enumeration is identical.
+    let reopened = HaematiteStore::open(&dir)?;
+    let summaries = reopened.list_activity_streams(&workflow()).await?;
+    let listed: Vec<(u64, u32, u64)> = summaries
+        .iter()
+        .map(|summary| {
+            (
+                summary.key.activity_id.sequence_position(),
+                summary.key.attempt,
+                summary.head,
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![(3, 0, 2), (5, 2, 1)],
+        "enumeration survives restart"
+    );
+    // A workflow with nothing retained reads empty, not an error.
+    assert!(
+        reopened
+            .list_activity_streams(&WorkflowId::new(Uuid::from_u128(0xF00D)))
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
+
 /// THE durability guarantee (§7.5 / §0.6): an `O`-region record survives a
 /// database reopen AND the workflow-history replay path (`read_history`) cannot
 /// see it — the `O` key is byte-disjoint from the `E`-stream, so replay never

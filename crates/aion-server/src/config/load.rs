@@ -31,7 +31,7 @@ use super::{
     DrainConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, NamespacesConfig,
     OUTBOX_BACKOFF_BASE_REQUIRED, OUTBOX_BACKOFF_MAX_REQUIRED, OUTBOX_BACKOFF_MULTIPLIER_REQUIRED,
     OUTBOX_BATCH_SIZE_REQUIRED, OUTBOX_MAX_ATTEMPTS_REQUIRED, OUTBOX_POLL_INTERVAL_REQUIRED,
-    OUTBOX_RECONCILE_INTERVAL_REQUIRED, OUTBOX_RECONCILE_STALE_AFTER_REQUIRED,
+    OUTBOX_RECONCILE_INTERVAL_REQUIRED, OUTBOX_RECONCILE_STALE_AFTER_REQUIRED, ObservabilityConfig,
     OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig, QUERY_TIMEOUT_REQUIRED, RuntimeConfig,
     RuntimeSection, ServerSection, StoreBackend, StoreConfig, TlsConfig, WebSocketConfig,
     WorkerConfig, config_error, env, file,
@@ -77,6 +77,8 @@ pub struct ServerConfig {
     pub dev: DevConfig,
     /// Durable-outbox fan-out dispatcher settings.
     pub outbox: OutboxConfig,
+    /// Agent-observability transcript retention bounds.
+    pub observability: ObservabilityConfig,
 }
 
 impl ServerConfig {
@@ -222,6 +224,7 @@ impl ServerConfig {
             authoring: self.authoring,
             dev: self.dev,
             outbox: self.outbox,
+            observability: self.observability,
             scheduler_threads: self.runtime.scheduler_threads,
             query_timeout: self.runtime.query_timeout_ms.map(Duration::from_millis),
             default_namespace: self.namespaces.default,
@@ -330,6 +333,7 @@ impl ServerConfig {
             return config_error("worker.heartbeat_window must be greater than zero");
         }
         self.websocket.validate()?;
+        self.observability.validate()?;
         match self.runtime.query_timeout_ms {
             None | Some(0) => return config_error(QUERY_TIMEOUT_REQUIRED),
             Some(_) => {}
@@ -763,6 +767,112 @@ mod tests {
         assert!(
             message.contains("websocket.cluster_broadcast_capacity"),
             "validation message must name the zero-valued cluster key: {message}"
+        );
+    }
+
+    /// An omitted `[observability]` section resolves both retention bounds to
+    /// their defaults and boots — retention is on out of the box, never a
+    /// forced operator decision.
+    #[test]
+    fn missing_observability_section_uses_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+            ",
+        )?;
+        assert_eq!(
+            config.observability.max_event_bytes,
+            crate::config::DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES
+        );
+        assert_eq!(
+            config.observability.max_stream_events,
+            crate::config::DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS
+        );
+        // The bounds also ride into the runtime view the server state reads.
+        let (_store, runtime) = config.into_parts();
+        assert_eq!(
+            runtime.observability.max_event_bytes,
+            crate::config::DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES
+        );
+        Ok(())
+    }
+
+    /// Explicit `[observability]` values parse and round-trip into the runtime
+    /// view.
+    #[test]
+    fn observability_section_parses_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let config = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [observability]
+                max_event_bytes = 512
+                max_stream_events = 3
+            ",
+        )?;
+        assert_eq!(config.observability.max_event_bytes, 512);
+        assert_eq!(config.observability.max_stream_events, 3);
+        let (_store, runtime) = config.into_parts();
+        assert_eq!(runtime.observability.max_event_bytes, 512);
+        assert_eq!(runtime.observability.max_stream_events, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_observability_max_event_bytes_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [observability]
+                max_event_bytes = 0
+            ",
+        );
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("observability.max_event_bytes"),
+            "validation message must name the zero-valued key: {message}"
+        );
+    }
+
+    #[test]
+    fn zero_observability_max_stream_events_fails_startup_validation() {
+        let result = ServerConfig::from_slice(
+            br"
+                [runtime]
+                query_timeout_ms = 10000
+
+                [websocket]
+                event_broadcast_capacity = 64
+                cluster_broadcast_capacity = 64
+
+                [observability]
+                max_stream_events = 0
+            ",
+        );
+        let message = result
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        assert!(
+            message.contains("observability.max_stream_events"),
+            "validation message must name the zero-valued key: {message}"
         );
     }
 

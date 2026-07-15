@@ -36,7 +36,8 @@ pub use defaults::{
     DEFAULT_CLUSTER_BROADCAST_CAPACITY, DEFAULT_DEPLOY_MAX_ARCHIVE_BYTES,
     DEFAULT_DEPLOY_MAX_INFLATED_BYTES, DEFAULT_EVENT_BROADCAST_CAPACITY,
     DEFAULT_FAILOVER_CONFIRMATIONS, DEFAULT_FAILOVER_POLL_INTERVAL_MS, DEFAULT_HAEMATITE_DATA_DIR,
-    DEFAULT_MAX_IN_FLIGHT_ACTIVITIES, DEFAULT_OUTBOX_BACKOFF_BASE_MS,
+    DEFAULT_MAX_IN_FLIGHT_ACTIVITIES, DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES,
+    DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS, DEFAULT_OUTBOX_BACKOFF_BASE_MS,
     DEFAULT_OUTBOX_BACKOFF_MAX_MS, DEFAULT_OUTBOX_BACKOFF_MULTIPLIER, DEFAULT_OUTBOX_BATCH_SIZE,
     DEFAULT_OUTBOX_MAX_ATTEMPTS, DEFAULT_OUTBOX_POLL_INTERVAL_MS, DEFAULT_QUERY_TIMEOUT_MS,
 };
@@ -45,8 +46,9 @@ pub use runtime::{CliOverrides, RuntimeConfig};
 pub use sections::{
     AuthConfig, AuthoringConfig, AutoCreate, ClusterConfig, ClusterPeer, DeployConfig, DevConfig,
     DrainConfig, ListenConfig, MetricsConfig, NamespaceConfig, NamespaceMode, NamespacesConfig,
-    OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig, OutboxTransport, RuntimeSection,
-    ServerSection, StoreBackend, StoreConfig, TlsConfig, WebSocketConfig, WorkerConfig,
+    ObservabilityConfig, OpsConsoleAssetSource, OpsConsoleConfig, OutboxConfig, OutboxTransport,
+    RuntimeSection, ServerSection, StoreBackend, StoreConfig, TlsConfig, WebSocketConfig,
+    WorkerConfig,
 };
 
 pub(crate) fn config_error<T>(message: impl Into<String>) -> Result<T, ServerError> {

@@ -18,7 +18,10 @@ use super::{
     config_error,
     defaults::{
         CLUSTER_BROADCAST_CAPACITY_REQUIRED, DEFAULT_GRPC_ADDRESS, DEFAULT_HAEMATITE_DATA_DIR,
-        DEFAULT_HTTP_ADDRESS, DEFAULT_MAX_IN_FLIGHT_ACTIVITIES, EVENT_BROADCAST_CAPACITY_REQUIRED,
+        DEFAULT_HTTP_ADDRESS, DEFAULT_MAX_IN_FLIGHT_ACTIVITIES,
+        DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES, DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS,
+        EVENT_BROADCAST_CAPACITY_REQUIRED, OBSERVABILITY_MAX_EVENT_BYTES_REQUIRED,
+        OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED,
     },
 };
 
@@ -377,6 +380,47 @@ impl WebSocketConfig {
             Some(_) => {}
         }
         Ok(())
+    }
+}
+
+/// Agent-observability transcript retention bounds from `[observability]`.
+///
+/// Both knobs default (a minimal/empty config boots) and both guard the durable
+/// `O` keyspace against unbounded growth: `max_event_bytes` truncates one
+/// oversized transcript event before it is persisted, and `max_stream_events`
+/// caps how many events one `(workflow, activity, attempt)` stream retains
+/// (one marker record is persisted at the cap; live streaming continues).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObservabilityConfig {
+    /// Ceiling on one persisted transcript event's serialized size, bytes.
+    pub max_event_bytes: usize,
+    /// Ceiling on retained events per `(workflow, activity, attempt)` stream.
+    pub max_stream_events: u64,
+}
+
+impl ObservabilityConfig {
+    /// Validate the retention bounds: both must be positive — a zero event
+    /// ceiling truncates every event to nothing and a zero stream cap retains
+    /// no transcript at all, so each is a genuine misconfiguration caught at
+    /// startup with an operator-facing message (the `WebSocketConfig` pattern).
+    pub(super) fn validate(&self) -> Result<(), ServerError> {
+        if self.max_event_bytes == 0 {
+            return config_error(OBSERVABILITY_MAX_EVENT_BYTES_REQUIRED);
+        }
+        if self.max_stream_events == 0 {
+            return config_error(OBSERVABILITY_MAX_STREAM_EVENTS_REQUIRED);
+        }
+        Ok(())
+    }
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            max_event_bytes: DEFAULT_OBSERVABILITY_MAX_EVENT_BYTES,
+            max_stream_events: DEFAULT_OBSERVABILITY_MAX_STREAM_EVENTS,
+        }
     }
 }
 

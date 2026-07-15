@@ -86,6 +86,16 @@ pub struct ActivityRecord {
     pub event: ActivityEvent,
 }
 
+/// One retained transcript stream of a workflow: its key and its head
+/// (the number of durably retained records / the next `store_seq`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityStreamSummary {
+    /// The stream's `(workflow, activity, attempt)` key.
+    pub key: ActivityStreamKey,
+    /// Next `store_seq` to be written == count of retained records.
+    pub head: u64,
+}
+
 /// Durable, append-only observability keyspace contract.
 ///
 /// Implemented by the haematite backend for production and by
@@ -135,6 +145,17 @@ pub trait ObservabilityStore: Send + Sync + 'static {
         key: &ActivityStreamKey,
         from_seq: u64,
     ) -> Result<Vec<ActivityRecord>, StoreError>;
+
+    /// Enumerate every retained transcript stream of `workflow_id`, ordered by
+    /// `(activity_id, attempt)` ascending. A workflow with no retained
+    /// transcript reads empty (old runs simply have none).
+    ///
+    /// # Errors
+    /// A backend or serialization error.
+    async fn list_activity_streams(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<ActivityStreamSummary>, StoreError>;
 }
 
 /// An in-memory [`ObservabilityStore`] reference implementation for tests.
@@ -227,6 +248,38 @@ impl ObservabilityStore for InMemoryObservabilityStore {
                     .collect()
             }))
     }
+
+    async fn list_activity_streams(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> Result<Vec<ActivityStreamSummary>, StoreError> {
+        let streams = self.streams.lock().map_err(|error| {
+            StoreError::Backend(format!("observability mutex poisoned: {error}"))
+        })?;
+        let mut summaries: Vec<ActivityStreamSummary> = streams
+            .iter()
+            .filter(|((workflow, _activity, _attempt), _records)| {
+                *workflow == workflow_id.as_uuid()
+            })
+            .map(
+                |(&(workflow, activity_seq, attempt), records)| ActivityStreamSummary {
+                    key: ActivityStreamKey::new(
+                        WorkflowId::new(workflow),
+                        ActivityId::from_sequence_position(activity_seq),
+                        attempt,
+                    ),
+                    head: stream_head(records),
+                },
+            )
+            .collect();
+        summaries.sort_by_key(|summary| {
+            (
+                summary.key.activity_id.sequence_position(),
+                summary.key.attempt,
+            )
+        });
+        Ok(summaries)
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +368,55 @@ mod tests {
         );
         assert_eq!(store.activity_head(&key0).await?, 1);
         assert_eq!(store.activity_head(&key1).await?, 1);
+        Ok(())
+    }
+
+    /// Two activities x two attempts of wf-1 plus one stream of wf-2: listing
+    /// wf-1 yields exactly its three streams, ordered by `(activity, attempt)`
+    /// ascending, each with the correct head.
+    #[tokio::test]
+    async fn list_activity_streams_orders_by_activity_then_attempt() -> Result<(), StoreError> {
+        let store = InMemoryObservabilityStore::default();
+        let event_for = |activity_seq: u64, attempt: u32, workflow: u128| {
+            let mut event = event(attempt, 1, "x");
+            event.workflow_id = WorkflowId::new(Uuid::from_u128(workflow));
+            event.activity_id = ActivityId::from_sequence_position(activity_seq);
+            event
+        };
+        // wf-1: activity 3 attempt 0 (two records), activity 3 attempt 1 (one),
+        // activity 5 attempt 0 (one). Inserted deliberately out of order.
+        store.append_activity_event(0, &event_for(5, 0, 1)).await?;
+        store.append_activity_event(0, &event_for(3, 1, 1)).await?;
+        store.append_activity_event(0, &event_for(3, 0, 1)).await?;
+        store.append_activity_event(1, &event_for(3, 0, 1)).await?;
+        // wf-2: one stream that must not leak into wf-1's enumeration.
+        store.append_activity_event(0, &event_for(3, 0, 2)).await?;
+
+        let summaries = store
+            .list_activity_streams(&WorkflowId::new(Uuid::from_u128(1)))
+            .await?;
+        let listed: Vec<(u64, u32, u64)> = summaries
+            .iter()
+            .map(|summary| {
+                (
+                    summary.key.activity_id.sequence_position(),
+                    summary.key.attempt,
+                    summary.head,
+                )
+            })
+            .collect();
+        assert_eq!(listed, vec![(3, 0, 2), (3, 1, 1), (5, 0, 1)]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_activity_streams_is_empty_for_unknown_workflow() -> Result<(), StoreError> {
+        let store = InMemoryObservabilityStore::default();
+        store.append_activity_event(0, &event(0, 1, "a")).await?;
+        let summaries = store
+            .list_activity_streams(&WorkflowId::new(Uuid::from_u128(99)))
+            .await?;
+        assert!(summaries.is_empty(), "an unwritten workflow lists empty");
         Ok(())
     }
 
