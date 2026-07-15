@@ -1,14 +1,19 @@
-import { ExternalLink, GitFork, Repeat2, Timer, Workflow } from 'lucide-react';
+import { ExternalLink, Workflow } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Handle, type NodeProps, Position } from 'reactflow';
 
 import { cn } from '@/lib/utils';
+import type { ProjectionStep } from '../lib/projection-types';
+import { StepNodeBody } from './StepNodeBody';
 
 export type CanvasNodeData = {
   kind: 'step' | 'child';
   name: string;
   label: string;
-  markers?: { looped: boolean; forked: boolean; waits: boolean };
+  step?: ProjectionStep;
+  expandedSubflows?: ReadonlySet<string>;
+  onToggleSubflow?: ((path: string) => void) | undefined;
+  onJumpTo?: ((byteOffset: number) => void) | undefined;
   diagnostic?: 'primary' | 'cascade' | undefined;
   childDocumentPath?: string | undefined;
   onActivate: () => void;
@@ -34,98 +39,80 @@ export function StepCanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
     }
   };
   return (
-    <article
-      className={cn(
-        'min-w-52 max-w-64 rounded-xl border bg-surface-elevated shadow-sm transition-[border-color,box-shadow]',
-        selected && 'border-accent-primary shadow-md',
-        !selected && data.diagnostic === undefined && 'border-border',
-        data.diagnostic === 'primary' && 'border-destructive bg-destructive/10',
-        data.diagnostic === 'cascade' && 'border-muted-foreground/40 opacity-70'
-      )}
-      aria-label={`Step ${data.name}`}
-    >
+    <div>
       <Handle
         className="!size-2 !border-surface-elevated !bg-muted-foreground"
         position={Position.Top}
         type="target"
       />
       {data.proseEditing === true ? (
-        <form
-          aria-label={`Edit prose for ${data.name}`}
-          className="nodrag p-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void saveProse();
-          }}
+        <article
+          aria-label={`Step ${data.name}`}
+          className="min-w-52 max-w-64 rounded-xl border border-accent-primary bg-surface-elevated shadow-md"
         >
-          <label className="block text-muted-foreground text-xs">
-            Step prose
-            <textarea
-              className="mt-2 min-h-20 w-full resize-y rounded-md border border-border bg-surface-base p-2 text-foreground text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
-              onChange={(event) => setDraft(event.target.value)}
-              value={draft}
-            />
-          </label>
-          <span className="mt-2 flex justify-end gap-2">
+          <form
+            aria-label={`Edit prose for ${data.name}`}
+            className="nodrag p-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveProse();
+            }}
+          >
+            <label className="block text-muted-foreground text-xs">
+              Step prose
+              <textarea
+                className="mt-2 min-h-20 w-full resize-y rounded-md border border-border bg-surface-base p-2 text-foreground text-sm outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
+                onChange={(event) => setDraft(event.target.value)}
+                value={draft}
+              />
+            </label>
+            <span className="mt-2 flex justify-end gap-2">
+              <button
+                className="rounded-md px-2 py-1 text-muted-foreground text-xs hover:bg-accent"
+                onClick={data.onCancelProseEdit}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-md bg-primary px-2 py-1 text-primary-foreground text-xs disabled:opacity-50"
+                disabled={saving}
+                type="submit"
+              >
+                {saving ? 'Saving…' : 'Save prose'}
+              </button>
+            </span>
+          </form>
+        </article>
+      ) : data.step !== undefined ? (
+        <>
+          <StepNodeBody
+            diagnostic={data.diagnostic}
+            expanded={data.expandedSubflows ?? new Set()}
+            onJumpTo={data.onJumpTo ?? (() => data.onActivate())}
+            onToggleSubflow={data.onToggleSubflow ?? (() => undefined)}
+            path={data.step.name}
+            selected={selected}
+            step={data.step}
+          />
+          {data.onBeginProseEdit !== undefined && (
             <button
-              className="rounded-md px-2 py-1 text-muted-foreground text-xs hover:bg-accent"
-              onClick={data.onCancelProseEdit}
+              aria-label={`Edit prose for ${data.name}`}
+              className="nodrag mt-1 rounded-md px-2 py-1 text-muted-foreground text-xs outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-accent-primary"
+              onClick={data.onBeginProseEdit}
               type="button"
             >
-              Cancel
+              Edit prose
             </button>
-            <button
-              className="rounded-md bg-primary px-2 py-1 text-primary-foreground text-xs disabled:opacity-50"
-              disabled={saving}
-              type="submit"
-            >
-              {saving ? 'Saving…' : 'Save prose'}
-            </button>
-          </span>
-        </form>
-      ) : (
-        <button
-          className="nodrag w-full rounded-xl p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base"
-          onClick={data.onActivate}
-          type="button"
-        >
-          <span className="flex items-center justify-between gap-2">
-            <span className="truncate font-mono font-semibold text-foreground text-xs">
-              {data.name}
-            </span>
-            <MarkerBadges markers={data.markers} />
-          </span>
-          <span className="mt-2 block text-foreground text-sm leading-snug">
-            {data.label || 'Undocumented step'}
-          </span>
-          {data.diagnostic !== undefined && (
-            <span
-              className={cn(
-                'mt-2 block text-xs',
-                data.diagnostic === 'primary' ? 'text-destructive' : 'text-muted-foreground'
-              )}
-            >
-              {data.diagnostic === 'primary' ? 'Primary error' : 'Downstream cascade'}
-            </span>
           )}
-        </button>
-      )}
-      {data.proseEditing !== true && data.onBeginProseEdit !== undefined && (
-        <button
-          aria-label={`Edit prose for ${data.name}`}
-          className="nodrag mx-3 mb-2 rounded-md px-2 py-1 text-muted-foreground text-xs outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-accent-primary"
-          onClick={data.onBeginProseEdit}
-          type="button"
-        >
-          Edit prose
-        </button>
-      )}
+        </>
+      ) : null}
       <Handle
         className="!size-2 !border-surface-elevated !bg-muted-foreground"
         position={Position.Bottom}
         type="source"
       />
-    </article>
+    </div>
   );
 }
 
@@ -174,16 +161,5 @@ export function ChildCanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
         type="source"
       />
     </article>
-  );
-}
-
-function MarkerBadges({ markers }: { markers: CanvasNodeData['markers'] }) {
-  if (markers === undefined) return null;
-  return (
-    <span className="flex items-center gap-1 text-muted-foreground">
-      {markers.looped && <Repeat2 aria-label="Loop" className="size-3.5" />}
-      {markers.forked && <GitFork aria-label="Fork" className="size-3.5" />}
-      {markers.waits && <Timer aria-label="Wait" className="size-3.5" />}
-    </span>
   );
 }

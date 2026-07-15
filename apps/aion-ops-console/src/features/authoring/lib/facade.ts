@@ -1,5 +1,6 @@
 import type { RenameMapping } from './facade-records';
 import { parseLayout, parseRenameMapping } from './facade-records';
+import { parseSemanticIndex } from './facade-semantic';
 import { createGuidedFacade } from './guided-facade';
 
 export type { RenameMapping } from './facade-records';
@@ -10,17 +11,8 @@ import {
   expectNumber,
   expectRecord,
   expectString,
-  nullableString,
 } from './facade-values';
-import type {
-  GraphProjection,
-  LayoutRecord,
-  SemanticDeclaration,
-  SemanticEntry,
-  SemanticIndex,
-  SourceSpan,
-  StudioProjection,
-} from './projection-types';
+import type { LayoutRecord, SemanticIndex } from './projection-types';
 
 export type {
   DeploymentRecord,
@@ -275,155 +267,5 @@ function parseDiagnostic(value: unknown): AwlDiagnostic {
     message: expectString(record.message, 'message'),
     line: expectNumber(record.line, 'line'),
     column: expectNumber(record.column, 'column'),
-  };
-}
-
-function parseSemanticIndex(value: unknown): SemanticIndex {
-  const record = expectRecord(value);
-  return {
-    entries: expectArray(record.entries, 'entries').map(parseSemanticEntry),
-    graph: parseGraph(record.graph),
-    studio: parseStudio(record.studio),
-  };
-}
-
-function parseStudio(value: unknown): StudioProjection {
-  const record = expectRecord(value);
-  return {
-    builtins: expectArray(record.builtins, 'studio.builtins').map((item) =>
-      expectString(item, 'builtin')
-    ),
-    types: expectArray(record.types, 'studio.types').map((item) => {
-      const type = expectRecord(item);
-      const kind = expectString(type.kind, 'type.kind');
-      if (kind !== 'record' && kind !== 'enum' && kind !== 'schema') {
-        throw new Error('Invalid authoring response: type.kind');
-      }
-      return {
-        name: expectString(type.name, 'type.name'),
-        kind,
-        fields: expectArray(type.fields, 'type.fields').map(parseStudioField),
-        variants: expectArray(type.variants, 'type.variants').map((variant) =>
-          expectString(variant, 'variant')
-        ),
-      };
-    }),
-    workers: expectArray(record.workers, 'studio.workers').map((item) => {
-      const worker = expectRecord(item);
-      return {
-        name: expectString(worker.name, 'worker.name'),
-        actions: expectArray(worker.actions, 'worker.actions').map((item) => {
-          const action = expectRecord(item);
-          return {
-            name: expectString(action.name, 'action.name'),
-            params: expectArray(action.params, 'action.params').map(parseStudioField),
-            returnType: expectString(action.return_type, 'action.return_type'),
-          };
-        }),
-      };
-    }),
-  };
-}
-
-function parseStudioField(value: unknown) {
-  const field = expectRecord(value);
-  return {
-    name: expectString(field.name, 'field.name'),
-    type: expectString(field.type, 'field.type'),
-  };
-}
-
-function parseSemanticEntry(value: unknown): SemanticEntry {
-  const record = expectRecord(value);
-  return {
-    span: parseSpan(record.span),
-    type: nullableString(record.type, 'type'),
-    declaration: record.declaration === null ? null : parseDeclaration(record.declaration),
-  };
-}
-
-function parseDeclaration(value: unknown): SemanticDeclaration {
-  const record = expectRecord(value);
-  const kind = expectString(record.kind, 'kind');
-  const kinds: SemanticDeclaration['kind'][] = [
-    'workflow',
-    'input',
-    'signal',
-    'outcome',
-    'type',
-    'field',
-    'variant',
-    'worker',
-    'action',
-    'child',
-    'parameter',
-    'step',
-    'binding',
-  ];
-  if (!kinds.includes(kind as SemanticDeclaration['kind'])) {
-    throw new Error('Invalid authoring response: declaration kind');
-  }
-  return {
-    name: expectString(record.name, 'name'),
-    kind: kind as SemanticDeclaration['kind'],
-    documentation: nullableString(record.documentation, 'documentation'),
-    span: parseSpan(record.span),
-  };
-}
-
-function parseSpan(value: unknown): SourceSpan {
-  const record = expectRecord(value);
-  return {
-    start: expectNumber(record.start, 'start'),
-    end: expectNumber(record.end, 'end'),
-    line: expectNumber(record.line, 'line'),
-    column: expectNumber(record.column, 'column'),
-  };
-}
-
-function parseGraph(value: unknown): GraphProjection {
-  const record = expectRecord(value);
-  return {
-    steps: expectArray(record.steps, 'graph.steps').map((item) => {
-      const step = expectRecord(item);
-      const markers = expectRecord(step.markers);
-      return {
-        name: expectString(step.name, 'step.name'),
-        documentation: expectString(step.documentation, 'step.documentation'),
-        activities: expectArray(step.activities, 'step.activities').map((activity) =>
-          expectString(activity, 'step.activity')
-        ),
-        span: parseSpan(step.span),
-        markers: {
-          looped: expectBoolean(markers.looped, 'markers.looped'),
-          forked: expectBoolean(markers.forked, 'markers.forked'),
-          waits: expectBoolean(markers.waits, 'markers.waits'),
-        },
-      };
-    }),
-    edges: expectArray(record.edges, 'graph.edges').map((item) => {
-      const edge = expectRecord(item);
-      const kind = edge.kind;
-      if (kind !== 'route' && kind !== 'fall_through' && kind !== 'after') {
-        throw new Error('Invalid authoring response: edge.kind');
-      }
-      return {
-        id: expectString(edge.id, 'edge.id'),
-        source: expectString(edge.source, 'edge.source'),
-        target: expectString(edge.target, 'edge.target'),
-        kind,
-        label: nullableString(edge.label, 'edge.label'),
-      };
-    }),
-    childCalls: expectArray(record.child_calls, 'graph.child_calls').map((item) => {
-      const child = expectRecord(item);
-      return {
-        id: expectString(child.id, 'child.id'),
-        parentStep: expectString(child.parent_step, 'child.parent_step'),
-        name: expectString(child.name, 'child.name'),
-        signature: expectString(child.signature, 'child.signature'),
-        span: parseSpan(child.span),
-      };
-    }),
   };
 }

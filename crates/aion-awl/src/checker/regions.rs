@@ -370,16 +370,30 @@ pub(super) fn check_collects(
 
 /// Classify every step of the flow for the semantic index, so projection
 /// (B3) never re-derives shape: `distribute` / `sequence` / `collect` /
-/// `subflow_call` / `decision` / `plain`. Substeps classify recursively
-/// (they can only be plain or decision — the placement rules forbid the
-/// rest).
-pub(super) fn classify(ctx: &mut Ctx<'_>, flow: &Flow<'_>) {
-    for step in flow.steps {
-        classify_step(ctx, step, flow.subflow.as_deref());
+/// `subflow_call` / `decision` / `plain`, each with the name of the
+/// `distribute`/`sequence` step opening the innermost region containing
+/// it, if any. Substeps classify recursively (they can only be plain or
+/// decision — the placement rules forbid the rest) and inherit their
+/// parent's region.
+pub(super) fn classify(ctx: &mut Ctx<'_>, flow: &Flow<'_>, regions: &[Region]) {
+    for (index, step) in flow.steps.iter().enumerate() {
+        let region = containing_region(flow, regions, index);
+        classify_step(ctx, step, flow.subflow.as_deref(), region);
     }
 }
 
-fn classify_step(ctx: &mut Ctx<'_>, step: &Step, subflow: Option<&str>) {
+/// Name of the `distribute`/`sequence` step opening the innermost region
+/// containing the step at `index`. Regions nest like brackets, so the
+/// innermost containing region is the one opened latest.
+fn containing_region<'a>(flow: &Flow<'a>, regions: &[Region], index: usize) -> Option<&'a str> {
+    regions
+        .iter()
+        .filter(|region| region.inside(index))
+        .max_by_key(|region| region.open)
+        .map(|region| flow.steps[region.open].name.as_str())
+}
+
+fn classify_step(ctx: &mut Ctx<'_>, step: &Step, subflow: Option<&str>, region: Option<&str>) {
     let kind = if let Some(distribute) = distribute_of(step) {
         match distribute.verb {
             DeliveryVerb::Distribute => StepKind::Distribute,
@@ -395,10 +409,36 @@ fn classify_step(ctx: &mut Ctx<'_>, step: &Step, subflow: Option<&str>) {
         StepKind::Plain
     };
     ctx.semantic
-        .step_kind(step.name_span, &step.name, kind, subflow);
-    for statement in &step.body {
-        if let Statement::SubStep(sub) = statement {
-            classify_step(ctx, sub, subflow);
+        .step_kind(step.name_span, &step.name, kind, subflow, region);
+    classify_statement_lists(ctx, step, subflow, region);
+}
+
+/// Visit the same statement-list tree as cycle checking while preserving the
+/// region inherited from the owning top-level step.
+fn classify_statement_lists(
+    ctx: &mut Ctx<'_>,
+    step: &Step,
+    subflow: Option<&str>,
+    region: Option<&str>,
+) {
+    classify_list(ctx, &step.body, subflow, region);
+    if let Some(on_failure) = &step.on_failure {
+        classify_list(ctx, &on_failure.body, subflow, region);
+    }
+}
+
+fn classify_list(
+    ctx: &mut Ctx<'_>,
+    statements: &[Statement],
+    subflow: Option<&str>,
+    region: Option<&str>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::SubStep(substep) => classify_step(ctx, substep, subflow, region),
+            Statement::Fork(fork) => classify_list(ctx, &fork.body, subflow, region),
+            Statement::Loop(looped) => classify_list(ctx, &looped.body, subflow, region),
+            _ => {}
         }
     }
 }

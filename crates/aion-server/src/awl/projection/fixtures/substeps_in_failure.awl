@@ -1,0 +1,27 @@
+//! Project sibling steps inside an on-failure compensation list.
+workflow failure_scoped_substeps
+  input task: String
+  outcome done: type Result, route success
+  outcome failed: type Result, route failure
+
+type Result { value: String }
+
+worker jobs
+  action attempt(task: String) -> Result
+
+step guarded
+  attempt(task: task) -> result
+
+  on failure
+    step choose_recovery
+      outcome next: otherwise, route classify_failure
+
+    step classify_failure
+      outcome terminal: otherwise, route failure_terminal
+
+    route failed(value: "compensation complete")
+
+  outcome failure_terminal: when false,
+    route failed(value: "classified failure")
+  outcome complete: otherwise,
+    route done(value: result.value)

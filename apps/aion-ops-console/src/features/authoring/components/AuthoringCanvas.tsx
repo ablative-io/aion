@@ -12,17 +12,20 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
+import { edgeLabel, nodeSize, parallelEdgeOffsets } from '../lib/canvas-layout';
 import type { AwlDiagnostic, AwlDocument, EditResult, GestureOperation } from '../lib/facade';
 import { authoringFacade } from '../lib/facade';
 import { diagnosticsByStep } from '../lib/projection';
 import type { GraphProjection, LayoutRecord, ProjectionStep } from '../lib/projection-types';
 import { CanvasGestureControls } from './CanvasGestureControls';
+import { ParallelCanvasEdge } from './CanvasEdge';
 import { type CanvasNodeData, ChildCanvasNode, StepCanvasNode } from './CanvasNode';
 
 const NODE_WIDTH = 240;
 const STEP_HEIGHT = 140;
 const CHILD_HEIGHT = 120;
 const nodeTypes = { step: StepCanvasNode, child: ChildCanvasNode };
+const edgeTypes = { parallel: ParallelCanvasEdge };
 
 export type AuthoringCanvasProps = {
   path: string;
@@ -50,6 +53,7 @@ export function AuthoringCanvas({
   mode = 'edit',
 }: AuthoringCanvasProps) {
   const [layout, setLayout] = useState<LayoutRecord>({ positions: {} });
+  const [expandedSubflows, setExpandedSubflows] = useState<ReadonlySet<string>>(new Set());
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [gestureError, setGestureError] = useState<string | null>(null);
   const [gestureWorking, setGestureWorking] = useState(false);
@@ -91,6 +95,20 @@ export function AuthoringCanvas({
     [migrateStepLayout, onGesture]
   );
 
+  const toggleSubflow = useCallback((path: string) => {
+    setExpandedSubflows((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        for (const open of next) {
+          if (open === path || open.startsWith(`${path}/`)) next.delete(open);
+        }
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+
   const projected = useMemo(
     () =>
       projectFlow(
@@ -104,7 +122,9 @@ export function AuthoringCanvas({
         proseEditingStep,
         setProseEditingStep,
         performGesture,
-        mode
+        mode,
+        expandedSubflows,
+        toggleSubflow
       ),
     [
       diagnosticTones,
@@ -117,6 +137,8 @@ export function AuthoringCanvas({
       proseEditingStep,
       selectedStep,
       mode,
+      expandedSubflows,
+      toggleSubflow,
     ]
   );
   const [nodes, setNodes] = useState(projected.nodes);
@@ -179,6 +201,7 @@ export function AuthoringCanvas({
       <ReactFlow
         aria-label="AWL workflow graph"
         edges={projected.edges}
+        edgeTypes={edgeTypes}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodeTypes={nodeTypes}
@@ -227,13 +250,21 @@ function projectFlow(
   proseEditingStep: string | null,
   onBeginProseEdit: (step: string | null) => void,
   onGesture: (operation: GestureOperation) => Promise<EditResult>,
-  mode: 'edit' | 'run'
+  mode: 'edit' | 'run',
+  expandedSubflows: ReadonlySet<string>,
+  onToggleSubflow: (path: string) => void
 ): { nodes: Node<CanvasNodeData>[]; edges: Edge[] } {
   const dagreGraph = new dagre.graphlib.Graph()
     .setDefaultEdgeLabel(() => ({}))
     .setGraph({ rankdir: 'TB', nodesep: 48, ranksep: 72 });
+  const stepSizes = new Map<string, { width: number; height: number }>();
   for (const step of graph.steps) {
-    dagreGraph.setNode(step.name, { width: NODE_WIDTH, height: STEP_HEIGHT });
+    const size = nodeSize(step, step.name, expandedSubflows, {
+      width: NODE_WIDTH,
+      height: STEP_HEIGHT,
+    });
+    stepSizes.set(step.name, size);
+    dagreGraph.setNode(step.name, size);
   }
   for (const child of graph.childCalls) {
     dagreGraph.setNode(child.id, { width: NODE_WIDTH, height: CHILD_HEIGHT });
@@ -253,9 +284,18 @@ function projectFlow(
       proseEditingStep,
       onBeginProseEdit,
       onGesture,
-      mode
+      mode,
+      expandedSubflows,
+      onToggleSubflow
     )
   );
+  const graphLeft = nodes.length === 0 ? 0 : Math.min(...nodes.map((node) => node.position.x));
+  const graphRight =
+    nodes.length === 0
+      ? 0
+      : Math.max(
+          ...nodes.map((node) => node.position.x + (stepSizes.get(node.id)?.width ?? NODE_WIDTH))
+        );
   for (const child of graph.childCalls) {
     const document = documents.find((item) => item.name === child.name);
     const position = topLeft(dagreGraph.node(child.id));
@@ -277,12 +317,20 @@ function projectFlow(
     });
   }
 
+  const siblingOffsets = parallelEdgeOffsets(graph.edges);
   const edges: Edge[] = graph.edges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    label: edge.label ?? undefined,
-    type: 'smoothstep',
+    label: edgeLabel(edge) ?? undefined,
+    type: 'parallel',
+    data: {
+      siblingOffset: siblingOffsets.get(edge.id) ?? 0,
+      back: edge.back,
+      selfLoop: edge.source === edge.target,
+      graphLeft,
+      graphRight,
+    },
     markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor(edge.kind) },
     style: {
       stroke: edgeColor(edge.kind),
@@ -290,8 +338,6 @@ function projectFlow(
       strokeDasharray:
         edge.kind === 'fall_through' ? '6 5' : edge.kind === 'after' ? '2 5' : undefined,
     },
-    labelStyle: { fill: 'var(--muted-foreground)', fontSize: 11, fontWeight: 600 },
-    labelBgStyle: { fill: 'var(--surface-base)', fillOpacity: 0.9 },
   }));
   for (const child of graph.childCalls) {
     edges.push({
@@ -319,7 +365,9 @@ function stepNode(
   proseEditingStep: string | null,
   onBeginProseEdit: (step: string | null) => void,
   onGesture: (operation: GestureOperation) => Promise<EditResult>,
-  mode: 'edit' | 'run'
+  mode: 'edit' | 'run',
+  expandedSubflows: ReadonlySet<string>,
+  onToggleSubflow: (path: string) => void
 ): Node<CanvasNodeData> {
   return {
     id: step.name,
@@ -332,7 +380,10 @@ function stepNode(
       kind: 'step',
       name: step.name,
       label: step.documentation,
-      markers: step.markers,
+      step,
+      expandedSubflows,
+      onToggleSubflow,
+      onJumpTo: onJumpToSpan,
       diagnostic: tones.get(step.name),
       onActivate: () => onJumpToSpan(step.span.start),
       proseEditing: proseEditingStep === step.name,

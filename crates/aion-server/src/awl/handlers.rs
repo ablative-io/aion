@@ -113,7 +113,7 @@ pub fn check_source(request: &CheckRequest) -> CheckResponse {
             semantic: None,
         };
     }
-    let graph = super::projection::build(&document);
+    let graph = super::projection::build(&document, analysis.step_kinds());
     let studio = super::studio_projection::build(&document);
     let semantic = SemanticIndex {
         entries: analysis

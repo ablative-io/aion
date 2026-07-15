@@ -126,6 +126,11 @@ pub struct StepInfo {
     pub kind: StepKind,
     /// `None` for a workflow step; the owning subflow's name otherwise.
     pub subflow: Option<String>,
+    /// Name of the `distribute`/`sequence` step that opened the innermost
+    /// per-item region containing this step, if any. The boundary steps —
+    /// the opener itself and its `collect` — are not members of the region
+    /// they delimit (though they may sit inside an outer one).
+    pub region: Option<String>,
 }
 
 /// Semantic facts attached to one source span.
@@ -420,19 +425,22 @@ impl Builder {
         }
     }
 
-    /// Record one step's checker-derived classification.
+    /// Record one step's checker-derived classification and region
+    /// membership.
     pub(crate) fn step_kind(
         &mut self,
         span: Span,
         name: &str,
         kind: StepKind,
         subflow: Option<&str>,
+        region: Option<&str>,
     ) {
         self.steps.push(StepInfo {
             span,
             name: name.to_owned(),
             kind,
             subflow: subflow.map(str::to_owned),
+            region: region.map(str::to_owned),
         });
     }
 

@@ -1,0 +1,46 @@
+//! Project block-nested sibling steps with an inherited per-item region.
+workflow region_scoped_substeps
+  input items: [String]
+  outcome done: type Result, route success
+
+type Result { value: String }
+
+worker jobs
+  action decide() -> Bool
+  action mark(item: String) -> String
+
+step wave
+  distribute item in items
+
+step member
+  fork branch in items
+    step fork_choose
+      outcome next: otherwise, route fork_finish
+
+    step fork_finish
+      outcome again: otherwise, route fork_choose
+      max 2 visits
+  join
+
+  loop complete = false
+    step loop_choose
+      outcome next: otherwise, route loop_finish
+
+    step loop_finish
+      outcome again: otherwise, route loop_choose
+      max 2 visits
+
+    decide() -> complete
+    until complete
+    max 1
+
+  mark(item: item) -> verdict
+
+  outcome loop_complete: when complete, route gather
+  outcome loop_exhausted: otherwise, route gather
+
+step gather
+  collect verdict -> results
+
+step finish
+  route done(value: "region complete")

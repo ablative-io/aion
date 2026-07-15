@@ -1,0 +1,31 @@
+//! Project sibling steps inside a fork statement list.
+workflow fork_scoped_substeps
+  input items: [String]
+  outcome done: type Result, route success
+
+type Result { value: String }
+
+worker jobs
+  action first() -> String
+  action second(prior: String) -> String
+
+step forked
+  fork item in items
+    step prepare
+      first() -> draft
+      outcome next: otherwise, route verify
+
+    step verify
+      second(prior: draft) -> checked
+  join
+
+  fork item in items
+    step archive
+      first() -> archived
+      outcome next: otherwise, route publish
+
+    step publish
+      second(prior: archived) -> published
+  join
+
+  route done(value: "fork complete")

@@ -96,7 +96,7 @@ pub(super) fn build(ctx: &mut Ctx<'_>, flow: &Flow<'_>) -> StepGraph {
     // the semantic step kinds — all purely syntactic over the step list.
     regions::structure(ctx, flow);
     let formed = regions::form(ctx, flow);
-    regions::classify(ctx, flow);
+    regions::classify(ctx, flow, &formed);
     let collect_masks = regions::masks(flow, &formed);
 
     // Resolve `after` targets.

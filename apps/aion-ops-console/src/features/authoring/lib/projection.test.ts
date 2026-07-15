@@ -8,6 +8,18 @@ import {
 } from './projection';
 import type { GraphProjection } from './projection-types';
 
+const plain = {
+  kind: 'plain' as const,
+  region: null,
+  distribution: null,
+  collect: null,
+  subflow: null,
+  substeps: [],
+  visits: null,
+  decision: false,
+  waits: false,
+};
+
 const graph: GraphProjection = {
   steps: [
     {
@@ -15,14 +27,16 @@ const graph: GraphProjection = {
       documentation: 'First',
       activities: [],
       span: { start: 0, end: 5, line: 1, column: 1 },
-      markers: { looped: false, forked: false, waits: false },
+      ...plain,
     },
     {
       name: 'second',
       documentation: 'Second',
       activities: [],
       span: { start: 12, end: 18, line: 4, column: 1 },
-      markers: { looped: false, forked: false, waits: false },
+      ...plain,
+      kind: 'distribute',
+      distribution: { binding: 'item', collection: 'state.items' },
     },
   ],
   edges: [],

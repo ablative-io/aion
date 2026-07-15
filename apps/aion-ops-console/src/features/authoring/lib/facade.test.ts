@@ -82,6 +82,113 @@ describe('authoring facade parsing', () => {
     });
   }
 
+  test('parses the flow-shape graph vocabulary across the wire', async () => {
+    const span = { start: 0, end: 4, line: 1, column: 1 };
+    const wireStep = (name: string, extra: Record<string, unknown>) => ({
+      name,
+      documentation: '',
+      activities: [],
+      span,
+      kind: 'plain',
+      region: null,
+      distribution: null,
+      collect: null,
+      subflow: null,
+      substeps: [],
+      visits: null,
+      decision: false,
+      waits: false,
+      ...extra,
+    });
+    const wire = {
+      ok: true,
+      deploys_green: true,
+      steps: 3,
+      diagnostics: [],
+      semantic: {
+        entries: [
+          {
+            span,
+            type: 'String',
+            declaration: {
+              name: 'coordinator_instructions',
+              kind: 'const',
+              documentation: null,
+              span,
+            },
+          },
+          {
+            span: { ...span, start: 5, end: 13 },
+            type: null,
+            declaration: {
+              name: 'dev_item',
+              kind: 'subflow',
+              documentation: null,
+              span: { ...span, start: 5, end: 13 },
+            },
+          },
+        ],
+        graph: {
+          steps: [
+            wireStep('wave', {
+              kind: 'distribute',
+              distribution: { binding: 'item', collection: 'state.items' },
+            }),
+            wireStep('build', {
+              kind: 'subflow_call',
+              region: 'wave',
+              subflow: {
+                name: 'dev_item',
+                graph: {
+                  steps: [wireStep('review', { decision: true, visits: '3' })],
+                  edges: [],
+                  child_calls: [],
+                },
+              },
+            }),
+            wireStep('gather', {
+              kind: 'collect',
+              collect: { binding: 'verdict', tolerant: true, result: 'results' },
+            }),
+          ],
+          edges: [
+            {
+              id: 'route:fold:wave:otherwise:1',
+              source: 'fold',
+              target: 'wave',
+              kind: 'route',
+              label: 'otherwise',
+              back: true,
+              visits: '3',
+            },
+          ],
+          child_calls: [],
+        },
+        studio: { builtins: [], types: [], workers: [] },
+      },
+    };
+    const facade = createAuthoringFacade(async () => Response.json(wire));
+    const result = await facade.check('workflow demo {}');
+    const graph = result.semantic?.graph;
+    expect(result.semantic?.entries.map((entry) => entry.declaration?.kind)).toEqual([
+      'const',
+      'subflow',
+    ]);
+    expect(graph?.steps[0]?.kind).toBe('distribute');
+    expect(graph?.steps[0]?.distribution).toEqual({ binding: 'item', collection: 'state.items' });
+    expect(graph?.steps[1]?.region).toBe('wave');
+    expect(graph?.steps[1]?.subflow?.name).toBe('dev_item');
+    expect(graph?.steps[1]?.subflow?.graph?.steps[0]?.decision).toBe(true);
+    expect(graph?.steps[1]?.subflow?.graph?.childCalls).toEqual([]);
+    expect(graph?.steps[2]?.collect).toEqual({
+      binding: 'verdict',
+      tolerant: true,
+      result: 'results',
+    });
+    expect(graph?.edges[0]?.back).toBe(true);
+    expect(graph?.edges[0]?.visits).toBe('3');
+  });
+
   test('sends the documented check shape', async () => {
     let body = '';
     const facade = createAuthoringFacade(async (_input, init) => {

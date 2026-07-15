@@ -127,6 +127,29 @@ fn every_step_carries_its_kind_in_the_semantic_index() -> TestResult {
 }
 
 #[test]
+fn every_step_carries_its_region_membership_in_the_semantic_index() -> TestResult {
+    let document = parse(SHAPE_DOC)?;
+    let analysis = analyze(&document);
+    assert!(analysis.diagnostics().is_empty());
+    let regions: Vec<(&str, Option<&str>)> = analysis
+        .step_kinds()
+        .iter()
+        .map(|step| (step.name.as_str(), step.region.as_deref()))
+        .collect();
+    assert_eq!(
+        regions,
+        vec![
+            ("wave", None),
+            ("build", Some("wave")),
+            ("gather", None),
+            ("decide", None),
+            ("develop", None),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn sequence_steps_classify_as_sequence() -> TestResult {
     let source = "//! Kinds.\n\
 workflow t\n\
