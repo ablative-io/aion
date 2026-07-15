@@ -201,6 +201,11 @@ pub fn action_requirements(document: &Document) -> Vec<ActionRequirement> {
             for step in &document.steps {
                 step_nodes(step, &action.name, declared, &mut nodes);
             }
+            for subflow in &document.subflows {
+                for step in &subflow.steps {
+                    step_nodes(step, &action.name, declared, &mut nodes);
+                }
+            }
             if nodes.is_empty() {
                 nodes.push(declared.map(str::to_owned));
             }
@@ -256,11 +261,14 @@ fn statement_nodes(
             Statement::Fork(fork) => statement_nodes(&fork.body, action, declared, nodes),
             Statement::Loop(looped) => statement_nodes(&looped.body, action, declared, nodes),
             Statement::SubStep(sub) => step_nodes(sub, action, declared, nodes),
-            // `spawn` starts a child workflow, never a worker action.
+            // `spawn` starts a child workflow, never a worker action; the
+            // region statements carry no calls.
             Statement::Spawn(_)
             | Statement::Wait(_)
             | Statement::Sleep(_)
-            | Statement::Route(_) => {}
+            | Statement::Route(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }

@@ -59,6 +59,12 @@ pub(super) fn parse_statement(
             stream.next();
             Ok(Statement::Fork(parse_fork(stream, lead, span)?))
         }
+        TokenKind::Keyword(
+            keyword @ (Keyword::Distribute | Keyword::Sequence | Keyword::Collect),
+        ) => {
+            let keyword = *keyword;
+            super::flow::parse_region_statement(stream, lead, &docs, keyword, span)
+        }
         TokenKind::Keyword(Keyword::Wait) => {
             reject_docs(&docs, "a wait")?;
             stream.next();
@@ -386,22 +392,55 @@ fn parse_wait(
 
 pub(super) fn parse_route_target(stream: &mut Stream) -> Result<RouteTarget, ParseError> {
     let (name, name_span) = stream.expect_name("a route target")?;
-    let payload = if stream.peek_is(|kind| matches!(kind, TokenKind::LeftParen)) {
+    if stream.peek_is(|kind| matches!(kind, TokenKind::LeftParen)) {
         stream.next();
-        let (args, close) = parse_args(stream)?;
+        let payload = parse_route_payload(stream)?;
+        let close = match &payload {
+            ParsedPayload::Args(_, close) | ParsedPayload::Value(_, close) => *close,
+        };
+        let payload = match payload {
+            ParsedPayload::Args(args, _) => crate::ast::RoutePayload::Args(args),
+            ParsedPayload::Value(value, _) => crate::ast::RoutePayload::Value(value),
+        };
         return Ok(RouteTarget {
             span: join_span(name_span, close),
             name,
             name_span,
-            payload: Some(args),
+            payload: Some(payload),
         });
-    } else {
-        None
-    };
+    }
     Ok(RouteTarget {
         span: name_span,
         name,
         name_span,
-        payload,
+        payload: None,
     })
+}
+
+enum ParsedPayload {
+    Args(Vec<crate::ast::Arg>, Span),
+    Value(crate::ast::Expr, Span),
+}
+
+/// Parse a route payload after its opening parenthesis: either named
+/// construction fields (`route done(value: …)`) or one bare value expression
+/// (`route out(verdict)` — the payload is the value itself). The two are
+/// told apart by the `name:` lookahead.
+fn parse_route_payload(stream: &mut Stream) -> Result<ParsedPayload, ParseError> {
+    let name_shaped = stream.peek_is(|kind| {
+        matches!(kind, TokenKind::Identifier(_))
+            || matches!(kind, TokenKind::Keyword(keyword) if super::stream::soft_keyword(*keyword))
+    });
+    let named = stream.peek_is(|kind| matches!(kind, TokenKind::RightParen))
+        || (name_shaped && stream.peek_second_is(|kind| matches!(kind, TokenKind::Colon)));
+    if named {
+        let (args, close) = parse_args(stream)?;
+        return Ok(ParsedPayload::Args(args, close));
+    }
+    let value = super::exprs::parse_expr(stream)?;
+    let close = stream.expect(
+        &TokenKind::RightParen,
+        "expected `)` to close the route payload",
+    )?;
+    Ok(ParsedPayload::Value(value, close.span))
 }

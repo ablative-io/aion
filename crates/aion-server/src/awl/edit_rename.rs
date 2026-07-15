@@ -112,6 +112,20 @@ fn rename_statements(statements: &mut [Statement], spans: &BTreeSet<(usize, usiz
             }
             Statement::Route(route) => rename_target(&mut route.target, spans, to),
             Statement::SubStep(step) => rename_step(step, spans, to),
+            Statement::Distribute(distribute) => {
+                if matches_span(distribute.var_span, spans) {
+                    distribute.var.clone_from(&to.to_owned());
+                }
+                rename_expr(&mut distribute.collection, spans, to);
+            }
+            Statement::Collect(collect) => {
+                if matches_span(collect.binding_span, spans) {
+                    collect.binding.clone_from(&to.to_owned());
+                }
+                if matches_span(collect.bind.span, spans) {
+                    collect.bind.name.clone_from(&to.to_owned());
+                }
+            }
         }
     }
 }
@@ -120,10 +134,14 @@ fn rename_target(target: &mut aion_awl::RouteTarget, spans: &BTreeSet<(usize, us
     if matches_span(target.name_span, spans) {
         target.name.clone_from(&to.to_owned());
     }
-    if let Some(payload) = &mut target.payload {
-        for arg in payload {
-            rename_arg(arg, spans, to);
+    match &mut target.payload {
+        Some(aion_awl::RoutePayload::Args(args)) => {
+            for arg in args {
+                rename_arg(arg, spans, to);
+            }
         }
+        Some(aion_awl::RoutePayload::Value(value)) => rename_expr(value, spans, to),
+        None => {}
     }
 }
 

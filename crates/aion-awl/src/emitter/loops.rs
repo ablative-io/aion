@@ -230,8 +230,12 @@ pub(crate) fn first_route_span(statements: &[Statement]) -> Option<Span> {
                     return Some(span);
                 }
             }
-            Statement::Call(_) | Statement::Spawn(_) | Statement::Wait(_) | Statement::Sleep(_) => {
-            }
+            Statement::Call(_)
+            | Statement::Spawn(_)
+            | Statement::Wait(_)
+            | Statement::Sleep(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
     None
@@ -295,15 +299,18 @@ pub(crate) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet
             }
             Statement::Pipe(pipe) => {
                 expr_refs(&pipe.head, refs);
-                if let crate::ast::PipeEnd::Route(target) = &pipe.end
-                    && let Some(payload) = &target.payload
-                {
-                    for arg in payload {
+                if let crate::ast::PipeEnd::Route(target) = &pipe.end {
+                    for arg in target.payload_args() {
                         expr_refs(&arg.value, refs);
                     }
                 }
             }
-            Statement::Wait(_) | Statement::Sleep(_) => {}
+            // Rev-3 region statements never reach the emitter (refused at
+            // the entry gate before planning).
+            Statement::Wait(_)
+            | Statement::Sleep(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
             Statement::Fork(fork) => {
                 if let ForkHeader::Collection { collection, .. } = &fork.header {
                     expr_refs(collection, refs);
@@ -321,10 +328,8 @@ pub(crate) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet
                 statements_expr_refs(&looped.body, refs);
             }
             Statement::Route(route) => {
-                if let Some(payload) = &route.target.payload {
-                    for arg in payload {
-                        expr_refs(&arg.value, refs);
-                    }
+                for arg in route.target.payload_args() {
+                    expr_refs(&arg.value, refs);
                 }
             }
             Statement::SubStep(sub) => {
@@ -367,7 +372,13 @@ pub(crate) fn statement_defs(statements: &[Statement], defs: &mut BTreeSet<Strin
                 }
             }
             Statement::SubStep(sub) => statement_defs(&sub.body, defs),
-            Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
+            // Rev-3 region statements never reach the emitter (refused at
+            // the entry gate before planning).
+            Statement::Spawn(_)
+            | Statement::Sleep(_)
+            | Statement::Route(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }

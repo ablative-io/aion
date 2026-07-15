@@ -38,6 +38,7 @@ pub(super) fn run(ctx: &mut Ctx<'_>) {
     check_header(ctx);
     resolve_type_bodies(ctx);
     check_workers_and_children(ctx);
+    check_subflows(ctx);
 }
 
 fn register_type_names(ctx: &mut Ctx<'_>) {
@@ -254,6 +255,59 @@ fn check_workers_and_children(ctx: &mut Ctx<'_>) {
             ctx.error(
                 child.name_span,
                 format!("duplicate child declaration `{}`", child.name),
+            );
+        }
+    }
+}
+
+/// Register subflow contracts: parameters (the subflow's inputs) and the
+/// single outcome's payload type (what an invocation binds). Subflows share
+/// the call namespace with actions and children, so the names must not
+/// collide.
+fn check_subflows(ctx: &mut Ctx<'_>) {
+    let doc = ctx.doc;
+    for subflow in &doc.subflows {
+        if !is_snake_case(&subflow.name) {
+            ctx.error(
+                subflow.name_span,
+                format!(
+                    "subflow name `{}` must be snake_case ([a-z][a-z0-9_]*)",
+                    subflow.name
+                ),
+            );
+        }
+        if !is_snake_case(&subflow.outcome.name) {
+            ctx.error(
+                subflow.outcome.name_span,
+                format!(
+                    "outcome name `{}` must be snake_case ([a-z][a-z0-9_]*)",
+                    subflow.outcome.name
+                ),
+            );
+        }
+        let callable = resolve_callable(ctx, &subflow.params, &subflow.outcome.ty);
+        ctx.semantic
+            .ty(subflow.name_span, &callable.returns.to_string());
+        ctx.semantic
+            .ty(subflow.outcome.name_span, &callable.returns.to_string());
+        if ctx.actions.contains_key(&subflow.name) || ctx.children.contains_key(&subflow.name) {
+            ctx.error(
+                subflow.name_span,
+                format!(
+                    "`{}` is already declared as an action or child — subflows share the \
+                     call namespace",
+                    subflow.name
+                ),
+            );
+        }
+        if ctx
+            .subflows
+            .insert(subflow.name.clone(), callable)
+            .is_some()
+        {
+            ctx.error(
+                subflow.name_span,
+                format!("duplicate subflow declaration `{}`", subflow.name),
             );
         }
     }

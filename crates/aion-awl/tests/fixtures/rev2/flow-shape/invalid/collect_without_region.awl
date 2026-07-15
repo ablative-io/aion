@@ -1,0 +1,11 @@
+//! A collect with no open region to close.
+workflow stray
+  input notes: [String]
+  outcome done: type String, route success
+
+worker w
+  action work(item: String) -> String
+
+step lonely
+  collect note -> gathered
+  "done" |> route done

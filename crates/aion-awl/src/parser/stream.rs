@@ -89,6 +89,24 @@ impl Stream {
         self.tokens.get(self.pos + 1)
     }
 
+    /// Whether the token after the next one — skipping line-structure noise
+    /// in between (newlines, indents, comments), as inside parentheses —
+    /// satisfies `test`.
+    pub(super) fn peek_second_is(&mut self, test: impl Fn(&TokenKind) -> bool) -> bool {
+        self.settle();
+        let mut index = self.pos + 1;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::Newline
+                | TokenKind::Indent
+                | TokenKind::Dedent
+                | TokenKind::Comment(_) => index += 1,
+                _ => return test(&token.kind),
+            }
+        }
+        false
+    }
+
     pub(super) fn next(&mut self) -> Option<Token> {
         self.settle();
         let token = self.tokens.get(self.pos)?.clone();

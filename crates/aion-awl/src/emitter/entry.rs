@@ -77,6 +77,14 @@ fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitEr
             format!("document does not check cleanly: {}", first.message),
         ));
     }
+    // The rev-3 flow shape (B2) checks but is not yet lowered: refuse it
+    // honestly here — with a span — before any planning pass runs.
+    if let Some((span, what)) = crate::unlowered::first_unlowered(document) {
+        return Err(EmitError::new(
+            span,
+            format!("{what} are not yet lowered — flow-vocabulary lowering lands in B4"),
+        ));
+    }
     // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
     // `schema of`, const references) down to plain literals first, so the
     // lowering below only ever sees the vocabulary it already speaks.

@@ -112,10 +112,39 @@ fn print_document(printer: &mut Printer, document: &Document) {
     for child in &document.children {
         print_child(printer, child);
     }
+    for subflow in &document.subflows {
+        print_subflow(printer, subflow);
+    }
     for step in &document.steps {
         print_step(printer, 0, step);
     }
     printer.leads(0, &document.epilogue);
+}
+
+/// Print one `subflow` declaration: the header with its typed parameters,
+/// the single `outcome <name>: type <Type>` line, then the subflow's steps
+/// one level deep.
+fn print_subflow(printer: &mut Printer, subflow: &crate::ast::SubflowDecl) {
+    printer.leads(0, &subflow.lead);
+    printer.docs(0, &subflow.docs);
+    printer.line(
+        0,
+        &format!("subflow {}({})", subflow.name, params_text(&subflow.params)),
+        subflow.trailing.as_ref(),
+    );
+    printer.leads(1, &subflow.outcome.lead);
+    printer.line(
+        1,
+        &format!(
+            "outcome {}: type {}",
+            subflow.outcome.name,
+            type_ref_text(&subflow.outcome.ty)
+        ),
+        subflow.outcome.trailing.as_ref(),
+    );
+    for step in &subflow.steps {
+        print_step(printer, 1, step);
+    }
 }
 
 /// Print one `const name = <value>` declaration. The value renders through

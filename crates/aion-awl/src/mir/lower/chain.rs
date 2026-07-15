@@ -147,9 +147,13 @@ fn collect_statements(
                     defs.insert(bind.name.clone());
                 }
             }
-            // Sleeps reference no bindings. Substeps refuse during body
-            // lowering and therefore never reach chain materialization.
-            Statement::Sleep(_) | Statement::SubStep(_) => {}
+            // Sleeps reference no bindings. Substeps and the rev-3 region
+            // statements refuse during body lowering (or at the entry gate)
+            // and therefore never reach chain materialization.
+            Statement::Sleep(_)
+            | Statement::SubStep(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }
@@ -166,8 +170,8 @@ fn route_refs(
     refs: &mut BTreeSet<String>,
     bare_pickup: bool,
 ) {
-    if let Some(payload) = &target.payload {
-        for arg in payload {
+    if target.payload.is_some() {
+        for arg in target.payload_args() {
             add_expr(&arg.value, defs, refs);
         }
         return;

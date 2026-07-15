@@ -35,6 +35,8 @@ pub enum DeclarationKind {
     Action,
     /// A child workflow.
     Child,
+    /// A subflow: an inline flow container used as a step.
+    Subflow,
     /// An action or child parameter.
     Parameter,
     /// A top-level step or nested substep.
@@ -59,6 +61,7 @@ impl DeclarationKind {
             Self::Worker => "worker",
             Self::Action => "action",
             Self::Child => "child",
+            Self::Subflow => "subflow",
             Self::Parameter => "parameter",
             Self::Step => "step",
             Self::Binding => "binding",
@@ -79,6 +82,52 @@ pub struct Declaration {
     pub documentation: Option<String>,
 }
 
+/// The checker's classification of one step — the canvas node vocabulary,
+/// recorded so projection never re-derives shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepKind {
+    /// An ordinary step (statements, optional outcomes).
+    Plain,
+    /// A `distribute … in …` region opener (parallel delivery).
+    Distribute,
+    /// A `sequence … in …` region opener (in-order delivery).
+    Sequence,
+    /// A `collect` region closer.
+    Collect,
+    /// A step whose single statement invokes a subflow.
+    SubflowCall,
+    /// A body-less step with only outcome clauses: a pure decision node.
+    Decision,
+}
+
+impl StepKind {
+    /// Returns the stable, human-readable name of this step kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Distribute => "distribute",
+            Self::Sequence => "sequence",
+            Self::Collect => "collect",
+            Self::SubflowCall => "subflow_call",
+            Self::Decision => "decision",
+        }
+    }
+}
+
+/// One step's checker-derived classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepInfo {
+    /// Source span of the step's name.
+    pub span: Span,
+    /// Step name.
+    pub name: String,
+    /// The checker's classification.
+    pub kind: StepKind,
+    /// `None` for a workflow step; the owning subflow's name otherwise.
+    pub subflow: Option<String>,
+}
+
 /// Semantic facts attached to one source span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticInfo {
@@ -96,6 +145,7 @@ pub struct SemanticInfo {
 pub struct SemanticAnalysis {
     diagnostics: Vec<CheckError>,
     info: Vec<SemanticInfo>,
+    steps: Vec<StepInfo>,
 }
 
 impl SemanticAnalysis {
@@ -128,10 +178,19 @@ impl SemanticAnalysis {
         self.info.iter()
     }
 
+    /// Every step's checker-derived classification (the canvas node
+    /// vocabulary): workflow steps first, then each subflow's, in document
+    /// order, substeps after their parent.
+    #[must_use]
+    pub fn step_kinds(&self) -> &[StepInfo] {
+        &self.steps
+    }
+
     pub(crate) fn from_parts(diagnostics: Vec<CheckError>, builder: Builder) -> Self {
         Self {
             diagnostics,
             info: builder.info,
+            steps: builder.steps,
         }
     }
 }
@@ -156,6 +215,7 @@ pub fn analyze_in(document: &Document, root: &Path) -> SemanticAnalysis {
 pub(crate) struct Builder {
     info: Vec<SemanticInfo>,
     declarations: Vec<Declaration>,
+    steps: Vec<StepInfo>,
 }
 
 impl Builder {
@@ -163,6 +223,7 @@ impl Builder {
         let mut builder = Self {
             info: Vec::new(),
             declarations: Vec::new(),
+            steps: Vec::new(),
         };
         builder.declare(
             document.name_span,
@@ -251,10 +312,39 @@ impl Builder {
                 );
             }
         }
+        builder.subflow_decls(document);
         for step in &document.steps {
-            builder.steps(step);
+            builder.step_decls(step);
         }
         builder
+    }
+
+    fn subflow_decls(&mut self, document: &Document) {
+        for subflow in &document.subflows {
+            self.declare(
+                subflow.name_span,
+                &subflow.name,
+                DeclarationKind::Subflow,
+                &subflow.docs,
+            );
+            for parameter in &subflow.params {
+                self.declare(
+                    parameter.name_span,
+                    &parameter.name,
+                    DeclarationKind::Parameter,
+                    &[],
+                );
+            }
+            self.declare(
+                subflow.outcome.name_span,
+                &subflow.outcome.name,
+                DeclarationKind::Outcome,
+                &[],
+            );
+            for step in &subflow.steps {
+                self.step_decls(step);
+            }
+        }
     }
 
     fn const_decls(&mut self, document: &Document) {
@@ -268,7 +358,7 @@ impl Builder {
         }
     }
 
-    fn steps(&mut self, step: &Step) {
+    fn step_decls(&mut self, step: &Step) {
         self.declare(
             step.name_span,
             &step.name,
@@ -318,10 +408,32 @@ impl Builder {
                     }
                     self.statements(&looped.body);
                 }
-                Statement::SubStep(substep) => self.steps(substep),
+                Statement::SubStep(substep) => self.step_decls(substep),
+                Statement::Distribute(distribute) => {
+                    self.binding_declaration(distribute.var_span, &distribute.var);
+                }
+                Statement::Collect(collect) => {
+                    self.binding_declaration(collect.bind.span, &collect.bind.name);
+                }
                 Statement::Sleep(_) | Statement::Route(_) => {}
             }
         }
+    }
+
+    /// Record one step's checker-derived classification.
+    pub(crate) fn step_kind(
+        &mut self,
+        span: Span,
+        name: &str,
+        kind: StepKind,
+        subflow: Option<&str>,
+    ) {
+        self.steps.push(StepInfo {
+            span,
+            name: name.to_owned(),
+            kind,
+            subflow: subflow.map(str::to_owned),
+        });
     }
 
     fn binding_declaration(&mut self, span: Span, name: &str) {

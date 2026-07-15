@@ -1,0 +1,62 @@
+//! Dev flow — the rev-3 flow-vocabulary worked example: the coordinator
+//! plans waves of work items, each item develops and reviews inside a
+//! subflow, and a tolerant collect folds the wave's verdicts back in.
+workflow dev_flow
+  input task: Task
+  outcome done:   type Complete,   route success
+  outcome failed: type Incomplete, route failure
+
+const coordinator_instructions = """You are the coordinator. Plan waves of work items."""
+const agent_schema = schema of AgentOut
+
+type Task       { title: String, goal: String }
+type Complete   { summary: String }
+type Incomplete { reason: String }
+
+/// One planned work item, minted by the coordinator.
+type WorkItem {
+  /// git-ref-safe slug; names the branch.
+  id: String,
+  title: String,
+  goal: String,
+}
+
+type ItemVerdict { verdict: String, item_id: String }
+type AgentOut    { items: [WorkItem], summary: String, notes_dir: String }
+
+worker dev
+  action run_agent(instructions: String, output_schema: String, prompt: String) -> AgentOut
+  action run_review(item: WorkItem, note: String) -> ItemVerdict
+
+subflow dev_item(item: WorkItem, notes_dir: String)
+  outcome out: type ItemVerdict
+
+  step develop
+    run_agent(instructions: coordinator_instructions, output_schema: agent_schema, prompt: notes_dir + item.goal) -> note
+
+  step review
+    run_review(item: item, note: note.summary) -> verdict
+
+    outcome redo: when verdict.verdict == "reject", route develop
+    outcome ok: otherwise, route out(verdict)
+    max 3 visits
+
+step plan
+  run_agent(instructions: coordinator_instructions, output_schema: agent_schema, prompt: task.goal) -> state
+
+step wave after plan
+  distribute item in state.items
+
+step build
+  dev_item(item: item, notes_dir: state.notes_dir) -> verdict
+
+step gather
+  collect verdict? -> results
+
+step fold
+  run_agent(instructions: coordinator_instructions, output_schema: agent_schema, prompt: state.summary) -> state
+
+  outcome finish: when state.items is empty,
+    route done(summary: state.summary)
+  outcome next: otherwise, route wave
+  max 3 visits

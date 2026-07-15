@@ -34,6 +34,14 @@ pub(super) fn print_step(printer: &mut Printer, indent: usize, step: &Step) {
     for outcome in &step.outcomes {
         print_outcome_clause(printer, indent + 1, outcome);
     }
+    if let Some(max_visits) = &step.max_visits {
+        printer.leads(indent + 1, &max_visits.lead);
+        printer.line(
+            indent + 1,
+            &format!("max {} visits", expr_text(&max_visits.bound)),
+            max_visits.trailing.as_ref(),
+        );
+    }
 }
 
 fn print_statement(printer: &mut Printer, indent: usize, statement: &Statement) {
@@ -89,6 +97,31 @@ fn print_statement(printer: &mut Printer, indent: usize, statement: &Statement) 
             );
         }
         Statement::SubStep(step) => print_step(printer, indent, step),
+        Statement::Distribute(distribute) => {
+            printer.leads(indent, &distribute.lead);
+            printer.line(
+                indent,
+                &format!(
+                    "{} {} in {}",
+                    distribute.verb.as_word(),
+                    distribute.var,
+                    expr_text(&distribute.collection)
+                ),
+                distribute.trailing.as_ref(),
+            );
+        }
+        Statement::Collect(collect) => {
+            printer.leads(indent, &collect.lead);
+            let question = if collect.tolerant { "?" } else { "" };
+            printer.line(
+                indent,
+                &format!(
+                    "collect {}{question} -> {}",
+                    collect.binding, collect.bind.name
+                ),
+                collect.trailing.as_ref(),
+            );
+        }
     }
 }
 
@@ -220,7 +253,12 @@ fn stage_text(stage: &PipeStage) -> String {
 
 fn route_target_text(target: &RouteTarget) -> String {
     match &target.payload {
-        Some(args) => format!("{}({})", target.name, args_text(args)),
+        Some(crate::ast::RoutePayload::Args(args)) => {
+            format!("{}({})", target.name, args_text(args))
+        }
+        Some(crate::ast::RoutePayload::Value(value)) => {
+            format!("{}({})", target.name, expr_text(value))
+        }
         None => target.name.clone(),
     }
 }
@@ -236,14 +274,20 @@ fn guard_text(guard: &Guard) -> String {
 /// the clause fits; a payload-constructing route ALWAYS breaks after the
 /// guard comma (the spec's worked examples break `route out(...)` clauses
 /// even under 100 columns — byte-identity with the flagship pins the
-/// examples' reading over the printer-contract prose). The payload wraps
+/// examples' reading over the printer-contract prose). A single-value
+/// payload (`route out(verdict)`) constructs nothing and stays inline like
+/// a bare route (rev-3 §6 writes it inline). The constructed payload wraps
 /// greedily one level deeper when the route line itself overflows.
 fn print_outcome_clause(printer: &mut Printer, indent: usize, outcome: &OutcomeClause) {
     printer.leads(indent, &outcome.lead);
     let opening = format!("outcome {}: {}", outcome.name, guard_text(&outcome.guard));
     let route = route_target_text(&outcome.route);
     let one_line = format!("{opening}, route {route}");
-    if outcome.route.payload.is_none() && indent * 2 + width(&one_line) <= MAX_WIDTH {
+    let constructs = matches!(
+        &outcome.route.payload,
+        Some(crate::ast::RoutePayload::Args(_))
+    );
+    if !constructs && indent * 2 + width(&one_line) <= MAX_WIDTH {
         printer.line(indent, &one_line, outcome.trailing.as_ref());
         return;
     }
@@ -259,10 +303,10 @@ fn print_outcome_clause(printer: &mut Printer, indent: usize, outcome: &OutcomeC
 /// Greedy payload wrap: pack arguments onto the `route` line while they
 /// fit, continuing one level deeper.
 fn print_wrapped_route(printer: &mut Printer, indent: usize, outcome: &OutcomeClause) {
-    let Some(args) = &outcome.route.payload else {
+    let Some(crate::ast::RoutePayload::Args(args)) = &outcome.route.payload else {
         printer.line(
             indent,
-            &format!("route {}", outcome.route.name),
+            &format!("route {}", route_target_text(&outcome.route)),
             outcome.trailing.as_ref(),
         );
         return;

@@ -505,36 +505,26 @@ fn counterless_loop_pins_the_scalar_result_path() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-/// Backward route re-entry resets the loop: the routed-to region re-evaluates
-/// the seed and calls the loop function with count 0 — the reference
-/// emitter's behavior (the spec leaves re-entry unstated; recorded in
-/// AWL-BC-IR.md, exam ledger F-family).
+/// Backward route re-entry: since rev 3 the cycle carries a
+/// `max … visits` bound (the bounded loop inside `compose` no longer
+/// satisfies the cycle rule), and the bound is not lowered until B4 — so
+/// the fixture's honest answer today is the flow-shape refusal, with a
+/// span. B4 restores the seed/count-reset semantics pin recorded in
+/// AWL-BC-IR.md (exam ledger F-family).
 #[test]
-fn backward_route_reentry_resets_seed_and_count() -> Result<(), Box<dyn std::error::Error>> {
+fn backward_route_reentry_refuses_until_the_visits_bound_lowers()
+-> Result<(), Box<dyn std::error::Error>> {
     let path = manifest_dir()
         .join("tests/fixtures/rev2/loop-outcomes/valid/backward_route_bounded_cycle.awl");
-    let module = lower_fixture(&path)??;
-    verify(&module)?;
-    let text = print_mir(&module);
-    let check = text
-        .split("== fn step_check/")
-        .nth(1)
-        .ok_or("missing check step")?;
-    assert!(
-        check.contains("tail_local step_compose("),
-        "rework must re-enter the compose region:\n{check}"
-    );
-    let compose = text
-        .split("== fn step_compose/")
-        .nth(1)
-        .ok_or("missing compose step")?;
-    let call_line = compose
-        .lines()
-        .find(|line| line.contains("call_local compose_loop_0("))
-        .ok_or("missing loop call in compose")?;
-    assert!(
-        call_line.contains(", 0,"),
-        "re-entry must reset the count to 0: {call_line}"
-    );
+    match lower_fixture(&path)? {
+        Err(LowerError::Unsupported { shape, span }) => {
+            assert!(
+                shape.contains("max … visits") && shape.contains("not yet lowered"),
+                "refusal drifted: {shape}"
+            );
+            assert!(span.line > 0, "refusal must carry a source span");
+        }
+        other => return Err(format!("expected the flow-shape refusal, got {other:?}").into()),
+    }
     Ok(())
 }

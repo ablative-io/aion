@@ -1,5 +1,5 @@
 /// A byte and display-position range in the source document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Span {
     /// Zero-based byte offset where the span starts.
     pub start: usize,
@@ -39,9 +39,11 @@ impl Token {
     }
 }
 
-/// AWL rev-2 keyword tokens.
+/// AWL keyword tokens.
 ///
-/// This is the complete reserved inventory from the AWL-2 spec. Words that
+/// This is the complete reserved inventory from the AWL-2 spec plus the
+/// flow-vocabulary rev-3 words (`subflow`, `distribute`, `sequence`,
+/// `collect`, `visits`). Words that
 /// were keywords in AWL-0/1 but are gone from rev-2 (`about`, `do`, `as`,
 /// `each`, `repeat`, `finish`, `match`, `case`, `parallel`, `race`,
 /// `output`, `error`, `up`, `to`, `in`, `order`, `queue`, `fail`) lex as
@@ -149,6 +151,16 @@ pub enum Keyword {
     Json,
     /// `of`.
     Of,
+    /// `subflow`.
+    Subflow,
+    /// `distribute`.
+    Distribute,
+    /// `sequence`.
+    Sequence,
+    /// `collect`.
+    Collect,
+    /// `visits`.
+    Visits,
 }
 
 impl Keyword {
@@ -206,6 +218,11 @@ impl Keyword {
             Self::Const => "const",
             Self::Json => "json",
             Self::Of => "of",
+            Self::Subflow => "subflow",
+            Self::Distribute => "distribute",
+            Self::Sequence => "sequence",
+            Self::Collect => "collect",
+            Self::Visits => "visits",
         }
     }
 
@@ -263,6 +280,11 @@ impl Keyword {
             "const" => Some(Self::Const),
             "json" => Some(Self::Json),
             "of" => Some(Self::Of),
+            "subflow" => Some(Self::Subflow),
+            "distribute" => Some(Self::Distribute),
+            "sequence" => Some(Self::Sequence),
+            "collect" => Some(Self::Collect),
+            "visits" => Some(Self::Visits),
             _ => None,
         }
     }

@@ -1,15 +1,17 @@
 //! Guaranteed-bindings dataflow: which names a step's surface defines, and
 //! the descending Kleene iteration that computes what is available on every
 //! path into each step (`after` dependencies contribute conjunctively,
-//! routing and fall-through predecessors disjunctively).
+//! routing and fall-through predecessors disjunctively). A `collect` step
+//! masks its region's per-instance names on the way out: only the collected
+//! result crosses the region boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Span;
 use crate::ast::{ForkHeader, PipeEnd, Statement, Step};
 
-use super::context::Ctx;
-use super::graph::RouteEdge;
+use super::context::Flow;
+use super::graph::{Provenance, RouteEdge};
 
 /// Every name a step's surface binds for later steps.
 pub(super) fn defined_names(step: &Step) -> BTreeSet<String> {
@@ -18,7 +20,7 @@ pub(super) fn defined_names(step: &Step) -> BTreeSet<String> {
     names
 }
 
-fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>) {
+pub(super) fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>) {
     for statement in statements {
         match statement {
             Statement::Call(call) => {
@@ -48,23 +50,64 @@ fn defined_in_statements(statements: &[Statement], names: &mut BTreeSet<String>)
                     names.insert(counter.name.clone());
                 }
             }
+            Statement::Distribute(distribute) => {
+                names.insert(distribute.var.clone());
+            }
+            Statement::Collect(collect) => {
+                names.insert(collect.bind.name.clone());
+            }
             Statement::SubStep(sub) => defined_in_statements(&sub.body, names),
             Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
         }
     }
 }
 
-pub(super) fn universe(ctx: &Ctx<'_>) -> BTreeSet<String> {
-    let mut names: BTreeSet<String> = ctx.inputs.keys().cloned().collect();
-    for step in &ctx.doc.steps {
+pub(super) fn universe(flow: &Flow<'_>) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = flow.inputs.keys().cloned().collect();
+    for step in flow.steps {
         names.extend(defined_names(step));
     }
     names
 }
 
-/// Unique declaration origins for names; `None` represents a merge of
-/// distinct declarations with the same name.
-pub(super) type Origins = BTreeMap<String, Option<Span>>;
+/// Where a name's value can come from at a program point: the set of
+/// declaration sites still distinguishable, or `Unknown` when the origin is
+/// unrecoverable (ambiguous writes within one step, unresolved `after`
+/// resets, fixpoint seeds). A `Known` set with several members marks a real
+/// graph join of distinct declarations — the walk reconciles their types
+/// there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OriginSet {
+    /// The declaration sites this name can arrive from.
+    Known(BTreeSet<Span>),
+    /// Ambiguous beyond recovery; absorbs every merge.
+    Unknown,
+}
+
+impl OriginSet {
+    fn single(span: Span) -> Self {
+        Self::Known(BTreeSet::from([span]))
+    }
+
+    /// The unique declaration site, when exactly one remains.
+    pub(super) fn unique(&self) -> Option<Span> {
+        match self {
+            Self::Known(spans) if spans.len() == 1 => spans.first().copied(),
+            _ => None,
+        }
+    }
+
+    /// The distinguishable declaration sites at a join (two or more).
+    pub(super) fn joined(&self) -> Option<&BTreeSet<Span>> {
+        match self {
+            Self::Known(spans) if spans.len() > 1 => Some(spans),
+            _ => None,
+        }
+    }
+}
+
+/// Declaration origins for names in scope at a program point.
+pub(super) type Origins = BTreeMap<String, OriginSet>;
 
 fn defined_origins(step: &Step) -> Origins {
     let mut origins = Origins::new();
@@ -72,7 +115,7 @@ fn defined_origins(step: &Step) -> Origins {
     origins
 }
 
-fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
+pub(super) fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
     for statement in statements {
         match statement {
             Statement::Call(call) => {
@@ -100,6 +143,12 @@ fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
                     insert_origin(origins, &counter.name, counter.span);
                 }
             }
+            Statement::Distribute(distribute) => {
+                insert_origin(origins, &distribute.var, distribute.var_span);
+            }
+            Statement::Collect(collect) => {
+                insert_origin(origins, &collect.bind.name, collect.bind.span);
+            }
             Statement::SubStep(substep) => origins_in_statements(&substep.body, origins),
             Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
         }
@@ -107,29 +156,34 @@ fn origins_in_statements(statements: &[Statement], origins: &mut Origins) {
 }
 
 fn insert_origin(origins: &mut Origins, name: &str, span: Span) {
+    // Two writes of one name WITHIN a step are sequential (last wins), not
+    // a graph join — the origin is ambiguous, never a reconciliation site.
     match origins.get(name) {
-        Some(Some(existing)) if *existing == span => {}
+        Some(OriginSet::Known(spans)) if spans.len() == 1 && spans.contains(&span) => {}
         Some(_) => {
-            origins.insert(name.to_owned(), None);
+            origins.insert(name.to_owned(), OriginSet::Unknown);
         }
         None => {
-            origins.insert(name.to_owned(), Some(span));
+            origins.insert(name.to_owned(), OriginSet::single(span));
         }
     }
 }
 
 /// Descending Kleene iteration for the guaranteed-bindings dataflow.
+/// `masks` subtracts a `collect` step's region-local names from its
+/// outgoing set (the per-item track is merged there).
 pub(super) fn availability(
-    ctx: &Ctx<'_>,
+    flow: &Flow<'_>,
     after: &[Vec<usize>],
     after_unknown: &[bool],
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
+    masks: &BTreeMap<usize, BTreeSet<String>>,
 ) -> (Vec<BTreeSet<String>>, Vec<Origins>) {
-    let steps = &ctx.doc.steps;
+    let steps = flow.steps;
     let count = steps.len();
-    let inputs: BTreeSet<String> = ctx.inputs.keys().cloned().collect();
-    let all = universe(ctx);
+    let inputs: BTreeSet<String> = flow.inputs.keys().cloned().collect();
+    let all = universe(flow);
     let defined: Vec<BTreeSet<String>> = steps.iter().map(defined_names).collect();
     let mut avail_in: Vec<BTreeSet<String>> = vec![all.clone(); count];
     let mut avail_out: Vec<BTreeSet<String>> = vec![all.clone(); count];
@@ -141,6 +195,11 @@ pub(super) fn availability(
             for &dep in &after[position] {
                 incoming.extend(avail_out[dep].iter().cloned());
             }
+            // An `after`-armed step has a first arrival carrying only its
+            // dependencies' guarantees: that arming is one of the paths the
+            // disjunctive meet ranges over, so a backward route into the
+            // step cannot smuggle its bindings onto the first pass.
+            let arming = (!after[position].is_empty()).then(|| incoming.clone());
             let mut disjunctive: Option<BTreeSet<String>> = None;
             let mut merge = |set: &BTreeSet<String>| {
                 disjunctive = Some(match disjunctive.take() {
@@ -151,8 +210,21 @@ pub(super) fn availability(
             if position == 0 {
                 merge(&inputs);
             }
+            if let Some(arming) = &arming {
+                merge(arming);
+            }
             for edge in routes.iter().filter(|edge| edge.target == position) {
-                merge(&avail_out[edge.source]);
+                match &edge.provenance {
+                    Provenance::Success => merge(&avail_out[edge.source]),
+                    // Compensation runs from the failed step's ENTRY set —
+                    // the body's bindings never happened on this path — plus
+                    // whatever the compensation bound before the route.
+                    Provenance::Failure { defines, .. } => {
+                        let mut contribution = avail_in[edge.source].clone();
+                        contribution.extend(defines.iter().cloned());
+                        merge(&contribution);
+                    }
+                }
             }
             if let Some(pred) = fall_pred[position] {
                 merge(&avail_out[pred]);
@@ -163,7 +235,13 @@ pub(super) fn availability(
             if after_unknown[position] {
                 incoming.clone_from(&all);
             }
-            let outgoing: BTreeSet<String> = incoming.union(&defined[position]).cloned().collect();
+            let mut passed = incoming.clone();
+            if let Some(mask) = masks.get(&position) {
+                for name in mask {
+                    passed.remove(name);
+                }
+            }
+            let outgoing: BTreeSet<String> = passed.union(&defined[position]).cloned().collect();
             if incoming != avail_in[position] {
                 avail_in[position] = incoming;
                 changed = true;
@@ -174,27 +252,41 @@ pub(super) fn availability(
             }
         }
     }
-    let origins = origin_availability(ctx, after, after_unknown, routes, fall_pred, &avail_in);
+    let origins = origin_availability(
+        flow,
+        after,
+        after_unknown,
+        routes,
+        fall_pred,
+        masks,
+        &avail_in,
+    );
     (avail_in, origins)
 }
 
 fn origin_availability(
-    ctx: &Ctx<'_>,
+    flow: &Flow<'_>,
     after: &[Vec<usize>],
     after_unknown: &[bool],
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
+    masks: &BTreeMap<usize, BTreeSet<String>>,
     avail_in: &[BTreeSet<String>],
 ) -> Vec<Origins> {
-    let count = ctx.doc.steps.len();
+    let count = flow.steps.len();
     let mut inputs = Origins::new();
-    for input in &ctx.doc.inputs {
-        insert_origin(&mut inputs, &input.name, input.name_span);
+    for (name, span) in &flow.input_origins {
+        insert_origin(&mut inputs, name, *span);
     }
-    let defined: Vec<Origins> = ctx.doc.steps.iter().map(defined_origins).collect();
+    let defined: Vec<Origins> = flow.steps.iter().map(defined_origins).collect();
     let mut origins_in: Vec<Origins> = avail_in
         .iter()
-        .map(|names| names.iter().map(|name| (name.clone(), None)).collect())
+        .map(|names| {
+            names
+                .iter()
+                .map(|name| (name.clone(), OriginSet::Unknown))
+                .collect()
+        })
         .collect();
     let mut origins_out = origins_in.clone();
     let mut changed = true;
@@ -205,24 +297,35 @@ fn origin_availability(
             for &dependency in &after[position] {
                 merge_origins(&mut incoming, &origins_out[dependency]);
             }
+            // The `after` arming path, mirroring `availability`.
+            let arming = (!after[position].is_empty()).then(|| incoming.clone());
             merge_disjunctive(
                 &mut incoming,
                 position,
+                arming.as_ref(),
                 routes,
                 fall_pred,
                 &inputs,
-                &origins_out,
+                &OriginFlows {
+                    ins: &origins_in,
+                    outs: &origins_out,
+                },
             );
             incoming.retain(|name, _| avail_in[position].contains(name));
             if after_unknown[position] {
                 incoming = avail_in[position]
                     .iter()
-                    .map(|name| (name.clone(), None))
+                    .map(|name| (name.clone(), OriginSet::Unknown))
                     .collect();
             }
             let mut outgoing = incoming.clone();
+            if let Some(mask) = masks.get(&position) {
+                for name in mask {
+                    outgoing.remove(name);
+                }
+            }
             for (name, origin) in &defined[position] {
-                outgoing.insert(name.clone(), *origin);
+                outgoing.insert(name.clone(), origin.clone());
             }
             if incoming != origins_in[position] {
                 origins_in[position] = incoming;
@@ -237,52 +340,85 @@ fn origin_availability(
     origins_in
 }
 
+/// The per-step origin sets of the running fixpoint, borrowed together.
+struct OriginFlows<'a> {
+    ins: &'a [Origins],
+    outs: &'a [Origins],
+}
+
 fn merge_disjunctive(
     incoming: &mut Origins,
     position: usize,
+    arming: Option<&Origins>,
     routes: &[RouteEdge],
     fall_pred: &[Option<usize>],
     inputs: &Origins,
-    origins_out: &[Origins],
+    flows: &OriginFlows<'_>,
 ) {
-    let mut paths: Vec<&Origins> = Vec::new();
+    let mut paths: Vec<Origins> = Vec::new();
     if position == 0 {
-        paths.push(inputs);
+        paths.push(inputs.clone());
+    }
+    if let Some(arming) = arming {
+        paths.push(arming.clone());
     }
     for edge in routes.iter().filter(|edge| edge.target == position) {
-        paths.push(&origins_out[edge.source]);
+        match &edge.provenance {
+            Provenance::Success => paths.push(flows.outs[edge.source].clone()),
+            Provenance::Failure { origins, .. } => {
+                let mut contribution = flows.ins[edge.source].clone();
+                merge_origins(&mut contribution, origins);
+                paths.push(contribution);
+            }
+        }
     }
     if let Some(predecessor) = fall_pred[position] {
-        paths.push(&origins_out[predecessor]);
+        paths.push(flows.outs[predecessor].clone());
     }
     let Some(first_path) = paths.first() else {
         return;
     };
     for name in first_path.keys() {
-        if paths[1..].iter().all(|path| path.contains_key(name)) {
-            let first = first_path.get(name).copied().flatten();
-            let same = paths[1..]
-                .iter()
-                .all(|path| path.get(name).copied().flatten() == first);
-            merge_origin(incoming, name, if same { first } else { None });
+        if !paths[1..].iter().all(|path| path.contains_key(name)) {
+            continue;
         }
+        // Union the declaration sites across the alternative paths; any
+        // ambiguous contribution makes the whole join ambiguous.
+        let mut union = OriginSet::Known(BTreeSet::new());
+        for path in &paths {
+            union = match (&union, path.get(name)) {
+                (OriginSet::Known(existing), Some(OriginSet::Known(incoming))) => {
+                    let mut spans = existing.clone();
+                    spans.extend(incoming.iter().copied());
+                    OriginSet::Known(spans)
+                }
+                _ => OriginSet::Unknown,
+            };
+            if union == OriginSet::Unknown {
+                break;
+            }
+        }
+        merge_origin(incoming, name, &union);
     }
 }
 
 fn merge_origins(target: &mut Origins, source: &Origins) {
     for (name, origin) in source {
-        merge_origin(target, name, *origin);
+        merge_origin(target, name, origin);
     }
 }
 
-fn merge_origin(target: &mut Origins, name: &str, origin: Option<Span>) {
-    match target.get(name) {
-        Some(existing) if *existing != origin => {
-            target.insert(name.to_owned(), None);
+fn merge_origin(target: &mut Origins, name: &str, origin: &OriginSet) {
+    match (target.get_mut(name), origin) {
+        (Some(OriginSet::Known(existing)), OriginSet::Known(incoming)) => {
+            existing.extend(incoming.iter().copied());
         }
-        Some(_) => {}
-        None => {
-            target.insert(name.to_owned(), origin);
+        (Some(existing @ OriginSet::Known(_)), OriginSet::Unknown) => {
+            *existing = OriginSet::Unknown;
+        }
+        (Some(OriginSet::Unknown), _) => {}
+        (None, _) => {
+            target.insert(name.to_owned(), origin.clone());
         }
     }
 }

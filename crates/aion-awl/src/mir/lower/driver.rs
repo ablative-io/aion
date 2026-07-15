@@ -87,6 +87,14 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
             span: first.span,
         });
     }
+    // The rev-3 flow shape (B2) checks but is not yet lowered: refuse it
+    // honestly — a scope marker with a span, never a panic downstream.
+    if let Some((span, what)) = crate::unlowered::first_unlowered(document) {
+        return Err(LowerError::Unsupported {
+            shape: format!("{what} — the rev-3 flow shape is not yet lowered (B4)"),
+            span,
+        });
+    }
     // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
     // `schema of`, const references) down to plain literals first, so the
     // shared planning passes and this lowering only ever see the expression

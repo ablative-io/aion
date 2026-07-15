@@ -480,6 +480,22 @@ pub(super) fn lower_statements(
                     "substeps lower only as a step body's trailing block",
                 ));
             }
+            // Defense in depth: the entry gate refuses the rev-3 flow shape
+            // before lowering ever starts.
+            Statement::Distribute(distribute) => {
+                return Err(EmitError::new(
+                    distribute.span,
+                    "`distribute`/`sequence` regions are not yet lowered — \
+                     flow-vocabulary lowering lands in B4",
+                ));
+            }
+            Statement::Collect(collect) => {
+                return Err(EmitError::new(
+                    collect.span,
+                    "`collect` steps are not yet lowered — flow-vocabulary \
+                     lowering lands in B4",
+                ));
+            }
         }
     }
     if expect_route_tail

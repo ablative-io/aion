@@ -63,6 +63,11 @@ pub(crate) fn fold_document(
     for step in &mut rewritten.steps {
         folder.fold_step(step)?;
     }
+    for subflow in &mut rewritten.subflows {
+        for step in &mut subflow.steps {
+            folder.fold_step(step)?;
+        }
+    }
     Ok(rewritten)
 }
 
@@ -196,6 +201,9 @@ impl Folder<'_> {
             }
             self.fold_route(&mut clause.route)?;
         }
+        if let Some(max_visits) = &mut step.max_visits {
+            self.fold_expr(&mut max_visits.bound)?;
+        }
         Ok(())
     }
 
@@ -243,17 +251,22 @@ impl Folder<'_> {
                 }
                 Statement::Route(route) => self.fold_route(&mut route.target)?,
                 Statement::SubStep(sub) => self.fold_step(sub)?,
-                Statement::Wait(_) | Statement::Sleep(_) => {}
+                Statement::Distribute(distribute) => self.fold_expr(&mut distribute.collection)?,
+                Statement::Wait(_) | Statement::Sleep(_) | Statement::Collect(_) => {}
             }
         }
         Ok(())
     }
 
     fn fold_route(&mut self, target: &mut RouteTarget) -> Result<(), FoldError> {
-        if let Some(args) = &mut target.payload {
-            for arg in args {
-                self.fold_expr(&mut arg.value)?;
+        match &mut target.payload {
+            Some(crate::ast::RoutePayload::Args(args)) => {
+                for arg in args {
+                    self.fold_expr(&mut arg.value)?;
+                }
             }
+            Some(crate::ast::RoutePayload::Value(value)) => self.fold_expr(value)?,
+            None => {}
         }
         Ok(())
     }

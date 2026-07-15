@@ -232,7 +232,13 @@ fn type_ref(w: &mut Walker<'_, '_>, view: View<'_>, span: Span, name: &str) -> T
         }
         return ty;
     }
-    if w.prior.contains_key(name) {
+    if name == "visits" {
+        w.err(
+            span,
+            "`visits` is the builtin visit counter — it is readable only in the \
+             outcome guards of the step that declares `max … visits`",
+        );
+    } else if w.prior.contains_key(name) {
         w.err(
             span,
             format!(

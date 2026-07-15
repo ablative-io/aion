@@ -1,5 +1,6 @@
 //! Block statements of the flow walk: `fork … join` (collection and
-//! named-branch forms) and `loop … until … max`.
+//! named-branch forms), `loop … until … max`, and the per-item region
+//! statements (`distribute`/`sequence` and `collect`).
 //!
 //! Named-branch forks run their branches in parallel, so each branch walks
 //! in its own clone of the pre-fork scope — a branch can never read a
@@ -9,13 +10,78 @@
 use std::rc::Rc;
 
 use crate::Span;
-use crate::ast::{Expr, ForkHeader, ForkStmt, LoopStmt, PipeEnd, Statement, Step};
+use crate::ast::{
+    CollectStmt, DistributeStmt, Expr, ForkHeader, ForkStmt, LoopStmt, PipeEnd, Statement, Step,
+};
 use crate::spanned::Spanned;
 
 use super::exprs::{View, type_of};
 use super::outcomes::Env;
 use super::types::{Ty, resolve};
 use super::walk::{LoopFrame, Scope, Walker, insert_binding, walk_statements};
+
+/// Walk a `distribute`/`sequence` statement: the collection must be a list,
+/// and the per-item variable binds its element type for everything
+/// downstream in the region.
+pub(super) fn walk_distribute(
+    w: &mut Walker<'_, '_>,
+    scope: &mut Scope,
+    distribute: &DistributeStmt,
+) {
+    let view = View::plain(scope);
+    let collection_ty = type_of(w, view, &distribute.collection);
+    let element = match resolve(&collection_ty, &w.ctx.types) {
+        Ty::List(inner) => (*inner).clone(),
+        Ty::Unknown => Ty::Unknown,
+        other => {
+            w.err(
+                distribute.collection.span(),
+                format!(
+                    "`{} … in` needs a list to fan out over, found {other}",
+                    distribute.verb.as_word()
+                ),
+            );
+            Ty::Unknown
+        }
+    };
+    insert_binding(w, scope, &distribute.var, element, distribute.var_span);
+}
+
+/// Walk a `collect` statement: type the gathered binding (the region pass
+/// owns formation and definite-assignment diagnostics), drop the region's
+/// per-instance names from scope — the per-item track is merged here — and
+/// bind the collected result: `[T]` strict, `[T?]` tolerant (slot per item,
+/// item order).
+pub(super) fn walk_collect(w: &mut Walker<'_, '_>, scope: &mut Scope, collect: &CollectStmt) {
+    let element = match scope.get(&collect.binding) {
+        Some(scoped) => {
+            let declaration = scoped.declaration;
+            let ty = scoped.ty.clone();
+            if w.emit {
+                w.ctx
+                    .semantic
+                    .reference_to(collect.binding_span, declaration);
+                w.ctx.semantic.ty(collect.binding_span, &ty.to_string());
+            }
+            ty
+        }
+        // Missing here means the region pass already reported the formation
+        // or assignment defect; stay quiet and keep checking downstream.
+        None => Ty::Unknown,
+    };
+    if let Some(mask) = w.collect_mask.clone() {
+        for name in &mask {
+            scope.remove(name);
+        }
+    }
+    let item = if collect.tolerant {
+        element.optional()
+    } else {
+        element
+    };
+    let results = Ty::List(Rc::new(item));
+    insert_binding(w, scope, &collect.bind.name, results, collect.bind.span);
+}
 
 pub(super) fn walk_fork(
     w: &mut Walker<'_, '_>,
@@ -135,6 +201,12 @@ fn statement_binds(statement: &Statement, out: &mut Vec<(String, Span)>) {
             for inner in &sub.body {
                 statement_binds(inner, out);
             }
+        }
+        Statement::Distribute(distribute) => {
+            out.push((distribute.var.clone(), distribute.var_span));
+        }
+        Statement::Collect(collect) => {
+            out.push((collect.bind.name.clone(), collect.bind.span));
         }
         Statement::Spawn(_) | Statement::Sleep(_) | Statement::Route(_) => {}
     }

@@ -158,8 +158,12 @@ fn collect_markers(statements: &[Statement], markers: &mut StepMarkers) {
                 collect_markers(&looped.body, markers);
             }
             Statement::SubStep(step) => collect_markers(&step.body, markers),
-            Statement::Call(_) | Statement::Spawn(_) | Statement::Pipe(_) | Statement::Route(_) => {
-            }
+            Statement::Call(_)
+            | Statement::Spawn(_)
+            | Statement::Pipe(_)
+            | Statement::Route(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }
@@ -185,8 +189,12 @@ fn collect_activities(statements: &[Statement], names: &mut BTreeSet<String>) {
             Statement::Fork(fork) => collect_activities(&fork.body, names),
             Statement::Loop(looped) => collect_activities(&looped.body, names),
             Statement::SubStep(step) => collect_activities(&step.body, names),
-            Statement::Pipe(_) | Statement::Wait(_) | Statement::Sleep(_) | Statement::Route(_) => {
-            }
+            Statement::Pipe(_)
+            | Statement::Wait(_)
+            | Statement::Sleep(_)
+            | Statement::Route(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }
@@ -267,7 +275,9 @@ fn collect_statement_routes(
             | Statement::Spawn(_)
             | Statement::Wait(_)
             | Statement::Sleep(_)
-            | Statement::SubStep(_) => {}
+            | Statement::SubStep(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }
@@ -345,7 +355,11 @@ fn collect_child_calls(
             Statement::SubStep(step) => {
                 collect_child_calls(parent_step, &step.body, children, found);
             }
-            Statement::Wait(_) | Statement::Sleep(_) | Statement::Route(_) => {}
+            Statement::Wait(_)
+            | Statement::Sleep(_)
+            | Statement::Route(_)
+            | Statement::Distribute(_)
+            | Statement::Collect(_) => {}
         }
     }
 }

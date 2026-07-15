@@ -1,17 +1,19 @@
 //! Outcome-clause checking: guard typing, guard-dependent optionality
-//! narrowing, route-target resolution (steps, workflow outcomes, substep
-//! siblings, parent arms), payload contracts, `otherwise` placement, and
-//! exhaustiveness (including enum-subject totality).
+//! narrowing, route-target resolution (steps, flow outcomes, substep
+//! siblings, parent arms), payload contracts (constructed and value forms),
+//! the `visits` builtin's guard scope, and `otherwise` placement.
+//! Exhaustiveness lives in `exhaustive`.
 
 use crate::Span;
-use crate::ast::{BinaryOp, Expr, Guard, PredicateKind, RouteTarget, Statement, Step};
+use crate::ast::{Expr, Guard, PredicateKind, RoutePayload, RouteTarget, Statement, Step};
 use crate::semantic::DeclarationKind;
 use crate::spanned::Spanned;
 
 use super::args::check_args;
+use super::exhaustive::check_exhaustiveness;
 use super::exprs::{View, type_of};
 use super::types::{Ty, assignable, resolve};
-use super::walk::{Scope, Walker};
+use super::walk::{Scope, ScopedTy, Walker};
 
 /// Where a route target resolves: the top level of the document, or inside
 /// a substep group (siblings and the parent's outcome arms).
@@ -44,8 +46,8 @@ enum RouteKind {
 }
 
 fn resolve_route(w: &Walker<'_, '_>, env: &Env<'_>, name: &str) -> RouteKind {
-    let top_step = w.ctx.doc.steps.iter().any(|step| step.name == name);
-    let outcome = w.ctx.outcome_types.get(name).cloned();
+    let top_step = w.flow.steps.iter().any(|step| step.name == name);
+    let outcome = w.flow.outcomes.get(name).cloned();
     match env {
         Env::Top => {
             if top_step {
@@ -102,9 +104,11 @@ pub(super) fn check_route(
                 .reference_to(target.name_span, sibling_span(env, &target.name));
         }
         RouteKind::Outcome(name, ty) => {
-            w.ctx
-                .semantic
-                .reference(target.name_span, DeclarationKind::Outcome, name);
+            // Resolve to THIS flow's outcome declaration by span — a global
+            // (kind, name) lookup goes ambiguous the moment two subflows
+            // declare same-named outcomes.
+            let declaration = w.flow.outcome_spans.get(name).copied();
+            w.ctx.semantic.reference_to(target.name_span, declaration);
             w.ctx.semantic.ty(target.name_span, &ty.to_string());
         }
         RouteKind::ParentArm | RouteKind::Escapes(_) | RouteKind::Unknown => {}
@@ -205,7 +209,7 @@ fn check_outcome_payload(
         return;
     }
     match &target.payload {
-        Some(args) => match resolve(ty, &w.ctx.types) {
+        Some(RoutePayload::Args(args)) => match resolve(ty, &w.ctx.types) {
             Ty::Record(record) => {
                 let params: Vec<(String, Ty)> = record
                     .fields
@@ -233,6 +237,15 @@ fn check_outcome_payload(
                 );
             }
         },
+        Some(RoutePayload::Value(value)) => {
+            let value_ty = type_of(w, view, value);
+            if !assignable(&value_ty, ty, &w.ctx.types) {
+                w.err(
+                    value.span(),
+                    format!("the payload value is {value_ty}, but outcome `{name}` carries {ty}"),
+                );
+            }
+        }
         None => match view_lookup(view, name) {
             Some(bound) => {
                 if !assignable(&bound, ty, &w.ctx.types) {
@@ -269,6 +282,23 @@ fn view_lookup(view: View<'_>, name: &str) -> Option<Ty> {
 
 /// Check a step's outcome clauses in written order.
 pub(super) fn check_clauses(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step, env: &Env<'_>) {
+    // A step carrying `max … visits` reads the builtin `visits` counter (an
+    // `Int`, 1-based) in its outcome guards — and only there.
+    let with_visits;
+    let scope = if let Some(max_visits) = &step.max_visits {
+        let mut extended = scope.clone();
+        extended.insert(
+            "visits".to_owned(),
+            ScopedTy {
+                ty: Ty::Int,
+                declaration: Some(max_visits.span),
+            },
+        );
+        with_visits = extended;
+        &with_visits
+    } else {
+        scope
+    };
     // Loop exhaustion must be explicitly named (ruled 2026-07-11): a step
     // whose body contains a `loop` must declare conditional outcome clauses
     // covering the exhausted case; with zero clauses, `max` running out with
@@ -372,131 +402,6 @@ fn narrowed_binding(scope: &Scope, guard: &Expr) -> Option<(String, Ty)> {
     };
     match scope.get(name).map(|value| &value.ty) {
         Some(Ty::Optional(inner)) => Some((name.clone(), (**inner).clone())),
-        _ => None,
-    }
-}
-
-fn check_exhaustiveness(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step) {
-    if step.outcomes.is_empty() {
-        return;
-    }
-    if step
-        .outcomes
-        .iter()
-        .any(|clause| matches!(clause.guard, Guard::Otherwise { .. }))
-    {
-        return;
-    }
-    if let Some(missing) = enum_totality_gap(w, scope, step) {
-        if missing.uncovered.is_empty() {
-            return;
-        }
-        w.err(
-            step.name_span,
-            format!(
-                "step `{}` has conditional outcomes that are not exhaustive: enum \
-                 variant{} {} of `{}` {} never covered — add an arm or `otherwise`",
-                step.name,
-                if missing.uncovered.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                },
-                missing
-                    .uncovered
-                    .iter()
-                    .map(|variant| format!("`{variant}`"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                missing.enum_name,
-                if missing.uncovered.len() == 1 {
-                    "is"
-                } else {
-                    "are"
-                },
-            ),
-        );
-        return;
-    }
-    w.err(
-        step.name_span,
-        format!(
-            "step `{}` has conditional outcomes that are not exhaustive — add an \
-             `otherwise` arm so nothing (including an exhausted loop) falls off the end",
-            step.name
-        ),
-    );
-}
-
-struct TotalityGap {
-    enum_name: String,
-    uncovered: Vec<String>,
-}
-
-/// Detect the enum-subject totality pattern: every arm compares the same
-/// subject expression against a bare variant. Returns `None` when the arms
-/// do not fit the pattern (the generic diagnostic applies).
-fn enum_totality_gap(w: &mut Walker<'_, '_>, scope: &Scope, step: &Step) -> Option<TotalityGap> {
-    let mut subject_key: Option<String> = None;
-    let mut subject_expr: Option<&Expr> = None;
-    let mut covered: Vec<String> = Vec::new();
-    for clause in &step.outcomes {
-        let Guard::When { expr, .. } = &clause.guard else {
-            return None;
-        };
-        let Expr::Binary {
-            left,
-            op: BinaryOp::Eq,
-            right,
-            ..
-        } = expr
-        else {
-            return None;
-        };
-        let (subject, variant) = match (left.as_ref(), right.as_ref()) {
-            (Expr::Variant { name, .. }, other) | (other, Expr::Variant { name, .. }) => {
-                (other, name.clone())
-            }
-            _ => return None,
-        };
-        let key = expr_key(subject)?;
-        match &subject_key {
-            None => {
-                subject_key = Some(key);
-                subject_expr = Some(subject);
-            }
-            Some(existing) if *existing == key => {}
-            Some(_) => return None,
-        }
-        covered.push(variant);
-    }
-    let subject = subject_expr?;
-    let view = View {
-        vars: scope,
-        narrow: None,
-        accessor: None,
-    };
-    let subject_ty = w.silently(|w| type_of(w, view, subject));
-    let Ty::Enum(spec) = resolve(&subject_ty, &w.ctx.types) else {
-        return None;
-    };
-    let uncovered: Vec<String> = spec
-        .variants
-        .iter()
-        .filter(|variant| !covered.contains(variant))
-        .cloned()
-        .collect();
-    Some(TotalityGap {
-        enum_name: spec.name.clone().unwrap_or_else(|| "the enum".to_owned()),
-        uncovered,
-    })
-}
-
-/// A canonical key for a subject expression: a reference or a field path.
-fn expr_key(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Ref { name, .. } => Some(name.clone()),
-        Expr::Field { base, name, .. } => Some(format!("{}.{name}", expr_key(base)?)),
         _ => None,
     }
 }

@@ -332,7 +332,7 @@ fn step_uses_field(step: &Step, name: &str) -> bool {
         })
         || step.outcomes.iter().any(|outcome| {
             matches!(&outcome.guard, Guard::When { expr, .. } if expr_uses_field(expr, name))
-                || route_uses_field(outcome.route.payload.as_deref(), name)
+                || route_uses_field(outcome.route.payload.as_ref(), name)
         })
 }
 
@@ -350,7 +350,7 @@ fn statement_uses_field(statement: &Statement, name: &str) -> bool {
                         .is_some_and(|expr| expr_uses_field(expr, name)),
                     PipeStage::Action { .. } => false,
                 })
-                || matches!(&pipe.end, PipeEnd::Route(target) if route_uses_field(target.payload.as_deref(), name))
+                || matches!(&pipe.end, PipeEnd::Route(target) if route_uses_field(target.payload.as_ref(), name))
         }
         Statement::Fork(fork) => {
             matches!(&fork.header, ForkHeader::Collection { collection, .. } if expr_uses_field(collection, name))
@@ -374,14 +374,19 @@ fn statement_uses_field(statement: &Statement, name: &str) -> bool {
                     .as_ref()
                     .is_some_and(|tail| expr_uses_field(&tail.expr, name))
         }
-        Statement::Route(route) => route_uses_field(route.target.payload.as_deref(), name),
+        Statement::Route(route) => route_uses_field(route.target.payload.as_ref(), name),
         Statement::SubStep(step) => step_uses_field(step, name),
-        Statement::Wait(_) | Statement::Sleep(_) => false,
+        Statement::Distribute(distribute) => expr_uses_field(&distribute.collection, name),
+        Statement::Collect(_) | Statement::Wait(_) | Statement::Sleep(_) => false,
     }
 }
 
-fn route_uses_field(payload: Option<&[aion_awl::Arg]>, name: &str) -> bool {
-    payload.is_some_and(|arguments| args_use_field(arguments, name))
+fn route_uses_field(payload: Option<&aion_awl::RoutePayload>, name: &str) -> bool {
+    match payload {
+        Some(aion_awl::RoutePayload::Args(args)) => args_use_field(args, name),
+        Some(aion_awl::RoutePayload::Value(value)) => expr_uses_field(value, name),
+        None => false,
+    }
 }
 
 fn args_use_field(arguments: &[aion_awl::Arg], name: &str) -> bool {

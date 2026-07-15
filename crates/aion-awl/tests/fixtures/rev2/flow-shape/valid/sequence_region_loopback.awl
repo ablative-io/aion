@@ -1,0 +1,38 @@
+//! Sequence region with an in-region loop-back, a strict collect with
+//! further statements after it, and a pure decision step.
+workflow rollout
+  input hosts: [Host]
+  outcome done:   type Report,  route success
+  outcome failed: type Trouble, route failure
+
+type Host    { name: String, canary: Bool }
+type Attempt { host: String, ok: Bool }
+type Report  { rolled: Int }
+type Trouble { reason: String }
+
+worker ops
+  action deploy(host: Host) -> Attempt
+  action verify(attempt: Attempt) -> Attempt
+
+step ordered
+  sequence host in hosts
+
+step push after ordered
+  deploy(host: host) -> attempt
+
+step confirm
+  verify(attempt: attempt) -> checked
+
+  outcome retry: when not checked.ok and visits < 3, route push
+  outcome move_on: otherwise, route settle
+  max 3 visits
+
+step settle
+  collect checked -> attempts
+  attempts |> count -> rolled
+
+step judge
+  outcome all_done: when attempts |> all(.ok),
+    route done(rolled: rolled)
+  outcome trouble: otherwise,
+    route failed(reason: "a host failed verification")

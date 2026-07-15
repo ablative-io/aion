@@ -37,7 +37,9 @@ pub(super) const COVERED: &[&str] = &[
     "header-types/valid/signal_wait",
     "header-types/valid/workflow_timeout",
     "header-types/valid/zero_inputs",
-    "loop-outcomes/valid/backward_route_bounded_cycle",
+    // `backward_route_bounded_cycle` regressed covered → refused at rev 3
+    // BY DESIGN: the cycle rule now demands a `max … visits` bound and the
+    // bound is not lowered until B4 (flow-vocabulary lowering).
     "loop-outcomes/valid/enum_when_totality",
     "loop-outcomes/valid/float_threshold_guard",
     "loop-outcomes/valid/fork_in_loop_live_ins",

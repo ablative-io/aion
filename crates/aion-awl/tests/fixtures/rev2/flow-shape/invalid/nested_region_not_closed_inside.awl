@@ -1,0 +1,27 @@
+//! Bracket nesting: the one collect closes the NEAREST open region (the
+//! inner one), so the outer region never reaches a collect of its own.
+workflow nesting
+  input outers: [String]
+  outcome done: type String, route success
+
+type Inner { items: [String] }
+
+worker w
+  action expand(outer: String) -> Inner
+  action work(item: String) -> String
+
+step outer_wave
+  distribute outer in outers
+
+step expandit
+  expand(outer: outer) -> inner
+
+step inner_wave
+  distribute item in inner.items
+
+step work_item
+  work(item: item) -> note
+
+step gather
+  collect note -> notes
+  "done" |> route done
