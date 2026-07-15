@@ -17,13 +17,13 @@ fn compound_until_is_short_circuited_in_nested_loops() -> Result<(), Box<dyn Err
         inner,
         &[
             "inspect_activity(probe)",
-            "let awl_count = awl_count + 1",
+            "let awl_count_2 = awl_count_2 + 1",
             "case detail {",
             "Some(detail) -> detail.approved",
             "None -> True",
             "True -> Ok(probe)",
             "False ->",
-            "case awl_count >= awl_max {",
+            "case awl_count_2 >= awl_max_2 {",
         ],
     )?;
 

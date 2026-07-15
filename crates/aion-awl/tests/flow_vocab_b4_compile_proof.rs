@@ -66,6 +66,15 @@ const PROVEN: &[(&str, &str)] = &[
     ),
     ("flow-shape/valid/counter_hygiene.awl", "counter_hygiene"),
     (
+        "flow-shape/valid/region_close_bounded.awl",
+        "bounded_region_close",
+    ),
+    ("flow-shape/valid/layer_hygiene.awl", "layer_hygiene"),
+    (
+        "flow-shape/valid/temporary_hygiene.awl",
+        "temporary_hygiene",
+    ),
+    (
         "flow-shape/valid/on_failure_route_tail.awl",
         "publish_with_cleanup",
     ),

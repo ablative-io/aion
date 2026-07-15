@@ -39,6 +39,8 @@ pub(super) fn lower_loop(
     let free = loop_free_names(looped, scope);
     let loop_fn = format!("{}_loop_{}", snake(ctx_step), emitter.loop_counter);
     emitter.loop_counter += 1;
+    let count = emitter.fresh_name("awl_count");
+    let maximum = emitter.fresh_name("awl_max");
 
     let var = ident(&looped.var);
     let counter_named = looped.counter.is_some();
@@ -71,21 +73,21 @@ pub(super) fn lower_loop(
     let rendered = emitter.capture(|this| {
         let var_annotation = this.env.gleam_type(&seed_ty);
         this.line(&format!(
-            "fn {loop_fn}({var}: {var_annotation}, awl_count: Int, awl_max: \
+            "fn {loop_fn}({var}: {var_annotation}, {count}: Int, {maximum}: \
              Int{comma_annotated_free}) -> Result({result_ty}, awl_error.AwlError) {{"
         ));
         this.indented_try(|this| {
             let mut inner_scope = loop_scope.clone();
             lower_body(this, &body, &mut inner_scope)?;
-            this.line("let awl_count = awl_count + 1");
+            this.line(&format!("let {count} = {count} + 1"));
             let exit = if counter_named {
-                format!("Ok(#({var}, awl_count))")
+                format!("Ok(#({var}, {count}))")
             } else {
                 format!("Ok({var})")
             };
-            let recurse = format!("{loop_fn}({var}, awl_count, awl_max{comma_free})");
+            let recurse = format!("{loop_fn}({var}, {count}, {maximum}{comma_free})");
             let bound_check = |this: &mut Emitter<'_>| {
-                this.line("case awl_count >= awl_max {");
+                this.line(&format!("case {count} >= {maximum} {{"));
                 this.indented(|this| {
                     this.line(&format!("True -> {exit}"));
                     this.line(&format!("False -> {recurse}"));

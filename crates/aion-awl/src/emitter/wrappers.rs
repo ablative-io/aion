@@ -119,15 +119,16 @@ fn raw_wrapper(
         emitter.line(") -> activity.Activity(String, String) {");
     }
     let input_codec = snake(input_name);
+    let codec_local = emitter.fresh_name("awl_input_codec");
     emitter.indented(|this| {
-        this.line(&format!("let awl_input_codec = {input_codec}_codec()"));
+        this.line(&format!("let {codec_local} = {input_codec}_codec()"));
         this.line("activity.new(");
         this.indented(|this| {
             this.line(&format!("\"{action_name}\","));
             if params.is_empty() {
-                this.line(&format!("awl_input_codec.encode({input_name}),"));
+                this.line(&format!("{codec_local}.encode({input_name}),"));
             } else {
-                this.line(&format!("awl_input_codec.encode({input_name}("));
+                this.line(&format!("{codec_local}.encode({input_name}("));
                 this.indented(|this| {
                     for (name, _) in params {
                         let rendered = ident(name);

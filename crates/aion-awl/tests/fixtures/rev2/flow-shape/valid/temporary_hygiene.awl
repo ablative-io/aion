@@ -1,0 +1,24 @@
+//! Pipe, index, workflow-id, and loop temporaries avoid author bindings.
+workflow temporary_hygiene
+  input reviewers: [String]
+  input awl_index_0: String
+  input awl_piped_0: String
+  input awl_workflow_id_0: String
+  input awl_count: String
+  input awl_max: String
+  input awl_input_codec: String
+  outcome done: type String, route success
+
+worker local
+  action echo(value: String) -> String
+
+step run
+  reviewers[0] |> echo -> first
+
+  loop status = first counting polls
+    echo(value: status) -> status
+    until status == first
+    max 2
+
+  outcome finished: when status == first, route done(status + workflow.id)
+  outcome exhausted: otherwise, route done(status + workflow.id)
