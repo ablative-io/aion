@@ -51,6 +51,12 @@ export type ContentProps = WorkflowDetailProps & {
    */
   renderChildRun?: ((childWorkflowId: string) => ReactNode) | undefined;
   /**
+   * Child workflow ids whose run regions start expanded — forwarded to
+   * {@link Swimlane} (tests only, same convention as its own prop: the SSR
+   * suite cannot click the expand toggle).
+   */
+  initialExpandedChildren?: readonly string[] | undefined;
+  /**
    * Selection + view mode are optionally CONTROLLED by the router-connected
    * wrapper (URL state, PART 3). When a setter is omitted the field falls back to
    * internal `useState`, so this presentational component renders without a router
@@ -130,6 +136,7 @@ function WorkflowDetailViewContent({
   embedded = false,
   ancestry,
   renderChildRun,
+  initialExpandedChildren,
   selectedSequence: selectedSequenceProp,
   onSelectSequence,
   mode: modeProp,
@@ -271,6 +278,7 @@ function WorkflowDetailViewContent({
               <Scrubber entries={timeline} onScrub={setScrubSeq} scrubSeq={scrubSeq} />
               <Swimlane
                 entries={timeline}
+                initialExpandedChildren={initialExpandedChildren}
                 onSelect={selectFromBar}
                 renderChildRun={renderChildRun}
                 scrubSeq={scrubSeq}

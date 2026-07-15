@@ -31,6 +31,13 @@ export type EmbeddedRunViewProps = {
   namespace: string | null;
   /** Ancestor chain, outermost first; also the recursion/cycle guard. */
   ancestry: readonly string[];
+  /**
+   * Child ids whose run regions start expanded, propagated through EVERY
+   * recursion level (tests only: the SSR suite cannot click the expand toggle,
+   * and this is how it proves the REAL recursion — ancestry accumulation and
+   * the depth cycle guard — by execution).
+   */
+  initialExpandedChildren?: readonly string[] | undefined;
 };
 
 /** Presentational cycle notice (SSR-testable, no hooks). */
@@ -45,14 +52,31 @@ export function CycleNotice({ workflowId }: { workflowId: string }) {
   );
 }
 
-export function EmbeddedRunView({ workflowId, namespace, ancestry }: EmbeddedRunViewProps) {
+export function EmbeddedRunView({
+  workflowId,
+  namespace,
+  ancestry,
+  initialExpandedChildren,
+}: EmbeddedRunViewProps) {
   if (isEmbedCycle(workflowId, ancestry)) {
     return <CycleNotice workflowId={workflowId} />;
   }
-  return <EmbeddedRunViewBody ancestry={ancestry} namespace={namespace} workflowId={workflowId} />;
+  return (
+    <EmbeddedRunViewBody
+      ancestry={ancestry}
+      initialExpandedChildren={initialExpandedChildren}
+      namespace={namespace}
+      workflowId={workflowId}
+    />
+  );
 }
 
-function EmbeddedRunViewBody({ workflowId, namespace, ancestry }: EmbeddedRunViewProps) {
+function EmbeddedRunViewBody({
+  workflowId,
+  namespace,
+  ancestry,
+  initialExpandedChildren,
+}: EmbeddedRunViewProps) {
   // EXACT mirror of the route wrapper's data composition: full durable backfill
   // FIRST, then the live tail attaches only after history succeeds.
   const historyQuery = useWorkflowHistory({ workflowId });
@@ -68,6 +92,7 @@ function EmbeddedRunViewBody({ workflowId, namespace, ancestry }: EmbeddedRunVie
       embedded
       error={historyQuery.error}
       history={live.events}
+      initialExpandedChildren={initialExpandedChildren}
       isError={historyQuery.isError}
       isLive={!live.isTerminal && namespace !== null}
       isLoading={historyQuery.isLoading || historyQuery.isPending}
@@ -77,6 +102,7 @@ function EmbeddedRunViewBody({ workflowId, namespace, ancestry }: EmbeddedRunVie
       renderChildRun={(childId) => (
         <EmbeddedRunView
           ancestry={[...ancestry, workflowId]}
+          initialExpandedChildren={initialExpandedChildren}
           namespace={namespace}
           workflowId={childId}
         />

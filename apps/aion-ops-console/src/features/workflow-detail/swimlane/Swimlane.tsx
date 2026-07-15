@@ -34,7 +34,7 @@ type SwimlaneProps = {
    */
   renderChildRun?: ((childWorkflowId: string) => ReactNode) | undefined;
   /** Child workflow ids whose run regions start expanded (tests only). */
-  initialExpandedChildren?: readonly string[];
+  initialExpandedChildren?: readonly string[] | undefined;
 };
 
 /** A child lane narrowed to a non-null expansion target. */
