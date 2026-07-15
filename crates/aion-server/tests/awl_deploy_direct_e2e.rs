@@ -236,7 +236,7 @@ fn workerless_source(name: &str) -> String {
     )
 }
 
-const LOWER_REFUSED: &str = "//! Focused ordinary-call index refusal.\nworkflow studio_index_refused\n  input docs: [Doc]\n  outcome done: type Done, route success\n\ntype Doc  { title: String }\ntype Done { title: String }\n\nworker review\n  action check_doc(doc: Doc) -> Done\n\nstep check_one\n  check_doc(doc: docs[0]) -> checked\n  route done(title: checked.title)\n";
+const LOWER_REFUSED: &str = "//! Focused on-failure lowering refusal (checker-valid; the direct path\n//! refuses `on failure` blocks — one of the three remaining refusal classes\n//! alongside parallel regions and substeps).\nworkflow studio_on_failure_refused\n  input title: String\n  outcome done: type Done, route success\n  outcome failed: type Failed, route failure\n\ntype Done   { title: String }\ntype Failed { reason: String }\n\nworker review\n  action check_doc(title: String) -> Done\n  action undo_check(title: String) -> Nil\n\nstep check_one\n  check_doc(title: title) -> checked\n\n  on failure\n    undo_check(title: title)\n    route failed(reason: \"check failed after compensation\")\n\n  route done(title: checked.title)\n";
 const CHECK_REFUSED: &str = "//! Focused checker refusal.\nworkflow studio_check_refused\n  outcome done: type Done, route success\n\ntype Done { value: String }\n\nstep finish\n  route done(value: missing)\n";
 
 async fn seed_package(
