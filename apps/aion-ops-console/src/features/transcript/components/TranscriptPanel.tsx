@@ -36,10 +36,12 @@ export type TranscriptPanelProps = {
 
 /** The data-bound panel: owns the transcript subscription for `target`. */
 export function TranscriptPanel({ target }: TranscriptPanelProps) {
-  const { entries, status, socketError } = useTranscript({ target });
+  const { entries, status, socketError, backfillState, backfillError } = useTranscript({ target });
 
   return (
     <TranscriptPanelContent
+      backfillError={backfillError}
+      backfillState={backfillState}
       entries={entries}
       hasTarget={target !== null}
       socketError={socketError}
@@ -53,6 +55,10 @@ export type TranscriptPanelContentProps = {
   status: ConnectionStatus;
   socketError: AionSocketError | null;
   hasTarget: boolean;
+  /** REST retained-backfill failure, surfaced visibly (defaults absent). */
+  backfillError?: Error | null;
+  /** REST retained-backfill lifecycle (informational; defaults `ready`). */
+  backfillState?: 'loading' | 'ready' | 'error';
 };
 
 /** Presentational panel body, driven by already-resolved props (unit-testable). */
@@ -61,6 +67,7 @@ export function TranscriptPanelContent({
   status,
   socketError,
   hasTarget,
+  backfillError = null,
 }: TranscriptPanelContentProps) {
   if (!hasTarget) {
     return (
@@ -93,6 +100,15 @@ export function TranscriptPanelContent({
           role="status"
         >
           {socketError.message}
+        </p>
+      )}
+      {backfillError === null ? null : (
+        <p
+          className="rounded-lg border border-warning/40 bg-warning-glow p-2 text-warning text-xs"
+          data-testid="transcript-backfill-error"
+          role="status"
+        >
+          {`Retained transcript fetch failed: ${backfillError.message} — showing the live-socket replay instead.`}
         </p>
       )}
       {entries.length === 0 ? (

@@ -48,6 +48,7 @@ import {
   type ApiCredentials,
   AW_REST_CONTRACT,
   appendHeaders,
+  buildScopedHeaders,
   buildUrl,
   mergeCredentials,
   stripTrailingSlash,
@@ -726,24 +727,7 @@ export class ApiClient {
   }
 
   private buildHeaders(options: RequestOptions): Headers {
-    const headers = new Headers({ 'content-type': 'application/json' });
-    const credentials = mergeCredentials(this.credentials, options.credentials);
-
-    appendHeaders(headers, credentials?.headers);
-
-    if (credentials?.bearerToken !== undefined) {
-      headers.set('authorization', `Bearer ${credentials.bearerToken}`);
-    }
-
-    if (credentials?.subject !== undefined) {
-      headers.set('x-aion-subject', credentials.subject);
-    }
-
-    if (credentials?.namespaces !== undefined) {
-      headers.set('x-aion-namespaces', credentials.namespaces.join(','));
-    }
-
-    return headers;
+    return buildScopedHeaders(mergeCredentials(this.credentials, options.credentials));
   }
 }
 

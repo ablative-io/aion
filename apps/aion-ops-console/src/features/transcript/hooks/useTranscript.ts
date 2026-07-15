@@ -6,7 +6,7 @@ import type {
   TranscriptStreamListener,
   TranscriptTarget,
 } from '@/lib/api/transcript-stream';
-import { createConfiguredTranscriptStream } from '@/lib/config';
+import { createConfiguredTranscriptReader, createConfiguredTranscriptStream } from '@/lib/config';
 import type { ActivityEvent, Namespace, WorkflowId } from '@/types';
 
 import { parseReasoningItem } from '../lib/reasoning';
@@ -91,8 +91,16 @@ export type TranscriptEntry = TranscriptEventEntry | TranscriptStreamEntry | Tra
 export type UseTranscriptOptions = {
   /** The attempt target to subscribe to; `null` disables the subscription. */
   target: TranscriptTarget | null;
-  /** Override the stream manager factory (tests); defaults to the configured one. */
-  createManager?: (target: TranscriptTarget) => AionTranscriptStreamManager;
+  /**
+   * Override the stream manager factory (tests); defaults to the configured
+   * one. `initialAfterSeq` seeds the WS resume cursor from the REST backfill.
+   */
+  createManager?: (
+    target: TranscriptTarget,
+    initialAfterSeq?: number
+  ) => AionTranscriptStreamManager;
+  /** Override the retained-transcript REST fetch (tests); defaults configured. */
+  fetchRetained?: (target: TranscriptTarget) => Promise<ActivityEvent[]>;
 };
 
 export type UseTranscriptResult = {
@@ -102,6 +110,10 @@ export type UseTranscriptResult = {
   status: ConnectionStatus;
   /** Typed live-socket error, or null (no silent failure). */
   socketError: AionSocketError | null;
+  /** REST-backfill lifecycle: the retained history fetch that precedes the WS. */
+  backfillState: 'loading' | 'ready' | 'error';
+  /** The retained-fetch failure, surfaced visibly (the WS replay still runs). */
+  backfillError: Error | null;
 };
 
 /** A serialized target identity for effect dependency + remount on target change. */
@@ -283,12 +295,51 @@ function comparePersistedThenArrival(left: TranscriptEntry, right: TranscriptEnt
   return 0;
 }
 
+/**
+ * Fold a REST-retained transcript (`store_seq` order) into entries + the resume
+ * cursor. `lastSeq` is the highest persisted `store_seq` seen — the WS attaches
+ * with `after_seq = lastSeq` so it serves only the live tail. An empty retained
+ * transcript reports no cursor (pre-retention run ⇒ full WS replay, honest).
+ */
+export function backfillEntries(events: readonly ActivityEvent[]): {
+  entries: TranscriptEntry[];
+  lastSeq: number | undefined;
+} {
+  let entries: TranscriptEntry[] = [];
+  let lastSeq: number | undefined;
+  let deltaId = 0;
+  for (const event of events) {
+    entries = foldTranscriptEvent(entries, event, deltaId);
+    deltaId += 1;
+    if (typeof event.store_seq === 'number') {
+      lastSeq = lastSeq === undefined ? event.store_seq : Math.max(lastSeq, event.store_seq);
+    }
+  }
+  return { entries, lastSeq };
+}
+
+/** Default retained-transcript fetch: the configured lane-#229 REST client. */
+function defaultFetchRetained(target: TranscriptTarget): Promise<ActivityEvent[]> {
+  return createConfiguredTranscriptReader({ namespace: target.namespace }).fetchTranscript(target);
+}
+
+/** Default manager factory: the configured WS stream, cursor-seeded. */
+function defaultCreateManager(
+  target: TranscriptTarget,
+  initialAfterSeq?: number
+): AionTranscriptStreamManager {
+  return createConfiguredTranscriptStream(target, undefined, initialAfterSeq);
+}
+
 export function useTranscript(options: UseTranscriptOptions): UseTranscriptResult {
   const { target } = options;
-  const createManager = options.createManager ?? createConfiguredTranscriptStream;
+  const createManager = options.createManager ?? defaultCreateManager;
+  const fetchRetained = options.fetchRetained ?? defaultFetchRetained;
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [socketError, setSocketError] = useState<AionSocketError | null>(null);
+  const [backfillState, setBackfillState] = useState<'loading' | 'ready' | 'error'>('ready');
+  const [backfillError, setBackfillError] = useState<Error | null>(null);
   // A monotonic id source for ephemeral-delta React keys, stable across renders.
   const deltaCounter = useRef(0);
   // Serialize the target so the subscribe effect re-runs on ANY field change
@@ -300,6 +351,8 @@ export function useTranscript(options: UseTranscriptOptions): UseTranscriptResul
       setEntries([]);
       setStatus('disconnected');
       setSocketError(null);
+      setBackfillState('ready');
+      setBackfillError(null);
       return;
     }
     // `key !== ''` iff `target` is non-null; the parse recovers the exact fields.
@@ -308,30 +361,70 @@ export function useTranscript(options: UseTranscriptOptions): UseTranscriptResul
     // Reset on target change: a new attempt is a fresh transcript.
     setEntries([]);
     deltaCounter.current = 0;
+    setBackfillError(null);
+    setBackfillState('loading');
 
-    const manager = createManager(resolved);
+    let cancelled = false;
+    let teardown: (() => void) | null = null;
 
-    const listener: TranscriptStreamListener = {
-      onEvent: (event) => {
-        const deltaId = deltaCounter.current;
-        deltaCounter.current += 1;
-        setEntries((current) => foldTranscriptEvent(current, event, deltaId));
-      },
+    // Attach the live WS tail (after the REST backfill resolves either way).
+    const attach = (initialAfterSeq: number | undefined) => {
+      const manager = createManager(resolved, initialAfterSeq);
+
+      const listener: TranscriptStreamListener = {
+        onEvent: (event) => {
+          const deltaId = deltaCounter.current;
+          deltaCounter.current += 1;
+          setEntries((current) => foldTranscriptEvent(current, event, deltaId));
+        },
+      };
+
+      const unsubscribeStream = manager.subscribe(listener);
+      const unsubscribeStatus = manager.onStatusChange(setStatus);
+      const unsubscribeError = manager.onError(setSocketError);
+      setStatus(manager.getStatus());
+      teardown = () => {
+        unsubscribeStream();
+        unsubscribeStatus();
+        unsubscribeError();
+      };
     };
 
-    const unsubscribeStream = manager.subscribe(listener);
-    const unsubscribeStatus = manager.onStatusChange(setStatus);
-    const unsubscribeError = manager.onError(setSocketError);
-    setStatus(manager.getStatus());
+    fetchRetained(resolved)
+      .then((events) => {
+        if (cancelled) {
+          return;
+        }
+        const { entries: retained, lastSeq } = backfillEntries(events);
+        // Keep live entry keys unique past the backfill's consumed ids.
+        deltaCounter.current = events.length;
+        setEntries(retained);
+        setBackfillState('ready');
+        // REST history + WS tail (after_seq = lastSeq); lastSeq undefined ⇒
+        // full WS replay (pre-retention run — the honest fallback).
+        attach(lastSeq);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setBackfillError(error instanceof Error ? error : new Error(String(error)));
+        setBackfillState('error');
+        // Resilient fallback: the WS durable replay still serves the full
+        // history; the REST failure stays VISIBLE (never swallowed).
+        attach(undefined);
+      });
 
     return () => {
-      unsubscribeStream();
-      unsubscribeStatus();
-      unsubscribeError();
+      cancelled = true;
+      teardown?.();
     };
-  }, [key, createManager]);
+  }, [key, createManager, fetchRetained]);
 
-  return useMemo(() => ({ entries, status, socketError }), [entries, status, socketError]);
+  return useMemo(
+    () => ({ entries, status, socketError, backfillState, backfillError }),
+    [entries, status, socketError, backfillState, backfillError]
+  );
 }
 
 /** Recover a {@link TranscriptTarget} from its serialized {@link targetKey}. */

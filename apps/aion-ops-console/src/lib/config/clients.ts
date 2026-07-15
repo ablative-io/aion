@@ -1,6 +1,7 @@
 import type { ApiClientOptions } from '@/lib/api';
 import { ApiClient } from '@/lib/api';
 import { AionClusterStreamManager } from '@/lib/api/cluster-stream';
+import { TranscriptReadClient } from '@/lib/api/transcript-read';
 import { AionTranscriptStreamManager, type TranscriptTarget } from '@/lib/api/transcript-stream';
 import { AionEventWebSocketManager, type SocketCredentials } from '@/lib/api/websocket';
 import type { Namespace } from '@/types';
@@ -34,6 +35,24 @@ export function createConfiguredApiClient(options: ConfiguredClientOptions = {})
   const credentials = buildCredentials(config, options.namespace);
 
   return new ApiClient({
+    baseUrl: options.baseUrl ?? config.apiBaseUrl,
+    ...(credentials === undefined ? {} : { credentials }),
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  });
+}
+
+/**
+ * Build a {@link TranscriptReadClient} (the lane-#229 durable transcript READ
+ * pair) bound to the configured REST base URL and credentials — identical
+ * config/credentials plumbing to {@link createConfiguredApiClient}.
+ */
+export function createConfiguredTranscriptReader(
+  options: ConfiguredClientOptions = {}
+): TranscriptReadClient {
+  const config = options.config ?? getOpsConsoleConfig();
+  const credentials = buildCredentials(config, options.namespace);
+
+  return new TranscriptReadClient({
     baseUrl: options.baseUrl ?? config.apiBaseUrl,
     ...(credentials === undefined ? {} : { credentials }),
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
@@ -109,7 +128,8 @@ export const configuredClusterStream = createConfiguredClusterStream();
  */
 export function createConfiguredTranscriptStream(
   target: TranscriptTarget,
-  config: OpsConsoleConfig = getOpsConsoleConfig()
+  config: OpsConsoleConfig = getOpsConsoleConfig(),
+  initialAfterSeq?: number
 ): AionTranscriptStreamManager {
   const credentials: SocketCredentials = {
     namespaces: config.namespaces,
@@ -117,5 +137,10 @@ export function createConfiguredTranscriptStream(
     ...(config.bearerToken === undefined ? {} : { bearerToken: config.bearerToken }),
   };
 
-  return new AionTranscriptStreamManager({ baseUrl: config.wsBaseUrl, credentials, target });
+  return new AionTranscriptStreamManager({
+    baseUrl: config.wsBaseUrl,
+    credentials,
+    target,
+    ...(initialAfterSeq === undefined ? {} : { initialAfterSeq }),
+  });
 }

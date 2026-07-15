@@ -4,6 +4,7 @@ export {
   configuredEventSocket,
   createConfiguredApiClient,
   createConfiguredClusterStream,
+  createConfiguredTranscriptReader,
   createConfiguredTranscriptStream,
   createConfiguredWebSocketManager,
 } from './clients';

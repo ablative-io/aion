@@ -194,3 +194,21 @@ describe('sortAttempts', () => {
     ]);
   });
 });
+
+describe('TranscriptPanelContent retained backfill', () => {
+  test('surfaces a retained-backfill failure as visible state', () => {
+    const markup = renderToStaticMarkup(
+      <TranscriptPanelContent
+        backfillError={new Error('boom')}
+        entries={[]}
+        hasTarget={true}
+        socketError={null}
+        status="connected"
+      />
+    );
+
+    expect(markup).toContain('data-testid="transcript-backfill-error"');
+    expect(markup).toContain('boom');
+    expect(markup).toContain('live-socket replay');
+  });
+});

@@ -58,6 +58,27 @@ test('subscribe sends a transcript frame WITHOUT after_seq for a fresh subscribe
   });
 });
 
+test('a manager seeded with initialAfterSeq subscribes with after_seq immediately', () => {
+  const factory = new FakeSocketFactory();
+  const manager = createAionTranscriptStreamManager({
+    baseUrl: 'https://aion.example',
+    initialAfterSeq: 4,
+    target,
+    webSocketImpl: factory.ctor,
+  });
+
+  manager.subscribe({ onEvent: () => {} });
+  const socket = factory.sockets[0] as FakeSocket;
+  socket.open();
+
+  // The FIRST subscribe frame already carries the REST-backfill cursor, so the
+  // socket serves only the live tail past the fetched history.
+  const frame = JSON.parse(socket.sent[0] ?? '{}') as {
+    subscription: { transcript: { after_seq?: number } };
+  };
+  expect(frame.subscription.transcript.after_seq).toBe(4);
+});
+
 test('reconnect resumes from the highest applied store_seq (no gap/dup)', () => {
   const factory = new FakeSocketFactory();
   const scheduler = new ImmediateScheduler();

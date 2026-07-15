@@ -9,4 +9,14 @@ export { TranscriptEventRow } from './components/TranscriptEventRow';
 export { TranscriptPanel, TranscriptPanelContent } from './components/TranscriptPanel';
 export { sortAttempts, useActivityAttempts } from './hooks/useActivityAttempts';
 export { useIntervene } from './hooks/useIntervene';
-export { foldTranscriptEvent, type TranscriptEntry, useTranscript } from './hooks/useTranscript';
+export {
+  type UseRetainedStreamsOptions,
+  type UseRetainedStreamsResult,
+  useRetainedStreams,
+} from './hooks/useRetainedStreams';
+export {
+  backfillEntries,
+  foldTranscriptEvent,
+  type TranscriptEntry,
+  useTranscript,
+} from './hooks/useTranscript';

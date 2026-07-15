@@ -143,6 +143,33 @@ function mergeHeaderInputs(
   return headers;
 }
 
+/**
+ * Build the namespace-scoped JSON request headers from resolved credentials:
+ * `content-type: application/json`, any extra credential headers, then
+ * `authorization`/`x-aion-subject`/`x-aion-namespaces`. Shared by
+ * `ApiClient.buildHeaders` and the transcript read client so every scoped REST
+ * caller sends byte-identical auth headers.
+ */
+export function buildScopedHeaders(credentials: ApiCredentials | undefined): Headers {
+  const headers = new Headers({ 'content-type': 'application/json' });
+
+  appendHeaders(headers, credentials?.headers);
+
+  if (credentials?.bearerToken !== undefined) {
+    headers.set('authorization', `Bearer ${credentials.bearerToken}`);
+  }
+
+  if (credentials?.subject !== undefined) {
+    headers.set('x-aion-subject', credentials.subject);
+  }
+
+  if (credentials?.namespaces !== undefined) {
+    headers.set('x-aion-namespaces', credentials.namespaces.join(','));
+  }
+
+  return headers;
+}
+
 export function appendHeaders(headers: Headers, input: HeadersInit | undefined): void {
   if (input === undefined) {
     return;
