@@ -1,6 +1,8 @@
-//! Flow-vocabulary B2 lowering refusals: every rev-3 construct fed to the
-//! public emitter and MIR lowering produces the honest, spanned "not yet
-//! lowered" refusal — never a parse error, never a panic.
+//! Flow-vocabulary lowering coverage (the retired B2 refusal ratchet):
+//! every rev-3 construct fed to the public emitter now lowers — B4
+//! dismantled the gate construct by construct. Each probe document is the
+//! minimal use of one construct; emission must succeed and carry the
+//! construct's generated shape.
 
 use std::error::Error;
 
@@ -99,46 +101,47 @@ step run\n\
     ]
 }
 
+/// The generated fragment each construct's emission must carry.
+fn emitted_fragment(name: &str) -> &'static str {
+    match name {
+        "distribute" => "workflow.map(",
+        "sequence" => "list.try_fold(",
+        "subflow" => "awl_sf_s(",
+        "max visits" => "awl_error.AwlVisitsExceeded(",
+        "value payload" => "Ok(DoneOutcome(note))",
+        _ => "execute",
+    }
+}
+
 #[test]
-fn every_new_construct_is_refused_by_emit_with_a_span() -> TestResult {
+fn every_new_construct_emits_with_its_generated_shape() -> TestResult {
     for (name, source, needle) in refusal_documents() {
         let document = parse(&source)?;
         let errors = check(&document);
         assert!(
             errors.is_empty(),
-            "{name}: the refusal document must check clean: {errors:#?}"
+            "{name}: the probe document must check clean: {errors:#?}"
         );
-        let Err(error) = emit(&document) else {
-            return Err(format!("{name}: emit must refuse").into());
-        };
+        let _ = needle;
+        let generated = emit(&document)
+            .map_err(|error| format!("{name}: emit refused: {}", error.message))?;
+        let fragment = emitted_fragment(name);
         assert!(
-            error.message.contains("not yet lowered"),
-            "{name}: not a refusal: {}",
-            error.message
+            generated.contains(fragment),
+            "{name}: generated module misses `{fragment}`:\n{generated}"
         );
-        let (line, _) = line_col_of(&source, needle)?;
-        assert_eq!(error.span.line, line, "{name}: refusal anchored off-span");
     }
     Ok(())
 }
 
 #[test]
-fn every_new_construct_is_refused_by_mir_lower_with_a_span() -> TestResult {
+fn every_new_construct_lowers_on_the_direct_path() -> TestResult {
     for (name, source, needle) in refusal_documents() {
         let document = parse(&source)?;
-        let Err(error) = aion_awl::mir::lower(&document, None) else {
-            return Err(format!("{name}: lower must refuse").into());
-        };
-        let rendered = error.to_string();
-        assert!(
-            rendered.contains("not yet lower"),
-            "{name}: not a refusal: {rendered}"
-        );
-        let (line, _) = line_col_of(&source, needle)?;
-        assert!(
-            rendered.contains(&format!("line {line}")),
-            "{name}: refusal anchored off-span: {rendered}"
-        );
+        let _ = needle;
+        let module = aion_awl::mir::lower(&document, None)
+            .map_err(|error| format!("{name}: lower refused: {error}"))?;
+        aion_awl::mir::verify(&module).map_err(|error| format!("{name}: verify: {error}"))?;
     }
     Ok(())
 }

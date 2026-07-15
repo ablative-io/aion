@@ -1,0 +1,23 @@
+//! Tolerant parallel fan-out over a single-activity track: the settled
+//! combinator gathers one slot per item, absent where an instance failed.
+workflow fan_scores
+  input docs: [Doc]
+  outcome done: type Done, route success
+
+type Doc   { title: String }
+type Score { points: Int }
+type Done  { total: Int }
+
+worker judge
+  action score(doc: Doc) -> Score
+
+step wave
+  distribute doc in docs
+
+step mark
+  score(doc: doc) -> row
+
+step gather
+  collect row? -> rows
+  rows |> count -> total
+  route done(total: total)

@@ -8,6 +8,7 @@ use std::mem;
 use crate::ast::{ActionDecl, ChildDecl, Document, RouteDirection, SignalDecl};
 
 use super::error::EmitError;
+use super::flowshape::{RegionShape, SubflowShape};
 use super::names::pascal;
 use super::types::{GType, TypeEnv};
 
@@ -43,6 +44,12 @@ pub(crate) struct Emitter<'a> {
     pub(crate) actions: BTreeMap<&'a str, (&'a str, &'a ActionDecl)>,
     pub(crate) children: BTreeMap<&'a str, &'a ChildDecl>,
     pub(crate) signals: BTreeMap<&'a str, &'a SignalDecl>,
+    /// The host flow's collapsed per-item regions, by synthetic step name.
+    pub(crate) host_regions: &'a BTreeMap<String, RegionShape>,
+    /// Shaped subflow declarations, in declaration order.
+    pub(crate) subflow_shapes: &'a [SubflowShape],
+    /// Subflow name → shaped declaration.
+    pub(crate) subflows: BTreeMap<&'a str, &'a SubflowShape>,
     pub(crate) outcomes: BTreeMap<&'a str, OutcomeInfo>,
     /// Global binding name → type (single-assignment surface).
     pub(crate) bindings: BTreeMap<String, GType>,
@@ -65,7 +72,12 @@ pub(crate) struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    pub(crate) fn new(document: &'a Document, env: TypeEnv) -> Result<Self, EmitError> {
+    pub(crate) fn new(
+        document: &'a Document,
+        env: TypeEnv,
+        host_regions: &'a BTreeMap<String, RegionShape>,
+        subflow_shapes: &'a [SubflowShape],
+    ) -> Result<Self, EmitError> {
         let mut env = env;
         let mut actions: BTreeMap<&str, (&str, &ActionDecl)> = BTreeMap::new();
         for worker in &document.workers {
@@ -137,12 +149,20 @@ impl<'a> Emitter<'a> {
             action_inputs.insert(name.name.clone(), record);
         }
 
+        let subflows = subflow_shapes
+            .iter()
+            .map(|shape| (shape.name.as_str(), shape))
+            .collect();
+
         Ok(Self {
             document,
             env,
             actions,
             children,
             signals,
+            host_regions,
+            subflow_shapes,
+            subflows,
             outcomes,
             bindings: BTreeMap::new(),
             input_type,

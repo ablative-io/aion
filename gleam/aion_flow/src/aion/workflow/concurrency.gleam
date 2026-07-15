@@ -91,6 +91,173 @@ pub fn race_with_default(
   }
 }
 
+/// Spawn all activities concurrently and settle every member independently:
+/// one `Result` slot per activity, in input order, with NO fail-fast and NO
+/// sibling cancellation.
+///
+/// Each member dispatches through the same single-dispatch wire `run` uses
+/// (tier-aware: an in-VM selection crosses the arity-4 thunk wire, everything
+/// else the arity-3 remote wire), collecting correlation ids in input order;
+/// each id is then awaited in input order. Every member's retry policy runs
+/// to its own final outcome — a terminal failure arrives as `Error(...)` in
+/// that member's slot while its siblings keep their own results. Empty list
+/// settles to `[]`.
+///
+/// Every await is a query-pump yield point, exactly like `run`.
+///
+/// CAUTION for hand-authored workflows: do not wrap a settled fan-out in a
+/// `with_timeout` scope. Scope expiry cancels only the operation being
+/// awaited; members dispatched but not yet awaited when the scope expires
+/// have no cancellation story on this wire.
+pub fn all_settled(
+  activities: List(Activity(i, o)),
+) -> List(Result(o, error.ActivityError)) {
+  all_settled_with_default(activities, None)
+}
+
+/// `all_settled`, supplying the workflow-level default task queue used for
+/// any member that selects none. Precedence (member override > workflow
+/// default > the named `"default"` queue) is resolved once at the engine
+/// schedule seam.
+pub fn all_settled_with_default(
+  activities: List(Activity(i, o)),
+  workflow_default_task_queue: option.Option(String),
+) -> List(Result(o, error.ActivityError)) {
+  let dispatched =
+    list.map(activities, fn(activity_value) {
+      settled_dispatch(activity_value, workflow_default_task_queue)
+    })
+  list.map(dispatched, settled_await)
+}
+
+/// Dynamically produce one activity per input element, then settle like
+/// `all_settled`: one `Result` slot per item, item order, no fail-fast.
+pub fn map_settled(
+  items: List(a),
+  to_activity: fn(a) -> Activity(i, o),
+) -> List(Result(o, error.ActivityError)) {
+  map_settled_with_default(items, to_activity, None)
+}
+
+/// `map_settled`, supplying the workflow-level default task queue used for
+/// any produced activity that selects none. See `all_settled_with_default`
+/// for the resolution precedence.
+pub fn map_settled_with_default(
+  items: List(a),
+  to_activity: fn(a) -> Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> List(Result(o, error.ActivityError)) {
+  items
+  |> list.map(to_activity)
+  |> all_settled_with_default(workflow_default_task_queue)
+}
+
+/// One settled member mid-flight: its correlation id and output codec when
+/// the dispatch was accepted, or the dispatch failure held for its slot.
+type SettledDispatch(o) {
+  SettledDispatch(correlation_id: String, output_codec: codec.Codec(o))
+  SettledRefused(failure: error.ActivityError)
+}
+
+/// Dispatch one settled member on its selected execution tier — the exact
+/// routing `aion/workflow/run` applies: `Some(InVm)` crosses the arity-4
+/// in-VM wire carrying the runner thunk; absence or a remote tier keeps the
+/// arity-3 remote wire (mirrors `ActivitySpec::selects_in_vm` engine-side).
+fn settled_dispatch(
+  activity_value: Activity(i, o),
+  workflow_default_task_queue: option.Option(String),
+) -> SettledDispatch(o) {
+  let input_codec = activity.input_codec(activity_value)
+  let output_codec = activity.output_codec(activity_value)
+  let encoded_input = input_codec.encode(activity.input(activity_value))
+  let config =
+    activity_config(activity_value, workflow_default_task_queue)
+  let dispatched = case activity.selected_tier(activity_value) {
+    Some(activity.InVm) ->
+      ffi.dispatch_activity_in_vm(
+        activity.name(activity_value),
+        encoded_input,
+        config,
+        settled_in_vm_thunk(activity_value),
+      )
+    // Deliberately exhaustive (no `_` arm), mirroring `run.gleam::dispatch`:
+    // a future `Tier` variant must make an explicit routing decision here.
+    Some(activity.RemotePython) | Some(activity.RemoteRust) | None ->
+      ffi.dispatch_activity(
+        activity.name(activity_value),
+        encoded_input,
+        config,
+      )
+  }
+  case dispatched {
+    Ok(correlation_id) ->
+      SettledDispatch(correlation_id: correlation_id, output_codec: output_codec)
+    Error(raw_error) -> SettledRefused(failure: activity_error(raw_error))
+  }
+}
+
+/// Await one settled member's final outcome and decode it into its slot.
+fn settled_await(
+  dispatched: SettledDispatch(o),
+) -> Result(o, error.ActivityError) {
+  case dispatched {
+    SettledRefused(failure) -> Error(failure)
+    SettledDispatch(correlation_id, output_codec) ->
+      case
+        pump.run(fn() { pump.shield(ffi.await_activity_result(correlation_id)) })
+      {
+        Ok(payload) ->
+          case output_codec.decode(payload) {
+            Ok(output) -> Ok(output)
+            Error(decode_error) ->
+              Error(error.ActivityDecodeFailed(decode_error))
+          }
+        Error(raw_error) -> Error(activity_error(raw_error))
+      }
+  }
+}
+
+/// The zero-argument thunk an in-VM settled dispatch hands the engine —
+/// byte-identical behavior to `run.gleam::in_vm_thunk`: run the runner,
+/// encode the outcome, and encode errors to the exact prefixed reason
+/// vocabulary `activity_error` parses back.
+fn settled_in_vm_thunk(
+  activity_value: Activity(i, o),
+) -> fn() -> Result(String, String) {
+  let runner = activity.runner(activity_value)
+  let input = activity.input(activity_value)
+  let output_codec = activity.output_codec(activity_value)
+  fn() {
+    case runner(input) {
+      Ok(output) -> Ok(output_codec.encode(output))
+      Error(runner_error) -> Error(encode_settled_error(runner_error))
+    }
+  }
+}
+
+/// Encode a runner's `ActivityError` to the prefixed reason vocabulary
+/// `activity_error` parses — the same inverse `run.gleam` keeps for its
+/// in-VM thunk, so kind fidelity survives the child-process boundary.
+fn encode_settled_error(runner_error: error.ActivityError) -> String {
+  case runner_error {
+    error.Retryable(message: message, details: _) -> "retryable:" <> message
+    error.Terminal(message: message, details: _) -> "terminal:" <> message
+    error.ActivityTimedOut(error.TimedOut(message: message)) ->
+      "timeout:" <> message
+    error.ActivityCancelled(error.Cancelled(reason: reason)) ->
+      "cancelled:" <> reason
+    error.ActivityNonDeterministic(error.NonDeterminismViolation(
+      message: message,
+    )) -> "non_determinism:" <> message
+    error.ActivityDecodeFailed(codec.DecodeError(reason: reason, path: path)) ->
+      "terminal:activity output decode failed at "
+      <> string.join(path, ".")
+      <> ": "
+      <> reason
+    error.ActivityEngineFailure(message: message) -> message
+  }
+}
+
 /// Dynamically produce one activity per input element, then collect like `all`.
 ///
 /// The v1 concurrency surface intentionally covers homogeneous-output list

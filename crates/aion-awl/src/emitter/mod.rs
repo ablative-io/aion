@@ -6,6 +6,8 @@ mod context;
 mod entry;
 mod error;
 mod exprs;
+mod flows;
+mod flowshape;
 mod forks;
 mod frame;
 mod graph;
@@ -30,7 +32,7 @@ pub use error::EmitError;
 // type environment rather than re-deriving them.
 pub(crate) use collection_predicates::is_fallible as predicate_is_fallible;
 pub(crate) use context::Emitter;
-pub(crate) use entry::prepare;
+pub(crate) use entry::{prepare, shape_document};
 pub(crate) use graph::{Plan, expr_refs};
 pub(crate) use loops::{first_route_span, statement_defs, statements_expr_refs};
 pub(crate) use names::snake;

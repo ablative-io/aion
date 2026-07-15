@@ -23,6 +23,8 @@ use crate::ast::{Expr, PipeEnd, Statement, Step};
 
 use super::context::Emitter;
 use super::error::EmitError;
+use super::flowshape::{RegionShape, visits_counter};
+use super::liveness::{ExitLive, FlowLive};
 
 /// One dependency-connected group of steps, lowered as one Gleam function.
 pub(crate) struct Region {
@@ -138,13 +140,170 @@ struct Edges {
     step_routes: Vec<Vec<usize>>,
 }
 
-/// Build the lowering plan for the document's steps.
-pub(crate) fn plan(emitter: &Emitter<'_>) -> Result<Plan, EmitError> {
-    let steps = &emitter.document.steps;
+/// One nested flow's plan: the per-flow [`Plan`] plus the run-once entry
+/// wrapper's contract (its ordered parameters, the visit counters it seeds,
+/// and the arguments of its call into the flow's entry step function).
+pub(crate) struct NestedPlan {
+    pub(crate) plan: Plan,
+    pub(crate) wrapper_params: Vec<String>,
+    pub(crate) counters: Vec<String>,
+    pub(crate) entry_args: Vec<String>,
+}
+
+/// Every flow's plan: the host workflow plus each region's per-instance flow
+/// (by region id) and each subflow (by name).
+pub(crate) struct Plans<'a> {
+    pub(crate) host: Plan,
+    /// Visit counters `execute` seeds for the host flow's bounded steps.
+    pub(crate) host_counters: Vec<String>,
+    pub(crate) regions: BTreeMap<usize, NestedPlan>,
+    pub(crate) region_shapes: BTreeMap<usize, &'a RegionShape>,
+    pub(crate) subflows: BTreeMap<String, NestedPlan>,
+}
+
+/// The visit counters of one flow's bounded steps, in step order.
+pub(crate) fn flow_counters(steps: &[Step]) -> Vec<String> {
+    steps
+        .iter()
+        .filter(|step| step.max_visits.is_some())
+        .map(|step| visits_counter(&step.name))
+        .collect()
+}
+
+/// Build the lowering plans for every flow: subflows and per-item region
+/// member flows bottom-up (their wrapper contracts feed the enclosing flow's
+/// liveness), then the host flow.
+pub(crate) fn plan_all<'a>(emitter: &Emitter<'a>) -> Result<Plans<'a>, EmitError> {
+    let mut region_plans: BTreeMap<usize, NestedPlan> = BTreeMap::new();
+    let mut region_shapes: BTreeMap<usize, &'a RegionShape> = BTreeMap::new();
+    let mut subflows = BTreeMap::new();
+    for shape in emitter.subflow_shapes {
+        let exit = ExitLive::Subflow {
+            name: &shape.outcome_name,
+        };
+        let plan = plan_flow(
+            emitter,
+            &shape.flow.steps,
+            &shape.flow.regions,
+            Some(exit),
+            &mut region_plans,
+            &mut region_shapes,
+        )?;
+        let counters = flow_counters(&shape.flow.steps);
+        let entry_args = entry_params(&plan, &shape.flow.steps)?.to_vec();
+        let wrapper_params: Vec<String> = shape
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect();
+        for arg in &entry_args {
+            if !wrapper_params.contains(arg) && !counters.contains(arg) {
+                return Err(EmitError::new(
+                    shape.span,
+                    format!(
+                        "subflow `{}` needs `{arg}` at its entry, which is neither a \
+                         parameter nor a language-owned counter — the document did not \
+                         check cleanly",
+                        shape.name
+                    ),
+                ));
+            }
+        }
+        subflows.insert(
+            shape.name.clone(),
+            NestedPlan {
+                plan,
+                wrapper_params,
+                counters,
+                entry_args,
+            },
+        );
+    }
+    let host = plan_flow(
+        emitter,
+        &emitter.document.steps,
+        emitter.host_regions,
+        None,
+        &mut region_plans,
+        &mut region_shapes,
+    )?;
+    Ok(Plans {
+        host,
+        host_counters: flow_counters(&emitter.document.steps),
+        regions: region_plans,
+        region_shapes,
+        subflows,
+    })
+}
+
+/// The entry step function's parameter list (the region headed by step 0).
+fn entry_params<'p>(plan: &'p Plan, steps: &[Step]) -> Result<&'p [String], EmitError> {
+    let Some(&region) = plan.entry_region.get(&0) else {
+        let anchor = steps.first().map_or(
+            crate::Span {
+                start: 0,
+                end: 0,
+                line: 1,
+                column: 1,
+            },
+            |step| step.name_span,
+        );
+        return Err(EmitError::new(anchor, "the flow has no entry step"));
+    };
+    Ok(plan.region_params(region))
+}
+
+/// Plan one flow, recursing into its per-item regions first so their
+/// wrapper contracts are known to this flow's liveness.
+fn plan_flow<'a>(
+    emitter: &Emitter<'a>,
+    steps: &'a [Step],
+    flow_regions: &'a BTreeMap<String, RegionShape>,
+    exit: Option<ExitLive<'a>>,
+    region_plans: &mut BTreeMap<usize, NestedPlan>,
+    region_shapes: &mut BTreeMap<usize, &'a RegionShape>,
+) -> Result<Plan, EmitError> {
+    for region in flow_regions.values() {
+        let member_exit = ExitLive::Region {
+            name: &region.exit_name,
+            binding: &region.binding,
+        };
+        let plan = plan_flow(
+            emitter,
+            &region.members.steps,
+            &region.members.regions,
+            Some(member_exit),
+            region_plans,
+            region_shapes,
+        )?;
+        let counters = flow_counters(&region.members.steps);
+        let entry_args = entry_params(&plan, &region.members.steps)?.to_vec();
+        let mut wrapper_params = vec![region.var.clone()];
+        for name in &entry_args {
+            if name != &region.var && !counters.contains(name) {
+                wrapper_params.push(name.clone());
+            }
+        }
+        region_plans.insert(
+            region.id,
+            NestedPlan {
+                plan,
+                wrapper_params,
+                counters,
+                entry_args,
+            },
+        );
+        region_shapes.insert(region.id, region);
+    }
     let edges = build_edges(steps)?;
     check_refusals(steps, &edges)?;
     let (regions, entry_region) = build_regions(steps, &edges)?;
-    super::liveness::build_params(emitter, steps, regions, entry_region, &edges.index)
+    let live = FlowLive {
+        regions: flow_regions,
+        region_plans,
+        exit,
+    };
+    super::liveness::build_params(emitter, steps, regions, entry_region, &edges.index, &live)
 }
 
 fn build_edges(steps: &[Step]) -> Result<Edges, EmitError> {

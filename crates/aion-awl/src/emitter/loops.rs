@@ -305,12 +305,10 @@ pub(crate) fn statements_expr_refs(statements: &[Statement], refs: &mut BTreeSet
                     }
                 }
             }
-            // Rev-3 region statements never reach the emitter (refused at
-            // the entry gate before planning).
-            Statement::Wait(_)
-            | Statement::Sleep(_)
-            | Statement::Distribute(_)
-            | Statement::Collect(_) => {}
+            Statement::Distribute(distribute) => {
+                expr_refs(&distribute.collection, refs);
+            }
+            Statement::Wait(_) | Statement::Sleep(_) | Statement::Collect(_) => {}
             Statement::Fork(fork) => {
                 if let ForkHeader::Collection { collection, .. } = &fork.header {
                     expr_refs(collection, refs);
@@ -372,13 +370,13 @@ pub(crate) fn statement_defs(statements: &[Statement], defs: &mut BTreeSet<Strin
                 }
             }
             Statement::SubStep(sub) => statement_defs(&sub.body, defs),
-            // Rev-3 region statements never reach the emitter (refused at
-            // the entry gate before planning).
+            Statement::Collect(collect) => {
+                defs.insert(collect.bind.name.clone());
+            }
             Statement::Spawn(_)
             | Statement::Sleep(_)
             | Statement::Route(_)
-            | Statement::Distribute(_)
-            | Statement::Collect(_) => {}
+            | Statement::Distribute(_) => {}
         }
     }
 }

@@ -1,0 +1,23 @@
+//! The retired B4 refusal: `on failure` combined with a body-terminal
+//! route. The fallible prefix runs under compensation; the route stays a
+//! genuine tail — a routed failure outcome never reads as a step failure.
+workflow publish_with_cleanup
+  input target: String
+  outcome shipped:   type Receipt, route success
+  outcome cleaned:   type Failed,  route failure
+  outcome dead_end:  type Failed,  route failure
+
+type Receipt { url: String }
+type Failed  { reason: String }
+
+worker shell
+  action publish(target: String) -> Receipt
+  action snapshot(target: String) -> Receipt
+
+step publish_it
+  publish(target: target) -> receipt
+  route dead_end(reason: "deliberately routed failure outcome")
+
+  on failure
+    snapshot(target: target)
+    route cleaned(reason: "publish failed; snapshot taken")
