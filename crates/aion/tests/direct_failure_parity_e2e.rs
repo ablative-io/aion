@@ -247,7 +247,11 @@ fn gleam_packages() -> Result<Vec<(String, Package)>, TestError> {
     fs::create_dir_all(root.join("schemas"))?;
 
     let scenarios: [(&str, &str, &[&str]); 3] = [
-        (STRICT_ABORT_MODULE, STRICT_ABORT, &["stage_one", "stage_two"]),
+        (
+            STRICT_ABORT_MODULE,
+            STRICT_ABORT,
+            &["stage_one", "stage_two"],
+        ),
         (VISITS_MODULE, VISITS, &["deploy", "verify"]),
         (SPAWN_REFUSAL_MODULE, SPAWN_REFUSAL, &["stage_one"]),
     ];
@@ -260,7 +264,10 @@ fn gleam_packages() -> Result<Vec<(String, Package)>, TestError> {
             return Err(format!("{module} did not check: {diagnostics:?}").into());
         }
         let artifact = aion_awl::emit_artifact(&document)?;
-        fs::write(root.join("src").join(format!("{module}.gleam")), &artifact.source)?;
+        fs::write(
+            root.join("src").join(format!("{module}.gleam")),
+            &artifact.source,
+        )?;
         fs::write(
             root.join("src").join(format!("{module}.awl.json")),
             serde_json::to_vec_pretty(&artifact.project_metadata())?,
@@ -331,9 +338,11 @@ async fn failure_details_converge_between_direct_and_gleam_paths() -> TestResult
     // Scenario 1 — strict abort: the typed activity failure crosses the
     // child boundary intact and aborts the parent.
     let direct = run_to_failure(direct_package(STRICT_ABORT)?, STRICT_ABORT_MODULE).await?;
-    let reference =
-        run_to_failure(gleam_package_for(&gleam, STRICT_ABORT_MODULE)?, STRICT_ABORT_MODULE)
-            .await?;
+    let reference = run_to_failure(
+        gleam_package_for(&gleam, STRICT_ABORT_MODULE)?,
+        STRICT_ABORT_MODULE,
+    )
+    .await?;
     assert_eq!(direct.parent_details, reference.parent_details);
     assert_eq!(direct.child_details, reference.child_details);
     assert_eq!(

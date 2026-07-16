@@ -108,19 +108,19 @@ async fn direct_single_activity_tolerant_distribute_completes_with_slot_semantic
     let workflow_id = handle.workflow_id().clone();
     let run_id = handle.run_id().clone();
 
-    let result = tokio::time::timeout(Duration::from_secs(20), engine.result(&workflow_id, &run_id))
-        .await?
-        ?
-        .map_err(|error| format!("tolerant parent must complete, failed: {error:?}"))?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        engine.result(&workflow_id, &run_id),
+    )
+    .await??
+    .map_err(|error| format!("tolerant parent must complete, failed: {error:?}"))?;
     let decoded: Value = serde_json::from_slice(result.bytes())?;
     assert_eq!(decoded.get("outcome").and_then(Value::as_str), Some("done"));
     // Per-slot Option semantics: the failed member's slot is ABSENT data but
     // still a slot — the tolerant collect neither fails fast nor compacts,
     // so the count covers all three items.
     assert_eq!(
-        decoded
-            .pointer("/payload/total")
-            .and_then(Value::as_i64),
+        decoded.pointer("/payload/total").and_then(Value::as_i64),
         Some(3),
         "tolerant collect must preserve one slot per item: {decoded}"
     );

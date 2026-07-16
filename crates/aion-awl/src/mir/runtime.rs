@@ -137,10 +137,7 @@ impl RuntimeFn {
     /// enumerated here.
     #[must_use]
     pub fn import_surface() -> Vec<(&'static str, String, u32)> {
-        all_runtime_fns()
-            .into_iter()
-            .map(Self::signature)
-            .collect()
+        all_runtime_fns().into_iter().map(Self::signature).collect()
     }
 
     fn raw_signature(self) -> (&'static str, &'static str, u32) {

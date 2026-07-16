@@ -143,8 +143,7 @@ step order
         match lower_source(&source)? {
             Err(LowerError::Unsupported { shape, .. }) => {
                 assert_eq!(
-                    shape,
-                    "`sort` over a non-comparable key (needs Int, Float, String)",
+                    shape, "`sort` over a non-comparable key (needs Int, Float, String)",
                     "sort key type {key_type} must refuse"
                 );
             }

@@ -54,7 +54,9 @@ fn export_set(bytes: &[u8]) -> Result<BTreeSet<(String, u32)>, Box<dyn std::erro
 /// `aion_flow`'s locked version in the oracle project's lockfile.
 fn oracle_sdk_version(manifest: &str) -> Result<String, Box<dyn std::error::Error>> {
     for line in manifest.lines() {
-        if let Some(rest) = line.trim().strip_prefix("{ name = \"aion_flow\", version = \"")
+        if let Some(rest) = line
+            .trim()
+            .strip_prefix("{ name = \"aion_flow\", version = \"")
             && let Some((version, _)) = rest.split_once('"')
         {
             return Ok(version.to_owned());
@@ -118,7 +120,9 @@ fn committed_closure_matches_a_fresh_oracle_harvest() -> TestResult {
             if beam.extension().is_none_or(|extension| extension != "beam") {
                 continue;
             }
-            let Some(module) = beam.file_stem().map(|stem| stem.to_string_lossy().into_owned())
+            let Some(module) = beam
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
             else {
                 continue;
             };
