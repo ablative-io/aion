@@ -79,6 +79,7 @@ fn archive_bytes(beam: &[u8], entry_function: &str) -> Result<Vec<u8>, TestError
         activities: vec![],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     Ok(PackageBuilder::new(manifest, beams).write_to_bytes()?)
 }
@@ -755,6 +756,7 @@ fn bomb_archive() -> Result<Vec<u8>, TestError> {
         activities: vec![],
         version: ManifestVersion::new("irrelevant-never-reached"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     let cursor = std::io::Cursor::new(Vec::new());

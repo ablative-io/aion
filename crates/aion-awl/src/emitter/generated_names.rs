@@ -38,6 +38,10 @@ pub(crate) struct NameAllocator {
 impl NameAllocator {
     fn for_document(document: &Document) -> Self {
         let mut used = BTreeSet::new();
+        used.insert(ident(&document.name));
+        for child in &document.children {
+            used.insert(ident(&child.name));
+        }
         for input in &document.inputs {
             used.insert(ident(&input.name));
         }

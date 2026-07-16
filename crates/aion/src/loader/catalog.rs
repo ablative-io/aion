@@ -9,7 +9,10 @@
 //! they already resolved (loads never unregister anything).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+
+#[path = "catalog_snapshot.rs"]
+mod catalog_snapshot;
 
 use aion_core::PackageVersion;
 use aion_package::{ContentHash, ManifestDigest, ManifestVersion, Package};
@@ -82,18 +85,6 @@ impl PinnedWorkflow {
 struct StartPin {
     pins: StartPins,
     key: (String, ContentHash),
-}
-
-impl Drop for StartPin {
-    fn drop(&mut self) {
-        let mut pins = self.pins.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(count) = pins.get_mut(&self.key) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                pins.remove(&self.key);
-            }
-        }
-    }
 }
 
 /// A version swapped out of the snapshot during unload verification.
@@ -423,7 +414,7 @@ impl WorkflowCatalog {
     where
         F: FnMut(&str, &[u8]) -> Result<(), EngineError>,
         R: FnMut(&str) -> Result<(), EngineError>,
-        V: FnOnce(&str, &str) -> Result<(), EngineError>,
+        V: FnMut(&str, &str) -> Result<(), EngineError>,
     {
         let _mutation = self.mutations.lock().await;
         let staged = StagedLoad::new(package)?;
@@ -443,28 +434,51 @@ impl WorkflowCatalog {
             }
         }
 
-        let key = (staged.workflow_type.clone(), staged.version.clone());
-        if let Some(existing) = snapshot.by_version.get(&key) {
+        let existing: Vec<_> = staged
+            .workflows
+            .iter()
+            .filter_map(|workflow| {
+                snapshot
+                    .by_version
+                    .get(&(workflow.workflow_type.clone(), staged.version.clone()))
+            })
+            .collect();
+        if !existing.is_empty() && existing.len() != staged.workflows.len() {
+            return Err(load_error(format!(
+                "package version `{}` is only partially registered ({}/{} workflow entries)",
+                staged.version,
+                existing.len(),
+                staged.workflows.len()
+            )));
+        }
+        if let Some(first) = existing.first() {
             // Same-hash-different-manifest tripwire: the content hash covers
             // the beam set only, so an "idempotent" re-load can carry a
             // manifest the resident version was never loaded with. Refuse
             // typed instead of silently ignoring the incoming manifest.
-            if existing.manifest_digest != staged.manifest_digest {
+            if existing
+                .iter()
+                .any(|entry| entry.manifest_digest != staged.manifest_digest)
+            {
                 return Err(EngineError::ManifestMismatch {
-                    workflow_type: staged.workflow_type.clone(),
+                    workflow_type: first.workflow.workflow_type().to_owned(),
                     version: staged.version.clone(),
-                    resident_digest: existing.manifest_digest.to_string(),
+                    resident_digest: first.manifest_digest.to_string(),
                     incoming_digest: staged.manifest_digest.to_string(),
                 });
             }
             // Idempotent re-load: nothing registers, but re-deploying a
-            // previously rolled-back version re-points the route at it.
-            let record = existing.workflow.clone();
-            let route_changed = snapshot.routed.get(&staged.workflow_type) != Some(&staged.version);
+            // previously rolled-back package re-points every entry atomically.
+            let record = first.workflow.clone();
+            let route_changed = staged.workflows.iter().any(|workflow| {
+                snapshot.routed.get(&workflow.workflow_type) != Some(&staged.version)
+            });
             if route_changed {
                 let mut next = (*snapshot).clone();
-                next.routed
-                    .insert(staged.workflow_type.clone(), staged.version.clone());
+                for workflow in &staged.workflows {
+                    next.routed
+                        .insert(workflow.workflow_type.clone(), staged.version.clone());
+                }
                 self.install(next)?;
             }
             return Ok(LoadOutcome {
@@ -497,38 +511,50 @@ impl WorkflowCatalog {
         // Entry-point verification before the route commit: a package whose
         // entry module loads but exports nothing routable must fail the
         // load, not the first dispatch.
-        if let Err(error) = verify_entry(&staged.deployed_entry_module, &staged.entry_function) {
-            let rollback_errors = rollback_registered(&mut rollback, &registered_now);
-            return Err(load_error(format!(
-                "entry verification failed for `{}`: {error}{}",
-                staged.deployed_entry_module, rollback_errors
-            )));
+        let mut verify_entry = verify_entry;
+        for workflow in &staged.workflows {
+            if let Err(error) =
+                verify_entry(&workflow.deployed_entry_module, &workflow.entry_function)
+            {
+                let rollback_errors = rollback_registered(&mut rollback, &registered_now);
+                return Err(load_error(format!(
+                    "entry verification failed for workflow `{}`: {error}{rollback_errors}",
+                    workflow.workflow_type
+                )));
+            }
         }
 
-        let record = staged.record();
+        let records = staged.records();
+        let Some(record) = records.first().cloned() else {
+            return Err(load_error("package staged no workflow entries".to_owned()));
+        };
         let mut next = (*snapshot).clone();
         for module in &staged.modules {
             next.registered_modules
                 .entry(module.deployed_name.clone())
                 .or_insert_with(|| staged.version.clone());
         }
-        next.by_version.insert(
-            key,
-            CatalogEntry {
-                workflow: record.clone(),
-                manifest_version: staged.manifest_version.clone(),
-                manifest_digest: staged.manifest_digest.clone(),
-                loaded_at: Utc::now(),
-            },
-        );
+        let loaded_at = Utc::now();
+        for workflow in &records {
+            next.by_version.insert(
+                (workflow.workflow_type().to_owned(), staged.version.clone()),
+                CatalogEntry {
+                    workflow: workflow.clone(),
+                    manifest_version: staged.manifest_version.clone(),
+                    manifest_digest: staged.manifest_digest.clone(),
+                    loaded_at,
+                },
+            );
+        }
         // A fresh load always commits the route pointer; `route_changed`
-        // reports whether it actually moved (a fresh version of a type can
-        // never already be route-active, so this is always true today, but
-        // computing it under the lock keeps the truth race-free by
-        // construction).
-        let route_changed = snapshot.routed.get(&staged.workflow_type) != Some(&staged.version);
-        next.routed
-            .insert(staged.workflow_type.clone(), staged.version.clone());
+        // reports whether any entry moved; all pointers commit in one swap.
+        let route_changed = records
+            .iter()
+            .any(|workflow| snapshot.routed.get(workflow.workflow_type()) != Some(&staged.version));
+        for workflow in &records {
+            next.routed
+                .insert(workflow.workflow_type().to_owned(), staged.version.clone());
+        }
         self.install(next)?;
         Ok(LoadOutcome {
             record,
@@ -645,29 +671,9 @@ impl WorkflowCatalog {
 #[path = "catalog_test_support.rs"]
 mod test_support;
 
-impl CatalogSnapshot {
-    fn routed_entry(&self, workflow_type: &str) -> Option<&CatalogEntry> {
-        let version = self.routed.get(workflow_type)?;
-        self.by_version
-            .get(&(workflow_type.to_owned(), version.clone()))
-    }
-
-    fn loaded_versions_of(&self, workflow_type: &str) -> String {
-        let mut versions: Vec<String> = self
-            .by_version
-            .keys()
-            .filter(|(loaded_type, _)| loaded_type == workflow_type)
-            .map(|(_, version)| version.to_string())
-            .collect();
-        versions.sort();
-        if versions.is_empty() {
-            "none".to_owned()
-        } else {
-            versions.join(", ")
-        }
-    }
-}
-
+#[cfg(test)]
+#[path = "catalog_multi_entry_tests.rs"]
+mod catalog_multi_entry_tests;
 #[cfg(test)]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;

@@ -250,6 +250,7 @@ fn fixture_archive(beam: &[u8]) -> Result<aion_package::Package, TestError> {
         activities: vec![],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let bytes = PackageBuilder::new(manifest, beams).write_to_bytes()?;
     Ok(aion_package::Package::load_from_bytes(

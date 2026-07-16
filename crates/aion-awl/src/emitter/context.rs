@@ -67,6 +67,10 @@ pub(crate) struct Emitter<'a> {
     pub(crate) union_type: Option<String>,
     /// Action name → generated `<Action>Input` record name.
     pub(crate) action_inputs: BTreeMap<String, String>,
+    /// Region id → generated implicit-child input record name.
+    pub(crate) region_input_types: BTreeMap<usize, String>,
+    /// Codec stem → implicit child result type required by emitted adapters.
+    pub(crate) implicit_child_outputs: BTreeMap<String, GType>,
     pub(crate) flags: Flags,
     /// Rendered loop functions, appended after the step functions.
     pub(crate) loop_fns: Vec<String>,
@@ -157,6 +161,11 @@ impl<'a> Emitter<'a> {
             action_inputs.insert(name.name.clone(), record);
         }
 
+        let mut region_input_types = BTreeMap::new();
+        allocate_region_input_types(&mut env, host_regions, &mut region_input_types);
+        for subflow in subflow_shapes {
+            allocate_region_input_types(&mut env, &subflow.flow.regions, &mut region_input_types);
+        }
         let subflows = subflow_shapes
             .iter()
             .map(|shape| (shape.name.as_str(), shape))
@@ -179,6 +188,8 @@ impl<'a> Emitter<'a> {
             input_type,
             union_type,
             action_inputs,
+            region_input_types,
+            implicit_child_outputs: BTreeMap::new(),
             flags: Flags::default(),
             loop_fns: Vec::new(),
             loop_counter: 0,
@@ -271,5 +282,19 @@ impl<'a> Emitter<'a> {
         let captured = mem::replace(&mut self.out, saved_out);
         self.indent = saved_indent;
         result.map(|()| captured)
+    }
+}
+
+fn allocate_region_input_types(
+    env: &mut TypeEnv,
+    regions: &BTreeMap<String, RegionShape>,
+    allocated: &mut BTreeMap<usize, String>,
+) {
+    for region in regions.values() {
+        let name = env
+            .names
+            .fresh(&format!("{}Input", pascal(&region.child_name)));
+        allocated.insert(region.id, name);
+        allocate_region_input_types(env, &region.members.regions, allocated);
     }
 }

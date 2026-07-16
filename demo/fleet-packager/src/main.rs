@@ -55,6 +55,7 @@ fn package(output: &Path) -> Result<(), String> {
         }],
         version: ManifestVersion::new("fleet-demo"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let builder =
         PackageBuilder::with_source(manifest, beams, [(FLEET_MODULE, FLEET_SOURCE.to_vec())]);

@@ -15,6 +15,7 @@ mod forks;
 mod frame;
 mod generated_names;
 mod graph;
+mod implicit_children;
 mod liveness;
 mod loops;
 mod names;

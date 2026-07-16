@@ -104,14 +104,14 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             Err(format!("unexpected_child_spawn_resolution:{other:?}"))
         }
         ResolveOutcome::ResumeLive => {
-            // D1: the child's package version is resolved once, here, at
-            // record time — always the latest loaded version of the child's
-            // type — and recorded durably so the spawn, the background
-            // retry, and the crash-repair sweep all start exactly it.
+            // Resolve within the parent's exact package version. The durable
+            // record carries that pin through retry, recovery, and adoption.
             let package_version = bridge
-                .routed_package_version(&workflow_type)
+                .package_version_for_child(&workflow_type, nif.workflow_handle().loaded_version())
                 .map_err(|error| format!("child_version_resolution:{error}"))?
-                .ok_or_else(|| format!("child_workflow_type_not_loaded:{workflow_type}"))?;
+                .ok_or_else(|| {
+                    format!("child_workflow_type_not_in_parent_package:{workflow_type}")
+                })?;
             // Record-then-spawn (#56): the id is recorded nondeterminism —
             // drawn once here, durably recorded before any observable use,
             // returned from history on every replay.

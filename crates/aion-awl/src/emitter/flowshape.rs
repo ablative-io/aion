@@ -53,6 +53,8 @@ pub(crate) struct FlowSteps {
 pub(crate) struct RegionShape {
     /// Globally unique region id (keys the planned nested flow).
     pub(crate) id: usize,
+    /// Hygienic package workflow type for the implicit per-item child.
+    pub(crate) child_name: String,
     /// The opening step's name (the synthetic step keeps it).
     pub(crate) open_name: String,
     /// Parallel (`distribute`) or in-order (`sequence`) delivery.
@@ -197,12 +199,16 @@ fn shape_flow(
                     message: "region opener lost its `distribute` statement".to_owned(),
                 });
             };
+            let id = *ids;
+            *ids += 1;
+            let child_name = names.allocator.fresh(&format!(
+                "awl_distribute_{}_{}",
+                snake(&frame.opener.name),
+                id
+            ));
             let region = RegionShape {
-                id: {
-                    let id = *ids;
-                    *ids += 1;
-                    id
-                },
+                id,
+                child_name,
                 open_name: frame.opener.name.clone(),
                 verb: distribute.verb,
                 var: distribute.var.clone(),

@@ -1,5 +1,7 @@
 //! Package staging: validated load units shared by the workflow catalog.
 
+use std::collections::HashSet;
+
 use aion_package::{ContentHash, ManifestDigest, ManifestVersion, Package};
 
 use crate::error::EngineError;
@@ -71,11 +73,16 @@ impl LoadedWorkflow {
     }
 }
 
-/// One package validated and decomposed into deployable module units.
-pub(crate) struct StagedLoad<'a> {
+/// One workflow entry staged from a package manifest.
+pub(crate) struct StagedWorkflow {
     pub(crate) workflow_type: String,
     pub(crate) deployed_entry_module: String,
     pub(crate) entry_function: String,
+}
+
+/// One package validated and decomposed into deployable module units.
+pub(crate) struct StagedLoad<'a> {
+    pub(crate) workflows: Vec<StagedWorkflow>,
     pub(crate) manifest_version: ManifestVersion,
     pub(crate) manifest_digest: ManifestDigest,
     pub(crate) version: ContentHash,
@@ -85,14 +92,38 @@ pub(crate) struct StagedLoad<'a> {
 impl<'a> StagedLoad<'a> {
     pub(crate) fn new(package: &'a Package) -> Result<Self, EngineError> {
         let manifest = package.manifest();
-        if package.beams().get(&manifest.entry_module).is_none() {
-            return Err(load_error(format!(
-                "manifest entry module `{}` is absent from package beams",
-                manifest.entry_module
-            )));
-        }
-
         let version = package.content_hash().clone();
+        let mut seen = HashSet::new();
+        let mut workflows = Vec::with_capacity(1 + manifest.additional_workflows.len());
+        let entries = std::iter::once((
+            manifest.entry_module.as_str(),
+            manifest.entry_module.as_str(),
+            manifest.entry_function.as_str(),
+        ))
+        .chain(manifest.additional_workflows.iter().map(|entry| {
+            (
+                entry.workflow_type.as_str(),
+                entry.entry_module.as_str(),
+                entry.entry_function.as_str(),
+            )
+        }));
+        for (workflow_type, entry_module, entry_function) in entries {
+            if !seen.insert(workflow_type) {
+                return Err(load_error(format!(
+                    "package declares workflow type `{workflow_type}` more than once"
+                )));
+            }
+            if package.beams().get(entry_module).is_none() {
+                return Err(load_error(format!(
+                    "manifest entry module `{entry_module}` for workflow `{workflow_type}` is absent from package beams"
+                )));
+            }
+            workflows.push(StagedWorkflow {
+                workflow_type: workflow_type.to_owned(),
+                deployed_entry_module: aion_package::deployed_name(entry_module, &version),
+                entry_function: entry_function.to_owned(),
+            });
+        }
         let modules = package
             .deployed_modules()
             .into_iter()
@@ -103,9 +134,7 @@ impl<'a> StagedLoad<'a> {
             .collect();
 
         Ok(Self {
-            workflow_type: manifest.entry_module.clone(),
-            deployed_entry_module: package.deployed_entry_module(),
-            entry_function: manifest.entry_function.clone(),
+            workflows,
             manifest_version: manifest.version.clone(),
             manifest_digest: manifest.canonical_digest()?,
             version,
@@ -113,14 +142,19 @@ impl<'a> StagedLoad<'a> {
         })
     }
 
-    /// Loaded-workflow record this staged unit commits as.
-    pub(crate) fn record(&self) -> LoadedWorkflow {
-        LoadedWorkflow::from_parts(
-            self.workflow_type.clone(),
-            self.deployed_entry_module.clone(),
-            self.entry_function.clone(),
-            self.version.clone(),
-        )
+    /// Loaded-workflow records this package commits atomically.
+    pub(crate) fn records(&self) -> Vec<LoadedWorkflow> {
+        self.workflows
+            .iter()
+            .map(|entry| {
+                LoadedWorkflow::from_parts(
+                    entry.workflow_type.clone(),
+                    entry.deployed_entry_module.clone(),
+                    entry.entry_function.clone(),
+                    self.version.clone(),
+                )
+            })
+            .collect()
     }
 }
 

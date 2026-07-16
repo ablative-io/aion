@@ -55,6 +55,7 @@ pub use extraction::ExtractionLimits;
 pub use hash::{ContentHash, content_hash, content_hash_with_timeout};
 pub use manifest::{
     CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestDigest, ManifestVersion,
+    WorkflowEntry,
 };
 pub use namespace::{
     DEPLOYED_NAME_SEPARATOR, NamespaceError, ParsedDeployedName, deployed_name, deployed_names,

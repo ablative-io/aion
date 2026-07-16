@@ -111,6 +111,7 @@ pub fn assemble_awl(
         activities: declared_activities(compiled),
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
 
     let mut builder = PackageBuilder::new(manifest, beams);

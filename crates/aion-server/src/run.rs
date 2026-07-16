@@ -1225,6 +1225,7 @@ mod lsub_prod_xnode_e2e {
             }],
             version: ManifestVersion::new("stamped-by-builder"),
             format_version: CURRENT_FORMAT_VERSION,
+            additional_workflows: Vec::new(),
         };
         let archive =
             PackageBuilder::with_source(manifest, beams, [(OUTBOX_MODULE, OUTBOX_SOURCE.to_vec())])

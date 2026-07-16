@@ -42,6 +42,21 @@ struct RawWorkflow {
     output_schema: String,
     activities: Vec<String>,
     output: Option<String>,
+    #[serde(default)]
+    additional_workflows: Vec<RawAdditionalWorkflow>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAdditionalWorkflow {
+    workflow_type: String,
+    entry_module: String,
+    entry_function: String,
+    timeout_seconds: u64,
+    input_schema: String,
+    output_schema: String,
+    #[serde(default)]
+    internal: bool,
 }
 
 /// Validated packaging configuration loaded from a project's `workflow.toml`.
@@ -72,8 +87,22 @@ pub(crate) struct WorkflowConfig {
     pub(crate) output_schema_path: PathBuf,
     /// Declared activity types, validated non-empty and unique.
     pub(crate) activities: Vec<String>,
+    /// Additional same-archive workflow entries.
+    pub(crate) additional_workflows: Vec<AdditionalWorkflowConfig>,
     /// Archive output path resolved against the project root.
     pub(crate) output_path: PathBuf,
+}
+
+/// One validated same-archive workflow entry.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AdditionalWorkflowConfig {
+    pub(crate) workflow_type: String,
+    pub(crate) entry_module: String,
+    pub(crate) entry_function: String,
+    pub(crate) timeout: Duration,
+    pub(crate) input_schema: serde_json::Value,
+    pub(crate) output_schema: serde_json::Value,
+    pub(crate) internal: bool,
 }
 
 /// Loads and validates `<root>/workflow.toml`, resolving all declared paths
@@ -189,6 +218,40 @@ fn validate_fields(index: usize, entry: &RawWorkflow) -> Result<(), PackagingErr
         }
     }
 
+    let mut workflow_types = BTreeMap::new();
+    workflow_types.insert(entry.entry_module.as_str(), 0usize);
+    for (position, additional) in entry.additional_workflows.iter().enumerate() {
+        let field =
+            |name: &str| format!("workflow[{index}].additional_workflows[{position}].{name}");
+        if additional.workflow_type.is_empty() {
+            return Err(PackagingError::ConfigInvalid {
+                field: field("workflow_type"),
+                reason: "must not be empty".to_owned(),
+            });
+        }
+        if !is_safe_logical_name(&additional.workflow_type)
+            || !is_safe_logical_name(&additional.entry_module)
+        {
+            return Err(PackagingError::ConfigInvalid {
+                field: field("workflow_type/entry_module"),
+                reason: "must be safe logical names".to_owned(),
+            });
+        }
+        if additional.entry_function.is_empty() || additional.timeout_seconds == 0 {
+            return Err(PackagingError::ConfigInvalid {
+                field: field("entry_function/timeout_seconds"),
+                reason: "entry function must be non-empty and timeout at least 1".to_owned(),
+            });
+        }
+        if let Some(first) = workflow_types.insert(additional.workflow_type.as_str(), position + 1)
+        {
+            return Err(PackagingError::ConfigInvalid {
+                field: field("workflow_type"),
+                reason: format!("duplicates workflow entry position {first}"),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -252,6 +315,8 @@ fn resolve_workflows(
                 format!("workflow[{index}].output_schema"),
                 &entry.output_schema,
             )?;
+            let additional_workflows =
+                resolve_additional(root, index, &entry.additional_workflows)?;
             Ok(WorkflowConfig {
                 input_schema: load_schema(&input_schema_path)?,
                 output_schema: load_schema(&output_schema_path)?,
@@ -261,421 +326,43 @@ fn resolve_workflows(
                 entry_function: entry.entry_function,
                 timeout: Duration::from_secs(entry.timeout_seconds),
                 activities: entry.activities,
+                additional_workflows,
                 output_path,
             })
         })
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{fs, path::PathBuf, time::Duration};
-
-    use serde_json::json;
-
-    use super::load_config;
-    use crate::project::{error::PackagingError, fixture};
-
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    const REQUIRED_LINES: [(&str, &str); 6] = [
-        ("entry_module", r#"entry_module = "demo""#),
-        ("entry_function", r#"entry_function = "run""#),
-        ("timeout_seconds", "timeout_seconds = 30"),
-        ("input_schema", r#"input_schema = "schemas/input.json""#),
-        ("output_schema", r#"output_schema = "schemas/output.json""#),
-        ("activities", r#"activities = ["greet"]"#),
-    ];
-
-    fn workflow_block(omitted: Option<&str>) -> String {
-        let mut text = String::from("[[workflow]]\n");
-        for (field, line) in REQUIRED_LINES {
-            if Some(field) != omitted {
-                text.push_str(line);
-                text.push('\n');
-            }
-        }
-        text
-    }
-
-    fn descriptor_project(
-        label: &str,
-        descriptor: &str,
-    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        fixture::temp_project(
-            label,
-            &[
-                ("workflow.toml", descriptor.as_bytes()),
-                ("schemas/input.json", br#"{ "type": "object" }"#),
-                ("schemas/output.json", b"true"),
-            ],
-        )
-    }
-
-    fn load_and_clean(
-        label: &str,
-        descriptor: &str,
-    ) -> Result<(PathBuf, Result<super::ProjectConfig, PackagingError>), Box<dyn std::error::Error>>
-    {
-        let root = descriptor_project(label, descriptor)?;
-        let result = load_config(&root);
-        fs::remove_dir_all(&root)?;
-        Ok((root, result))
-    }
-
-    #[test]
-    fn full_descriptor_round_trips_with_derived_and_explicit_outputs() -> TestResult {
-        let descriptor = format!(
-            "[package]\ninclude_source = false\n\n{}\n[[workflow]]\n\
-             entry_module = \"demo@nested\"\nentry_function = \"start\"\n\
-             timeout_seconds = 3600\ninput_schema = \"schemas/input.json\"\n\
-             output_schema = \"schemas/output.json\"\nactivities = []\n\
-             output = \"custom-name.aion\"\n",
-            workflow_block(None)
-        );
-        let (root, result) = load_and_clean("config-full", &descriptor)?;
-        let config = result?;
-
-        assert!(!config.include_source);
-        assert_eq!(config.workflows.len(), 2);
-        let first = &config.workflows[0];
-        assert_eq!(first.entry_module, "demo");
-        assert_eq!(first.entry_function, "run");
-        assert_eq!(first.timeout, Duration::from_secs(30));
-        assert_eq!(first.input_schema, json!({ "type": "object" }));
-        assert_eq!(first.output_schema, json!(true));
-        assert_eq!(first.activities, vec!["greet".to_owned()]);
-        assert_eq!(first.output_path, root.join("demo.aion"));
-        let second = &config.workflows[1];
-        assert_eq!(second.entry_module, "demo@nested");
-        assert_eq!(second.timeout, Duration::from_secs(3600));
-        assert!(second.activities.is_empty());
-        assert_eq!(second.output_path, root.join("custom-name.aion"));
-        Ok(())
-    }
-
-    #[test]
-    fn include_source_defaults_to_true_without_package_table() -> TestResult {
-        let (_, result) = load_and_clean("config-default-source", &workflow_block(None))?;
-
-        assert!(result?.include_source);
-        Ok(())
-    }
-
-    #[test]
-    fn missing_descriptor_returns_config_missing() -> TestResult {
-        let root = fixture::temp_project("config-missing", &[])?;
-        let result = load_config(&root);
-        fs::remove_dir_all(&root)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::ConfigMissing { root: reported }) if reported == root
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn omitting_each_required_field_returns_config_parse_naming_it() -> TestResult {
-        for (field, _) in REQUIRED_LINES {
-            let label = format!("config-omit-{field}");
-            let (_, result) = load_and_clean(&label, &workflow_block(Some(field)))?;
-
-            let Err(PackagingError::ConfigParse { source, .. }) = result else {
-                return Err(format!("omitting {field} did not produce ConfigParse").into());
-            };
-            assert!(
-                source.to_string().contains(field),
-                "parse error for omitted {field} does not name it: {source}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn unknown_keys_in_any_table_return_config_parse_naming_them() -> TestResult {
-        let cases = [
-            ("top", format!("mystery = 1\n{}", workflow_block(None))),
-            (
-                "package",
-                format!("[package]\nmystery = true\n\n{}", workflow_block(None)),
-            ),
-            ("workflow", format!("{}mystery = 1\n", workflow_block(None))),
-        ];
-        for (table, descriptor) in cases {
-            let label = format!("config-unknown-{table}");
-            let (_, result) = load_and_clean(&label, &descriptor)?;
-
-            let Err(PackagingError::ConfigParse { source, .. }) = result else {
-                return Err(format!("unknown key in {table} did not produce ConfigParse").into());
-            };
-            assert!(
-                source.to_string().contains("mystery"),
-                "parse error for {table} does not name the unknown key: {source}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn zero_timeout_returns_config_invalid() -> TestResult {
-        let descriptor = workflow_block(Some("timeout_seconds")) + "timeout_seconds = 0\n";
-        let (_, result) = load_and_clean("config-zero-timeout", &descriptor)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::ConfigInvalid { field, .. })
-                if field == "workflow[0].timeout_seconds"
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn unsafe_entry_modules_return_config_invalid() -> TestResult {
-        for (case, module) in [
-            ("dollar", "demo$bad"),
-            ("dotdot", "../escape"),
-            ("empty", ""),
-        ] {
-            let descriptor =
-                workflow_block(Some("entry_module")) + &format!("entry_module = \"{module}\"\n");
-            let label = format!("config-unsafe-{case}");
-            let (_, result) = load_and_clean(&label, &descriptor)?;
-
-            assert!(
-                matches!(
-                    result,
-                    Err(PackagingError::ConfigInvalid { ref field, .. })
-                        if field == "workflow[0].entry_module"
-                ),
-                "entry module `{module}` was not rejected: {result:?}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn empty_entry_function_returns_config_invalid() -> TestResult {
-        let descriptor = workflow_block(Some("entry_function")) + "entry_function = \"\"\n";
-        let (_, result) = load_and_clean("config-empty-function", &descriptor)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::ConfigInvalid { field, .. })
-                if field == "workflow[0].entry_function"
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn duplicate_entry_modules_return_config_invalid() -> TestResult {
-        let descriptor = format!(
-            "{}\n{}output = \"second.aion\"\n",
-            workflow_block(None),
-            workflow_block(None)
-        );
-        let (_, result) = load_and_clean("config-dup-modules", &descriptor)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::ConfigInvalid { field, reason })
-                if field == "workflow[1].entry_module" && reason.contains("workflow[0]")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn absolute_schema_path_outside_root_is_rejected_unread() -> TestResult {
-        let outside = std::env::temp_dir().join("aion-config-outside-secret.json");
-        fs::write(&outside, br#"{ "type": "object" }"#)?;
-        let outside_str = outside.to_str().ok_or("non-UTF-8 temp path")?.to_owned();
-        let descriptor =
-            workflow_block(Some("input_schema")) + &format!("input_schema = \"{outside_str}\"\n");
-        let (_, result) = load_and_clean("config-abs-schema", &descriptor)?;
-        fs::remove_file(&outside)?;
-
-        assert!(
-            matches!(
-                result,
-                Err(PackagingError::PathEscapesRoot { ref field, ref path })
-                    if field == "workflow[0].input_schema" && *path == outside
-            ),
-            "absolute schema path was not rejected: {result:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn dotdot_output_escaping_root_is_rejected() -> TestResult {
-        let descriptor = workflow_block(None) + "output = \"../../escape.aion\"\n";
-        let (_, result) = load_and_clean("config-escape-output", &descriptor)?;
-
-        assert!(
-            matches!(
-                result,
-                Err(PackagingError::PathEscapesRoot { ref field, ref path })
-                    if field == "workflow[0].output"
-                        && path == &PathBuf::from("../../escape.aion")
-            ),
-            "escaping output was not rejected: {result:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn dotdot_output_schema_escaping_root_is_rejected() -> TestResult {
-        let descriptor = workflow_block(Some("output_schema"))
-            + "output_schema = \"schemas/../../outside.json\"\n";
-        let (_, result) = load_and_clean("config-escape-output-schema", &descriptor)?;
-
-        assert!(
-            matches!(
-                result,
-                Err(PackagingError::PathEscapesRoot { ref field, ref path })
-                    if field == "workflow[0].output_schema"
-                        && path == &PathBuf::from("schemas/../../outside.json")
-            ),
-            "escaping output_schema was not rejected: {result:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn dotdot_paths_staying_inside_root_are_accepted_and_normalized() -> TestResult {
-        let descriptor = workflow_block(Some("input_schema"))
-            + "input_schema = \"sub/../schemas/input.json\"\noutput = \"sub/../demo.aion\"\n";
-        let (root, result) = load_and_clean("config-inside-dotdot", &descriptor)?;
-        let config = result?;
-
-        assert_eq!(config.workflows[0].output_path, root.join("demo.aion"));
-        assert_eq!(
-            config.workflows[0].input_schema,
-            json!({ "type": "object" })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn textually_distinct_outputs_naming_the_same_file_conflict() -> TestResult {
-        let second = workflow_block(Some("entry_module"))
-            + "entry_module = \"demo@nested\"\noutput = \"sub/../demo.aion\"\n";
-        let descriptor = format!("{}output = \"demo.aion\"\n\n{second}", workflow_block(None));
-        let (root, result) = load_and_clean("config-normalized-conflict", &descriptor)?;
-
-        assert!(
-            matches!(
-                result,
-                Err(PackagingError::OutputConflict { ref first, ref second, ref path })
-                    if first == "demo" && second == "demo@nested"
-                        && *path == root.join("demo.aion")
-            ),
-            "normalized-equal outputs did not conflict: {result:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn explicit_output_conflicts_are_rejected_with_both_workflows() -> TestResult {
-        let second = workflow_block(Some("entry_module"))
-            + "entry_module = \"demo@nested\"\noutput = \"demo.aion\"\n";
-        let descriptor = format!("{}\n{second}", workflow_block(None));
-        let (root, result) = load_and_clean("config-output-conflict", &descriptor)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::OutputConflict { first, second, path })
-                if first == "demo" && second == "demo@nested" && path == root.join("demo.aion")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn duplicate_activities_return_config_invalid() -> TestResult {
-        let descriptor =
-            workflow_block(Some("activities")) + "activities = [\"greet\", \"greet\"]\n";
-        let (_, result) = load_and_clean("config-dup-activities", &descriptor)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::ConfigInvalid { field, reason })
-                if field == "workflow[0].activities" && reason.contains("greet")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn empty_activity_strings_return_config_invalid() -> TestResult {
-        let descriptor = workflow_block(Some("activities")) + "activities = [\"\"]\n";
-        let (_, result) = load_and_clean("config-empty-activity", &descriptor)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::ConfigInvalid { field, .. })
-                if field == "workflow[0].activities"
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn zero_workflow_tables_return_config_invalid() -> TestResult {
-        for (case, descriptor) in [("empty", ""), ("package-only", "[package]\n")] {
-            let label = format!("config-no-workflows-{case}");
-            let (_, result) = load_and_clean(&label, descriptor)?;
-
-            assert!(
-                matches!(
-                    result,
-                    Err(PackagingError::ConfigInvalid { ref field, .. }) if field == "workflow"
-                ),
-                "{case} descriptor was not rejected: {result:?}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn missing_schema_file_returns_actionable_schema_missing() -> TestResult {
-        let root = fixture::temp_project(
-            "config-schema-missing",
-            &[
-                ("workflow.toml", workflow_block(None).as_bytes()),
-                ("schemas/output.json", b"true"),
-            ],
-        )?;
-        let result = load_config(&root);
-        fs::remove_dir_all(&root)?;
-
-        let Err(PackagingError::SchemaMissing { path }) = result else {
-            return Err(format!("expected SchemaMissing, got {result:?}").into());
-        };
-        assert_eq!(path, root.join("schemas/input.json"));
-        // The error must point at generation, not at restoring a hand file.
-        let message = PackagingError::SchemaMissing { path }.to_string();
-        assert!(
-            message.contains("aion generate") && message.contains("generated artifacts"),
-            "missing-schema error must be actionable: {message}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn invalid_schema_json_returns_schema_parse_with_path() -> TestResult {
-        let root = fixture::temp_project(
-            "config-schema-invalid",
-            &[
-                ("workflow.toml", workflow_block(None).as_bytes()),
-                ("schemas/input.json", b"{ not json"),
-                ("schemas/output.json", b"true"),
-            ],
-        )?;
-        let result = load_config(&root);
-        fs::remove_dir_all(&root)?;
-
-        assert!(matches!(
-            result,
-            Err(PackagingError::SchemaParse { path, .. })
-                if path == root.join("schemas/input.json")
-        ));
-        Ok(())
-    }
+fn resolve_additional(
+    root: &Path,
+    workflow_index: usize,
+    entries: &[RawAdditionalWorkflow],
+) -> Result<Vec<AdditionalWorkflowConfig>, PackagingError> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let prefix = format!("workflow[{workflow_index}].additional_workflows[{index}]");
+            let input_path =
+                resolve_confined(root, format!("{prefix}.input_schema"), &entry.input_schema)?;
+            let output_path = resolve_confined(
+                root,
+                format!("{prefix}.output_schema"),
+                &entry.output_schema,
+            )?;
+            Ok(AdditionalWorkflowConfig {
+                workflow_type: entry.workflow_type.clone(),
+                entry_module: entry.entry_module.clone(),
+                entry_function: entry.entry_function.clone(),
+                timeout: Duration::from_secs(entry.timeout_seconds),
+                input_schema: load_schema(&input_path)?,
+                output_schema: load_schema(&output_path)?,
+                internal: entry.internal,
+            })
+        })
+        .collect()
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

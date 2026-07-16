@@ -68,6 +68,7 @@ fn package_with(
             .collect(),
         version: ManifestVersion::new(hash.to_string()),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let source_map = BTreeMap::from([(entry_module.to_owned(), source.as_bytes().to_vec())]);
     Ok(Package::from_validated_parts_for_test(
@@ -410,6 +411,7 @@ fn missing_entry_source_is_a_loud_error() -> TestResult {
         activities: vec![],
         version: ManifestVersion::new(hash.to_string()),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let package = Package::from_validated_parts_for_test(manifest, beams, BTreeMap::new(), hash);
 
@@ -435,6 +437,7 @@ fn non_utf8_entry_source_is_a_loud_error() -> TestResult {
         activities: vec![],
         version: ManifestVersion::new(hash.to_string()),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let source = BTreeMap::from([("order_saga".to_owned(), vec![0xff, 0xfe, 0x00])]);
     let package = Package::from_validated_parts_for_test(manifest, beams, source, hash);

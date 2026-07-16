@@ -28,6 +28,7 @@ fn manifest(entry_module: &str) -> Manifest {
         }],
         version: ManifestVersion::new("placeholder"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     }
 }
 
