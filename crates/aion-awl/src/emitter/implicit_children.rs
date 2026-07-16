@@ -106,8 +106,18 @@ pub(super) fn emit_fanout(
     items: &str,
     var: &str,
     bind: &str,
-    item_ty: &GType,
 ) -> Result<(), EmitError> {
+    let Some(item_ty) = emitter
+        .region_bindings
+        .get(&region.id)
+        .and_then(|bindings| bindings.get(&region.binding))
+        .cloned()
+    else {
+        return Err(EmitError::new(
+            region.span,
+            format!("implicit child region {} has no result type", region.id),
+        ));
+    };
     let mut fields = Vec::with_capacity(nested.wrapper_params.len());
     for name in &nested.wrapper_params {
         let Some(ty) = branch_scope.get(name) else {
@@ -124,7 +134,7 @@ pub(super) fn emit_fanout(
         ));
     }
     let input = format!("json.object([{}])", fields.join(", "));
-    let output_codec = emitter.child_output_codec_fn(item_ty);
+    let output_codec = emitter.child_output_codec_fn(&item_ty);
     let spawn = format!(
         "({}, {CHILD_WITNESS}, {input}, awlc.json_value(), {output_codec}(), awl_error.codec())",
         string_lit(&region.child_name)

@@ -254,28 +254,10 @@ pub(super) fn emit_fanout(
         } else if emitter.children.contains_key(call.call.name.as_str()) {
             emit_child_fanout(emitter, region, call, &branch_scope, &items, &var, &bind)?;
         } else {
-            emit_instance_fanout(
-                emitter,
-                region,
-                nested,
-                &branch_scope,
-                &items,
-                &var,
-                &bind,
-                &item_ty,
-            )?;
+            emit_instance_fanout(emitter, region, nested, &branch_scope, &items, &var, &bind)?;
         }
     } else {
-        emit_instance_fanout(
-            emitter,
-            region,
-            nested,
-            &branch_scope,
-            &items,
-            &var,
-            &bind,
-            &item_ty,
-        )?;
+        emit_instance_fanout(emitter, region, nested, &branch_scope, &items, &var, &bind)?;
     }
 
     let slot = if region.tolerant {
@@ -477,7 +459,6 @@ fn emit_instance_fanout(
     items: &str,
     var: &str,
     bind: &str,
-    item_ty: &GType,
 ) -> Result<(), EmitError> {
     if matches!(region.verb, DeliveryVerb::Distribute) {
         return super::implicit_children::emit_fanout(
@@ -488,7 +469,6 @@ fn emit_instance_fanout(
             items,
             var,
             bind,
-            item_ty,
         );
     }
     let gathered = emitter.fresh_name("awl_gathered");

@@ -161,11 +161,7 @@ impl<'a> Emitter<'a> {
             action_inputs.insert(name.name.clone(), record);
         }
 
-        let mut region_input_types = BTreeMap::new();
-        allocate_region_input_types(&mut env, host_regions, &mut region_input_types);
-        for subflow in subflow_shapes {
-            allocate_region_input_types(&mut env, &subflow.flow.regions, &mut region_input_types);
-        }
+        let region_input_types = region_input_types(&mut env, host_regions, subflow_shapes);
         let subflows = subflow_shapes
             .iter()
             .map(|shape| (shape.name.as_str(), shape))
@@ -283,6 +279,19 @@ impl<'a> Emitter<'a> {
         self.indent = saved_indent;
         result.map(|()| captured)
     }
+}
+
+fn region_input_types(
+    env: &mut TypeEnv,
+    host_regions: &BTreeMap<String, RegionShape>,
+    subflows: &[SubflowShape],
+) -> BTreeMap<usize, String> {
+    let mut allocated = BTreeMap::new();
+    allocate_region_input_types(env, host_regions, &mut allocated);
+    for subflow in subflows {
+        allocate_region_input_types(env, &subflow.flow.regions, &mut allocated);
+    }
+    allocated
 }
 
 fn allocate_region_input_types(
