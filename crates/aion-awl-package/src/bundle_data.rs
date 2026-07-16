@@ -7,7 +7,7 @@
 //! Regenerate with the script above whenever the SDK changes.
 
 /// `aion_flow` version the embedded closure was built from.
-pub(crate) const SDK_CLOSURE_VERSION: &str = "0.6.0";
+pub(crate) const SDK_CLOSURE_VERSION: &str = "0.7.0";
 
 /// (logical module name, exact `.beam` bytes), sorted by module name.
 pub(crate) const MODULES: &[(&str, &[u8])] = &[
@@ -42,6 +42,10 @@ pub(crate) const MODULES: &[(&str, &[u8])] = &[
     (
         "aion@error",
         include_bytes!("../sdk-closure/aion_flow/aion@error.beam"),
+    ),
+    (
+        "aion@internal@activity_dispatch",
+        include_bytes!("../sdk-closure/aion_flow/aion@internal@activity_dispatch.beam"),
     ),
     (
         "aion@internal@ffi",
