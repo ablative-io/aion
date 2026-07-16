@@ -22,9 +22,9 @@ fn lower_source(source: &str) -> Result<Result<MirModule, LowerError>, Box<dyn s
 
 /// The two combined fixtures advance to their next honest refusal instead of
 /// silently claiming coverage: `dev_brief` refuses at its dependency-parallel
-/// layer, while `ship_release_combined` — whose build/canary cycle carries a
-/// `max … visits` bound since rev 3 — refuses at the flow-shape gate until
-/// B4 lowers the bound (behind it still waits the `on failure` refusal).
+/// layer, while `ship_release_combined` — its `max … visits` bound lowered by
+/// the fan-out parity landing — now surfaces the `on failure` refusal that
+/// waited behind it.
 #[test]
 fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let dev_brief = manifest_dir().join("tests/fixtures/rev2/flagship/valid/dev_brief.awl");
@@ -39,12 +39,12 @@ fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn st
     match lower_fixture(&ship)? {
         Err(LowerError::Unsupported { shape, .. }) => {
             assert!(
-                shape.contains("max … visits") && shape.contains("not yet lowered"),
+                shape.contains("on failure"),
                 "ship_release refusal drifted: {shape}"
             );
         }
         other => {
-            return Err(format!("ship_release must refuse at the visits bound: {other:?}").into());
+            return Err(format!("ship_release must refuse at `on failure`: {other:?}").into());
         }
     }
     Ok(())

@@ -69,10 +69,22 @@ pub fn verify(module: &MirModule) -> Result<(), VerifyError> {
 
 fn verify_exports(module: &MirModule) -> Result<(), VerifyError> {
     let mut seen = Vec::new();
+    let mut extras = 0usize;
     for reference in &module.exports {
         let function = module
             .function(*reference)
             .ok_or_else(|| VerifyError::new("<exports>", "export references no function"))?;
+        // Beyond the fixed trio, only implicit-child engine entries
+        // (`<child>_run/1`) may export.
+        if matches!(function.origin(), crate::mir::FnOrigin::ChildRun { .. }) {
+            if MirModule::arity(function) != 1 {
+                return Err(VerifyError::new(
+                    "<exports>",
+                    format!("child entry {} must export arity 1", function.name()),
+                ));
+            }
+            extras += 1;
+        }
         seen.push((function.name().to_owned(), MirModule::arity(function)));
     }
     for (name, arity) in [("run", 1_u32), ("definition", 0), ("execute", 1)] {
@@ -83,10 +95,11 @@ fn verify_exports(module: &MirModule) -> Result<(), VerifyError> {
             ));
         }
     }
-    if seen.len() != 3 {
+    if seen.len() != 3 + extras {
         return Err(VerifyError::new(
             "<exports>",
-            "export set must be exactly run/1, definition/0, execute/1",
+            "export set must be exactly run/1, definition/0, execute/1 plus implicit-child \
+             entries",
         ));
     }
     Ok(())

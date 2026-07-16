@@ -505,26 +505,14 @@ fn counterless_loop_pins_the_scalar_result_path() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-/// Backward route re-entry: since rev 3 the cycle carries a
-/// `max … visits` bound (the bounded loop inside `compose` no longer
-/// satisfies the cycle rule), and the bound is not lowered until B4 — so
-/// the fixture's honest answer today is the flow-shape refusal, with a
-/// span. B4 restores the seed/count-reset semantics pin recorded in
-/// AWL-BC-IR.md (exam ledger F-family).
+/// Backward route re-entry: the rev-3 `max … visits` bound now lowers (the
+/// fan-out parity landing), restoring the seed/count-reset coverage recorded
+/// in AWL-BC-IR.md (exam ledger F-family) — the fixture lowers and verifies.
 #[test]
-fn backward_route_reentry_refuses_until_the_visits_bound_lowers()
--> Result<(), Box<dyn std::error::Error>> {
+fn backward_route_reentry_now_lowers() -> Result<(), Box<dyn std::error::Error>> {
     let path = manifest_dir()
         .join("tests/fixtures/rev2/loop-outcomes/valid/backward_route_bounded_cycle.awl");
-    match lower_fixture(&path)? {
-        Err(LowerError::Unsupported { shape, span }) => {
-            assert!(
-                shape.contains("max … visits") && shape.contains("not yet lowered"),
-                "refusal drifted: {shape}"
-            );
-            assert!(span.line > 0, "refusal must carry a source span");
-        }
-        other => return Err(format!("expected the flow-shape refusal, got {other:?}").into()),
-    }
+    let module = lower_fixture(&path)??;
+    super::verify(&module)?;
     Ok(())
 }

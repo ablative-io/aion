@@ -1,7 +1,7 @@
 //! The lowering context: atom/literal interning, the `GType -> TyDesc` and
 //! `GType -> WireDesc` maps, leaf detection, and per-function var allocation.
 
-use crate::emitter::{Emitter, GType, NamedDef, Plan};
+use crate::emitter::{Emitter, GType, NamedDef, Plan, Plans};
 
 use super::super::func::MirFn;
 use super::super::ids::{AtomRef, FnRef, LitRef, Var};
@@ -12,7 +12,12 @@ use super::driver::LowerError;
 /// Shared lowering state threaded through the build.
 pub(super) struct Ctx<'a> {
     pub(super) emitter: &'a Emitter<'a>,
+    /// The host flow's plan (`plans.host` — kept as a direct field because
+    /// most of the skeleton build is host-anchored).
     pub(super) plan: &'a Plan,
+    /// Every flow's plan: the host plus each per-item region member flow
+    /// (the shared planning surface, D-BC1).
+    pub(super) plans: &'a Plans<'a>,
     pub(super) module_name: String,
     pub(super) atoms: Vec<String>,
     pub(super) literals: Vec<MirLiteral>,
@@ -22,10 +27,11 @@ pub(super) struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    pub(super) fn new(emitter: &'a Emitter<'a>, plan: &'a Plan, module_name: String) -> Self {
+    pub(super) fn new(emitter: &'a Emitter<'a>, plans: &'a Plans<'a>, module_name: String) -> Self {
         Self {
             emitter,
-            plan,
+            plan: &plans.host,
+            plans,
             module_name,
             atoms: Vec::new(),
             literals: Vec::new(),

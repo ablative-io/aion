@@ -20,11 +20,12 @@ use super::expr::{Binding, Scope};
 
 pub(super) fn lower_named_fork(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: super::flow::FlowEnv<'_>,
     fork: &ForkStmt,
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
 ) -> Result<(), LowerError> {
+    let plan = env.plan;
     let mut branches: Vec<&CallStmt> = Vec::new();
     for statement in &fork.body {
         match statement {
@@ -52,7 +53,7 @@ pub(super) fn lower_named_fork(
             .all(|branch| branch.call.name == branches[0].call.name);
     if branches.len() <= 1 {
         for branch in &branches {
-            super::flow::lower_call(ctx, plan, branch, scope, stmts)?;
+            super::flow::lower_call(ctx, env, branch, scope, stmts)?;
         }
         return Ok(());
     }

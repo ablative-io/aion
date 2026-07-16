@@ -8,15 +8,15 @@ use crate::spanned::Spanned;
 
 use super::super::ids::Span;
 use super::super::ops::{Block, Stmt, Tail, Test};
-use super::build::FnPlan;
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_expr};
-use super::flow::route_tail;
+use super::flow::FlowEnv;
+use super::route::route_tail;
 
 pub(super) fn lower_outcomes(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     clauses: &[OutcomeClause],
     scope: &Scope,
 ) -> Result<Block, LowerError> {
@@ -42,7 +42,7 @@ pub(super) fn lower_outcomes(
         for (variant, clause) in arms {
             lowered.push((
                 ctx.atom(&snake(&variant)),
-                lower_outcome_arm(ctx, plan, clause, scope, None)?,
+                lower_outcome_arm(ctx, env, clause, scope, None)?,
             ));
         }
         return Ok(Block {
@@ -54,7 +54,7 @@ pub(super) fn lower_outcomes(
             },
         });
     }
-    lower_outcome_cascade(ctx, plan, clauses, scope)
+    lower_outcome_cascade(ctx, env, clauses, scope)
 }
 
 fn enum_total_form(clauses: &[OutcomeClause]) -> Option<(Expr, Vec<(String, &OutcomeClause)>)> {
@@ -135,7 +135,7 @@ enum Decision<'a> {
 
 fn lower_outcome_cascade(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     clauses: &[OutcomeClause],
     scope: &Scope,
 ) -> Result<Block, LowerError> {
@@ -150,7 +150,7 @@ fn lower_outcome_cascade(
             if !rest.is_empty() {
                 return Err(LowerError::new(*span, "`otherwise` must be the last arm"));
             }
-            lower_outcome_arm(ctx, plan, clause, scope, None)
+            lower_outcome_arm(ctx, env, clause, scope, None)
         }
         Guard::When { expr, span } => {
             let decision = guard_decision(
@@ -163,7 +163,7 @@ fn lower_outcome_cascade(
             );
             // Keep the source clause span on the outer decision. Nested tests
             // carry their own expression spans.
-            lower_decision(ctx, plan, &decision, scope, Some(*span))
+            lower_decision(ctx, env, &decision, scope, Some(*span))
         }
     }
 }
@@ -236,7 +236,7 @@ fn narrow_short_circuit_rhs<'a>(
 
 fn lower_decision(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     decision: &Decision<'_>,
     scope: &Scope,
     outer_span: Option<crate::Span>,
@@ -253,8 +253,8 @@ fn lower_decision(
                 stmts,
                 tail: Tail::If {
                     test: Test::IsTrue(test),
-                    then_block: Box::new(lower_decision(ctx, plan, when_true, scope, None)?),
-                    else_block: Box::new(lower_decision(ctx, plan, when_false, scope, None)?),
+                    then_block: Box::new(lower_decision(ctx, env, when_true, scope, None)?),
+                    else_block: Box::new(lower_decision(ctx, env, when_false, scope, None)?),
                     span: Span::from_source(outer_span.unwrap_or_else(|| expr.span())),
                 },
             })
@@ -263,13 +263,13 @@ fn lower_decision(
             let mut narrowed = scope.clone();
             let mut stmts = Vec::new();
             narrow_binding(ctx, name, *span, &mut narrowed, &mut stmts);
-            let mut block = lower_decision(ctx, plan, next, &narrowed, None)?;
+            let mut block = lower_decision(ctx, env, next, &narrowed, None)?;
             stmts.append(&mut block.stmts);
             block.stmts = stmts;
             Ok(block)
         }
-        Decision::Arm { clause, guard } => lower_outcome_arm(ctx, plan, clause, scope, *guard),
-        Decision::Cascade(clauses) => lower_outcome_cascade(ctx, plan, clauses, scope),
+        Decision::Arm { clause, guard } => lower_outcome_arm(ctx, env, clause, scope, *guard),
+        Decision::Cascade(clauses) => lower_outcome_cascade(ctx, env, clauses, scope),
         Decision::Ready(block) => Ok((*block).clone()),
     }
 }
@@ -281,7 +281,7 @@ fn lower_decision(
 /// effectful or narrowing right-hand side.
 pub(super) fn lower_condition(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     expr: &Expr,
     scope: &Scope,
     when_true: &Block,
@@ -292,12 +292,12 @@ pub(super) fn lower_condition(
         Decision::Ready(when_true),
         Decision::Ready(when_false),
     );
-    lower_decision(ctx, plan, &decision, scope, None)
+    lower_decision(ctx, env, &decision, scope, None)
 }
 
 fn lower_outcome_arm(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     clause: &OutcomeClause,
     scope: &Scope,
     guard: Option<&Expr>,
@@ -305,7 +305,7 @@ fn lower_outcome_arm(
     let mut arm_scope = scope.clone();
     let mut stmts = Vec::new();
     narrow_present(ctx, guard, &mut arm_scope, &mut stmts);
-    let tail = route_tail(ctx, plan, &clause.route, &arm_scope, None, &mut stmts)?;
+    let tail = route_tail(ctx, env, &clause.route, &arm_scope, None, &mut stmts)?;
     Ok(Block { stmts, tail })
 }
 

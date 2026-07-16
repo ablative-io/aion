@@ -7,7 +7,7 @@
 //! sidecar-visible, S8 "select never synthesizes a function"), expanded here.
 
 use crate::mir::runtime::RuntimeFn;
-use crate::mir::{CodecRef, FnOrigin, FnRef, MirModule, TemplateFn, TypeShape};
+use crate::mir::{CodecRef, ExecArg, FnOrigin, FnRef, MirModule, TemplateFn, TypeShape};
 
 use super::builder::Builder;
 use super::error::SelectError;
@@ -188,6 +188,11 @@ pub(super) fn lower_shell(
             input_codec,
             output_codec,
         } => shell_run(builder, *input_codec, output_codec, execute, &header),
+        TemplateFn::ChildRun {
+            input_codec,
+            output_codec,
+            execute: child_execute,
+        } => shell_run(builder, *input_codec, output_codec, *child_execute, &header),
         TemplateFn::Definition {
             workflow_name,
             input_codec,
@@ -284,12 +289,14 @@ fn shell_definition(
     Ok(shell.finish(tail, header))
 }
 
-/// T-EXEC: `get_tuple_element` per input field, then tail-call the entry region.
+/// T-EXEC: `get_tuple_element` per input field, then tail-call the entry
+/// region. `ExecArg::Zero` args load the integer-zero seed of a flow-owned
+/// visit counter instead of an input field.
 fn shell_execute(
     builder: &mut Builder<'_>,
     field_count: usize,
     entry: FnRef,
-    entry_args: &[u16],
+    entry_args: &[ExecArg],
     header: &Header,
 ) -> Result<Body, SelectError> {
     let mut shell = Shell::new(builder, header.param_count);
@@ -309,10 +316,15 @@ fn shell_execute(
     let (entry_arity, entry_label) = entry_target(shell.builder.module, entry)?;
     let mut args = Vec::with_capacity(entry_args.len());
     for selector in entry_args {
-        let field = fields
-            .get(usize::from(*selector))
-            .ok_or_else(|| SelectError::invariant("execute entry_arg selects an unknown field"))?;
-        args.push(Src::Var(*field));
+        match selector {
+            ExecArg::Field(index) => {
+                let field = fields.get(usize::from(*index)).ok_or_else(|| {
+                    SelectError::invariant("execute entry_arg selects an unknown field")
+                })?;
+                args.push(Src::Var(*field));
+            }
+            ExecArg::Zero => args.push(Src::Int(0)),
+        }
     }
     let call_arity = u8::try_from(args.len()).map_err(|_| SelectError::OutOfRange {
         what: "entry arity".to_owned(),

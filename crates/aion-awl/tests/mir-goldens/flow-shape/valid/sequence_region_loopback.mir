@@ -1,0 +1,337 @@
+module rollout source=rollout.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  awl_r0_ordered_step_push:
+    aion@activity:task_queue/2 [activities] (v2, lit#16)
+    aion@workflow:run/1 [activities] (v3)
+  awl_r0_ordered_step_confirm:
+    aion@activity:task_queue/2 [activities] (v6, lit#18)
+    aion@workflow:run/1 [activities] (v7)
+== durable families == activities
+== atoms ==
+  [0] host
+  [1] attempt
+  [2] report
+  [3] trouble
+  [4] deploy_input
+  [5] verify_input
+  [6] rollout_input
+  [7] done_outcome
+  [8] ok
+  [9] awl_outcome_failure
+  [10] error
+  [11] awl_visits_exceeded
+== literals ==
+  [0] "name"
+  [1] "canary"
+  [2] "host"
+  [3] "ok"
+  [4] "rolled"
+  [5] "reason"
+  [6] "host"
+  [7] "attempt"
+  [8] "hosts"
+  [9] "done"
+  [10] "outcome"
+  [11] "RolloutOutcome"
+  [12] "done"
+  [13] "payload"
+  [14] "a host failed verification"
+  [15] "failed"
+  [16] "ops"
+  [17] "step `confirm` exceeded its `max … visits` bound at line 28, column 3"
+  [18] "ops"
+== types ==
+  record Host tag=host
+    name: string
+    canary: bool
+  record Attempt tag=attempt
+    host: string
+    ok: bool
+  record Report tag=report
+    rolled: int
+  record Trouble tag=trouble
+    reason: string
+  record DeployInput tag=deploy_input
+    host: ref(Host)
+  record VerifyInput tag=verify_input
+    attempt: ref(Attempt)
+  record RolloutInput tag=rollout_input
+    hosts: list(ref(Host))
+  union RolloutOutcome
+    done -> done_outcome(ref(Report))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=rollout_input_codec output=rollout_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(rollout.RolloutInput, rollout.RolloutOutcome, AwlError)
+  T-DEF name="rollout" input=rollout_input_codec output=rollout_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (rollout.RolloutInput) -> Result(rollout.RolloutOutcome, AwlError)
+  T-EXEC fields=[hosts:List(rollout.Host)] entry=step_ordered args=[0]
+== fn host_codec/0 origin=codec_template(RecordTrio, Host, record#0) ==
+  sig: () -> Codec(rollout.Host)
+  v0 = make_closure host_to_json captures=[]
+  v1 = call_local host_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn host_to_json/1 origin=codec_template(RecordTrio, Host, record#0) ==
+  sig: (rollout.Host) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"name": v1|>awlc.string_to_json, "canary": v2|>awlc.bool_to_json}
+  return v3
+== fn host_decoder/0 origin=codec_template(RecordTrio, Host, record#0) ==
+  sig: () -> Decoder(rollout.Host)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure host_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn host_decoder$0/1 origin=lifted(host_decoder, #0) ==
+  sig: (String) -> Decoder(rollout.Host)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure host_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v1, v2)
+== fn host_decoder$1/2 origin=lifted(host_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(rollout.Host)
+  v2 = record(host, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn attempt_codec/0 origin=codec_template(RecordTrio, Attempt, record#1) ==
+  sig: () -> Codec(rollout.Attempt)
+  v0 = make_closure attempt_to_json captures=[]
+  v1 = call_local attempt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn attempt_to_json/1 origin=codec_template(RecordTrio, Attempt, record#1) ==
+  sig: (rollout.Attempt) -> Json
+  v1 = field(v0, 1)
+  v2 = field(v0, 2)
+  v3 = json_obj {"host": v1|>awlc.string_to_json, "ok": v2|>awlc.bool_to_json}
+  return v3
+== fn attempt_decoder/0 origin=codec_template(RecordTrio, Attempt, record#1) ==
+  sig: () -> Decoder(rollout.Attempt)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure attempt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn attempt_decoder$0/1 origin=lifted(attempt_decoder, #0) ==
+  sig: (String) -> Decoder(rollout.Attempt)
+  v1 = call_rt aion@awl@codec:bool_decoder/0() live_after=[v0]
+  v2 = make_closure attempt_decoder$1 captures=[v0]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v1, v2)
+== fn attempt_decoder$1/2 origin=lifted(attempt_decoder, #1) ==
+  sig: (Bool, String) -> Decoder(rollout.Attempt)
+  v2 = record(attempt, [v1, v0])
+  tail_rt gleam@dynamic@decode:success/1(v2)
+== fn report_codec/0 origin=codec_template(RecordTrio, Report, record#2) ==
+  sig: () -> Codec(rollout.Report)
+  v0 = make_closure report_to_json captures=[]
+  v1 = call_local report_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn report_to_json/1 origin=codec_template(RecordTrio, Report, record#2) ==
+  sig: (rollout.Report) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"rolled": v1|>awlc.int_to_json}
+  return v2
+== fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#2) ==
+  sig: () -> Decoder(rollout.Report)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure report_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn report_decoder$0/1 origin=lifted(report_decoder, #0) ==
+  sig: (Int) -> Decoder(rollout.Report)
+  v1 = record(report, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn trouble_codec/0 origin=codec_template(RecordTrio, Trouble, record#3) ==
+  sig: () -> Codec(rollout.Trouble)
+  v0 = make_closure trouble_to_json captures=[]
+  v1 = call_local trouble_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn trouble_to_json/1 origin=codec_template(RecordTrio, Trouble, record#3) ==
+  sig: (rollout.Trouble) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"reason": v1|>awlc.string_to_json}
+  return v2
+== fn trouble_decoder/0 origin=codec_template(RecordTrio, Trouble, record#3) ==
+  sig: () -> Decoder(rollout.Trouble)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure trouble_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn trouble_decoder$0/1 origin=lifted(trouble_decoder, #0) ==
+  sig: (String) -> Decoder(rollout.Trouble)
+  v1 = record(trouble, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn deploy_input_codec/0 origin=codec_template(RecordTrio, DeployInput, record#4) ==
+  sig: () -> Codec(rollout.DeployInput)
+  v0 = make_closure deploy_input_to_json captures=[]
+  v1 = call_local deploy_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn deploy_input_to_json/1 origin=codec_template(RecordTrio, DeployInput, record#4) ==
+  sig: (rollout.DeployInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"host": v1|>host_to_json}
+  return v2
+== fn deploy_input_decoder/0 origin=codec_template(RecordTrio, DeployInput, record#4) ==
+  sig: () -> Decoder(rollout.DeployInput)
+  v0 = call_local host_decoder()
+  v1 = make_closure deploy_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn deploy_input_decoder$0/1 origin=lifted(deploy_input_decoder, #0) ==
+  sig: (rollout.Host) -> Decoder(rollout.DeployInput)
+  v1 = record(deploy_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn verify_input_codec/0 origin=codec_template(RecordTrio, VerifyInput, record#5) ==
+  sig: () -> Codec(rollout.VerifyInput)
+  v0 = make_closure verify_input_to_json captures=[]
+  v1 = call_local verify_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verify_input_to_json/1 origin=codec_template(RecordTrio, VerifyInput, record#5) ==
+  sig: (rollout.VerifyInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"attempt": v1|>attempt_to_json}
+  return v2
+== fn verify_input_decoder/0 origin=codec_template(RecordTrio, VerifyInput, record#5) ==
+  sig: () -> Decoder(rollout.VerifyInput)
+  v0 = call_local attempt_decoder()
+  v1 = make_closure verify_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn verify_input_decoder$0/1 origin=lifted(verify_input_decoder, #0) ==
+  sig: (rollout.Attempt) -> Decoder(rollout.VerifyInput)
+  v1 = record(verify_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn rollout_input_codec/0 origin=codec_template(RecordTrio, RolloutInput, record#6) ==
+  sig: () -> Codec(rollout.RolloutInput)
+  v0 = make_closure rollout_input_to_json captures=[]
+  v1 = call_local rollout_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn rollout_input_to_json/1 origin=codec_template(RecordTrio, RolloutInput, record#6) ==
+  sig: (rollout.RolloutInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"hosts": v1|>list_host_to_json}
+  return v2
+== fn rollout_input_decoder/0 origin=codec_template(RecordTrio, RolloutInput, record#6) ==
+  sig: () -> Decoder(rollout.RolloutInput)
+  v0 = call_local list_host_decoder()
+  v1 = make_closure rollout_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#8, v0, v1)
+== fn rollout_input_decoder$0/1 origin=lifted(rollout_input_decoder, #0) ==
+  sig: (List(rollout.Host)) -> Decoder(rollout.RolloutInput)
+  v1 = record(rollout_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn rollout_outcome_codec/0 origin=codec_template(UnionTrio, RolloutOutcome, union#7) ==
+  sig: () -> Codec(rollout.RolloutOutcome)
+  v0 = make_closure rollout_outcome_to_json captures=[]
+  v1 = call_local rollout_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn rollout_outcome_to_json/1 origin=codec_template(UnionTrio, RolloutOutcome, union#7) ==
+  sig: (rollout.RolloutOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#9|>awlc.string_to_json, "payload": v1|>report_to_json}
+  return v2
+== fn rollout_outcome_decoder/0 origin=codec_template(UnionTrio, RolloutOutcome, union#7) ==
+  sig: () -> Decoder(rollout.RolloutOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure rollout_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn rollout_outcome_decoder$outcome/1 origin=lifted(rollout_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(rollout.RolloutOutcome)
+  if cmp Eq v0 lit#12:
+    v3 = call_local report_decoder()
+    v4 = make_closure rollout_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#13, v3, v4)
+  else:
+    v1 = record(report, [0])
+    v2 = record(done_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#11)
+== fn rollout_outcome_decoder$arm0/1 origin=lifted(rollout_outcome_decoder, #1) ==
+  sig: (rollout.Report) -> Decoder(rollout.RolloutOutcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_host_codec/0 origin=codec_template(CompositeTrio, List(Host), composite(list(ref(Host)))) ==
+  sig: () -> Codec(List(rollout.Host))
+  v0 = make_closure list_host_to_json captures=[]
+  v1 = call_local list_host_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_host_to_json/1 origin=codec_template(CompositeTrio, List(Host), composite(list(ref(Host)))) ==
+  sig: (List(rollout.Host)) -> Json
+  v1 = make_closure host_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_host_decoder/0 origin=codec_template(CompositeTrio, List(Host), composite(list(ref(Host)))) ==
+  sig: () -> Decoder(List(rollout.Host))
+  v0 = call_local host_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn deploy_activity/1 origin=activity_wrapper(deploy, raw=false) ==
+  sig: (rollout.Host) -> Activity(rollout.DeployInput, rollout.Attempt)
+  T-ACT action=deploy input_codec=deploy_input_codec return=attempt_codec
+== fn verify_activity/1 origin=activity_wrapper(verify, raw=false) ==
+  sig: (rollout.Attempt) -> Activity(rollout.VerifyInput, rollout.Attempt)
+  T-ACT action=verify input_codec=verify_input_codec return=attempt_codec
+== fn step_ordered/1 origin=region(ordered) ==
+  sig: (List(rollout.Host)) -> Result(rollout.RolloutOutcome, AwlError)
+  v1 = make_closure ordered_fanout_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, nil, v1)
+  v3 = try_bind v2
+  v4 = call_rt gleam@list:reverse/1(v3)
+  v5 = call_rt gleam@list:length/1(v4) live_after=[v4]
+  tail_local step_judge(v4, v5)
+== fn step_judge/2 origin=chain_step(ordered.judge) ==
+  sig: (List(rollout.Attempt), Int) -> Result(rollout.RolloutOutcome, AwlError)
+  v2 = make_closure awl_predicate_0 captures=[]
+  v3 = call_rt gleam@list:all/2(v0, v2) live_after=[v1]
+  if is_true v3:
+    v4 = record(report, [v1])
+    v5 = record(done_outcome, [v4])
+    v6 = record(ok, [v5])
+    return v6
+  else:
+    v7 = record(trouble, [lit#14])
+    v8 = call_local trouble_to_json(v7)
+    v9 = call_rt gleam@json:to_string/1(v8)
+    v10 = record(awl_outcome_failure, [lit#15, v9])
+    v11 = record(error, [v10])
+    return v11
+== fn awl_r0_ordered/1 origin=region_wrapper(r0:ordered) ==
+  sig: (rollout.Host) -> Result(rollout.Attempt, AwlError)
+  tail_local awl_r0_ordered_step_push(0, v0)
+== fn awl_r0_ordered_step_push/2 origin=region(r0:ordered::push) ==
+  sig: (Int, rollout.Host) -> Result(rollout.Attempt, AwlError)
+  v2 = call_local deploy_activity(v1) live_after=[v0, v1]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#16) live_after=[v0, v1]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v0, v1]
+  v5 = call_rt aion@awl@error:map_activity_error/1(v4) live_after=[v0, v1]
+  v6 = try_bind v5 live_after=[v0, v1]
+  tail_local awl_r0_ordered_step_confirm(v6, v0, v1)
+== fn awl_r0_ordered_step_confirm/3 origin=chain_step(r0:ordered::push.confirm) ==
+  sig: (rollout.Attempt, Int, rollout.Host) -> Result(rollout.Attempt, AwlError)
+  v3 = increment v1
+  if cmp Gt v3 3:
+    v4 = record(awl_visits_exceeded, [lit#17])
+    v5 = record(error, [v4])
+    return v5
+  else:
+    v6 = call_local verify_activity(v0) live_after=[v2, v3]
+    v7 = call_rt aion@activity:task_queue/2(v6, lit#18) live_after=[v2, v3]
+    v8 = call_rt aion@workflow:run/1(v7) live_after=[v2, v3]
+    v9 = call_rt aion@awl@error:map_activity_error/1(v8) live_after=[v2, v3]
+    v10 = try_bind v9 live_after=[v2, v3]
+    v11 = field(v10, 2)
+    if is_true v11:
+      v12 = record(ok, [v10])
+      return v12
+    else:
+      v13 = cmp Lt v3 3
+      if is_true v13:
+        tail_local awl_r0_ordered_step_push(v3, v2)
+      else:
+        v14 = record(ok, [v10])
+        return v14
+== fn ordered_fanout_0/2 origin=fork(ordered#0) ==
+  sig: (List(rollout.Attempt), rollout.Host) -> Result(List(rollout.Attempt), AwlError)
+  v2 = call_local awl_r0_ordered(v1) live_after=[v0]
+  v3 = try_bind v2 live_after=[v0]
+  v4 = cons v3 v0
+  v5 = record(ok, [v4])
+  return v5
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl_predicate_0/1 origin=lifted(execute, #0) ==
+  sig: (rollout.Attempt) -> Bool
+  v1 = field(v0, 2)
+  return v1

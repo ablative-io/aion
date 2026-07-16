@@ -20,6 +20,18 @@ pub enum CodecRef {
     SdkLeaf(Leaf),
 }
 
+/// One argument of T-EXEC's entry tail call: an input-record field selected
+/// by position, or the integer-zero seed of a flow-owned visit counter (the
+/// run-once seeding of `emitter/steps.rs::emit_execute` /
+/// `flows.rs::emit_wrapper`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecArg {
+    /// The input record field at this position.
+    Field(u16),
+    /// The literal `0` seed of a language-owned visit counter.
+    Zero,
+}
+
 /// A template shell: name-substitution only, BC-3 expands each from a fixed
 /// recipe (AWL-BC-IR.md §2.4). Post-S8 these are the ONLY templated functions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,10 +45,20 @@ pub enum TemplateFn {
         input_codec: FnRef,
         output_codec: CodecRef,
     },
+    /// The exported engine entry of one implicit per-item child workflow
+    /// (`emitter/implicit_children.rs::emit_adapter`): `runtime.run(raw,
+    /// input_codec, output_codec, execute)` over the CHILD's input record
+    /// codec, output envelope codec, and `_execute` adapter — the same recipe
+    /// as T-RUN with an explicit executor instead of the module's `execute/1`.
+    ChildRun {
+        input_codec: FnRef,
+        output_codec: CodecRef,
+        execute: FnRef,
+    },
     Execute {
         input_fields: Vec<(String, TyDesc)>,
         entry: FnRef,
-        entry_args: Vec<u16>,
+        entry_args: Vec<ExecArg>,
     },
     ActivityWrapper {
         action: String,
@@ -110,6 +132,23 @@ pub enum FnOrigin {
     SubStep {
         parent: String,
         sub: String,
+    },
+    /// A per-item region member flow's run-once entry wrapper (the MIR twin
+    /// of `emitter/flows.rs::emit_wrapper`): seeds the flow's visit counters
+    /// and tail-calls the entry step function.
+    RegionWrapper {
+        region: usize,
+        open: String,
+    },
+    /// The typed `_execute` adapter of an implicit per-item child workflow:
+    /// unpacks the child input record into the instance wrapper's arguments.
+    ChildExecute {
+        child: String,
+    },
+    /// The exported raw engine entry (`<child>_run`) of an implicit per-item
+    /// child workflow.
+    ChildRun {
+        child: String,
     },
     Loop {
         step: String,

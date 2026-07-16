@@ -27,6 +27,12 @@ pub(super) const COVERED: &[&str] = &[
     "declarations/valid/workers_multiple",
     "ergonomics/valid/flow_vocab_b1",
     "flagship/valid/awl_hello",
+    "flow-shape/valid/distribute_activity_tolerant",
+    "flow-shape/valid/distribute_child_collect",
+    "flow-shape/valid/distribute_child_tolerant",
+    "flow-shape/valid/region_pure_decision",
+    "flow-shape/valid/sequence_activity_tolerant",
+    "flow-shape/valid/sequence_region_loopback",
     "header-types/valid/builtins",
     "header-types/valid/combined",
     "header-types/valid/doc_comments",
@@ -38,8 +44,9 @@ pub(super) const COVERED: &[&str] = &[
     "header-types/valid/workflow_timeout",
     "header-types/valid/zero_inputs",
     // `backward_route_bounded_cycle` regressed covered → refused at rev 3
-    // BY DESIGN: the cycle rule now demands a `max … visits` bound and the
-    // bound is not lowered until B4 (flow-vocabulary lowering).
+    // (the cycle rule demanded a `max … visits` bound); the fan-out parity
+    // landing lowers the bound, restoring coverage.
+    "loop-outcomes/valid/backward_route_bounded_cycle",
     "loop-outcomes/valid/enum_when_totality",
     "loop-outcomes/valid/float_threshold_guard",
     "loop-outcomes/valid/fork_in_loop_live_ins",
