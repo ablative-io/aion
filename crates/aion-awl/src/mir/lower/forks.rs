@@ -189,13 +189,14 @@ fn single_unbound_call(body: &[Statement]) -> Option<&CallStmt> {
 
 pub(super) fn lower_fork_stmt(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: super::flow::FlowEnv<'_>,
     step: &Step,
     fork: &ForkStmt,
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
     slots: &mut Slots,
 ) -> Result<(), LowerError> {
+    let plan = env.plan;
     match &fork.header {
         ForkHeader::Collection {
             var,
@@ -216,7 +217,7 @@ pub(super) fn lower_fork_stmt(
             stmts,
             slots,
         ),
-        ForkHeader::Named => super::fork_named::lower_named_fork(ctx, plan, fork, scope, stmts),
+        ForkHeader::Named => super::fork_named::lower_named_fork(ctx, env, fork, scope, stmts),
     }
 }
 

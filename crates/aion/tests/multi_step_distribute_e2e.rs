@@ -336,9 +336,12 @@ async fn assert_durable_child_histories(
                     .details
                     .as_ref()
                     .ok_or_else(|| format!("item b failure has no details: {error:?}"))?;
+                // The run shell records failures as the `AwlError` codec's
+                // own JSON-object encoding (the decodable child-error wire),
+                // never the raw error record's term-to-JSON array image.
                 assert_eq!(
                     serde_json::from_slice::<Value>(details.bytes())?,
-                    json!(["awl_activity_failed", "activity failed"]),
+                    json!({ "tag": "AwlActivityFailed", "message": "activity failed" }),
                     "item b must hold the generated child workflow's durable activity failure"
                 );
                 durable_slots.push(None);

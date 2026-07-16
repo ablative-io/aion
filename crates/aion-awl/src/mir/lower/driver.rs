@@ -68,7 +68,8 @@ impl std::error::Error for LowerError {}
 
 /// The first rev-3 construct the direct path does not yet mirror (the B4
 /// staging gate: constructs retire from this list as their MIR lowering
-/// lands).
+/// lands — `distribute`/`sequence` regions, `collect` steps, and `max …
+/// visits` retired with the fan-out parity landing).
 fn flow_shape_gap(document: &Document) -> Option<(crate::Span, &'static str)> {
     use crate::ast::{RoutePayload, RouteTarget, Statement, Step};
     fn route_gap(target: &RouteTarget) -> Option<(crate::Span, &'static str)> {
@@ -83,10 +84,6 @@ fn flow_shape_gap(document: &Document) -> Option<(crate::Span, &'static str)> {
     fn statements_gap(statements: &[Statement]) -> Option<(crate::Span, &'static str)> {
         for statement in statements {
             let found = match statement {
-                Statement::Distribute(distribute) => {
-                    Some((distribute.span, "`distribute`/`sequence` regions"))
-                }
-                Statement::Collect(collect) => Some((collect.span, "`collect` steps")),
                 Statement::Route(route) => route_gap(&route.target),
                 Statement::Pipe(pipe) => match &pipe.end {
                     crate::ast::PipeEnd::Route(target) => route_gap(target),
@@ -98,7 +95,9 @@ fn flow_shape_gap(document: &Document) -> Option<(crate::Span, &'static str)> {
                 Statement::Call(_)
                 | Statement::Spawn(_)
                 | Statement::Wait(_)
-                | Statement::Sleep(_) => None,
+                | Statement::Sleep(_)
+                | Statement::Distribute(_)
+                | Statement::Collect(_) => None,
             };
             if found.is_some() {
                 return found;
@@ -107,9 +106,6 @@ fn flow_shape_gap(document: &Document) -> Option<(crate::Span, &'static str)> {
         None
     }
     fn step_gap(step: &Step) -> Option<(crate::Span, &'static str)> {
-        if let Some(max_visits) = &step.max_visits {
-            return Some((max_visits.span, "the `max … visits` step attribute"));
-        }
         if let Some(found) = statements_gap(&step.body) {
             return Some(found);
         }
@@ -179,12 +175,11 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
     let (emitter, plans) = prepare(&shaped, root).map_err(|error| LowerError::Planning {
         message: error.to_string(),
     })?;
-    let plan = plans.host;
     let document = emitter.document;
     let module_name = snake(&document.name);
     let source = format!("{module_name}.awl");
 
-    let mut ctx = Ctx::new(&emitter, &plan, module_name.clone());
+    let mut ctx = Ctx::new(&emitter, &plans, module_name.clone());
     let mut skeleton = build::skeleton(&mut ctx)?;
     ctx.set_predicate_start(skeleton.plan.predicate_start);
     let mut slots = super::slots::Slots {
@@ -192,7 +187,28 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
         forks: super::slots::ForkSlots::new(skeleton.plan.forks.clone()),
         waits: super::slots::WaitSlots::new(skeleton.plan.waits.clone()),
     };
-    flow::lower_regions(
+    let host_flow = flow::FlowCtx {
+        steps: &document.steps,
+        regions: emitter.host_regions,
+        plan: &plans.host,
+        fns: &skeleton.plan.host,
+        bindings: &emitter.bindings,
+        exit: None,
+        prefix: String::new(),
+        label: None,
+        ret_ty: super::super::tydesc::TyDesc::Result(
+            Box::new(build::output_tydesc(&ctx)),
+            Box::new(super::super::tydesc::TyDesc::AwlError),
+        ),
+    };
+    let host_env = flow::FlowEnv {
+        plan: &skeleton.plan,
+        flow: &host_flow,
+    };
+    flow::lower_flow_fns(&mut ctx, host_env, &mut skeleton.functions, &mut slots)?;
+    // Each per-item member flow lowers once (wrapper + chain fns), ascending
+    // region id, right after the host chains (the reserved slot order).
+    super::nested::lower_nested_flows(
         &mut ctx,
         &skeleton.plan,
         &mut skeleton.functions,
@@ -204,6 +220,11 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
     slots.loops.append_into(&mut skeleton.functions)?;
     slots.forks.append_into(&mut skeleton.functions)?;
     slots.waits.append_into(&mut skeleton.functions)?;
+    // Implicit-child adapter shells follow every wait slot (ascending region
+    // id), before the fixed helpers.
+    for shell in super::nested::adapter_shells(&ctx, &skeleton.plan)? {
+        skeleton.functions.push(shell);
+    }
     // The shared dead-body function (T-DEAD) is a real, sidecar-visible entry
     // (S8): append exactly one when the module has any activity to close over.
     if !skeleton.plan.activities.is_empty() {

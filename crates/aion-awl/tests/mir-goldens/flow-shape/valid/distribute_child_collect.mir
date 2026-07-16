@@ -1,0 +1,246 @@
+module fan_children source=fan_children.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  awl_r0_wave_step_delegate:
+    aion@workflow:spawn_and_wait/6 [children] (lit#13, v2, v1, v3, v4, v5)
+  wave_fanout_0:
+    aion@workflow:spawn/6 [children] (lit#12, v3, v2, v4, v5, v6)
+  wave_fanout_1:
+    aion@child:await/1 [children] (v1)
+== durable families == children
+== atoms ==
+  [0] job
+  [1] verdict
+  [2] done
+  [3] fan_children_input
+  [4] done_outcome
+  [5] ok
+== literals ==
+  [0] "name"
+  [1] "ok"
+  [2] "count"
+  [3] "jobs"
+  [4] "done"
+  [5] "outcome"
+  [6] "FanChildrenOutcome"
+  [7] "done"
+  [8] "payload"
+  [9] "child"
+  [10] "outcome"
+  [11] "payload"
+  [12] "run_job"
+  [13] "run_job"
+== types ==
+  record Job tag=job
+    name: string
+  record Verdict tag=verdict
+    ok: bool
+  record Done tag=done
+    count: int
+  record FanChildrenInput tag=fan_children_input
+    jobs: list(ref(Job))
+  union FanChildrenOutcome
+    done -> done_outcome(ref(Done))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fan_children_input_codec output=fan_children_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fan_children.FanChildrenInput, fan_children.FanChildrenOutcome, AwlError)
+  T-DEF name="fan_children" input=fan_children_input_codec output=fan_children_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fan_children.FanChildrenInput) -> Result(fan_children.FanChildrenOutcome, AwlError)
+  T-EXEC fields=[jobs:List(fan_children.Job)] entry=step_wave args=[0]
+== fn job_codec/0 origin=codec_template(RecordTrio, Job, record#0) ==
+  sig: () -> Codec(fan_children.Job)
+  v0 = make_closure job_to_json captures=[]
+  v1 = call_local job_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn job_to_json/1 origin=codec_template(RecordTrio, Job, record#0) ==
+  sig: (fan_children.Job) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn job_decoder/0 origin=codec_template(RecordTrio, Job, record#0) ==
+  sig: () -> Decoder(fan_children.Job)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure job_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn job_decoder$0/1 origin=lifted(job_decoder, #0) ==
+  sig: (String) -> Decoder(fan_children.Job)
+  v1 = record(job, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn verdict_codec/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Codec(fan_children.Verdict)
+  v0 = make_closure verdict_to_json captures=[]
+  v1 = call_local verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn verdict_to_json/1 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: (fan_children.Verdict) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"ok": v1|>awlc.bool_to_json}
+  return v2
+== fn verdict_decoder/0 origin=codec_template(RecordTrio, Verdict, record#1) ==
+  sig: () -> Decoder(fan_children.Verdict)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure verdict_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn verdict_decoder$0/1 origin=lifted(verdict_decoder, #0) ==
+  sig: (Bool) -> Decoder(fan_children.Verdict)
+  v1 = record(verdict, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn done_codec/0 origin=codec_template(RecordTrio, Done, record#2) ==
+  sig: () -> Codec(fan_children.Done)
+  v0 = make_closure done_to_json captures=[]
+  v1 = call_local done_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn done_to_json/1 origin=codec_template(RecordTrio, Done, record#2) ==
+  sig: (fan_children.Done) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"count": v1|>awlc.int_to_json}
+  return v2
+== fn done_decoder/0 origin=codec_template(RecordTrio, Done, record#2) ==
+  sig: () -> Decoder(fan_children.Done)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure done_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn done_decoder$0/1 origin=lifted(done_decoder, #0) ==
+  sig: (Int) -> Decoder(fan_children.Done)
+  v1 = record(done, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fan_children_input_codec/0 origin=codec_template(RecordTrio, FanChildrenInput, record#3) ==
+  sig: () -> Codec(fan_children.FanChildrenInput)
+  v0 = make_closure fan_children_input_to_json captures=[]
+  v1 = call_local fan_children_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fan_children_input_to_json/1 origin=codec_template(RecordTrio, FanChildrenInput, record#3) ==
+  sig: (fan_children.FanChildrenInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"jobs": v1|>list_job_to_json}
+  return v2
+== fn fan_children_input_decoder/0 origin=codec_template(RecordTrio, FanChildrenInput, record#3) ==
+  sig: () -> Decoder(fan_children.FanChildrenInput)
+  v0 = call_local list_job_decoder()
+  v1 = make_closure fan_children_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn fan_children_input_decoder$0/1 origin=lifted(fan_children_input_decoder, #0) ==
+  sig: (List(fan_children.Job)) -> Decoder(fan_children.FanChildrenInput)
+  v1 = record(fan_children_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fan_children_outcome_codec/0 origin=codec_template(UnionTrio, FanChildrenOutcome, union#4) ==
+  sig: () -> Codec(fan_children.FanChildrenOutcome)
+  v0 = make_closure fan_children_outcome_to_json captures=[]
+  v1 = call_local fan_children_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fan_children_outcome_to_json/1 origin=codec_template(UnionTrio, FanChildrenOutcome, union#4) ==
+  sig: (fan_children.FanChildrenOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#4|>awlc.string_to_json, "payload": v1|>done_to_json}
+  return v2
+== fn fan_children_outcome_decoder/0 origin=codec_template(UnionTrio, FanChildrenOutcome, union#4) ==
+  sig: () -> Decoder(fan_children.FanChildrenOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fan_children_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#5, v0, v1)
+== fn fan_children_outcome_decoder$outcome/1 origin=lifted(fan_children_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fan_children.FanChildrenOutcome)
+  if cmp Eq v0 lit#7:
+    v3 = call_local done_decoder()
+    v4 = make_closure fan_children_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#8, v3, v4)
+  else:
+    v1 = record(done, [0])
+    v2 = record(done_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#6)
+== fn fan_children_outcome_decoder$arm0/1 origin=lifted(fan_children_outcome_decoder, #1) ==
+  sig: (fan_children.Done) -> Decoder(fan_children.FanChildrenOutcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_job_codec/0 origin=codec_template(CompositeTrio, List(Job), composite(list(ref(Job)))) ==
+  sig: () -> Codec(List(fan_children.Job))
+  v0 = make_closure list_job_to_json captures=[]
+  v1 = call_local list_job_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_job_to_json/1 origin=codec_template(CompositeTrio, List(Job), composite(list(ref(Job)))) ==
+  sig: (List(fan_children.Job)) -> Json
+  v1 = make_closure job_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_job_decoder/0 origin=codec_template(CompositeTrio, List(Job), composite(list(ref(Job)))) ==
+  sig: () -> Decoder(List(fan_children.Job))
+  v0 = call_local job_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn awl_child_output_verdict_codec/0 origin=codec_template(ChildEnvelopeTrio, Verdict, child_envelope(ref(Verdict))) ==
+  sig: () -> Codec(fan_children.Verdict)
+  v0 = make_closure awl_child_output_verdict_to_json captures=[]
+  v1 = call_local awl_child_output_verdict_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_verdict_to_json/1 origin=codec_template(ChildEnvelopeTrio, Verdict, child_envelope(ref(Verdict))) ==
+  sig: (fan_children.Verdict) -> Json
+  v1 = json_obj {"outcome": lit#9|>awlc.string_to_json, "payload": v0|>verdict_to_json}
+  return v1
+== fn awl_child_output_verdict_decoder/0 origin=codec_template(ChildEnvelopeTrio, Verdict, child_envelope(ref(Verdict))) ==
+  sig: () -> Decoder(fan_children.Verdict)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_verdict_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v0, v1)
+== fn awl_child_output_verdict_decoder$outcome/1 origin=lifted(awl_child_output_verdict_decoder, #0) ==
+  sig: (String) -> Decoder(fan_children.Verdict)
+  v1 = call_local verdict_decoder()
+  v2 = make_closure awl_child_output_verdict_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#11, v1, v2)
+== fn awl_child_output_verdict_decoder$payload/1 origin=lifted(awl_child_output_verdict_decoder, #1) ==
+  sig: (fan_children.Verdict) -> Decoder(fan_children.Verdict)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn step_wave/1 origin=region(wave) ==
+  sig: (List(fan_children.Job)) -> Result(fan_children.FanChildrenOutcome, AwlError)
+  v1 = make_closure wave_fanout_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, nil, v1)
+  v3 = try_bind v2
+  v4 = call_rt gleam@list:reverse/1(v3)
+  v5 = make_closure wave_fanout_1 captures=[]
+  v6 = call_rt gleam@list:try_fold/3(v4, nil, v5)
+  v7 = try_bind v6
+  v8 = call_rt gleam@list:reverse/1(v7)
+  v9 = call_rt gleam@list:length/1(v8)
+  v10 = record(done, [v9])
+  v11 = record(done_outcome, [v10])
+  v12 = record(ok, [v11])
+  return v12
+== fn awl_r0_wave/1 origin=region_wrapper(r0:wave) ==
+  sig: (fan_children.Job) -> Result(fan_children.Verdict, AwlError)
+  tail_local awl_r0_wave_step_delegate(v0)
+== fn awl_r0_wave_step_delegate/1 origin=region(r0:wave::delegate) ==
+  sig: (fan_children.Job) -> Result(fan_children.Verdict, AwlError)
+  v1 = json_obj {"job": v0|>job_to_json}
+  v2 = make_closure awl$child_witness captures=[]
+  v3 = call_rt aion@awl@codec:json_value/0() live_after=[v1, v2]
+  v4 = call_local awl_child_output_verdict_codec() live_after=[v1, v2, v3]
+  v5 = call_rt aion@awl@error:codec/0() live_after=[v1, v2, v3, v4]
+  v6 = call_rt aion@workflow:spawn_and_wait/6(lit#13, v2, v1, v3, v4, v5)
+  v7 = call_rt aion@awl@error:map_child_error/1(v6)
+  v8 = try_bind v7
+  v9 = record(ok, [v8])
+  return v9
+== fn wave_fanout_0/2 origin=fork(wave#0) ==
+  sig: (List(ChildHandle(fan_children.Verdict, AwlError)), fan_children.Job) -> Result(List(ChildHandle(fan_children.Verdict, AwlError)), AwlError)
+  v2 = json_obj {"job": v1|>job_to_json}
+  v3 = make_closure awl$child_witness captures=[]
+  v4 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v2, v3]
+  v5 = call_local awl_child_output_verdict_codec() live_after=[v0, v2, v3, v4]
+  v6 = call_rt aion@awl@error:codec/0() live_after=[v0, v2, v3, v4, v5]
+  v7 = call_rt aion@workflow:spawn/6(lit#12, v3, v2, v4, v5, v6) live_after=[v0]
+  v8 = call_rt aion@awl@error:map_spawn_error/1(v7) live_after=[v0]
+  v9 = try_bind v8 live_after=[v0]
+  v10 = cons v9 v0
+  v11 = record(ok, [v10])
+  return v11
+== fn wave_fanout_1/2 origin=fork(wave#1) ==
+  sig: (List(fan_children.Verdict), ChildHandle(fan_children.Verdict, AwlError)) -> Result(List(fan_children.Verdict), AwlError)
+  v2 = call_rt aion@child:await/1(v1) live_after=[v0]
+  v3 = call_rt aion@awl@error:map_child_error/1(v2) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  v5 = cons v4 v0
+  v6 = record(ok, [v5])
+  return v6
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

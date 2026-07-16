@@ -148,12 +148,15 @@ fn lower_combinator_stage(
                 GType::Int => RuntimeFn::CmpInt,
                 GType::Float => RuntimeFn::CmpFloat,
                 GType::Str => RuntimeFn::CmpString,
-                GType::Bool => RuntimeFn::CmpBool,
                 // The reference's hard gate (`emitter/pipes.rs`), mapped to
-                // the direct path's refusal class.
+                // the direct path's refusal class. Bool refuses too: the
+                // shipped `gleam_stdlib` exports no `gleam@bool:compare/2`,
+                // so a Bool key would be a Gleam compile error on the
+                // reference path and an `undef` crash on this one (caught by
+                // the aion-awl-package runtime-surface guard).
                 _ => {
                     return Err(LowerError::unsupported(
-                        "`sort` over a non-comparable key (needs Int, Float, String, Bool)",
+                        "`sort` over a non-comparable key (needs Int, Float, String)",
                         combinator.span,
                     ));
                 }

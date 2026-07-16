@@ -1,82 +1,103 @@
-//! Region-body lowering for the BC-2 covered subset: sequential regions whose
-//! step bodies are action calls (with per-key call-site config merge), awaited
-//! child calls and fire-and-forget spawns (`child_call`), waits with and
-//! without timeouts (`wait`), sleeps, and pipe chains (action/child/field/
-//! combinator stages — `pipes`) ending in a route. A multi-step chain lowers
-//! as one `FlowFn` per step, each non-terminal step ending in a tail call to
+//! Region-body lowering, parametric over the flow being lowered (the host
+//! workflow or a per-item region member flow — [`FlowCtx`], the MIR twin of
+//! the reference `emitter/steps.rs::FlowCtx`). A multi-step chain lowers as
+//! one `FlowFn` per step, each non-terminal step ending in a tail call to
 //! its successor (IR-14) with the chain-boundary live set
-//! (`chain::chain_params`) as arguments. Bounded loops lower through `loops`
-//! (a self-tail-calling `FlowFn(Loop)` per loop). Forks lower through `forks`
-//! (activity fan-out over `workflow.map`/`all` / `list.try_fold` and child
-//! spawn-all/ordered-await fan-out to the reference emitter's parity
-//! contract).
+//! (`chain::chain_params`) as arguments; a `max … visits` step opens with the
+//! increment-and-test prologue; a chain whose last step falls through hands
+//! control to the next step's region (or a member flow's exit return of the
+//! collected binding). Bounded loops lower through `loops`, forks through
+//! `forks`, collapsed per-item regions through `fanout`, routes through
+//! `route`.
 //!
 //! Still deferred (`LowerError::unsupported`, visible incompleteness — never
 //! silent divergence from the reference):
 //! - substeps: mechanical but large (per-substep fns over the shared plan's
 //!   `sub_params`/`sub_node`, sibling/parent route frames, `on failure`
-//!   interaction — reference `emitter/subs.rs:20-60`, shape gates
-//!   `emitter/graph.rs:73-116`) against one valid-fixture pressure point
-//!   (`loop-outcomes/valid/substeps_two_stage.awl`) — `FnOrigin::SubStep`
+//!   interaction — reference `emitter/subs.rs:20-60`) — `FnOrigin::SubStep`
 //!   already exists;
 //! - `on failure`: needs the reserved `Stmt::Attempt` select emission —
 //!   instruction selection refuses it (`select/flow.rs::unsupported_stmt`),
-//!   so support is select-surface work (attempt closure call + defs-tuple
-//!   threading mirroring `emitter/steps.rs:301-354`), beyond lowering scope;
-//!   the lowering sketch: lift the attempt body to a `FlowFn` returning
-//!   `Ok(defs-tuple)`, host does `CallLocal` + `Tail::If IsTagged(ok, arity
-//!   2)` with the compensation block (which must end in a route,
-//!   `emitter/steps.rs:485-501`) in the else arm — reconvergence is
-//!   impossible, so the success continuation nests in the then-arm; refuse
-//!   the body-terminal-route combination with the emitter's class
-//!   (`emitter/steps.rs:302-311`). Fixture pressure:
-//!   `on_failure_compensation.awl`, `ship_release_combined.awl`;
-//! - dependency-parallel region layers (`parallel region`). The reference is
-//!   richer twice over (`emitter/steps.rs`): single-bare-call layers (every
-//!   member = one unbound declared-action call, no outcomes/on-failure —
-//!   `layer_calls`) dispatch as ONE `workflow.all`, typed when homogeneous,
-//!   raw twins + per-position decode when heterogeneous
-//!   (`lower_hetero_parallel`); richer layers degrade to WRITTEN ORDER with
-//!   a generated visibility comment. Design if implemented: flatten
-//!   `region.layers` into the emitter's step walk; for a multi-member layer
-//!   first try the single-call-layer gate, lowering the typed/raw
-//!   `workflow.all` by reusing `fork_named`'s machinery (`AssertList` binds
-//!   plus `bind_branches` per-position decode); otherwise lower members
-//!   sequentially and set `degraded_parallel: true` on the region `FlowFn`
-//!   (the MIR twin of the emitter's comment, printed as S13). Planning
-//!   impact: `chain_params`/`plan.chains` assume one member per layer — the
-//!   flattened order must be identical at plan and lower time; hetero
-//!   layers need raw twins planned, so `forks::raw_action_inventory` must
-//!   also scan multi-member layers. Fixtures unlocked: after multi diamond
-//!   (all-layer); release pipeline combined + flagship dev brief (degraded).
+//!   so support is select-surface work beyond lowering scope;
+//! - `subflow` declarations and value route payloads (`route out(<value>)`):
+//!   refused at the driver's staging gate;
+//! - dependency-parallel region layers (`parallel region`) — see the design
+//!   sketch retained in the module history (flatten `region.layers` into the
+//!   emitter's step walk, `workflow.all` single-call layers, degrade richer
+//!   layers to written order with the S13 marker).
 //!
 //! Parity refusals (the reference emitter refuses these too — a language
-//! boundary, not a direct-path gap): mid-chain routes (the shared `Plan`
-//! refuses step-level routes to non-entry steps, `emitter/graph.rs:331-345` /
-//! `emitter/outcomes.rs:91-95` — `route_tail`'s `region_of_entry` miss),
-//! indexing inside outcome guards (`outcome::lower_outcomes`), and the fork
-//! boundaries named in `forks`. The activity-emission primitives live in
-//! `activity`.
+//! boundary, not a direct-path gap): mid-chain routes, indexing inside
+//! outcome guards and `max … visits` bounds, and the fork/fan-out boundaries
+//! named in `forks`/`fanout`.
 
-use crate::RouteDirection;
-use crate::ast::{CallStmt, PipeEnd, RouteTarget, Statement, Step};
-use crate::emitter::{GType, snake, type_ref_to_g};
+use std::collections::BTreeMap;
+
+use crate::ast::{CallStmt, PipeEnd, Statement, Step};
+use crate::emitter::{GType, Plan, RegionShape, snake, type_ref_to_g};
 
 use super::super::func::{FlowFn, FnOrigin, MirFn};
 use super::super::ids::{FnRef, Span, Var};
 use super::super::ops::{Block, Stmt, Tail, Value};
-use super::super::runtime::RuntimeFn;
 use super::super::tydesc::TyDesc;
-use super::activity::{activity_call, call_rt, encode_json, lower_sleep, record_new, zero_span};
-use super::build::{FnPlan, output_tydesc};
+use super::activity::{activity_call, lower_sleep, record_new, zero_span};
+use super::build::{FlowFns, FnPlan};
 use super::chain::chain_params;
 use super::ctx::Ctx;
 use super::driver::LowerError;
-use super::expr::{Binding, Scope, lower_arg_for};
+use super::expr::{Binding, Scope};
 use super::forks::lower_fork_stmt;
 use super::loops::lower_loop_stmt;
 use super::outcome::lower_outcomes;
+use super::route::route_tail;
 use super::slots::Slots;
+
+/// A member flow's exit contract: routing to (or falling into) the close
+/// step returns `Ok(<collected binding>)`.
+pub(super) struct FlowExit {
+    /// The route-target name that exits the flow (the close step's name).
+    pub(super) name: String,
+    /// The per-instance binding the collect gathers.
+    pub(super) binding: String,
+}
+
+/// The flow whose steps are being lowered: the host workflow (`prefix`
+/// empty, no exit) or a per-item region member flow, whose functions are
+/// name-prefixed and whose exit returns `Ok(<collected binding>)` instead of
+/// a workflow outcome.
+pub(super) struct FlowCtx<'a> {
+    pub(super) steps: &'a [Step],
+    pub(super) regions: &'a BTreeMap<String, RegionShape>,
+    pub(super) plan: &'a Plan,
+    /// This flow's reserved region-chain function refs.
+    pub(super) fns: &'a FlowFns,
+    /// Binding/type environment owned by this flow.
+    pub(super) bindings: &'a BTreeMap<String, GType>,
+    pub(super) exit: Option<FlowExit>,
+    /// Generated-name prefix (`""` for the host, `"awl_r<id>_<open>_"`).
+    pub(super) prefix: String,
+    /// Origin qualifier for nested flows (`r0:wave`).
+    pub(super) label: Option<String>,
+    /// The full return type of this flow's functions (`Result(_, AwlError)`).
+    pub(super) ret_ty: TyDesc,
+}
+
+impl FlowCtx<'_> {
+    fn origin_step(&self, step: &str) -> String {
+        match &self.label {
+            Some(label) => format!("{label}::{step}"),
+            None => step.to_owned(),
+        }
+    }
+}
+
+/// The per-flow lowering environment: the module-wide fn-ref plan plus the
+/// flow being lowered.
+#[derive(Clone, Copy)]
+pub(super) struct FlowEnv<'a> {
+    pub(super) plan: &'a FnPlan,
+    pub(super) flow: &'a FlowCtx<'a>,
+}
 
 /// The fall-through continuation of a non-terminal chain step: the successor's
 /// function ref and parameter names.
@@ -85,25 +106,25 @@ struct Next {
     param_names: Vec<String>,
 }
 
-/// Lower every region into `step_<name>` `FlowFn`s (one per chain step, in
-/// chain order), appended to `functions`.
-pub(super) fn lower_regions(
+/// Lower every region of one flow into `step_<name>` `FlowFn`s (one per chain
+/// step, in chain order), appended to `functions`.
+pub(super) fn lower_flow_fns(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     functions: &mut Vec<MirFn>,
     slots: &mut Slots,
 ) -> Result<(), LowerError> {
     let mut retired_outcome_anchor = None;
-    for region_index in 0..ctx.plan.regions.len() {
-        let outcome_anchor = ctx.plan.regions[region_index]
+    for region_index in 0..env.flow.plan.regions.len() {
+        let outcome_anchor = env.flow.plan.regions[region_index]
             .layers
             .iter()
             .flatten()
             .find_map(|step_index| {
-                let step = &ctx.emitter.document.steps[*step_index];
+                let step = &env.flow.steps[*step_index];
                 (!step.outcomes.is_empty()).then_some(step.name_span)
             });
-        if let Err(error) = lower_region(ctx, plan, region_index, functions, slots) {
+        if let Err(error) = lower_region(ctx, env, region_index, functions, slots) {
             return Err(match retired_outcome_anchor {
                 Some(anchor) => error.reanchor_unsupported(anchor),
                 None => error,
@@ -116,15 +137,16 @@ pub(super) fn lower_regions(
 
 fn lower_region(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     region_index: usize,
     functions: &mut Vec<MirFn>,
     slots: &mut Slots,
 ) -> Result<(), LowerError> {
-    let region = &ctx.plan.regions[region_index];
+    let flow = env.flow;
+    let region = &flow.plan.regions[region_index];
     let entry_index = region.entry;
     let layers = region.layers.clone();
-    let entry_step = ctx.emitter.document.steps[entry_index].clone();
+    let entry_step = flow.steps[entry_index].clone();
 
     // A sequential chain has exactly one member per layer; dependency-parallel
     // layers stay deferred.
@@ -144,58 +166,58 @@ fn lower_region(
             entry_step.name_span,
         ));
     }
+    let region_last = chain.last().copied().unwrap_or(entry_index);
 
-    let params = chain_params(ctx.emitter, ctx.plan, &chain);
+    let params = chain_params(ctx, flow, &chain)?;
     for (position, &step_index) in chain.iter().enumerate() {
-        let step = ctx.emitter.document.steps[step_index].clone();
+        let step = flow.steps[step_index].clone();
         // The entry's parameter list is the shared plan's fixed point (the
         // parity anchor); chain boundaries use the backward live sets.
         let param_names = if position == 0 {
-            ctx.plan.region_params(region_index).to_vec()
+            flow.plan.region_params(region_index).to_vec()
         } else {
             params[position].clone()
         };
         let next = chain.get(position + 1).map(|_| Next {
-            callee: plan.chains[region_index][position + 1],
+            callee: flow.fns.chains[region_index][position + 1],
             param_names: params[position + 1].clone(),
         });
-        let flow = lower_chain_step(
-            ctx,
-            ChainStep {
-                plan,
-                entry_step: &entry_step,
-                step: &step,
-                position,
-                param_names: &param_names,
-                next,
-            },
-            slots,
-        )?;
-        functions.push(MirFn::Flow(flow));
+        let chain_step = ChainStep {
+            entry_step: &entry_step,
+            step: &step,
+            position,
+            param_names: &param_names,
+            next,
+            region_last,
+        };
+        let flow_fn = lower_chain_step(ctx, env, chain_step, slots)?;
+        functions.push(MirFn::Flow(flow_fn));
     }
     Ok(())
 }
 
 struct ChainStep<'a> {
-    plan: &'a FnPlan,
     entry_step: &'a Step,
     step: &'a Step,
     position: usize,
     param_names: &'a [String],
     next: Option<Next>,
+    region_last: usize,
 }
 
 fn lower_chain_step(
     ctx: &mut Ctx<'_>,
+    env: FlowEnv<'_>,
     chain: ChainStep<'_>,
     slots: &mut Slots,
 ) -> Result<FlowFn, LowerError> {
+    let flow = env.flow;
     ctx.reset_vars();
     let mut scope: Scope = Scope::new();
     let mut param_vars = Vec::new();
     let mut param_tys = Vec::new();
     for name in chain.param_names {
-        let ty = ctx.emitter.bindings.get(name).cloned().ok_or_else(|| {
+        let ty = flow.bindings.get(name).cloned().ok_or_else(|| {
             LowerError::new(
                 chain.step.name_span,
                 format!("binding `{name}` has no type"),
@@ -207,23 +229,58 @@ fn lower_chain_step(
         scope.insert(name.clone(), Binding { var, ty });
     }
 
-    let body = lower_step(ctx, chain.plan, chain.step, &mut scope, chain.next, slots)?;
+    // The visit-bound prologue of a `max … visits` step: increment the
+    // language-owned counter and refuse the visit past the bound with the
+    // spanned `AwlVisitsExceeded` runtime failure (the reference
+    // `emitter/steps.rs::emit_visits_prologue`).
+    let mut prologue = Vec::new();
+    let guard = match &chain.step.max_visits {
+        Some(max_visits) => Some(super::visits::visits_prologue(
+            ctx,
+            chain.step,
+            max_visits,
+            &mut scope,
+            &mut prologue,
+        )?),
+        None => None,
+    };
+    let body = lower_step(
+        ctx,
+        env,
+        chain.step,
+        &mut scope,
+        chain.next,
+        chain.region_last,
+        slots,
+    )?;
+    let body = match guard {
+        Some((test, error_block)) => Block {
+            stmts: prologue,
+            tail: Tail::If {
+                test,
+                then_block: error_block,
+                else_block: Box::new(body),
+                span: Span::from_source(chain.step.name_span),
+            },
+        },
+        None => body,
+    };
     let origin = if chain.position == 0 {
         FnOrigin::Region {
-            entry_step: chain.entry_step.name.clone(),
+            entry_step: flow.origin_step(&chain.entry_step.name),
         }
     } else {
         FnOrigin::ChainStep {
-            entry_step: chain.entry_step.name.clone(),
+            entry_step: flow.origin_step(&chain.entry_step.name),
             step: chain.step.name.clone(),
         }
     };
     Ok(FlowFn {
         origin,
-        name: format!("step_{}", snake(&chain.step.name)),
+        name: format!("{}step_{}", flow.prefix, snake(&chain.step.name)),
         params: param_vars,
         param_tys,
-        ret_ty: TyDesc::Result(Box::new(output_tydesc(ctx)), Box::new(TyDesc::AwlError)),
+        ret_ty: flow.ret_ty.clone(),
         body,
         span: Span::from_source(chain.step.name_span),
         degraded_parallel: false,
@@ -232,10 +289,11 @@ fn lower_chain_step(
 
 fn lower_step(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     step: &Step,
     scope: &mut Scope,
     next: Option<Next>,
+    region_last: usize,
     slots: &mut Slots,
 ) -> Result<Block, LowerError> {
     if step.on_failure.is_some() {
@@ -246,12 +304,12 @@ fn lower_step(
     }
     let mut stmts = Vec::new();
     for statement in &step.body {
-        if let Some(tail) = lower_statement(ctx, plan, step, statement, scope, &mut stmts, slots)? {
+        if let Some(tail) = lower_statement(ctx, env, step, statement, scope, &mut stmts, slots)? {
             return Ok(Block { stmts, tail });
         }
     }
     if !step.outcomes.is_empty() {
-        let outcome = lower_outcomes(ctx, plan, &step.outcomes, scope)
+        let outcome = lower_outcomes(ctx, env, &step.outcomes, scope)
             .map_err(|error| error.reanchor_unsupported(step.name_span))?;
         stmts.extend(outcome.stmts);
         return Ok(Block {
@@ -280,15 +338,77 @@ fn lower_step(
             },
         });
     }
-    Err(LowerError::unsupported(
-        "step falls through without a route",
-        step.name_span,
-    ))
+    flow_end(ctx, env, step, scope, region_last, stmts)
+}
+
+/// Where control goes when the flow's last chain step completes: an implicit
+/// tail call into the next step's region, a member flow's exit return, or the
+/// honest refusal (the reference `emitter/steps.rs::emit_flow_end`).
+fn flow_end(
+    ctx: &mut Ctx<'_>,
+    env: FlowEnv<'_>,
+    step: &Step,
+    scope: &Scope,
+    region_last: usize,
+    mut stmts: Vec<Stmt>,
+) -> Result<Block, LowerError> {
+    let flow = env.flow;
+    let next = region_last + 1;
+    if next < flow.steps.len() {
+        let target = &flow.steps[next];
+        let region = flow.plan.region_of_entry(next).ok_or_else(|| {
+            LowerError::new(
+                target.name_span,
+                format!(
+                    "control falls into `{}`, which does not head a region — the document \
+                     did not check cleanly",
+                    target.name
+                ),
+            )
+        })?;
+        let mut args = Vec::new();
+        for name in flow.plan.region_params(region) {
+            let binding = scope.get(name).ok_or_else(|| {
+                LowerError::new(
+                    step.name_span,
+                    format!("fall-through needs `{name}` in scope"),
+                )
+            })?;
+            args.push(Value::Var(binding.var));
+        }
+        return Ok(Block {
+            stmts,
+            tail: Tail::TailLocal {
+                callee: flow.fns.regions[region],
+                args,
+            },
+        });
+    }
+    match &flow.exit {
+        Some(FlowExit { binding, .. }) => {
+            let bound = scope.get(binding).ok_or_else(|| {
+                LowerError::new(
+                    step.name_span,
+                    format!("the collected binding `{binding}` is not in scope at the flow's end"),
+                )
+            })?;
+            let ok = ctx.atom("ok");
+            let value = record_new(ctx, ok, vec![Value::Var(bound.var)], &mut stmts);
+            Ok(Block {
+                stmts,
+                tail: Tail::Return(Value::Var(value)),
+            })
+        }
+        None => Err(LowerError::unsupported(
+            "step falls through without a route",
+            step.name_span,
+        )),
+    }
 }
 
 pub(super) fn lower_statement(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     step: &Step,
     statement: &Statement,
     scope: &mut Scope,
@@ -297,7 +417,7 @@ pub(super) fn lower_statement(
 ) -> Result<Option<Tail>, LowerError> {
     match statement {
         Statement::Call(call) => {
-            lower_call(ctx, plan, call, scope, stmts)?;
+            lower_call(ctx, env, call, scope, stmts)?;
             Ok(None)
         }
         Statement::Sleep(sleep) => {
@@ -305,8 +425,14 @@ pub(super) fn lower_statement(
             Ok(None)
         }
         Statement::Pipe(pipe) => {
-            let (value, ty) =
-                super::pipes::lower_pipe_value(ctx, plan, &pipe.head, &pipe.stages, scope, stmts)?;
+            let (value, ty) = super::pipes::lower_pipe_value(
+                ctx,
+                env.plan,
+                &pipe.head,
+                &pipe.stages,
+                scope,
+                stmts,
+            )?;
             match &pipe.end {
                 PipeEnd::Bind(binding) => {
                     let var = as_var(ctx, value, stmts);
@@ -314,48 +440,45 @@ pub(super) fn lower_statement(
                     Ok(None)
                 }
                 PipeEnd::Route(target) => {
-                    let tail = route_tail(ctx, plan, target, scope, Some((value, ty)), stmts)?;
+                    let tail = route_tail(ctx, env, target, scope, Some((value, ty)), stmts)?;
                     Ok(Some(tail))
                 }
             }
         }
         Statement::Route(route) => {
-            let tail = route_tail(ctx, plan, &route.target, scope, None, stmts)?;
+            let tail = route_tail(ctx, env, &route.target, scope, None, stmts)?;
             Ok(Some(tail))
         }
         Statement::Spawn(spawn) => {
-            super::child_call::lower_spawn_stmt(ctx, plan, spawn, scope, stmts)?;
+            super::child_call::lower_spawn_stmt(ctx, env.plan, spawn, scope, stmts)?;
             Ok(None)
         }
         Statement::Wait(wait) => {
-            super::wait::lower_wait_stmt(ctx, plan, step, wait, scope, stmts, slots)?;
+            super::wait::lower_wait_stmt(ctx, env.plan, step, wait, scope, stmts, slots)?;
             Ok(None)
         }
         Statement::Fork(fork) => {
-            lower_fork_stmt(ctx, plan, step, fork, scope, stmts, slots)?;
+            lower_fork_stmt(ctx, env, step, fork, scope, stmts, slots)?;
             Ok(None)
         }
         Statement::Loop(looped) => {
-            lower_loop_stmt(ctx, plan, step, looped, scope, stmts, slots)?;
+            lower_loop_stmt(ctx, env, step, looped, scope, stmts, slots)?;
             Ok(None)
         }
         Statement::SubStep(sub) => Err(LowerError::unsupported("substep", sub.name_span)),
-        // Defense in depth: the entry gate refuses the rev-3 flow shape
-        // before lowering ever starts.
-        Statement::Distribute(distribute) => Err(LowerError::unsupported(
-            "`distribute`/`sequence` regions — the rev-3 flow shape is not yet lowered (B4)",
-            distribute.span,
-        )),
-        Statement::Collect(collect) => Err(LowerError::unsupported(
-            "`collect` steps — the rev-3 flow shape is not yet lowered (B4)",
-            collect.span,
-        )),
+        // The collapsed region step's fan-out pair: the header lowers the
+        // whole delivery + collect; the collect marker is consumed.
+        Statement::Distribute(distribute) => {
+            super::fanout::lower_fanout(ctx, env, step, distribute, scope, stmts, slots)?;
+            Ok(None)
+        }
+        Statement::Collect(_) => Ok(None),
     }
 }
 
 pub(super) fn lower_call(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     call: &CallStmt,
     scope: &mut Scope,
     stmts: &mut Vec<Stmt>,
@@ -364,11 +487,11 @@ pub(super) fn lower_call(
     // config on a child call refuses with the reference's class
     // (`child_call::lower_child_call_stmt`).
     if ctx.emitter.children.contains_key(call.call.name.as_str()) {
-        return super::child_call::lower_child_call_stmt(ctx, plan, call, scope, stmts);
+        return super::child_call::lower_child_call_stmt(ctx, env.plan, call, scope, stmts);
     }
     let bound = activity_call(
         ctx,
-        plan,
+        env.plan,
         &call.call,
         call.config.as_ref(),
         None,
@@ -395,142 +518,7 @@ pub(super) fn lower_call(
     Ok(())
 }
 
-pub(super) fn route_tail(
-    ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
-    target: &RouteTarget,
-    scope: &Scope,
-    piped: Option<(Value, GType)>,
-    stmts: &mut Vec<Stmt>,
-) -> Result<Tail, LowerError> {
-    if let Some(info) = ctx.emitter.outcomes.get(target.name.as_str()).cloned() {
-        let payload = outcome_payload(ctx, target, &info.ty, scope, piped, stmts)?;
-        return match info.direction {
-            RouteDirection::Success => {
-                let constructor = info.constructor.ok_or_else(|| {
-                    LowerError::new(target.name_span, "success outcome lost its constructor")
-                })?;
-                let ctor = ctx.atom(&snake(&constructor));
-                let wrapped = record_new(ctx, ctor, vec![payload], stmts);
-                let ok = ctx.atom("ok");
-                let ok_value = record_new(ctx, ok, vec![Value::Var(wrapped)], stmts);
-                Ok(Tail::Return(Value::Var(ok_value)))
-            }
-            RouteDirection::Failure => {
-                let json = encode_json(ctx, plan, &info.ty, payload, stmts)?;
-                let string = call_rt(
-                    ctx,
-                    RuntimeFn::JToString,
-                    vec![Value::Var(json)],
-                    stmts,
-                    target.name_span,
-                );
-                let name_lit = ctx.binary(&target.name);
-                let failure_atom = ctx.atom("awl_outcome_failure");
-                let failure = record_new(
-                    ctx,
-                    failure_atom,
-                    vec![Value::Lit(name_lit), Value::Var(string)],
-                    stmts,
-                );
-                let error_atom = ctx.atom("error");
-                let error = record_new(ctx, error_atom, vec![Value::Var(failure)], stmts);
-                Ok(Tail::Return(Value::Var(error)))
-            }
-        };
-    }
-    // A route to another step: a tail call to its region.
-    let step_index = ctx
-        .emitter
-        .document
-        .steps
-        .iter()
-        .position(|step| step.name == target.name)
-        .ok_or_else(|| {
-            LowerError::new(
-                target.name_span,
-                format!("`{}` names no outcome or step", target.name),
-            )
-        })?;
-    let region = ctx
-        .plan
-        .region_of_entry(step_index)
-        .ok_or_else(|| LowerError::unsupported("route to a mid-chain step", target.name_span))?;
-    let names = ctx.plan.region_params(region).to_vec();
-    let mut args = Vec::new();
-    for name in &names {
-        let binding = scope.get(name).ok_or_else(|| {
-            LowerError::new(target.name_span, format!("route needs `{name}` in scope"))
-        })?;
-        args.push(Value::Var(binding.var));
-    }
-    Ok(Tail::TailLocal {
-        callee: plan.regions[region],
-        args,
-    })
-}
-
-fn outcome_payload(
-    ctx: &mut Ctx<'_>,
-    target: &RouteTarget,
-    outcome_ty: &GType,
-    scope: &Scope,
-    piped: Option<(Value, GType)>,
-    stmts: &mut Vec<Stmt>,
-) -> Result<Value, LowerError> {
-    if let Some(crate::ast::RoutePayload::Value(value)) = &target.payload {
-        return Err(LowerError::unsupported(
-            "value route payloads (`route out(<value>)`) — the rev-3 flow shape is \
-             not yet lowered (B4)",
-            crate::spanned::Spanned::span(value),
-        ));
-    }
-    if let Some(crate::ast::RoutePayload::Args(args)) = &target.payload {
-        let Some((gleam_name, record)) = ctx.emitter.env.record_of(outcome_ty) else {
-            return Err(LowerError::new(
-                target.name_span,
-                "constructed payload needs a record outcome",
-            ));
-        };
-        let fields = record.fields.clone();
-        let tag = ctx.atom(&snake(&gleam_name));
-        if fields.is_empty() {
-            return Ok(Value::Atom(tag));
-        }
-        let mut values = Vec::new();
-        for field in &fields {
-            let value = match args.iter().find(|arg| arg.name == field.awl_name) {
-                Some(arg) => lower_arg_for(ctx, &arg.value, &field.ty, scope, stmts)?,
-                None if matches!(ctx.emitter.env.resolve(&field.ty), GType::Option(_)) => {
-                    Value::Atom(ctx.atom("none"))
-                }
-                None => {
-                    return Err(LowerError::new(
-                        target.span,
-                        format!("outcome misses field `{}`", field.awl_name),
-                    ));
-                }
-            };
-            values.push(value);
-        }
-        return Ok(Value::Var(record_new(ctx, tag, values, stmts)));
-    }
-    if let Some((value, _)) = piped {
-        return Ok(value);
-    }
-    if let Some(binding) = scope.get(target.name.as_str()) {
-        return Ok(Value::Var(binding.var));
-    }
-    if matches!(ctx.emitter.env.resolve(outcome_ty), GType::Nil) {
-        return Ok(Value::Nil);
-    }
-    Err(LowerError::new(
-        target.name_span,
-        format!("bare route `{}` needs a binding in scope", target.name),
-    ))
-}
-
-fn as_var(ctx: &mut Ctx<'_>, value: Value, stmts: &mut Vec<Stmt>) -> Var {
+pub(super) fn as_var(ctx: &mut Ctx<'_>, value: Value, stmts: &mut Vec<Stmt>) -> Var {
     match value {
         Value::Var(var) => var,
         other => {

@@ -192,7 +192,7 @@ pub(super) fn run(emitter: &mut Emitter<'_>) {
     let input_codec = snake(&emitter.input_type);
     let output_codec = output_codec_ref(emitter);
     emitter.line("/// Engine entry point.");
-    emitter.line("pub fn run(raw_input: Dynamic) -> Result(String, awl_error.AwlError) {");
+    emitter.line("pub fn run(raw_input: Dynamic) -> Result(String, String) {");
     emitter.indented(|this| {
         this.line(&format!(
             "runtime.run(raw_input, {input_codec}_codec(), {output_codec}(), execute)"

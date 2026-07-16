@@ -163,7 +163,7 @@ fn emit_wrapper(
 /// The one bare call of a single-step, single-statement member track whose
 /// binding is the collected one — the shape that fans out directly through
 /// the SDK combinators instead of an instance function.
-pub(super) fn single_member_call(region: &RegionShape) -> Option<&CallStmt> {
+pub(crate) fn single_member_call(region: &RegionShape) -> Option<&CallStmt> {
     let [step] = region.members.steps.as_slice() else {
         return None;
     };

@@ -132,15 +132,15 @@ fn render_combinator(
                     emitter.flags.compare_modules.insert("string");
                     "string.compare"
                 }
-                GType::Bool => {
-                    emitter.flags.compare_modules.insert("bool");
-                    "bool.compare"
-                }
+                // Bool refuses: the shipped `gleam_stdlib` exports no
+                // `gleam@bool:compare/2`, so emitting `bool.compare` would
+                // fail `gleam build` on this path and be an `undef` on the
+                // direct path (both backends refuse with matching classes).
                 other => {
                     return Err(EmitError::new(
                         combinator.span,
                         format!(
-                            "`sort` needs a comparable key (Int, Float, String, Bool), found {}",
+                            "`sort` needs a comparable key (Int, Float, String), found {}",
                             emitter.env.gleam_type(&other)
                         ),
                     ));

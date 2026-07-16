@@ -1,0 +1,236 @@
+module region_decision source=region_decision.awl
+exports: run/1, definition/0, execute/1, aion_internal_awl_child_region_decision_wave_0_run/1
+== effect schedule ==
+  awl_r0_wave_step_build:
+    aion@activity:task_queue/2 [activities] (v1, lit#12)
+    aion@workflow:run/1 [activities] (v2)
+  wave_fanout_0:
+    aion@workflow:spawn/6 [children] (lit#11, v3, v2, v4, v5, v6)
+  wave_fanout_1:
+    aion@child:await/1 [children] (v1)
+== durable families == activities, children
+== atoms ==
+  [0] work_input
+  [1] region_decision_input
+  [2] done_outcome
+  [3] aion_internal_awl_child_region_decision_wave0_input
+  [4] ok
+== literals ==
+  [0] "item"
+  [1] "items"
+  [2] "done"
+  [3] "outcome"
+  [4] "RegionDecisionOutcome"
+  [5] "done"
+  [6] "payload"
+  [7] "item"
+  [8] "child"
+  [9] "outcome"
+  [10] "payload"
+  [11] "aion_internal_awl_child_region_decision_wave_0"
+  [12] "w"
+== types ==
+  record WorkInput tag=work_input
+    item: string
+  record RegionDecisionInput tag=region_decision_input
+    items: list(string)
+  union RegionDecisionOutcome
+    done -> done_outcome(list(string))
+  record AionInternalAwlChildRegionDecisionWave0Input tag=aion_internal_awl_child_region_decision_wave0_input
+    item: string
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=region_decision_input_codec output=region_decision_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(region_decision.RegionDecisionInput, region_decision.RegionDecisionOutcome, AwlError)
+  T-DEF name="region_decision" input=region_decision_input_codec output=region_decision_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (region_decision.RegionDecisionInput) -> Result(region_decision.RegionDecisionOutcome, AwlError)
+  T-EXEC fields=[items:List(String)] entry=step_wave args=[0]
+== fn work_input_codec/0 origin=codec_template(RecordTrio, WorkInput, record#0) ==
+  sig: () -> Codec(region_decision.WorkInput)
+  v0 = make_closure work_input_to_json captures=[]
+  v1 = call_local work_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn work_input_to_json/1 origin=codec_template(RecordTrio, WorkInput, record#0) ==
+  sig: (region_decision.WorkInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"item": v1|>awlc.string_to_json}
+  return v2
+== fn work_input_decoder/0 origin=codec_template(RecordTrio, WorkInput, record#0) ==
+  sig: () -> Decoder(region_decision.WorkInput)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure work_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn work_input_decoder$0/1 origin=lifted(work_input_decoder, #0) ==
+  sig: (String) -> Decoder(region_decision.WorkInput)
+  v1 = record(work_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn region_decision_input_codec/0 origin=codec_template(RecordTrio, RegionDecisionInput, record#1) ==
+  sig: () -> Codec(region_decision.RegionDecisionInput)
+  v0 = make_closure region_decision_input_to_json captures=[]
+  v1 = call_local region_decision_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn region_decision_input_to_json/1 origin=codec_template(RecordTrio, RegionDecisionInput, record#1) ==
+  sig: (region_decision.RegionDecisionInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"items": v1|>list_string_to_json}
+  return v2
+== fn region_decision_input_decoder/0 origin=codec_template(RecordTrio, RegionDecisionInput, record#1) ==
+  sig: () -> Decoder(region_decision.RegionDecisionInput)
+  v0 = call_local list_string_decoder()
+  v1 = make_closure region_decision_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn region_decision_input_decoder$0/1 origin=lifted(region_decision_input_decoder, #0) ==
+  sig: (List(String)) -> Decoder(region_decision.RegionDecisionInput)
+  v1 = record(region_decision_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn region_decision_outcome_codec/0 origin=codec_template(UnionTrio, RegionDecisionOutcome, union#2) ==
+  sig: () -> Codec(region_decision.RegionDecisionOutcome)
+  v0 = make_closure region_decision_outcome_to_json captures=[]
+  v1 = call_local region_decision_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn region_decision_outcome_to_json/1 origin=codec_template(UnionTrio, RegionDecisionOutcome, union#2) ==
+  sig: (region_decision.RegionDecisionOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#2|>awlc.string_to_json, "payload": v1|>list_string_to_json}
+  return v2
+== fn region_decision_outcome_decoder/0 origin=codec_template(UnionTrio, RegionDecisionOutcome, union#2) ==
+  sig: () -> Decoder(region_decision.RegionDecisionOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure region_decision_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn region_decision_outcome_decoder$outcome/1 origin=lifted(region_decision_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(region_decision.RegionDecisionOutcome)
+  if cmp Eq v0 lit#5:
+    v2 = call_local list_string_decoder()
+    v3 = make_closure region_decision_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#6, v2, v3)
+  else:
+    v1 = record(done_outcome, [nil])
+    tail_rt gleam@dynamic@decode:failure/2(v1, lit#4)
+== fn region_decision_outcome_decoder$arm0/1 origin=lifted(region_decision_outcome_decoder, #1) ==
+  sig: (List(String)) -> Decoder(region_decision.RegionDecisionOutcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn aion_internal_awl_child_region_decision_wave0_input_codec/0 origin=codec_template(RecordTrio, AionInternalAwlChildRegionDecisionWave0Input, record#3) ==
+  sig: () -> Codec(region_decision.AionInternalAwlChildRegionDecisionWave0Input)
+  v0 = make_closure aion_internal_awl_child_region_decision_wave0_input_to_json captures=[]
+  v1 = call_local aion_internal_awl_child_region_decision_wave0_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn aion_internal_awl_child_region_decision_wave0_input_to_json/1 origin=codec_template(RecordTrio, AionInternalAwlChildRegionDecisionWave0Input, record#3) ==
+  sig: (region_decision.AionInternalAwlChildRegionDecisionWave0Input) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"item": v1|>awlc.string_to_json}
+  return v2
+== fn aion_internal_awl_child_region_decision_wave0_input_decoder/0 origin=codec_template(RecordTrio, AionInternalAwlChildRegionDecisionWave0Input, record#3) ==
+  sig: () -> Decoder(region_decision.AionInternalAwlChildRegionDecisionWave0Input)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure aion_internal_awl_child_region_decision_wave0_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#7, v0, v1)
+== fn aion_internal_awl_child_region_decision_wave0_input_decoder$0/1 origin=lifted(aion_internal_awl_child_region_decision_wave0_input_decoder, #0) ==
+  sig: (String) -> Decoder(region_decision.AionInternalAwlChildRegionDecisionWave0Input)
+  v1 = record(aion_internal_awl_child_region_decision_wave0_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_string_codec/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Codec(List(String))
+  v0 = make_closure list_string_to_json captures=[]
+  v1 = call_local list_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_string_to_json/1 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: (List(String)) -> Json
+  v1 = make_closure list_string_to_json$item captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_string_decoder/0 origin=codec_template(CompositeTrio, List(String), composite(list(string))) ==
+  sig: () -> Decoder(List(String))
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn list_string_to_json$item/1 origin=lifted(list_string_to_json, #0) ==
+  sig: (String) -> Json
+  tail_rt aion@awl@codec:string_to_json/1(v0)
+== fn awl_child_output_string_codec/0 origin=codec_template(ChildEnvelopeTrio, String, child_envelope(string)) ==
+  sig: () -> Codec(String)
+  v0 = make_closure awl_child_output_string_to_json captures=[]
+  v1 = call_local awl_child_output_string_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn awl_child_output_string_to_json/1 origin=codec_template(ChildEnvelopeTrio, String, child_envelope(string)) ==
+  sig: (String) -> Json
+  v1 = json_obj {"outcome": lit#8|>awlc.string_to_json, "payload": v0|>awlc.string_to_json}
+  return v1
+== fn awl_child_output_string_decoder/0 origin=codec_template(ChildEnvelopeTrio, String, child_envelope(string)) ==
+  sig: () -> Decoder(String)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure awl_child_output_string_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#9, v0, v1)
+== fn awl_child_output_string_decoder$outcome/1 origin=lifted(awl_child_output_string_decoder, #0) ==
+  sig: (String) -> Decoder(String)
+  v1 = call_rt aion@awl@codec:string_decoder/0()
+  v2 = make_closure awl_child_output_string_decoder$payload captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#10, v1, v2)
+== fn awl_child_output_string_decoder$payload/1 origin=lifted(awl_child_output_string_decoder, #1) ==
+  sig: (String) -> Decoder(String)
+  tail_rt gleam@dynamic@decode:success/1(v0)
+== fn work_activity/1 origin=activity_wrapper(work, raw=false) ==
+  sig: (String) -> Activity(region_decision.WorkInput, String)
+  T-ACT action=work input_codec=work_input_codec return=awlc.string_codec
+== fn step_wave/1 origin=region(wave) ==
+  sig: (List(String)) -> Result(region_decision.RegionDecisionOutcome, AwlError)
+  v1 = make_closure wave_fanout_0 captures=[]
+  v2 = call_rt gleam@list:try_fold/3(v0, nil, v1)
+  v3 = try_bind v2
+  v4 = call_rt gleam@list:reverse/1(v3)
+  v5 = make_closure wave_fanout_1 captures=[]
+  v6 = call_rt gleam@list:try_fold/3(v4, nil, v5)
+  v7 = try_bind v6
+  v8 = call_rt gleam@list:reverse/1(v7)
+  v9 = record(done_outcome, [v8])
+  v10 = record(ok, [v9])
+  return v10
+== fn awl_r0_wave/1 origin=region_wrapper(r0:wave) ==
+  sig: (String) -> Result(String, AwlError)
+  tail_local awl_r0_wave_step_build(v0)
+== fn awl_r0_wave_step_build/1 origin=region(r0:wave::build) ==
+  sig: (String) -> Result(String, AwlError)
+  v1 = call_local work_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#12)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  tail_local awl_r0_wave_step_decide(v5)
+== fn awl_r0_wave_step_decide/1 origin=chain_step(r0:wave::build.decide) ==
+  sig: (String) -> Result(String, AwlError)
+  v1 = record(ok, [v0])
+  return v1
+== fn wave_fanout_0/2 origin=fork(wave#0) ==
+  sig: (List(ChildHandle(String, AwlError)), String) -> Result(List(ChildHandle(String, AwlError)), AwlError)
+  v2 = json_obj {"item": v1|>awlc.string_to_json}
+  v3 = make_closure awl$child_witness captures=[]
+  v4 = call_rt aion@awl@codec:json_value/0() live_after=[v0, v2, v3]
+  v5 = call_local awl_child_output_string_codec() live_after=[v0, v2, v3, v4]
+  v6 = call_rt aion@awl@error:codec/0() live_after=[v0, v2, v3, v4, v5]
+  v7 = call_rt aion@workflow:spawn/6(lit#11, v3, v2, v4, v5, v6) live_after=[v0]
+  v8 = call_rt aion@awl@error:map_spawn_error/1(v7) live_after=[v0]
+  v9 = try_bind v8 live_after=[v0]
+  v10 = cons v9 v0
+  v11 = record(ok, [v10])
+  return v11
+== fn wave_fanout_1/2 origin=fork(wave#1) ==
+  sig: (List(String), ChildHandle(String, AwlError)) -> Result(List(String), AwlError)
+  v2 = call_rt aion@child:await/1(v1) live_after=[v0]
+  v3 = call_rt aion@awl@error:map_child_error/1(v2) live_after=[v0]
+  v4 = try_bind v3 live_after=[v0]
+  v5 = cons v4 v0
+  v6 = record(ok, [v5])
+  return v6
+== fn aion_internal_awl_child_region_decision_wave_0_execute/1 origin=child_execute(aion_internal_awl_child_region_decision_wave_0) ==
+  sig: (region_decision.AionInternalAwlChildRegionDecisionWave0Input) -> Result(String, AwlError)
+  T-EXEC fields=[item:String] entry=awl_r0_wave args=[0]
+== fn aion_internal_awl_child_region_decision_wave_0_run/1 origin=child_run(aion_internal_awl_child_region_decision_wave_0) ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-CHILDRUN input=aion_internal_awl_child_region_decision_wave0_input_codec output=awl_child_output_string_codec execute=aion_internal_awl_child_region_decision_wave_0_execute
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD
+== fn awl$child_witness/1 origin=child_witness ==
+  sig: (Json) -> Result(Dynamic, AwlError)
+  T-WIT

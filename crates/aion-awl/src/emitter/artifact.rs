@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use super::types::{GType, NamedDef, TypeEnv};
 
 /// One synthesized workflow entry implemented by the emitted Gleam module.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SynthesizedWorkflowEntry {
     /// Reserved, deterministic routing identity used by parent spawns.
     pub workflow_type: String,

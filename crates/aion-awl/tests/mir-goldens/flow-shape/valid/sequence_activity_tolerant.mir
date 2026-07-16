@@ -1,0 +1,233 @@
+module ordered_tolerant source=ordered_tolerant.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  awl_r0_ordered_step_push:
+    aion@activity:task_queue/2 [activities] (v1, lit#11)
+    aion@workflow:run/1 [activities] (v2)
+  ordered_fanout_0:
+    aion@activity:task_queue/2 [activities] (v2, lit#10)
+    aion@workflow:run/1 [activities] (v3)
+== durable families == activities
+== atoms ==
+  [0] host
+  [1] attempt
+  [2] report
+  [3] deploy_input
+  [4] ordered_tolerant_input
+  [5] done_outcome
+  [6] ok
+  [7] some
+  [8] none
+== literals ==
+  [0] "name"
+  [1] "ok"
+  [2] "tried"
+  [3] "host"
+  [4] "hosts"
+  [5] "done"
+  [6] "outcome"
+  [7] "OrderedTolerantOutcome"
+  [8] "done"
+  [9] "payload"
+  [10] "ops"
+  [11] "ops"
+== types ==
+  record Host tag=host
+    name: string
+  record Attempt tag=attempt
+    ok: bool
+  record Report tag=report
+    tried: int
+  record DeployInput tag=deploy_input
+    host: ref(Host)
+  record OrderedTolerantInput tag=ordered_tolerant_input
+    hosts: list(ref(Host))
+  union OrderedTolerantOutcome
+    done -> done_outcome(ref(Report))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=ordered_tolerant_input_codec output=ordered_tolerant_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(ordered_tolerant.OrderedTolerantInput, ordered_tolerant.OrderedTolerantOutcome, AwlError)
+  T-DEF name="ordered_tolerant" input=ordered_tolerant_input_codec output=ordered_tolerant_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (ordered_tolerant.OrderedTolerantInput) -> Result(ordered_tolerant.OrderedTolerantOutcome, AwlError)
+  T-EXEC fields=[hosts:List(ordered_tolerant.Host)] entry=step_ordered args=[0]
+== fn host_codec/0 origin=codec_template(RecordTrio, Host, record#0) ==
+  sig: () -> Codec(ordered_tolerant.Host)
+  v0 = make_closure host_to_json captures=[]
+  v1 = call_local host_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn host_to_json/1 origin=codec_template(RecordTrio, Host, record#0) ==
+  sig: (ordered_tolerant.Host) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"name": v1|>awlc.string_to_json}
+  return v2
+== fn host_decoder/0 origin=codec_template(RecordTrio, Host, record#0) ==
+  sig: () -> Decoder(ordered_tolerant.Host)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure host_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn host_decoder$0/1 origin=lifted(host_decoder, #0) ==
+  sig: (String) -> Decoder(ordered_tolerant.Host)
+  v1 = record(host, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn attempt_codec/0 origin=codec_template(RecordTrio, Attempt, record#1) ==
+  sig: () -> Codec(ordered_tolerant.Attempt)
+  v0 = make_closure attempt_to_json captures=[]
+  v1 = call_local attempt_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn attempt_to_json/1 origin=codec_template(RecordTrio, Attempt, record#1) ==
+  sig: (ordered_tolerant.Attempt) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"ok": v1|>awlc.bool_to_json}
+  return v2
+== fn attempt_decoder/0 origin=codec_template(RecordTrio, Attempt, record#1) ==
+  sig: () -> Decoder(ordered_tolerant.Attempt)
+  v0 = call_rt aion@awl@codec:bool_decoder/0()
+  v1 = make_closure attempt_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn attempt_decoder$0/1 origin=lifted(attempt_decoder, #0) ==
+  sig: (Bool) -> Decoder(ordered_tolerant.Attempt)
+  v1 = record(attempt, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn report_codec/0 origin=codec_template(RecordTrio, Report, record#2) ==
+  sig: () -> Codec(ordered_tolerant.Report)
+  v0 = make_closure report_to_json captures=[]
+  v1 = call_local report_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn report_to_json/1 origin=codec_template(RecordTrio, Report, record#2) ==
+  sig: (ordered_tolerant.Report) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"tried": v1|>awlc.int_to_json}
+  return v2
+== fn report_decoder/0 origin=codec_template(RecordTrio, Report, record#2) ==
+  sig: () -> Decoder(ordered_tolerant.Report)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure report_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn report_decoder$0/1 origin=lifted(report_decoder, #0) ==
+  sig: (Int) -> Decoder(ordered_tolerant.Report)
+  v1 = record(report, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn deploy_input_codec/0 origin=codec_template(RecordTrio, DeployInput, record#3) ==
+  sig: () -> Codec(ordered_tolerant.DeployInput)
+  v0 = make_closure deploy_input_to_json captures=[]
+  v1 = call_local deploy_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn deploy_input_to_json/1 origin=codec_template(RecordTrio, DeployInput, record#3) ==
+  sig: (ordered_tolerant.DeployInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"host": v1|>host_to_json}
+  return v2
+== fn deploy_input_decoder/0 origin=codec_template(RecordTrio, DeployInput, record#3) ==
+  sig: () -> Decoder(ordered_tolerant.DeployInput)
+  v0 = call_local host_decoder()
+  v1 = make_closure deploy_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn deploy_input_decoder$0/1 origin=lifted(deploy_input_decoder, #0) ==
+  sig: (ordered_tolerant.Host) -> Decoder(ordered_tolerant.DeployInput)
+  v1 = record(deploy_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn ordered_tolerant_input_codec/0 origin=codec_template(RecordTrio, OrderedTolerantInput, record#4) ==
+  sig: () -> Codec(ordered_tolerant.OrderedTolerantInput)
+  v0 = make_closure ordered_tolerant_input_to_json captures=[]
+  v1 = call_local ordered_tolerant_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ordered_tolerant_input_to_json/1 origin=codec_template(RecordTrio, OrderedTolerantInput, record#4) ==
+  sig: (ordered_tolerant.OrderedTolerantInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"hosts": v1|>list_host_to_json}
+  return v2
+== fn ordered_tolerant_input_decoder/0 origin=codec_template(RecordTrio, OrderedTolerantInput, record#4) ==
+  sig: () -> Decoder(ordered_tolerant.OrderedTolerantInput)
+  v0 = call_local list_host_decoder()
+  v1 = make_closure ordered_tolerant_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn ordered_tolerant_input_decoder$0/1 origin=lifted(ordered_tolerant_input_decoder, #0) ==
+  sig: (List(ordered_tolerant.Host)) -> Decoder(ordered_tolerant.OrderedTolerantInput)
+  v1 = record(ordered_tolerant_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn ordered_tolerant_outcome_codec/0 origin=codec_template(UnionTrio, OrderedTolerantOutcome, union#5) ==
+  sig: () -> Codec(ordered_tolerant.OrderedTolerantOutcome)
+  v0 = make_closure ordered_tolerant_outcome_to_json captures=[]
+  v1 = call_local ordered_tolerant_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn ordered_tolerant_outcome_to_json/1 origin=codec_template(UnionTrio, OrderedTolerantOutcome, union#5) ==
+  sig: (ordered_tolerant.OrderedTolerantOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#5|>awlc.string_to_json, "payload": v1|>report_to_json}
+  return v2
+== fn ordered_tolerant_outcome_decoder/0 origin=codec_template(UnionTrio, OrderedTolerantOutcome, union#5) ==
+  sig: () -> Decoder(ordered_tolerant.OrderedTolerantOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure ordered_tolerant_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn ordered_tolerant_outcome_decoder$outcome/1 origin=lifted(ordered_tolerant_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(ordered_tolerant.OrderedTolerantOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local report_decoder()
+    v4 = make_closure ordered_tolerant_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(report, [0])
+    v2 = record(done_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn ordered_tolerant_outcome_decoder$arm0/1 origin=lifted(ordered_tolerant_outcome_decoder, #1) ==
+  sig: (ordered_tolerant.Report) -> Decoder(ordered_tolerant.OrderedTolerantOutcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_host_codec/0 origin=codec_template(CompositeTrio, List(Host), composite(list(ref(Host)))) ==
+  sig: () -> Codec(List(ordered_tolerant.Host))
+  v0 = make_closure list_host_to_json captures=[]
+  v1 = call_local list_host_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_host_to_json/1 origin=codec_template(CompositeTrio, List(Host), composite(list(ref(Host)))) ==
+  sig: (List(ordered_tolerant.Host)) -> Json
+  v1 = make_closure host_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_host_decoder/0 origin=codec_template(CompositeTrio, List(Host), composite(list(ref(Host)))) ==
+  sig: () -> Decoder(List(ordered_tolerant.Host))
+  v0 = call_local host_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn deploy_activity/1 origin=activity_wrapper(deploy, raw=false) ==
+  sig: (ordered_tolerant.Host) -> Activity(ordered_tolerant.DeployInput, ordered_tolerant.Attempt)
+  T-ACT action=deploy input_codec=deploy_input_codec return=attempt_codec
+== fn step_ordered/1 origin=region(ordered) ==
+  sig: (List(ordered_tolerant.Host)) -> Result(ordered_tolerant.OrderedTolerantOutcome, AwlError)
+  v1 = make_closure ordered_fanout_0 captures=[]
+  v2 = call_rt gleam@list:fold/3(v0, nil, v1)
+  v3 = call_rt gleam@list:reverse/1(v2)
+  v4 = call_rt gleam@list:length/1(v3)
+  v5 = record(report, [v4])
+  v6 = record(done_outcome, [v5])
+  v7 = record(ok, [v6])
+  return v7
+== fn awl_r0_ordered/1 origin=region_wrapper(r0:ordered) ==
+  sig: (ordered_tolerant.Host) -> Result(ordered_tolerant.Attempt, AwlError)
+  tail_local awl_r0_ordered_step_push(v0)
+== fn awl_r0_ordered_step_push/1 origin=region(r0:ordered::push) ==
+  sig: (ordered_tolerant.Host) -> Result(ordered_tolerant.Attempt, AwlError)
+  v1 = call_local deploy_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#11)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(ok, [v5])
+  return v6
+== fn ordered_fanout_0/2 origin=fork(ordered#0) ==
+  sig: (List(Option(ordered_tolerant.Attempt)), ordered_tolerant.Host) -> List(Option(ordered_tolerant.Attempt))
+  v2 = call_local deploy_activity(v1) live_after=[v0]
+  v3 = call_rt aion@activity:task_queue/2(v2, lit#10) live_after=[v0]
+  v4 = call_rt aion@workflow:run/1(v3) live_after=[v0]
+  if is_tagged v4 ok/2:
+    v5 = field(v4, 1)
+    v6 = record(some, [v5])
+    v7 = cons v6 v0
+    return v7
+  else:
+    v8 = cons 'none' v0
+    return v8
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

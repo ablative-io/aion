@@ -79,6 +79,12 @@ impl Ctx<'_> {
         if let Some(union_name) = emitter.union_type.clone() {
             self.push_union(&mut shapes, &mut codecs, &union_name);
         }
+        // 4b. implicit-child input records, ascending region id — the MIR
+        // twin of the adapter-time `frame::emit_record_type` +
+        // `codecs::record_codec` pair (`emitter/implicit_children.rs`).
+        for (record_name, record) in self.implicit_child_inputs() {
+            self.push_record(&mut shapes, &mut codecs, &record_name, &record);
+        }
         // 5. composite (list/option) trios for every wire-reachable shape,
         // stem-ordered — the reference's exact discovery
         // (`emitter/composites.rs::composite_codecs`).
@@ -96,8 +102,10 @@ impl Ctx<'_> {
             });
         }
         // 6. one parent-side child outcome-envelope codec per distinct
-        // declared payload type, matching `emitter/codecs.rs`.
-        let child_outputs: BTreeMap<String, GType> = emitter
+        // declared payload type, matching `emitter/codecs.rs` — implicit
+        // per-item child result types merge in exactly as
+        // `child_output_codecs` folds `implicit_child_outputs`.
+        let mut child_outputs: BTreeMap<String, GType> = emitter
             .document
             .children
             .iter()
@@ -106,6 +114,11 @@ impl Ctx<'_> {
                 (emitter.env.codec_name(&ty), ty)
             })
             .collect();
+        for ty in self.implicit_child_output_types() {
+            child_outputs
+                .entry(emitter.env.codec_name(&ty))
+                .or_insert(ty);
+        }
         for (payload_stem, ty) in child_outputs {
             codecs.push(CodecType {
                 stem: format!("awl_child_output_{payload_stem}"),
@@ -116,6 +129,69 @@ impl Ctx<'_> {
             });
         }
         (shapes, codecs)
+    }
+
+    /// The input record of every region that runs as an implicit per-item
+    /// child, ascending region id: the generated `<Child>Input` name and its
+    /// wrapper-parameter fields (typed from the region's isolated binding
+    /// environment, `emitter/implicit_children.rs::emit_adapter`). Regions
+    /// whose contract cannot resolve are skipped here; the adapter build
+    /// refuses them loudly.
+    fn implicit_child_inputs(&self) -> Vec<(String, RecordDef)> {
+        let emitter = self.emitter;
+        let mut records = Vec::new();
+        for (&id, nested) in &self.plans.regions {
+            let Some(&region) = self.plans.region_shapes.get(&id) else {
+                continue;
+            };
+            if !crate::emitter::implicit_child_required(emitter, region) {
+                continue;
+            }
+            let Some(record_name) = emitter.region_input_types.get(&id) else {
+                continue;
+            };
+            let Some(bindings) = emitter.region_bindings.get(&id) else {
+                continue;
+            };
+            let mut fields = Vec::with_capacity(nested.wrapper_params.len());
+            for name in &nested.wrapper_params {
+                let Some(ty) = bindings.get(name) else {
+                    fields.clear();
+                    break;
+                };
+                fields.push(FieldDef {
+                    awl_name: name.clone(),
+                    ty: ty.clone(),
+                });
+            }
+            if fields.len() == nested.wrapper_params.len() {
+                records.push((record_name.clone(), RecordDef { fields }));
+            }
+        }
+        records
+    }
+
+    /// The result type of every implicit per-item child (the collected
+    /// binding's type), for the shared child-output envelope codecs.
+    fn implicit_child_output_types(&self) -> Vec<GType> {
+        let emitter = self.emitter;
+        let mut types = Vec::new();
+        for &id in self.plans.regions.keys() {
+            let Some(&region) = self.plans.region_shapes.get(&id) else {
+                continue;
+            };
+            if !crate::emitter::implicit_child_required(emitter, region) {
+                continue;
+            }
+            if let Some(ty) = emitter
+                .region_bindings
+                .get(&id)
+                .and_then(|bindings| bindings.get(&region.binding))
+            {
+                types.push(ty.clone());
+            }
+        }
+        types
     }
 
     /// Every wire position a composite shape can be reached from: workflow

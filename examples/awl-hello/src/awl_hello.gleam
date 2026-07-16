@@ -49,7 +49,7 @@ pub fn definition() -> workflow.WorkflowDefinition(AwlHelloInput, AwlHelloOutcom
 }
 
 /// Engine entry point.
-pub fn run(raw_input: Dynamic) -> Result(String, awl_error.AwlError) {
+pub fn run(raw_input: Dynamic) -> Result(String, String) {
   runtime.run(raw_input, awl_hello_input_codec(), awl_hello_outcome_codec(), execute)
 }
 

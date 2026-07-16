@@ -328,8 +328,15 @@ fn shout(note: Note) -> Result(Outcome, AwlError) {
   Ok(Done(Note(name: note.name, memo: note.memo)))
 }
 
-fn run_note(raw: dynamic.Dynamic) -> Result(String, AwlError) {
+fn run_note(raw: dynamic.Dynamic) -> Result(String, String) {
   runtime.run(raw, note_codec(), outcome_codec(), shout)
+}
+
+/// Decode a `run` failure payload exactly the way an awaiting parent does:
+/// with the fixed `AwlError` codec carried on the child handle.
+fn decode_run_failure(payload: String) -> Result(AwlError, codec.DecodeError) {
+  let error_codec = error.codec()
+  error_codec.decode(payload)
 }
 
 pub fn run_success_encodes_output_test() {
@@ -337,21 +344,22 @@ pub fn run_success_encodes_output_test() {
   |> should.equal(Ok("{\"outcome\":\"done\",\"payload\":{\"name\":\"a\"}}"))
 }
 
-pub fn run_non_string_payload_fails_test() {
-  run_note(dynamic.int(42))
+pub fn run_non_string_payload_fails_encoded_test() {
+  let assert Error(payload) = run_note(dynamic.int(42))
+  decode_run_failure(payload)
   |> should.equal(
-    Error(AwlDecodeInputFailed("workflow input payload was not a string")),
+    Ok(AwlDecodeInputFailed("workflow input payload was not a string")),
   )
 }
 
-pub fn run_undecodable_input_fails_test() {
-  let assert Error(AwlDecodeInputFailed(message)) =
-    run_note(dynamic.string("{not json"))
+pub fn run_undecodable_input_fails_encoded_test() {
+  let assert Error(payload) = run_note(dynamic.string("{not json"))
+  let assert Ok(AwlDecodeInputFailed(message)) = decode_run_failure(payload)
   string.starts_with(message, "failed to decode workflow input: ")
   |> should.be_true
 }
 
-pub fn run_propagates_execute_error_test() {
+pub fn run_propagates_execute_error_as_the_codec_encoding_test() {
   let boom = fn(_note: Note) -> Result(Outcome, AwlError) {
     Error(AwlOutcomeFailure(outcome: "failed", payload: "{}"))
   }
@@ -361,7 +369,47 @@ pub fn run_propagates_execute_error_test() {
     outcome_codec(),
     boom,
   )
-  |> should.equal(Error(AwlOutcomeFailure(outcome: "failed", payload: "{}")))
+  |> should.equal(Error(
+    "{\"tag\":\"AwlOutcomeFailure\",\"outcome\":\"failed\",\"payload\":\"{}\"}",
+  ))
+}
+
+// -- The child boundary: `run` failures round-trip the `AwlError` codec ----
+//
+// The engine records a failed run's `Error(payload)` text as the child's
+// failure details and hands that exact text to an awaiting parent, which
+// decodes it with the same `aion/awl/error` codec. Every typed kind must
+// survive that encode → decode round-trip; leaking the raw error record
+// instead of the codec encoding turns typed kinds into
+// `ChildErrorDecodeFailed` ("Expected Dict, found List") at the parent.
+
+pub fn run_failure_round_trips_every_typed_kind_test() {
+  [
+    AwlActivityFailed("activity failed"),
+    AwlChildFailed("detached spawn failed"),
+    error.AwlVisitsExceeded(
+      "step `confirm` exceeded its `max … visits` bound at line 3, column 7",
+    ),
+    AwlSignalFailed("signal receive failed"),
+    AwlTimerFailed("timer failed"),
+    error.AwlTimedOut("scope expired"),
+    AwlIndexOutOfRange("label text"),
+    AwlDecodeInputFailed("failed to decode workflow input: boom"),
+    AwlOutcomeFailure(outcome: "failed", payload: "{\"n\":1}"),
+    AwlFailed,
+  ]
+  |> list.each(fn(kind) {
+    let failing = fn(_note: Note) -> Result(Outcome, AwlError) { Error(kind) }
+    let assert Error(payload) =
+      runtime.run(
+        dynamic.string(note_codec().encode(Note(name: "a", memo: None))),
+        note_codec(),
+        outcome_codec(),
+        failing,
+      )
+    decode_run_failure(payload)
+    |> should.equal(Ok(kind))
+  })
 }
 
 // -- index -----------------------------------------------------------------

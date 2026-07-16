@@ -22,9 +22,9 @@ fn lower_source(source: &str) -> Result<Result<MirModule, LowerError>, Box<dyn s
 
 /// The two combined fixtures advance to their next honest refusal instead of
 /// silently claiming coverage: `dev_brief` refuses at its dependency-parallel
-/// layer, while `ship_release_combined` — whose build/canary cycle carries a
-/// `max … visits` bound since rev 3 — refuses at the flow-shape gate until
-/// B4 lowers the bound (behind it still waits the `on failure` refusal).
+/// layer, while `ship_release_combined` — its `max … visits` bound lowered by
+/// the fan-out parity landing — now surfaces the `on failure` refusal that
+/// waited behind it.
 #[test]
 fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn std::error::Error>> {
     let dev_brief = manifest_dir().join("tests/fixtures/rev2/flagship/valid/dev_brief.awl");
@@ -39,12 +39,12 @@ fn combined_loop_fixtures_advance_to_the_next_refusal() -> Result<(), Box<dyn st
     match lower_fixture(&ship)? {
         Err(LowerError::Unsupported { shape, .. }) => {
             assert!(
-                shape.contains("max … visits") && shape.contains("not yet lowered"),
+                shape.contains("on failure"),
                 "ship_release refusal drifted: {shape}"
             );
         }
         other => {
-            return Err(format!("ship_release must refuse at the visits bound: {other:?}").into());
+            return Err(format!("ship_release must refuse at `on failure`: {other:?}").into());
         }
     }
     Ok(())
@@ -116,33 +116,43 @@ fn statement_level_child_forms_plan_the_witness() -> Result<(), Box<dyn std::err
 
 /// `sort` over a non-comparable key is the reference emitter's hard gate; the
 /// checker does not constrain key comparability, so a check-clean document
-/// must refuse here with the reference class.
+/// must refuse here with the reference class. Bool keys refuse too: the
+/// shipped `gleam_stdlib` exports no `gleam@bool:compare/2`, so a Bool key
+/// could only ever be a Gleam compile error (reference path) or an `undef`
+/// crash (direct path).
 #[test]
 fn sort_non_comparable_key_refuses_with_the_reference_class()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = "\
+    for (key_type, field) in [("Inner", "inner"), ("Bool", "flag")] {
+        let source = format!(
+            "\
 //! Focused non-comparable sort-key refusal.
 workflow sort_non_comparable
   input docs: [Doc]
   outcome done: type Done, route success
 
-type Inner { note: String }
-type Doc   { inner: Inner }
-type Done  { total: Int }
+type Inner {{ note: String }}
+type Doc   {{ inner: Inner, flag: Bool }}
+type Done  {{ total: Int }}
 
 step order
-  docs |> sort(.inner) |> count -> total
+  docs |> sort(.{field}) |> count -> total
   route done(total: total)
-";
-    match lower_source(source)? {
-        Err(LowerError::Unsupported { shape, .. }) => {
-            assert_eq!(
-                shape,
-                "`sort` over a non-comparable key (needs Int, Float, String, Bool)"
-            );
-        }
-        other => {
-            return Err(format!("expected the non-comparable sort refusal, got {other:?}").into());
+"
+        );
+        match lower_source(&source)? {
+            Err(LowerError::Unsupported { shape, .. }) => {
+                assert_eq!(
+                    shape, "`sort` over a non-comparable key (needs Int, Float, String)",
+                    "sort key type {key_type} must refuse"
+                );
+            }
+            other => {
+                return Err(format!(
+                    "expected the non-comparable sort refusal for {key_type}, got {other:?}"
+                )
+                .into());
+            }
         }
     }
     Ok(())

@@ -41,6 +41,7 @@ saffron.workspace = true
 
 [dev-dependencies]
 aion-awl = { version = "0.8.0", path = "../aion-awl" }
+aion-awl-package = { version = "0.8.0", path = "../aion-awl-package" }
 aion-package = { version = "0.8.0", path = "../aion-package", features = ["test-support"] }
 aion-store-libsql = { version = "0.8.0", path = "../aion-store-libsql" }
 aion-store-haematite = { version = "0.8.0", path = "../aion-store-haematite" }

@@ -269,6 +269,7 @@ name = "aion-rs"
 version = "0.8.0"
 dependencies = [
  "aion-awl",
+ "aion-awl-package",
  "aion-core",
  "aion-package",
  "aion-store",

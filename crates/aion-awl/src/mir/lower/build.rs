@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 
 use crate::emitter::{GType, snake, type_ref_to_g};
 
-use super::super::func::{CodecRef, CodecTemplateKind, FnOrigin, FnSig, MirFn, TemplateFn};
+use super::super::func::{
+    CodecRef, CodecTemplateKind, ExecArg, FnOrigin, FnSig, MirFn, TemplateFn,
+};
 use super::super::ids::{FnRef, Span};
 use super::super::shapes::{TypeShape, WireDesc};
 use super::super::tydesc::TyDesc;
@@ -41,6 +43,30 @@ impl CodecType {
     }
 }
 
+/// One flow's region-entry/chain function references: `chains[r][0] ==
+/// regions[r]`, one chain entry per layer.
+pub(super) struct FlowFns {
+    /// Region index to its entry-step function ref.
+    pub(super) regions: Vec<FnRef>,
+    /// Region index to the function refs of its chain steps, one per layer in
+    /// chain order.
+    pub(super) chains: Vec<Vec<FnRef>>,
+}
+
+/// A nested flow's reserved function set: the run-once entry wrapper slot
+/// followed by the flow's chain slots.
+pub(super) struct NestedFns {
+    pub(super) wrapper: FnRef,
+    pub(super) fns: FlowFns,
+}
+
+/// One implicit per-item child's reserved adapter shells: the typed
+/// `_execute` unpacker, then the exported `_run` engine entry.
+pub(super) struct AdapterFns {
+    pub(super) execute: FnRef,
+    pub(super) run: FnRef,
+}
+
 /// Resolved function references for cross-referencing during body build.
 pub(super) struct FnPlan {
     pub(super) run: FnRef,
@@ -59,11 +85,13 @@ pub(super) struct FnPlan {
     /// bytes identical) — planned only for actions a heterogeneous named fork
     /// dispatches (`forks::raw_action_inventory`).
     pub(super) raw_activities: BTreeMap<String, FnRef>,
-    /// Region index to its entry-step function ref.
-    pub(super) regions: Vec<FnRef>,
-    /// Region index to the function refs of its chain steps, one per layer in
-    /// chain order; `chains[r][0] == regions[r]`.
-    pub(super) chains: Vec<Vec<FnRef>>,
+    /// The host flow's region-chain function refs.
+    pub(super) host: FlowFns,
+    /// Region id to its per-item member flow's wrapper + chain refs.
+    pub(super) region_fns: BTreeMap<usize, NestedFns>,
+    /// Region id to its implicit-child adapter shells (`_execute`, `_run`),
+    /// present exactly for the regions that run as synthesized children.
+    pub(super) adapters: BTreeMap<usize, AdapterFns>,
     /// One reserved slot per bounded loop, in the exact order lowering
     /// encounters them (regions in plan order, chain steps in layer order,
     /// statements pre-order — `loops::count_loops`). All loop slots follow
@@ -207,9 +235,12 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         signal_refs.insert(signal.clone(), FnRef(next));
         next += 1;
     }
-    let slots = plan_flow_slots(ctx, &mut next);
-    let (child_witness, predicate_start) =
-        fixed_helper_refs(next, !activities.is_empty(), slots.child_witness_needed);
+    let slots = super::plan_slots::plan_flow_slots(ctx, &mut next)?;
+    let (child_witness, predicate_start) = super::plan_slots::fixed_helper_refs(
+        next,
+        !activities.is_empty(),
+        slots.child_witness_needed,
+    );
 
     let plan = FnPlan {
         run: FnRef(0),
@@ -219,8 +250,9 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
         codec_lifted,
         activities,
         raw_activities,
-        regions: slots.regions,
-        chains: slots.chains,
+        host: slots.host,
+        region_fns: slots.region_fns,
+        adapters: slots.adapters,
         loops: slots.loops,
         forks: slots.forks,
         signals: signal_refs,
@@ -251,98 +283,17 @@ pub(super) fn skeleton(ctx: &mut Ctx<'_>) -> Result<Skeleton, LowerError> {
     }
     // Region bodies are appended by `flow::regions`.
 
-    let exports = vec![plan.run, plan.definition, plan.execute];
+    // The exported entry set: the fixed trio, then every implicit child's
+    // `_run` engine entry (ascending region id) so the multi-entry manifest's
+    // functions resolve at load time.
+    let mut exports = vec![plan.run, plan.definition, plan.execute];
+    exports.extend(plan.adapters.values().map(|adapter| adapter.run));
     Ok(Skeleton {
         types,
         plan,
         functions,
         exports,
     })
-}
-
-/// The flow-function slot inventory: region chains, then loop slots, then
-/// fork slots, then wait slots (split from `skeleton` for the function-size
-/// law).
-struct FlowSlots {
-    regions: Vec<FnRef>,
-    chains: Vec<Vec<FnRef>>,
-    loops: Vec<FnRef>,
-    forks: Vec<FnRef>,
-    waits: Vec<FnRef>,
-    child_witness_needed: bool,
-}
-
-/// Reserve region-chain, loop, fork, and wait slots in the canonical order.
-/// Wait-lifted slots (two per timeout wait) follow every fork slot and
-/// precede the fixed helpers, so modules without timeout waits keep
-/// byte-identical function refs.
-fn plan_flow_slots(ctx: &Ctx<'_>, next: &mut u32) -> FlowSlots {
-    let emitter = ctx.emitter;
-    let mut regions = Vec::new();
-    let mut chains = Vec::new();
-    for region in &ctx.plan.regions {
-        regions.push(FnRef(*next));
-        let slots = region.layers.len().max(1);
-        let mut chain = Vec::with_capacity(slots);
-        for _ in 0..slots {
-            chain.push(FnRef(*next));
-            *next += 1;
-        }
-        chains.push(chain);
-    }
-    let mut loops = Vec::new();
-    for region in &ctx.plan.regions {
-        for step_index in region.layers.iter().flatten() {
-            let step = &emitter.document.steps[*step_index];
-            for _ in 0..super::loops::count_loops(&step.body) {
-                loops.push(FnRef(*next));
-                *next += 1;
-            }
-        }
-    }
-    let mut forks = Vec::new();
-    let mut child_witness_needed = false;
-    for region in &ctx.plan.regions {
-        for step_index in region.layers.iter().flatten() {
-            let step = &emitter.document.steps[*step_index];
-            child_witness_needed |= super::forks::needs_child_witness(&step.body, emitter);
-            for _ in 0..super::forks::count_fork_fns(&step.body, emitter) {
-                forks.push(FnRef(*next));
-                *next += 1;
-            }
-        }
-    }
-    let mut waits = Vec::new();
-    for region in &ctx.plan.regions {
-        for step_index in region.layers.iter().flatten() {
-            let step = &emitter.document.steps[*step_index];
-            for _ in 0..super::wait::count_wait_fns(&step.body) {
-                waits.push(FnRef(*next));
-                *next += 1;
-            }
-        }
-    }
-    FlowSlots {
-        regions,
-        chains,
-        loops,
-        forks,
-        waits,
-        child_witness_needed,
-    }
-}
-
-/// T-DEAD precedes T-WIT; dynamically generated predicates follow both. This
-/// preserves every existing function reference when a module has no predicate.
-fn fixed_helper_refs(
-    next: u32,
-    has_activity: bool,
-    child_witness_needed: bool,
-) -> (Option<FnRef>, FnRef) {
-    let dead_offset = u32::from(has_activity);
-    let child_witness = child_witness_needed.then_some(FnRef(next + dead_offset));
-    let fixed_count = dead_offset + u32::from(child_witness_needed);
-    (child_witness, FnRef(next + fixed_count))
 }
 
 fn zero_span() -> Span {
@@ -455,20 +406,32 @@ fn execute_shell(ctx: &Ctx<'_>, plan: &FnPlan) -> Result<MirFn, LowerError> {
             LowerError::new(emitter.document.span, "the workflow has no start region")
         })?;
     let params = ctx.plan.region_params(entry_region).to_vec();
+    // Language-owned visit counters seed once, at the flow's run-once entry,
+    // so a backward route can never reset a bound (the reference
+    // `emitter/steps.rs::emit_execute`).
+    let counters = &ctx.plans.host_counters;
     let mut entry_args = Vec::new();
     for param in &params {
         let index = emitter
             .document
             .inputs
             .iter()
-            .position(|input| &input.name == param)
-            .ok_or_else(|| {
-                LowerError::new(
+            .position(|input| &input.name == param);
+        match index {
+            Some(index) => {
+                entry_args.push(ExecArg::Field(u16::try_from(index).unwrap_or(u16::MAX)));
+            }
+            None if counters.contains(param) => entry_args.push(ExecArg::Zero),
+            None => {
+                return Err(LowerError::new(
                     emitter.document.span,
-                    format!("the workflow start needs `{param}`, which is not an input"),
-                )
-            })?;
-        entry_args.push(u16::try_from(index).unwrap_or(u16::MAX));
+                    format!(
+                        "the workflow start needs `{param}`, which is neither an input nor a \
+                         language-owned counter — the document did not check cleanly"
+                    ),
+                ));
+            }
+        }
     }
     let input_fields = emitter
         .document
@@ -481,7 +444,7 @@ fn execute_shell(ctx: &Ctx<'_>, plan: &FnPlan) -> Result<MirFn, LowerError> {
         origin: FnOrigin::Execute,
         template: TemplateFn::Execute {
             input_fields,
-            entry: plan.regions[entry_region],
+            entry: plan.host.regions[entry_region],
             entry_args,
         },
         sig,

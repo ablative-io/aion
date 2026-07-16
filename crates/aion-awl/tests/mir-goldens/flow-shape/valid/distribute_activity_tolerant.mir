@@ -1,0 +1,235 @@
+module fan_scores source=fan_scores.awl
+exports: run/1, definition/0, execute/1
+== effect schedule ==
+  step_wave:
+    aion@workflow:map_settled/2 [activities] (v0, v1)
+  awl_r0_wave_step_mark:
+    aion@activity:task_queue/2 [activities] (v1, lit#11)
+    aion@workflow:run/1 [activities] (v2)
+  wave_fanout_0:
+    aion@activity:task_queue/2 [activities] (v1, lit#10)
+== durable families == activities
+== atoms ==
+  [0] doc
+  [1] score
+  [2] done
+  [3] score_input
+  [4] fan_scores_input
+  [5] done_outcome
+  [6] ok
+  [7] some
+  [8] none
+== literals ==
+  [0] "title"
+  [1] "points"
+  [2] "total"
+  [3] "doc"
+  [4] "docs"
+  [5] "done"
+  [6] "outcome"
+  [7] "FanScoresOutcome"
+  [8] "done"
+  [9] "payload"
+  [10] "judge"
+  [11] "judge"
+== types ==
+  record Doc tag=doc
+    title: string
+  record Score tag=score
+    points: int
+  record Done tag=done
+    total: int
+  record ScoreInput tag=score_input
+    doc: ref(Doc)
+  record FanScoresInput tag=fan_scores_input
+    docs: list(ref(Doc))
+  union FanScoresOutcome
+    done -> done_outcome(ref(Done))
+== fn run/1 origin=run ==
+  sig: (Dynamic) -> Result(String, AwlError)
+  T-RUN input=fan_scores_input_codec output=fan_scores_outcome_codec
+== fn definition/0 origin=definition ==
+  sig: () -> WorkflowDefinition(fan_scores.FanScoresInput, fan_scores.FanScoresOutcome, AwlError)
+  T-DEF name="fan_scores" input=fan_scores_input_codec output=fan_scores_outcome_codec
+== fn execute/1 origin=execute ==
+  sig: (fan_scores.FanScoresInput) -> Result(fan_scores.FanScoresOutcome, AwlError)
+  T-EXEC fields=[docs:List(fan_scores.Doc)] entry=step_wave args=[0]
+== fn doc_codec/0 origin=codec_template(RecordTrio, Doc, record#0) ==
+  sig: () -> Codec(fan_scores.Doc)
+  v0 = make_closure doc_to_json captures=[]
+  v1 = call_local doc_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn doc_to_json/1 origin=codec_template(RecordTrio, Doc, record#0) ==
+  sig: (fan_scores.Doc) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"title": v1|>awlc.string_to_json}
+  return v2
+== fn doc_decoder/0 origin=codec_template(RecordTrio, Doc, record#0) ==
+  sig: () -> Decoder(fan_scores.Doc)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure doc_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#0, v0, v1)
+== fn doc_decoder$0/1 origin=lifted(doc_decoder, #0) ==
+  sig: (String) -> Decoder(fan_scores.Doc)
+  v1 = record(doc, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn score_codec/0 origin=codec_template(RecordTrio, Score, record#1) ==
+  sig: () -> Codec(fan_scores.Score)
+  v0 = make_closure score_to_json captures=[]
+  v1 = call_local score_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn score_to_json/1 origin=codec_template(RecordTrio, Score, record#1) ==
+  sig: (fan_scores.Score) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"points": v1|>awlc.int_to_json}
+  return v2
+== fn score_decoder/0 origin=codec_template(RecordTrio, Score, record#1) ==
+  sig: () -> Decoder(fan_scores.Score)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure score_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#1, v0, v1)
+== fn score_decoder$0/1 origin=lifted(score_decoder, #0) ==
+  sig: (Int) -> Decoder(fan_scores.Score)
+  v1 = record(score, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn done_codec/0 origin=codec_template(RecordTrio, Done, record#2) ==
+  sig: () -> Codec(fan_scores.Done)
+  v0 = make_closure done_to_json captures=[]
+  v1 = call_local done_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn done_to_json/1 origin=codec_template(RecordTrio, Done, record#2) ==
+  sig: (fan_scores.Done) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"total": v1|>awlc.int_to_json}
+  return v2
+== fn done_decoder/0 origin=codec_template(RecordTrio, Done, record#2) ==
+  sig: () -> Decoder(fan_scores.Done)
+  v0 = call_rt aion@awl@codec:int_decoder/0()
+  v1 = make_closure done_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#2, v0, v1)
+== fn done_decoder$0/1 origin=lifted(done_decoder, #0) ==
+  sig: (Int) -> Decoder(fan_scores.Done)
+  v1 = record(done, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn score_input_codec/0 origin=codec_template(RecordTrio, ScoreInput, record#3) ==
+  sig: () -> Codec(fan_scores.ScoreInput)
+  v0 = make_closure score_input_to_json captures=[]
+  v1 = call_local score_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn score_input_to_json/1 origin=codec_template(RecordTrio, ScoreInput, record#3) ==
+  sig: (fan_scores.ScoreInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"doc": v1|>doc_to_json}
+  return v2
+== fn score_input_decoder/0 origin=codec_template(RecordTrio, ScoreInput, record#3) ==
+  sig: () -> Decoder(fan_scores.ScoreInput)
+  v0 = call_local doc_decoder()
+  v1 = make_closure score_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#3, v0, v1)
+== fn score_input_decoder$0/1 origin=lifted(score_input_decoder, #0) ==
+  sig: (fan_scores.Doc) -> Decoder(fan_scores.ScoreInput)
+  v1 = record(score_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fan_scores_input_codec/0 origin=codec_template(RecordTrio, FanScoresInput, record#4) ==
+  sig: () -> Codec(fan_scores.FanScoresInput)
+  v0 = make_closure fan_scores_input_to_json captures=[]
+  v1 = call_local fan_scores_input_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fan_scores_input_to_json/1 origin=codec_template(RecordTrio, FanScoresInput, record#4) ==
+  sig: (fan_scores.FanScoresInput) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"docs": v1|>list_doc_to_json}
+  return v2
+== fn fan_scores_input_decoder/0 origin=codec_template(RecordTrio, FanScoresInput, record#4) ==
+  sig: () -> Decoder(fan_scores.FanScoresInput)
+  v0 = call_local list_doc_decoder()
+  v1 = make_closure fan_scores_input_decoder$0 captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#4, v0, v1)
+== fn fan_scores_input_decoder$0/1 origin=lifted(fan_scores_input_decoder, #0) ==
+  sig: (List(fan_scores.Doc)) -> Decoder(fan_scores.FanScoresInput)
+  v1 = record(fan_scores_input, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn fan_scores_outcome_codec/0 origin=codec_template(UnionTrio, FanScoresOutcome, union#5) ==
+  sig: () -> Codec(fan_scores.FanScoresOutcome)
+  v0 = make_closure fan_scores_outcome_to_json captures=[]
+  v1 = call_local fan_scores_outcome_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn fan_scores_outcome_to_json/1 origin=codec_template(UnionTrio, FanScoresOutcome, union#5) ==
+  sig: (fan_scores.FanScoresOutcome) -> Json
+  v1 = field(v0, 1)
+  v2 = json_obj {"outcome": lit#5|>awlc.string_to_json, "payload": v1|>done_to_json}
+  return v2
+== fn fan_scores_outcome_decoder/0 origin=codec_template(UnionTrio, FanScoresOutcome, union#5) ==
+  sig: () -> Decoder(fan_scores.FanScoresOutcome)
+  v0 = call_rt aion@awl@codec:string_decoder/0()
+  v1 = make_closure fan_scores_outcome_decoder$outcome captures=[]
+  tail_rt gleam@dynamic@decode:field/3(lit#6, v0, v1)
+== fn fan_scores_outcome_decoder$outcome/1 origin=lifted(fan_scores_outcome_decoder, #0) ==
+  sig: (String) -> Decoder(fan_scores.FanScoresOutcome)
+  if cmp Eq v0 lit#8:
+    v3 = call_local done_decoder()
+    v4 = make_closure fan_scores_outcome_decoder$arm0 captures=[]
+    tail_rt gleam@dynamic@decode:field/3(lit#9, v3, v4)
+  else:
+    v1 = record(done, [0])
+    v2 = record(done_outcome, [v1])
+    tail_rt gleam@dynamic@decode:failure/2(v2, lit#7)
+== fn fan_scores_outcome_decoder$arm0/1 origin=lifted(fan_scores_outcome_decoder, #1) ==
+  sig: (fan_scores.Done) -> Decoder(fan_scores.FanScoresOutcome)
+  v1 = record(done_outcome, [v0])
+  tail_rt gleam@dynamic@decode:success/1(v1)
+== fn list_doc_codec/0 origin=codec_template(CompositeTrio, List(Doc), composite(list(ref(Doc)))) ==
+  sig: () -> Codec(List(fan_scores.Doc))
+  v0 = make_closure list_doc_to_json captures=[]
+  v1 = call_local list_doc_decoder() live_after=[v0]
+  tail_rt aion@codec:json_codec/2(v0, v1)
+== fn list_doc_to_json/1 origin=codec_template(CompositeTrio, List(Doc), composite(list(ref(Doc)))) ==
+  sig: (List(fan_scores.Doc)) -> Json
+  v1 = make_closure doc_to_json captures=[]
+  tail_rt gleam@json:array/2(v0, v1)
+== fn list_doc_decoder/0 origin=codec_template(CompositeTrio, List(Doc), composite(list(ref(Doc)))) ==
+  sig: () -> Decoder(List(fan_scores.Doc))
+  v0 = call_local doc_decoder()
+  tail_rt gleam@dynamic@decode:list/1(v0)
+== fn score_activity/1 origin=activity_wrapper(score, raw=false) ==
+  sig: (fan_scores.Doc) -> Activity(fan_scores.ScoreInput, fan_scores.Score)
+  T-ACT action=score input_codec=score_input_codec return=score_codec
+== fn step_wave/1 origin=region(wave) ==
+  sig: (List(fan_scores.Doc)) -> Result(fan_scores.FanScoresOutcome, AwlError)
+  v1 = make_closure wave_fanout_0 captures=[]
+  v2 = call_rt aion@workflow:map_settled/2(v0, v1)
+  v3 = make_closure wave_fanout_1 captures=[]
+  v4 = call_rt gleam@list:map/2(v2, v3)
+  v5 = call_rt gleam@list:length/1(v4)
+  v6 = record(done, [v5])
+  v7 = record(done_outcome, [v6])
+  v8 = record(ok, [v7])
+  return v8
+== fn awl_r0_wave/1 origin=region_wrapper(r0:wave) ==
+  sig: (fan_scores.Doc) -> Result(fan_scores.Score, AwlError)
+  tail_local awl_r0_wave_step_mark(v0)
+== fn awl_r0_wave_step_mark/1 origin=region(r0:wave::mark) ==
+  sig: (fan_scores.Doc) -> Result(fan_scores.Score, AwlError)
+  v1 = call_local score_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#11)
+  v3 = call_rt aion@workflow:run/1(v2)
+  v4 = call_rt aion@awl@error:map_activity_error/1(v3)
+  v5 = try_bind v4
+  v6 = record(ok, [v5])
+  return v6
+== fn wave_fanout_0/1 origin=fork(wave#0) ==
+  sig: (fan_scores.Doc) -> Activity(fan_scores.ScoreInput, fan_scores.Score)
+  v1 = call_local score_activity(v0)
+  v2 = call_rt aion@activity:task_queue/2(v1, lit#10)
+  return v2
+== fn wave_fanout_1/1 origin=fork(wave#1) ==
+  sig: (Result(fan_scores.Score, AwlError)) -> Option(fan_scores.Score)
+  if is_tagged v0 ok/2:
+    v1 = field(v0, 1)
+    v2 = record(some, [v1])
+    return v2
+  else:
+    return 'none'
+== fn awl$dead_body/1 origin=dead_body ==
+  sig: (Dynamic) -> Result(Dynamic, AwlError)
+  T-DEAD

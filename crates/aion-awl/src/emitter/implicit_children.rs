@@ -13,6 +13,76 @@ use super::names::{ident, snake, string_lit};
 use super::stmts::CHILD_WITNESS;
 use super::types::GType;
 
+/// Whether a region must run each item as a synthesized child workflow —
+/// crate-facing so the MIR direct path dispatches fan-out tracks and plans
+/// child adapters from the exact same gate (D-BC1, zero drift).
+pub(crate) fn implicit_child_required(emitter: &Emitter<'_>, region: &RegionShape) -> bool {
+    is_required(emitter, region)
+}
+
+/// Every synthesized same-package workflow entry a document's parallel
+/// multi-step regions require, in the emission order of the Gleam path
+/// (`flows.rs::emit_nested`: regions by ascending id). Shared by both
+/// backends so the two paths' manifests can never drift.
+pub(crate) fn synthesized_entries(
+    emitter: &Emitter<'_>,
+    plans: &super::graph::Plans<'_>,
+) -> Result<Vec<super::artifact::SynthesizedWorkflowEntry>, EmitError> {
+    let mut entries = Vec::new();
+    for (&id, nested) in &plans.regions {
+        let Some(&region) = plans.region_shapes.get(&id) else {
+            return Err(EmitError::new(
+                emitter.document.span,
+                format!("region {id} lost its shape"),
+            ));
+        };
+        if !is_required(emitter, region) {
+            continue;
+        }
+        let Some(bindings) = emitter.region_bindings.get(&id) else {
+            return Err(EmitError::new(
+                region.span,
+                format!("region {id} has no binding environment"),
+            ));
+        };
+        let Some(item_ty) = bindings.get(&region.binding) else {
+            return Err(EmitError::new(
+                region.span,
+                format!(
+                    "the collected binding `{}` has no established type",
+                    region.binding
+                ),
+            ));
+        };
+        let mut fields = Vec::with_capacity(nested.wrapper_params.len());
+        for name in &nested.wrapper_params {
+            let Some(ty) = bindings.get(name).cloned() else {
+                return Err(EmitError::new(
+                    region.span,
+                    format!("implicit child parameter `{name}` has no established type"),
+                ));
+            };
+            fields.push((name.clone(), ty));
+        }
+        let timeout_seconds = emitter
+            .document
+            .timeout
+            .as_ref()
+            .and_then(|timeout| timeout.duration.checked_duration())
+            .map_or(60 * 60, |timeout| timeout.as_secs());
+        entries.push(super::artifact::SynthesizedWorkflowEntry {
+            workflow_type: region.child_name.clone(),
+            entry_module: emitter.document.name.clone(),
+            entry_function: entry_fn(region),
+            input_schema: super::artifact::schema_for_fields(&emitter.env, &fields),
+            output_schema: super::artifact::schema_for_type(&emitter.env, item_ty),
+            timeout_seconds,
+            internal: true,
+        });
+    }
+    Ok(entries)
+}
+
 /// Whether a region must run each item as a synthesized child workflow.
 pub(super) fn is_required(emitter: &Emitter<'_>, region: &RegionShape) -> bool {
     if !matches!(region.verb, DeliveryVerb::Distribute) {
@@ -26,7 +96,7 @@ pub(super) fn is_required(emitter: &Emitter<'_>, region: &RegionShape) -> bool {
 }
 
 /// Exported engine entry function for a region's synthesized workflow type.
-pub(super) fn entry_fn(region: &RegionShape) -> String {
+pub(crate) fn entry_fn(region: &RegionShape) -> String {
     format!("{}_run", snake(&region.child_name))
 }
 
@@ -97,7 +167,7 @@ pub(super) fn emit_adapter(
     let output_codec = emitter.child_output_codec_fn(item_ty);
     emitter.line("/// Engine entry point for an implicit parallel region child.");
     emitter.line(&format!(
-        "pub fn {entry}(raw_input: Dynamic) -> Result(String, awl_error.AwlError) {{"
+        "pub fn {entry}(raw_input: Dynamic) -> Result(String, String) {{"
     ));
     emitter.indented(|this| {
         this.line(&format!(

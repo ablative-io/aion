@@ -63,7 +63,7 @@ pub fn definition() -> workflow.WorkflowDefinition(CargoGatesInput, CargoGatesOu
 }
 
 /// Engine entry point.
-pub fn run(raw_input: Dynamic) -> Result(String, awl_error.AwlError) {
+pub fn run(raw_input: Dynamic) -> Result(String, String) {
   runtime.run(raw_input, cargo_gates_input_codec(), cargo_gates_outcome_codec(), execute)
 }
 
@@ -148,10 +148,10 @@ fn run_clippy_activity(
 fn run_clippy_activity_raw(
   path: String,
 ) -> activity.Activity(String, String) {
-  let awl_input_codec = run_clippy_input_codec()
+  let awl_input_codec_2 = run_clippy_input_codec()
   activity.new(
     "run_clippy",
-    awl_input_codec.encode(RunClippyInput(
+    awl_input_codec_2.encode(RunClippyInput(
       path: path,
     )),
     awlc.raw(),
@@ -183,10 +183,10 @@ fn run_tests_activity(
 fn run_tests_activity_raw(
   path: String,
 ) -> activity.Activity(String, String) {
-  let awl_input_codec = run_tests_input_codec()
+  let awl_input_codec_3 = run_tests_input_codec()
   activity.new(
     "run_tests",
-    awl_input_codec.encode(RunTestsInput(
+    awl_input_codec_3.encode(RunTestsInput(
       path: path,
     )),
     awlc.raw(),
@@ -218,10 +218,10 @@ fn run_fmt_check_activity(
 fn run_fmt_check_activity_raw(
   path: String,
 ) -> activity.Activity(String, String) {
-  let awl_input_codec = run_fmt_check_input_codec()
+  let awl_input_codec_4 = run_fmt_check_input_codec()
   activity.new(
     "run_fmt_check",
-    awl_input_codec.encode(RunFmtCheckInput(
+    awl_input_codec_4.encode(RunFmtCheckInput(
       path: path,
     )),
     awlc.raw(),

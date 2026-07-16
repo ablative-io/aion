@@ -27,10 +27,10 @@ use super::super::ids::{FnRef, Span};
 use super::super::ops::{Block, CmpOp, LiveAfter, Stmt, Tail, Test, Value};
 use super::super::tydesc::TyDesc;
 use super::activity::record_new;
-use super::build::FnPlan;
 use super::ctx::Ctx;
 use super::driver::LowerError;
 use super::expr::{Binding, Scope, lower_expr};
+use super::flow::FlowEnv;
 use super::flow::lower_statement;
 use super::outcome::lower_condition;
 use super::slots::Slots;
@@ -103,7 +103,7 @@ pub(super) fn count_loops(statements: &[Statement]) -> u32 {
 
 pub(super) fn lower_loop_stmt(
     ctx: &mut Ctx<'_>,
-    plan: &FnPlan,
+    env: FlowEnv<'_>,
     step: &Step,
     looped: &LoopStmt,
     scope: &mut Scope,
@@ -134,7 +134,7 @@ pub(super) fn lower_loop_stmt(
         })?;
 
     let build = LoopBuild {
-        plan,
+        env,
         step,
         looped,
         host_scope: scope,
@@ -264,7 +264,7 @@ fn free_names(looped: &LoopStmt, scope: &Scope) -> Vec<String> {
 }
 
 struct LoopBuild<'a> {
-    plan: &'a FnPlan,
+    env: FlowEnv<'a>,
     step: &'a Step,
     looped: &'a LoopStmt,
     host_scope: &'a Scope,
@@ -297,7 +297,7 @@ fn build_loop_fn(
     build: &LoopBuild<'_>,
     slots: &mut Slots,
 ) -> Result<FlowFn, LowerError> {
-    let plan = build.plan;
+    let env = build.env;
     let step = build.step;
     let looped = build.looped;
     let host_scope = build.host_scope;
@@ -342,8 +342,7 @@ fn build_loop_fn(
     // Body first: the loop is post-test, so even `max <= 0` runs one pass.
     let mut stmts = Vec::new();
     for statement in &looped.body {
-        if lower_statement(ctx, plan, step, statement, &mut fn_scope, &mut stmts, slots)?.is_some()
-        {
+        if lower_statement(ctx, env, step, statement, &mut fn_scope, &mut stmts, slots)?.is_some() {
             return Err(LowerError::new(
                 looped.span,
                 "a `route` inside a `loop` body is illegal (`check` refuses it) — a loop \
@@ -412,7 +411,7 @@ fn control_tail(
     fn_scope: &Scope,
     control: LoopControl,
 ) -> Result<Block, LowerError> {
-    let plan = build.plan;
+    let env = build.env;
     let looped = build.looped;
     let free = build.free;
     let self_ref = build.self_ref;
@@ -475,7 +474,7 @@ fn control_tail(
         },
     };
     match &looped.until {
-        Some(tail) => lower_condition(ctx, plan, &tail.expr, fn_scope, &exit, &bound_check),
+        Some(tail) => lower_condition(ctx, env, &tail.expr, fn_scope, &exit, &bound_check),
         None => Ok(bound_check),
     }
 }

@@ -35,6 +35,11 @@ pub struct CompiledWorkflow {
     pub actions: Vec<ActionRequirement>,
     /// `.gleam_types` sidecar bytes (deterministic).
     pub sidecar_bytes: Vec<u8>,
+    /// Synthesized same-package workflow entries (one per implicit per-item
+    /// child a parallel multi-step `distribute` region requires), in the
+    /// shared emission order — the packaging seam maps these onto the
+    /// manifest's `additional_workflows`.
+    pub synthesized_workflows: Vec<crate::SynthesizedWorkflowEntry>,
 }
 
 /// One effective action requirement: the task queue (worker name), the
@@ -150,6 +155,7 @@ pub fn compile(source: &str, schema_root: &Path) -> Result<CompiledWorkflow, Com
     let output_schema =
         crate::schema_for_outcomes_in(&document, schema_root).map_err(CompileError::Schema)?;
     let actions = action_requirements(&document);
+    let synthesized_workflows = synthesized_workflow_entries(&document, schema_root)?;
     let module = lower(&document, Some(schema_root)).map_err(lower_diagnostic)?;
     verify(&module).map_err(|error| CompileError::Backend {
         message: error.to_string(),
@@ -179,6 +185,30 @@ pub fn compile(source: &str, schema_root: &Path) -> Result<CompiledWorkflow, Com
         output_schema,
         actions,
         sidecar_bytes,
+        synthesized_workflows,
+    })
+}
+
+/// The synthesized same-package workflow entries of a checked document, from
+/// the shared shaping + planning passes (D-BC1: byte-identical child names
+/// and contracts on both backends).
+fn synthesized_workflow_entries(
+    document: &Document,
+    schema_root: &Path,
+) -> Result<Vec<crate::SynthesizedWorkflowEntry>, CompileError> {
+    let shaped = crate::emitter::shape_document(document, Some(schema_root)).map_err(|error| {
+        CompileError::Planning {
+            message: error.to_string(),
+        }
+    })?;
+    let (emitter, plans) =
+        crate::emitter::prepare(&shaped, Some(schema_root)).map_err(|error| {
+            CompileError::Planning {
+                message: error.to_string(),
+            }
+        })?;
+    crate::emitter::synthesized_entries(&emitter, &plans).map_err(|error| CompileError::Planning {
+        message: error.to_string(),
     })
 }
 
