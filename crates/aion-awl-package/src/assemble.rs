@@ -13,7 +13,7 @@ use aion_awl::CompiledWorkflow;
 
 use aion_package::{
     BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion,
-    PackageBuilder, PackageError, builder::is_safe_logical_name,
+    PackageBuilder, PackageError, WorkflowEntry, builder::is_safe_logical_name,
 };
 
 use crate::bundle;
@@ -50,6 +50,18 @@ pub enum AssembleError {
     BundleCollision {
         /// The colliding module name.
         module: String,
+    },
+    /// A synthesized child workflow type cannot serve as a routing name.
+    #[error("synthesized workflow type `{name}` is not a valid logical name")]
+    InvalidSynthesizedName {
+        /// The refused synthesized workflow type.
+        name: String,
+    },
+    /// Two entries in one archive would claim the same workflow type.
+    #[error("workflow type `{name}` appears more than once in the archive")]
+    DuplicateWorkflowType {
+        /// The duplicated workflow type.
+        name: String,
     },
     /// The underlying package machinery refused the assembly.
     #[error(transparent)]
@@ -111,7 +123,7 @@ pub fn assemble_awl(
         activities: declared_activities(compiled),
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,
-        additional_workflows: Vec::new(),
+        additional_workflows: additional_workflows(compiled)?,
     };
 
     let mut builder = PackageBuilder::new(manifest, beams);
@@ -119,6 +131,39 @@ pub fn assemble_awl(
         builder = builder.with_explicit_timeout_identity();
     }
     Ok(builder.write_to_bytes()?)
+}
+
+/// Maps the compile output's synthesized workflow entries (implicit per-item
+/// children of parallel multi-step `distribute` regions) onto the manifest's
+/// `additional_workflows`, validating routing names and archive-wide
+/// workflow-type uniqueness (the loader re-checks both; refusing here gives a
+/// typed error at assembly time).
+fn additional_workflows(compiled: &CompiledWorkflow) -> Result<Vec<WorkflowEntry>, AssembleError> {
+    let mut seen: Vec<&str> = vec![compiled.workflow_name.as_str()];
+    let mut entries = Vec::with_capacity(compiled.synthesized_workflows.len());
+    for entry in &compiled.synthesized_workflows {
+        if !is_safe_logical_name(&entry.workflow_type) {
+            return Err(AssembleError::InvalidSynthesizedName {
+                name: entry.workflow_type.clone(),
+            });
+        }
+        if seen.contains(&entry.workflow_type.as_str()) {
+            return Err(AssembleError::DuplicateWorkflowType {
+                name: entry.workflow_type.clone(),
+            });
+        }
+        seen.push(entry.workflow_type.as_str());
+        entries.push(WorkflowEntry {
+            workflow_type: entry.workflow_type.clone(),
+            entry_module: entry.entry_module.clone(),
+            entry_function: entry.entry_function.clone(),
+            input_schema: entry.input_schema.clone(),
+            output_schema: entry.output_schema.clone(),
+            timeout: Duration::from_secs(entry.timeout_seconds),
+            internal: entry.internal,
+        });
+    }
+    Ok(entries)
 }
 
 /// Projects the compile output's action requirements onto the manifest's
@@ -173,6 +218,7 @@ mod tests {
                 },
             ],
             sidecar_bytes: Vec::new(),
+            synthesized_workflows: Vec::new(),
         }
     }
 

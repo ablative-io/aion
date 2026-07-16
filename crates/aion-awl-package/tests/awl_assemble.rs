@@ -390,6 +390,7 @@ fn hand_built(name: &str) -> CompiledWorkflow {
             node: None,
         }],
         sidecar_bytes: Vec::new(),
+        synthesized_workflows: Vec::new(),
     }
 }
 
