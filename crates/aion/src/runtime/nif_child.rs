@@ -235,10 +235,8 @@ enum AwaitChildOutcome {
 enum AwaitChildStep {
     /// A pending query's sentinel payload for `{error, <<"aion_query:...">>}`.
     QuerySentinel(String),
-    /// Exact durable bytes from a successful child completion.
-    ChildCompleted(Vec<u8>),
-    /// Typed child-failure envelope for the SDK error codec.
-    ChildFailed(String),
+    /// The D4 result envelope payload (`ok:`/`error:` prefixed) for `{ok, _}`.
+    ChildResolved(String),
     /// The enclosing `with_timeout` scope expired: `{error, message}`.
     ScopeExpired(String),
     /// Park the calling process; the watcher is armed and the pin is set.
@@ -261,10 +259,7 @@ fn run_await_child(args: &[Term], ctx: &mut ProcessContext) -> Result<AwaitChild
         AwaitChildStep::QuerySentinel(sentinel) => Ok(AwaitChildOutcome::Resolved(
             error_result_term(ctx, &sentinel).unwrap_or(Term::NIL),
         )),
-        AwaitChildStep::ChildCompleted(payload) => Ok(AwaitChildOutcome::Resolved(
-            term_or_encoding_error(ok_result_bytes(ctx, &payload))?,
-        )),
-        AwaitChildStep::ChildFailed(envelope) => Ok(AwaitChildOutcome::Resolved(
+        AwaitChildStep::ChildResolved(envelope) => Ok(AwaitChildOutcome::Resolved(
             term_or_encoding_error(ok_result_term(ctx, &envelope))?,
         )),
         AwaitChildStep::ScopeExpired(message) => Ok(AwaitChildOutcome::Resolved(
@@ -325,11 +320,11 @@ fn await_child_step(
         .resolve_command(command)
         .map_err(|error| context_error(&error))?
     {
-        // Successful child data crosses the NIF boundary byte-for-byte. The
-        // SDK decodes this exact payload directly; adding an `ok:` prefix and
-        // slicing it back off created a sub-binary whose padded storage could
-        // expose a synthetic NUL to JSON decoding. Child failures retain the
-        // `error:` data tag; `{error, _}` remains reserved for engine faults.
+        // D4 envelope: child success and child failure are both `{ok, _}`
+        // data with `ok:`/`error:` payload prefixes (the stable SDK and
+        // compiled-workflow wire contract); `{error, _}` is reserved for
+        // engine faults. The SDK copies the sliced suffix before decoding so
+        // no padded sub-binary storage reaches a codec.
         ResolveOutcome::Recorded(Resolution::ChildCompleted(result)) => {
             if let Some(message) =
                 scope_expired_before_child_terminal(state, bridge, &nif, pid, child_workflow_id)
@@ -337,7 +332,8 @@ fn await_child_step(
                 return Ok(AwaitChildStep::ScopeExpired(message));
             }
             state.pending_awaits.remove(&pid);
-            Ok(AwaitChildStep::ChildCompleted(result.bytes().to_vec()))
+            let payload = payload_text(&result)?;
+            Ok(AwaitChildStep::ChildResolved(format!("ok:{payload}")))
         }
         ResolveOutcome::Recorded(Resolution::ChildFailed(error)) => {
             if let Some(message) =
@@ -347,7 +343,7 @@ fn await_child_step(
             }
             state.pending_awaits.remove(&pid);
             let details = workflow_error_text(&error);
-            Ok(AwaitChildStep::ChildFailed(format!("error:{details}")))
+            Ok(AwaitChildStep::ChildResolved(format!("error:{details}")))
         }
         ResolveOutcome::Recorded(other) => {
             Err(format!("unexpected_child_await_resolution:{other:?}"))
@@ -602,13 +598,7 @@ fn workflow_error_text(error: &WorkflowError) -> String {
 /// Allocation may collect on attached calls: decode every argument `Term`
 /// before the first result allocation.
 fn ok_result_term(ctx: &mut ProcessContext, value: &str) -> Option<Term> {
-    ok_result_bytes(ctx, value.as_bytes())
-}
-
-/// Build `{ok, <<bytes>>}` without a string conversion, prefix, terminator, or
-/// sub-binary slice. The resulting binary length is exactly `bytes.len()`.
-fn ok_result_bytes(ctx: &mut ProcessContext, bytes: &[u8]) -> Option<Term> {
-    let value_term = ctx.alloc_binary(bytes).ok()?;
+    let value_term = ctx.alloc_binary(value.as_bytes()).ok()?;
     ctx.alloc_tuple(&[Term::atom(Atom::OK), value_term]).ok()
 }
 
@@ -933,7 +923,7 @@ mod tests {
         );
         assert_eq!(
             harness.step(),
-            Ok(AwaitChildStep::ChildCompleted(b"42".to_vec()))
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned()))
         );
         assert_eq!(harness.pinned_child(), None);
         harness.shutdown()
@@ -970,7 +960,7 @@ mod tests {
         // engine fault.
         assert_eq!(
             harness.step(),
-            Ok(AwaitChildStep::ChildFailed(
+            Ok(AwaitChildStep::ChildResolved(
                 "error:cancelled:operator".to_owned()
             ))
         );
@@ -1068,7 +1058,7 @@ mod tests {
     /// terminal are recorded, history order decides the branch — a deadline
     /// recorded first means the live run timed out before the watcher's
     /// record landed, so resolution takes the timeout branch on live and
-    /// replay alike. Before the fix this resolved `ChildCompleted(b"42")`.
+    /// replay alike. Before the fix this resolved `ChildResolved("ok:42")`.
     #[tokio::test(flavor = "multi_thread")]
     async fn deadline_recorded_before_child_terminal_takes_the_timeout_branch() -> TestResult {
         let child = WorkflowId::new_v4();
@@ -1157,7 +1147,7 @@ mod tests {
 
         assert_eq!(
             harness.step(),
-            Ok(AwaitChildStep::ChildCompleted(b"42".to_vec())),
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned())),
             "a child terminal recorded before the deadline resolves the child"
         );
         assert_eq!(harness.pinned_child(), None);
@@ -1248,7 +1238,7 @@ mod tests {
         // deadline (4) and resolves the child branch.
         assert_eq!(
             harness.step(),
-            Ok(AwaitChildStep::ChildCompleted(b"42".to_vec()))
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned()))
         );
         assert_eq!(harness.pinned_child(), None);
 
@@ -1275,7 +1265,7 @@ mod tests {
         });
         assert_eq!(
             replayed,
-            Ok(AwaitChildStep::ChildCompleted(b"42".to_vec())),
+            Ok(AwaitChildStep::ChildResolved("ok:42".to_owned())),
             "replay must take the same branch as the converged live run"
         );
         harness.shutdown()

@@ -21,6 +21,13 @@ use serde_json::{Value, json};
 const MODULE: &str = "b5_multi_step_distribute";
 const AWL: &str = include_str!("fixtures/b5_multi_step_distribute.awl");
 const DEADLINE: Duration = Duration::from_secs(20);
+const COLLECTOR_PLACEHOLDER: &str =
+    "  Ok(DoneOutcome(Done(first: \"unprojected\", middle_present: True, third: \"unprojected\")))";
+const COLLECTOR_PROJECTION: &str = r"  case results {
+    [Some(first), None, Some(third)] ->
+      Ok(DoneOutcome(Done(first: first, middle_present: False, third: third)))
+    _ -> Error(awl_error.AwlFailed)
+  }";
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -153,6 +160,17 @@ fn repo_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .ok_or_else(|| "cannot resolve repository root".into())
 }
 
+/// The language intentionally forbids `[T?]` in public types, but tolerant
+/// collection owns that shape internally. Replace the fixture's legal
+/// placeholder tail with a test-only pattern match in the emitted workflow so
+/// the engine result is produced from the collector's actual three slots.
+fn expose_actual_collector_slots(source: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if source.matches(COLLECTOR_PLACEHOLDER).count() != 1 {
+        return Err("emitted proof lacks its unique collector placeholder tail".into());
+    }
+    Ok(source.replacen(COLLECTOR_PLACEHOLDER, COLLECTOR_PROJECTION, 1))
+}
+
 fn emitted_package() -> Result<Package, Box<dyn std::error::Error>> {
     let repo = repo_root()?;
     let root = repo.join("target/flow-vocab-b5-engine-proof");
@@ -164,6 +182,7 @@ fn emitted_package() -> Result<Package, Box<dyn std::error::Error>> {
         return Err(format!("engine proof AWL did not check: {diagnostics:?}").into());
     }
     let artifact = aion_awl::emit_artifact(&document)?;
+    let projected_source = expose_actual_collector_slots(&artifact.source)?;
     let [child] = artifact.synthesized_workflows.as_slice() else {
         return Err(format!(
             "expected exactly one synthesized entry, got {}",
@@ -182,7 +201,7 @@ fn emitted_package() -> Result<Package, Box<dyn std::error::Error>> {
     }
     fs::write(
         root.join("src").join(format!("{MODULE}.gleam")),
-        &artifact.source,
+        projected_source,
     )?;
     fs::write(
         root.join("src").join(format!("{MODULE}.awl.json")),
@@ -465,14 +484,24 @@ async fn emitted_multistep_distribute_is_parallel_ordered_and_tolerant() -> Test
         .map_err(|error| format!("parent failed: {error:?}"))?;
     assert_eq!(gates.completion_order()?, vec!["c", "b", "a"]);
     let decoded_result: Value = serde_json::from_slice(result.bytes())?;
+    let projected = decoded_result
+        .get("payload")
+        .ok_or("parent result has no projected collector payload")?;
     assert_eq!(
-        decoded_result
-            .get("payload")
-            .and_then(|payload| payload.get("slots"))
-            .and_then(Value::as_u64),
-        Some(3),
-        "tolerant collect must preserve all three item-order slots"
+        projected.get("first").and_then(Value::as_str),
+        Some("a-done")
     );
+    assert_eq!(
+        projected.get("middle_present").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        projected.get("third").and_then(Value::as_str),
+        Some("c-done")
+    );
+
+    // Correlate the result produced by the actual collector with the separate
+    // parent/child durable-event reconstruction.
     let final_history = store.read_history(&workflow_id).await?;
     let durable_slots = assert_durable_child_histories(&store, &final_history).await?;
     assert_eq!(

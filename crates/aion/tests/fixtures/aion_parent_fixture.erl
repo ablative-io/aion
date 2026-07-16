@@ -7,9 +7,9 @@
 child_round_trip(_Input) ->
     {ok, ChildId} = aion_flow_ffi:spawn_child(
         <<"aion_child_fixture">>, <<"\"child-input\"">>, <<"{}">>),
-    %% await_child returns successful durable bytes exactly; child failures use
-    %% an "error:" data prefix, while {error, _} is an engine fault.
-    {ok, ChildResult} = aion_flow_ffi:await_child(ChildId),
+    %% await_child returns child success/failure as data with the SDK's
+    %% "ok:"/"error:" payload prefixes; {error, _} is an engine fault.
+    {ok, <<"ok:", ChildResult/binary>>} = aion_flow_ffi:await_child(ChildId),
     {ChildId, ChildResult}.
 
 %% Same as child_round_trip/1, but gate completion on a "release" signal so
@@ -18,7 +18,7 @@ child_round_trip(_Input) ->
 child_then_signal(_Input) ->
     {ok, ChildId} = aion_flow_ffi:spawn_child(
         <<"aion_child_fixture">>, <<"\"child-input\"">>, <<"{}">>),
-    {ok, ChildResult} = aion_flow_ffi:await_child(ChildId),
+    {ok, <<"ok:", ChildResult/binary>>} = aion_flow_ffi:await_child(ChildId),
     {ok, _Release} = aion_flow_ffi:receive_signal(<<"release">>, <<"{}">>),
     {ChildId, ChildResult}.
 
@@ -44,7 +44,7 @@ two_children(_Input) ->
     {ok, _Mid} = aion_flow_ffi:receive_signal(<<"mid">>, <<"{}">>),
     {ok, SecondChild} = aion_flow_ffi:spawn_child(
         <<"aion_child_fixture">>, <<"\"second-input\"">>, <<"{}">>),
-    {ok, _FirstResult} = aion_flow_ffi:await_child(FirstChild),
-    {ok, _SecondResult} = aion_flow_ffi:await_child(SecondChild),
+    {ok, <<"ok:", _FirstResult/binary>>} = aion_flow_ffi:await_child(FirstChild),
+    {ok, <<"ok:", _SecondResult/binary>>} = aion_flow_ffi:await_child(SecondChild),
     {ok, _Release} = aion_flow_ffi:receive_signal(<<"release">>, <<"{}">>),
     {FirstChild, SecondChild}.

@@ -109,10 +109,11 @@ pub fn awl_rt_run() {
 
 /// The production FFI namespace for the child-statement proof: `spawn_child`
 /// executes the generated child's exported `run/1` on the exact encoded
-/// input and records its encoded output verbatim under a process-dictionary
-/// correlation (the `harness::child_host_ebin` precedent); `await_child`
-/// replays it. The fire-and-forget spawn and the awaited call share the child,
-/// proving both statement forms cross the same six-argument spawn ABI.
+/// input and records its `ok:`-prefixed encoded output under a
+/// process-dictionary correlation (the `harness::child_host_ebin`
+/// precedent); `await_child` replays it. The fire-and-forget spawn and the
+/// awaited call share the child, proving both statement forms cross the same
+/// six-argument spawn ABI.
 fn child_stmt_host_ebin(
     label: &str,
     parent_module: &str,
@@ -129,7 +130,7 @@ fn child_stmt_host_ebin(
              spawn_child(<<\"score_essay\">>, Input, _Config) ->\n\
              ChildId = Input,\n\
              Result = case {child_module}:run(Input) of\n\
-             {{ok, Output}} -> {{ok, Output}};\n\
+             {{ok, Output}} -> {{ok, <<\"ok:\", Output/binary>>}};\n\
              {{error, _}} -> {{error, <<\"child run failed\">>}} end,\n\
              erlang:put({{awl_child_result, ChildId}}, Result),\n\
              {{ok, ChildId}}.\n\

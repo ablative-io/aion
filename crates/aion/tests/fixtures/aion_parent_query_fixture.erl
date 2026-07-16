@@ -13,7 +13,7 @@
 await_gated(_Input) ->
     {ok, ChildId} = aion_flow_ffi:spawn_child(
         <<"aion_child_fixture">>, <<"\"child-input\"">>, <<"{}">>),
-    {ok, ChildResult} =
+    {ok, <<"ok:", ChildResult/binary>>} =
         pumped(fun() -> aion_flow_ffi:await_child(ChildId) end),
     {ok, _Release} =
         pumped(fun() -> aion_flow_ffi:receive_signal(<<"release">>, <<"{}">>) end),

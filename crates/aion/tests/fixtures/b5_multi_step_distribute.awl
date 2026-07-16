@@ -3,7 +3,7 @@ workflow b5_multi_step_distribute
   input items: [String]
   outcome done: type Done, route success
 
-type Done { slots: Int }
+type Done { first: String, middle_present: Bool, third: String }
 
 worker proof
   action stage_one(item: String) -> String
@@ -20,5 +20,4 @@ step second
 
 step gather
   collect result? -> results
-  results |> count -> slots
-  route done(slots: slots)
+  route done(first: "unprojected", middle_present: true, third: "unprojected")

@@ -278,7 +278,7 @@ testing_register_activity_mock(Name, Handler) ->
 
 %% The handler is the type-erased child double registered by
 %% `aion/testing.mock_child`: it receives the encoded child input and returns
-%% `{ok, Output}` / `{ok, <<"error:", Error/binary>>}` for
+%% `{ok, <<"ok:", Output/binary>>}` / `{ok, <<"error:", Error/binary>>}` for
 %% recorded child terminals, or `{error, Reason}` for an engine-level fault.
 testing_register_child_mock(Name, Handler) ->
     Key = {aion_child_mock, self(), Name},
@@ -416,16 +416,20 @@ activity_delay(Spec) ->
 
 child_result(<<"checkout-child">>, Input) ->
     OrderId = extract_string(Input, <<"order_id">>),
-    {ok, <<"{\"id\":\"child-receipt-", OrderId/binary, "\",\"approved\":true}">>};
+    {ok, <<"ok:{\"id\":\"child-receipt-", OrderId/binary, "\",\"approved\":true}">>};
 child_result(<<"declining-child">>, _Input) ->
     {ok, <<"error:\"declined\"">>};
 child_result(<<"malformed-child">>, _Input) ->
-    {ok, <<"{\"id\":1,\"approved\":true}">>};
+    {ok, <<"ok:{\"id\":1,\"approved\":true}">>};
+child_result(<<"raw-error-prefix-success">>, _Input) ->
+    {ok, <<"ok:error:identical-payload">>};
+child_result(<<"raw-error-prefix-failure">>, _Input) ->
+    {ok, <<"error:error:identical-payload">>};
 child_result(<<"queried-child">>, _Input) ->
     %% First await yields a query sentinel; the re-entered await resolves.
     {sentinel_then,
         {error, <<"aion_query:{\"query_id\":\"q-child\",\"name\":\"child-state\"}">>},
-        {ok, <<"\"queried-child-receipt\"">>}};
+        {ok, <<"ok:\"queried-child-receipt\"">>}};
 child_result(_Name, _Input) ->
     {error, <<"unknown child workflow">>}.
 
