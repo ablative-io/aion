@@ -119,7 +119,8 @@ impl ChildNifBridge {
         self.watch_backoff
     }
 
-    /// Resolves a child entry at the parent's exact package version.
+    /// Resolves a same-package child at the parent's exact package version,
+    /// falling back to the routed version for an explicitly separate child.
     ///
     /// Same-archive entries share one content hash, so this exact lookup keeps
     /// child starts pinned across a redeploy of either route.
@@ -128,10 +129,10 @@ impl ChildNifBridge {
         workflow_type: &str,
         parent_version: &aion_package::ContentHash,
     ) -> Result<Option<aion_core::PackageVersion>, EngineError> {
-        Ok(self
-            .catalog
-            .get(workflow_type, parent_version)?
-            .map(|workflow| crate::loader::package_version_of(workflow.version())))
+        if let Some(workflow) = self.catalog.get(workflow_type, parent_version)? {
+            return Ok(Some(crate::loader::package_version_of(workflow.version())));
+        }
+        self.catalog.routed_version(workflow_type)
     }
 
     /// Abort every child-terminal watcher armed by an exited parent pid.

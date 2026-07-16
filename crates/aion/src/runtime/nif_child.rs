@@ -109,9 +109,7 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             let package_version = bridge
                 .package_version_for_child(&workflow_type, nif.workflow_handle().loaded_version())
                 .map_err(|error| format!("child_version_resolution:{error}"))?
-                .ok_or_else(|| {
-                    format!("child_workflow_type_not_in_parent_package:{workflow_type}")
-                })?;
+                .ok_or_else(|| format!("child_workflow_type_not_loaded:{workflow_type}"))?;
             // Record-then-spawn (#56): the id is recorded nondeterminism —
             // drawn once here, durably recorded before any observable use,
             // returned from history on every replay.

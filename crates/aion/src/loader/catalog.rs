@@ -488,41 +488,9 @@ impl WorkflowCatalog {
             });
         }
 
-        let mut registered_now = Vec::new();
-        for module in &staged.modules {
-            if snapshot
-                .registered_modules
-                .contains_key(&module.deployed_name)
-            {
-                continue;
-            }
-            if let Err(error) = register(&module.deployed_name, module.bytes) {
-                let rollback_errors = rollback_registered(&mut rollback, &registered_now);
-                return Err(load_error(format!(
-                    "runtime rejected deployed module `{}` after {} staged registrations: {error}{}",
-                    module.deployed_name,
-                    registered_now.len(),
-                    rollback_errors
-                )));
-            }
-            registered_now.push(module.deployed_name.clone());
-        }
-
-        // Entry-point verification before the route commit: a package whose
-        // entry module loads but exports nothing routable must fail the
-        // load, not the first dispatch.
-        let mut verify_entry = verify_entry;
-        for workflow in &staged.workflows {
-            if let Err(error) =
-                verify_entry(&workflow.deployed_entry_module, &workflow.entry_function)
-            {
-                let rollback_errors = rollback_registered(&mut rollback, &registered_now);
-                return Err(load_error(format!(
-                    "entry verification failed for workflow `{}`: {error}{rollback_errors}",
-                    workflow.workflow_type
-                )));
-            }
-        }
+        let registered_now =
+            register_staged_modules(&staged, &snapshot, &mut register, &mut rollback)?;
+        verify_staged_entries(&staged, verify_entry, &mut rollback, &registered_now)?;
 
         let records = staged.records();
         let Some(record) = records.first().cloned() else {
@@ -665,6 +633,59 @@ impl WorkflowCatalog {
         }
         self.install(next)
     }
+}
+
+fn register_staged_modules<F, R>(
+    staged: &StagedLoad<'_>,
+    snapshot: &CatalogSnapshot,
+    register: &mut F,
+    rollback: &mut R,
+) -> Result<Vec<String>, EngineError>
+where
+    F: FnMut(&str, &[u8]) -> Result<(), EngineError>,
+    R: FnMut(&str) -> Result<(), EngineError>,
+{
+    let mut registered = Vec::new();
+    for module in &staged.modules {
+        if snapshot
+            .registered_modules
+            .contains_key(&module.deployed_name)
+        {
+            continue;
+        }
+        if let Err(error) = register(&module.deployed_name, module.bytes) {
+            let rollback_errors = rollback_registered(rollback, &registered);
+            return Err(load_error(format!(
+                "runtime rejected deployed module `{}` after {} staged registrations: {error}{rollback_errors}",
+                module.deployed_name,
+                registered.len()
+            )));
+        }
+        registered.push(module.deployed_name.clone());
+    }
+    Ok(registered)
+}
+
+fn verify_staged_entries<V, R>(
+    staged: &StagedLoad<'_>,
+    mut verify: V,
+    rollback: &mut R,
+    registered: &[String],
+) -> Result<(), EngineError>
+where
+    V: FnMut(&str, &str) -> Result<(), EngineError>,
+    R: FnMut(&str) -> Result<(), EngineError>,
+{
+    for workflow in &staged.workflows {
+        if let Err(error) = verify(&workflow.deployed_entry_module, &workflow.entry_function) {
+            let rollback_errors = rollback_registered(rollback, registered);
+            return Err(load_error(format!(
+                "entry verification failed for workflow `{}`: {error}{rollback_errors}",
+                workflow.workflow_type
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
