@@ -3,7 +3,7 @@
 //! terminal arrivals may invert item order, tolerant failure preserves a slot,
 //! and no sibling is cancelled.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,16 +14,11 @@ use aion::activity::bridge::{ActivityDispatch, ActivityDispatcher};
 use aion::signal::ConcreteSignalRouter;
 use aion::{EngineBuilder, RuntimeHandle, SignalRouter};
 use aion_core::{Event, Payload, WorkflowId};
-use aion_package::{
-    BeamModule, BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest,
-    ManifestVersion, Package, PackageBuilder, WorkflowEntry,
-};
+use aion_package::{Package, PackageOptions, package_project};
 use aion_store::{EventStore, InMemoryStore};
 use serde_json::{Value, json};
 
 const MODULE: &str = "b5_multi_step_distribute";
-const CHILD_TYPE: &str = "awl_distribute_fan_0";
-const CHILD_ENTRY: &str = "awl_distribute_fan_0_run";
 const AWL: &str = include_str!("fixtures/b5_multi_step_distribute.awl");
 const DEADLINE: Duration = Duration::from_secs(20);
 
@@ -162,18 +157,51 @@ fn emitted_package() -> Result<Package, Box<dyn std::error::Error>> {
     let repo = repo_root()?;
     let root = repo.join("target/flow-vocab-b5-engine-proof");
     fs::create_dir_all(root.join("src"))?;
+    fs::create_dir_all(root.join("schemas"))?;
     let document = aion_awl::parse(AWL)?;
     let diagnostics = aion_awl::check(&document);
     if !diagnostics.is_empty() {
         return Err(format!("engine proof AWL did not check: {diagnostics:?}").into());
     }
-    let generated = aion_awl::emit(&document)?;
-    if !generated.contains(&format!("workflow.spawn(\"{CHILD_TYPE}\""))
-        || !generated.contains(&format!("pub fn {CHILD_ENTRY}"))
+    let artifact = aion_awl::emit_artifact(&document)?;
+    let [child] = artifact.synthesized_workflows.as_slice() else {
+        return Err(format!(
+            "expected exactly one synthesized entry, got {}",
+            artifact.synthesized_workflows.len()
+        )
+        .into());
+    };
+    if !artifact
+        .source
+        .contains(&format!("workflow.spawn(\"{}\"", child.workflow_type))
+        || !artifact
+            .source
+            .contains(&format!("pub fn {}", child.entry_function))
     {
-        return Err("emitted proof lacks implicit child spawn/entry shape".into());
+        return Err("emitted proof lacks its structured child spawn/entry shape".into());
     }
-    fs::write(root.join("src").join(format!("{MODULE}.gleam")), &generated)?;
+    fs::write(
+        root.join("src").join(format!("{MODULE}.gleam")),
+        &artifact.source,
+    )?;
+    fs::write(
+        root.join("src").join(format!("{MODULE}.awl.json")),
+        serde_json::to_vec_pretty(&artifact.project_metadata())?,
+    )?;
+    fs::write(
+        root.join("schemas/input.json"),
+        serde_json::to_vec_pretty(&aion_awl::schema_for_workflow(&document)?)?,
+    )?;
+    fs::write(
+        root.join("schemas/output.json"),
+        serde_json::to_vec_pretty(&aion_awl::schema_for_outcomes(&document)?)?,
+    )?;
+    fs::write(
+        root.join("workflow.toml"),
+        format!(
+            "[[workflow]]\nentry_module = \"{MODULE}\"\nentry_function = \"run\"\ntimeout_seconds = 30\ninput_schema = \"schemas/input.json\"\noutput_schema = \"schemas/output.json\"\nactivities = [\"stage_one\", \"stage_two\"]\n"
+        ),
+    )?;
     fs::write(
         root.join("gleam.toml"),
         format!(
@@ -193,63 +221,24 @@ fn emitted_package() -> Result<Package, Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let mut modules = Vec::new();
-    for package in fs::read_dir(root.join("build/dev/erlang"))? {
-        let ebin = package?.path().join("ebin");
-        if !ebin.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(ebin)? {
-            let path = entry?.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("beam") {
-                continue;
-            }
-            let name = path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .ok_or("compiled BEAM has no UTF-8 name")?
-                .to_owned();
-            if name != "aion_flow_ffi" {
-                modules.push(BeamModule::new(name, fs::read(&path)?));
-            }
-        }
+    let mut report = package_project(&root, &PackageOptions::default())?;
+    let packaged = report
+        .packages
+        .pop()
+        .ok_or("project packaging produced no archive")?;
+    if !report.packages.is_empty() {
+        return Err("project packaging produced more than one archive".into());
     }
-    let manifest = Manifest {
-        entry_module: MODULE.to_owned(),
-        entry_function: "run".to_owned(),
-        input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object" }),
-        timeout: Duration::from_secs(30),
-        activities: vec![
-            DeclaredActivity {
-                activity_type: "stage_one".to_owned(),
-            },
-            DeclaredActivity {
-                activity_type: "stage_two".to_owned(),
-            },
-        ],
-        version: ManifestVersion::new("unstamped"),
-        format_version: CURRENT_FORMAT_VERSION,
-        additional_workflows: vec![WorkflowEntry {
-            workflow_type: CHILD_TYPE.to_owned(),
-            entry_module: MODULE.to_owned(),
-            entry_function: CHILD_ENTRY.to_owned(),
-            input_schema: json!({ "type": "object" }),
-            output_schema: json!({}),
-            timeout: Duration::from_secs(30),
-            internal: true,
-        }],
-    };
-    let archive = PackageBuilder::with_source(
-        manifest,
-        BeamSet::new(modules)?,
-        [(MODULE, generated.into_bytes())],
-    )
-    .write_to_bytes()?;
-    Ok(Package::load_from_bytes(
-        archive,
-        ExtractionLimits::unbounded(),
-    )?)
+    let entries = &packaged.package.manifest().additional_workflows;
+    if entries.len() != 1
+        || entries[0].workflow_type != child.workflow_type
+        || entries[0].entry_function != child.entry_function
+        || entries[0].input_schema != child.input_schema
+        || entries[0].output_schema != child.output_schema
+    {
+        return Err("packaged synthesized entry differs from emitted artifact".into());
+    }
+    Ok(packaged.package)
 }
 
 async fn wait_history(
@@ -268,6 +257,85 @@ async fn wait_history(
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+async fn assert_durable_child_histories(
+    store: &Arc<dyn EventStore>,
+    parent_history: &[Event],
+) -> TestResult {
+    let mut children = BTreeMap::new();
+    for event in parent_history {
+        if let Event::ChildWorkflowStarted {
+            child_workflow_id,
+            input,
+            ..
+        } = event
+        {
+            let value: Value = serde_json::from_slice(input.bytes())?;
+            let item = value
+                .get("item")
+                .and_then(Value::as_str)
+                .ok_or("child input has no item")?;
+            children.insert(item.to_owned(), child_workflow_id.clone());
+        }
+    }
+    assert_eq!(children.len(), 3);
+    assert!(
+        !parent_history
+            .iter()
+            .any(|event| matches!(event, Event::ChildWorkflowCancelled { .. })),
+        "parent history contains a child cancellation"
+    );
+
+    let mut first_schedules = Vec::new();
+    let mut first_completions = Vec::new();
+    for (item, child_id) in children {
+        let history = store.read_history(&child_id).await?;
+        assert!(
+            !history.iter().any(|event| matches!(
+                event,
+                Event::ChildWorkflowCancelled { .. } | Event::WorkflowCancelled { .. }
+            )),
+            "child {item} history contains cancellation"
+        );
+        let (activity_id, scheduled_at, scheduled_item) = history
+            .iter()
+            .find_map(|event| match event {
+                Event::ActivityScheduled {
+                    activity_id,
+                    activity_type,
+                    input,
+                    ..
+                } if activity_type == "stage_one" => {
+                    let value: Value = serde_json::from_slice(input.bytes()).ok()?;
+                    Some((
+                        activity_id.clone(),
+                        *event.recorded_at(),
+                        value.get("item")?.as_str()?.to_owned(),
+                    ))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| format!("child {item} has no durable stage_one schedule"))?;
+        assert_eq!(scheduled_item, item);
+        let completed_at = history
+            .iter()
+            .find_map(|event| match event {
+                Event::ActivityCompleted {
+                    activity_id: completed,
+                    ..
+                } if *completed == activity_id => Some(*event.recorded_at()),
+                _ => None,
+            })
+            .ok_or_else(|| format!("child {item} has no durable stage_one completion"))?;
+        first_schedules.push(scheduled_at);
+        first_completions.push(completed_at);
+    }
+    assert!(
+        first_schedules.iter().max() < first_completions.iter().min(),
+        "all three durable first schedules must precede the first completion: schedules={first_schedules:?}, completions={first_completions:?}"
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -347,22 +415,17 @@ async fn emitted_multistep_distribute_is_parallel_ordered_and_tolerant() -> Test
         .await?
         .map_err(|error| format!("parent failed: {error:?}"))?;
     assert_eq!(gates.completion_order()?, vec!["c", "b", "a"]);
-    let result_text = std::str::from_utf8(result.bytes())?;
-    assert!(
-        result_text.contains("\"slots\":3"),
-        "tolerant collect must retain three item-order slots: {result_text}"
+    let decoded_result: Value = serde_json::from_slice(result.bytes())?;
+    assert_eq!(
+        decoded_result
+            .get("payload")
+            .and_then(|payload| payload.get("slots"))
+            .and_then(Value::as_u64),
+        Some(3),
+        "tolerant collect must preserve all three item-order slots"
     );
     let final_history = store.read_history(&workflow_id).await?;
-    let starts: Vec<_> = final_history
-        .iter()
-        .filter(|event| matches!(event, Event::ChildWorkflowStarted { .. }))
-        .collect();
-    assert_eq!(starts.len(), 3);
-    assert!(
-        !final_history
-            .iter()
-            .any(|event| matches!(event, Event::ChildWorkflowCancelled { .. }))
-    );
+    assert_durable_child_histories(&store, &final_history).await?;
     engine.shutdown()?;
     Ok(())
 }

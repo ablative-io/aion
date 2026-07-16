@@ -13,13 +13,287 @@ mod reload_fixture;
 
 use std::{sync::Arc, time::Duration};
 
-use aion_package::{ExtractionLimits, Package, PackageBuilder};
-use aion_store::{EventStore, InMemoryStore};
+use aion::{EngineError, PinHolder};
+use aion_package::{ExtractionLimits, Package, PackageBuilder, WorkflowEntry};
+use aion_store::{
+    Event, EventStore, InMemoryStore, OutboxRow, PackageRecord, PackageRouteRecord, PackageStore,
+    ReadableEventStore, RunSummary, StoreError, TimerEntry, TimerId, WorkflowFilter, WorkflowId,
+    WorkflowSummary, WritableEventStore, WriteToken,
+};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use tokio::sync::Notify;
 
 use reload_fixture::{
     RELOAD_MODULE, compile_reload_beam, engine_with, input, recorded_version, reload_package,
     result_int, start, version_of,
 };
+
+struct PausingPackageStore {
+    inner: InMemoryStore,
+    entered: Notify,
+    release: Notify,
+}
+
+impl PausingPackageStore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: InMemoryStore::default(),
+            entered: Notify::new(),
+            release: Notify::new(),
+        })
+    }
+}
+
+#[async_trait]
+impl ReadableEventStore for PausingPackageStore {
+    async fn read_history(&self, id: &WorkflowId) -> Result<Vec<Event>, StoreError> {
+        self.inner.read_history(id).await
+    }
+    async fn read_history_from(&self, id: &WorkflowId, seq: u64) -> Result<Vec<Event>, StoreError> {
+        self.inner.read_history_from(id, seq).await
+    }
+    async fn read_run_chain(&self, id: &WorkflowId) -> Result<Vec<RunSummary>, StoreError> {
+        self.inner.read_run_chain(id).await
+    }
+    async fn list_workflow_ids(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.inner.list_workflow_ids().await
+    }
+    async fn list_active(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.inner.list_active().await
+    }
+    async fn list_paused(&self) -> Result<Vec<WorkflowId>, StoreError> {
+        self.inner.list_paused().await
+    }
+    async fn query(&self, filter: &WorkflowFilter) -> Result<Vec<WorkflowSummary>, StoreError> {
+        self.inner.query(filter).await
+    }
+    async fn schedule_timer(
+        &self,
+        workflow_id: &WorkflowId,
+        timer_id: &TimerId,
+        fire_at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        self.inner
+            .schedule_timer(workflow_id, timer_id, fire_at)
+            .await
+    }
+    async fn expired_timers(&self, as_of: DateTime<Utc>) -> Result<Vec<TimerEntry>, StoreError> {
+        self.inner.expired_timers(as_of).await
+    }
+}
+
+#[async_trait]
+impl WritableEventStore for PausingPackageStore {
+    async fn append(
+        &self,
+        token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+    ) -> Result<(), StoreError> {
+        self.inner
+            .append(token, workflow_id, events, expected_seq)
+            .await
+    }
+
+    async fn append_with_outbox(
+        &self,
+        token: WriteToken,
+        workflow_id: &WorkflowId,
+        events: &[Event],
+        expected_seq: u64,
+        outbox_rows: &[OutboxRow],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .append_with_outbox(token, workflow_id, events, expected_seq, outbox_rows)
+            .await
+    }
+}
+
+#[async_trait]
+impl PackageStore for PausingPackageStore {
+    async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        drop(record);
+        self.entered.notify_one();
+        self.release.notified().await;
+        Err(StoreError::Backend(
+            "injected put_package failure".to_owned(),
+        ))
+    }
+
+    async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
+        self.inner.list_packages().await
+    }
+
+    async fn delete_package(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        self.inner.delete_package(workflow_type, content_hash).await
+    }
+
+    async fn put_package_route(
+        &self,
+        workflow_type: &str,
+        content_hash: &str,
+    ) -> Result<(), StoreError> {
+        self.inner
+            .put_package_route(workflow_type, content_hash)
+            .await
+    }
+
+    async fn list_package_routes(&self) -> Result<Vec<PackageRouteRecord>, StoreError> {
+        self.inner.list_package_routes().await
+    }
+}
+
+#[tokio::test]
+async fn failed_paused_persistence_never_publishes_a_startable_hash() -> TestResult {
+    let package = reload_package(&compile_reload_beam(1)?, "run")?;
+    let store_impl = PausingPackageStore::new();
+    let store: Arc<dyn EventStore> = store_impl.clone();
+    let engine = Arc::new(engine_with(&store, vec![]).await?);
+    let deploy_engine = Arc::clone(&engine);
+    let deploy = tokio::spawn(async move { deploy_engine.load_package(package).await });
+
+    store_impl.entered.notified().await;
+    let staged_versions = engine.list_workflow_versions()?;
+    assert!(
+        staged_versions.iter().all(|version| !version.route_active),
+        "staged versions published before persistence: {staged_versions:#?}"
+    );
+    let raced_start = start(&engine).await;
+    assert!(
+        raced_start.is_err(),
+        "staged hash became startable before persistence: {staged_versions:#?}"
+    );
+    for workflow_id in store.list_workflow_ids().await? {
+        let history = store.read_history(&workflow_id).await?;
+        assert!(
+            !history
+                .iter()
+                .any(|event| matches!(event, Event::WorkflowStarted { workflow_type, .. } if workflow_type == RELOAD_MODULE)),
+            "racing start recorded the staged package pin before persistence: {history:#?}"
+        );
+    }
+    store_impl.release.notify_one();
+    let deploy_result = deploy.await?;
+    let Err(deploy_error) = deploy_result else {
+        return Err("injected put_package failure unexpectedly succeeded".into());
+    };
+    assert!(
+        deploy_error
+            .to_string()
+            .contains("injected put_package failure")
+    );
+    assert!(engine.list_workflow_versions()?.is_empty());
+    engine.shutdown()?;
+    drop(engine);
+
+    let recovered = engine_with(&store, vec![]).await?;
+    assert!(
+        recovered.list_workflow_versions()?.is_empty(),
+        "failed deploy resurrected after restart"
+    );
+    for workflow_id in store.list_workflow_ids().await? {
+        assert!(
+            !store
+                .read_history(&workflow_id)
+                .await?
+                .iter()
+                .any(|event| matches!(event, Event::WorkflowStarted { workflow_type, .. } if workflow_type == RELOAD_MODULE)),
+            "racing start left an unrecoverable staged package pin after restart"
+        );
+    }
+    recovered.shutdown()?;
+    Ok(())
+}
+
+fn grouped_package(
+    package: &Package,
+    child_type: &str,
+) -> Result<Package, Box<dyn std::error::Error>> {
+    let mut manifest = package.manifest().clone();
+    manifest.additional_workflows.push(WorkflowEntry {
+        workflow_type: child_type.to_owned(),
+        entry_module: manifest.entry_module.clone(),
+        entry_function: "gated".to_owned(),
+        input_schema: manifest.input_schema.clone(),
+        output_schema: manifest.output_schema.clone(),
+        timeout: manifest.timeout,
+        internal: true,
+    });
+    let bytes = PackageBuilder::new(manifest, package.beams().clone()).write_to_bytes()?;
+    Ok(Package::load_from_bytes(
+        bytes,
+        ExtractionLimits::unbounded(),
+    )?)
+}
+
+#[tokio::test]
+async fn active_sibling_pins_whole_archive_group_across_restart() -> TestResult {
+    const CHILD_TYPE: &str = "aion_internal_awl_child_reload_group_fan_0";
+    let v1 = grouped_package(
+        &reload_package(&compile_reload_beam(1)?, "run")?,
+        CHILD_TYPE,
+    )?;
+    let v2 = grouped_package(
+        &reload_package(&compile_reload_beam(2)?, "run")?,
+        CHILD_TYPE,
+    )?;
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+
+    let engine = engine_with(&store, vec![]).await?;
+    engine.load_package(v1.clone()).await?;
+    let child = engine
+        .start_workflow(
+            CHILD_TYPE,
+            input()?,
+            std::collections::HashMap::new(),
+            "default".to_owned(),
+        )
+        .await?;
+    let child_id = child.workflow_id().clone();
+    let child_run = child.run_id().clone();
+    engine.load_package(v2.clone()).await?;
+
+    let refusal = engine
+        .unload_workflow_version(RELOAD_MODULE, v1.content_hash())
+        .await;
+    assert!(
+        matches!(
+            refusal,
+            Err(EngineError::VersionPinned {
+                ref workflow_type,
+                pinned_by: PinHolder::LiveRun { .. },
+                ..
+            }) if workflow_type == CHILD_TYPE
+        ),
+        "active sibling did not pin its whole archive group: {refusal:?}"
+    );
+    assert!(engine.list_workflow_versions()?.iter().any(|entry| {
+        entry.workflow_type == CHILD_TYPE && entry.content_hash == *v1.content_hash()
+    }));
+    engine.shutdown()?;
+
+    let recovered = engine_with(&store, vec![]).await?;
+    let versions = recovered.list_workflow_versions()?;
+    assert!(versions.iter().any(|entry| {
+        entry.workflow_type == RELOAD_MODULE && entry.content_hash == *v1.content_hash()
+    }));
+    assert!(versions.iter().any(|entry| {
+        entry.workflow_type == CHILD_TYPE && entry.content_hash == *v1.content_hash()
+    }));
+    let recovered_child = recovered
+        .registry()
+        .get(&child_id, &child_run)?
+        .ok_or("active sibling did not recover after refused group unload")?;
+    assert_eq!(recovered_child.loaded_version(), v1.content_hash());
+    recovered.shutdown()?;
+    Ok(())
+}
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

@@ -21,15 +21,15 @@ use crate::runtime::RuntimeHandle;
 
 use super::WorkflowCatalog;
 
-/// Persists a successfully loaded deploy: the canonical archive bytes and,
+/// Persists a verified staged deploy: the canonical archive bytes and,
 /// atomically with them, the type's route pointer.
 ///
-/// Called for every successful runtime deploy, including idempotent re-loads
-/// (`freshly_loaded = false`): re-deploying a version is a routing intent the
-/// catalog already honoured, and the persisted pointer must mirror it. A
-/// persistence failure surfaces to the deploy caller while the in-memory load
-/// stands; re-sending the same archive is idempotent in the catalog and
-/// retries persistence.
+/// Called before in-memory routes are published, including for idempotent
+/// re-loads (`freshly_loaded = false`): re-deploying a version is a routing
+/// intent, and durability must lead the catalog pointer. A persistence failure
+/// surfaces to the deploy caller; a freshly staged package is rolled back by
+/// the caller, while re-sending the archive safely retries this idempotent
+/// write.
 ///
 /// # Errors
 ///
