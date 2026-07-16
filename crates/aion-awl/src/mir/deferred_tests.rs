@@ -116,33 +116,44 @@ fn statement_level_child_forms_plan_the_witness() -> Result<(), Box<dyn std::err
 
 /// `sort` over a non-comparable key is the reference emitter's hard gate; the
 /// checker does not constrain key comparability, so a check-clean document
-/// must refuse here with the reference class.
+/// must refuse here with the reference class. Bool keys refuse too: the
+/// shipped `gleam_stdlib` exports no `gleam@bool:compare/2`, so a Bool key
+/// could only ever be a Gleam compile error (reference path) or an `undef`
+/// crash (direct path).
 #[test]
 fn sort_non_comparable_key_refuses_with_the_reference_class()
 -> Result<(), Box<dyn std::error::Error>> {
-    let source = "\
+    for (key_type, field) in [("Inner", "inner"), ("Bool", "flag")] {
+        let source = format!(
+            "\
 //! Focused non-comparable sort-key refusal.
 workflow sort_non_comparable
   input docs: [Doc]
   outcome done: type Done, route success
 
-type Inner { note: String }
-type Doc   { inner: Inner }
-type Done  { total: Int }
+type Inner {{ note: String }}
+type Doc   {{ inner: Inner, flag: Bool }}
+type Done  {{ total: Int }}
 
 step order
-  docs |> sort(.inner) |> count -> total
+  docs |> sort(.{field}) |> count -> total
   route done(total: total)
-";
-    match lower_source(source)? {
-        Err(LowerError::Unsupported { shape, .. }) => {
-            assert_eq!(
-                shape,
-                "`sort` over a non-comparable key (needs Int, Float, String, Bool)"
-            );
-        }
-        other => {
-            return Err(format!("expected the non-comparable sort refusal, got {other:?}").into());
+"
+        );
+        match lower_source(&source)? {
+            Err(LowerError::Unsupported { shape, .. }) => {
+                assert_eq!(
+                    shape,
+                    "`sort` over a non-comparable key (needs Int, Float, String)",
+                    "sort key type {key_type} must refuse"
+                );
+            }
+            other => {
+                return Err(format!(
+                    "expected the non-comparable sort refusal for {key_type}, got {other:?}"
+                )
+                .into());
+            }
         }
     }
     Ok(())

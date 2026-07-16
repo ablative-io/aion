@@ -104,7 +104,6 @@ pub enum RuntimeFn {
     CmpInt,
     CmpFloat,
     CmpString,
-    CmpBool,
     StrAppend,
     // R1 fallback ONLY (unused in the primary design; marked row in §6).
     ResultTry,
@@ -122,6 +121,26 @@ impl RuntimeFn {
     pub(crate) fn signature(self) -> (&'static str, String, u32) {
         let (module, function, arity) = self.raw_signature();
         (module, function.to_owned(), arity)
+    }
+
+    /// Every `(module, function, arity)` the lowering may mint, with the
+    /// leaf-parametrised rows expanded over every [`Leaf`] — the complete
+    /// static import surface of generated code.
+    ///
+    /// This exists for the bundle guard in `aion-awl-package`: iterating
+    /// this table against the embedded SDK closure's export sets makes
+    /// lowering/bundle skew (a `RuntimeFn` row the shipped beams do not
+    /// export) a test failure instead of an `undef` crash in a running VM.
+    /// The variant list below is kept honest by `variant_ordinal` in this
+    /// module's tests: adding a `RuntimeFn` variant breaks that exhaustive
+    /// match at compile time, and its test fails until the variant is
+    /// enumerated here.
+    #[must_use]
+    pub fn import_surface() -> Vec<(&'static str, String, u32)> {
+        all_runtime_fns()
+            .into_iter()
+            .map(Self::signature)
+            .collect()
     }
 
     fn raw_signature(self) -> (&'static str, &'static str, u32) {
@@ -192,7 +211,6 @@ impl RuntimeFn {
             Self::CmpInt => ("gleam@int", "compare", 2),
             Self::CmpFloat => ("gleam@float", "compare", 2),
             Self::CmpString => ("gleam@string", "compare", 2),
-            Self::CmpBool => ("gleam@bool", "compare", 2),
             Self::StrAppend => ("gleam@string", "append", 2),
             Self::ResultTry => ("gleam@result", "try", 2),
             Self::IntAdd => ("erlang", "+", 2),
@@ -227,6 +245,89 @@ impl RuntimeFn {
     }
 }
 
+/// Every [`Leaf`], for expanding the leaf-parametrised runtime rows.
+const ALL_LEAVES: [Leaf; 5] = [Leaf::Bool, Leaf::Int, Leaf::Float, Leaf::Str, Leaf::Nil];
+
+/// Every [`RuntimeFn`] value (leaf rows expanded), backing
+/// [`RuntimeFn::import_surface`]. Kept exhaustive by the `variant_ordinal`
+/// staleness guard in this module's tests.
+fn all_runtime_fns() -> Vec<RuntimeFn> {
+    let mut all = vec![
+        RuntimeFn::WfDefine,
+        RuntimeFn::WfRun,
+        RuntimeFn::WfAll,
+        RuntimeFn::WfMap,
+        RuntimeFn::WfMapSettled,
+        RuntimeFn::WfSpawn,
+        RuntimeFn::WfSpawnAndWait,
+        RuntimeFn::WfReceive,
+        RuntimeFn::WfWithTimeout,
+        RuntimeFn::WfSleep,
+        RuntimeFn::WfId,
+        RuntimeFn::ActNew,
+        RuntimeFn::ActTaskQueue,
+        RuntimeFn::ActRetry,
+        RuntimeFn::ActTimeout,
+        RuntimeFn::ActNode,
+        RuntimeFn::ErrCodec,
+        RuntimeFn::MapActivityError,
+        RuntimeFn::MapReceiveError,
+        RuntimeFn::MapChildError,
+        RuntimeFn::MapSpawnError,
+        RuntimeFn::MapTimerError,
+        RuntimeFn::MapEngineError,
+        RuntimeFn::NilCodec,
+        RuntimeFn::RawCodec,
+        RuntimeFn::Decoded,
+        RuntimeFn::JsonValueCodec,
+        RuntimeFn::RtRun,
+        RuntimeFn::RtIndex,
+        RuntimeFn::JsonCodec,
+        RuntimeFn::DurationMs,
+        RuntimeFn::ErrorTerminal,
+        RuntimeFn::SignalNew,
+        RuntimeFn::ChildAwait,
+        RuntimeFn::JObject,
+        RuntimeFn::JString,
+        RuntimeFn::JArray,
+        RuntimeFn::JNullable,
+        RuntimeFn::JToString,
+        RuntimeFn::DField,
+        RuntimeFn::DOptionalField,
+        RuntimeFn::DSuccess,
+        RuntimeFn::DFailure,
+        RuntimeFn::DThen,
+        RuntimeFn::DMap,
+        RuntimeFn::DList,
+        RuntimeFn::DOptional,
+        RuntimeFn::LFlatten,
+        RuntimeFn::LFilter,
+        RuntimeFn::LMap,
+        RuntimeFn::LAny,
+        RuntimeFn::LAll,
+        RuntimeFn::LSort,
+        RuntimeFn::LLength,
+        RuntimeFn::LTryFold,
+        RuntimeFn::LFold,
+        RuntimeFn::LReverse,
+        RuntimeFn::LIsEmpty,
+        RuntimeFn::OIsSome,
+        RuntimeFn::OIsNone,
+        RuntimeFn::CmpInt,
+        RuntimeFn::CmpFloat,
+        RuntimeFn::CmpString,
+        RuntimeFn::StrAppend,
+        RuntimeFn::ResultTry,
+        RuntimeFn::IntAdd,
+    ];
+    for leaf in ALL_LEAVES {
+        all.push(RuntimeFn::LeafCodec(leaf));
+        all.push(RuntimeFn::LeafToJson(leaf));
+        all.push(RuntimeFn::LeafDecoder(leaf));
+    }
+    all
+}
+
 fn leaf_fn(leaf: Leaf, suffix: &str) -> &'static str {
     match (leaf, suffix) {
         (Leaf::Bool, "codec") => "bool_codec",
@@ -244,5 +345,132 @@ fn leaf_fn(leaf: Leaf, suffix: &str) -> &'static str {
         (Leaf::Nil, "codec") => "nil_codec",
         (Leaf::Nil, "to_json") => "nil_to_json",
         (Leaf::Nil, _) => "nil_decoder",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ALL_LEAVES, Leaf, RuntimeFn, all_runtime_fns};
+
+    /// Compile-time staleness anchor for [`all_runtime_fns`]: a NEW
+    /// `RuntimeFn` variant breaks this exhaustive match (no wildcard arm) so
+    /// the enumeration behind `import_surface` cannot silently lag the enum.
+    /// The leaf-parametrised rows are anchored by [`leaf_ordinal`] the same
+    /// way.
+    fn variant_ordinal(function: RuntimeFn) -> usize {
+        match function {
+            RuntimeFn::WfDefine => 0,
+            RuntimeFn::WfRun => 1,
+            RuntimeFn::WfAll => 2,
+            RuntimeFn::WfMap => 3,
+            RuntimeFn::WfMapSettled => 4,
+            RuntimeFn::WfSpawn => 5,
+            RuntimeFn::WfSpawnAndWait => 6,
+            RuntimeFn::WfReceive => 7,
+            RuntimeFn::WfWithTimeout => 8,
+            RuntimeFn::WfSleep => 9,
+            RuntimeFn::WfId => 10,
+            RuntimeFn::ActNew => 11,
+            RuntimeFn::ActTaskQueue => 12,
+            RuntimeFn::ActRetry => 13,
+            RuntimeFn::ActTimeout => 14,
+            RuntimeFn::ActNode => 15,
+            RuntimeFn::ErrCodec => 16,
+            RuntimeFn::MapActivityError => 17,
+            RuntimeFn::MapReceiveError => 18,
+            RuntimeFn::MapChildError => 19,
+            RuntimeFn::MapSpawnError => 20,
+            RuntimeFn::MapTimerError => 21,
+            RuntimeFn::MapEngineError => 22,
+            RuntimeFn::NilCodec => 23,
+            RuntimeFn::RawCodec => 24,
+            RuntimeFn::Decoded => 25,
+            RuntimeFn::JsonValueCodec => 26,
+            RuntimeFn::RtRun => 27,
+            RuntimeFn::RtIndex => 28,
+            RuntimeFn::JsonCodec => 29,
+            RuntimeFn::DurationMs => 30,
+            RuntimeFn::ErrorTerminal => 31,
+            RuntimeFn::SignalNew => 32,
+            RuntimeFn::ChildAwait => 33,
+            RuntimeFn::JObject => 34,
+            RuntimeFn::JString => 35,
+            RuntimeFn::JArray => 36,
+            RuntimeFn::JNullable => 37,
+            RuntimeFn::JToString => 38,
+            RuntimeFn::DField => 39,
+            RuntimeFn::DOptionalField => 40,
+            RuntimeFn::DSuccess => 41,
+            RuntimeFn::DFailure => 42,
+            RuntimeFn::DThen => 43,
+            RuntimeFn::DMap => 44,
+            RuntimeFn::DList => 45,
+            RuntimeFn::DOptional => 46,
+            RuntimeFn::LFlatten => 47,
+            RuntimeFn::LFilter => 48,
+            RuntimeFn::LMap => 49,
+            RuntimeFn::LAny => 50,
+            RuntimeFn::LAll => 51,
+            RuntimeFn::LSort => 52,
+            RuntimeFn::LLength => 53,
+            RuntimeFn::LTryFold => 54,
+            RuntimeFn::LFold => 55,
+            RuntimeFn::LReverse => 56,
+            RuntimeFn::LIsEmpty => 57,
+            RuntimeFn::OIsSome => 58,
+            RuntimeFn::OIsNone => 59,
+            RuntimeFn::CmpInt => 60,
+            RuntimeFn::CmpFloat => 61,
+            RuntimeFn::CmpString => 62,
+            RuntimeFn::StrAppend => 63,
+            RuntimeFn::ResultTry => 64,
+            RuntimeFn::IntAdd => 65,
+            RuntimeFn::LeafCodec(leaf) => 66 + 3 * leaf_ordinal(leaf),
+            RuntimeFn::LeafToJson(leaf) => 67 + 3 * leaf_ordinal(leaf),
+            RuntimeFn::LeafDecoder(leaf) => 68 + 3 * leaf_ordinal(leaf),
+        }
+    }
+
+    /// Compile-time staleness anchor for [`ALL_LEAVES`] (no wildcard arm).
+    fn leaf_ordinal(leaf: Leaf) -> usize {
+        match leaf {
+            Leaf::Bool => 0,
+            Leaf::Int => 1,
+            Leaf::Float => 2,
+            Leaf::Str => 3,
+            Leaf::Nil => 4,
+        }
+    }
+
+    /// `all_runtime_fns` enumerates every variant exactly once: 66 plain
+    /// variants plus 3 leaf-parametrised rows over the 5 leaves.
+    #[test]
+    fn enumeration_covers_every_variant_exactly_once() {
+        let all = all_runtime_fns();
+        let expected = 66 + 3 * ALL_LEAVES.len();
+        assert_eq!(all.len(), expected);
+        let mut seen = vec![false; expected];
+        for function in all {
+            let ordinal = variant_ordinal(function);
+            assert!(
+                !seen[ordinal],
+                "duplicate enumeration of {}",
+                function.label()
+            );
+            seen[ordinal] = true;
+        }
+        assert!(seen.iter().all(|covered| *covered));
+    }
+
+    /// The projected surface carries one row per enumerated function, in
+    /// enumeration order, and each row is the function's own signature.
+    #[test]
+    fn import_surface_projects_the_full_enumeration() {
+        let surface = RuntimeFn::import_surface();
+        let all = all_runtime_fns();
+        assert_eq!(surface.len(), all.len());
+        for (row, function) in surface.iter().zip(all) {
+            assert_eq!(*row, function.signature());
+        }
     }
 }
