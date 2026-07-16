@@ -183,12 +183,15 @@ pub(super) fn child_spawn_args(
     ))
 }
 
-/// Lower one call statement (action or awaited child).
+/// Lower one call statement (action, awaited child, or subflow invocation).
 pub(super) fn lower_call(
     emitter: &mut Emitter<'_>,
     call: &CallStmt,
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
+    if emitter.subflows.contains_key(call.call.name.as_str()) {
+        return lower_subflow_call(emitter, call, scope);
+    }
     let mut prelude = Vec::new();
     let binder = call
         .bind
@@ -320,7 +323,7 @@ pub(super) fn lower_sleep(emitter: &mut Emitter<'_>, sleep: &SleepStmt) {
         duration_expr(&sleep.duration)
     ));
 }
-/// Action/child return-type lookup shared with the binding-type pass.
+/// Action/child/subflow return-type lookup shared with the binding-type pass.
 pub(super) fn action_return(emitter: &Emitter<'_>, name: &str) -> Option<GType> {
     emitter
         .actions
@@ -332,4 +335,67 @@ pub(super) fn action_return(emitter: &Emitter<'_>, name: &str) -> Option<GType> 
                 .get(name)
                 .map(|&child| type_ref_to_g(&child.returns))
         })
+        .or_else(|| {
+            emitter
+                .subflows
+                .get(name)
+                .map(|shape| type_ref_to_g(&shape.outcome_ty))
+        })
+}
+
+/// The generated function name of a subflow's run-once entry wrapper.
+pub(super) fn subflow_fn(name: &str) -> String {
+    format!("awl_sf_{}", snake(name))
+}
+
+/// Lower a subflow invocation: a plain call of the subflow's generated
+/// wrapper, arguments in declared order, binding the outcome.
+fn lower_subflow_call(
+    emitter: &mut Emitter<'_>,
+    call: &CallStmt,
+    scope: &mut Scope,
+) -> Result<(), EmitError> {
+    let Some(&shape) = emitter.subflows.get(call.call.name.as_str()) else {
+        return Err(EmitError::new(
+            call.call.name_span,
+            format!("`{}` names no declared subflow", call.call.name),
+        ));
+    };
+    if call.config.is_some() {
+        return Err(EmitError::new(
+            call.span,
+            "`node`/`timeout` cannot pin a subflow invocation — a subflow compiles inline",
+        ));
+    }
+    let args = ordered_args(
+        &call.call.args,
+        &shape.params,
+        call.call.span,
+        &call.call.name,
+    )?;
+    let mut prelude = Vec::new();
+    let mut rendered = Vec::new();
+    for (arg, param_ty) in args {
+        rendered.push(render_arg_for(
+            emitter,
+            &arg.value,
+            &param_ty,
+            scope,
+            &mut prelude,
+        )?);
+    }
+    flush_prelude(emitter, prelude);
+    let binder = call
+        .bind
+        .as_ref()
+        .map_or_else(|| "_".to_owned(), |bind| ident(&bind.name));
+    emitter.line(&format!(
+        "use {binder} <- result.try({}({}))",
+        subflow_fn(&call.call.name),
+        rendered.join(", ")
+    ));
+    if let Some(bind) = &call.bind {
+        scope.insert(bind.name.clone(), type_ref_to_g(&shape.outcome_ty));
+    }
+    Ok(())
 }

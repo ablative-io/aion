@@ -1,0 +1,20 @@
+//! A substep's routed failure outcome stays outside its compensation attempt.
+workflow substep_cleanup
+  input target: String
+  outcome done:   type String, route success
+  outcome failed: type String, route failure
+
+worker shell
+  action publish(target: String) -> String
+  action cleanup(target: String) -> String
+
+step publish_it
+  step attempt
+    publish(target: target) -> receipt
+    route finish
+
+    on failure
+      cleanup(target: target)
+      route finish
+
+  outcome finish: otherwise, route failed("substep finished")

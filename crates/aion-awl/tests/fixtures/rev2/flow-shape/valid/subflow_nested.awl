@@ -1,0 +1,28 @@
+//! Subflows nest: a subflow invoking a subflow, each compiled once as an
+//! inline function, the invocation binding the outcome.
+workflow nested_subflows
+  input topic: String
+  outcome done: type String, route success
+
+worker writing
+  action work(item: String) -> String
+
+subflow inner_polish(text: String)
+  outcome out: type String
+  step polish
+    work(item: text) -> polished
+    polished |> route out
+
+subflow outer_shape(text: String)
+  outcome out: type String
+  step first
+    inner_polish(text: text) -> refined
+  step second
+    work(item: refined) -> shaped
+    shaped |> route out
+
+step run_it
+  outer_shape(text: topic) -> got
+
+step finish
+  got |> route done

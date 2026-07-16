@@ -189,7 +189,7 @@ pub(super) fn lower_pipe_value(
     flush_prelude(emitter, prelude);
     for (position, stage) in pipe.stages.iter().enumerate() {
         let next_ty = stage_type(emitter, &current_ty, stage)?;
-        let fresh = format!("awl_piped_{position}");
+        let fresh = emitter.fresh_name(&format!("awl_piped_{position}"));
         match stage {
             PipeStage::Action { span, name } => {
                 pipe_action_stage(emitter, *span, name, &fresh, &current, &current_ty)?;

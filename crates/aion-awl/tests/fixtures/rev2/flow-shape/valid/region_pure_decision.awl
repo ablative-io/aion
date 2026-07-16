@@ -1,0 +1,20 @@
+//! A pure-decision member can route to the close inside an extracted region.
+workflow region_decision
+  input items: [String]
+  outcome done: type [String], route success
+
+worker w
+  action work(item: String) -> String
+
+step wave
+  distribute item in items
+
+step build
+  work(item: item) -> note
+
+step decide
+  outcome close: otherwise, route gather
+
+step gather
+  collect note -> notes
+  notes |> route done

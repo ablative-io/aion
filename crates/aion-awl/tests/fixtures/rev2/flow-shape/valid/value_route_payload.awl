@@ -1,0 +1,13 @@
+//! A value route payload at the workflow boundary: the outcome carries the
+//! expression itself, checked assignable to the outcome's type.
+workflow value_route
+  input task: String
+  outcome done: type String, route success
+
+worker w
+  action work(item: String) -> String
+
+step run
+  work(item: task) -> note
+
+  outcome ok: otherwise, route done(note)

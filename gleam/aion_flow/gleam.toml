@@ -1,6 +1,11 @@
 name = "aion_flow"
 version = "0.6.0"
 target = "erlang"
+internal_modules = [
+  "aion/internal/activity_dispatch",
+  "aion/internal/ffi",
+  "aion/internal/pump",
+]
 description = "Typed durable workflow authoring SDK for Aion."
 licences = ["AGPL-3.0-only"]
 repository = { type = "github", user = "tomWhiting", repo = "aion" }

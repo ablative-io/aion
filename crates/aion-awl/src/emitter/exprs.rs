@@ -236,7 +236,7 @@ pub(super) fn render_expr(
         } => render_record(emitter, *span, name, *name_span, args, scope, prelude),
         Expr::Field { base, name, .. } => {
             if matches!(base.as_ref(), Expr::Workflow { .. }) && name == "id" {
-                let fresh = format!("awl_workflow_id_{}", prelude.len());
+                let fresh = emitter.fresh_name(&format!("awl_workflow_id_{}", prelude.len()));
                 prelude.push(format!(
                     "use {fresh} <- result.try(workflow.id() |> awl_error.map_engine_error)"
                 ));
@@ -249,7 +249,7 @@ pub(super) fn render_expr(
             span, base, index, ..
         } => {
             let base_rendered = render_expr(emitter, base, scope, prelude)?;
-            let fresh = format!("awl_index_{}", prelude.len());
+            let fresh = emitter.fresh_name(&format!("awl_index_{}", prelude.len()));
             prelude.push(format!(
                 "use {fresh} <- result.try(runtime.index({base_rendered}, {index}, \
                  \"index {index} out of range at line {}, column {}\"))",

@@ -1,30 +1,34 @@
 //! Route and outcome lowering: workflow-outcome returns (`Ok(Ctor(payload))`
 //! on the success path, `Error(AwlOutcomeFailure(…))` on the failure path),
-//! step routes as region tail calls, sibling-substep and parent-arm
-//! resolution, enum-total `case` forms, and `when`-cascades with the one
-//! flow-typing rule (`is present` unwraps the guarded binding in its arm).
+//! nested-flow exit returns (`Ok(payload)` for a subflow outcome, `Ok(<
+//! collected binding>)` for a region's close), step routes as region tail
+//! calls, sibling-substep and parent-arm resolution, enum-total `case`
+//! forms, and `when`-cascades with the one flow-typing rule (`is present`
+//! unwraps the guarded binding in its arm).
 
 use std::fmt::Write as _;
 
 use crate::RouteDirection;
 use crate::Spanned;
-use crate::ast::{BinaryOp, Expr, Guard, OutcomeClause, PredicateKind, RouteTarget, Statement};
+use crate::ast::{
+    BinaryOp, Expr, Guard, OutcomeClause, PredicateKind, RoutePayload, RouteTarget, Statement,
+};
 
 use super::context::Emitter;
 use super::error::EmitError;
 use super::exprs::{Scope, expr_type, render_arg_for, render_expr};
-use super::graph::Plan;
-use super::names::{ident, snake, string_lit};
+use super::names::{ident, string_lit};
 use super::pipes::wrap_optional;
-use super::steps::Frame;
+use super::steps::{ExitKind, FlowCtx, Frame};
 use super::stmts::flush_prelude;
 use super::types::GType;
 
-/// Emit the tail expression for a route: a workflow outcome return, a step
-/// (region) call, a sibling substep call, or a parent outcome arm fired.
+/// Emit the tail expression for a route: a nested-flow exit, a workflow
+/// outcome return, a step (region) call, a sibling substep call, or a
+/// parent outcome arm fired.
 pub(super) fn emit_route(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     frame: Frame<'_>,
     target: &RouteTarget,
     scope: &Scope,
@@ -32,21 +36,21 @@ pub(super) fn emit_route(
 ) -> Result<(), EmitError> {
     // Substep frame: siblings first, then parent outcome arms.
     if let Some((parent_index, split)) = frame.sub {
-        let parent = &emitter.document.steps[parent_index];
+        let parent = &flow.steps[parent_index];
         for (position, statement) in parent.body[split..].iter().enumerate() {
             if let Statement::SubStep(candidate) = statement
                 && candidate.name == target.name
             {
-                let args = plan
+                let args = flow
+                    .plan
                     .sub_params(parent_index, position)
                     .iter()
                     .map(|name| ident(name))
                     .collect::<Vec<_>>()
                     .join(", ");
                 emitter.line(&format!(
-                    "sub_{}_{}({args})",
-                    snake(&parent.name),
-                    snake(&candidate.name)
+                    "{}({args})",
+                    flow.sub_fn(&parent.name, &candidate.name)
                 ));
                 return Ok(());
             }
@@ -62,19 +66,22 @@ pub(super) fn emit_route(
                 sub: None,
             };
             let route = clause.route.clone();
-            return emit_route(emitter, plan, parent_frame, &route, scope, piped);
+            return emit_route(emitter, flow, parent_frame, &route, scope, piped);
         }
     }
 
-    if emitter.outcomes.contains_key(target.name.as_str()) {
+    // The nested flow's exit.
+    if let Some(exit) = &flow.exit
+        && exit.name == target.name
+    {
+        return emit_exit_return(emitter, flow, target, scope, piped);
+    }
+
+    if flow.exit.is_none() && emitter.outcomes.contains_key(target.name.as_str()) {
         return emit_outcome_return(emitter, target, scope, piped);
     }
 
-    let step_index = emitter
-        .document
-        .steps
-        .iter()
-        .position(|step| step.name == target.name);
+    let step_index = flow.steps.iter().position(|step| step.name == target.name);
     if let Some(step_index) = step_index {
         if piped.is_some() {
             return Err(EmitError::new(
@@ -88,24 +95,142 @@ pub(super) fn emit_route(
                 "routing to a step carries no payload",
             ));
         }
-        let Some(region) = plan.region_of_entry(step_index) else {
+        let Some(region) = flow.plan.region_of_entry(step_index) else {
             return Err(EmitError::new(
                 target.name_span,
                 format!("`{}` is not a routable step entry", target.name),
             ));
         };
-        let args = plan
+        let args = flow
+            .plan
             .region_params(region)
             .iter()
             .map(|name| ident(name))
             .collect::<Vec<_>>()
             .join(", ");
-        emitter.line(&format!("step_{}({args})", snake(&target.name)));
+        emitter.line(&format!("{}({args})", flow.step_fn(&target.name)));
         return Ok(());
     }
     Err(EmitError::new(
         target.name_span,
         format!("`{}` names no workflow outcome or step", target.name),
+    ))
+}
+
+/// Return from a nested flow through its exit: `Ok(payload)` for a subflow
+/// outcome, `Ok(<collected binding>)` for a region member flow's close.
+fn emit_exit_return(
+    emitter: &mut Emitter<'_>,
+    flow: &FlowCtx<'_>,
+    target: &RouteTarget,
+    scope: &Scope,
+    piped: Option<(String, GType)>,
+) -> Result<(), EmitError> {
+    let Some(exit) = &flow.exit else {
+        return Err(EmitError::new(target.name_span, "flow lost its exit"));
+    };
+    match &exit.kind {
+        ExitKind::Region { binding } => {
+            if piped.is_some() || target.payload.is_some() {
+                return Err(EmitError::new(
+                    target.name_span,
+                    "routing to a region's `collect` carries no payload — the collect \
+                     gathers the per-instance binding",
+                ));
+            }
+            emitter.line(&format!("Ok({})", ident(binding)));
+            Ok(())
+        }
+        ExitKind::Subflow { ty } => {
+            let ty = ty.clone();
+            let mut prelude = Vec::new();
+            let payload = render_payload(emitter, target, &ty, scope, piped, &mut prelude)?;
+            flush_prelude(emitter, prelude);
+            emitter.line(&format!("Ok({payload})"));
+            Ok(())
+        }
+    }
+}
+
+/// Render the payload value a route carries toward a typed destination:
+/// constructed named fields, a single value expression, the piped value,
+/// the binding named after the destination, or `Nil`.
+fn render_payload(
+    emitter: &mut Emitter<'_>,
+    target: &RouteTarget,
+    into: &GType,
+    scope: &Scope,
+    piped: Option<(String, GType)>,
+    prelude: &mut Vec<String>,
+) -> Result<String, EmitError> {
+    if piped.is_some() && target.payload.is_some() {
+        return Err(EmitError::new(
+            target.span,
+            "a piped route carries the piped value as its payload — payload construction is \
+             not allowed here (the document did not check cleanly)",
+        ));
+    }
+    if let Some(RoutePayload::Value(value)) = &target.payload {
+        return render_arg_for(emitter, value, into, scope, prelude);
+    }
+    if let Some(RoutePayload::Args(args)) = &target.payload {
+        // Constructed payload: the destination type must be a record.
+        let Some((gleam_name, record)) = emitter.env.record_of(into) else {
+            return Err(EmitError::new(
+                target.name_span,
+                format!(
+                    "outcome `{}` carries {}, which cannot take named payload fields",
+                    target.name,
+                    emitter.env.gleam_type(into)
+                ),
+            ));
+        };
+        let fields = record.fields.clone();
+        if fields.is_empty() {
+            return Ok(gleam_name);
+        }
+        let mut rendered = format!("{gleam_name}(");
+        for (position, field) in fields.iter().enumerate() {
+            if position > 0 {
+                rendered.push_str(", ");
+            }
+            let value = match args.iter().find(|arg| arg.name == field.awl_name) {
+                Some(arg) => render_arg_for(emitter, &arg.value, &field.ty, scope, prelude)?,
+                None if matches!(emitter.env.resolve(&field.ty), GType::Option(_)) => {
+                    "None".to_owned()
+                }
+                None => {
+                    return Err(EmitError::new(
+                        target.span,
+                        format!(
+                            "outcome `{}` misses its required payload field `{}`",
+                            target.name, field.awl_name
+                        ),
+                    ));
+                }
+            };
+            let _ = write!(rendered, "{}: {value}", ident(&field.awl_name));
+        }
+        rendered.push(')');
+        return Ok(rendered);
+    }
+    if let Some((value, value_ty)) = piped {
+        return Ok(wrap_optional(emitter, value, &value_ty, into));
+    }
+    if let Some(bound_ty) = scope.get(target.name.as_str()) {
+        // Bare route picks up the binding named after the destination.
+        let value = ident(&target.name);
+        return Ok(wrap_optional(emitter, value, &bound_ty.clone(), into));
+    }
+    if matches!(emitter.env.resolve(into), GType::Nil) {
+        return Ok("Nil".to_owned());
+    }
+    Err(EmitError::new(
+        target.name_span,
+        format!(
+            "bare `route {}` needs a binding named `{}` in scope to pick up",
+            target.name, target.name
+        ),
     ))
 }
 
@@ -117,82 +242,9 @@ fn emit_outcome_return(
     scope: &Scope,
     piped: Option<(String, GType)>,
 ) -> Result<(), EmitError> {
-    if piped.is_some() && target.payload.is_some() {
-        return Err(EmitError::new(
-            target.span,
-            "a piped route carries the piped value as its payload — payload construction is \
-             not allowed here (the document did not check cleanly)",
-        ));
-    }
     let info = emitter.outcomes[target.name.as_str()].clone();
     let mut prelude = Vec::new();
-    if let Some(crate::ast::RoutePayload::Value(value)) = &target.payload {
-        return Err(EmitError::new(
-            crate::spanned::Spanned::span(value),
-            "value route payloads (`route out(<value>)`) are not yet lowered — \
-             flow-vocabulary lowering lands in B4",
-        ));
-    }
-    let payload = if let Some(crate::ast::RoutePayload::Args(args)) = &target.payload {
-        // Constructed payload: the outcome type must be a record.
-        let Some((gleam_name, record)) = emitter.env.record_of(&info.ty) else {
-            return Err(EmitError::new(
-                target.name_span,
-                format!(
-                    "outcome `{}` carries {}, which cannot take named payload fields",
-                    target.name,
-                    emitter.env.gleam_type(&info.ty)
-                ),
-            ));
-        };
-        let fields = record.fields.clone();
-        if fields.is_empty() {
-            gleam_name
-        } else {
-            let mut rendered = format!("{gleam_name}(");
-            for (position, field) in fields.iter().enumerate() {
-                if position > 0 {
-                    rendered.push_str(", ");
-                }
-                let value = match args.iter().find(|arg| arg.name == field.awl_name) {
-                    Some(arg) => {
-                        render_arg_for(emitter, &arg.value, &field.ty, scope, &mut prelude)?
-                    }
-                    None if matches!(emitter.env.resolve(&field.ty), GType::Option(_)) => {
-                        "None".to_owned()
-                    }
-                    None => {
-                        return Err(EmitError::new(
-                            target.span,
-                            format!(
-                                "outcome `{}` misses its required payload field `{}`",
-                                target.name, field.awl_name
-                            ),
-                        ));
-                    }
-                };
-                let _ = write!(rendered, "{}: {value}", ident(&field.awl_name));
-            }
-            rendered.push(')');
-            rendered
-        }
-    } else if let Some((value, value_ty)) = piped {
-        wrap_optional(emitter, value, &value_ty, &info.ty)
-    } else if let Some(bound_ty) = scope.get(target.name.as_str()) {
-        // Bare route picks up the binding named after the outcome.
-        let value = ident(&target.name);
-        wrap_optional(emitter, value, &bound_ty.clone(), &info.ty)
-    } else if matches!(emitter.env.resolve(&info.ty), GType::Nil) {
-        "Nil".to_owned()
-    } else {
-        return Err(EmitError::new(
-            target.name_span,
-            format!(
-                "bare `route {}` needs a binding named `{}` in scope to pick up",
-                target.name, target.name
-            ),
-        ));
-    };
+    let payload = render_payload(emitter, target, &info.ty, scope, piped, &mut prelude)?;
     flush_prelude(emitter, prelude);
     match info.direction {
         RouteDirection::Success => {
@@ -221,7 +273,7 @@ fn emit_outcome_return(
 /// an arm guarded by `x is present` rebinds `x` unwrapped for its body.
 pub(super) fn emit_outcomes(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     frame: Frame<'_>,
     clauses: &[OutcomeClause],
     scope: &Scope,
@@ -241,7 +293,7 @@ pub(super) fn emit_outcomes(
                 this.line(&format!("{variant} -> {{"));
                 this.indented_try(|this| {
                     let route = clause.route.clone();
-                    emit_route(this, plan, frame, &route, scope, None)
+                    emit_route(this, flow, frame, &route, scope, None)
                 })?;
                 this.line("}");
             }
@@ -250,7 +302,7 @@ pub(super) fn emit_outcomes(
         emitter.line("}");
         return Ok(());
     }
-    emit_cascade(emitter, plan, frame, clauses, scope)
+    emit_cascade(emitter, flow, frame, clauses, scope)
 }
 
 /// `when <subject> == <Variant>` over one common subject, all arms.
@@ -308,7 +360,7 @@ fn enum_total_form<'c>(
 
 fn emit_cascade(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     frame: Frame<'_>,
     clauses: &[OutcomeClause],
     scope: &Scope,
@@ -325,7 +377,7 @@ fn emit_cascade(
             if !rest.is_empty() {
                 return Err(EmitError::new(*span, "`otherwise` must be the last arm"));
             }
-            emit_arm(emitter, plan, frame, clause, scope, None)
+            emit_arm(emitter, flow, frame, clause, scope, None)
         }
         Guard::When { expr, .. } => {
             let mut prelude = Vec::new();
@@ -339,10 +391,10 @@ fn emit_cascade(
             emitter.line(&format!("case {rendered} {{"));
             emitter.indented_try(|this| {
                 this.line("True -> {");
-                this.indented_try(|this| emit_arm(this, plan, frame, clause, scope, Some(expr)))?;
+                this.indented_try(|this| emit_arm(this, flow, frame, clause, scope, Some(expr)))?;
                 this.line("}");
                 this.line("False -> {");
-                this.indented_try(|this| emit_cascade(this, plan, frame, rest, scope))?;
+                this.indented_try(|this| emit_cascade(this, flow, frame, rest, scope))?;
                 this.line("}");
                 Ok(())
             })?;
@@ -356,7 +408,7 @@ fn emit_cascade(
 /// then the arm's route.
 fn emit_arm(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     frame: Frame<'_>,
     clause: &OutcomeClause,
     scope: &Scope,
@@ -376,5 +428,5 @@ fn emit_arm(
         arm_scope.insert(name.clone(), (*inner).clone());
     }
     let route = clause.route.clone();
-    emit_route(emitter, plan, frame, &route, &arm_scope, None)
+    emit_route(emitter, flow, frame, &route, &arm_scope, None)
 }

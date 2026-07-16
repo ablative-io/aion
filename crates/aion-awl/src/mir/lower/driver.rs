@@ -66,6 +66,71 @@ impl fmt::Display for LowerError {
 
 impl std::error::Error for LowerError {}
 
+/// The first rev-3 construct the direct path does not yet mirror (the B4
+/// staging gate: constructs retire from this list as their MIR lowering
+/// lands).
+fn flow_shape_gap(document: &Document) -> Option<(crate::Span, &'static str)> {
+    use crate::ast::{RoutePayload, RouteTarget, Statement, Step};
+    fn route_gap(target: &RouteTarget) -> Option<(crate::Span, &'static str)> {
+        match &target.payload {
+            Some(RoutePayload::Value(value)) => Some((
+                crate::spanned::Spanned::span(value),
+                "value route payloads (`route out(<value>)`)",
+            )),
+            _ => None,
+        }
+    }
+    fn statements_gap(statements: &[Statement]) -> Option<(crate::Span, &'static str)> {
+        for statement in statements {
+            let found = match statement {
+                Statement::Distribute(distribute) => {
+                    Some((distribute.span, "`distribute`/`sequence` regions"))
+                }
+                Statement::Collect(collect) => Some((collect.span, "`collect` steps")),
+                Statement::Route(route) => route_gap(&route.target),
+                Statement::Pipe(pipe) => match &pipe.end {
+                    crate::ast::PipeEnd::Route(target) => route_gap(target),
+                    crate::ast::PipeEnd::Bind(_) => None,
+                },
+                Statement::Fork(fork) => statements_gap(&fork.body),
+                Statement::Loop(looped) => statements_gap(&looped.body),
+                Statement::SubStep(sub) => step_gap(sub),
+                Statement::Call(_)
+                | Statement::Spawn(_)
+                | Statement::Wait(_)
+                | Statement::Sleep(_) => None,
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+    fn step_gap(step: &Step) -> Option<(crate::Span, &'static str)> {
+        if let Some(max_visits) = &step.max_visits {
+            return Some((max_visits.span, "the `max … visits` step attribute"));
+        }
+        if let Some(found) = statements_gap(&step.body) {
+            return Some(found);
+        }
+        if let Some(on_failure) = &step.on_failure
+            && let Some(found) = statements_gap(&on_failure.body)
+        {
+            return Some(found);
+        }
+        for clause in &step.outcomes {
+            if let Some(found) = route_gap(&clause.route) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    if let Some(subflow) = document.subflows.first() {
+        return Some((subflow.name_span, "`subflow` declarations"));
+    }
+    document.steps.iter().find_map(step_gap)
+}
+
 /// Lower a checked document to its MIR module.
 ///
 /// # Errors
@@ -87,26 +152,35 @@ pub fn lower(document: &Document, root: Option<&Path>) -> Result<MirModule, Lowe
             span: first.span,
         });
     }
-    // The rev-3 flow shape (B2) checks but is not yet lowered: refuse it
-    // honestly — a scope marker with a span, never a panic downstream.
+    // The one rev-3 refusal both backends keep: substep `after` would drop
+    // on the floor — refuse honestly, with a span, before planning.
     if let Some((span, what)) = crate::unlowered::first_unlowered(document) {
+        return Err(LowerError::Unsupported {
+            shape: format!("{what} — a later landing carries them"),
+            span,
+        });
+    }
+    // TEMPORARY B4 staging gate: the direct path grows the rev-3 lowering
+    // piecewise behind the emitter; anything not yet mirrored refuses
+    // honestly here (removed as each construct lands).
+    if let Some((span, what)) = flow_shape_gap(document) {
         return Err(LowerError::Unsupported {
             shape: format!("{what} — the rev-3 flow shape is not yet lowered (B4)"),
             span,
         });
     }
-    // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
-    // `schema of`, const references) down to plain literals first, so the
-    // shared planning passes and this lowering only ever see the expression
-    // vocabulary they already speak.
-    let document =
-        &crate::fold::fold_document(document, root).map_err(|error| LowerError::Message {
-            message: error.message,
-            span: error.span,
+    // Fold the B1 ergonomics vocabulary down to plain literals, then shape
+    // the rev-3 flow constructs (regions, subflows, visit counters) into
+    // the planned form both backends lower.
+    let shaped =
+        crate::emitter::shape_document(document, root).map_err(|error| LowerError::Planning {
+            message: error.to_string(),
         })?;
-    let (emitter, plan) = prepare(document, root).map_err(|error| LowerError::Planning {
+    let (emitter, plans) = prepare(&shaped, root).map_err(|error| LowerError::Planning {
         message: error.to_string(),
     })?;
+    let plan = plans.host;
+    let document = emitter.document;
     let module_name = snake(&document.name);
     let source = format!("{module_name}.awl");
 

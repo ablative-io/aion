@@ -1,0 +1,24 @@
+//! A dependency-parallel layer cannot collide with an author binding.
+workflow layer_hygiene
+  input seed: String
+  input awl_layer: String
+  outcome done: type String, route success
+
+worker local
+  action root(value: String) -> String
+  action left(value: String) -> String
+  action right(value: String) -> String
+  action merge(left: String, right: String) -> String
+
+step root
+  root(value: seed) -> rooted
+
+step left after root
+  left(value: rooted) -> left_value
+
+step right after root
+  right(value: rooted) -> right_value
+
+step merge after left, right
+  merge(left: left_value, right: right_value) -> joined
+  route done(joined)

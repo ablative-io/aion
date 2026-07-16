@@ -1,0 +1,24 @@
+//! Subflow-local names are independently typed, even when reused by the host.
+workflow scoped_names
+  input value: String
+  outcome done: type String, route success
+
+subflow echo(value: String)
+  outcome out: type String
+  step decide
+    outcome yes: when value == "host", route out(value)
+    outcome no: otherwise, route out(value)
+
+subflow same_number(value: Int)
+  outcome out: type Int
+  step return_it
+    value |> route out
+
+step text
+  echo(value: value) -> echoed
+
+step number
+  same_number(value: 7) -> numbered
+
+step finish
+  echoed |> route done

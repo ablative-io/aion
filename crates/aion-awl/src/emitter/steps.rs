@@ -1,22 +1,69 @@
 //! Region, step, substep, and outcome lowering: the control-flow half of
-//! the emitter. Every region (dependency-connected step group) becomes one
-//! Gleam function; routes are tail calls; conditional outcomes lower to
-//! `case` cascades (or a single enum `case` when every arm matches one
-//! variant of the same subject); `on failure` wraps the step body in an
-//! attempt closure whose error arm runs the compensation.
+//! the emitter, parametric over the flow being lowered (the host workflow,
+//! a subflow, or a per-item region member flow — see [`FlowCtx`]). Every
+//! region (dependency-connected step group) becomes one Gleam function;
+//! routes are tail calls; conditional outcomes lower to `case` cascades (or
+//! a single enum `case` when every arm matches one variant of the same
+//! subject); `on failure` wraps the step body's fallible prefix in an
+//! attempt closure whose error arm runs the compensation — a body-terminal
+//! route stays OUTSIDE the closure, so a routed failure outcome
+//! (`AwlOutcomeFailure`) can never read as a step failure.
 
-use crate::ast::{CallStmt, PipeEnd, Statement, Step};
+use std::collections::BTreeMap;
+
+use crate::ast::{CallStmt, Statement, Step};
 
 use super::context::Emitter;
 use super::error::EmitError;
-use super::exprs::Scope;
-use super::forks::{lower_fork, lower_hetero_parallel};
-use super::graph::{Plan, body_ends_in_route, substep_split};
-use super::loops::{lower_loop, statement_defs};
+use super::exprs::{Scope, render_expr};
+use super::failure::{emit_step_tail, emit_with_failure, lower_statements};
+use super::flowshape::{RegionShape, visits_counter};
+use super::forks::lower_hetero_parallel;
+use super::graph::{Plan, Plans, substep_split};
 use super::names::{ident, snake};
-use super::outcomes::{emit_outcomes, emit_route};
-use super::pipes::lower_pipe_value;
-use super::stmts::{flush_prelude, lower_call, lower_sleep, lower_spawn, lower_wait};
+use super::stmts::flush_prelude;
+
+/// The flow whose steps are being lowered: the host workflow (`prefix`
+/// empty, no exit) or a nested flow (a subflow or a region's per-item
+/// member flow), whose functions are name-prefixed and whose exit returns
+/// `Ok(...)` instead of a workflow outcome.
+pub(super) struct FlowCtx<'f> {
+    pub(super) steps: &'f [Step],
+    pub(super) regions: &'f BTreeMap<String, RegionShape>,
+    pub(super) plan: &'f Plan,
+    pub(super) plans: &'f Plans<'f>,
+    /// Binding/type environment owned by this flow.
+    pub(super) bindings: BTreeMap<String, super::types::GType>,
+    pub(super) prefix: String,
+    pub(super) exit: Option<FlowExit>,
+    /// The rendered Gleam type of this flow's `Ok(...)` result.
+    pub(super) output: String,
+}
+
+/// A nested flow's exit contract.
+pub(super) struct FlowExit {
+    /// The route-target name that exits the flow.
+    pub(super) name: String,
+    pub(super) kind: ExitKind,
+}
+
+pub(super) enum ExitKind {
+    /// A subflow outcome: `route out(<payload>)` returns `Ok(payload)`.
+    Subflow { ty: super::types::GType },
+    /// A region member flow: reaching (or routing to) the close step
+    /// returns `Ok(<collected binding>)`.
+    Region { binding: String },
+}
+
+impl FlowCtx<'_> {
+    pub(super) fn step_fn(&self, name: &str) -> String {
+        format!("{}step_{}", self.prefix, snake(name))
+    }
+
+    pub(super) fn sub_fn(&self, parent: &str, sub: &str) -> String {
+        format!("{}sub_{}_{}", self.prefix, snake(parent), snake(sub))
+    }
+}
 
 /// Route-resolution frame: `Some` while lowering inside a substep chain.
 #[derive(Clone, Copy)]
@@ -27,30 +74,58 @@ pub(super) struct Frame<'a> {
     pub(super) sub: Option<(usize, usize)>,
 }
 
-/// Emit `execute`, every region function, and every substep function.
-pub(super) fn emit_flow(emitter: &mut Emitter<'_>, plan: &Plan) -> Result<(), EmitError> {
-    emit_execute(emitter, plan)?;
-    for region_index in 0..plan.regions.len() {
-        emit_region(emitter, plan, region_index)?;
+/// Emit `execute`, every host flow function, and every nested flow.
+pub(super) fn emit_flow(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Result<(), EmitError> {
+    let flow = FlowCtx {
+        steps: &emitter.document.steps,
+        regions: emitter.host_regions,
+        plan: &plans.host,
+        plans,
+        bindings: emitter.bindings.clone(),
+        prefix: String::new(),
+        exit: None,
+        output: emitter.output_type(),
+    };
+    emit_execute(emitter, &flow, &plans.host_counters)?;
+    emit_flow_fns(emitter, &flow)?;
+    super::flows::emit_nested(emitter, plans)
+}
+
+/// Emit one flow's region functions and substep chains.
+pub(super) fn emit_flow_fns(
+    emitter: &mut Emitter<'_>,
+    flow: &FlowCtx<'_>,
+) -> Result<(), EmitError> {
+    for region_index in 0..flow.plan.regions.len() {
+        emit_region(emitter, flow, region_index)?;
     }
-    for (position, step) in emitter.document.steps.iter().enumerate() {
+    for (position, step) in flow.steps.iter().enumerate() {
         let split = substep_split(step)?;
         if split < step.body.len() {
-            super::subs::emit_sub_chain(emitter, plan, position, step, split)?;
+            super::subs::emit_sub_chain(emitter, flow, position, step, split)?;
         }
     }
     Ok(())
 }
 
-fn emit_execute(emitter: &mut Emitter<'_>, plan: &Plan) -> Result<(), EmitError> {
-    let output = emitter.output_type();
+fn emit_execute(
+    emitter: &mut Emitter<'_>,
+    flow: &FlowCtx<'_>,
+    counters: &[String],
+) -> Result<(), EmitError> {
+    let output = flow.output.clone();
     let input_type = emitter.input_type.clone();
     emitter.line("/// Workflow body generated from the AWL steps.");
     emitter.line(&format!(
         "pub fn execute(input: {input_type}) -> Result({output}, awl_error.AwlError) {{"
     ));
     let document = emitter.document;
-    let Some(first_region) = plan.regions.iter().position(|region| region.entry == 0) else {
+    let Some(first_region) = flow
+        .plan
+        .regions
+        .iter()
+        .position(|region| region.entry == 0)
+    else {
         return Err(EmitError::new(
             document.span,
             "the workflow has no steps to execute",
@@ -61,20 +136,31 @@ fn emit_execute(emitter: &mut Emitter<'_>, plan: &Plan) -> Result<(), EmitError>
             let name = ident(&input.name);
             this.line(&format!("let {name} = input.{name}"));
         }
-        let params = plan.region_params(first_region);
+        // Language-owned visit counters seed once, at the flow's run-once
+        // entry, so a backward route can never reset a bound.
+        for counter in counters {
+            this.line(&format!("let {} = 0", ident(counter)));
+        }
+        let params = flow.plan.region_params(first_region);
         for param in params {
-            if !document.inputs.iter().any(|input| &input.name == param) {
+            let is_input = document.inputs.iter().any(|input| &input.name == param);
+            if !is_input && !counters.contains(param) {
                 return Err(EmitError::new(
                     document.span,
                     format!(
-                        "the workflow start needs `{param}`, which is not an input — the \
-                         document did not check cleanly"
+                        "the workflow start needs `{param}`, which is neither an input nor a \
+                         language-owned counter — the document did not check cleanly"
                     ),
                 ));
             }
         }
-        let entry = &document.steps[plan.regions[first_region].entry];
-        this.line(&call_region(entry, params));
+        let entry = &flow.steps[flow.plan.regions[first_region].entry];
+        let args = params
+            .iter()
+            .map(|name| ident(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        this.line(&format!("{}({args})", flow.step_fn(&entry.name)));
         Ok(())
     })?;
     emitter.line("}");
@@ -82,32 +168,29 @@ fn emit_execute(emitter: &mut Emitter<'_>, plan: &Plan) -> Result<(), EmitError>
     Ok(())
 }
 
-fn call_region(entry: &Step, params: &[String]) -> String {
-    let args = params
-        .iter()
-        .map(|name| ident(name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("step_{}({args})", snake(&entry.name))
-}
-
 fn emit_region(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     region_index: usize,
 ) -> Result<(), EmitError> {
-    let region = &plan.regions[region_index];
-    let entry = &emitter.document.steps[region.entry];
-    let output = emitter.output_type();
-    let params = plan.region_params(region_index).to_vec();
-    let mut scope = scope_from_params(emitter, &params, entry)?;
+    let region = &flow.plan.regions[region_index];
+    let entry = &flow.steps[region.entry];
+    let output = flow.output.clone();
+    let params = flow.plan.region_params(region_index).to_vec();
+    let mut scope = scope_from_params(&flow.bindings, &params, entry)?;
     let rendered_params = annotated_params(emitter, &params, &scope);
     emitter.line(&format!(
-        "fn step_{}({rendered_params}) -> Result({output}, awl_error.AwlError) {{",
-        snake(&entry.name)
+        "fn {}({rendered_params}) -> Result({output}, awl_error.AwlError) {{",
+        flow.step_fn(&entry.name)
     ));
     let layers = region.layers.clone();
-    emitter.indented_try(|this| emit_layers(this, plan, &layers, 0, 0, &mut scope))?;
+    let region_last = layers
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .unwrap_or(region.entry);
+    emitter.indented_try(|this| emit_layers(this, flow, &layers, 0, 0, region_last, &mut scope))?;
     emitter.line("}");
     emitter.blank();
     Ok(())
@@ -129,13 +212,13 @@ pub(super) fn annotated_params(emitter: &Emitter<'_>, params: &[String], scope: 
 }
 
 pub(super) fn scope_from_params(
-    emitter: &Emitter<'_>,
+    bindings: &BTreeMap<String, super::types::GType>,
     params: &[String],
     anchor: &Step,
 ) -> Result<Scope, EmitError> {
     let mut scope = Scope::new();
     for param in params {
-        let Some(ty) = emitter.bindings.get(param) else {
+        let Some(ty) = bindings.get(param) else {
             return Err(EmitError::new(
                 anchor.name_span,
                 format!(
@@ -152,23 +235,21 @@ pub(super) fn scope_from_params(
 
 /// Emit the region's steps from `(layer, member)` onward, nesting
 /// continuations inside `on failure` success arms as needed.
-fn emit_layers(
+pub(super) fn emit_layers(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     layers: &[Vec<usize>],
     layer: usize,
     member: usize,
+    region_last: usize,
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
     let Some(current) = layers.get(layer) else {
-        return Err(EmitError::new(
-            emitter.document.span,
-            "a step chain ends without routing — the document did not check cleanly",
-        ));
+        return emit_flow_end(emitter, flow, region_last, scope);
     };
     if member == 0 && current.len() > 1 {
-        if let Some(calls) = layer_calls(emitter, current) {
-            return emit_parallel_layer(emitter, plan, layers, layer, &calls, scope);
+        if let Some(calls) = layer_calls(emitter, flow, current) {
+            return emit_parallel_layer(emitter, flow, layers, layer, region_last, &calls, scope);
         }
         // Dependency-parallel steps whose bodies are more than one bare
         // action call cannot dispatch concurrently in the Gleam stopgap
@@ -179,31 +260,92 @@ fn emit_layers(
         emitter.line("// Gleam SDK has no heterogeneous task primitive for full step bodies).");
     }
     let Some(&step_index) = current.get(member) else {
-        return emit_layers(emitter, plan, layers, layer + 1, 0, scope);
+        return emit_layers(emitter, flow, layers, layer + 1, 0, region_last, scope);
     };
-    let step = &emitter.document.steps[step_index];
+    let step = &flow.steps[step_index];
     let next: Continuation<'_> = if member + 1 < current.len() {
         Continuation {
             layers,
             layer,
             member: member + 1,
+            region_last,
         }
     } else {
         Continuation {
             layers,
             layer: layer + 1,
             member: 0,
+            region_last,
         }
     };
-    emit_step(emitter, plan, step_index, step, scope, Some(next))
+    emit_step(emitter, flow, step_index, step, scope, Some(next))
+}
+
+/// Where control goes when the flow's last region layer completes: an
+/// implicit tail call into the next step's region, a nested flow's exit
+/// return, or the honest refusal.
+fn emit_flow_end(
+    emitter: &mut Emitter<'_>,
+    flow: &FlowCtx<'_>,
+    region_last: usize,
+    scope: &Scope,
+) -> Result<(), EmitError> {
+    let next = region_last + 1;
+    if next < flow.steps.len() {
+        let target = &flow.steps[next];
+        let Some(region) = flow.plan.region_of_entry(next) else {
+            return Err(EmitError::new(
+                target.name_span,
+                format!(
+                    "control falls into `{}`, which does not head a region — the Gleam \
+                     stopgap cannot express that hand-off",
+                    target.name
+                ),
+            ));
+        };
+        let args = flow
+            .plan
+            .region_params(region)
+            .iter()
+            .map(|name| ident(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        emitter.line(&format!("{}({args})", flow.step_fn(&target.name)));
+        return Ok(());
+    }
+    match &flow.exit {
+        Some(FlowExit {
+            kind: ExitKind::Region { binding },
+            ..
+        }) => {
+            let _ = scope;
+            emitter.line(&format!("Ok({})", ident(binding)));
+            Ok(())
+        }
+        Some(FlowExit {
+            kind: ExitKind::Subflow { .. },
+            name,
+        }) => Err(EmitError::new(
+            emitter.document.span,
+            format!(
+                "a subflow's last step must route to its outcome `{name}` — the document \
+                 did not check cleanly"
+            ),
+        )),
+        None => Err(EmitError::new(
+            emitter.document.span,
+            "a step chain ends without routing — the document did not check cleanly",
+        )),
+    }
 }
 
 /// Where control goes when a step falls through.
 #[derive(Clone, Copy)]
-struct Continuation<'a> {
-    layers: &'a [Vec<usize>],
-    layer: usize,
-    member: usize,
+pub(super) struct Continuation<'a> {
+    pub(super) layers: &'a [Vec<usize>],
+    pub(super) layer: usize,
+    pub(super) member: usize,
+    pub(super) region_last: usize,
 }
 
 /// The single bare action call of every member step in a multi-step layer,
@@ -211,11 +353,15 @@ struct Continuation<'a> {
 /// declared action with no outcomes or handlers (dependency-parallel steps
 /// with fuller bodies fall back to written order — a recorded mapping
 /// limit).
-fn layer_calls<'a>(emitter: &Emitter<'a>, members: &[usize]) -> Option<Vec<&'a CallStmt>> {
+fn layer_calls<'a>(
+    emitter: &Emitter<'_>,
+    flow: &FlowCtx<'a>,
+    members: &[usize],
+) -> Option<Vec<&'a CallStmt>> {
     let mut calls = Vec::new();
     for &member in members {
-        let step = &emitter.document.steps[member];
-        if !step.outcomes.is_empty() || step.on_failure.is_some() {
+        let step = &flow.steps[member];
+        if !step.outcomes.is_empty() || step.on_failure.is_some() || step.max_visits.is_some() {
             return None;
         }
         let [Statement::Call(call)] = step.body.as_slice() else {
@@ -234,9 +380,10 @@ fn layer_calls<'a>(emitter: &Emitter<'a>, members: &[usize]) -> Option<Vec<&'a C
 /// form (see [`lower_hetero_parallel`]) otherwise.
 fn emit_parallel_layer(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     layers: &[Vec<usize>],
     layer: usize,
+    region_last: usize,
     calls: &[&CallStmt],
     scope: &mut Scope,
 ) -> Result<(), EmitError> {
@@ -245,7 +392,7 @@ fn emit_parallel_layer(
         .all(|call| call.call.name == calls[0].call.name);
     if !homogeneous {
         lower_hetero_parallel(emitter, calls, scope)?;
-        return emit_layers(emitter, plan, layers, layer + 1, 0, scope);
+        return emit_layers(emitter, flow, layers, layer + 1, 0, region_last, scope);
     }
     let mut values = Vec::new();
     let mut patterns = Vec::new();
@@ -273,19 +420,24 @@ fn emit_parallel_layer(
             );
         }
     }
+    let layer_result = emitter.fresh_name("awl_layer");
     emitter.line(&format!(
-        "use awl_layer <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
+        "use {layer_result} <- result.try(workflow.all([{}]) |> awl_error.map_activity_error)",
         values.join(", ")
     ));
-    emitter.line(&format!("let assert [{}] = awl_layer", patterns.join(", ")));
-    emit_layers(emitter, plan, layers, layer + 1, 0, scope)
+    emitter.line(&format!(
+        "let assert [{}] = {layer_result}",
+        patterns.join(", ")
+    ));
+    emit_layers(emitter, flow, layers, layer + 1, 0, region_last, scope)
 }
 
-/// Emit one step: leading statements, substep hand-off or outcomes or
-/// fall-through continuation, with `on failure` wrapping when declared.
+/// Emit one step: the visit-bound prologue when declared, leading
+/// statements, substep hand-off or outcomes or fall-through continuation,
+/// with `on failure` wrapping when declared.
 fn emit_step(
     emitter: &mut Emitter<'_>,
-    plan: &Plan,
+    flow: &FlowCtx<'_>,
     step_index: usize,
     step: &Step,
     scope: &mut Scope,
@@ -295,225 +447,66 @@ fn emit_step(
         step_name: &step.name,
         sub: None,
     };
+    if let Some(max_visits) = &step.max_visits {
+        emit_visits_prologue(emitter, step, max_visits, scope)?;
+    }
     let split = substep_split(step)?;
     let body = &step.body[..split];
 
     if let Some(on_failure) = &step.on_failure {
-        if body_ends_in_route(body) {
-            return Err(EmitError::new(
-                step.name_span,
-                format!(
-                    "step `{}` combines `on failure` with a body-terminal route — the Gleam \
-                     stopgap cannot tell a routed failure outcome from a step failure there",
-                    step.name
-                ),
-            ));
-        }
-        let mut defs = std::collections::BTreeSet::new();
-        statement_defs(body, &mut defs);
-        let defs: Vec<String> = defs.into_iter().collect();
-        let mut attempt_scope = scope.clone();
-        emitter.line("let awl_attempt = fn() {");
-        emitter.indented_try(|this| {
-            lower_statements(this, plan, frame, body, &mut attempt_scope, false)?;
-            let tuple = render_defs_tuple(&defs);
-            this.line(&format!("Ok({tuple})"));
-            Ok(())
-        })?;
-        emitter.line("}");
-        let pattern = render_defs_tuple(&defs);
-        emitter.line("case awl_attempt() {");
-        emitter.indented_try(|this| {
-            this.line(&format!("Ok({pattern}) -> {{"));
-            this.indented_try(|this| {
-                for name in &defs {
-                    if let Some(ty) = attempt_scope.get(name) {
-                        scope.insert(name.clone(), ty.clone());
-                    }
-                }
-                emit_step_tail(this, plan, step_index, step, frame, scope, continuation)
-            })?;
-            this.line("}");
-            this.line("Error(_) -> {");
-            this.indented_try(|this| {
-                let mut compensation_scope = scope.clone();
-                lower_statements(
-                    this,
-                    plan,
-                    frame,
-                    &on_failure.body,
-                    &mut compensation_scope,
-                    true,
-                )
-            })?;
-            this.line("}");
-            Ok(())
-        })?;
-        emitter.line("}");
-        return Ok(());
-    }
-
-    lower_statements(emitter, plan, frame, body, scope, false)?;
-    emit_step_tail(emitter, plan, step_index, step, frame, scope, continuation)
-}
-
-pub(super) fn render_defs_tuple(defs: &[String]) -> String {
-    match defs {
-        [] => "Nil".to_owned(),
-        [single] => ident(single),
-        many => format!(
-            "#({})",
-            many.iter()
-                .map(|name| ident(name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-/// After a step's leading statements: substep hand-off, outcome clauses,
-/// an already-emitted terminal route, or the fall-through continuation.
-fn emit_step_tail(
-    emitter: &mut Emitter<'_>,
-    plan: &Plan,
-    step_index: usize,
-    step: &Step,
-    frame: Frame<'_>,
-    scope: &mut Scope,
-    continuation: Option<Continuation<'_>>,
-) -> Result<(), EmitError> {
-    let split = substep_split(step)?;
-    if split < step.body.len() {
-        let params = plan.sub_params(step_index, 0);
-        let Statement::SubStep(first) = &step.body[split] else {
-            return Err(EmitError::new(step.name_span, "substep block mis-shaped"));
-        };
-        let args = params
-            .iter()
-            .map(|name| ident(name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        emitter.line(&format!(
-            "sub_{}_{}({args})",
-            snake(&step.name),
-            snake(&first.name)
-        ));
-        return Ok(());
-    }
-    if !step.outcomes.is_empty() {
-        return emit_outcomes(emitter, plan, frame, &step.outcomes, scope);
-    }
-    if body_ends_in_route(&step.body) {
-        // The route rendered as the body's tail expression already.
-        return Ok(());
-    }
-    let Some(next) = continuation else {
-        return Err(EmitError::new(
-            step.name_span,
-            format!(
-                "step `{}` completes with nowhere to go — the document did not check cleanly",
-                step.name
-            ),
-        ));
-    };
-    emit_layers(emitter, plan, next.layers, next.layer, next.member, scope)
-}
-/// Lower a statement list. Terminal routes render as the tail expression;
-/// `expect_route_tail` marks `on failure` bodies, which must end in one.
-pub(super) fn lower_statements(
-    emitter: &mut Emitter<'_>,
-    plan: &Plan,
-    frame: Frame<'_>,
-    statements: &[Statement],
-    scope: &mut Scope,
-    expect_route_tail: bool,
-) -> Result<(), EmitError> {
-    for (position, statement) in statements.iter().enumerate() {
-        let last = position + 1 == statements.len();
-        match statement {
-            Statement::Call(call) => lower_call(emitter, call, scope)?,
-            Statement::Spawn(spawn) => lower_spawn(emitter, spawn, scope)?,
-            Statement::Wait(wait) => lower_wait(emitter, wait, scope)?,
-            Statement::Sleep(sleep) => lower_sleep(emitter, sleep),
-            Statement::Fork(fork) => lower_fork(emitter, fork, scope)?,
-            Statement::Loop(looped) => {
-                let step_name = frame.step_name.to_owned();
-                lower_loop(
-                    emitter,
-                    &step_name,
-                    looped,
-                    scope,
-                    &mut |this, body, loop_scope| {
-                        lower_statements(this, plan, frame, body, loop_scope, false)
-                    },
-                )?;
-            }
-            Statement::Pipe(pipe) => match &pipe.end {
-                PipeEnd::Bind(binding) => {
-                    let (value, ty) = lower_pipe_value(emitter, pipe, scope)?;
-                    emitter.line(&format!("let {} = {value}", ident(&binding.name)));
-                    scope.insert(binding.name.clone(), ty);
-                }
-                PipeEnd::Route(target) => {
-                    if !last {
-                        return Err(EmitError::new(
-                            pipe.span,
-                            "statements after an unconditional route are unreachable",
-                        ));
-                    }
-                    let piped = lower_pipe_value(emitter, pipe, scope)?;
-                    emit_route(emitter, plan, frame, target, scope, Some(piped))?;
-                }
+        let on_failure_body = on_failure.body.clone();
+        return emit_with_failure(
+            emitter,
+            flow,
+            frame,
+            body,
+            &on_failure_body,
+            scope,
+            &mut |this, scope| {
+                emit_step_tail(this, flow, step_index, step, frame, scope, continuation)
             },
-            Statement::Route(route) => {
-                if !last {
-                    return Err(EmitError::new(
-                        route.span,
-                        "statements after an unconditional route are unreachable",
-                    ));
-                }
-                emit_route(emitter, plan, frame, &route.target, scope, None)?;
-            }
-            Statement::SubStep(sub) => {
-                return Err(EmitError::new(
-                    sub.name_span,
-                    "substeps lower only as a step body's trailing block",
-                ));
-            }
-            // Defense in depth: the entry gate refuses the rev-3 flow shape
-            // before lowering ever starts.
-            Statement::Distribute(distribute) => {
-                return Err(EmitError::new(
-                    distribute.span,
-                    "`distribute`/`sequence` regions are not yet lowered — \
-                     flow-vocabulary lowering lands in B4",
-                ));
-            }
-            Statement::Collect(collect) => {
-                return Err(EmitError::new(
-                    collect.span,
-                    "`collect` steps are not yet lowered — flow-vocabulary \
-                     lowering lands in B4",
-                ));
-            }
-        }
+        );
     }
-    if expect_route_tail
-        && !matches!(
-            statements.last(),
-            Some(
-                Statement::Route(_)
-                    | Statement::Pipe(crate::ast::PipeStmt {
-                        end: PipeEnd::Route(_),
-                        ..
-                    })
-            )
-        )
-    {
+
+    lower_statements(emitter, flow, frame, body, scope, false)?;
+    emit_step_tail(emitter, flow, step_index, step, frame, scope, continuation)
+}
+
+/// The visit-bound prologue of a `max … visits` step: increment the
+/// language-owned counter and refuse the visit past the bound with the
+/// spanned `AwlVisitsExceeded` runtime failure.
+fn emit_visits_prologue(
+    emitter: &mut Emitter<'_>,
+    step: &Step,
+    max_visits: &crate::ast::MaxVisits,
+    scope: &mut Scope,
+) -> Result<(), EmitError> {
+    let counter = ident(&visits_counter(step, &emitter.generated_names)?);
+    let mut prelude = Vec::new();
+    let bound = render_expr(emitter, &max_visits.bound, scope, &mut prelude)?;
+    if !prelude.is_empty() {
         return Err(EmitError::new(
-            emitter.document.span,
-            "an `on failure` block must end in a route",
+            max_visits.span,
+            "indexing inside a `max … visits` bound is not lowerable in the Gleam stopgap",
         ));
     }
+    emitter.line(&format!("let {counter} = {counter} + 1"));
+    let message = format!(
+        "step `{}` exceeded its `max … visits` bound at line {}, column {}",
+        step.name, max_visits.span.line, max_visits.span.column
+    );
+    emitter.line(&format!("use _ <- result.try(case {counter} > {bound} {{"));
+    emitter.indented(|this| {
+        this.line(&format!(
+            "True -> Error(awl_error.AwlVisitsExceeded({}))",
+            super::names::string_lit(&message)
+        ));
+        this.line("False -> Ok(Nil)");
+    });
+    emitter.line("})");
+    scope.insert(
+        visits_counter(step, &emitter.generated_names)?,
+        super::types::GType::Int,
+    );
     Ok(())
 }

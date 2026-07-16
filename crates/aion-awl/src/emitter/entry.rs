@@ -14,8 +14,9 @@ use super::bindings;
 use super::codecs;
 use super::context::Emitter;
 use super::error::EmitError;
+use super::flowshape::{self, Shaped};
 use super::frame;
-use super::graph;
+use super::graph::{self, Plans};
 use super::steps;
 use super::types::build_env;
 use super::wrappers;
@@ -43,22 +44,40 @@ pub fn emit_in(document: &Document, root: &Path) -> Result<String, EmitError> {
     emit_inner(document, Some(root))
 }
 
-/// Run the shared planning passes (`build_env`, `bindings::compute`,
-/// `graph::plan`) and return the populated [`Emitter`] context together with
-/// its control-flow [`Plan`]. This is the single lowering front the AWL-BC
-/// MIR backend consumes (D-BC1 / AWL-BC-IR.md §4 lowering rule zero): both the
-/// Gleam emitter and the bytecode `lower` derive regions, Kahn layers,
-/// liveness-threaded params, and refusals from these exact passes, so those
-/// decisions cannot drift between backends.
-pub(crate) fn prepare<'a>(
-    document: &'a Document,
+/// Fold, then shape, a checked document: the one preparation both backends
+/// run before planning (D-BC1 — decisions shared, zero drift).
+pub(crate) fn shape_document(
+    document: &Document,
     root: Option<&Path>,
-) -> Result<(Emitter<'a>, graph::Plan), EmitError> {
-    let env = build_env(document, root)?;
-    let mut emitter = Emitter::new(document, env)?;
+) -> Result<Shaped, EmitError> {
+    let folded = crate::fold::fold_document(document, root)
+        .map_err(|error| EmitError::new(error.span, error.message))?;
+    flowshape::shape(&folded).map_err(|error| EmitError::new(error.span, error.message))
+}
+
+/// Run the shared planning passes (`build_env`, `bindings::compute`,
+/// `graph::plan_all`) over a shaped document and return the populated
+/// [`Emitter`] context together with every flow's [`Plans`]. This is the
+/// single lowering front the AWL-BC MIR backend consumes (D-BC1 /
+/// AWL-BC-IR.md §4 lowering rule zero): both the Gleam emitter and the
+/// bytecode `lower` derive regions, Kahn layers, liveness-threaded params,
+/// and refusals from these exact passes, so those decisions cannot drift
+/// between backends.
+pub(crate) fn prepare<'a>(
+    shaped: &'a Shaped,
+    root: Option<&Path>,
+) -> Result<(Emitter<'a>, Plans<'a>), EmitError> {
+    let env = build_env(&shaped.document, root)?;
+    let mut emitter = Emitter::new(
+        &shaped.document,
+        env,
+        &shaped.host_regions,
+        &shaped.subflows,
+        &shaped.generated_names,
+    )?;
     bindings::compute(&mut emitter)?;
-    let plan = graph::plan(&emitter)?;
-    Ok((emitter, plan))
+    let plans = graph::plan_all(&emitter)?;
+    Ok((emitter, plans))
 }
 
 fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitError> {
@@ -77,25 +96,21 @@ fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitEr
             format!("document does not check cleanly: {}", first.message),
         ));
     }
-    // The rev-3 flow shape (B2) checks but is not yet lowered: refuse it
-    // honestly here — with a span — before any planning pass runs.
+    // The one rev-3 refusal B4 keeps: substep `after` dependencies would
+    // drop on the floor — refuse honestly, with a span, before planning.
     if let Some((span, what)) = crate::unlowered::first_unlowered(document) {
         return Err(EmitError::new(
             span,
-            format!("{what} are not yet lowered — flow-vocabulary lowering lands in B4"),
+            format!("{what} are not yet lowered — a later landing carries them"),
         ));
     }
-    // Fold the B1 ergonomics vocabulary (raw strings, `json { … }`,
-    // `schema of`, const references) down to plain literals first, so the
-    // lowering below only ever sees the vocabulary it already speaks.
-    let document = &crate::fold::fold_document(document, root)
-        .map_err(|error| EmitError::new(error.span, error.message))?;
-    let env = build_env(document, root)?;
-    let mut emitter = Emitter::new(document, env)?;
-    bindings::compute(&mut emitter)?;
-    let plan = graph::plan(&emitter)?;
+    // Fold the B1 ergonomics vocabulary down to plain literals, then shape
+    // the rev-3 flow constructs (regions, subflows, visit counters) into
+    // the planned form both backends lower.
+    let shaped = shape_document(document, root)?;
+    let (mut emitter, plans) = prepare(&shaped, root)?;
 
-    let flow = emitter.capture(|this| steps::emit_flow(this, &plan))?;
+    let flow = emitter.capture(|this| steps::emit_flow(this, &plans))?;
     let wrapper_section = emitter.capture(|this| {
         wrappers::activity_wrappers(this);
         wrappers::signal_refs(this);

@@ -5,11 +5,35 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ast::{Expr, PipeEnd, Statement, Step};
+use crate::ast::{Expr, PipeEnd, RoutePayload, RouteTarget, Statement, Step};
 
 use super::context::Emitter;
 use super::error::EmitError;
-use super::graph::{Node, Plan, Region, expr_refs, falls_through, substep_split};
+use super::expr_refs::expr_refs;
+use super::flowshape::{RegionShape, visits_counter};
+use super::graph::{Node, Plan, Region, falls_through, substep_split};
+
+/// The flow-shape context one flow's liveness runs under: its collapsed
+/// per-item regions (with their already-planned member contracts) and its
+/// exit, when the flow is itself a nested one.
+pub(super) struct FlowLive<'f> {
+    /// This flow's collapsed regions, by synthetic step name.
+    pub(super) regions: &'f BTreeMap<String, RegionShape>,
+    /// Member-flow plans computed bottom-up (by region id).
+    pub(super) region_plans: &'f BTreeMap<usize, super::graph::NestedPlan>,
+    /// The nested flow's exit, `None` for the host workflow.
+    pub(super) exit: Option<ExitLive<'f>>,
+}
+
+/// A nested flow's exit contract, as liveness sees it.
+#[derive(Clone, Copy)]
+pub(super) enum ExitLive<'f> {
+    /// A per-item region member flow: routing to (or falling into) the close
+    /// step returns the collected binding.
+    Region { name: &'f str, binding: &'f str },
+    /// A subflow: routing to the outcome returns its payload.
+    Subflow { name: &'f str },
+}
 
 /// Route-target resolution data: which liveness node a step-route calls.
 struct Resolver<'r> {
@@ -36,6 +60,7 @@ pub(super) fn build_params(
     regions: Vec<Region>,
     entry_region: BTreeMap<usize, usize>,
     index: &BTreeMap<String, usize>,
+    live: &FlowLive<'_>,
 ) -> Result<Plan, EmitError> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut region_node = Vec::new();
@@ -64,6 +89,7 @@ pub(super) fn build_params(
             nodes: &mut nodes,
             sub_node: &sub_node,
             resolver: &resolver,
+            live,
         };
         for (region_position, region) in regions.iter().enumerate() {
             let node = region_node[region_position];
@@ -73,13 +99,37 @@ pub(super) fn build_params(
                 }
             }
         }
+        // Fall-through at a region's end: an implicit tail call into the
+        // next step's region (when one follows), or — in a per-item member
+        // flow — the exit return of the collected binding.
+        for (region_position, region) in regions.iter().enumerate() {
+            let node = region_node[region_position];
+            let Some(last) = region.layers.iter().flatten().copied().max() else {
+                continue;
+            };
+            if !falls_through(&steps[last]) {
+                continue;
+            }
+            let next = last + 1;
+            if next < steps.len() {
+                if let Some(&callee_region) = entry_region.get(&next) {
+                    liveness.nodes[node]
+                        .callees
+                        .insert(region_node[callee_region]);
+                }
+            } else if let Some(ExitLive::Region { binding, .. }) = live.exit {
+                if !liveness.nodes[node].defs.contains(binding) {
+                    liveness.nodes[node].refs.insert(binding.to_owned());
+                }
+            }
+        }
     }
 
-    // Fixed point: params(n) = (refs(n) ∪ ⋃ params(callee)) − defs(n).
-    let mut params: Vec<BTreeSet<String>> = nodes
-        .iter()
-        .map(|node| node.refs.difference(&node.defs).cloned().collect())
-        .collect();
+    // Fixed point: params(n) = refs(n) ∪ (⋃ params(callee) − defs(n)).
+    // `refs` is recorded in execution order (a name already defined at its
+    // read site never registers), so a read-before-rebind still threads in
+    // as a parameter — defs subtract only from callee needs.
+    let mut params: Vec<BTreeSet<String>> = nodes.iter().map(|node| node.refs.clone()).collect();
     loop {
         let mut changed = false;
         for position in 0..nodes.len() {
@@ -120,12 +170,43 @@ struct Liveness<'l, 'a> {
     nodes: &'l mut Vec<Node>,
     sub_node: &'l BTreeMap<(usize, usize), usize>,
     resolver: &'l Resolver<'l>,
+    live: &'l FlowLive<'l>,
 }
 
 impl Liveness<'_, '_> {
     /// Fold one step's surface into its region node and substep nodes.
     fn collect_step(&mut self, member: usize, node: usize) -> Result<(), EmitError> {
         let step = &self.steps[member];
+        // A bounded step reads its language-owned visit counter and its
+        // bound expression at entry (before any of its defs).
+        if let Some(max_visits) = &step.max_visits {
+            let counter = visits_counter(step, &self.emitter.generated_names)?;
+            if !self.nodes[node].defs.contains(&counter) {
+                self.nodes[node].refs.insert(counter);
+            }
+            self.add_expr(&max_visits.bound, node, &BTreeSet::new());
+        }
+        // A collapsed per-item region step reads its collection and every
+        // free name its member flow's wrapper threads in.
+        if matches!(step.body.first(), Some(Statement::Distribute(_))) {
+            let Some(region) = self.live.regions.get(&step.name) else {
+                return Err(EmitError::new(
+                    step.name_span,
+                    format!("step `{}` lost its region shape", step.name),
+                ));
+            };
+            let Some(nested) = self.live.region_plans.get(&region.id) else {
+                return Err(EmitError::new(
+                    step.name_span,
+                    format!("step `{}` has no planned member flow", step.name),
+                ));
+            };
+            for name in &nested.wrapper_params {
+                if name != &region.var && !self.nodes[node].defs.contains(name) {
+                    self.nodes[node].refs.insert(name.clone());
+                }
+            }
+        }
         let split = substep_split(step)?;
         self.collect_statements(&step.body[..split], node);
         if let Some(on_failure) = &step.on_failure {
@@ -215,9 +296,7 @@ impl Liveness<'_, '_> {
             .find(|clause| clause.name == target.name)
         {
             let mut refs = BTreeSet::new();
-            for arg in clause.route.payload_args() {
-                expr_refs(&arg.value, &mut refs);
-            }
+            self.target_refs(&clause.route, &mut refs);
             for name in refs {
                 if !self.nodes[sub_id].defs.contains(&name) {
                     self.nodes[sub_id].refs.insert(name);
@@ -243,23 +322,55 @@ impl Liveness<'_, '_> {
         if let crate::ast::Guard::When { expr, .. } = &clause.guard {
             expr_refs(expr, &mut refs);
         }
-        for arg in clause.route.payload_args() {
-            expr_refs(&arg.value, &mut refs);
-        }
-        if clause.route.payload.is_none()
-            && self
-                .emitter
-                .outcomes
-                .contains_key(clause.route.name.as_str())
-        {
-            // A bare route to a workflow outcome picks up the binding named
-            // after the outcome, unless the payload type is Nil.
-            refs.insert(clause.route.name.clone());
-        }
+        self.target_refs(&clause.route, &mut refs);
         for name in refs {
             if !self.nodes[node].defs.contains(&name) {
                 self.nodes[node].refs.insert(name);
             }
+        }
+    }
+
+    /// The names a route target's payload (or bare-route pickup) reads:
+    /// constructed args, a value payload's expression, the exit contract
+    /// (a member flow's collected binding; a subflow's bare pickup), or the
+    /// binding named after a bare workflow outcome.
+    fn target_refs(&self, target: &RouteTarget, refs: &mut BTreeSet<String>) {
+        self.target_refs_form(target, refs, false);
+    }
+
+    /// [`target_refs`] for a PIPED route: the piped value is the payload, so
+    /// the bare-route binding pickup never applies.
+    fn piped_target_refs(&self, target: &RouteTarget, refs: &mut BTreeSet<String>) {
+        self.target_refs_form(target, refs, true);
+    }
+
+    fn target_refs_form(&self, target: &RouteTarget, refs: &mut BTreeSet<String>, piped: bool) {
+        for arg in target.payload_args() {
+            expr_refs(&arg.value, refs);
+        }
+        if let Some(RoutePayload::Value(value)) = &target.payload {
+            expr_refs(value, refs);
+        }
+        match self.live.exit {
+            Some(ExitLive::Region { name, binding }) if target.name == name => {
+                refs.insert(binding.to_owned());
+                return;
+            }
+            Some(ExitLive::Subflow { name }) if target.name == name => {
+                if target.payload.is_none() && !piped {
+                    refs.insert(target.name.clone());
+                }
+                return;
+            }
+            _ => {}
+        }
+        if target.payload.is_none()
+            && !piped
+            && self.emitter.outcomes.contains_key(target.name.as_str())
+        {
+            // A bare route to a workflow outcome picks up the binding named
+            // after the outcome, unless the payload type is Nil.
+            refs.insert(target.name.clone());
         }
     }
 
@@ -310,12 +421,16 @@ impl Liveness<'_, '_> {
                 Statement::Fork(fork) => self.collect_fork(fork, node, defined),
                 Statement::Loop(looped) => self.collect_loop(looped, node, defined),
                 Statement::Route(route) => self.collect_route(route, node, defined),
-                // Rev-3 region statements never reach the emitter (refused
-                // at the entry gate before planning).
-                Statement::Sleep(_)
-                | Statement::SubStep(_)
-                | Statement::Distribute(_)
-                | Statement::Collect(_) => {}
+                // The fan-out pair of a collapsed region step: the header
+                // reads the collection, the collect defines the gathered
+                // binding (member free names are folded in `collect_step`).
+                Statement::Distribute(distribute) => {
+                    self.add_expr(&distribute.collection, node, defined);
+                }
+                Statement::Collect(collect) => {
+                    defined.insert(collect.bind.name.clone());
+                }
+                Statement::Sleep(_) | Statement::SubStep(_) => {}
             }
         }
         // Names defined here are defs of the node.
@@ -343,8 +458,12 @@ impl Liveness<'_, '_> {
                 defined.insert(binding.name.clone());
             }
             PipeEnd::Route(target) => {
-                for arg in target.payload_args() {
-                    self.add_expr(&arg.value, node, defined);
+                let mut refs = BTreeSet::new();
+                self.piped_target_refs(target, &mut refs);
+                for name in refs {
+                    if !defined.contains(&name) && !self.nodes[node].defs.contains(&name) {
+                        self.nodes[node].refs.insert(name);
+                    }
                 }
                 if let Some(callee) = self.resolver.step_route(&target.name) {
                     self.nodes[node].callees.insert(callee);
@@ -408,17 +527,12 @@ impl Liveness<'_, '_> {
         node: usize,
         defined: &mut BTreeSet<String>,
     ) {
-        for arg in route.target.payload_args() {
-            self.add_expr(&arg.value, node, defined);
-        }
-        if route.target.payload.is_none()
-            && self
-                .emitter
-                .outcomes
-                .contains_key(route.target.name.as_str())
-            && !defined.contains(&route.target.name)
-        {
-            self.nodes[node].refs.insert(route.target.name.clone());
+        let mut refs = BTreeSet::new();
+        self.target_refs(&route.target, &mut refs);
+        for name in refs {
+            if !defined.contains(&name) && !self.nodes[node].defs.contains(&name) {
+                self.nodes[node].refs.insert(name);
+            }
         }
         if let Some(callee) = self.resolver.step_route(&route.target.name) {
             self.nodes[node].callees.insert(callee);

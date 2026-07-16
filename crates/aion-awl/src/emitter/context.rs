@@ -8,6 +8,8 @@ use std::mem;
 use crate::ast::{ActionDecl, ChildDecl, Document, RouteDirection, SignalDecl};
 
 use super::error::EmitError;
+use super::flowshape::{RegionShape, SubflowShape};
+use super::generated_names::GeneratedNames;
 use super::names::pascal;
 use super::types::{GType, TypeEnv};
 
@@ -43,9 +45,21 @@ pub(crate) struct Emitter<'a> {
     pub(crate) actions: BTreeMap<&'a str, (&'a str, &'a ActionDecl)>,
     pub(crate) children: BTreeMap<&'a str, &'a ChildDecl>,
     pub(crate) signals: BTreeMap<&'a str, &'a SignalDecl>,
+    /// The host flow's collapsed per-item regions, by synthetic step name.
+    pub(crate) host_regions: &'a BTreeMap<String, RegionShape>,
+    /// Shaped subflow declarations, in declaration order.
+    pub(crate) subflow_shapes: &'a [SubflowShape],
+    /// Subflow name → shaped declaration.
+    pub(crate) subflows: BTreeMap<&'a str, &'a SubflowShape>,
     pub(crate) outcomes: BTreeMap<&'a str, OutcomeInfo>,
-    /// Global binding name → type (single-assignment surface).
+    /// Binding types for the host flow only.
     pub(crate) bindings: BTreeMap<String, GType>,
+    /// Independent binding environments for each subflow.
+    pub(crate) subflow_bindings: BTreeMap<String, BTreeMap<String, GType>>,
+    /// Independent binding environments for each extracted region.
+    pub(crate) region_bindings: BTreeMap<usize, BTreeMap<String, GType>>,
+    /// Persisted counters plus the allocator used for later temporaries.
+    pub(crate) generated_names: GeneratedNames,
     /// Generated input record name (`<Workflow>Input`).
     pub(crate) input_type: String,
     /// Generated outcome union name, `None` when no success outcome exists
@@ -65,7 +79,13 @@ pub(crate) struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    pub(crate) fn new(document: &'a Document, env: TypeEnv) -> Result<Self, EmitError> {
+    pub(crate) fn new(
+        document: &'a Document,
+        env: TypeEnv,
+        host_regions: &'a BTreeMap<String, RegionShape>,
+        subflow_shapes: &'a [SubflowShape],
+        generated_names: &GeneratedNames,
+    ) -> Result<Self, EmitError> {
         let mut env = env;
         let mut actions: BTreeMap<&str, (&str, &ActionDecl)> = BTreeMap::new();
         for worker in &document.workers {
@@ -137,14 +157,25 @@ impl<'a> Emitter<'a> {
             action_inputs.insert(name.name.clone(), record);
         }
 
+        let subflows = subflow_shapes
+            .iter()
+            .map(|shape| (shape.name.as_str(), shape))
+            .collect();
+
         Ok(Self {
             document,
             env,
             actions,
             children,
             signals,
+            host_regions,
+            subflow_shapes,
+            subflows,
             outcomes,
             bindings: BTreeMap::new(),
+            subflow_bindings: BTreeMap::new(),
+            region_bindings: BTreeMap::new(),
+            generated_names: generated_names.clone(),
             input_type,
             union_type,
             action_inputs,
@@ -155,6 +186,11 @@ impl<'a> Emitter<'a> {
             out: String::new(),
             indent: 0,
         })
+    }
+
+    /// Allocate one local identifier that cannot collide with author bindings.
+    pub(crate) fn fresh_name(&mut self, base: &str) -> String {
+        self.generated_names.allocator.fresh(base)
     }
 
     /// The Gleam output type of `execute` (the outcome union, or `Nil` when

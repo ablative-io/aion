@@ -81,6 +81,48 @@ pub fn race_with_default(
   concurrency.race_with_default(activities, workflow_default_task_queue)
 }
 
+/// Spawn all activities concurrently and settle every member independently:
+/// one `Result` slot per activity, input order, no fail-fast, no sibling
+/// cancellation. Each member's retry policy runs to its own final outcome.
+pub fn all_settled(
+  activities: List(Activity(input, output)),
+) -> List(Result(output, error.ActivityError)) {
+  concurrency.all_settled(activities)
+}
+
+/// `all_settled`, supplying the workflow-level default task queue for any
+/// member that selects none. See [`run_with_default`] for the precedence.
+pub fn all_settled_with_default(
+  activities: List(Activity(input, output)),
+  workflow_default_task_queue: Option(String),
+) -> List(Result(output, error.ActivityError)) {
+  concurrency.all_settled_with_default(activities, workflow_default_task_queue)
+}
+
+/// Dynamically produce one activity per input element, then settle like
+/// [`all_settled`]: one `Result` slot per item, item order, no fail-fast.
+pub fn map_settled(
+  items: List(value),
+  to_activity: fn(value) -> Activity(input, output),
+) -> List(Result(output, error.ActivityError)) {
+  concurrency.map_settled(items, to_activity)
+}
+
+/// `map_settled`, supplying the workflow-level default task queue for any
+/// produced activity that selects none. See [`run_with_default`] for the
+/// precedence.
+pub fn map_settled_with_default(
+  items: List(value),
+  to_activity: fn(value) -> Activity(input, output),
+  workflow_default_task_queue: Option(String),
+) -> List(Result(output, error.ActivityError)) {
+  concurrency.map_settled_with_default(
+    items,
+    to_activity,
+    workflow_default_task_queue,
+  )
+}
+
 pub fn map(
   items: List(value),
   to_activity: fn(value) -> Activity(input, output),

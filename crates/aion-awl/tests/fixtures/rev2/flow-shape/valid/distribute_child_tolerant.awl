@@ -1,0 +1,29 @@
+//! Tolerant parallel fan-out over a single child-workflow track: a failed
+//! instance's slot is absent (spawn refusals included); siblings keep
+//! their results.
+workflow fan_children_tolerant
+  input jobs: [Job]
+  input awl_handles_reversed: String
+  input awl_results_reversed: String
+  input awl_acc: String
+  input awl_handle: String
+  input awl_item: String
+  input awl_live: String
+  outcome done: type Done, route success
+
+type Job     { name: String }
+type Verdict { ok: Bool }
+type Done    { count: Int }
+
+child run_job(job: Job) -> Verdict
+
+step wave
+  distribute job in jobs
+
+step delegate
+  run_job(job: job) -> verdict
+
+step gather
+  collect verdict? -> verdicts
+  verdicts |> count -> total
+  route done(count: total)

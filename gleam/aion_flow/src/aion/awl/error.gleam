@@ -23,6 +23,7 @@ pub type AwlError {
   AwlTimerFailed(String)
   AwlTimedOut(String)
   AwlIndexOutOfRange(String)
+  AwlVisitsExceeded(String)
   AwlOutcomeFailure(outcome: String, payload: String)
   AwlFailed
 }
@@ -69,6 +70,11 @@ fn to_json(error_value: AwlError) -> json.Json {
         #("tag", json.string("AwlIndexOutOfRange")),
         #("message", json.string(message)),
       ])
+    AwlVisitsExceeded(message) ->
+      json.object([
+        #("tag", json.string("AwlVisitsExceeded")),
+        #("message", json.string(message)),
+      ])
     AwlOutcomeFailure(outcome, payload) ->
       json.object([
         #("tag", json.string("AwlOutcomeFailure")),
@@ -109,6 +115,10 @@ fn decoder() -> decode.Decoder(AwlError) {
     "AwlIndexOutOfRange" -> {
       use message <- decode.field("message", decode.string)
       decode.success(AwlIndexOutOfRange(message))
+    }
+    "AwlVisitsExceeded" -> {
+      use message <- decode.field("message", decode.string)
+      decode.success(AwlVisitsExceeded(message))
     }
     "AwlOutcomeFailure" -> {
       use outcome <- decode.field("outcome", decode.string)

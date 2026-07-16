@@ -1,0 +1,23 @@
+//! Tolerant in-order fan-out over a single-activity track: one instance at
+//! a time in collection order, a failed instance's slot absent.
+workflow ordered_tolerant
+  input hosts: [Host]
+  outcome done: type Report, route success
+
+type Host    { name: String }
+type Attempt { ok: Bool }
+type Report  { tried: Int }
+
+worker ops
+  action deploy(host: Host) -> Attempt
+
+step ordered
+  sequence host in hosts
+
+step push
+  deploy(host: host) -> attempt
+
+step settle
+  collect attempt? -> attempts
+  attempts |> count -> tried
+  route done(tried: tried)

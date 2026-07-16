@@ -508,7 +508,7 @@ step join_b
     let document = parse(source)?;
     let error = emit(&document).err().ok_or("emit must refuse")?;
     assert!(
-        error.message.contains("one type per binding name"),
+        error.message.contains("incompatible types inside one flow"),
         "unexpected message: {}",
         error.message
     );

@@ -1,0 +1,20 @@
+//! A region close keeps its max-visits counter identity after synthesis.
+workflow bounded_region_close
+  input values: [String]
+  outcome done: type String, route success
+
+worker local
+  action echo(value: String) -> String
+
+step wave
+  distribute value in values
+
+step work
+  echo(value: value) -> item
+
+step gather
+  collect item -> items
+
+  outcome repeat: when visits < 2, route wave
+  outcome finish: otherwise, route done("finished")
+  max 2 visits
