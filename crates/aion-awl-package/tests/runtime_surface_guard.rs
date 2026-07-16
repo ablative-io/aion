@@ -23,11 +23,12 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// bundle module can or should export it.
 const VM_PROVIDED_MODULES: &[&str] = &["erlang"];
 
-/// The export map of the embedded closure: module name → exported
-/// `(function, arity)` set, read through the same beamr chunk loader the
-/// engine uses.
-fn closure_exports() -> Result<BTreeMap<String, BTreeSet<(String, u32)>>, Box<dyn std::error::Error>>
-{
+/// Module name → exported `(function, arity)` set.
+type ExportMap = BTreeMap<String, BTreeSet<(String, u32)>>;
+
+/// The export map of the embedded closure, read through the same beamr
+/// chunk loader the engine uses.
+fn closure_exports() -> Result<ExportMap, Box<dyn std::error::Error>> {
     let atoms = AtomTable::with_common_atoms();
     let mut exports = BTreeMap::new();
     for (name, bytes) in sdk_closure_modules() {

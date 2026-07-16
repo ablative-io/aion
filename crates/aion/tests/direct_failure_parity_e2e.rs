@@ -25,6 +25,7 @@
 //! is a wire-contract extension, not a cheap change at the child-spawn
 //! seam.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,7 +45,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 type TestError = Box<dyn std::error::Error>;
 
 const STRICT_ABORT_MODULE: &str = "parity_strict_abort";
-const STRICT_ABORT: &str = r#"//! Strict abort: the middle stage of an implicit child fails.
+const STRICT_ABORT: &str = r"//! Strict abort: the middle stage of an implicit child fails.
 workflow parity_strict_abort
   input items: [String]
   outcome done: type Done, route success
@@ -68,10 +69,10 @@ step gather
   collect result -> results
   results |> count -> total
   route done(total: total)
-"#;
+";
 
 const VISITS_MODULE: &str = "parity_visits";
-const VISITS: &str = r#"//! Visits exhaustion inside the implicit child's bounded loop.
+const VISITS: &str = r"//! Visits exhaustion inside the implicit child's bounded loop.
 workflow parity_visits
   input items: [String]
   outcome done: type Done, route success
@@ -100,10 +101,10 @@ step settle
   collect checked -> results
   results |> count -> total
   route done(total: total)
-"#;
+";
 
 const SPAWN_REFUSAL_MODULE: &str = "parity_spawn_refusal";
-const SPAWN_REFUSAL: &str = r#"//! In-child spawn refusal: the spawned type is not in the archive.
+const SPAWN_REFUSAL: &str = r"//! In-child spawn refusal: the spawned type is not in the archive.
 workflow parity_spawn_refusal
   input items: [String]
   outcome done: type Done, route success
@@ -126,7 +127,7 @@ step gather
   collect result -> results
   results |> count -> total
   route done(total: total)
-"#;
+";
 
 /// One dispatcher serves every scenario (action names are disjoint):
 /// `stage_two` fails terminally, `verify` never approves, the rest succeed.
@@ -284,12 +285,13 @@ fn gleam_packages() -> Result<Vec<(String, Package)>, TestError> {
             .iter()
             .map(|activity| format!("\"{activity}\""))
             .collect();
-        workflow_toml.push_str(&format!(
+        write!(
+            workflow_toml,
             "[[workflow]]\nentry_module = \"{module}\"\nentry_function = \"run\"\n\
              timeout_seconds = 60\ninput_schema = \"schemas/{module}_input.json\"\n\
              output_schema = \"schemas/{module}_output.json\"\nactivities = [{}]\n\n",
             quoted.join(", ")
-        ));
+        )?;
     }
     fs::write(root.join("workflow.toml"), workflow_toml)?;
     fs::write(

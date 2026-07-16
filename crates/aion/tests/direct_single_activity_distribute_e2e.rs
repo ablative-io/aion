@@ -26,7 +26,7 @@ const MODULE: &str = "single_tol_probe";
 
 /// The panel's `single_tol` scenario: a tolerant collect over a
 /// single-activity distribute track.
-const AWL: &str = r#"//! Tolerant single-activity distribute: the map_settled combinator track.
+const AWL: &str = r"//! Tolerant single-activity distribute: the map_settled combinator track.
 workflow single_tol_probe
   input items: [String]
   outcome done: type Done, route success
@@ -46,7 +46,7 @@ step gather
   collect result? -> results
   results |> count -> total
   route done(total: total)
-"#;
+";
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
