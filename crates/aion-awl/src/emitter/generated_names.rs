@@ -41,6 +41,13 @@ impl NameAllocator {
         for input in &document.inputs {
             used.insert(ident(&input.name));
         }
+        for worker in &document.workers {
+            for action in &worker.actions {
+                for param in &action.params {
+                    used.insert(ident(&param.name));
+                }
+            }
+        }
         collect_step_names(&document.steps, &mut used);
         for subflow in &document.subflows {
             for param in &subflow.params {

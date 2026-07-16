@@ -1,0 +1,16 @@
+//! Wrapper temporaries must not shadow author action parameters.
+workflow action_param_hygiene
+  input seed: String
+  outcome complete: type String, route success
+
+worker source
+  action fetch_text(awl_input_codec: String) -> String
+  action fetch_number(value: String) -> Int
+
+step gather
+  fork
+    fetch_text(awl_input_codec: seed) -> text
+    fetch_number(value: seed) -> number
+  join
+
+  route complete(text)

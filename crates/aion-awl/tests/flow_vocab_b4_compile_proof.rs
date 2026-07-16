@@ -71,6 +71,10 @@ const PROVEN: &[(&str, &str)] = &[
     ),
     ("flow-shape/valid/layer_hygiene.awl", "layer_hygiene"),
     (
+        "flow-shape/valid/action_param_hygiene.awl",
+        "action_param_hygiene",
+    ),
+    (
         "flow-shape/valid/temporary_hygiene.awl",
         "temporary_hygiene",
     ),
