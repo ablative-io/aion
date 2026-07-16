@@ -122,10 +122,21 @@ pub(crate) fn visits_counter(
 pub(crate) fn shape(document: &Document) -> Result<Shaped, ShapeError> {
     let mut ids = 0usize;
     let mut generated_names = GeneratedNames::new(document);
-    let mut host = shape_flow(document.steps.clone(), &mut ids, &mut generated_names)?;
+    let parent = snake(&document.name);
+    let mut host = shape_flow(
+        document.steps.clone(),
+        &mut ids,
+        &mut generated_names,
+        &parent,
+    )?;
     let mut subflows = Vec::new();
     for decl in &document.subflows {
-        subflows.push(shape_subflow(decl, &mut ids, &mut generated_names)?);
+        subflows.push(shape_subflow(
+            decl,
+            &mut ids,
+            &mut generated_names,
+            &parent,
+        )?);
     }
     let mut shaped_document = document.clone();
     shaped_document.steps = std::mem::take(&mut host.steps);
@@ -141,8 +152,9 @@ fn shape_subflow(
     decl: &SubflowDecl,
     ids: &mut usize,
     names: &mut GeneratedNames,
+    parent: &str,
 ) -> Result<SubflowShape, ShapeError> {
-    let flow = shape_flow(decl.steps.clone(), ids, names)?;
+    let flow = shape_flow(decl.steps.clone(), ids, names, parent)?;
     Ok(SubflowShape {
         name: decl.name.clone(),
         params: decl.params.clone(),
@@ -166,6 +178,7 @@ fn shape_flow(
     mut steps: Vec<Step>,
     ids: &mut usize,
     names: &mut GeneratedNames,
+    parent: &str,
 ) -> Result<FlowSteps, ShapeError> {
     normalize_adjacent_after(&mut steps);
     for step in &mut steps {
@@ -202,7 +215,8 @@ fn shape_flow(
             let id = *ids;
             *ids += 1;
             let child_name = names.allocator.fresh(&format!(
-                "awl_distribute_{}_{}",
+                "aion_internal_awl_child_{}_{}_{}",
+                parent,
                 snake(&frame.opener.name),
                 id
             ));

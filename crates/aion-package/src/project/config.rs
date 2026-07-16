@@ -59,6 +59,26 @@ struct RawAdditionalWorkflow {
     internal: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedWorkflowSidecar {
+    format_version: u32,
+    entry_module: String,
+    synthesized_workflows: Vec<GeneratedWorkflowEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedWorkflowEntry {
+    workflow_type: String,
+    entry_module: String,
+    entry_function: String,
+    timeout_seconds: u64,
+    input_schema: serde_json::Value,
+    output_schema: serde_json::Value,
+    internal: bool,
+}
+
 /// Validated packaging configuration loaded from a project's `workflow.toml`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ProjectConfig {
@@ -169,6 +189,7 @@ fn validate(root: &Path, raw: RawConfig) -> Result<ProjectConfig, PackagingError
         .and_then(|package| package.include_source)
         .unwrap_or(true);
     let workflows = resolve_workflows(root, raw.workflow)?;
+    validate_unique_workflow_types(&workflows)?;
 
     Ok(ProjectConfig {
         include_source,
@@ -315,8 +336,9 @@ fn resolve_workflows(
                 format!("workflow[{index}].output_schema"),
                 &entry.output_schema,
             )?;
-            let additional_workflows =
+            let mut additional_workflows =
                 resolve_additional(root, index, &entry.additional_workflows)?;
+            additional_workflows.extend(load_generated_entries(root, &entry.entry_module)?);
             Ok(WorkflowConfig {
                 input_schema: load_schema(&input_schema_path)?,
                 output_schema: load_schema(&output_schema_path)?,
@@ -361,6 +383,100 @@ fn resolve_additional(
             })
         })
         .collect()
+}
+
+fn load_generated_entries(
+    root: &Path,
+    entry_module: &str,
+) -> Result<Vec<AdditionalWorkflowConfig>, PackagingError> {
+    let path = root.join("src").join(format!("{entry_module}.awl.json"));
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(PackagingError::ConfigInvalid {
+                field: path.display().to_string(),
+                reason: format!("failed to read generated AWL entry metadata: {source}"),
+            });
+        }
+    };
+    let sidecar: GeneratedWorkflowSidecar =
+        serde_json::from_slice(&bytes).map_err(|source| PackagingError::ConfigInvalid {
+            field: path.display().to_string(),
+            reason: format!("invalid generated AWL entry metadata: {source}"),
+        })?;
+    if sidecar.format_version != 1 {
+        return Err(PackagingError::ConfigInvalid {
+            field: path.display().to_string(),
+            reason: format!(
+                "unsupported generated AWL entry metadata version {}",
+                sidecar.format_version
+            ),
+        });
+    }
+    if sidecar.entry_module != entry_module {
+        return Err(PackagingError::ConfigInvalid {
+            field: path.display().to_string(),
+            reason: format!(
+                "generated metadata names entry module `{}`, expected `{entry_module}`",
+                sidecar.entry_module
+            ),
+        });
+    }
+    sidecar
+        .synthesized_workflows
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            if entry.workflow_type.is_empty()
+                || entry.entry_function.is_empty()
+                || entry.timeout_seconds == 0
+                || !is_safe_logical_name(&entry.workflow_type)
+                || !is_safe_logical_name(&entry.entry_module)
+            {
+                return Err(PackagingError::ConfigInvalid {
+                    field: format!("{}:synthesized_workflows[{index}]", path.display()),
+                    reason: "workflow type/module/function must be valid and timeout at least 1"
+                        .to_owned(),
+                });
+            }
+            Ok(AdditionalWorkflowConfig {
+                workflow_type: entry.workflow_type,
+                entry_module: entry.entry_module,
+                entry_function: entry.entry_function,
+                timeout: Duration::from_secs(entry.timeout_seconds),
+                input_schema: entry.input_schema,
+                output_schema: entry.output_schema,
+                internal: entry.internal,
+            })
+        })
+        .collect()
+}
+
+fn validate_unique_workflow_types(workflows: &[WorkflowConfig]) -> Result<(), PackagingError> {
+    let mut seen = BTreeMap::new();
+    for (workflow_index, workflow) in workflows.iter().enumerate() {
+        for (entry_index, workflow_type) in std::iter::once(workflow.entry_module.as_str())
+            .chain(
+                workflow
+                    .additional_workflows
+                    .iter()
+                    .map(|entry| entry.workflow_type.as_str()),
+            )
+            .enumerate()
+        {
+            let location = format!("workflow[{workflow_index}].entry[{entry_index}]");
+            if let Some(first) = seen.insert(workflow_type, location.clone()) {
+                return Err(PackagingError::ConfigInvalid {
+                    field: location,
+                    reason: format!(
+                        "workflow type `{workflow_type}` duplicates package entry `{first}`"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

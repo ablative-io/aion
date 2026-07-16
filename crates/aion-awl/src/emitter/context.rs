@@ -71,6 +71,8 @@ pub(crate) struct Emitter<'a> {
     pub(crate) region_input_types: BTreeMap<usize, String>,
     /// Codec stem → implicit child result type required by emitted adapters.
     pub(crate) implicit_child_outputs: BTreeMap<String, GType>,
+    /// Package entries implemented by emitted implicit child adapters.
+    pub(crate) synthesized_workflows: Vec<super::artifact::SynthesizedWorkflowEntry>,
     pub(crate) flags: Flags,
     /// Rendered loop functions, appended after the step functions.
     pub(crate) loop_fns: Vec<String>,
@@ -186,6 +188,7 @@ impl<'a> Emitter<'a> {
             action_inputs,
             region_input_types,
             implicit_child_outputs: BTreeMap::new(),
+            synthesized_workflows: Vec::new(),
             flags: Flags::default(),
             loop_fns: Vec::new(),
             loop_counter: 0,

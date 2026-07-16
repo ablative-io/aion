@@ -45,7 +45,10 @@ pub use checker::{CheckError, check, check_in};
 pub use compile::{
     ActionRequirement, CompileError, CompiledWorkflow, action_requirements, compile,
 };
-pub use emitter::{EmitError, emit, emit_in};
+pub use emitter::{
+    EmitError, EmittedArtifact, SynthesizedWorkflowEntry, emit, emit_artifact, emit_artifact_in,
+    emit_in,
+};
 pub use lexer::{DurationUnit, Keyword, LexError, Span, Token, TokenKind, lex};
 pub use parser::{ParseError, parse};
 pub use printer::{expr_text, print};

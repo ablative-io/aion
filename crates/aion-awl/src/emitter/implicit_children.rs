@@ -57,6 +57,24 @@ pub(super) fn emit_adapter(
         fields.push((name.clone(), ty));
     }
 
+    let timeout_seconds = emitter
+        .document
+        .timeout
+        .as_ref()
+        .and_then(|timeout| timeout.duration.checked_duration())
+        .map_or(60 * 60, |timeout| timeout.as_secs());
+    emitter
+        .synthesized_workflows
+        .push(super::artifact::SynthesizedWorkflowEntry {
+            workflow_type: region.child_name.clone(),
+            entry_module: emitter.document.name.clone(),
+            entry_function: entry_fn(region),
+            input_schema: super::artifact::schema_for_fields(&emitter.env, &fields),
+            output_schema: super::artifact::schema_for_type(&emitter.env, item_ty),
+            timeout_seconds,
+            internal: true,
+        });
+
     super::frame::emit_record_type(emitter, &input_type, &fields);
     super::codecs::record_codec(emitter, &input_type, &fields);
     let execute = format!("{}_execute", snake(&region.child_name));

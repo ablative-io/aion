@@ -138,7 +138,7 @@ fn b4_flow_shape_fixtures_compile_under_gleam() -> TestResult {
         );
         if is_multistep_distribute(relative) {
             assert!(
-                generated.contains("workflow.spawn(\"awl_distribute_"),
+                generated.contains("workflow.spawn(\"aion_internal_awl_child_"),
                 "{relative} must spawn synthesized children before awaiting:\n{generated}"
             );
             assert!(
@@ -146,7 +146,7 @@ fn b4_flow_shape_fixtures_compile_under_gleam() -> TestResult {
                 "{relative} must await synthesized child handles:\n{generated}"
             );
             assert!(
-                generated.contains("pub fn awl_distribute_")
+                generated.contains("pub fn aion_internal_awl_child_")
                     && generated.contains("_run(raw_input: Dynamic)"),
                 "{relative} must export synthesized child adapters:\n{generated}"
             );

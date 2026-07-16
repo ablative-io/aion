@@ -10,6 +10,7 @@ use std::path::Path;
 
 use crate::ast::Document;
 
+use super::artifact::EmittedArtifact;
 use super::bindings;
 use super::codecs;
 use super::context::Emitter;
@@ -30,7 +31,7 @@ use super::wrappers;
 /// Returns [`EmitError`] for constructs the Gleam stopgap cannot lower
 /// faithfully, and for documents that would not check cleanly.
 pub fn emit(document: &Document) -> Result<String, EmitError> {
-    emit_inner(document, None)
+    Ok(emit_artifact(document)?.source)
 }
 
 /// Emit a complete Gleam workflow module, resolving schema imports relative
@@ -41,6 +42,24 @@ pub fn emit(document: &Document) -> Result<String, EmitError> {
 /// Returns [`EmitError`] for constructs the Gleam stopgap cannot lower
 /// faithfully, and for documents that would not check cleanly.
 pub fn emit_in(document: &Document, root: &Path) -> Result<String, EmitError> {
+    Ok(emit_artifact_in(document, root)?.source)
+}
+
+/// Emit source together with every synthesized same-package workflow entry.
+///
+/// # Errors
+///
+/// Returns [`EmitError`] under the same conditions as [`emit`].
+pub fn emit_artifact(document: &Document) -> Result<EmittedArtifact, EmitError> {
+    emit_inner(document, None)
+}
+
+/// Emit a structured artifact while resolving schema imports relative to `root`.
+///
+/// # Errors
+///
+/// Returns [`EmitError`] under the same conditions as [`emit_in`].
+pub fn emit_artifact_in(document: &Document, root: &Path) -> Result<EmittedArtifact, EmitError> {
     emit_inner(document, Some(root))
 }
 
@@ -80,7 +99,7 @@ pub(crate) fn prepare<'a>(
     Ok((emitter, plans))
 }
 
-fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitError> {
+fn emit_inner(document: &Document, root: Option<&Path>) -> Result<EmittedArtifact, EmitError> {
     // Emission is defined only for documents that check cleanly: fold-time
     // const substitution is name-based and relies on the checker's
     // invariants (no shadowed consts, no input/signal collisions), so an
@@ -130,5 +149,9 @@ fn emit_inner(document: &Document, root: Option<&Path>) -> Result<String, EmitEr
     }
     emitter.out.push_str(&wrapper_section);
     emitter.out.push_str(&codec_section);
-    Ok(emitter.out)
+    Ok(EmittedArtifact {
+        entry_module: document.name.clone(),
+        source: emitter.out,
+        synthesized_workflows: emitter.synthesized_workflows,
+    })
 }

@@ -1,3 +1,4 @@
+mod artifact;
 mod bindings;
 mod child_fanout;
 mod codecs;
@@ -28,7 +29,8 @@ mod subs;
 mod types;
 mod wrappers;
 
-pub use entry::{emit, emit_in};
+pub use artifact::{EmittedArtifact, SynthesizedWorkflowEntry};
+pub use entry::{emit, emit_artifact, emit_artifact_in, emit_in};
 pub use error::EmitError;
 
 // Crate-internal planning surface consumed by the AWL-BC MIR backend

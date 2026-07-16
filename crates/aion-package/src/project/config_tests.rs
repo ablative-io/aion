@@ -405,3 +405,71 @@ fn invalid_schema_json_returns_schema_parse_with_path() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn generated_awl_sidecar_supplies_additional_workflow_entries() -> TestResult {
+    let root = descriptor_project("config-awl-sidecar", &workflow_block(None))?;
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(
+        root.join("src/demo.awl.json"),
+        serde_json::to_vec_pretty(&json!({
+            "format_version": 1,
+            "entry_module": "demo",
+            "synthesized_workflows": [{
+                "workflow_type": "aion_internal_awl_child_demo_fan_0",
+                "entry_module": "demo",
+                "entry_function": "aion_internal_awl_child_demo_fan_0_run",
+                "timeout_seconds": 30,
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "string"},
+                "internal": true
+            }]
+        }))?,
+    )?;
+    let config = load_config(&root)?;
+    fs::remove_dir_all(&root)?;
+    let entries = &config.workflows[0].additional_workflows;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].workflow_type,
+        "aion_internal_awl_child_demo_fan_0"
+    );
+    assert_eq!(entries[0].output_schema, json!({"type": "string"}));
+    assert!(entries[0].internal);
+    Ok(())
+}
+
+#[test]
+fn workflow_types_must_be_unique_across_every_project_entry() -> TestResult {
+    let descriptor = format!(
+        "{}\n[[workflow]]\nentry_module = \"other\"\nentry_function = \"run\"\n\
+         timeout_seconds = 30\ninput_schema = \"schemas/input.json\"\n\
+         output_schema = \"schemas/output.json\"\nactivities = []\n",
+        workflow_block(None)
+    );
+    let root = descriptor_project("config-global-type-collision", &descriptor)?;
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(
+        root.join("src/demo.awl.json"),
+        serde_json::to_vec(&json!({
+            "format_version": 1,
+            "entry_module": "demo",
+            "synthesized_workflows": [{
+                "workflow_type": "other",
+                "entry_module": "demo",
+                "entry_function": "child_run",
+                "timeout_seconds": 30,
+                "input_schema": {},
+                "output_schema": {},
+                "internal": true
+            }]
+        }))?,
+    )?;
+    let result = load_config(&root);
+    fs::remove_dir_all(&root)?;
+    assert!(
+        matches!(result, Err(PackagingError::ConfigInvalid { reason, .. })
+            if reason.contains("workflow type `other`") && reason.contains("duplicates"))
+    );
+    Ok(())
+}
