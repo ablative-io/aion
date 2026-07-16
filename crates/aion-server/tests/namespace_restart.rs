@@ -118,6 +118,7 @@ fn package_from(
         }],
         version: ManifestVersion::new("stamped-by-builder"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let archive = PackageBuilder::with_source(manifest, beams, [(module, source.to_vec())])
         .write_to_bytes()?;

@@ -148,6 +148,15 @@ impl PackageStore for LibSqlStore {
         crate::package::put_package(self.connection(), record).await
     }
 
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
+        crate::package::put_package_with_routes(self.connection(), record, route_workflow_types)
+            .await
+    }
+
     async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
         crate::package::list_packages(self.connection()).await
     }

@@ -90,6 +90,7 @@ fn direct_builder_archive(root: &Path) -> Result<Vec<u8>, Box<dyn std::error::Er
         }],
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let source = BTreeMap::from([
         (

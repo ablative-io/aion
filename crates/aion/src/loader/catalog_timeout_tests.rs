@@ -23,6 +23,7 @@ fn package(timeout: Duration, explicit: bool) -> Result<Package, aion_package::P
         activities: Vec::new(),
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let mut builder = PackageBuilder::new(manifest, beams);
     if explicit {

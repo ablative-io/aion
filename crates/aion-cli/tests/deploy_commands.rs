@@ -74,6 +74,7 @@ fn write_archive(directory: &std::path::Path) -> Result<std::path::PathBuf, Test
         activities: vec![],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let archive = PackageBuilder::new(manifest, beams).write_to_bytes()?;
     let path = directory.join(format!("{RELOAD_MODULE}.aion"));

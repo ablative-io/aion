@@ -81,20 +81,49 @@ pub(super) async fn put_package_points_route_at_persisted_version(
 ) -> Result<(), StoreError> {
     let first = "a".repeat(64);
     let second = "b".repeat(64);
-    store
-        .put_package(record("checkout", &first, b"v1", deployed_at(10)?))
-        .await?;
-    store
-        .put_package(record("checkout", &second, b"v2", deployed_at(20)?))
-        .await?;
+    let v1 = record("checkout", &first, b"v1", deployed_at(10)?);
+    let v2 = record("checkout", &second, b"v2", deployed_at(20)?);
+    store.put_package(v1.clone()).await?;
+    store.put_package(v2.clone()).await?;
 
     expect(
         &store.list_package_routes().await?,
         &vec![PackageRouteRecord {
             workflow_type: "checkout".to_owned(),
-            content_hash: second,
+            content_hash: second.clone(),
         }],
         "put_package must atomically re-point the type's route at the persisted version",
+    )?;
+
+    let grouped_hash = "c".repeat(64);
+    let grouped = record("billing", &grouped_hash, b"group", deployed_at(30)?);
+    let grouped_routes = vec!["billing".to_owned(), "billing-child".to_owned()];
+    store
+        .put_package_with_routes(grouped.clone(), &grouped_routes)
+        .await?;
+
+    expect(
+        &store.list_packages().await?,
+        &vec![v1, v2, grouped],
+        "put_package_with_routes must persist the package row",
+    )?;
+    expect(
+        &store.list_package_routes().await?,
+        &vec![
+            PackageRouteRecord {
+                workflow_type: "billing".to_owned(),
+                content_hash: grouped_hash.clone(),
+            },
+            PackageRouteRecord {
+                workflow_type: "billing-child".to_owned(),
+                content_hash: grouped_hash,
+            },
+            PackageRouteRecord {
+                workflow_type: "checkout".to_owned(),
+                content_hash: second,
+            },
+        ],
+        "put_package_with_routes must publish every group route with the package row",
     )
 }
 

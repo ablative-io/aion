@@ -421,6 +421,10 @@ child_result(<<"declining-child">>, _Input) ->
     {ok, <<"error:\"declined\"">>};
 child_result(<<"malformed-child">>, _Input) ->
     {ok, <<"ok:{\"id\":1,\"approved\":true}">>};
+child_result(<<"raw-error-prefix-success">>, _Input) ->
+    {ok, <<"ok:error:identical-payload">>};
+child_result(<<"raw-error-prefix-failure">>, _Input) ->
+    {ok, <<"error:error:identical-payload">>};
 child_result(<<"queried-child">>, _Input) ->
     %% First await yields a query sentinel; the re-entered await resolves.
     {sentinel_then,

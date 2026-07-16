@@ -119,12 +119,19 @@ impl ChildNifBridge {
         self.watch_backoff
     }
 
-    /// Routed package version for a child workflow type, in its durable
-    /// textual form, resolved at child-record time (D1: latest-at-record).
-    pub(crate) fn routed_package_version(
+    /// Resolves a same-package child at the parent's exact package version,
+    /// falling back to the routed version for an explicitly separate child.
+    ///
+    /// Same-archive entries share one content hash, so this exact lookup keeps
+    /// child starts pinned across a redeploy of either route.
+    pub(crate) fn package_version_for_child(
         &self,
         workflow_type: &str,
+        parent_version: &aion_package::ContentHash,
     ) -> Result<Option<aion_core::PackageVersion>, EngineError> {
+        if let Some(workflow) = self.catalog.get(workflow_type, parent_version)? {
+            return Ok(Some(crate::loader::package_version_of(workflow.version())));
+        }
         self.catalog.routed_version(workflow_type)
     }
 

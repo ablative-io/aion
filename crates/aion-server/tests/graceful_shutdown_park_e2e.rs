@@ -111,6 +111,7 @@ fn write_package_archive(dir: &std::path::Path, beam: &[u8]) -> Result<PathBuf, 
         }],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let archive = PackageBuilder::new(manifest, beams).write_to_bytes()?;
     let path = dir.join("park_fixture.aion");

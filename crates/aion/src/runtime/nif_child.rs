@@ -104,12 +104,10 @@ fn run_spawn_child(args: &[Term], ctx: &mut ProcessContext) -> Result<Term, Stri
             Err(format!("unexpected_child_spawn_resolution:{other:?}"))
         }
         ResolveOutcome::ResumeLive => {
-            // D1: the child's package version is resolved once, here, at
-            // record time — always the latest loaded version of the child's
-            // type — and recorded durably so the spawn, the background
-            // retry, and the crash-repair sweep all start exactly it.
+            // Resolve within the parent's exact package version. The durable
+            // record carries that pin through retry, recovery, and adoption.
             let package_version = bridge
-                .routed_package_version(&workflow_type)
+                .package_version_for_child(&workflow_type, nif.workflow_handle().loaded_version())
                 .map_err(|error| format!("child_version_resolution:{error}"))?
                 .ok_or_else(|| format!("child_workflow_type_not_loaded:{workflow_type}"))?;
             // Record-then-spawn (#56): the id is recorded nondeterminism —
@@ -323,8 +321,10 @@ fn await_child_step(
         .map_err(|error| context_error(&error))?
     {
         // D4 envelope: child success and child failure are both `{ok, _}`
-        // data with `ok:`/`error:` payload prefixes (the SDK decode
-        // contract); `{error, _}` is reserved for engine faults.
+        // data with `ok:`/`error:` payload prefixes (the stable SDK and
+        // compiled-workflow wire contract); `{error, _}` is reserved for
+        // engine faults. The SDK copies the sliced suffix before decoding so
+        // no padded sub-binary storage reaches a codec.
         ResolveOutcome::Recorded(Resolution::ChildCompleted(result)) => {
             if let Some(message) =
                 scope_expired_before_child_terminal(state, bridge, &nif, pid, child_workflow_id)

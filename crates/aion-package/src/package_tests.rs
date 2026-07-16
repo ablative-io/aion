@@ -26,6 +26,7 @@ fn sample_manifest() -> Manifest {
         }],
         version: ManifestVersion::new("placeholder"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     }
 }
 

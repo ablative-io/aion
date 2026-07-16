@@ -97,6 +97,13 @@ const PROVEN: &[(&str, &str)] = &[
     ),
 ];
 
+fn is_multistep_distribute(relative: &str) -> bool {
+    matches!(
+        relative,
+        "flow-shape/valid/dev_flow.awl" | "flow-shape/valid/region_pure_decision.awl"
+    )
+}
+
 /// The B4 landing bar: every proven fixture checks, emits, and the whole
 /// set `gleam build`s clean as one project.
 #[test]
@@ -125,6 +132,30 @@ fn b4_flow_shape_fixtures_compile_under_gleam() -> TestResult {
         assert!(errors.is_empty(), "{relative} must check clean: {errors:?}");
         let generated = emit_in(&document, fixture_dir)
             .map_err(|error| format!("{relative}: emit refused: {}", error.message))?;
+        assert!(
+            !generated.contains("this distribute's per-item track is a multi-step flow"),
+            "{relative} retained the forbidden sequential-degradation comment"
+        );
+        if is_multistep_distribute(relative) {
+            assert!(
+                generated.contains("workflow.spawn(\"aion_internal_awl_child_"),
+                "{relative} must spawn synthesized children before awaiting:\n{generated}"
+            );
+            assert!(
+                generated.contains("child.await("),
+                "{relative} must await synthesized child handles:\n{generated}"
+            );
+            assert!(
+                generated.contains("pub fn aion_internal_awl_child_")
+                    && generated.contains("_run(raw_input: Dynamic)"),
+                "{relative} must export synthesized child adapters:\n{generated}"
+            );
+            let repeated = emit_in(&document, fixture_dir)?;
+            assert_eq!(
+                generated, repeated,
+                "{relative} emission must be deterministic"
+            );
+        }
         fs::write(
             project.join("src").join(format!("{module}.gleam")),
             generated,

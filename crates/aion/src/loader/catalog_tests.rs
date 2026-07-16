@@ -28,6 +28,7 @@ fn manifest(entry_module: &str) -> Manifest {
         }],
         version: ManifestVersion::new("placeholder"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     }
 }
 
@@ -484,7 +485,7 @@ async fn route_version_re_points_and_rejects_unknown_hashes() -> TestResult {
 }
 
 #[tokio::test]
-async fn swap_out_refuses_routed_version_and_restore_round_trips() -> TestResult {
+async fn swap_out_refuses_routed_package_and_restore_round_trips() -> TestResult {
     let first = package("workflow/order", vec![1, 2, 3])?;
     let second = package("workflow/order", vec![1, 2, 4])?;
     let catalog = WorkflowCatalog::new();
@@ -493,18 +494,19 @@ async fn swap_out_refuses_routed_version_and_restore_round_trips() -> TestResult
 
     {
         let _mutation = catalog.begin_mutation().await;
-        let routed = catalog.swap_out_version("workflow/order", second.content_hash());
+        let routed = catalog.swap_out_package("workflow/order", second.content_hash());
         assert!(
             matches!(&routed, Err(EngineError::RouteActive { workflow_type, version })
-                if workflow_type == "workflow/order" && version == second.content_hash()),
+                if workflow_type == "workflow/order"
+                    && version.to_string() == second.content_hash().to_string()),
             "swapping out the routed version must be refused: {routed:?}"
         );
 
-        let removed = catalog.swap_out_version("workflow/order", first.content_hash())?;
+        let removed = catalog.swap_out_package("workflow/order", first.content_hash())?;
         assert_eq!(catalog.get("workflow/order", first.content_hash())?, None);
         assert!(!catalog.has_registered_module(first_record.deployed_entry_module()));
 
-        catalog.restore_version(removed)?;
+        catalog.restore_package(removed)?;
     }
     assert_eq!(
         catalog.get("workflow/order", first.content_hash())?,

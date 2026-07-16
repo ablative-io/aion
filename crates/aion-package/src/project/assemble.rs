@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     BeamSet, CURRENT_FORMAT_VERSION, DeclaredActivity, ExtractionLimits, Manifest, ManifestVersion,
-    Package, PackageBuilder, WorkflowVersion,
+    Package, PackageBuilder, WorkflowEntry, WorkflowVersion,
 };
 
 /// Options for packaging an already-built Gleam workflow project.
@@ -192,6 +192,19 @@ fn build_workflow_package(
             .collect(),
         version: ManifestVersion::new("unstamped"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: workflow
+            .additional_workflows
+            .iter()
+            .map(|entry| WorkflowEntry {
+                workflow_type: entry.workflow_type.clone(),
+                entry_module: entry.entry_module.clone(),
+                entry_function: entry.entry_function.clone(),
+                input_schema: entry.input_schema.clone(),
+                output_schema: entry.output_schema.clone(),
+                timeout: entry.timeout,
+                internal: entry.internal,
+            })
+            .collect(),
     };
 
     PackageBuilder::with_source(manifest, beams.clone(), source.clone())

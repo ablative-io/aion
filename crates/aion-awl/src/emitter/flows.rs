@@ -8,12 +8,11 @@
 //! - `distribute` over a single child-workflow track: spawn-all then
 //!   await-each in item order (strict), per-handle `Option` capture
 //!   (tolerant);
-//! - `sequence`, and any multi-step track: one instance at a time through
+//! - multi-step `distribute`: one synthesized child workflow per item,
+//!   spawn-all then await-each in item order;
+//! - `sequence`: one instance at a time through
 //!   the region's generated instance function (`list.try_fold` strict,
-//!   `list.fold` with per-instance `Option` capture tolerant). A parallel
-//!   `distribute` over a multi-step track degrades to written order with a
-//!   generated visibility comment (the SDK parallelizes activities, not
-//!   flows) — a recorded mapping limit.
+//!   `list.fold` with per-instance `Option` capture tolerant).
 
 use crate::Spanned;
 use crate::ast::{CallStmt, DeliveryVerb, DistributeStmt, Statement};
@@ -88,6 +87,7 @@ pub(super) fn emit_nested(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Resul
                 ),
             ));
         };
+        let implicit_child = super::implicit_children::is_required(emitter, region);
         let output = emitter.env.gleam_type(&item_ty);
         let flow = FlowCtx {
             steps: &region.members.steps,
@@ -104,8 +104,19 @@ pub(super) fn emit_nested(emitter: &mut Emitter<'_>, plans: &Plans<'_>) -> Resul
             }),
             output,
         };
-        emit_wrapper(emitter, &flow, &region_fn(region), nested)?;
+        let instance = region_fn(region);
+        emit_wrapper(emitter, &flow, &instance, nested)?;
         emit_flow_fns(emitter, &flow)?;
+        if implicit_child {
+            super::implicit_children::emit_adapter(
+                emitter,
+                region,
+                nested,
+                &flow.bindings,
+                &item_ty,
+                &instance,
+            )?;
+        }
     }
     Ok(())
 }
@@ -152,7 +163,7 @@ fn emit_wrapper(
 /// The one bare call of a single-step, single-statement member track whose
 /// binding is the collected one — the shape that fans out directly through
 /// the SDK combinators instead of an instance function.
-fn single_member_call(region: &RegionShape) -> Option<&CallStmt> {
+pub(super) fn single_member_call(region: &RegionShape) -> Option<&CallStmt> {
     let [step] = region.members.steps.as_slice() else {
         return None;
     };
@@ -243,10 +254,10 @@ pub(super) fn emit_fanout(
         } else if emitter.children.contains_key(call.call.name.as_str()) {
             emit_child_fanout(emitter, region, call, &branch_scope, &items, &var, &bind)?;
         } else {
-            emit_instance_fanout(emitter, region, nested, &items, &var, &bind)?;
+            emit_instance_fanout(emitter, region, nested, &branch_scope, &items, &var, &bind)?;
         }
     } else {
-        emit_instance_fanout(emitter, region, nested, &items, &var, &bind)?;
+        emit_instance_fanout(emitter, region, nested, &branch_scope, &items, &var, &bind)?;
     }
 
     let slot = if region.tolerant {
@@ -438,25 +449,31 @@ fn emit_child_fanout(
     Ok(())
 }
 
-/// Fan out a multi-step track through its generated instance function, one
-/// instance at a time (a parallel `distribute` degrades to written order —
-/// recorded in the generated module).
+/// Fan out a multi-step track: synthesized children for `distribute`, or the
+/// generated instance function one item at a time for `sequence`.
 fn emit_instance_fanout(
     emitter: &mut Emitter<'_>,
     region: &RegionShape,
     nested: &NestedPlan,
+    branch_scope: &Scope,
     items: &str,
     var: &str,
     bind: &str,
 ) -> Result<(), EmitError> {
+    if matches!(region.verb, DeliveryVerb::Distribute) {
+        return super::implicit_children::emit_fanout(
+            emitter,
+            region,
+            nested,
+            branch_scope,
+            items,
+            var,
+            bind,
+        );
+    }
     let gathered = emitter.fresh_name("awl_gathered");
     let acc = emitter.fresh_name("awl_acc");
     let item = emitter.fresh_name("awl_item");
-    if matches!(region.verb, DeliveryVerb::Distribute) {
-        emitter.line("// awl stopgap: this distribute's per-item track is a multi-step flow;");
-        emitter.line("// instances run one at a time (the Gleam SDK parallelizes single");
-        emitter.line("// activities, not flows).");
-    }
     let instance = region_fn(region);
     let args = nested
         .wrapper_params

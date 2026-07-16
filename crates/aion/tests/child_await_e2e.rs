@@ -58,6 +58,7 @@ fn fixture_package(
         }],
         version: ManifestVersion::new("stamped-by-builder"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let archive = PackageBuilder::with_source(manifest, beams, [(module, source.to_vec())])
         .write_to_bytes()?;
@@ -1066,14 +1067,14 @@ async fn unloaded_child_type_fails_before_recording() -> TestResult {
 
 // --- brief §4 item 10: >10 parents parked in await_child simultaneously ----
 
-/// The headline thread-pinning claim, behaviorally: beamr's dirty IO pool
-/// defaults to 10 threads, and the old blocking `await_child` held one for a
-/// child's entire lifetime — ten parked parents wedged the engine. The
-/// two-phase native parks via `request_suspend`, so 16 parents awaiting 16
-/// gated children must all park concurrently on a single scheduler thread
-/// and all resolve once the children are released, in bounded time.
+/// The parent BEAM in this test is byte-for-byte from pre-d14 commit
+/// `911eac558603` (SHA-256 `497a75457c606587a43991ca2def20a99c4e3912b8768db0c20b7c14b2bdb0e4`)
+/// and still pattern-matches `{ok, <<"ok:", Payload/binary>>}`. Running it
+/// unchanged pins wire compatibility while retaining the headline thread-
+/// pinning proof: 16 parents awaiting 16 gated children must all park on one
+/// scheduler thread and resolve in bounded time.
 #[tokio::test(flavor = "multi_thread")]
-async fn sixteen_parents_parked_in_await_child_all_resolve() -> TestResult {
+async fn pre_d14_parent_beam_runs_unchanged_while_sixteen_awaits_resolve() -> TestResult {
     const PARENTS: usize = 16;
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let engine = EngineBuilder::new()

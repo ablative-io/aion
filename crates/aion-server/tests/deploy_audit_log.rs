@@ -79,6 +79,7 @@ fn archive_bytes(beam: &[u8], entry_function: &str) -> Result<Vec<u8>, TestError
         activities: vec![],
         version: ManifestVersion::new("test"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     Ok(PackageBuilder::new(manifest, beams).write_to_bytes()?)
 }

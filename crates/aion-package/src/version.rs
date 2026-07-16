@@ -66,6 +66,7 @@ mod tests {
             ],
             version: ManifestVersion::new("placeholder"),
             format_version: CURRENT_FORMAT_VERSION,
+            additional_workflows: Vec::new(),
         }
     }
 

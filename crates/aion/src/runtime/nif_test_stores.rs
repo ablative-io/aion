@@ -146,6 +146,16 @@ impl aion_store::PackageStore for StaleReadStore {
         self.inner.put_package(record).await
     }
 
+    async fn put_package_with_routes(
+        &self,
+        record: aion_store::PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), aion_store::StoreError> {
+        self.inner
+            .put_package_with_routes(record, route_workflow_types)
+            .await
+    }
+
     async fn list_packages(
         &self,
     ) -> Result<Vec<aion_store::PackageRecord>, aion_store::StoreError> {

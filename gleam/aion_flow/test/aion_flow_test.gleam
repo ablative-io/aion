@@ -1,6 +1,7 @@
 //// aion_flow foundational primitive tests.
 
 import aion/activity
+import aion/awl/codec as awl_codec
 import aion/child
 import aion/codec
 import aion/duration
@@ -656,6 +657,36 @@ pub fn workflow_spawn_and_wait_returns_decoded_child_error_test() {
     workflow_error_codec(),
   )
   |> should.equal(Error(error.ChildWorkflowFailed("declined")))
+}
+
+fn raw_child_workflow(input: String) -> Result(String, String) {
+  Ok(input)
+}
+
+pub fn child_success_payload_beginning_error_prefix_stays_success_test() {
+  let raw = awl_codec.raw()
+  workflow.spawn_and_wait(
+    "raw-error-prefix-success",
+    raw_child_workflow,
+    "ignored",
+    raw,
+    raw,
+    raw,
+  )
+  |> should.equal(Ok("error:identical-payload"))
+}
+
+pub fn child_failure_with_identical_payload_stays_typed_failure_test() {
+  let raw = awl_codec.raw()
+  workflow.spawn_and_wait(
+    "raw-error-prefix-failure",
+    raw_child_workflow,
+    "ignored",
+    raw,
+    raw,
+    raw,
+  )
+  |> should.equal(Error(error.ChildWorkflowFailed("error:identical-payload")))
 }
 
 pub fn child_await_decode_failure_is_typed_data_test() {

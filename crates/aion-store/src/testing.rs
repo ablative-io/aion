@@ -222,6 +222,16 @@ impl PackageStore for ShardSeamSpy {
         self.inner.put_package(record).await
     }
 
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .put_package_with_routes(record, route_workflow_types)
+            .await
+    }
+
     async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
         self.inner.list_packages().await
     }

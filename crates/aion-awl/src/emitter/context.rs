@@ -67,6 +67,12 @@ pub(crate) struct Emitter<'a> {
     pub(crate) union_type: Option<String>,
     /// Action name → generated `<Action>Input` record name.
     pub(crate) action_inputs: BTreeMap<String, String>,
+    /// Region id → generated implicit-child input record name.
+    pub(crate) region_input_types: BTreeMap<usize, String>,
+    /// Codec stem → implicit child result type required by emitted adapters.
+    pub(crate) implicit_child_outputs: BTreeMap<String, GType>,
+    /// Package entries implemented by emitted implicit child adapters.
+    pub(crate) synthesized_workflows: Vec<super::artifact::SynthesizedWorkflowEntry>,
     pub(crate) flags: Flags,
     /// Rendered loop functions, appended after the step functions.
     pub(crate) loop_fns: Vec<String>,
@@ -157,6 +163,7 @@ impl<'a> Emitter<'a> {
             action_inputs.insert(name.name.clone(), record);
         }
 
+        let region_input_types = region_input_types(&mut env, host_regions, subflow_shapes);
         let subflows = subflow_shapes
             .iter()
             .map(|shape| (shape.name.as_str(), shape))
@@ -179,6 +186,9 @@ impl<'a> Emitter<'a> {
             input_type,
             union_type,
             action_inputs,
+            region_input_types,
+            implicit_child_outputs: BTreeMap::new(),
+            synthesized_workflows: Vec::new(),
             flags: Flags::default(),
             loop_fns: Vec::new(),
             loop_counter: 0,
@@ -271,5 +281,32 @@ impl<'a> Emitter<'a> {
         let captured = mem::replace(&mut self.out, saved_out);
         self.indent = saved_indent;
         result.map(|()| captured)
+    }
+}
+
+fn region_input_types(
+    env: &mut TypeEnv,
+    host_regions: &BTreeMap<String, RegionShape>,
+    subflows: &[SubflowShape],
+) -> BTreeMap<usize, String> {
+    let mut allocated = BTreeMap::new();
+    allocate_region_input_types(env, host_regions, &mut allocated);
+    for subflow in subflows {
+        allocate_region_input_types(env, &subflow.flow.regions, &mut allocated);
+    }
+    allocated
+}
+
+fn allocate_region_input_types(
+    env: &mut TypeEnv,
+    regions: &BTreeMap<String, RegionShape>,
+    allocated: &mut BTreeMap<usize, String>,
+) {
+    for region in regions.values() {
+        let name = env
+            .names
+            .fresh(&format!("{}Input", pascal(&region.child_name)));
+        allocated.insert(region.id, name);
+        allocate_region_input_types(env, &region.members.regions, allocated);
     }
 }

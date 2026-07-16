@@ -857,6 +857,7 @@ mod tests {
             }],
             version: ManifestVersion::new("test"),
             format_version: CURRENT_FORMAT_VERSION,
+            additional_workflows: Vec::new(),
         }
     }
 

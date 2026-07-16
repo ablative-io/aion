@@ -475,6 +475,20 @@ impl PackageStore for InstrumentedEventStore {
         result
     }
 
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
+        let started = Instant::now();
+        let result = self
+            .inner
+            .put_package_with_routes(record, route_workflow_types)
+            .await;
+        self.observe_since("put_package_with_routes", started);
+        result
+    }
+
     async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
         let started = Instant::now();
         let result = self.inner.list_packages().await;

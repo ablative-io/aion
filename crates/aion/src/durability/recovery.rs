@@ -467,6 +467,17 @@ mod tests {
             ))
         }
 
+        async fn put_package_with_routes(
+            &self,
+            record: aion_store::PackageRecord,
+            route_workflow_types: &[String],
+        ) -> Result<(), StoreError> {
+            let _ = (record, route_workflow_types);
+            Err(StoreError::Backend(
+                "unexpected put_package_with_routes in the recovery test".to_owned(),
+            ))
+        }
+
         async fn list_packages(&self) -> Result<Vec<aion_store::PackageRecord>, StoreError> {
             Ok(Vec::new())
         }

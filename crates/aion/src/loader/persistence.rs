@@ -21,15 +21,15 @@ use crate::runtime::RuntimeHandle;
 
 use super::WorkflowCatalog;
 
-/// Persists a successfully loaded deploy: the canonical archive bytes and,
-/// atomically with them, the type's route pointer.
+/// Persists a verified staged deploy: the canonical archive bytes and,
+/// atomically with them, every primary and additional entry's route pointer.
 ///
-/// Called for every successful runtime deploy, including idempotent re-loads
-/// (`freshly_loaded = false`): re-deploying a version is a routing intent the
-/// catalog already honoured, and the persisted pointer must mirror it. A
-/// persistence failure surfaces to the deploy caller while the in-memory load
-/// stands; re-sending the same archive is idempotent in the catalog and
-/// retries persistence.
+/// Called before in-memory routes are published, including for idempotent
+/// re-loads (`freshly_loaded = false`): re-deploying a version is a routing
+/// intent, and durability must lead the catalog pointer. A persistence failure
+/// surfaces to the deploy caller; a freshly staged package is rolled back by
+/// the caller, while re-sending the archive safely retries this idempotent
+/// write.
 ///
 /// # Errors
 ///
@@ -41,6 +41,15 @@ pub(crate) async fn persist_deployed_package(
 ) -> Result<(), EngineError> {
     let workflow_type = package.manifest().entry_module.clone();
     let content_hash = package.content_hash().to_string();
+    let route_workflow_types = std::iter::once(workflow_type.clone())
+        .chain(
+            package
+                .manifest()
+                .additional_workflows
+                .iter()
+                .map(|entry| entry.workflow_type.clone()),
+        )
+        .collect::<Vec<_>>();
     let archive = package
         .to_archive_bytes()
         .map_err(|error| EngineError::Load {
@@ -49,12 +58,15 @@ pub(crate) async fn persist_deployed_package(
             ),
         })?;
     store
-        .put_package(PackageRecord {
-            workflow_type,
-            content_hash,
-            archive,
-            deployed_at: Utc::now(),
-        })
+        .put_package_with_routes(
+            PackageRecord {
+                workflow_type,
+                content_hash,
+                archive,
+                deployed_at: Utc::now(),
+            },
+            &route_workflow_types,
+        )
         .await?;
     Ok(())
 }

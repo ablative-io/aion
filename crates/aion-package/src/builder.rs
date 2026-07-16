@@ -219,6 +219,7 @@ mod tests {
             }],
             version: ManifestVersion::new("caller-supplied-version"),
             format_version: CURRENT_FORMAT_VERSION,
+            additional_workflows: Vec::new(),
         }
     }
 

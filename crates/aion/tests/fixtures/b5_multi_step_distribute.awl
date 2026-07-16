@@ -1,0 +1,23 @@
+//! Engine proof for true-parallel multi-step distribute.
+workflow b5_multi_step_distribute
+  input items: [String]
+  outcome done: type Done, route success
+
+type Done { first: String, middle_present: Bool, third: String }
+
+worker proof
+  action stage_one(item: String) -> String
+  action stage_two(item: String) -> String
+
+step fan
+  distribute item in items
+
+step first
+  stage_one(item: item) -> prepared
+
+step second
+  stage_two(item: prepared) -> result
+
+step gather
+  collect result? -> results
+  route done(first: "unprojected", middle_present: true, third: "unprojected")

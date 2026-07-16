@@ -78,7 +78,7 @@ pub(super) fn emit_codecs(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
 /// payload type. The outcome string is required but deliberately unconstrained;
 /// the parent's `-> T` contract selects only the required typed payload.
 fn child_output_codecs(emitter: &mut Emitter<'_>) {
-    let outputs: BTreeMap<String, GType> = emitter
+    let mut outputs: BTreeMap<String, GType> = emitter
         .document
         .children
         .iter()
@@ -87,6 +87,9 @@ fn child_output_codecs(emitter: &mut Emitter<'_>) {
             (emitter.env.codec_name(&ty), ty)
         })
         .collect();
+    for (stem, ty) in emitter.implicit_child_outputs.clone() {
+        outputs.entry(stem).or_insert(ty);
+    }
     for (payload_stem, ty) in outputs {
         child_output_codec(emitter, &payload_stem, &ty);
     }
@@ -209,7 +212,7 @@ fn union_codec(emitter: &mut Emitter<'_>) -> Result<(), EmitError> {
 }
 
 /// One record's codec trio, with optional fields omitted when absent.
-fn record_codec(emitter: &mut Emitter<'_>, name: &str, fields: &[(String, GType)]) {
+pub(super) fn record_codec(emitter: &mut Emitter<'_>, name: &str, fields: &[(String, GType)]) {
     let stem = snake(name);
     let has_optional = fields
         .iter()

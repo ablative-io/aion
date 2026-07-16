@@ -21,6 +21,18 @@ pub struct EmitRequest {
 pub struct EmitResponse {
     pub emitted: String,
     pub bytes: usize,
+    pub synthesized_workflows: Vec<EmittedWorkflowEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EmittedWorkflowEntry {
+    pub workflow_type: String,
+    pub entry_module: String,
+    pub entry_function: String,
+    pub input_schema: serde_json::Value,
+    pub output_schema: serde_json::Value,
+    pub timeout_seconds: u64,
+    pub internal: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,15 +128,29 @@ pub fn emit(
         .path
         .as_deref()
         .and_then(|path| Path::new(path).parent());
-    let emitted = root
+    let artifact = root
         .map_or_else(
-            || aion_awl::emit(&document),
-            |root| aion_awl::emit_in(&document, root),
+            || aion_awl::emit_artifact(&document),
+            |root| aion_awl::emit_artifact_in(&document, root),
         )
         .map_err(|error| RunLoopError::EmitRefused(error.message))?;
+    let synthesized_workflows = artifact
+        .synthesized_workflows
+        .into_iter()
+        .map(|entry| EmittedWorkflowEntry {
+            workflow_type: entry.workflow_type,
+            entry_module: entry.entry_module,
+            entry_function: entry.entry_function,
+            input_schema: entry.input_schema,
+            output_schema: entry.output_schema,
+            timeout_seconds: entry.timeout_seconds,
+            internal: entry.internal,
+        })
+        .collect();
     Ok(EmitResponse {
-        bytes: emitted.len(),
-        emitted,
+        bytes: artifact.source.len(),
+        emitted: artifact.source,
+        synthesized_workflows,
     })
 }
 

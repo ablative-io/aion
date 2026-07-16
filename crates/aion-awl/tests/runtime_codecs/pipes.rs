@@ -172,7 +172,7 @@ pub fn awl_rt_run() {
 
 /// Build the production FFI namespace for the pipe-child proof: `spawn_child`
 /// executes the generated child's exported `run/1` on the exact encoded input
-/// and records its "ok:"-prefixed encoded output verbatim (the production
+/// and records its `ok:`-prefixed encoded output verbatim (the production
 /// envelope contract proven by `harness::child_host_ebin`), plus the
 /// workflow-sized heap runner for the parent driver.
 fn pipe_child_host_ebin(

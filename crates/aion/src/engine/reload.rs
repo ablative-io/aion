@@ -27,8 +27,9 @@ impl Engine {
     /// re-deploying a previously rolled-back version must take effect
     /// (`route_changed` reports whether it did).
     ///
-    /// A successful load is persisted to the store (archive bytes plus,
-    /// atomically, the route pointer) so the deploy survives a restart:
+    /// Verified modules and catalog entries are staged first, then the archive
+    /// and route are persisted, and only then are in-memory routes published.
+    /// Therefore no start can record a hash whose archive is not durable.
     /// startup reloads every persisted package before recovery resolves any
     /// run's recorded pinned version. Idempotent re-loads re-persist —
     /// re-deploying is a routing intent and the durable pointer must mirror
@@ -40,12 +41,10 @@ impl Engine {
     /// [`EngineError::Load`] for archive, collision, registration, or
     /// entry-verification failures, and [`EngineError::ManifestMismatch`]
     /// when an idempotent re-load presents the resident content hash with a
-    /// different manifest. On those failures the catalog is untouched:
+    /// different manifest. On those failures live routing is untouched:
     /// routing, loaded versions, and in-flight dispatches are unaffected.
-    /// Returns [`EngineError::Store`] when the load committed but
-    /// persistence failed — the version is live in THIS process yet would
-    /// not survive a restart, so the deploy must not be reported applied;
-    /// re-sending the same archive is idempotent and retries persistence.
+    /// Returns [`EngineError::Store`] when persistence fails; newly staged
+    /// modules and entries are rolled back before the error is returned.
     pub async fn load_package(
         &self,
         source: impl Into<WorkflowPackageSource>,
@@ -59,11 +58,30 @@ impl Engine {
             // state the catalog no longer holds.
             let _deploy = self.deploy_mutations.lock().await;
             let package = package_from_source(source.into())?;
-            let outcome = self
-                .workflow_catalog()
-                .load_package(self.runtime(), &package)
-                .await?;
-            crate::loader::persistence::persist_deployed_package(self.store().as_ref(), &package)
+            let catalog = self.workflow_catalog();
+            let outcome = catalog.stage_package(self.runtime(), &package).await?;
+            let version = package.content_hash().clone();
+            if let Err(error) = crate::loader::persistence::persist_deployed_package(
+                self.store().as_ref(),
+                &package,
+            )
+            .await
+            {
+                if outcome.freshly_loaded {
+                    let mutation_guard = catalog.begin_mutation().await;
+                    let removed = catalog
+                        .swap_out_package(package.manifest().entry_module.as_str(), &version)?;
+                    self.unregister_unloaded_modules(
+                        package.manifest().entry_module.as_str(),
+                        &version,
+                        &removed,
+                    )?;
+                    drop(mutation_guard);
+                }
+                return Err(error);
+            }
+            catalog
+                .publish_package_routes(package.manifest().entry_module.as_str(), &version)
                 .await?;
             Ok(outcome)
         }
@@ -93,9 +111,8 @@ impl Engine {
     /// Returns [`EngineError::ShuttingDown`] once shutdown begins,
     /// [`EngineError::UnknownVersion`] naming the loaded set when
     /// `(type, version)` is not loaded — routing to a never-loaded hash is
-    /// impossible — and [`EngineError::Store`] when the in-memory re-point
-    /// committed but the durable pointer could not be written (retrying the
-    /// same re-point is idempotent and re-attempts persistence).
+    /// impossible — and [`EngineError::Store`] when the durable pointer could
+    /// not be written. The in-memory route is published only after that write.
     pub async fn route_workflow_version(
         &self,
         workflow_type: &str,
@@ -107,12 +124,29 @@ impl Engine {
             // pointer write must not interleave with another deploy
             // mutation's persistence.
             let _deploy = self.deploy_mutations.lock().await;
-            self.workflow_catalog()
-                .route_version(workflow_type, version)
-                .await?;
+            let catalog = self.workflow_catalog();
+            if catalog.get(workflow_type, version)?.is_none() {
+                let loaded_versions = catalog
+                    .versions()?
+                    .into_iter()
+                    .filter(|entry| entry.workflow_type == workflow_type)
+                    .map(|entry| entry.content_hash.to_string())
+                    .collect::<Vec<_>>();
+                let loaded = if loaded_versions.is_empty() {
+                    "none".to_owned()
+                } else {
+                    loaded_versions.join(", ")
+                };
+                return Err(EngineError::UnknownVersion {
+                    workflow_type: workflow_type.to_owned(),
+                    version: version.clone(),
+                    loaded,
+                });
+            }
             self.store()
                 .put_package_route(workflow_type, &version.to_string())
                 .await?;
+            catalog.route_version(workflow_type, version).await?;
             Ok(())
         }
         .await;
@@ -172,12 +206,16 @@ impl Engine {
         // Swap the version out FIRST: from this instant no new resolution can
         // produce it, so the checks below cannot be invalidated by a racing
         // start (a start that already resolved holds a pin and is detected).
-        let removed = catalog.swap_out_version(workflow_type, version)?;
+        let removed = catalog.swap_out_package(workflow_type, version)?;
+        let member_types = removed
+            .workflow_types()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         if let Err(error) = self
-            .verify_unload_unpinned(catalog, workflow_type, version)
+            .verify_unload_unpinned(catalog, &member_types, version)
             .await
         {
-            catalog.restore_version(removed)?;
+            catalog.restore_package(removed)?;
             return Err(error);
         }
         // Delete the persisted artifact BEFORE unregistering modules: if the
@@ -186,18 +224,30 @@ impl Engine {
         // restart. Idempotent for never-persisted (operator-file) versions.
         if let Err(error) = self
             .store()
-            .delete_package(workflow_type, &version.to_string())
+            .delete_package(removed.primary_workflow_type(), &version.to_string())
             .await
         {
-            catalog.restore_version(removed)?;
+            catalog.restore_package(removed)?;
             return Err(error.into());
         }
         self.unregister_unloaded_modules(workflow_type, version, &removed)
     }
 
-    /// Verifies no in-flight start, resident handle, or recoverable instance
-    /// pins `(type, version)`.
+    /// Verifies no member type in an archive group is pinned to `version`.
     async fn verify_unload_unpinned(
+        &self,
+        catalog: &WorkflowCatalog,
+        workflow_types: &[String],
+        version: &ContentHash,
+    ) -> Result<(), EngineError> {
+        for workflow_type in workflow_types {
+            self.verify_unload_member_unpinned(catalog, workflow_type, version)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn verify_unload_member_unpinned(
         &self,
         catalog: &WorkflowCatalog,
         workflow_type: &str,
@@ -302,7 +352,7 @@ impl Engine {
         &self,
         workflow_type: &str,
         version: &ContentHash,
-        removed: &crate::loader::catalog::RemovedVersion,
+        removed: &crate::loader::catalog::RemovedPackage,
     ) -> Result<(), EngineError> {
         let nif_modules = self.runtime().registered_nif_modules();
         let mut failures = Vec::new();

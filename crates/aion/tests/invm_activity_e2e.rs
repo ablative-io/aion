@@ -95,6 +95,7 @@ fn fixture_package(entry_function: &str) -> Result<Package, Box<dyn std::error::
         }],
         version: ManifestVersion::new("stamped-by-builder"),
         format_version: CURRENT_FORMAT_VERSION,
+        additional_workflows: Vec::new(),
     };
     let archive =
         PackageBuilder::with_source(manifest, beams, [(FIXTURE_MODULE, FIXTURE_SOURCE.to_vec())])

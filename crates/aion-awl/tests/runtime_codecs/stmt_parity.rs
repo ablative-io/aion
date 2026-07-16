@@ -109,7 +109,7 @@ pub fn awl_rt_run() {
 
 /// The production FFI namespace for the child-statement proof: `spawn_child`
 /// executes the generated child's exported `run/1` on the exact encoded
-/// input and records its "ok:"-prefixed encoded output under a
+/// input and records its `ok:`-prefixed encoded output under a
 /// process-dictionary correlation (the `harness::child_host_ebin`
 /// precedent); `await_child` replays it. The fire-and-forget spawn and the
 /// awaited call share the child, proving both statement forms cross the same

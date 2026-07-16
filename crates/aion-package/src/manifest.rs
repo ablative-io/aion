@@ -76,6 +76,30 @@ pub struct DeclaredActivity {
     pub activity_type: String,
 }
 
+/// An additional workflow entry exported by the same `.aion` archive.
+///
+/// Additional entries share the archive's content hash and BEAM closure with
+/// the primary manifest entry. `workflow_type` is the routing name, while
+/// `entry_module` and `entry_function` identify the callable in that closure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowEntry {
+    /// Stable workflow type used by start and child-spawn routing.
+    pub workflow_type: String,
+    /// Logical BEAM module exporting the entry function.
+    pub entry_module: String,
+    /// Exported engine entry function.
+    pub entry_function: String,
+    /// JSON Schema for the entry's input payload.
+    pub input_schema: serde_json::Value,
+    /// JSON Schema for the entry's result payload.
+    pub output_schema: serde_json::Value,
+    /// Workflow execution timeout.
+    pub timeout: Duration,
+    /// Whether this entry is package-internal rather than operator-authored.
+    #[serde(default)]
+    pub internal: bool,
+}
+
 /// Typed on-disk `manifest.json` descriptor for a `.aion` package.
 ///
 /// The public field names are the stable JSON keys written into `manifest.json`:
@@ -109,6 +133,11 @@ pub struct Manifest {
     /// This lets future layout changes be detected rather than silently misread.
     #[serde(rename = "format_version")]
     pub format_version: u32,
+    /// Additional workflow entries exported by this same archive and pinned to
+    /// the same content hash. Absent in packages created before multi-entry
+    /// registration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_workflows: Vec<WorkflowEntry>,
 }
 
 impl Manifest {
@@ -155,7 +184,9 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion};
+    use super::{
+        CURRENT_FORMAT_VERSION, DeclaredActivity, Manifest, ManifestVersion, WorkflowEntry,
+    };
     use crate::PackageError;
 
     fn sample_manifest() -> Manifest {
@@ -193,6 +224,7 @@ mod tests {
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             ),
             format_version: CURRENT_FORMAT_VERSION,
+            additional_workflows: Vec::new(),
         }
     }
 
@@ -204,6 +236,42 @@ mod tests {
         let decoded: Manifest = serde_json::from_str(&json)?;
 
         assert_eq!(decoded, manifest);
+        Ok(())
+    }
+
+    #[test]
+    fn absent_additional_workflow_list_loads_as_legacy_empty() -> Result<(), serde_json::Error> {
+        let mut value = serde_json::to_value(sample_manifest())?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| serde_json::Error::io(std::io::Error::other("manifest not object")))?;
+        object.remove("additional_workflows");
+        let decoded: Manifest = serde_json::from_value(value)?;
+        assert!(decoded.additional_workflows.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn additional_workflow_entry_round_trips_with_internal_flag() -> Result<(), serde_json::Error> {
+        let mut manifest = sample_manifest();
+        manifest.additional_workflows.push(WorkflowEntry {
+            workflow_type: "awl_distribute_items_0".to_owned(),
+            entry_module: manifest.entry_module.clone(),
+            entry_function: "awl_distribute_items_0_run".to_owned(),
+            input_schema: json!({ "type": "object" }),
+            output_schema: json!({ "type": "string" }),
+            timeout: Duration::from_secs(30),
+            internal: true,
+        });
+        let encoded = serde_json::to_string(&manifest)?;
+        let decoded: Manifest = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, manifest);
+        assert!(
+            decoded
+                .additional_workflows
+                .first()
+                .is_some_and(|entry| entry.internal)
+        );
         Ok(())
     }
 
