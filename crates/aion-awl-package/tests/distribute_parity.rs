@@ -5,7 +5,8 @@
 //! document — so a package produced by either path exposes interchangeable
 //! route identities.
 
-use aion_awl_package::compile_and_assemble_awl;
+use aion_awl::{CompiledWorkflow, SynthesizedWorkflowEntry};
+use aion_awl_package::{AssembleError, AwlAssembleOptions, assemble_awl, compile_and_assemble_awl};
 use aion_package::{ExtractionLimits, Package};
 
 /// The B5 engine-proof document: a three-step parallel region with a
@@ -115,4 +116,66 @@ step gather
     assert!(package.manifest().additional_workflows.is_empty());
     assert!(prepared.compiled.synthesized_workflows.is_empty());
     Ok(())
+}
+
+// -- Typed assembly refusals for synthesized entries ------------------------
+//
+// KNOWN LIMIT (documented, not fixed here): these refusals are assembly-time
+// and carry no source span; upstream lowering refusals that DO carry spans
+// can be reanchored to the enclosing region rather than the offending
+// construct, so a diagnostic may point some lines above the real culprit.
+
+fn with_children(entries: Vec<SynthesizedWorkflowEntry>) -> CompiledWorkflow {
+    CompiledWorkflow {
+        workflow_name: "refusal_case".to_owned(),
+        first_worker: None,
+        timeout: None,
+        beam_bytes: b"opaque".to_vec(),
+        input_schema: serde_json::json!({ "type": "object" }),
+        output_schema: serde_json::json!({ "type": "object" }),
+        actions: Vec::new(),
+        sidecar_bytes: Vec::new(),
+        synthesized_workflows: entries,
+    }
+}
+
+fn child_entry(workflow_type: &str) -> SynthesizedWorkflowEntry {
+    SynthesizedWorkflowEntry {
+        workflow_type: workflow_type.to_owned(),
+        entry_module: "refusal_case".to_owned(),
+        entry_function: "child_run".to_owned(),
+        input_schema: serde_json::json!({ "type": "object" }),
+        output_schema: serde_json::json!({ "type": "string" }),
+        timeout_seconds: 60,
+        internal: true,
+    }
+}
+
+/// A synthesized workflow type that cannot serve as a routing name is
+/// refused typed, before any archive bytes exist.
+#[test]
+fn unsafe_synthesized_workflow_type_is_refused_typed() {
+    let compiled = with_children(vec![child_entry("../escape")]);
+    let result = assemble_awl(&compiled, AwlAssembleOptions::default());
+    assert!(matches!(
+        result,
+        Err(AssembleError::InvalidSynthesizedName { name }) if name == "../escape"
+    ));
+}
+
+/// Two entries claiming one workflow type are refused typed — including a
+/// synthesized entry colliding with the entry workflow itself.
+#[test]
+fn duplicate_workflow_types_are_refused_typed() {
+    let duplicated = with_children(vec![child_entry("twin"), child_entry("twin")]);
+    assert!(matches!(
+        assemble_awl(&duplicated, AwlAssembleOptions::default()),
+        Err(AssembleError::DuplicateWorkflowType { name }) if name == "twin"
+    ));
+
+    let shadows_entry = with_children(vec![child_entry("refusal_case")]);
+    assert!(matches!(
+        assemble_awl(&shadows_entry, AwlAssembleOptions::default()),
+        Err(AssembleError::DuplicateWorkflowType { name }) if name == "refusal_case"
+    ));
 }
