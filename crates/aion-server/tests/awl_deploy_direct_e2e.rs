@@ -162,6 +162,11 @@ async fn read_json(response: Response) -> Result<Value, TestError> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+async fn get_request(router: &axum::Router, uri: &str) -> Result<Response, TestError> {
+    let request = granted(Request::builder().method("GET").uri(uri)).body(body::Body::empty())?;
+    Ok(router.clone().oneshot(request).await?)
+}
+
 async fn save_document(
     router: &axum::Router,
     path: &str,
@@ -394,6 +399,45 @@ async fn awl_deploy_identity_e2e_keeps_each_route_and_preserves_a_third() -> Res
         let package = Package::load_from_bytes(&record.archive, ExtractionLimits::unbounded())?;
         assert_eq!(package.manifest().entry_module, workflow_type);
     }
+    Ok(())
+}
+
+/// Bug #21 regression: identity comes from the document's `workflow <name>`
+/// declaration alone — never the file name, and never the configured
+/// authoring template's frozen entry. A document saved under an existing
+/// routed type's file name deploys under its own declared type, the
+/// colliding route keeps its original version, and the persisted deployment
+/// record read back through the status surface carries the same identity.
+#[tokio::test]
+async fn awl_deploy_identity_comes_from_the_declaration_not_the_file_name() -> Result<(), TestError>
+{
+    let harness = Harness::new().await?;
+    let existing = workflow_source("studio_existing", "existing_queue", None);
+    let existing_hash = seed_package(&harness.engine, &existing, harness.workspace()).await?;
+    let gamma = workflow_source("studio_gamma", "gamma_queue", None);
+    let deploy = deploy_document(&harness.router, "studio_existing.awl", &gamma).await?;
+    let deployment_id = deploy["deployment"]["deployment_id"]
+        .as_str()
+        .ok_or("deploy response omitted deployment_id")?;
+    let status = get_request(&harness.router, &format!("/awl/runs/{deployment_id}")).await?;
+    assert_eq!(status.status(), StatusCode::OK);
+    let record = read_json(status).await?;
+    assert_eq!(record["deployment"]["workflow_type"], "studio_gamma");
+    assert_eq!(record["deployment"]["document_path"], "studio_existing.awl");
+    let catalog = harness.engine.workflow_catalog();
+    let existing_route = catalog
+        .routed_version("studio_existing")?
+        .map(|version| version.to_string());
+    assert_eq!(
+        existing_route,
+        Some(existing_hash),
+        "deploying a colliding file name must not re-route the existing type"
+    );
+    assert!(catalog.routed("studio_gamma")?.is_some());
+    assert!(
+        catalog.routed(FROZEN_ENTRY)?.is_none(),
+        "the frozen template entry must never gain a route from a studio deploy"
+    );
     Ok(())
 }
 
