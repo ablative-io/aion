@@ -235,9 +235,14 @@ fn child_output_codec_is_strict_and_symmetric_on_both_backends() -> Result<(), B
         "bare result did not surface ChildOutputDecodeFailed: {direct_typed}"
     );
     assert_eq!(direct_error, reference_error);
+    // The run shell returns failures as the `AwlError` codec's own encoding
+    // (a JSON object in a binary), never the raw error record — the encoded
+    // form is what survives the engine's failure-details recording and the
+    // awaiting parent's codec decode.
     assert_eq!(
         direct_error,
-        "{error, {awl_child_failed, <<\"child output decode failed: Expected Field, found Nothing\">>}}"
+        "{error, <<\"{\\\"tag\\\":\\\"AwlChildFailed\\\",\\\"message\\\":\\\"child output decode \
+         failed: Expected Field, found Nothing\\\"}\">>}"
     );
     Ok(())
 }

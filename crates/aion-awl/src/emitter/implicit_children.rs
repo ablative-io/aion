@@ -167,7 +167,7 @@ pub(super) fn emit_adapter(
     let output_codec = emitter.child_output_codec_fn(item_ty);
     emitter.line("/// Engine entry point for an implicit parallel region child.");
     emitter.line(&format!(
-        "pub fn {entry}(raw_input: Dynamic) -> Result(String, awl_error.AwlError) {{"
+        "pub fn {entry}(raw_input: Dynamic) -> Result(String, String) {{"
     ));
     emitter.indented(|this| {
         this.line(&format!(
