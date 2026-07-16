@@ -303,7 +303,13 @@ pub fn map_receive_error_maps_failure_test() {
 
 pub fn map_child_error_maps_failure_test() {
   error.map_child_error(Error(aion_error.ChildEngineFailure("boom")))
-  |> should.equal(Error(AwlChildFailed("child workflow failed")))
+  |> should.equal(Error(AwlChildFailed("child engine failure: boom")))
+
+  let decode_error = codec.DecodeError(reason: "Unexpected byte: 0x0", path: [])
+  error.map_child_error(Error(aion_error.ChildOutputDecodeFailed(decode_error)))
+  |> should.equal(
+    Error(AwlChildFailed("child output decode failed: Unexpected byte: 0x0")),
+  )
 }
 
 pub fn map_spawn_error_maps_failure_test() {

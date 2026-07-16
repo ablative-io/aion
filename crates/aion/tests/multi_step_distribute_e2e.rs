@@ -3,7 +3,7 @@
 //! terminal arrivals may invert item order, tolerant failure preserves a slot,
 //! and no sibling is cancelled.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -262,8 +262,8 @@ async fn wait_history(
 async fn assert_durable_child_histories(
     store: &Arc<dyn EventStore>,
     parent_history: &[Event],
-) -> TestResult {
-    let mut children = BTreeMap::new();
+) -> Result<Vec<Option<String>>, Box<dyn std::error::Error>> {
+    let mut children = Vec::new();
     for event in parent_history {
         if let Event::ChildWorkflowStarted {
             child_workflow_id,
@@ -276,7 +276,7 @@ async fn assert_durable_child_histories(
                 .get("item")
                 .and_then(Value::as_str)
                 .ok_or("child input has no item")?;
-            children.insert(item.to_owned(), child_workflow_id.clone());
+            children.push((item.to_owned(), child_workflow_id.clone()));
         }
     }
     assert_eq!(children.len(), 3);
@@ -287,10 +287,59 @@ async fn assert_durable_child_histories(
         "parent history contains a child cancellation"
     );
 
+    // Reconstruct the tolerant collect through the durable parent seam, in
+    // source-item order. This exposes the internal `[String?]` without
+    // weakening the language rule that forbids optional list elements in
+    // public outcomes.
+    let mut durable_slots = Vec::with_capacity(children.len());
+    for (item, child_id) in &children {
+        let terminal = parent_history.iter().find(|event| match event {
+            Event::ChildWorkflowCompleted {
+                child_workflow_id, ..
+            }
+            | Event::ChildWorkflowFailed {
+                child_workflow_id, ..
+            } => child_workflow_id == child_id,
+            _ => false,
+        });
+        match terminal {
+            Some(Event::ChildWorkflowCompleted { result, .. }) => {
+                let value: Value = serde_json::from_slice(result.bytes())?;
+                let output = value
+                    .get("payload")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("child {item} completion has no string payload"))?;
+                durable_slots.push(Some(output.to_owned()));
+            }
+            Some(Event::ChildWorkflowFailed { error, .. }) => {
+                assert_eq!(item, "b", "only item b should fail: {error:?}");
+                let details = error
+                    .details
+                    .as_ref()
+                    .ok_or_else(|| format!("item b failure has no details: {error:?}"))?;
+                assert_eq!(
+                    serde_json::from_slice::<Value>(details.bytes())?,
+                    json!(["awl_activity_failed", "activity failed"]),
+                    "item b must hold the generated child workflow's durable activity failure"
+                );
+                durable_slots.push(None);
+            }
+            _ => return Err(format!("child {item} has no durable terminal event").into()),
+        }
+    }
+
+    assert_durable_child_overlap(store, &children).await?;
+    Ok(durable_slots)
+}
+
+async fn assert_durable_child_overlap(
+    store: &Arc<dyn EventStore>,
+    children: &[(String, WorkflowId)],
+) -> TestResult {
     let mut first_schedules = Vec::new();
     let mut first_completions = Vec::new();
     for (item, child_id) in children {
-        let history = store.read_history(&child_id).await?;
+        let history = store.read_history(child_id).await?;
         assert!(
             !history.iter().any(|event| matches!(
                 event,
@@ -317,7 +366,7 @@ async fn assert_durable_child_histories(
                 _ => None,
             })
             .ok_or_else(|| format!("child {item} has no durable stage_one schedule"))?;
-        assert_eq!(scheduled_item, item);
+        assert_eq!(scheduled_item, *item);
         let completed_at = history
             .iter()
             .find_map(|event| match event {
@@ -425,7 +474,12 @@ async fn emitted_multistep_distribute_is_parallel_ordered_and_tolerant() -> Test
         "tolerant collect must preserve all three item-order slots"
     );
     let final_history = store.read_history(&workflow_id).await?;
-    assert_durable_child_histories(&store, &final_history).await?;
+    let durable_slots = assert_durable_child_histories(&store, &final_history).await?;
+    assert_eq!(
+        durable_slots,
+        vec![Some("a-done".to_owned()), None, Some("c-done".to_owned())],
+        "tolerant collect must preserve exact ordered optional slots"
+    );
     engine.shutdown()?;
     Ok(())
 }

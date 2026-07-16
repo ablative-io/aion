@@ -65,9 +65,9 @@ pub fn await(
 ) -> Result(output, error.ChildError(workflow_error)) {
   // The engine reserves `{error, _}` from `await_child` for engine faults
   // (`await_child:`-prefixed messages) and the `with_timeout` scope-expiry
-  // sentinel that the enclosing scope consumes. Child failure — including
-  // engine-side cancellation/timeout terminals — arrives as `{ok, "error:"}`
-  // data and is decoded by `decode_child_result` below.
+  // sentinel that the enclosing scope consumes. Child success arrives as its
+  // exact durable payload bytes; child failure — including engine-side
+  // cancellation/timeout terminals — arrives as `{ok, "error:"}` data.
   //
   // The child id is precomputed so the pump thunk's body is exactly one
   // shielded FFI call on a captured value — the re-execution-safety contract
@@ -121,13 +121,9 @@ fn decode_child_result(
   raw_result: String,
   handle: ChildHandle(output, workflow_error),
 ) -> Result(output, error.ChildError(workflow_error)) {
-  case string.starts_with(raw_result, "ok:") {
-    True -> decode_output(string.drop_start(raw_result, 3), handle)
-    False ->
-      case string.starts_with(raw_result, "error:") {
-        True -> decode_error_payload(string.drop_start(raw_result, 6), handle)
-        False -> Error(error.ChildEngineFailure(message: raw_result))
-      }
+  case string.starts_with(raw_result, "error:") {
+    True -> decode_error_payload(string.drop_start(raw_result, 6), handle)
+    False -> decode_output(raw_result, handle)
   }
 }
 

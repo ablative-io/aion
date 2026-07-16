@@ -63,8 +63,7 @@ pub fn child(
     case child_input_codec.decode(raw_input) {
       Ok(typed_input) ->
         case handler(typed_input) {
-          Ok(typed_output) ->
-            Ok("ok:" <> child_output_codec.encode(typed_output))
+          Ok(typed_output) -> Ok(child_output_codec.encode(typed_output))
           Error(workflow_error) ->
             Ok("error:" <> child_error_codec.encode(workflow_error))
         }

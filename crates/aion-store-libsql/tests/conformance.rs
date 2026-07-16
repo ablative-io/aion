@@ -126,6 +126,16 @@ impl PackageStore for StoreOpenResult {
         self.store()?.put_package(record).await
     }
 
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
+        self.store()?
+            .put_package_with_routes(record, route_workflow_types)
+            .await
+    }
+
     async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
         self.store()?.list_packages().await
     }

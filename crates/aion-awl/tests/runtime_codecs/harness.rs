@@ -146,11 +146,11 @@ pub(crate) fn child_host_ebin(
     fs::create_dir_all(&dir)?;
     let source = dir.join("aion_flow_ffi.erl");
     let terminal = if bare {
-        "{ok, <<\"ok:{\\\"spec\\\":{\\\"harness\\\":\\\"legacy\\\",\\\"model\\\":\\\"bare\\\",\\\"effort\\\":\\\"none\\\"},\\\"first_try\\\":true}\">>}"
+        "{ok, <<\"{\\\"spec\\\":{\\\"harness\\\":\\\"legacy\\\",\\\"model\\\":\\\"bare\\\",\\\"effort\\\":\\\"none\\\"},\\\"first_try\\\":true}\">>}"
             .to_owned()
     } else {
         format!(
-            "case {child_module}:run(Input) of {{ok, Output}} -> {{ok, <<\"ok:\", Output/binary>>}}; \
+            "case {child_module}:run(Input) of {{ok, Output}} -> {{ok, Output}}; \
              {{error, _}} -> {{error, <<\"child run failed\">>}} end"
         )
     };

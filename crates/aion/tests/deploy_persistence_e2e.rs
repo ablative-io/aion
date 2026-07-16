@@ -114,12 +114,22 @@ impl WritableEventStore for PausingPackageStore {
 #[async_trait]
 impl PackageStore for PausingPackageStore {
     async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        let primary = record.workflow_type.clone();
+        self.put_package_with_routes(record, &[primary]).await
+    }
+
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
         drop(record);
+        let route_count = route_workflow_types.len();
         self.entered.notify_one();
         self.release.notified().await;
-        Err(StoreError::Backend(
-            "injected put_package failure".to_owned(),
-        ))
+        Err(StoreError::Backend(format!(
+            "injected put_package failure for {route_count} routes"
+        )))
     }
 
     async fn list_packages(&self) -> Result<Vec<PackageRecord>, StoreError> {
@@ -292,6 +302,56 @@ async fn active_sibling_pins_whole_archive_group_across_restart() -> TestResult 
         .ok_or("active sibling did not recover after refused group unload")?;
     assert_eq!(recovered_child.loaded_version(), v1.content_hash());
     recovered.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn group_redeploy_durably_supersedes_an_old_explicit_child_route() -> TestResult {
+    const CHILD_TYPE: &str = "aion_internal_awl_child_reload_group_fan_0";
+    let v1 = grouped_package(
+        &reload_package(&compile_reload_beam(1)?, "run")?,
+        CHILD_TYPE,
+    )?;
+    let v2 = grouped_package(
+        &reload_package(&compile_reload_beam(2)?, "run")?,
+        CHILD_TYPE,
+    )?;
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+
+    let engine = engine_with(&store, vec![]).await?;
+    engine.load_package(v1.clone()).await?;
+    engine.load_package(v2.clone()).await?;
+    engine
+        .route_workflow_version(CHILD_TYPE, v1.content_hash())
+        .await?;
+    assert_route(&engine, CHILD_TYPE, v1.content_hash())?;
+
+    // An idempotent group redeploy is routing intent for every member. Its
+    // one durable write must supersede the stale child route across restart.
+    engine.load_package(v2.clone()).await?;
+    engine.shutdown()?;
+
+    let recovered = engine_with(&store, vec![]).await?;
+    assert_route(&recovered, RELOAD_MODULE, v2.content_hash())?;
+    assert_route(&recovered, CHILD_TYPE, v2.content_hash())?;
+    recovered.shutdown()?;
+    Ok(())
+}
+
+fn assert_route(
+    engine: &aion::Engine,
+    workflow_type: &str,
+    expected: &aion_package::ContentHash,
+) -> TestResult {
+    let versions = engine.list_workflow_versions()?;
+    assert!(
+        versions.iter().any(|entry| {
+            entry.workflow_type == workflow_type
+                && entry.content_hash == *expected
+                && entry.route_active
+        }),
+        "workflow `{workflow_type}` is not routed to `{expected}`: {versions:#?}"
+    );
     Ok(())
 }
 

@@ -39,6 +39,16 @@ pub(crate) async fn put_package(
     conn: &libsql::Connection,
     record: PackageRecord,
 ) -> Result<(), StoreError> {
+    let primary = record.workflow_type.clone();
+    put_package_with_routes(conn, record, &[primary]).await
+}
+
+/// Persist a deployed package and every group-member route in one transaction.
+pub(crate) async fn put_package_with_routes(
+    conn: &libsql::Connection,
+    record: PackageRecord,
+    route_workflow_types: &[String],
+) -> Result<(), StoreError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .await
@@ -56,12 +66,14 @@ pub(crate) async fn put_package(
         )
         .await
         .map_err(|error| crate::error::libsql_error(&error))?;
-        tx.execute(
-            UPSERT_ROUTE_SQL,
-            libsql::params![record.workflow_type, record.content_hash],
-        )
-        .await
-        .map_err(|error| crate::error::libsql_error(&error))?;
+        for workflow_type in route_workflow_types {
+            tx.execute(
+                UPSERT_ROUTE_SQL,
+                libsql::params![workflow_type.clone(), record.content_hash.clone()],
+            )
+            .await
+            .map_err(|error| crate::error::libsql_error(&error))?;
+        }
         Ok(())
     }
     .await;

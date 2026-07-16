@@ -59,6 +59,20 @@ pub trait PackageStore: Send + Sync + 'static {
     /// re-deploy) and still re-points the route.
     async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError>;
 
+    /// Persists `record` and atomically points every member workflow type at
+    /// its content hash.
+    ///
+    /// Multi-entry archives use this operation so a crash cannot commit the
+    /// primary route while leaving a synthesized child on an older explicit
+    /// pointer. `route_workflow_types` contains the primary plus every
+    /// additional manifest entry and must commit in the same transaction as
+    /// the archive row.
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError>;
+
     /// Lists every persisted package in ascending `deployed_at` order
     /// (ties broken by `(workflow_type, content_hash)` text order), so
     /// startup reload re-applies deploys deterministically.

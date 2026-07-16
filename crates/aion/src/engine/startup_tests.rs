@@ -150,6 +150,17 @@ impl aion_store::PackageStore for RacingSuccessorStore {
         ))
     }
 
+    async fn put_package_with_routes(
+        &self,
+        record: aion_store::PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
+        let _ = (record, route_workflow_types);
+        Err(StoreError::Backend(
+            "unexpected put_package_with_routes in the sweep test".to_owned(),
+        ))
+    }
+
     async fn list_packages(&self) -> Result<Vec<aion_store::PackageRecord>, StoreError> {
         Ok(Vec::new())
     }

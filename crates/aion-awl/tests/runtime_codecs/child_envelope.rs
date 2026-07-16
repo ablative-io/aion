@@ -237,7 +237,7 @@ fn child_output_codec_is_strict_and_symmetric_on_both_backends() -> Result<(), B
     assert_eq!(direct_error, reference_error);
     assert_eq!(
         direct_error,
-        "{error, {awl_child_failed, <<\"child workflow failed\">>}}"
+        "{error, {awl_child_failed, <<\"child output decode failed: Expected Field, found Nothing\">>}}"
     );
     Ok(())
 }

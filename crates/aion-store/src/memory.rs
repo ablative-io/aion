@@ -120,10 +120,21 @@ fn history_in_sequence_order(history: &[Event]) -> Vec<Event> {
 #[async_trait]
 impl PackageStore for InMemoryStore {
     async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        let primary = record.workflow_type.clone();
+        self.put_package_with_routes(record, &[primary]).await
+    }
+
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
         let mut state = self.lock_state()?;
-        state
-            .package_routes
-            .insert(record.workflow_type.clone(), record.content_hash.clone());
+        for workflow_type in route_workflow_types {
+            state
+                .package_routes
+                .insert(workflow_type.clone(), record.content_hash.clone());
+        }
         state.packages.insert(
             (record.workflow_type.clone(), record.content_hash.clone()),
             record,

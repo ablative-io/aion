@@ -2730,6 +2730,16 @@ impl ReadableEventStore for HaematiteStore {
 #[async_trait]
 impl PackageStore for HaematiteStore {
     async fn put_package(&self, record: PackageRecord) -> Result<(), StoreError> {
+        let primary = record.workflow_type.clone();
+        self.put_package_with_routes(record, &[primary]).await
+    }
+
+    async fn put_package_with_routes(
+        &self,
+        record: PackageRecord,
+        route_workflow_types: &[String],
+    ) -> Result<(), StoreError> {
+        let route_workflow_types = route_workflow_types.to_vec();
         self.blocking(move |store| {
             let database = store.database();
             database
@@ -2738,13 +2748,14 @@ impl PackageStore for HaematiteStore {
                     encode_package(&record)?,
                 )
                 .map_err(|error| database_error(&error))?;
-            // put_package re-points the type's route at this version.
-            database
-                .put(
-                    keyspace::route_key(&record.workflow_type),
-                    record.content_hash.clone().into_bytes(),
-                )
-                .map_err(|error| database_error(&error))?;
+            for workflow_type in route_workflow_types {
+                database
+                    .put(
+                        keyspace::route_key(&workflow_type),
+                        record.content_hash.clone().into_bytes(),
+                    )
+                    .map_err(|error| database_error(&error))?;
+            }
             database.commit().map_err(|error| database_error(&error))?;
             Ok(())
         })

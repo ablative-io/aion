@@ -172,9 +172,9 @@ pub fn awl_rt_run() {
 
 /// Build the production FFI namespace for the pipe-child proof: `spawn_child`
 /// executes the generated child's exported `run/1` on the exact encoded input
-/// and records its "ok:"-prefixed encoded output verbatim (the production
-/// envelope contract proven by `harness::child_host_ebin`), plus the
-/// workflow-sized heap runner for the parent driver.
+/// and records its encoded output verbatim (the production byte contract proven
+/// by `harness::child_host_ebin`), plus the workflow-sized heap runner for the
+/// parent driver.
 fn pipe_child_host_ebin(
     label: &str,
     parent_module: &str,
@@ -191,7 +191,7 @@ fn pipe_child_host_ebin(
              spawn_child(<<\"score_essay\">>, Input, _Config) ->\n\
              ChildId = Input,\n\
              Result = case {child_module}:run(Input) of\n\
-             {{ok, Output}} -> {{ok, <<\"ok:\", Output/binary>>}};\n\
+             {{ok, Output}} -> {{ok, Output}};\n\
              {{error, _}} -> {{error, <<\"child run failed\">>}} end,\n\
              erlang:put({{awl_child_result, ChildId}}, Result),\n\
              {{ok, ChildId}}.\n\

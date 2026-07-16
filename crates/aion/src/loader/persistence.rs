@@ -22,7 +22,7 @@ use crate::runtime::RuntimeHandle;
 use super::WorkflowCatalog;
 
 /// Persists a verified staged deploy: the canonical archive bytes and,
-/// atomically with them, the type's route pointer.
+/// atomically with them, every primary and additional entry's route pointer.
 ///
 /// Called before in-memory routes are published, including for idempotent
 /// re-loads (`freshly_loaded = false`): re-deploying a version is a routing
@@ -41,6 +41,15 @@ pub(crate) async fn persist_deployed_package(
 ) -> Result<(), EngineError> {
     let workflow_type = package.manifest().entry_module.clone();
     let content_hash = package.content_hash().to_string();
+    let route_workflow_types = std::iter::once(workflow_type.clone())
+        .chain(
+            package
+                .manifest()
+                .additional_workflows
+                .iter()
+                .map(|entry| entry.workflow_type.clone()),
+        )
+        .collect::<Vec<_>>();
     let archive = package
         .to_archive_bytes()
         .map_err(|error| EngineError::Load {
@@ -49,12 +58,15 @@ pub(crate) async fn persist_deployed_package(
             ),
         })?;
     store
-        .put_package(PackageRecord {
-            workflow_type,
-            content_hash,
-            archive,
-            deployed_at: Utc::now(),
-        })
+        .put_package_with_routes(
+            PackageRecord {
+                workflow_type,
+                content_hash,
+                archive,
+                deployed_at: Utc::now(),
+            },
+            &route_workflow_types,
+        )
         .await?;
     Ok(())
 }

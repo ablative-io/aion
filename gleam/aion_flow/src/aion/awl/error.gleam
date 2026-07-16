@@ -156,7 +156,15 @@ pub fn map_child_error(
 ) -> Result(a, AwlError) {
   case result {
     Ok(value) -> Ok(value)
-    Error(_) -> Error(AwlChildFailed("child workflow failed"))
+    Error(error.ChildWorkflowFailed(child_error)) -> Error(child_error)
+    Error(error.ChildOutputDecodeFailed(decode_error)) ->
+      Error(AwlChildFailed(
+        "child output decode failed: " <> decode_error.reason,
+      ))
+    Error(error.ChildErrorDecodeFailed(decode_error)) ->
+      Error(AwlChildFailed("child error decode failed: " <> decode_error.reason))
+    Error(error.ChildEngineFailure(message)) ->
+      Error(AwlChildFailed("child engine failure: " <> message))
   }
 }
 
