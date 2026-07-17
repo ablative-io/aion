@@ -13,6 +13,7 @@ use beamr::process::ExitReason;
 use crate::error::EngineError;
 use crate::registry::Registry;
 
+use super::activity_delivery::ActivityOutcomeKind;
 use super::{Pid, RuntimeHandle, runtime_error};
 use crate::runtime::payload::term_to_payload;
 
@@ -195,11 +196,12 @@ impl RuntimeHandle {
         let activity_id = correlation_to_activity_pid(correlation_id)?;
         let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_complete");
-        self.retain_activity_outcome_until_marker_delivery(
+        self.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &self.activity_results,
             key,
             Payload::new(ContentType::Json, result.into_bytes()),
+            ActivityOutcomeKind::Result,
             || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
         )
     }
@@ -220,11 +222,12 @@ impl RuntimeHandle {
         let activity_id = correlation_to_activity_pid(correlation_id)?;
         let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_failed");
-        self.retain_activity_outcome_until_marker_delivery(
+        self.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &self.activity_errors,
             key,
             activity_failure(reason),
+            ActivityOutcomeKind::Error,
             || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
         )
     }
@@ -316,11 +319,12 @@ impl RuntimeHandle {
     ) -> Result<(), EngineError> {
         let key = (parent_pid, activity_pid);
         let marker = self.atom_table.intern("aion_activity_result");
-        self.retain_activity_outcome_until_marker_delivery(
+        self.retain_activity_outcome_and_deliver_marker(
             parent_pid,
             &self.activity_results,
             key,
             payload,
+            ActivityOutcomeKind::Result,
             || {
                 if self.scheduler.enqueue_atom_message(parent_pid, marker) {
                     self.confirm_marker_wake(parent_pid);
@@ -385,10 +389,11 @@ impl RuntimeHandle {
         activity_pid: Pid,
         error: ActivityError,
     ) -> Result<(), EngineError> {
-        self.with_activity_delivery(parent_pid, |gate| {
-            self.ensure_activity_delivery_live(parent_pid, gate)?;
+        self.with_activity_delivery(parent_pid, |state| {
+            self.ensure_activity_delivery_live(parent_pid, state)?;
             self.activity_errors
                 .insert((parent_pid, activity_pid), error);
+            state.retain_outcome(activity_pid, ActivityOutcomeKind::Error);
             Ok(())
         })
     }
@@ -414,9 +419,12 @@ impl RuntimeHandle {
         parent_pid: Pid,
         activity_sequence: Pid,
     ) -> Option<Payload> {
-        self.activity_results
-            .remove(&(parent_pid, activity_sequence))
-            .map(|(_, payload)| payload)
+        self.take_activity_outcome(
+            parent_pid,
+            activity_sequence,
+            &self.activity_results,
+            ActivityOutcomeKind::Result,
+        )
     }
 
     pub(crate) fn take_activity_error(
@@ -424,9 +432,12 @@ impl RuntimeHandle {
         parent_pid: Pid,
         activity_sequence: Pid,
     ) -> Option<ActivityError> {
-        self.activity_errors
-            .remove(&(parent_pid, activity_sequence))
-            .map(|(_, error)| error)
+        self.take_activity_outcome(
+            parent_pid,
+            activity_sequence,
+            &self.activity_errors,
+            ActivityOutcomeKind::Error,
+        )
     }
 
     /// Number of retained two-phase activity completion entries (results

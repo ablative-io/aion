@@ -69,7 +69,12 @@ impl RuntimeHandle {
                 // awaiting them (race losers, post-exit deliveries) are
                 // never taken; drop them with the process. A poisoned scoped
                 // gate is a typed monitor failure, never silent continuation.
-                let monitored_outcome = match runtime.drain_activity_completions(pid) {
+                let activity_cleanup = runtime.drain_activity_completions(pid);
+                // beamr publishes the exit tombstone before process-table
+                // removal. This monitor is the per-pid removal notification:
+                // it waits without holding the gate, then reaps that exact gate.
+                runtime.finish_activity_delivery_cleanup(pid);
+                let monitored_outcome = match activity_cleanup {
                     Ok(()) => process_outcome,
                     Err(error) => {
                         tracing::error!(%error, pid, "workflow activity cleanup failed");
