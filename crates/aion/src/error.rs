@@ -113,6 +113,13 @@ pub enum EngineError {
     #[error("process cleanup executor state was poisoned")]
     CleanupExecutorPoisoned,
 
+    /// The runtime cleanup worker did not stop within the configured bound.
+    #[error("process cleanup executor did not stop within {timeout_millis}ms")]
+    CleanupExecutorShutdownTimedOut {
+        /// Configured shutdown observation bound in milliseconds.
+        timeout_millis: u128,
+    },
+
     /// The process-exit registry lifecycle lock was poisoned.
     #[error("process exit registry lifecycle state was poisoned")]
     ProcessExitRegistryPoisoned,
@@ -142,6 +149,13 @@ pub enum EngineError {
     #[error("process {process_id} exited before its outcome could be captured")]
     ProcessExitUnavailable {
         /// Process whose beamr outcome was no longer available.
+        process_id: u64,
+    },
+
+    /// A retired process generation cannot accept another outcome consumer.
+    #[error("process {process_id} already reached its terminal runtime outcome")]
+    ProcessExitAlreadyTerminal {
+        /// Process generation whose heavyweight exit record was retired.
         process_id: u64,
     },
 

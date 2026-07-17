@@ -11,6 +11,20 @@ use crate::runtime::{RuntimeConfig, RuntimeHandle, SignalDeliveryConfig};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+fn wait_for_process_cleanup(runtime: &RuntimeHandle, pid: u64) -> TestResult {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if runtime.process_cleanup_complete_for_test(pid) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Err(
+        format!("process {pid} cleanup did not reach its terminal predicate before the deadline")
+            .into(),
+    )
+}
+
 #[test]
 fn monitor_installs_for_process_that_already_exited() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
@@ -48,7 +62,7 @@ fn monitor_rejects_pid_never_spawned_by_this_runtime() -> TestResult {
 }
 
 #[test]
-fn monitor_spawn_failure_drains_retained_completion_transaction() -> TestResult {
+fn monitor_installation_failure_drains_retained_completion_transaction() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let baseline_gates = runtime.activity_delivery_gate_count();
     let pid = runtime.spawn_test_process()?;
@@ -68,11 +82,11 @@ fn monitor_spawn_failure_drains_retained_completion_transaction() -> TestResult 
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 1);
     assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates + 1);
 
-    runtime.force_next_monitor_spawn_failure_for_test();
+    runtime.force_next_monitor_installation_failure_for_test();
     let error = runtime
         .monitor_process_for_test(pid, |_| {})
         .err()
-        .ok_or("forced monitor spawn failure installed a monitor")?;
+        .ok_or("forced monitor installation failure installed a monitor")?;
 
     assert!(
         error.to_string().contains("forced test failure"),
@@ -99,7 +113,7 @@ fn duplicate_installation_cannot_consume_outcome_or_abort_owned_process() -> Tes
     })?;
     assert_eq!(runtime.nif_state().monitor_installations.len(), 1);
 
-    runtime.force_next_monitor_spawn_failure_for_test();
+    runtime.force_next_monitor_installation_failure_for_test();
     let (duplicate_sender, duplicate_receiver) = mpsc::channel();
     let duplicate_error = runtime
         .monitor_process_for_test(pid, move |outcome| {
@@ -125,7 +139,8 @@ fn duplicate_installation_cannot_consume_outcome_or_abort_owned_process() -> Tes
         }
     }
     assert!(duplicate_receiver.try_recv().is_err());
-    assert_eq!(runtime.nif_state().monitor_installations.len(), 1);
+    wait_for_process_cleanup(&runtime, pid)?;
+    assert!(runtime.nif_state().monitor_installations.is_empty());
     runtime.shutdown()?;
     Ok(())
 }
@@ -158,7 +173,7 @@ fn abort_refuses_a_process_owned_by_a_committed_monitor() -> TestResult {
 }
 
 #[test]
-fn duplicate_installation_after_fast_exit_is_sticky() -> TestResult {
+fn duplicate_installation_after_retirement_is_typed_terminal() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let pid = runtime.spawn_test_process()?;
     let (first_sender, first_receiver) = mpsc::channel();
@@ -167,16 +182,19 @@ fn duplicate_installation_after_fast_exit_is_sticky() -> TestResult {
     })?;
     runtime.cancel_pid(pid)?;
     let _ = first_receiver.recv_timeout(Duration::from_secs(10))??;
-    assert_eq!(runtime.exit_outcome_consumptions_for_test(pid)?, 1);
+    wait_for_process_cleanup(&runtime, pid)?;
 
     let duplicate_error = runtime
         .monitor_process_for_test(pid, |_| {})
         .err()
-        .ok_or("completed monitor installation did not keep its sticky claim")?;
+        .ok_or("retired process accepted a fresh monitor installation")?;
 
-    assert!(duplicate_error.to_string().contains("already has"));
-    assert_eq!(runtime.exit_outcome_consumptions_for_test(pid)?, 1);
-    assert_eq!(runtime.nif_state().monitor_installations.len(), 1);
+    assert!(matches!(
+        duplicate_error,
+        crate::EngineError::ProcessExitAlreadyTerminal { process_id } if process_id == pid
+    ));
+    assert!(runtime.nif_state().monitor_installations.is_empty());
+    assert_eq!(runtime.process_exits.len(), 0);
     runtime.shutdown()?;
     Ok(())
 }
@@ -193,7 +211,7 @@ fn dead_and_unavailable_outcome_is_typed_and_runs_full_cleanup() -> TestResult {
         String::from(r#"{"late":true}"#),
         Some(4),
     )?;
-    assert!(!runtime.process_cleanup_observed_for_test(pid));
+    assert!(!runtime.process_cleanup_complete_for_test(pid));
     runtime.cancel_pid(pid)?;
 
     let (sender, receiver) = mpsc::channel();
@@ -210,8 +228,7 @@ fn dead_and_unavailable_outcome_is_typed_and_runs_full_cleanup() -> TestResult {
         error,
         crate::EngineError::ProcessExitUnavailable { process_id } if process_id == pid
     ));
-    assert_eq!(runtime.exit_outcome_consumptions_for_test(pid)?, 0);
-    assert!(runtime.process_cleanup_observed_for_test(pid));
+    wait_for_process_cleanup(&runtime, pid)?;
     assert_eq!(runtime.retained_activity_completions(), 0);
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     runtime.shutdown()?;
@@ -224,15 +241,15 @@ fn exact_cleanup_predicate_rejects_a_live_native_entry() -> TestResult {
     let pid = runtime.spawn_test_process()?;
     runtime.observe_native_entry_for_test(pid);
 
-    assert!(!runtime.process_cleanup_observed_for_test(pid));
+    assert!(!runtime.process_cleanup_complete_for_test(pid));
     runtime.abort_unmonitored_process(pid)?;
-    assert!(runtime.process_cleanup_observed_for_test(pid));
+    assert!(runtime.process_cleanup_complete_for_test(pid));
     runtime.shutdown()?;
     Ok(())
 }
 
 #[test]
-fn unavailable_cleanup_executor_is_typed_and_keeps_one_abort_identity() -> TestResult {
+fn unavailable_cleanup_executor_is_typed_without_sticky_abort_identity() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let pid = runtime.spawn_test_process()?;
     runtime.shutdown_cleanup_executor_for_test()?;
@@ -244,7 +261,7 @@ fn unavailable_cleanup_executor_is_typed_and_keeps_one_abort_identity() -> TestR
     let retry = runtime
         .abort_unmonitored_process(pid)
         .err()
-        .ok_or("closed cleanup executor retry lost its terminal abort identity")?;
+        .ok_or("closed cleanup executor accepted an abort retry")?;
 
     assert!(matches!(
         first,
@@ -257,8 +274,8 @@ fn unavailable_cleanup_executor_is_typed_and_keeps_one_abort_identity() -> TestR
             if process_id == pid
     ));
     assert!(runtime.is_live(pid));
-    assert_eq!(runtime.abort_jobs.len(), 1);
-    assert!(!runtime.process_cleanup_observed_for_test(pid));
+    assert!(runtime.abort_jobs.is_empty());
+    assert!(!runtime.process_cleanup_complete_for_test(pid));
     runtime.shutdown()?;
     Ok(())
 }
@@ -266,7 +283,7 @@ fn unavailable_cleanup_executor_is_typed_and_keeps_one_abort_identity() -> TestR
 #[test]
 fn bounded_cleanup_queue_exhaustion_is_typed() -> TestResult {
     let signal_delivery = SignalDeliveryConfig::new(
-        Duration::from_millis(10),
+        Duration::from_millis(100),
         1,
         Duration::from_millis(1),
         Duration::from_millis(1),
@@ -291,10 +308,11 @@ fn bounded_cleanup_queue_exhaustion_is_typed() -> TestResult {
         .abort_unmonitored_process(queued_pid)
         .err()
         .ok_or("queued cleanup job did not exhaust its observation bound")?;
+    runtime.force_next_monitor_installation_failure_for_test();
     let exhausted = runtime
-        .abort_unmonitored_process(exhausted_pid)
+        .monitor_process_for_test(exhausted_pid, |_| {})
         .err()
-        .ok_or("full cleanup queue accepted a third distinct abort job")?;
+        .ok_or("full cleanup queue accepted failed-installation rollback")?;
 
     assert!(matches!(
         blocked,
@@ -304,21 +322,24 @@ fn bounded_cleanup_queue_exhaustion_is_typed() -> TestResult {
         queued,
         UnmonitoredProcessAbortError::TimedOut { .. }
     ));
-    assert!(matches!(
-        exhausted,
-        UnmonitoredProcessAbortError::ExecutorExhausted { process_id }
-            if process_id == exhausted_pid
-    ));
+    assert!(matches!(exhausted, crate::EngineError::Runtime { reason }
+        if reason.contains("cleanup executor is exhausted")));
     assert!(runtime.is_live(exhausted_pid));
+    assert!(!runtime.abort_jobs.contains_key(&exhausted_pid));
+    assert!(
+        !runtime
+            .nif_state()
+            .monitor_installations
+            .contains_key(&exhausted_pid)
+    );
     drop(held_process);
-    for _ in 0..1_000 {
-        if runtime.process_cleanup_observed_for_test(queued_pid) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(runtime.process_cleanup_observed_for_test(blocked_pid));
-    assert!(runtime.process_cleanup_observed_for_test(queued_pid));
+    wait_for_process_cleanup(&runtime, blocked_pid)?;
+    wait_for_process_cleanup(&runtime, queued_pid)?;
+    runtime.abort_unmonitored_process(exhausted_pid)?;
+    assert!(!runtime.is_live(exhausted_pid));
+    wait_for_process_cleanup(&runtime, exhausted_pid)?;
+    assert!(runtime.abort_jobs.is_empty());
+    assert_eq!(runtime.process_exits.len(), 0);
     runtime.shutdown()?;
     Ok(())
 }
@@ -331,8 +352,28 @@ fn absent_process_without_tombstone_aborts_without_waiting_for_outcome() -> Test
     runtime.abort_unmonitored_process(9_999)?;
 
     assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(runtime.process_cleanup_observed_for_test(9_999));
+    assert!(runtime.process_cleanup_complete_for_test(9_999));
     runtime.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn shutdown_force_unblocks_process_exit_jobs_before_executor_join() -> TestResult {
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let pid = runtime.spawn_test_process()?;
+    let record = runtime.process_exits.get(pid)?;
+    runtime
+        .cleanup_executor
+        .submit(Box::new(move || {
+            if record.wait().is_ok() {
+                let _ = record.close_without_monitor();
+            }
+        }))
+        .map_err(|error| format!("cleanup wait job was refused: {error:?}"))?;
+
+    runtime.shutdown()?;
+
+    assert!(!runtime.is_live(pid));
     Ok(())
 }
 
@@ -355,7 +396,7 @@ fn unmonitored_abort_bound_exhaustion_is_typed() -> TestResult {
         .ok_or("spawned process was absent before bounded abort")?;
     let started = Instant::now();
 
-    runtime.force_next_monitor_spawn_failure_for_test();
+    runtime.force_next_monitor_installation_failure_for_test();
     let error = runtime
         .monitor_process_for_test(pid, |_| {})
         .err()
@@ -369,13 +410,7 @@ fn unmonitored_abort_bound_exhaustion_is_typed() -> TestResult {
     assert!(started.elapsed() < Duration::from_secs(1));
     assert_eq!(runtime.nif_state().monitor_installations.len(), 1);
     drop(held_process);
-    for _ in 0..1_000 {
-        if runtime.process_cleanup_observed_for_test(pid) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(runtime.process_cleanup_observed_for_test(pid));
+    wait_for_process_cleanup(&runtime, pid)?;
     assert!(runtime.nif_state().monitor_installations.is_empty());
 
     let typed_pid = runtime.spawn_test_process()?;
@@ -396,13 +431,55 @@ fn unmonitored_abort_bound_exhaustion_is_typed() -> TestResult {
         } if process_id == typed_pid
     ));
     drop(typed_held_process);
-    for _ in 0..1_000 {
-        if runtime.process_cleanup_observed_for_test(typed_pid) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
+    wait_for_process_cleanup(&runtime, typed_pid)?;
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn completed_process_lifecycle_state_returns_to_baseline_under_churn() -> TestResult {
+    const WORKFLOWS: usize = 24;
+
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let baseline_records = runtime.process_exits.len();
+    let baseline_claims = runtime.nif_state().monitor_installations.len();
+    let baseline_aborts = runtime.abort_jobs.len();
+
+    for _ in 0..WORKFLOWS {
+        let pid = runtime.spawn_test_process()?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        runtime.monitor_process_for_test(pid, move |outcome| {
+            let _ = sender.send(outcome);
+        })?;
+        runtime.cancel_pid(pid)?;
+        let _ = receiver.recv_timeout(Duration::from_secs(10))??;
+        wait_for_process_cleanup(&runtime, pid)?;
     }
-    assert!(runtime.process_cleanup_observed_for_test(typed_pid));
+
+    for _ in 0..WORKFLOWS {
+        let pid = runtime.spawn_test_process()?;
+        match runtime.abort_unmonitored_process(pid) {
+            Ok(()) | Err(UnmonitoredProcessAbortError::TimedOut { .. }) => {}
+            Err(error) => {
+                return Err(format!("process {pid} churn abort failed: {error}").into());
+            }
+        }
+        wait_for_process_cleanup(&runtime, pid)?;
+    }
+
+    for _ in 0..WORKFLOWS {
+        let pid = runtime.spawn_test_process()?;
+        runtime.cancel_pid(pid)?;
+        let _ = runtime.activity_process_exit_outcome(pid)?;
+        assert!(!runtime.process_exits.contains(pid));
+    }
+
+    assert_eq!(runtime.process_exits.len(), baseline_records);
+    assert_eq!(
+        runtime.nif_state().monitor_installations.len(),
+        baseline_claims
+    );
+    assert_eq!(runtime.abort_jobs.len(), baseline_aborts);
     runtime.shutdown()?;
     Ok(())
 }

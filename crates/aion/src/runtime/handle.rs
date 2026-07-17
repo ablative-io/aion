@@ -154,6 +154,7 @@ impl RuntimeHandle {
         let wake_confirmer = super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?;
         let cleanup_executor = super::cleanup_executor::CleanupExecutor::new(
             config.signal_delivery.max_enqueue_attempts as usize,
+            config.signal_delivery.cleanup_shutdown_timeout(),
         )?;
 
         Ok(Self {
@@ -492,11 +493,6 @@ impl RuntimeHandle {
     ///
     /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
-        self.cleanup_executor.shutdown()?;
-        // Stop the wake-confirmation worker: its only job is healing
-        // lost wakeups for a running scheduler, and pending follow-ups are
-        // moot once the scheduler stops.
-        self.wake_confirmer.shutdown();
         // Kill every still-live in-VM activity child BEFORE stopping the
         // scheduler: the kill writes each child's exit tombstone while the
         // scheduler can still process it, releasing the exit watchers'
@@ -515,6 +511,12 @@ impl RuntimeHandle {
                 self.scheduler.terminate_process(pid, ExitReason::Kill);
             }
         }
+        // Abort jobs may be blocked waiting for exactly the exits published
+        // above, so drain the bounded executor only after every registered pid
+        // has been force-unblocked.
+        self.cleanup_executor.shutdown()?;
+        // Pending wake follow-ups are moot once process observation is closed.
+        self.wake_confirmer.shutdown();
         self.process_exits.close_and_join_all()?;
         self.scheduler.shutdown();
         self.spawn_heaps.clear();

@@ -315,7 +315,7 @@ async fn sweep_start_failure_without_a_successor_still_fails() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn recovered_monitor_spawn_failure_drains_retained_completion() -> TestResult {
+async fn recovered_monitor_installation_failure_drains_retained_completion() -> TestResult {
     let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let context = recovery_context(
@@ -352,7 +352,7 @@ async fn recovered_monitor_spawn_failure_drains_retained_completion() -> TestRes
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 1);
     assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates + 1);
 
-    runtime.force_next_monitor_spawn_failure_for_test();
+    runtime.force_next_monitor_installation_failure_for_test();
     let error = register_recovered_resident(
         &context,
         RecoveredResident {
@@ -369,7 +369,7 @@ async fn recovered_monitor_spawn_failure_drains_retained_completion() -> TestRes
     )
     .await
     .err()
-    .ok_or("forced recovered monitor spawn failure registered a resident")?;
+    .ok_or("forced recovered monitor installation failure registered a resident")?;
 
     assert!(error.to_string().contains("forced test failure"));
     assert!(context.registry.live_pid(&workflow_id)?.is_none());
@@ -445,7 +445,7 @@ async fn recovered_reconcile_failure_after_publication_runs_observed_abort() -> 
     assert!(context.registry.live_pid(&workflow_id)?.is_none());
     assert!(!runtime.is_live(pid));
     assert!(!runtime.is_live(child_pid));
-    assert!(runtime.process_cleanup_observed_for_test(pid));
+    assert!(runtime.process_cleanup_complete_for_test(pid));
     assert_eq!(runtime.retained_activity_completions(), 0);
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);

@@ -74,9 +74,9 @@ pub(crate) struct EngineNifState {
     pub(super) servicing_queries: DashMap<u64, String>,
     /// Per-pid suspending-native entry counter consumed by the wake
     /// confirmation ladder (see [`super::wake_confirm`]): every suspending
-    /// await bumps its caller's epoch on entry, and process exit stamps the
+    /// await bumps its caller's epoch on entry, and process cleanup start stamps the
     /// [`WAKE_EPOCH_EXITED`] tombstone, so an armed ladder can observe "this
-    /// process ran (or died) after my marker was delivered" and stop.
+    /// process ran (or began exit cleanup) after my marker was delivered" and stop.
     /// Entries are never removed — beamr never reuses pids within a
     /// scheduler, and a removed tombstone would make a late ladder re-wake a
     /// dead pid forever.
@@ -87,7 +87,7 @@ pub(crate) struct EngineNifState {
     pub(super) monitor_installations: DashMap<u64, Arc<super::monitor::MonitorInstallation>>,
 }
 
-/// Epoch tombstone recorded for an exited workflow pid.
+/// Epoch tombstone recorded at the start of exited-workflow cleanup.
 const WAKE_EPOCH_EXITED: u64 = u64::MAX;
 
 /// One query delivered to a workflow pid, awaiting pump pickup.
@@ -222,9 +222,9 @@ impl EngineNifState {
             .map_or(0, |epoch| *epoch)
     }
 
-    /// Whether shared process cleanup stamped the exact exited tombstone.
+    /// Whether shared process cleanup has started and stamped the wake tombstone.
     #[cfg(test)]
-    pub(crate) fn process_cleanup_observed(&self, pid: u64) -> bool {
+    pub(crate) fn process_cleanup_started(&self, pid: u64) -> bool {
         self.wake_observation_epochs
             .get(&pid)
             .is_some_and(|epoch| *epoch == WAKE_EPOCH_EXITED)

@@ -31,6 +31,9 @@ impl RuntimeHandle {
         if self.process_exits.contains(pid) {
             return Ok(());
         }
+        if self.process_exits.is_retired(pid) {
+            return Err(EngineError::ProcessExitAlreadyTerminal { process_id: pid });
+        }
         Err(super::runtime_error(format!(
             "process {pid} was never spawned by this runtime"
         )))

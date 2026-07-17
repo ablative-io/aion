@@ -364,7 +364,7 @@ async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() 
     let registry = Arc::new(Registry::default());
     let baseline_gates = runtime.activity_delivery_gate_count();
     runtime.pause_next_start_publication_for_test();
-    runtime.force_next_monitor_spawn_failure_for_test();
+    runtime.force_next_monitor_installation_failure_for_test();
 
     let start = tokio::spawn(start_workflow(
         context(
@@ -419,7 +419,7 @@ async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() 
     assert!(error.to_string().contains("forced test failure"));
     assert!(registry.list()?.is_empty());
     assert!(!runtime.is_live(pid));
-    assert!(runtime.process_cleanup_observed_for_test(pid));
+    assert!(runtime.process_cleanup_complete_for_test(pid));
     delayed.release.send(())?;
     let delayed_error = delayed
         .result

@@ -379,6 +379,9 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::CleanupExecutorPoisoned => {
             simple_engine_fields("CleanupExecutorPoisoned", source)
         }
+        EngineError::CleanupExecutorShutdownTimedOut { .. } => {
+            simple_engine_fields("CleanupExecutorShutdownTimedOut", source)
+        }
         EngineError::ProcessExitRegistryPoisoned => {
             simple_engine_fields("ProcessExitRegistryPoisoned", source)
         }
@@ -393,6 +396,9 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         }
         EngineError::ProcessExitUnavailable { .. } => {
             simple_engine_fields("ProcessExitUnavailable", source)
+        }
+        EngineError::ProcessExitAlreadyTerminal { .. } => {
+            simple_engine_fields("ProcessExitAlreadyTerminal", source)
         }
         EngineError::ActivityDeliveryPoisoned { .. } => {
             simple_engine_fields("ActivityDeliveryPoisoned", source)
@@ -510,6 +516,9 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         EngineError::CleanupExecutorPoisoned => {
             WireError::backend_with_type("CleanupExecutorPoisoned", source.to_string())
         }
+        EngineError::CleanupExecutorShutdownTimedOut { .. } => {
+            WireError::backend_with_type("CleanupExecutorShutdownTimedOut", source.to_string())
+        }
         EngineError::ProcessExitRegistryPoisoned => {
             WireError::backend_with_type("ProcessExitRegistryPoisoned", source.to_string())
         }
@@ -524,6 +533,9 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         }
         EngineError::ProcessExitUnavailable { .. } => {
             WireError::backend_with_type("ProcessExitUnavailable", source.to_string())
+        }
+        EngineError::ProcessExitAlreadyTerminal { .. } => {
+            WireError::backend_with_type("ProcessExitAlreadyTerminal", source.to_string())
         }
         EngineError::ActivityDeliveryPoisoned { .. } => {
             WireError::backend_with_type("ActivityDeliveryPoisoned", source.to_string())
