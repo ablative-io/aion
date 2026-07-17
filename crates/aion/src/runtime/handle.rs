@@ -88,10 +88,10 @@ pub struct RuntimeHandle {
     activity_delivery_gates: dashmap::DashMap<Pid, Arc<activity_delivery::ActivityDeliveryGate>>,
     /// One-based delivery attempt that produced a retained two-phase activity
     /// outcome, keyed like [`Self::activity_results`] / [`Self::activity_errors`]
-    /// (#197). Noted by the completion task's retry loop when it delivers a
-    /// final outcome; taken by the awaiting NIF so recorded terminals carry
-    /// the genuine attempt. Absence means the first delivery (paths that never
-    /// retry — outbox re-delivery, in-VM — note nothing).
+    /// (#197). Retained in the same gate transaction as the final outcome and
+    /// taken atomically with that outcome, so recorded terminals carry the
+    /// genuine attempt. Absence means the first delivery (paths that never
+    /// retry — outbox re-delivery and in-VM execution — retain nothing).
     activity_delivery_attempts: Arc<dashmap::DashMap<(Pid, Pid), u32>>,
     /// Live in-VM activity children per workflow pid.
     ///

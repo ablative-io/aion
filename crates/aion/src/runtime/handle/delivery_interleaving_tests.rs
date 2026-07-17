@@ -10,7 +10,7 @@ use crate::error::EngineError;
 use crate::registry::Registry;
 use crate::runtime::config::RuntimeConfig;
 use crate::runtime::handle::RuntimeHandle;
-use crate::runtime::handle::activity_delivery::ActivityOutcomeKind;
+use crate::runtime::handle::activity_delivery::{ActivityOutcomeKind, RetainedActivityDelivery};
 
 use super::{TestResult, live_handle};
 
@@ -24,6 +24,13 @@ fn test_runtime_error(reason: impl Into<String>) -> EngineError {
 }
 
 fn join_test_thread<T>(thread: JoinHandle<T>) -> Result<T, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    while !thread.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(TEST_POLL_INTERVAL);
+    }
+    if !thread.is_finished() {
+        return Err("activity-delivery test worker timed out".into());
+    }
     Ok(thread
         .join()
         .map_err(|_| "activity-delivery test worker panicked")?)
@@ -45,7 +52,6 @@ fn monitor_drain_overlaps_completion_before_enqueue_and_rolls_it_back() -> TestR
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(None))?);
     let baseline = runtime.activity_delivery_gate_count();
     let workflow_pid = runtime.spawn_test_process()?;
-    runtime.note_delivery_attempt(workflow_pid, 7, 3);
     let (monitor_sender, monitor_receiver) = mpsc::channel();
     runtime.monitor_process_for_test(workflow_pid, move |outcome| {
         if monitor_sender.send(outcome).is_err() {
@@ -61,9 +67,12 @@ fn monitor_drain_overlaps_completion_before_enqueue_and_rolls_it_back() -> TestR
         delivery_runtime.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &delivery_runtime.activity_results,
-            key,
-            Payload::new(ContentType::Json, br#"{"ok":true}"#.to_vec()),
-            ActivityOutcomeKind::Result,
+            RetainedActivityDelivery {
+                key,
+                outcome: Payload::new(ContentType::Json, br#"{"ok":true}"#.to_vec()),
+                kind: ActivityOutcomeKind::Result,
+                attempt: Some(3),
+            },
             || {
                 marker_sender
                     .send(())
@@ -97,7 +106,12 @@ fn monitor_drain_overlaps_completion_before_enqueue_and_rolls_it_back() -> TestR
         "clean drain must preserve the process outcome"
     );
     assert!(runtime.activity_result(workflow_pid, 7).is_none());
-    assert!(runtime.take_delivery_attempt(workflow_pid, 7).is_none());
+    assert!(
+        runtime
+            .activity_delivery_attempts
+            .get(&(workflow_pid, 7))
+            .is_none()
+    );
     assert_eq!(runtime.activity_delivery_gate_count(), baseline);
     runtime.shutdown()?;
     Ok(())
@@ -108,7 +122,6 @@ fn monitor_drain_overlaps_failure_before_enqueue_and_rolls_it_back() -> TestResu
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(None))?);
     let baseline = runtime.activity_delivery_gate_count();
     let workflow_pid = runtime.spawn_test_process()?;
-    runtime.note_delivery_attempt(workflow_pid, 9, 4);
     let (monitor_sender, monitor_receiver) = mpsc::channel();
     runtime.monitor_process_for_test(workflow_pid, move |outcome| {
         if monitor_sender.send(outcome).is_err() {
@@ -124,13 +137,16 @@ fn monitor_drain_overlaps_failure_before_enqueue_and_rolls_it_back() -> TestResu
         delivery_runtime.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &delivery_runtime.activity_errors,
-            key,
-            ActivityError {
-                kind: ActivityErrorKind::Terminal,
-                message: "failed".to_owned(),
-                details: None,
+            RetainedActivityDelivery {
+                key,
+                outcome: ActivityError {
+                    kind: ActivityErrorKind::Terminal,
+                    message: "failed".to_owned(),
+                    details: None,
+                },
+                kind: ActivityOutcomeKind::Error,
+                attempt: Some(4),
             },
-            ActivityOutcomeKind::Error,
             || {
                 marker_sender
                     .send(())
@@ -164,7 +180,12 @@ fn monitor_drain_overlaps_failure_before_enqueue_and_rolls_it_back() -> TestResu
         "clean drain must preserve the process outcome"
     );
     assert!(runtime.activity_error(workflow_pid, 9).is_none());
-    assert!(runtime.take_delivery_attempt(workflow_pid, 9).is_none());
+    assert!(
+        runtime
+            .activity_delivery_attempts
+            .get(&(workflow_pid, 9))
+            .is_none()
+    );
     assert_eq!(runtime.activity_delivery_gate_count(), baseline);
     runtime.shutdown()?;
     Ok(())
@@ -190,9 +211,12 @@ fn monitor_drains_outcome_when_death_follows_successful_enqueue() -> TestResult 
         delivery_runtime.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &delivery_runtime.activity_results,
-            key,
-            Payload::new(ContentType::Json, br#"{"ok":true}"#.to_vec()),
-            ActivityOutcomeKind::Result,
+            RetainedActivityDelivery {
+                key,
+                outcome: Payload::new(ContentType::Json, br#"{"ok":true}"#.to_vec()),
+                kind: ActivityOutcomeKind::Result,
+                attempt: None,
+            },
             || {
                 delivery_runtime.enqueue_activity_marker(
                     workflow_pid,
@@ -235,11 +259,11 @@ fn poisoned_monitor_drain_removes_state_and_returns_typed_error() -> TestResult 
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(None))?);
     let baseline = runtime.activity_delivery_gate_count();
     let workflow_pid = runtime.spawn_test_process()?;
-    runtime.note_delivery_attempt(workflow_pid, 13, 2);
-    runtime.deliver_activity_completion_message(
+    runtime.deliver_activity_completion_message_with_attempt(
         workflow_pid,
         "activity:13",
         r#"{"retained":true}"#.to_owned(),
+        Some(2),
     )?;
     runtime.force_activity_delivery_poison_for_test(workflow_pid)?;
 
@@ -295,7 +319,7 @@ fn withheld_removal_does_not_block_reregistered_workflow_delivery() -> TestResul
         r#"{"seed":true}"#.to_owned(),
     )?;
     let seed = runtime
-        .take_activity_result(new_pid, 1)
+        .take_activity_result(new_pid, 1)?
         .ok_or("new workflow gate was not seeded")?;
     drop(seed);
     let baseline = runtime.activity_delivery_gate_count();
@@ -373,10 +397,11 @@ fn withheld_removal_does_not_block_reregistered_workflow_delivery() -> TestResul
         "old workflow cleanup must complete"
     );
 
-    let payload = runtime
-        .take_activity_result(new_pid, 19)
+    let (payload, attempt) = runtime
+        .take_activity_result(new_pid, 19)?
         .ok_or("re-registered workflow did not retain its completion")?;
     assert_eq!(payload.bytes(), br#"{"new":true}"#);
+    assert_eq!(attempt, None);
     assert!(runtime.activity_result(old_pid, 17).is_none());
     assert_eq!(runtime.activity_delivery_gate_count(), baseline);
     runtime.shutdown()?;
@@ -424,14 +449,25 @@ fn late_delivery_after_monitor_cleanup_does_not_recreate_a_gate() -> TestResult 
             details: None,
         },
     );
-    runtime.note_delivery_attempt(workflow_pid, 25, 3);
+    let attempted_completion = runtime.deliver_activity_completion_message_with_attempt(
+        workflow_pid,
+        "activity:25",
+        r#"{"late":true}"#.to_owned(),
+        Some(3),
+    );
 
     assert!(completion.is_err());
     assert!(failure.is_err());
     assert!(legacy_result.is_err());
     assert!(legacy_error.is_err());
+    assert!(attempted_completion.is_err());
     assert_eq!(runtime.retained_activity_completions(), 0);
-    assert!(runtime.take_delivery_attempt(workflow_pid, 25).is_none());
+    assert!(
+        runtime
+            .activity_delivery_attempts
+            .get(&(workflow_pid, 25))
+            .is_none()
+    );
     assert_eq!(runtime.activity_delivery_gate_count(), baseline);
     runtime.shutdown()?;
     Ok(())

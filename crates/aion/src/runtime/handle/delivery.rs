@@ -13,7 +13,7 @@ use beamr::process::ExitReason;
 use crate::error::EngineError;
 use crate::registry::Registry;
 
-use super::activity_delivery::ActivityOutcomeKind;
+use super::activity_delivery::{ActivityOutcomeKind, RetainedActivityDelivery};
 use super::{Pid, RuntimeHandle, runtime_error};
 use crate::runtime::payload::term_to_payload;
 
@@ -193,15 +193,33 @@ impl RuntimeHandle {
         correlation_id: &str,
         result: String,
     ) -> Result<(), EngineError> {
+        self.deliver_activity_completion_message_with_attempt(
+            workflow_pid,
+            correlation_id,
+            result,
+            None,
+        )
+    }
+
+    pub(crate) fn deliver_activity_completion_message_with_attempt(
+        &self,
+        workflow_pid: Pid,
+        correlation_id: &str,
+        result: String,
+        attempt: Option<u32>,
+    ) -> Result<(), EngineError> {
         let activity_id = correlation_to_activity_pid(correlation_id)?;
         let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_complete");
         self.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &self.activity_results,
-            key,
-            Payload::new(ContentType::Json, result.into_bytes()),
-            ActivityOutcomeKind::Result,
+            RetainedActivityDelivery {
+                key,
+                outcome: Payload::new(ContentType::Json, result.into_bytes()),
+                kind: ActivityOutcomeKind::Result,
+                attempt,
+            },
             || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
         )
     }
@@ -219,15 +237,33 @@ impl RuntimeHandle {
         correlation_id: &str,
         reason: String,
     ) -> Result<(), EngineError> {
+        self.deliver_activity_failure_message_with_attempt(
+            workflow_pid,
+            correlation_id,
+            reason,
+            None,
+        )
+    }
+
+    pub(crate) fn deliver_activity_failure_message_with_attempt(
+        &self,
+        workflow_pid: Pid,
+        correlation_id: &str,
+        reason: String,
+        attempt: Option<u32>,
+    ) -> Result<(), EngineError> {
         let activity_id = correlation_to_activity_pid(correlation_id)?;
         let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_failed");
         self.retain_activity_outcome_and_deliver_marker(
             workflow_pid,
             &self.activity_errors,
-            key,
-            activity_failure(reason),
-            ActivityOutcomeKind::Error,
+            RetainedActivityDelivery {
+                key,
+                outcome: activity_failure(reason),
+                kind: ActivityOutcomeKind::Error,
+                attempt,
+            },
             || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
         )
     }
@@ -322,9 +358,12 @@ impl RuntimeHandle {
         self.retain_activity_outcome_and_deliver_marker(
             parent_pid,
             &self.activity_results,
-            key,
-            payload,
-            ActivityOutcomeKind::Result,
+            RetainedActivityDelivery {
+                key,
+                outcome: payload,
+                kind: ActivityOutcomeKind::Result,
+                attempt: None,
+            },
             || {
                 if self.scheduler.enqueue_atom_message(parent_pid, marker) {
                     self.confirm_marker_wake(parent_pid);
@@ -418,7 +457,7 @@ impl RuntimeHandle {
         &self,
         parent_pid: Pid,
         activity_sequence: Pid,
-    ) -> Option<Payload> {
+    ) -> Result<Option<(Payload, Option<u32>)>, EngineError> {
         self.take_activity_outcome(
             parent_pid,
             activity_sequence,
@@ -431,7 +470,7 @@ impl RuntimeHandle {
         &self,
         parent_pid: Pid,
         activity_sequence: Pid,
-    ) -> Option<ActivityError> {
+    ) -> Result<Option<(ActivityError, Option<u32>)>, EngineError> {
         self.take_activity_outcome(
             parent_pid,
             activity_sequence,

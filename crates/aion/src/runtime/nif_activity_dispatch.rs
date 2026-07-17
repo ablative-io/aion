@@ -3,14 +3,13 @@
 use std::sync::Arc;
 
 use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
-use crate::durability::{Command, CorrelationKey, Recorder, Resolution, ResolveOutcome};
+use crate::durability::{Command, CorrelationKey, Recorder, ResolveOutcome};
 use crate::runtime::nif_activity::{
-    activity_error, activity_id_from_correlation, context_error_term, correlation_id,
-    decode_string_arg, error_result_term, json_payload, labels_from_config, ok_result_term,
-    record_started, runtime_context,
+    context_error_term, correlation_id, decode_string_arg, error_result_term, json_payload,
+    labels_from_config, ok_result_term, record_started, runtime_context,
 };
 use crate::runtime::nif_context::NifContext;
-use aion_core::{ActivityId, Payload};
+use aion_core::ActivityId;
 use beamr::native::ProcessContext;
 use beamr::term::Term;
 
@@ -321,28 +320,22 @@ pub(super) fn spawn_completion_task(
         let attempt = outcome.attempt;
         match outcome.terminal {
             RetryLoopTerminal::Completed(payload) => {
-                runtime.note_delivery_attempt(
-                    workflow_pid,
-                    request.activity_id.sequence_position(),
-                    attempt,
-                );
-                if let Err(error) = runtime.deliver_activity_completion_message(
+                if let Err(error) = runtime.deliver_activity_completion_message_with_attempt(
                     workflow_pid,
                     &correlation_id,
                     payload,
+                    Some(attempt),
                 ) {
                     tracing::warn!(%error, workflow_pid, correlation_id, "activity completion delivery failed");
                 }
             }
             RetryLoopTerminal::Failed(reason) => {
-                runtime.note_delivery_attempt(
+                if let Err(error) = runtime.deliver_activity_failure_message_with_attempt(
                     workflow_pid,
-                    request.activity_id.sequence_position(),
-                    attempt,
-                );
-                if let Err(error) =
-                    runtime.deliver_activity_failure_message(workflow_pid, &correlation_id, reason)
-                {
+                    &correlation_id,
+                    reason,
+                    Some(attempt),
+                ) {
                     tracing::warn!(%error, workflow_pid, correlation_id, "activity failure delivery failed");
                 }
             }
@@ -607,195 +600,9 @@ async fn record_retry_event(
     }
 }
 
-fn await_activity_result_with_context(
-    state: &crate::runtime::EngineNifState,
-    mut context: NifContext,
-    runtime: &Arc<crate::RuntimeHandle>,
-    process_context: &mut ProcessContext,
-    correlation: &str,
-) -> Result<Term, Term> {
-    // A query handler must not nest into another await; refuse before any
-    // marker is consumed or resolution attempted.
-    if let Err(error) = crate::runtime::nif_query_pump::ensure_not_servicing_query(
-        state,
-        context.pid(),
-        "await_activity_result",
-    ) {
-        return Ok(error_result_term(process_context, &error).unwrap_or(Term::NIL));
-    }
-    // Queries first (Q6), and deliberately BEFORE the recorded-resolution
-    // fast path below: a tight replay loop whose awaits all resolve from
-    // history instantly must still drain queued queries at each yield point.
-    if let Some(sentinel) =
-        crate::runtime::nif_query_pump::take_pending_query_sentinel(state, context.pid())
-    {
-        return Ok(error_result_term(process_context, &sentinel).unwrap_or(Term::NIL));
-    }
-    let activity_id = activity_id_from_correlation(process_context, correlation)?;
-    let step = await_activity_step(state, &mut context, runtime, &activity_id, || {
-        super::nif_wake::consume_wake_marker(process_context, runtime);
-    });
-    match step {
-        Ok(ActivityAwaitStep::Completed(bytes)) => {
-            Ok(ok_result_term(process_context, &bytes).unwrap_or(Term::NIL))
-        }
-        Ok(ActivityAwaitStep::Failed(message)) => {
-            Ok(error_result_term(process_context, &message).unwrap_or(Term::NIL))
-        }
-        Ok(ActivityAwaitStep::Suspend) => {
-            process_context.request_suspend(None);
-            Ok(Term::NIL)
-        }
-        Err(message) => Err(error_result_term(process_context, &message).unwrap_or(Term::NIL)),
-    }
-}
-
-/// Outcome of one ProcessContext-free `await_activity_result` resolution
-/// step, invoked fresh on every mailbox wake by the NIF shell above.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ActivityAwaitStep {
-    /// The recorded (or just-recorded) completion payload bytes.
-    Completed(Vec<u8>),
-    /// A workflow-visible `{error, _}`: the recorded (or just-recorded)
-    /// terminal failure message, or a recorded non-activity resolution.
-    Failed(String),
-    /// Park the calling process; a mailbox wake re-invokes the native.
-    Suspend,
-}
-
-/// One activity-await resolution pass.
-///
-/// Recorded terminal first — it IS the live run's decision (this await
-/// records completions, failures, and the durable timeout failure itself,
-/// synchronously, before workflow code observes the branch), so replay reads
-/// the decision and no deadline-vs-terminal seq ordering is needed on the
-/// recorded path (unlike `await_child`/`receive_signal`, whose arrivals are
-/// recorded by racing third parties). Then a takeable runtime-map completion
-/// (recorded now), then the enclosing-scope expiry, then suspend.
-///
-/// `consume_wake_marker` runs once per live pass, only when no recorded
-/// terminal resolves the await: markers are pure wakes and the completion
-/// state lives in the runtime's keyed maps, so any marker (even one destined
-/// for another await) is safe to take — leaving it queued would insta-rewake
-/// the suspend into a busy spin.
-pub(super) fn await_activity_step(
-    state: &crate::runtime::EngineNifState,
-    context: &mut NifContext,
-    runtime: &crate::RuntimeHandle,
-    activity_id: &ActivityId,
-    consume_wake_marker: impl FnOnce(),
-) -> Result<ActivityAwaitStep, String> {
-    if let Some(recorded) = recorded_resolution_for(context, activity_id)? {
-        return Ok(recorded_step(recorded));
-    }
-    consume_wake_marker();
-    if let Some(step) = take_runtime_completion(context, runtime, activity_id.clone())? {
-        return Ok(step);
-    }
-    // An expired enclosing with_timeout deadline aborts the await instead of
-    // re-suspending; the failure is recorded durably so replay returns it
-    // verbatim. The expiry decision is a pure function of the RESOLUTION
-    // snapshot (`context.history()`), never a fresh store read: this
-    // resolution observed neither the activity terminal nor the deadline's
-    // `TimerFired`, and deciding the branch from a newer snapshot than the
-    // one the resolution settled on is the N-1 defect family. A deadline
-    // firing after the snapshot is settled by the wake it triggers, whose
-    // fresh snapshot re-enters this step.
-    if crate::runtime::nif_timeout::expired_scope_deadline(state, context.pid(), context.history())
-        .is_some()
-    {
-        let message = crate::runtime::nif_timeout::SCOPE_EXPIRED_MESSAGE.to_owned();
-        // #197: stamp the terminal with the LATEST attempt the resolution
-        // snapshot recorded for this ordinal (a retry loop may have moved it
-        // past the first delivery); a snapshot with no attempt trail keeps
-        // the first delivery, exactly as before.
-        let attempt =
-            super::nif_activity_retry::latest_recorded_attempt(context.history(), activity_id)
-                .unwrap_or(FIRST_DELIVERY_ATTEMPT)
-                .max(FIRST_DELIVERY_ATTEMPT);
-        context
-            .record_activity_failed(
-                chrono::Utc::now(),
-                activity_id.clone(),
-                activity_error(message.clone()),
-                attempt,
-            )
-            .map_err(|error| error.error_reason())?;
-        return Ok(ActivityAwaitStep::Failed(message));
-    }
-    Ok(ActivityAwaitStep::Suspend)
-}
-
-fn recorded_resolution_for(
-    context: &mut NifContext,
-    activity_id: &ActivityId,
-) -> Result<Option<Resolution>, String> {
-    let ordinal = activity_id.sequence_position();
-    let input = Payload::from_json(&serde_json::Value::Null)
-        .map_err(|error| format!("await_activity_result replay input: {error}"))?;
-    match context
-        .resolve_command(Command::RunActivity {
-            key: CorrelationKey::Activity(ordinal),
-            activity_type: "await_activity_result".to_owned(),
-            input,
-        })
-        .map_err(|error| error.error_reason())?
-    {
-        ResolveOutcome::Recorded(resolution) => Ok(Some(resolution)),
-        ResolveOutcome::ResumeLive => Ok(None),
-    }
-}
-
-fn recorded_step(resolution: Resolution) -> ActivityAwaitStep {
-    match resolution {
-        Resolution::ActivityCompleted(payload) => {
-            ActivityAwaitStep::Completed(payload.bytes().to_vec())
-        }
-        Resolution::ActivityFailedTerminal(error) => ActivityAwaitStep::Failed(error.message),
-        other => ActivityAwaitStep::Failed(format!(
-            "await_activity_result: recorded non-activity resolution {other:?}"
-        )),
-    }
-}
-
-fn take_runtime_completion(
-    context: &NifContext,
-    runtime: &crate::RuntimeHandle,
-    activity_id: ActivityId,
-) -> Result<Option<ActivityAwaitStep>, String> {
-    let ordinal = activity_id.sequence_position();
-    if let Some(payload) = runtime.take_activity_result(context.pid(), ordinal) {
-        // NOI-0/#197: the completion task notes the attempt that produced the
-        // delivered outcome (a retry loop can move it past the first
-        // delivery); paths that never retry (outbox re-delivery, in-VM) note
-        // nothing and resolve to the first delivery exactly as before.
-        let attempt = runtime
-            .take_delivery_attempt(context.pid(), ordinal)
-            .unwrap_or(FIRST_DELIVERY_ATTEMPT);
-        context
-            .record_activity_completed(chrono::Utc::now(), activity_id, payload.clone(), attempt)
-            .map_err(|error| error.error_reason())?;
-        return Ok(Some(ActivityAwaitStep::Completed(payload.bytes().to_vec())));
-    }
-    if let Some(error) = runtime.take_activity_error(context.pid(), ordinal) {
-        // #197: an exhausted retry budget fails the workflow with the LAST
-        // reason verbatim and the final attempt count on the recorded
-        // terminal `ActivityFailed`.
-        let attempt = runtime
-            .take_delivery_attempt(context.pid(), ordinal)
-            .unwrap_or(FIRST_DELIVERY_ATTEMPT);
-        context
-            .record_activity_failed(
-                chrono::Utc::now(),
-                activity_id,
-                activity_error(error.message.clone()),
-                attempt,
-            )
-            .map_err(|record_error| record_error.error_reason())?;
-        return Ok(Some(ActivityAwaitStep::Failed(error.message)));
-    }
-    Ok(None)
-}
+use super::nif_activity_await::await_activity_result_with_context;
+#[cfg(test)]
+pub(super) use super::nif_activity_await::{ActivityAwaitStep, await_activity_step};
 
 #[cfg(test)]
 mod tests {
@@ -811,6 +618,7 @@ mod tests {
     use super::{ActivityAwaitStep, await_activity_step, spawn_completion_task};
     use crate::activity::bridge::{ActivityDispatch, ActivityDispatcher};
     use crate::durability::Recorder;
+    use crate::error::EngineError;
     use crate::registry::{
         CompletionNotifier, HandleResidency, Registry, WorkflowHandle, WorkflowHandleParts,
     };
@@ -872,6 +680,10 @@ mod tests {
         /// One production-shaped pass: a fresh `NifContext` (one history
         /// read — the resolution snapshot) resolving the ordinal-0 await.
         fn step(&self) -> Result<ActivityAwaitStep, String> {
+            self.step_typed().map_err(|error| error.to_string())
+        }
+
+        fn step_typed(&self) -> Result<ActivityAwaitStep, EngineError> {
             // Production runs this on a beamr scheduler thread with no
             // ambient Tokio context; block_in_place mirrors that so the
             // step's history reads can block_on the harness runtime.
@@ -882,7 +694,9 @@ mod tests {
                     tokio::runtime::Handle::current(),
                     SignalDeliveryConfig::default(),
                 )
-                .map_err(|error| error.error_reason())?;
+                .map_err(|error| EngineError::Runtime {
+                    reason: error.error_reason(),
+                })?;
                 await_activity_step(
                     &self.state,
                     &mut context,
@@ -1100,6 +914,66 @@ mod tests {
         replay.shutdown()
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn poisoned_take_fails_typed_and_monitor_drains_retained_state() -> TestResult {
+        let backing = Arc::new(StaleReadStore::new(0));
+        let store: Arc<dyn EventStore> = Arc::clone(&backing) as Arc<dyn EventStore>;
+        let (workflow_id, run_id) = seed_pending_activity_then_deadline(&store, 7).await?;
+        let harness = AwaitHarness::over_store(store, workflow_id, run_id).await?;
+        let baseline = harness.runtime.activity_delivery_gate_count();
+        harness
+            .runtime
+            .deliver_activity_completion_message_with_attempt(
+                harness.pid,
+                "activity:0",
+                r#""retained""#.to_owned(),
+                Some(3),
+            )?;
+        assert_eq!(harness.runtime.retained_activity_completions(), 1);
+        assert_eq!(
+            harness.runtime.retained_activity_attempt_count_for_test(),
+            1
+        );
+        harness
+            .runtime
+            .force_activity_delivery_poison_for_test(harness.pid)?;
+
+        let step = harness.step_typed();
+        assert!(matches!(
+            step,
+            Err(EngineError::ActivityDeliveryPoisoned { process_id })
+                if process_id == harness.pid
+        ));
+        assert_eq!(
+            harness.history_len().await?,
+            4,
+            "poison must neither suspend nor record a fabricated attempt-one completion"
+        );
+
+        let (monitor_sender, monitor_receiver) = std::sync::mpsc::channel();
+        harness
+            .runtime
+            .monitor_process_for_test(harness.pid, move |outcome| {
+                if monitor_sender.send(outcome).is_err() {
+                    tracing::error!("poisoned-take monitor receiver dropped");
+                }
+            })?;
+        harness.runtime.cancel_pid(harness.pid)?;
+        let monitored = monitor_receiver.recv_timeout(std::time::Duration::from_secs(10))?;
+        assert!(matches!(
+            monitored,
+            Err(EngineError::ActivityDeliveryPoisoned { process_id })
+                if process_id == harness.pid
+        ));
+        assert_eq!(harness.runtime.retained_activity_completions(), 0);
+        assert_eq!(
+            harness.runtime.retained_activity_attempt_count_for_test(),
+            0
+        );
+        assert_eq!(harness.runtime.activity_delivery_gate_count(), baseline);
+        harness.shutdown()
+    }
+
     /// Synchronous dispatcher that parks its calling thread on a channel
     /// until the test's release task — running on the same Tokio runtime —
     /// frees it.
@@ -1181,9 +1055,13 @@ mod tests {
                 .map_err(|error| error.to_string())?;
             let mut payload = None;
             for _ in 0_u32..2_000 {
-                if let Some(delivered) = runtime.take_activity_result(pid, 0) {
-                    payload = Some(delivered.bytes().to_vec());
-                    break;
+                match runtime.take_activity_result(pid, 0) {
+                    Ok(Some((delivered, _))) => {
+                        payload = Some(delivered.bytes().to_vec());
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Err(error.to_string()),
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
@@ -1551,11 +1429,11 @@ mod tests {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(
-            runtime.take_activity_result(pid, 0).is_none(),
+            runtime.take_activity_result(pid, 0)?.is_none(),
             "a parked dispatch must never deliver a completion"
         );
         assert!(
-            runtime.take_activity_error(pid, 0).is_none(),
+            runtime.take_activity_error(pid, 0)?.is_none(),
             "the parked sentinel must never be delivered to workflow code"
         );
         assert_eq!(
@@ -1625,12 +1503,14 @@ mod tests {
         let (workflow_id, run_id) = seed_pending_activity_then_deadline(&store, 7).await?;
         let harness =
             AwaitHarness::over_store(Arc::clone(&store), workflow_id.clone(), run_id).await?;
-        harness.runtime.note_delivery_attempt(harness.pid, 0, 3);
-        harness.runtime.deliver_activity_failure_message(
-            harness.pid,
-            "activity:0",
-            "retryable:reset three".to_owned(),
-        )?;
+        harness
+            .runtime
+            .deliver_activity_failure_message_with_attempt(
+                harness.pid,
+                "activity:0",
+                "retryable:reset three".to_owned(),
+                Some(3),
+            )?;
 
         assert_eq!(
             harness.step(),

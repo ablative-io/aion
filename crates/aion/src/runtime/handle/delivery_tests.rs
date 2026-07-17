@@ -53,9 +53,10 @@ fn outbox_completion_lands_where_take_reads_it() -> TestResult {
     )?;
 
     assert!(delivered, "delivery to a live workflow must report true");
-    let payload = runtime
-        .take_activity_result(pid, ordinal)
+    let (payload, attempt) = runtime
+        .take_activity_result(pid, ordinal)?
         .ok_or("completion was not retained where take_activity_result reads it")?;
+    assert_eq!(attempt, None);
     assert_eq!(payload.bytes(), br#"{"ok":true}"#);
 
     let unknown = runtime.deliver_outbox_completion(
@@ -94,7 +95,7 @@ fn outbox_completion_is_run_scoped_across_continue_as_new() -> TestResult {
         r#"{"from":"prior"}"#.to_owned(),
     )?;
     assert!(!stale, "a superseded run must not receive a completion");
-    assert!(runtime.take_activity_result(pid, ordinal).is_none());
+    assert!(runtime.take_activity_result(pid, ordinal)?.is_none());
 
     let delivered = runtime.deliver_outbox_completion(
         &registry,
@@ -104,9 +105,10 @@ fn outbox_completion_is_run_scoped_across_continue_as_new() -> TestResult {
         r#"{"from":"live"}"#.to_owned(),
     )?;
     assert!(delivered, "the live run must receive its completion");
-    let payload = runtime
-        .take_activity_result(pid, ordinal)
+    let (payload, attempt) = runtime
+        .take_activity_result(pid, ordinal)?
         .ok_or("live-run completion was not retained")?;
+    assert_eq!(attempt, None);
     assert_eq!(payload.bytes(), br#"{"from":"live"}"#);
 
     runtime.shutdown()?;
@@ -136,7 +138,7 @@ fn outbox_failure_is_run_scoped_across_continue_as_new() -> TestResult {
         "prior failed".to_owned(),
     )?;
     assert!(!stale, "a superseded run must not receive a failure");
-    assert!(runtime.take_activity_error(pid, ordinal).is_none());
+    assert!(runtime.take_activity_error(pid, ordinal)?.is_none());
 
     let delivered = runtime.deliver_outbox_failure(
         &registry,
@@ -146,7 +148,7 @@ fn outbox_failure_is_run_scoped_across_continue_as_new() -> TestResult {
         "live failed".to_owned(),
     )?;
     assert!(delivered, "the live run must receive its failure");
-    assert!(runtime.take_activity_error(pid, ordinal).is_some());
+    assert!(runtime.take_activity_error(pid, ordinal)?.is_some());
 
     runtime.shutdown()?;
     Ok(())
@@ -154,3 +156,5 @@ fn outbox_failure_is_run_scoped_across_continue_as_new() -> TestResult {
 
 #[path = "delivery_interleaving_tests.rs"]
 mod interleavings;
+#[path = "delivery_rollback_tests.rs"]
+mod rollback;

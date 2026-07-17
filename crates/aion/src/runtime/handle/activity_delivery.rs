@@ -19,6 +19,13 @@ pub(super) enum ActivityOutcomeKind {
     Error,
 }
 
+pub(super) struct RetainedActivityDelivery<V> {
+    pub(super) key: (Pid, Pid),
+    pub(super) outcome: V,
+    pub(super) kind: ActivityOutcomeKind,
+    pub(super) attempt: Option<u32>,
+}
+
 #[derive(Default)]
 struct RetainedActivityParts {
     result: bool,
@@ -114,123 +121,96 @@ impl RuntimeHandle {
     ///
     /// After successful marker delivery, the outcome remains retained until the
     /// awaiting NIF takes it or workflow-death cleanup drains it. A failed marker
-    /// delivery rolls back both the outcome and its attempt metadata.
+    /// delivery restores any outcome and attempt metadata that this delivery
+    /// replaced, and removes only state introduced by this delivery.
     pub(super) fn retain_activity_outcome_and_deliver_marker<V, F>(
         &self,
         workflow_pid: Pid,
         retained: &dashmap::DashMap<(Pid, Pid), V>,
-        key: (Pid, Pid),
-        outcome: V,
-        kind: ActivityOutcomeKind,
+        delivery: RetainedActivityDelivery<V>,
         deliver_marker: F,
     ) -> Result<(), EngineError>
     where
         F: FnOnce() -> Result<(), EngineError>,
     {
-        let delivery = self.with_activity_delivery(workflow_pid, |state| {
-            if let Err(error) = self.ensure_activity_delivery_live(workflow_pid, state) {
-                self.activity_delivery_attempts.remove(&key);
-                state.release_attempt(key.1);
-                return Err(error);
-            }
-            retained.insert(key, outcome);
+        let RetainedActivityDelivery {
+            key,
+            outcome,
+            kind,
+            attempt,
+        } = delivery;
+        self.with_activity_delivery(workflow_pid, |state| {
+            self.ensure_activity_delivery_live(workflow_pid, state)?;
+            let previous_outcome = retained.insert(key, outcome);
             state.retain_outcome(key.1, kind);
+            let previous_attempt = attempt.map(|attempt| {
+                let previous = self.activity_delivery_attempts.insert(key, attempt);
+                state.retain_attempt(key.1);
+                previous
+            });
             let marker_delivery = deliver_marker();
             if marker_delivery.is_err() {
-                retained.remove(&key);
-                self.activity_delivery_attempts.remove(&key);
-                state.release_outcome(key.1, kind);
-                state.release_attempt(key.1);
+                if let Some(previous) = previous_outcome {
+                    retained.insert(key, previous);
+                } else {
+                    retained.remove(&key);
+                    state.release_outcome(key.1, kind);
+                }
+                if let Some(previous) = previous_attempt {
+                    if let Some(previous) = previous {
+                        self.activity_delivery_attempts.insert(key, previous);
+                    } else {
+                        self.activity_delivery_attempts.remove(&key);
+                        state.release_attempt(key.1);
+                    }
+                }
             }
             marker_delivery
-        });
-        if matches!(&delivery, Err(EngineError::ActivityDeliveryPoisoned { .. })) {
-            self.activity_delivery_attempts.remove(&key);
-        }
-        delivery
+        })
     }
 
-    /// Retain the one-based delivery attempt that produced the outcome about
-    /// to be delivered for `(parent_pid, activity_sequence)` (#197).
+    /// Atomically take a retained outcome and its one-based delivery attempt.
     ///
-    /// Called by the completion task's retry loop right before it retains the
-    /// final payload/error, so the awaiting NIF records the terminal with the
-    /// genuine attempt instead of assuming the first delivery.
-    ///
-    /// A typed gate-poison or dead-workflow error is logged explicitly. This
-    /// best-effort metadata cannot change the completion task's `()` contract;
-    /// the following outcome delivery independently returns and logs the same
-    /// liveness or poison failure.
-    pub(crate) fn note_delivery_attempt(
-        &self,
-        parent_pid: Pid,
-        activity_sequence: Pid,
-        attempt: u32,
-    ) {
-        let note = self.with_activity_delivery(parent_pid, |state| {
-            self.ensure_activity_delivery_live(parent_pid, state)?;
-            self.activity_delivery_attempts
-                .insert((parent_pid, activity_sequence), attempt);
-            state.retain_attempt(activity_sequence);
-            Ok(())
-        });
-        if let Err(error) = note {
-            tracing::error!(
-                %error,
-                parent_pid,
-                activity_sequence,
-                "activity delivery attempt retention failed"
-            );
-        }
-    }
-
-    /// Take the noted delivery attempt for a retained outcome, if any.
-    ///
-    /// `None` means the outcome arrived through a path that never retries
-    /// (outbox re-delivery, in-VM children) and is the first delivery.
-    pub(crate) fn take_delivery_attempt(
-        &self,
-        parent_pid: Pid,
-        activity_sequence: Pid,
-    ) -> Option<u32> {
-        let gate = self
-            .activity_delivery_gates
-            .get(&parent_pid)
-            .map(|entry| Arc::clone(entry.value()))?;
-        let ActivityDeliveryLock::Clean(mut state) = Self::lock_activity_delivery(&gate) else {
-            return None;
-        };
-        let attempt = self
-            .activity_delivery_attempts
-            .remove(&(parent_pid, activity_sequence))
-            .map(|(_, attempt)| attempt);
-        if attempt.is_some() {
-            state.release_attempt(activity_sequence);
-        }
-        attempt
-    }
-
+    /// A missing attempt means the outcome came from a path that never retries
+    /// (outbox re-delivery or an in-VM child) and is the first delivery.
     pub(super) fn take_activity_outcome<V>(
         &self,
         workflow_pid: Pid,
         activity_sequence: Pid,
         retained: &dashmap::DashMap<(Pid, Pid), V>,
         kind: ActivityOutcomeKind,
-    ) -> Option<V> {
-        let gate = self
+    ) -> Result<Option<(V, Option<u32>)>, EngineError> {
+        let Some(gate) = self
             .activity_delivery_gates
             .get(&workflow_pid)
-            .map(|entry| Arc::clone(entry.value()))?;
-        let ActivityDeliveryLock::Clean(mut state) = Self::lock_activity_delivery(&gate) else {
-            return None;
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return Ok(None);
+        };
+        let mut state = match Self::lock_activity_delivery(&gate) {
+            ActivityDeliveryLock::Clean(state) => state,
+            ActivityDeliveryLock::Poisoned(state) => {
+                drop(state);
+                return Err(EngineError::ActivityDeliveryPoisoned {
+                    process_id: workflow_pid,
+                });
+            }
         };
         let outcome = retained
             .remove(&(workflow_pid, activity_sequence))
             .map(|(_, outcome)| outcome);
-        if outcome.is_some() {
-            state.release_outcome(activity_sequence, kind);
+        let Some(outcome) = outcome else {
+            return Ok(None);
+        };
+        state.release_outcome(activity_sequence, kind);
+        let attempt = self
+            .activity_delivery_attempts
+            .remove(&(workflow_pid, activity_sequence))
+            .map(|(_, attempt)| attempt);
+        if attempt.is_some() {
+            state.release_attempt(activity_sequence);
         }
-        outcome
+        Ok(Some((outcome, attempt)))
     }
 
     /// Mark a workflow dead and drop all of its retained activity state.
@@ -386,7 +366,7 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    pub(super) fn force_activity_delivery_poison_for_test(
+    pub(crate) fn force_activity_delivery_poison_for_test(
         &self,
         workflow_pid: Pid,
     ) -> Result<(), EngineError> {
@@ -397,8 +377,39 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    pub(super) fn activity_delivery_gate_count(&self) -> usize {
+    pub(super) fn activity_delivery_index_contains_for_test(
+        &self,
+        workflow_pid: Pid,
+        activity_sequence: Pid,
+    ) -> Result<bool, EngineError> {
+        let Some(gate) = self
+            .activity_delivery_gates
+            .get(&workflow_pid)
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return Ok(false);
+        };
+        match Self::lock_activity_delivery(&gate) {
+            ActivityDeliveryLock::Clean(state) => {
+                Ok(state.retained.contains_key(&activity_sequence))
+            }
+            ActivityDeliveryLock::Poisoned(state) => {
+                drop(state);
+                Err(EngineError::ActivityDeliveryPoisoned {
+                    process_id: workflow_pid,
+                })
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activity_delivery_gate_count(&self) -> usize {
         self.activity_delivery_gates.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_activity_attempt_count_for_test(&self) -> usize {
+        self.activity_delivery_attempts.len()
     }
 
     #[cfg(test)]
