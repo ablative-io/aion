@@ -34,10 +34,10 @@ impl RuntimeHandle {
         activity_pid: Pid,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        let (reason, owned_result) = self.scheduler.run_until_exit(activity_pid);
+        let observed = self.activity_process_exit_outcome(activity_pid)?;
         self.release_spawn_heaps(activity_pid);
-        if reason == ExitReason::Normal {
-            let payload = term_to_payload(owned_result.root(), &self.atom_table)?;
+        if observed.reason == ExitReason::Normal {
+            let payload = term_to_payload(observed.result.root(), &self.atom_table)?;
             self.deliver_activity_result(parent_pid, activity_pid, payload)
         } else {
             let error = self
@@ -46,7 +46,7 @@ impl RuntimeHandle {
                 .map_or_else(
                     || ActivityError {
                         kind: ActivityErrorKind::Terminal,
-                        message: activity_exit_message(activity_pid, reason),
+                        message: activity_exit_message(activity_pid, observed.reason),
                         details: None,
                     },
                     |entry| entry.clone(),
@@ -70,20 +70,24 @@ impl RuntimeHandle {
     /// Deliberately NOT keyed through the legacy `(parent, child_pid)` maps:
     /// the caller delivers the decoded outcome by correlation id into the
     /// ordinal-keyed two-phase maps, the same regime the remote wire uses.
-    pub(crate) fn in_vm_child_outcome(&self, child_pid: Pid) -> InVmChildOutcome {
-        let (reason, owned_result) = self.scheduler.run_until_exit(child_pid);
+    pub(crate) fn in_vm_child_outcome(
+        &self,
+        child_pid: Pid,
+    ) -> Result<InVmChildOutcome, EngineError> {
+        let observed = self.activity_process_exit_outcome(child_pid)?;
         self.release_spawn_heaps(child_pid);
-        if reason == ExitReason::Normal {
-            decode_in_vm_result(owned_result.root()).unwrap_or_else(|| {
-                InVmChildOutcome::Failed(format!(
+        if observed.reason == ExitReason::Normal {
+            match decode_in_vm_result(observed.result.root()) {
+                Some(outcome) => Ok(outcome),
+                None => Ok(InVmChildOutcome::Failed(format!(
                     "terminal:activity process {child_pid} returned an unexpected result shape"
-                ))
-            })
+                ))),
+            }
         } else {
-            InVmChildOutcome::Failed(format!(
+            Ok(InVmChildOutcome::Failed(format!(
                 "terminal:{}",
-                activity_exit_message(child_pid, reason)
-            ))
+                activity_exit_message(child_pid, observed.reason)
+            )))
         }
     }
 

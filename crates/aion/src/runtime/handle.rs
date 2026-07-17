@@ -1,6 +1,5 @@
 //! `RuntimeHandle` spawn, register, cancel, and shutdown support.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aion_core::{ActivityError, Payload};
@@ -72,7 +71,7 @@ impl RuntimeInput {
 
 /// Handle to the embedded beamr scheduler and code-server state.
 pub struct RuntimeHandle {
-    pub(super) scheduler: Scheduler,
+    pub(super) scheduler: Arc<Scheduler>,
     pub(super) atom_table: Arc<AtomTable>,
     pub(super) module_registry: Arc<ModuleRegistry>,
     pub(super) native_registry: Arc<BifRegistryImpl>,
@@ -116,14 +115,12 @@ pub struct RuntimeHandle {
     /// Bounded follow-up wakes for delivered mailbox markers, healing
     /// beamr 0.4.9's lost-wakeup window (see [`super::wake_confirm`]).
     pub(super) wake_confirmer: super::wake_confirm::WakeConfirmer,
-    /// Highest process identifier this runtime has spawned.
-    ///
-    /// beamr allocates pids from a monotonic counter, so any pid at or below
-    /// this watermark was spawned here and its exit outcome stays observable
-    /// through the scheduler's exit tombstones even after the process leaves
-    /// the live table. Monitor installation uses this to accept processes
-    /// that exited between spawn and monitor setup.
-    spawned_pid_watermark: AtomicU64,
+    /// Per-pid outcomes established before top-level process pids are published.
+    pub(super) process_exits: Arc<super::process_exit::ProcessExitRegistry>,
+    /// Runtime-provisioned owner for every process abort and shared cleanup.
+    pub(super) cleanup_executor: super::cleanup_executor::CleanupExecutor,
+    /// Identity-bearing abort jobs retained for deduplicated retries.
+    pub(super) abort_jobs: dashmap::DashMap<Pid, Arc<super::monitor::UnmonitoredProcessAbortJob>>,
 }
 
 impl RuntimeHandle {
@@ -145,13 +142,19 @@ impl RuntimeHandle {
         };
         let native_registry = Arc::new(BifRegistryImpl::new());
         register_all_bifs(&native_registry, &atom_table)?;
-        let scheduler = Scheduler::with_code_server(
-            scheduler_config,
-            Arc::clone(&module_registry),
-            Arc::clone(&atom_table),
-            Arc::clone(&native_registry),
-        )
-        .map_err(runtime_error_from_display)?;
+        let scheduler = Arc::new(
+            Scheduler::with_code_server(
+                scheduler_config,
+                Arc::clone(&module_registry),
+                Arc::clone(&atom_table),
+                Arc::clone(&native_registry),
+            )
+            .map_err(runtime_error_from_display)?,
+        );
+        let wake_confirmer = super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?;
+        let cleanup_executor = super::cleanup_executor::CleanupExecutor::new(
+            config.signal_delivery.max_enqueue_attempts as usize,
+        )?;
 
         Ok(Self {
             scheduler,
@@ -170,8 +173,10 @@ impl RuntimeHandle {
             spawn_heaps: Arc::new(dashmap::DashMap::new()),
             signal_delivery: config.signal_delivery,
             outbox_enabled: config.outbox_enabled,
-            wake_confirmer: super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?,
-            spawned_pid_watermark: AtomicU64::new(0),
+            wake_confirmer,
+            process_exits: Arc::new(super::process_exit::ProcessExitRegistry::new()),
+            cleanup_executor,
+            abort_jobs: dashmap::DashMap::new(),
         })
     }
 
@@ -282,7 +287,7 @@ impl RuntimeHandle {
             .scheduler
             .spawn_trap_exit(module, function, terms)
             .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -317,7 +322,7 @@ impl RuntimeHandle {
                 .spawn_link(parent_pid, module, function_atom, terms)
                 .map_err(runtime_error_from_display)?
         };
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -352,7 +357,7 @@ impl RuntimeHandle {
             .scheduler
             .spawn_link_closure(parent_pid, closure_term)
             .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         self.in_vm_children
             .entry(parent_pid)
             .or_default()
@@ -487,7 +492,8 @@ impl RuntimeHandle {
     ///
     /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
-        // Stop the wake-confirmation worker first: its only job is healing
+        self.cleanup_executor.shutdown()?;
+        // Stop the wake-confirmation worker: its only job is healing
         // lost wakeups for a running scheduler, and pending follow-ups are
         // moot once the scheduler stops.
         self.wake_confirmer.shutdown();
@@ -504,6 +510,12 @@ impl RuntimeHandle {
         for workflow_pid in workflow_pids {
             self.kill_in_vm_children(workflow_pid);
         }
+        for pid in self.process_exits.begin_shutdown()? {
+            if self.is_live(pid) {
+                self.scheduler.terminate_process(pid, ExitReason::Kill);
+            }
+        }
+        self.process_exits.close_and_join_all()?;
         self.scheduler.shutdown();
         self.spawn_heaps.clear();
         Ok(())
@@ -523,13 +535,9 @@ impl RuntimeHandle {
             .scheduler
             .spawn(module, function, terms)
             .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
-    }
-
-    fn record_spawned_pid(&self, pid: Pid) {
-        self.spawned_pid_watermark.fetch_max(pid, Ordering::AcqRel);
     }
 
     fn retain_spawn_heaps(&self, pid: Pid, heaps: RetainedHeaps) {
@@ -567,27 +575,6 @@ impl RuntimeHandle {
         } else {
             Err(runtime_error(format!("process {pid} is not live")))
         }
-    }
-
-    /// Ensure `pid` has an observable exit outcome: it is either live now or
-    /// was spawned by this runtime and already exited.
-    ///
-    /// A workflow can run to completion on a scheduler thread between its
-    /// spawn and the caller's monitor installation. The exited process is no
-    /// longer in the live table, but beamr keeps its exit tombstone, so
-    /// `run_until_exit` still returns the recorded outcome immediately.
-    /// Rejecting such pids would spuriously fail the spawn of any workflow
-    /// that finishes faster than its monitor is installed.
-    pub(super) fn ensure_monitorable_pid(&self, pid: Pid) -> Result<(), EngineError> {
-        if self.scheduler.process_table().get(pid).is_some() {
-            return Ok(());
-        }
-        if pid > 0 && pid <= self.spawned_pid_watermark.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        Err(runtime_error(format!(
-            "process {pid} was never spawned by this runtime"
-        )))
     }
 
     /// Register a test module whose exported function waits indefinitely.
@@ -636,7 +623,7 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub fn spawn_test_process(&self) -> Result<Pid, EngineError> {
         let pid = self.scheduler.spawn_test_process(false);
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         Ok(pid)
     }
 
@@ -648,7 +635,7 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub fn spawn_test_process_with_trap_exit(&self, trap_exit: bool) -> Result<Pid, EngineError> {
         let pid = self.scheduler.spawn_test_process(trap_exit);
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         Ok(pid)
     }
 
@@ -665,7 +652,7 @@ impl RuntimeHandle {
             .scheduler
             .spawn_linked_test_process(parent_pid)
             .map_err(runtime_error_from_display)?;
-        self.record_spawned_pid(pid);
+        self.establish_process_exit_ownership(pid)?;
         Ok(pid)
     }
 
@@ -742,13 +729,6 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn run_until_exit_for_test(&self, pid: Pid) -> (ExitReason, Term) {
-        let (reason, owned_result) = self.scheduler.run_until_exit(pid);
-        self.release_spawn_heaps(pid);
-        (reason, owned_result.root())
-    }
-
-    #[cfg(test)]
     pub(crate) fn retained_spawn_heap_count_for_test(&self) -> usize {
         self.release_dead_spawn_heaps();
         self.spawn_heaps.len()
@@ -765,6 +745,7 @@ fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
 
 mod activity_delivery;
 mod delivery;
+mod process_ownership;
 mod registration;
 
 pub(crate) use delivery::InVmChildOutcome;

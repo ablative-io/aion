@@ -1,5 +1,6 @@
 //! Sole beamr boundary for aion per D1; other modules use `RuntimeHandle`.
 
+mod cleanup_executor;
 /// Runtime configuration values passed to beamr.
 pub mod config;
 mod engine_nifs;
@@ -45,6 +46,7 @@ mod nif_wake;
 pub mod outcome;
 /// Payload conversion helpers used at the runtime boundary.
 pub mod payload;
+mod process_exit;
 mod wake_confirm;
 /// Workflow module and entrypoint execution helpers.
 pub mod workflow;

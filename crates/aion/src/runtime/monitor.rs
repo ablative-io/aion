@@ -1,16 +1,18 @@
-//! Runtime-owned process monitoring helpers.
+//! Runtime-owned process exit monitoring and cleanup orchestration.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use beamr::process::ExitReason;
 use dashmap::mapref::entry::Entry;
 
 use crate::{EngineError, Pid, RuntimeHandle};
 
+use super::cleanup_executor::CleanupSubmitError;
 use super::outcome::{self, WorkflowProcessOutcome};
+use super::process_exit::{ObservedProcessExit, OwnedProcessExitOutcome};
 
-/// Identity retained for the lifetime of one process monitor installation.
+/// Identity retained permanently after one monitor installation commits.
 pub(super) struct MonitorInstallation {
     committed: AtomicBool,
 }
@@ -21,36 +23,73 @@ impl MonitorInstallation {
             committed: AtomicBool::new(false),
         }
     }
+
+    pub(super) fn commit(&self) {
+        self.committed.store(true, Ordering::Release);
+    }
 }
 
-/// Typed failure from synchronously aborting an unmonitored process.
+/// Typed failure from synchronously requesting an unmonitored-process abort.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum UnmonitoredProcessAbortError {
-    /// Process removal and shared cleanup did not complete before the bound.
+    /// Process cleanup did not complete before the caller's observation bound.
     #[error("process {process_id} did not complete unmonitored abort within {timeout_millis}ms")]
     TimedOut {
-        /// Process whose externally requested termination was not fully observed.
+        /// Process whose termination remained owned by the runtime job.
         process_id: Pid,
         /// Configured observation bound in milliseconds.
         timeout_millis: u128,
     },
-    /// Runtime termination setup or shared cleanup failed.
-    #[error(transparent)]
-    Engine(EngineError),
+    /// The runtime cleanup executor had already closed.
+    #[error("process cleanup executor is unavailable for process {process_id}")]
+    ExecutorUnavailable {
+        /// Process retained by the terminal abort identity.
+        process_id: Pid,
+    },
+    /// The bounded cleanup executor queue had no capacity for a distinct job.
+    #[error("process cleanup executor is exhausted for process {process_id}")]
+    ExecutorExhausted {
+        /// Process retained by the terminal abort identity.
+        process_id: Pid,
+    },
+    /// The cleanup executor's ownership lock was poisoned.
+    #[error("process cleanup executor state is poisoned for process {process_id}")]
+    ExecutorPoisoned {
+        /// Process retained by the terminal abort identity.
+        process_id: Pid,
+    },
+    /// A completion monitor already owns this process generation.
+    #[error("process {process_id} already has a completion monitor owner")]
+    MonitorInstalled {
+        /// Process the abort refused to terminate.
+        process_id: Pid,
+    },
+    /// The per-process monitor/abort ownership gate was poisoned.
+    #[error("process exit ownership gate for process {process_id} was poisoned")]
+    OwnershipPoisoned {
+        /// Process whose ownership could not be serialized.
+        process_id: Pid,
+    },
+    /// An abort job's identity state was poisoned.
+    #[error("unmonitored abort state for process {process_id} was poisoned")]
+    StatePoisoned {
+        /// Process whose abort state could not be observed.
+        process_id: Pid,
+    },
+    /// Runtime cleanup failed after the job acquired execution ownership.
+    #[error("process {process_id} cleanup failed: {reason}")]
+    CleanupFailed {
+        /// Process whose shared cleanup failed.
+        process_id: Pid,
+        /// Typed engine failure rendered for repeatable fan-out reads.
+        reason: String,
+    },
 }
 
 impl UnmonitoredProcessAbortError {
     pub(crate) fn into_engine_error(self) -> EngineError {
-        match self {
-            Self::TimedOut {
-                process_id,
-                timeout_millis,
-            } => EngineError::Runtime {
-                reason: format!(
-                    "process {process_id} did not complete unmonitored abort within {timeout_millis}ms"
-                ),
-            },
-            Self::Engine(error) => error,
+        EngineError::Runtime {
+            reason: self.to_string(),
         }
     }
 }
@@ -75,21 +114,151 @@ impl ProcessMonitorHandle {
     }
 }
 
+#[derive(Clone)]
+enum AbortJobTerminal {
+    Succeeded,
+    CleanupFailed(String),
+    ExecutorUnavailable,
+    ExecutorExhausted,
+    ExecutorPoisoned,
+}
+
+enum AbortJobPhase {
+    Running,
+    Complete(AbortJobTerminal),
+}
+
+struct AbortJobState {
+    phase: AbortJobPhase,
+    installation: Option<Arc<MonitorInstallation>>,
+}
+
+/// One runtime-owned abort identity for a `pid` generation.
+pub(super) struct UnmonitoredProcessAbortJob {
+    pid: Pid,
+    state: Mutex<AbortJobState>,
+    ready: Condvar,
+}
+
+impl UnmonitoredProcessAbortJob {
+    fn new(pid: Pid, installation: Option<Arc<MonitorInstallation>>) -> Self {
+        Self {
+            pid,
+            state: Mutex::new(AbortJobState {
+                phase: AbortJobPhase::Running,
+                installation,
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn attach_installation(
+        &self,
+        installation: Option<Arc<MonitorInstallation>>,
+    ) -> Result<(), UnmonitoredProcessAbortError> {
+        let Some(installation) = installation else {
+            return Ok(());
+        };
+        let mut state = self.lock_state()?;
+        if state.installation.is_none() {
+            state.installation = Some(installation);
+        }
+        Ok(())
+    }
+
+    fn complete_cleanup(
+        &self,
+        runtime: &RuntimeHandle,
+        cleanup: Result<(), EngineError>,
+    ) -> Result<(), UnmonitoredProcessAbortError> {
+        let installation = {
+            let mut state = self.lock_state()?;
+            let terminal = match cleanup {
+                Ok(()) => AbortJobTerminal::Succeeded,
+                Err(error) => AbortJobTerminal::CleanupFailed(error.to_string()),
+            };
+            state.phase = AbortJobPhase::Complete(terminal);
+            let installation = state.installation.take();
+            self.ready.notify_all();
+            installation
+        };
+        if let Some(installation) = installation {
+            runtime.release_monitor_installation(self.pid, &installation);
+        }
+        Ok(())
+    }
+
+    fn complete_submission_failure(
+        &self,
+        terminal: AbortJobTerminal,
+    ) -> Result<(), UnmonitoredProcessAbortError> {
+        let mut state = self.lock_state()?;
+        state.phase = AbortJobPhase::Complete(terminal);
+        self.ready.notify_all();
+        Ok(())
+    }
+
+    fn wait(&self, timeout: std::time::Duration) -> Result<(), UnmonitoredProcessAbortError> {
+        let state = self.lock_state()?;
+        let (state, wait) = self
+            .ready
+            .wait_timeout_while(state, timeout, |state| {
+                matches!(state.phase, AbortJobPhase::Running)
+            })
+            .map_err(|_| UnmonitoredProcessAbortError::StatePoisoned {
+                process_id: self.pid,
+            })?;
+        match &state.phase {
+            AbortJobPhase::Running if wait.timed_out() => {
+                Err(UnmonitoredProcessAbortError::TimedOut {
+                    process_id: self.pid,
+                    timeout_millis: timeout.as_millis(),
+                })
+            }
+            AbortJobPhase::Running => Err(UnmonitoredProcessAbortError::StatePoisoned {
+                process_id: self.pid,
+            }),
+            AbortJobPhase::Complete(terminal) => terminal.result(self.pid),
+        }
+    }
+
+    fn lock_state(&self) -> Result<MutexGuard<'_, AbortJobState>, UnmonitoredProcessAbortError> {
+        self.state
+            .lock()
+            .map_err(|_| UnmonitoredProcessAbortError::StatePoisoned {
+                process_id: self.pid,
+            })
+    }
+}
+
+impl AbortJobTerminal {
+    fn result(&self, pid: Pid) -> Result<(), UnmonitoredProcessAbortError> {
+        match self {
+            Self::Succeeded => Ok(()),
+            Self::CleanupFailed(reason) => Err(UnmonitoredProcessAbortError::CleanupFailed {
+                process_id: pid,
+                reason: reason.clone(),
+            }),
+            Self::ExecutorUnavailable => {
+                Err(UnmonitoredProcessAbortError::ExecutorUnavailable { process_id: pid })
+            }
+            Self::ExecutorExhausted => {
+                Err(UnmonitoredProcessAbortError::ExecutorExhausted { process_id: pid })
+            }
+            Self::ExecutorPoisoned => {
+                Err(UnmonitoredProcessAbortError::ExecutorPoisoned { process_id: pid })
+            }
+        }
+    }
+}
+
 impl RuntimeHandle {
-    /// Install a runtime-owned monitor that invokes `callback` when `pid` exits.
-    ///
-    /// The callback runs on a dedicated monitor thread outside workflow dirty NIF
-    /// execution. The runtime boundary owns the process wait and BEAM term
-    /// conversion so lifecycle code never imports beamr types.
+    /// Install one completion callback against the `pid`'s owned exit record.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::Runtime`] when `pid` is neither live nor a
-    /// process this runtime previously spawned. A monitored process that
-    /// already exited is accepted: its outcome is still observable through
-    /// the scheduler's exit tombstone, so the callback fires immediately
-    /// instead of the spawn path spuriously failing for fast-completing
-    /// workflows.
+    /// Returns a typed runtime error for unknown pids, duplicate committed
+    /// installations, or an abort already owning this `pid` generation.
     pub fn monitor_process<F>(
         self: &Arc<Self>,
         pid: Pid,
@@ -99,24 +268,25 @@ impl RuntimeHandle {
         F: FnOnce(Result<WorkflowProcessOutcome, EngineError>) + Send + 'static,
     {
         self.ensure_monitorable_pid(pid)?;
+        let record = self.process_exits.get(pid)?;
+        let ownership = record.lock_ownership()?;
         let installation = self.reserve_monitor_installation(pid)?;
-        if !self.is_live(pid) && self.scheduler.peek_exit_reason(pid).is_none() {
-            let observation_error = EngineError::Runtime {
+        #[cfg(test)]
+        if self.take_monitor_spawn_failure_for_test() {
+            let error = EngineError::Runtime {
                 reason: format!(
-                    "process {pid} exited and its bounded exit outcome is no longer observable"
+                    "failed to install workflow monitor for process {pid}: forced test failure"
                 ),
             };
+            drop(ownership);
             self.rollback_failed_monitor_installation(pid, &installation)?;
-            return Err(observation_error);
+            return Err(error);
         }
+
         let runtime = Arc::clone(self);
-        let monitor_installation = Arc::clone(&installation);
-        let monitor = move || {
-            while !monitor_installation.committed.load(Ordering::Acquire) {
-                std::thread::yield_now();
-            }
+        let completion = Box::new(move |owned| {
             let process_outcome =
-                outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
+                outcome::workflow_process_outcome(&runtime.atom_table, pid, &owned);
             let monitored_outcome = match runtime.finish_process_monitor_cleanup(pid) {
                 Ok(()) => process_outcome,
                 Err(error) => {
@@ -125,31 +295,12 @@ impl RuntimeHandle {
                 }
             };
             callback(monitored_outcome);
-            runtime.release_monitor_installation(pid, &monitor_installation);
-        };
-        #[cfg(test)]
-        let force_monitor_spawn_failure = self.take_monitor_spawn_failure_for_test();
-        #[cfg(not(test))]
-        let force_monitor_spawn_failure = false;
-        let monitor_spawn = if force_monitor_spawn_failure {
-            Err(EngineError::Runtime {
-                reason: format!(
-                    "failed to spawn workflow monitor for process {pid}: forced test failure"
-                ),
-            })
-        } else {
-            Self::spawn_monitor_thread(pid, monitor)
-        };
-        if let Err(error) = monitor_spawn {
-            if let Err(rollback_error) =
-                self.rollback_failed_monitor_installation(pid, &installation)
-            {
-                tracing::error!(%error, pid, "workflow monitor spawn failed before bounded rollback");
-                return Err(rollback_error);
-            }
+        });
+        if let Err(error) = record.attach_callback(&installation, completion) {
+            drop(ownership);
+            self.rollback_failed_monitor_installation(pid, &installation)?;
             return Err(error);
         }
-        installation.committed.store(true, Ordering::Release);
         Ok(ProcessMonitorHandle::installed())
     }
 
@@ -157,6 +308,11 @@ impl RuntimeHandle {
         &self,
         pid: Pid,
     ) -> Result<Arc<MonitorInstallation>, EngineError> {
+        if self.abort_jobs.contains_key(&pid) {
+            return Err(EngineError::Runtime {
+                reason: format!("process {pid} already has an abort job"),
+            });
+        }
         match self.nif_state().monitor_installations.entry(pid) {
             Entry::Vacant(entry) => {
                 let installation = Arc::new(MonitorInstallation::uncommitted());
@@ -182,26 +338,14 @@ impl RuntimeHandle {
         pid: Pid,
         installation: &Arc<MonitorInstallation>,
     ) -> Result<(), EngineError> {
-        let owns_uncommitted = !installation.committed.load(Ordering::Acquire)
-            && self
-                .nif_state()
-                .monitor_installations
-                .get(&pid)
-                .is_some_and(|current| Arc::ptr_eq(current.value(), installation));
-        if !owns_uncommitted {
+        if installation.committed.load(Ordering::Acquire) {
             return Ok(());
         }
         self.abort_unmonitored_process_with_installation(pid, Some(Arc::clone(installation)))
             .map_err(UnmonitoredProcessAbortError::into_engine_error)
     }
 
-    /// Terminate and synchronously clean up a process that has no installed monitor.
-    ///
-    /// A dedicated abort worker owns termination, process-table removal
-    /// observation, and the shared monitor cleanup. The caller waits only for
-    /// that typed result and is bounded by the runtime readiness timeout. An
-    /// already-absent process is cleaned immediately even when its FIFO
-    /// tombstone was evicted; this path never consumes a process outcome.
+    /// Terminate and synchronously observe cleanup of an unmonitored process.
     pub(crate) fn abort_unmonitored_process(
         self: &Arc<Self>,
         pid: Pid,
@@ -214,84 +358,124 @@ impl RuntimeHandle {
         pid: Pid,
         installation: Option<Arc<MonitorInstallation>>,
     ) -> Result<(), UnmonitoredProcessAbortError> {
-        if !self.is_live(pid) {
-            let cleanup = self
-                .finish_process_monitor_cleanup(pid)
-                .map_err(UnmonitoredProcessAbortError::Engine);
-            if let Some(installation) = installation {
-                self.release_monitor_installation(pid, &installation);
+        let record =
+            if self.process_exits.contains(pid) {
+                Some(self.process_exits.get(pid).map_err(|_| {
+                    UnmonitoredProcessAbortError::OwnershipPoisoned { process_id: pid }
+                })?)
+            } else {
+                None
+            };
+        let ownership = record
+            .as_ref()
+            .map(|record| record.lock_ownership())
+            .transpose()
+            .map_err(|_| UnmonitoredProcessAbortError::OwnershipPoisoned { process_id: pid })?;
+        let job = match self.abort_jobs.entry(pid) {
+            Entry::Occupied(entry) => {
+                let job = Arc::clone(entry.get());
+                job.attach_installation(installation)?;
+                job
             }
-            return cleanup;
-        }
-        let timeout = self.signal_delivery().ready_timeout;
-        let runtime = Arc::clone(self);
-        let worker_installation = installation.clone();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        let worker = std::thread::Builder::new()
-            .name(format!("aion-unmonitored-abort-{pid}"))
-            .spawn(move || {
-                runtime.scheduler.terminate_process(pid, ExitReason::Kill);
-                let cleanup = runtime.finish_process_monitor_cleanup(pid);
-                if let Some(installation) = worker_installation {
-                    runtime.release_monitor_installation(pid, &installation);
+            Entry::Vacant(entry) => {
+                let owns_uncommitted_installation = installation.as_ref().is_some_and(|expected| {
+                    !expected.committed.load(Ordering::Acquire)
+                        && self
+                            .nif_state()
+                            .monitor_installations
+                            .get(&pid)
+                            .is_some_and(|current| Arc::ptr_eq(current.value(), expected))
+                });
+                if self.nif_state().monitor_installations.contains_key(&pid)
+                    && !owns_uncommitted_installation
+                {
+                    return Err(UnmonitoredProcessAbortError::MonitorInstalled { process_id: pid });
                 }
-                let _ = sender.send(cleanup);
-            });
-        if let Err(error) = worker {
-            if let Some(installation) = installation {
-                self.release_monitor_installation(pid, &installation);
+                let job = Arc::new(UnmonitoredProcessAbortJob::new(pid, installation));
+                entry.insert(Arc::clone(&job));
+                let runtime = Arc::clone(self);
+                let worker_job = Arc::clone(&job);
+                let submission = self.cleanup_executor.submit(Box::new(move || {
+                    if runtime.is_live(pid) {
+                        runtime.scheduler.terminate_process(pid, ExitReason::Kill);
+                    }
+                    let mut cleanup = runtime.finish_process_monitor_cleanup(pid);
+                    if runtime.process_exits.contains(pid) {
+                        match runtime.process_exits.get(pid) {
+                            Ok(record) => {
+                                if let Err(error) = record.wait() {
+                                    if cleanup.is_ok() {
+                                        cleanup = Err(error);
+                                    }
+                                }
+                                if let Err(error) = record.close_without_monitor() {
+                                    if cleanup.is_ok() {
+                                        cleanup = Err(error);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                if cleanup.is_ok() {
+                                    cleanup = Err(error);
+                                }
+                            }
+                        }
+                    }
+                    if let Err(error) = worker_job.complete_cleanup(&runtime, cleanup) {
+                        tracing::error!(pid, %error, "failed to publish process abort completion");
+                    }
+                }));
+                if let Err(error) = submission {
+                    let terminal = match error {
+                        CleanupSubmitError::Unavailable => AbortJobTerminal::ExecutorUnavailable,
+                        CleanupSubmitError::Exhausted => AbortJobTerminal::ExecutorExhausted,
+                        CleanupSubmitError::Poisoned => AbortJobTerminal::ExecutorPoisoned,
+                    };
+                    job.complete_submission_failure(terminal)?;
+                }
+                job
             }
-            return Err(UnmonitoredProcessAbortError::Engine(EngineError::Runtime {
-                reason: format!("failed to spawn bounded abort worker for process {pid}: {error}"),
-            }));
-        }
-        match receiver.recv_timeout(timeout) {
-            Ok(cleanup) => cleanup.map_err(UnmonitoredProcessAbortError::Engine),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                Err(UnmonitoredProcessAbortError::TimedOut {
-                    process_id: pid,
-                    timeout_millis: timeout.as_millis(),
-                })
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(UnmonitoredProcessAbortError::Engine(EngineError::Runtime {
-                    reason: format!("bounded abort worker for process {pid} disconnected"),
-                }))
+        };
+        drop(ownership);
+        job.wait(self.signal_delivery().ready_timeout)
+    }
+
+    pub(super) fn process_exit_outcome(
+        &self,
+        pid: Pid,
+    ) -> Result<Arc<ObservedProcessExit>, EngineError> {
+        match self.process_exits.get(pid)?.wait()? {
+            OwnedProcessExitOutcome::Observed(observed) => Ok(observed),
+            OwnedProcessExitOutcome::DeadAndUnavailable { process_id } => {
+                Err(EngineError::ProcessExitUnavailable { process_id })
             }
         }
     }
 
-    fn finish_process_monitor_cleanup(&self, pid: Pid) -> Result<(), EngineError> {
+    pub(super) fn activity_process_exit_outcome(
+        &self,
+        pid: Pid,
+    ) -> Result<Arc<ObservedProcessExit>, EngineError> {
+        let record = self.process_exits.get(pid)?;
+        let outcome = self.process_exit_outcome(pid);
+        record.close_without_monitor()?;
+        outcome
+    }
+
+    pub(super) fn finish_process_monitor_cleanup(&self, pid: Pid) -> Result<(), EngineError> {
         self.release_spawn_heaps(pid);
         self.nif_state().cleanup_process(pid);
-        // A Normal workflow exit does not propagate through BEAM links, so
-        // any in-VM activity child still running must be torn down here.
         self.kill_in_vm_children(pid);
-        // Retained completions racing process death are dropped transactionally
-        // before the exact per-pid gate is reaped after process-table removal.
         let activity_cleanup = self.drain_activity_completions(pid);
         self.finish_activity_delivery_cleanup(pid);
         activity_cleanup
-    }
-
-    fn spawn_monitor_thread<F>(pid: Pid, monitor: F) -> Result<(), EngineError>
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        std::thread::Builder::new()
-            .name(format!("aion-workflow-monitor-{pid}"))
-            .spawn(monitor)
-            .map_err(|error| EngineError::Runtime {
-                reason: format!("failed to spawn workflow monitor for process {pid}: {error}"),
-            })?;
-        Ok(())
     }
 
     /// Test-only monitor installation status probe.
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError`] if the runtime rejects the monitor installation.
+    /// Returns the same typed installation errors as [`Self::monitor_process`].
     #[cfg(test)]
     pub fn monitor_process_for_test<F>(
         self: &Arc<Self>,
@@ -306,7 +490,7 @@ impl RuntimeHandle {
 
     #[cfg(test)]
     pub(crate) fn process_cleanup_observed_for_test(&self, pid: Pid) -> bool {
-        self.nif_state().wake_ladder_done(pid, 0)
+        self.nif_state().process_cleanup_observed(pid)
     }
 }
 

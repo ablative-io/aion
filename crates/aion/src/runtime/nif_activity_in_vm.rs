@@ -227,9 +227,9 @@ pub(super) fn retain_spawn_failure(
 /// await resolves — `take_runtime_completion` then records
 /// `ActivityCompleted`/`ActivityFailed` exactly as for remote.
 ///
-/// Runs on the Tokio blocking pool: `run_until_exit` parks its thread until
-/// the child exits, one thread per in-flight in-VM activity. Delivery to a
-/// workflow that died meanwhile fails with a warn and the retained entry is
+/// Runs on the Tokio blocking pool: the runtime-owned exit record parks this
+/// reader until the child observer caches its terminal. Delivery to a workflow
+/// that died meanwhile fails with a warn and the retained entry is
 /// drained by the workflow process monitor (D5).
 fn spawn_in_vm_completion_watcher(
     tokio_handle: &tokio::runtime::Handle,
@@ -244,12 +244,13 @@ fn spawn_in_vm_completion_watcher(
         // teardown set so a later workflow exit does not re-kill a dead pid.
         runtime.deregister_in_vm_child(workflow_pid, child_pid);
         let delivered = match outcome {
-            crate::runtime::handle::InVmChildOutcome::Completed(payload) => {
+            Ok(crate::runtime::handle::InVmChildOutcome::Completed(payload)) => {
                 runtime.deliver_activity_completion_message(workflow_pid, &correlation_id, payload)
             }
-            crate::runtime::handle::InVmChildOutcome::Failed(reason) => {
+            Ok(crate::runtime::handle::InVmChildOutcome::Failed(reason)) => {
                 runtime.deliver_activity_failure_message(workflow_pid, &correlation_id, reason)
             }
+            Err(error) => Err(error),
         };
         if let Err(error) = delivered {
             tracing::warn!(

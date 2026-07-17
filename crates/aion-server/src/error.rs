@@ -376,6 +376,24 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::Package(_) => simple_engine_fields("Package", source),
         EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
         EngineError::Runtime { .. } => simple_engine_fields("Runtime", source),
+        EngineError::CleanupExecutorPoisoned => {
+            simple_engine_fields("CleanupExecutorPoisoned", source)
+        }
+        EngineError::ProcessExitRegistryPoisoned => {
+            simple_engine_fields("ProcessExitRegistryPoisoned", source)
+        }
+        EngineError::ProcessExitOwnershipPoisoned { .. } => {
+            simple_engine_fields("ProcessExitOwnershipPoisoned", source)
+        }
+        EngineError::ProcessExitStatePoisoned { .. } => {
+            simple_engine_fields("ProcessExitStatePoisoned", source)
+        }
+        EngineError::ProcessExitObserverPoisoned { .. } => {
+            simple_engine_fields("ProcessExitObserverPoisoned", source)
+        }
+        EngineError::ProcessExitUnavailable { .. } => {
+            simple_engine_fields("ProcessExitUnavailable", source)
+        }
         EngineError::ActivityDeliveryPoisoned { .. } => {
             simple_engine_fields("ActivityDeliveryPoisoned", source)
         }
@@ -489,6 +507,24 @@ fn wire_from_engine(source: &EngineError) -> WireError {
             WireError::backend_with_type("Schedule", source.to_string())
         }
         EngineError::Runtime { .. } => WireError::backend_with_type("Runtime", source.to_string()),
+        EngineError::CleanupExecutorPoisoned => {
+            WireError::backend_with_type("CleanupExecutorPoisoned", source.to_string())
+        }
+        EngineError::ProcessExitRegistryPoisoned => {
+            WireError::backend_with_type("ProcessExitRegistryPoisoned", source.to_string())
+        }
+        EngineError::ProcessExitOwnershipPoisoned { .. } => {
+            WireError::backend_with_type("ProcessExitOwnershipPoisoned", source.to_string())
+        }
+        EngineError::ProcessExitStatePoisoned { .. } => {
+            WireError::backend_with_type("ProcessExitStatePoisoned", source.to_string())
+        }
+        EngineError::ProcessExitObserverPoisoned { .. } => {
+            WireError::backend_with_type("ProcessExitObserverPoisoned", source.to_string())
+        }
+        EngineError::ProcessExitUnavailable { .. } => {
+            WireError::backend_with_type("ProcessExitUnavailable", source.to_string())
+        }
         EngineError::ActivityDeliveryPoisoned { .. } => {
             WireError::backend_with_type("ActivityDeliveryPoisoned", source.to_string())
         }

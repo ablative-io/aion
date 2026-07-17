@@ -109,6 +109,42 @@ pub enum EngineError {
         reason: String,
     },
 
+    /// The runtime-owned cleanup executor's ownership state was poisoned.
+    #[error("process cleanup executor state was poisoned")]
+    CleanupExecutorPoisoned,
+
+    /// The process-exit registry lifecycle lock was poisoned.
+    #[error("process exit registry lifecycle state was poisoned")]
+    ProcessExitRegistryPoisoned,
+
+    /// A process exit record's installation/abort ownership gate was poisoned.
+    #[error("process exit ownership gate for process {process_id} was poisoned")]
+    ProcessExitOwnershipPoisoned {
+        /// Process whose monitor/abort ownership could not be serialized.
+        process_id: u64,
+    },
+
+    /// A process exit record's fan-out state was poisoned.
+    #[error("process exit outcome state for process {process_id} was poisoned")]
+    ProcessExitStatePoisoned {
+        /// Process whose cached exit state could not be accessed.
+        process_id: u64,
+    },
+
+    /// A process exit record's observer handle was poisoned.
+    #[error("process exit observer state for process {process_id} was poisoned")]
+    ProcessExitObserverPoisoned {
+        /// Process whose tracked observer could not be accessed.
+        process_id: u64,
+    },
+
+    /// A spawned process was dead after beamr had evicted its exit tombstone.
+    #[error("process {process_id} exited before its outcome could be captured")]
+    ProcessExitUnavailable {
+        /// Process whose beamr outcome was no longer available.
+        process_id: u64,
+    },
+
     /// A workflow's activity-delivery synchronization lock was poisoned.
     #[error("activity delivery lock for process {process_id} was poisoned")]
     ActivityDeliveryPoisoned {

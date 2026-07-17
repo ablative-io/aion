@@ -1,8 +1,9 @@
 //! Tests for workflow start lifecycle.
 
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
-use aion_core::{Event, Payload};
+use aion_core::{Event, Payload, WorkflowId};
 use aion_package::ContentHash;
 use aion_store::visibility::VisibilityStore;
 use aion_store::{EventStore, InMemoryStore, ReadableEventStore};
@@ -304,7 +305,56 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
     Ok(())
 }
 
-#[tokio::test]
+struct DelayedRegistryDelivery {
+    resolved: mpsc::Receiver<u64>,
+    release: mpsc::SyncSender<()>,
+    result: mpsc::Receiver<Result<(), EngineError>>,
+    worker: std::thread::JoinHandle<()>,
+}
+
+fn spawn_delayed_registry_delivery(
+    registry: Arc<Registry>,
+    runtime: Arc<RuntimeHandle>,
+    workflow_id: WorkflowId,
+) -> Result<DelayedRegistryDelivery, std::io::Error> {
+    let (resolved_sender, resolved) = mpsc::sync_channel(1);
+    let (release, release_receiver) = mpsc::sync_channel(1);
+    let (delivery_sender, result) = mpsc::sync_channel(1);
+    let worker = std::thread::Builder::new()
+        .name(String::from("aion-start-window-delivery-test"))
+        .spawn(move || {
+            let delivery = registry
+                .live_pid(&workflow_id)
+                .and_then(|resolved| {
+                    resolved.ok_or_else(|| EngineError::Runtime {
+                        reason: String::from("delayed delivery did not resolve the real registry"),
+                    })
+                })
+                .and_then(|resolved| {
+                    let _ = resolved_sender.send(resolved);
+                    release_receiver
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(|_| EngineError::Runtime {
+                            reason: String::from("delayed delivery release was not observed"),
+                        })?;
+                    runtime.deliver_activity_completion_message_with_attempt(
+                        resolved,
+                        "activity:42",
+                        String::from(r#"{"late":true}"#),
+                        Some(5),
+                    )
+                });
+            let _ = delivery_sender.send(delivery);
+        })?;
+    Ok(DelayedRegistryDelivery {
+        resolved,
+        release,
+        result,
+        worker,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() -> TestResult {
     let store = Arc::new(InMemoryStore::default());
     let catalog = load_without_runtime_registration("monitor-failure");
@@ -313,9 +363,10 @@ async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() 
     let supervision = Arc::new(SupervisionTree::new());
     let registry = Arc::new(Registry::default());
     let baseline_gates = runtime.activity_delivery_gate_count();
+    runtime.pause_next_start_publication_for_test();
     runtime.force_next_monitor_spawn_failure_for_test();
 
-    let error = start_workflow(
+    let start = tokio::spawn(start_workflow(
         context(
             store.clone(),
             store,
@@ -326,29 +377,62 @@ async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() 
         ),
         "monitor-failure",
         payload("input")?,
-    )
+    ));
+    let published = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(handle) = registry.list()?.into_iter().next() {
+                return Ok::<_, EngineError>(handle);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
     .await
-    .err()
-    .ok_or("forced normal-start monitor failure returned a handle")?;
+    .map_err(|_| "normal start did not publish before the deadline")??;
+    let pid = published.pid();
+    runtime.wait_for_start_publication_pause_for_test(pid)?;
+    let real_registry_pid = registry
+        .live_pid(published.workflow_id())?
+        .ok_or("real registry did not resolve the just-published workflow")?;
+    assert_eq!(real_registry_pid, pid);
 
-    let workflow_pids: Vec<_> = supervision
-        .type_supervisors()?
-        .into_iter()
-        .flat_map(|node| {
-            node.workflow_processes()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let pid = workflow_pids
-        .first()
-        .copied()
-        .ok_or("normal start did not reach supervision placement")?;
+    runtime.deliver_activity_completion_message_with_attempt(
+        real_registry_pid,
+        "activity:41",
+        String::from(r#"{"published":true}"#),
+        Some(3),
+    )?;
+    assert_eq!(runtime.retained_activity_completions(), 1);
+    assert_eq!(runtime.retained_activity_attempt_count_for_test(), 1);
+
+    let delayed = spawn_delayed_registry_delivery(
+        Arc::clone(&registry),
+        Arc::clone(&runtime),
+        published.workflow_id().clone(),
+    )?;
+    assert_eq!(delayed.resolved.recv_timeout(Duration::from_secs(10))?, pid);
+
+    runtime.release_start_publication_for_test(pid)?;
+    let error = start
+        .await?
+        .err()
+        .ok_or("forced normal-start monitor failure returned a handle")?;
     assert!(error.to_string().contains("forced test failure"));
     assert!(registry.list()?.is_empty());
     assert!(!runtime.is_live(pid));
     assert!(runtime.process_cleanup_observed_for_test(pid));
+    delayed.release.send(())?;
+    let delayed_error = delayed
+        .result
+        .recv_timeout(Duration::from_secs(10))?
+        .err()
+        .ok_or("delivery resolved before retraction was not refused after abort")?;
+    assert!(delayed_error.to_string().contains("not live"));
+    delayed
+        .worker
+        .join()
+        .map_err(|_| "delayed registry-resolved delivery thread failed")?;
+    assert_eq!(runtime.retained_activity_completions(), 0);
+    assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);
     runtime.shutdown()?;
     Ok(())

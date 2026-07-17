@@ -222,6 +222,14 @@ impl EngineNifState {
             .map_or(0, |epoch| *epoch)
     }
 
+    /// Whether shared process cleanup stamped the exact exited tombstone.
+    #[cfg(test)]
+    pub(crate) fn process_cleanup_observed(&self, pid: u64) -> bool {
+        self.wake_observation_epochs
+            .get(&pid)
+            .is_some_and(|epoch| *epoch == WAKE_EPOCH_EXITED)
+    }
+
     /// Whether a wake ladder armed at `snapshot` may stop for `pid`.
     ///
     /// True once the epoch moved past the snapshot (a suspending-native

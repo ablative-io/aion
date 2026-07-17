@@ -187,7 +187,7 @@ fn payload_binary_remains_valid_through_spawn_and_is_released()
     let pid =
         runtime.spawn_workflow("payload_echo", "run", RuntimeInput::from_payload(&payload)?)?;
     assert_eq!(runtime.retained_spawn_heap_count_for_test(), 1);
-    let (reason, result) = runtime.run_until_exit_for_test(pid);
+    let (reason, result) = runtime.run_until_exit_for_test(pid)?;
 
     assert_eq!(reason, beamr::process::ExitReason::Normal);
     assert_eq!(
@@ -269,7 +269,7 @@ fn repeated_completed_payload_spawns_do_not_accumulate_retained_heaps()
             "run",
             RuntimeInput::from_payload(&payload)?,
         )?;
-        let (reason, result) = runtime.run_until_exit_for_test(pid);
+        let (reason, result) = runtime.run_until_exit_for_test(pid)?;
         assert_eq!(reason, beamr::process::ExitReason::Normal);
         assert_eq!(
             result.as_small_int(),
@@ -314,7 +314,7 @@ fn distinct_nifs_are_registered_and_callable() -> Result<(), Box<dyn std::error:
     );
     runtime.module_registry.insert(host_nif_call);
     let pid = runtime.spawn_workflow("host_nif_call", "answer", RuntimeInput::default())?;
-    let (reason, result) = runtime.run_until_exit_for_test(pid);
+    let (reason, result) = runtime.run_until_exit_for_test(pid)?;
 
     assert_eq!(reason, beamr::process::ExitReason::Normal);
     assert_eq!(result, Term::small_int(42));

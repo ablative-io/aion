@@ -222,6 +222,8 @@ fn register_started_handle(
         }
         return Err(abort_unmonitored_start(&context.runtime, pid, error));
     }
+    #[cfg(test)]
+    context.runtime.pause_at_start_publication_for_test(pid)?;
     if let Err(error) = install_completion_monitor(context, pid, handle) {
         if let Err(remove_error) = context
             .registry
