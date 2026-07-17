@@ -109,6 +109,13 @@ pub enum EngineError {
         reason: String,
     },
 
+    /// A workflow's activity-delivery synchronization lock was poisoned.
+    #[error("activity delivery lock for process {process_id} was poisoned")]
+    ActivityDeliveryPoisoned {
+        /// Workflow process whose scoped delivery lock was poisoned.
+        process_id: u64,
+    },
+
     /// The active workflow registry lock was poisoned.
     #[error("active workflow registry lock was poisoned")]
     RegistryPoisoned,

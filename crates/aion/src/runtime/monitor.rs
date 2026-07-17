@@ -55,7 +55,7 @@ impl RuntimeHandle {
         std::thread::Builder::new()
             .name(format!("aion-workflow-monitor-{pid}"))
             .spawn(move || {
-                let outcome =
+                let process_outcome =
                     outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
                 runtime.release_spawn_heaps(pid);
                 runtime.nif_state().cleanup_process(pid);
@@ -67,9 +67,16 @@ impl RuntimeHandle {
                 runtime.kill_in_vm_children(pid);
                 // D5: completions delivered after the workflow stopped
                 // awaiting them (race losers, post-exit deliveries) are
-                // never taken; drop them with the process.
-                runtime.drain_activity_completions(pid);
-                callback(outcome);
+                // never taken; drop them with the process. A poisoned scoped
+                // gate is a typed monitor failure, never silent continuation.
+                let monitored_outcome = match runtime.drain_activity_completions(pid) {
+                    Ok(()) => process_outcome,
+                    Err(error) => {
+                        tracing::error!(%error, pid, "workflow activity cleanup failed");
+                        Err(error)
+                    }
+                };
+                callback(monitored_outcome);
             })
             .map_err(|error| EngineError::Runtime {
                 reason: format!("failed to spawn workflow monitor for process {pid}: {error}"),
