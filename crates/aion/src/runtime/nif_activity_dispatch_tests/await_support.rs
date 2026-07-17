@@ -1,19 +1,21 @@
+use super::support::*;
+
 /// Everything one `await_activity_step` determinism test needs over a
 /// synthesized history.
-struct AwaitHarness {
-    state: Arc<EngineNifState>,
-    registry: Arc<Registry>,
-    runtime: Arc<RuntimeHandle>,
-    store: Arc<dyn EventStore>,
-    workflow_id: WorkflowId,
-    pid: u64,
+pub(in super::super) struct AwaitHarness {
+    pub(super) state: Arc<EngineNifState>,
+    pub(super) registry: Arc<Registry>,
+    pub(super) runtime: Arc<RuntimeHandle>,
+    pub(super) store: Arc<dyn EventStore>,
+    pub(super) workflow_id: WorkflowId,
+    pub(super) pid: u64,
 }
 
 impl AwaitHarness {
     /// Build a fresh engine epoch (registry, handle, runtime) over an
     /// existing seeded store — the unit-level analogue of an engine
     /// restart before replay.
-    async fn over_store(
+    pub(super) async fn over_store(
         store: Arc<dyn EventStore>,
         workflow_id: WorkflowId,
         run_id: RunId,
@@ -48,11 +50,11 @@ impl AwaitHarness {
 
     /// One production-shaped pass: a fresh `NifContext` (one history
     /// read — the resolution snapshot) resolving the ordinal-0 await.
-    fn step(&self) -> Result<ActivityAwaitStep, String> {
+    pub(super) fn step(&self) -> Result<ActivityAwaitStep, String> {
         self.step_typed().map_err(|error| error.to_string())
     }
 
-    fn step_typed(&self) -> Result<ActivityAwaitStep, EngineError> {
+    pub(super) fn step_typed(&self) -> Result<ActivityAwaitStep, EngineError> {
         // Production runs this on a beamr scheduler thread with no
         // ambient Tokio context; block_in_place mirrors that so the
         // step's history reads can block_on the harness runtime.
@@ -81,7 +83,7 @@ impl AwaitHarness {
     /// installing it proves the stale-snapshot test fails if a fresh
     /// read is reintroduced, instead of accidentally passing because
     /// the fresh read was unavailable.
-    fn install_fresh_read_bridge(&self) {
+    pub(super) fn install_fresh_read_bridge(&self) {
         crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
             &self.state,
             Arc::clone(&self.registry),
@@ -91,7 +93,7 @@ impl AwaitHarness {
         );
     }
 
-    fn arm_live_scope(&self, deadline_ordinal: u64) {
+    pub(super) fn arm_live_scope(&self, deadline_ordinal: u64) {
         self.state.timeout_scopes.insert(
             31,
             TimeoutScope::live_for_test(self.pid, aion_core::TimerId::anonymous(deadline_ordinal)),
@@ -99,7 +101,7 @@ impl AwaitHarness {
         self.state.timeout_scope_stacks.insert(self.pid, vec![31]);
     }
 
-    fn arm_replayed_expired_scope(&self, deadline_ordinal: u64) {
+    pub(super) fn arm_replayed_expired_scope(&self, deadline_ordinal: u64) {
         self.state.timeout_scopes.insert(
             1,
             TimeoutScope::replayed_expired_with_deadline_for_test(
@@ -110,17 +112,17 @@ impl AwaitHarness {
         self.state.timeout_scope_stacks.insert(self.pid, vec![1]);
     }
 
-    async fn history_len(&self) -> Result<usize, Box<dyn std::error::Error>> {
+    pub(super) async fn history_len(&self) -> Result<usize, Box<dyn std::error::Error>> {
         Ok(self.store.read_history(&self.workflow_id).await?.len())
     }
 
-    fn shutdown(self) -> TestResult {
+    pub(super) fn shutdown(self) -> TestResult {
         self.runtime.shutdown()?;
         Ok(())
     }
 }
 
-fn envelope(workflow_id: &WorkflowId, seq: u64) -> EventEnvelope {
+pub(in super::super) fn envelope(workflow_id: &WorkflowId, seq: u64) -> EventEnvelope {
     EventEnvelope {
         seq,
         recorded_at: chrono::Utc::now(),
@@ -130,7 +132,7 @@ fn envelope(workflow_id: &WorkflowId, seq: u64) -> EventEnvelope {
 
 /// Seed `WorkflowStarted` + a scheduled/started ordinal-0 activity +
 /// the scope deadline's `TimerFired` (seq 4).
-async fn seed_pending_activity_then_deadline(
+pub(in super::super) async fn seed_pending_activity_then_deadline(
     store: &Arc<dyn EventStore>,
     deadline_ordinal: u64,
 ) -> Result<(WorkflowId, RunId), Box<dyn std::error::Error>> {

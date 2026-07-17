@@ -1,21 +1,23 @@
+use super::{await_support::envelope, support::*};
+
 // ---- #197: retry loop at the dispatch seam ------------------------------
 
 /// Scripted dispatcher for the retry-loop tests: pops one outcome per
 /// dispatch and records the wire attempt each delivery carried.
-struct ScriptedRetryDispatcher {
+pub(in super::super) struct ScriptedRetryDispatcher {
     outcomes: std::sync::Mutex<std::collections::VecDeque<Result<String, String>>>,
     attempts: std::sync::Mutex<Vec<u32>>,
 }
 
 impl ScriptedRetryDispatcher {
-    fn new(outcomes: Vec<Result<String, String>>) -> Arc<Self> {
+    pub(super) fn new(outcomes: Vec<Result<String, String>>) -> Arc<Self> {
         Arc::new(Self {
             outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
             attempts: std::sync::Mutex::new(Vec::new()),
         })
     }
 
-    fn seen_attempts(&self) -> Vec<u32> {
+    pub(super) fn seen_attempts(&self) -> Vec<u32> {
         self.attempts
             .lock()
             .map(|attempts| attempts.clone())
@@ -40,15 +42,15 @@ impl ActivityDispatcher for ScriptedRetryDispatcher {
 /// Store + recorder + request over a seeded `WorkflowStarted` +
 /// `ActivityScheduled` + `ActivityStarted(attempt 1)` history — exactly
 /// what the dispatch NIF records before spawning the completion task.
-struct RetryLoopHarness {
-    store: Arc<dyn EventStore>,
-    seam: super::RetryRecorderSeam,
-    request: ActivityDispatch,
-    workflow_id: WorkflowId,
+pub(in super::super) struct RetryLoopHarness {
+    pub(super) store: Arc<dyn EventStore>,
+    pub(super) seam: RetryRecorderSeam,
+    pub(super) request: ActivityDispatch,
+    pub(super) workflow_id: WorkflowId,
 }
 
 impl RetryLoopHarness {
-    async fn seeded(config: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(super) async fn seeded(config: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let store: Arc<dyn EventStore> = Arc::new(aion_store::InMemoryStore::default());
         let workflow_id = WorkflowId::new_v4();
         let run_id = RunId::new_v4();
@@ -93,7 +95,7 @@ impl RetryLoopHarness {
         };
         Ok(Self {
             store,
-            seam: super::RetryRecorderSeam {
+            seam: RetryRecorderSeam {
                 recorder: Arc::new(tokio::sync::Mutex::new(recorder)),
                 run_id,
             },
@@ -102,10 +104,10 @@ impl RetryLoopHarness {
         })
     }
 
-    async fn history(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    pub(super) async fn history(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
         Ok(self.store.read_history(&self.workflow_id).await?)
     }
 }
 
-const FIXED_RETRY_CONFIG: &str =
+pub(in super::super) const FIXED_RETRY_CONFIG: &str =
     r#"{"retry":{"max_attempts":3,"backoff":{"kind":"fixed","delay_ms":2}}}"#;

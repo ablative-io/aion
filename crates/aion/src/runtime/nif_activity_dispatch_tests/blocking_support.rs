@@ -1,3 +1,5 @@
+use super::support::*;
+
 /// Synchronous dispatcher that parks its calling thread on a channel
 /// until the test's release task — running on the same Tokio runtime —
 /// frees it.

@@ -1,4 +1,6 @@
-fn reenvelope(event: Event, workflow_id: &WorkflowId, seq: u64) -> Event {
+use super::support::*;
+
+pub(in super::super) fn reenvelope(event: Event, workflow_id: &WorkflowId, seq: u64) -> Event {
     let envelope = EventEnvelope {
         seq,
         recorded_at: chrono::Utc::now(),
@@ -89,7 +91,7 @@ fn reenvelope(event: Event, workflow_id: &WorkflowId, seq: u64) -> Event {
     }
 }
 
-fn started_event(
+pub(in super::super) fn started_event(
     workflow_id: &WorkflowId,
     run_id: &RunId,
 ) -> Result<Event, Box<dyn std::error::Error>> {
@@ -107,7 +109,7 @@ fn started_event(
     })
 }
 
-fn placeholder_envelope() -> EventEnvelope {
+pub(in super::super) fn placeholder_envelope() -> EventEnvelope {
     EventEnvelope {
         seq: 0,
         recorded_at: chrono::Utc::now(),
@@ -115,7 +117,7 @@ fn placeholder_envelope() -> EventEnvelope {
     }
 }
 
-fn scheduled_started(ordinal: u64, name: &str) -> Vec<Event> {
+pub(in super::super) fn scheduled_started(ordinal: u64, name: &str) -> Vec<Event> {
     vec![
         Event::ActivityScheduled {
             envelope: placeholder_envelope(),
@@ -133,7 +135,7 @@ fn scheduled_started(ordinal: u64, name: &str) -> Vec<Event> {
     ]
 }
 
-fn completed(ordinal: u64, result: &str) -> Event {
+pub(in super::super) fn completed(ordinal: u64, result: &str) -> Event {
     Event::ActivityCompleted {
         envelope: placeholder_envelope(),
         activity_id: ActivityId::from_sequence_position(ordinal),
@@ -142,7 +144,7 @@ fn completed(ordinal: u64, result: &str) -> Event {
     }
 }
 
-fn scheduled_started_on(
+pub(in super::super) fn scheduled_started_on(
     ordinal: u64,
     name: &str,
     task_queue: &str,
@@ -164,4 +166,3 @@ fn scheduled_started_on(
         },
     ]
 }
-

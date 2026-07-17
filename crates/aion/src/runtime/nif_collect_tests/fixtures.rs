@@ -1,4 +1,6 @@
-fn failed(ordinal: u64, message: &str) -> Event {
+use super::{events::*, harness::CollectHarness, support::*};
+
+pub(in super::super) fn failed(ordinal: u64, message: &str) -> Event {
     Event::ActivityFailed {
         envelope: placeholder_envelope(),
         activity_id: ActivityId::from_sequence_position(ordinal),
@@ -11,7 +13,7 @@ fn failed(ordinal: u64, message: &str) -> Event {
     }
 }
 
-fn spec(name: &str) -> ActivitySpec {
+pub(in super::super) fn spec(name: &str) -> ActivitySpec {
     ActivitySpec {
         name: name.to_owned(),
         input: r#""in""#.to_owned(),
@@ -23,7 +25,7 @@ fn spec(name: &str) -> ActivitySpec {
 /// its dispatch config: `task_queue` (the per-activity override) and
 /// `workflow_task_queue` (the workflow-level default). `None` encodes the
 /// SDK's "no selection" as JSON null.
-fn spec_with_task_queue(
+pub(in super::super) fn spec_with_task_queue(
     name: &str,
     task_queue: Option<&str>,
     workflow_task_queue: Option<&str>,
@@ -45,7 +47,7 @@ fn spec_with_task_queue(
 
 /// An [`ActivitySpec`] carrying the SDK's OPTIONAL `node` affinity field in
 /// its dispatch config. `None` encodes the SDK's "no pin" as JSON null.
-fn spec_with_node(name: &str, node: Option<&str>) -> ActivitySpec {
+pub(in super::super) fn spec_with_node(name: &str, node: Option<&str>) -> ActivitySpec {
     let field = match node {
         Some(text) => format!("\"{text}\""),
         None => "null".to_owned(),
@@ -59,11 +61,11 @@ fn spec_with_node(name: &str, node: Option<&str>) -> ActivitySpec {
     }
 }
 
-fn specs(names: &[&str]) -> Vec<ActivitySpec> {
+pub(in super::super) fn specs(names: &[&str]) -> Vec<ActivitySpec> {
     names.iter().map(|name| spec(name)).collect()
 }
 
-fn scope_deadline_fired(ordinal: u64) -> Event {
+pub(in super::super) fn scope_deadline_fired(ordinal: u64) -> Event {
     Event::TimerFired {
         envelope: placeholder_envelope(),
         timer_id: aion_core::TimerId::anonymous(ordinal),
@@ -75,7 +77,7 @@ fn scope_deadline_fired(ordinal: u64) -> Event {
 /// it proves the stale-snapshot tests fail if a fresh read is
 /// reintroduced, instead of accidentally passing because the fresh read
 /// was unavailable.
-fn install_fresh_read_bridge(harness: &CollectHarness) {
+pub(in super::super) fn install_fresh_read_bridge(harness: &CollectHarness) {
     crate::runtime::nif_timer_bridge::install_timer_nif_bridge(
         &harness.state,
         Arc::clone(&harness.deps.registry),
@@ -85,7 +87,7 @@ fn install_fresh_read_bridge(harness: &CollectHarness) {
     );
 }
 
-fn pending_batch(names: &[&str]) -> Vec<Event> {
+pub(in super::super) fn pending_batch(names: &[&str]) -> Vec<Event> {
     names
         .iter()
         .enumerate()
@@ -94,4 +96,3 @@ fn pending_batch(names: &[&str]) -> Vec<Event> {
         })
         .collect()
 }
-
