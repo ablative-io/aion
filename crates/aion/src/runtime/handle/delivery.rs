@@ -193,12 +193,18 @@ impl RuntimeHandle {
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
         let activity_id = correlation_to_activity_pid(correlation_id)?;
-        self.activity_results.insert(
-            (workflow_pid, activity_id),
-            Payload::new(ContentType::Json, result.into_bytes()),
-        );
+        let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_complete");
-        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+        let delivery = retain_activity_outcome_until_marker_delivery(
+            &self.activity_results,
+            key,
+            Payload::new(ContentType::Json, result.into_bytes()),
+            || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
+        );
+        if delivery.is_err() {
+            self.activity_delivery_attempts.remove(&key);
+        }
+        delivery
     }
 
     /// Deliver a two-phase activity failure marker to the workflow mailbox.
@@ -215,10 +221,18 @@ impl RuntimeHandle {
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(workflow_pid)?;
         let activity_id = correlation_to_activity_pid(correlation_id)?;
-        self.activity_errors
-            .insert((workflow_pid, activity_id), activity_failure(reason));
+        let key = (workflow_pid, activity_id);
         let marker = self.atom_table.intern("activity_failed");
-        self.enqueue_activity_marker(workflow_pid, marker, correlation_id)
+        let delivery = retain_activity_outcome_until_marker_delivery(
+            &self.activity_errors,
+            key,
+            activity_failure(reason),
+            || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
+        );
+        if delivery.is_err() {
+            self.activity_delivery_attempts.remove(&key);
+        }
+        delivery
     }
 
     /// Route an unmatched durable-outbox activity completion into the live
@@ -302,17 +316,18 @@ impl RuntimeHandle {
         payload: Payload,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        self.activity_results
-            .insert((parent_pid, activity_pid), payload);
+        let key = (parent_pid, activity_pid);
         let marker = self.atom_table.intern("aion_activity_result");
-        if self.scheduler.enqueue_atom_message(parent_pid, marker) {
-            self.confirm_marker_wake(parent_pid);
-            Ok(())
-        } else {
-            Err(runtime_error(format!(
-                "failed to deliver activity result from {activity_pid} to {parent_pid}"
-            )))
-        }
+        retain_activity_outcome_until_marker_delivery(&self.activity_results, key, payload, || {
+            if self.scheduler.enqueue_atom_message(parent_pid, marker) {
+                self.confirm_marker_wake(parent_pid);
+                Ok(())
+            } else {
+                Err(runtime_error(format!(
+                    "failed to deliver activity result from {activity_pid} to {parent_pid}"
+                )))
+            }
+        })
     }
 
     /// Wake a suspended workflow process so blocking awaits re-run their
@@ -365,9 +380,16 @@ impl RuntimeHandle {
         error: ActivityError,
     ) -> Result<(), EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        self.activity_errors
-            .insert((parent_pid, activity_pid), error);
-        Ok(())
+        let key = (parent_pid, activity_pid);
+        let rollback_error = error.clone();
+        self.activity_errors.insert(key, error);
+        if let Err(liveness_error) = self.ensure_live_pid(parent_pid) {
+            self.activity_errors
+                .remove_if(&key, |_, retained| retained == &rollback_error);
+            Err(liveness_error)
+        } else {
+            Ok(())
+        }
     }
 
     /// Read a previously delivered activity result payload.
@@ -617,6 +639,27 @@ impl RuntimeHandle {
     }
 }
 
+fn retain_activity_outcome_until_marker_delivery<V, F>(
+    retained: &dashmap::DashMap<(Pid, Pid), V>,
+    key: (Pid, Pid),
+    outcome: V,
+    deliver_marker: F,
+) -> Result<(), EngineError>
+where
+    V: Clone + PartialEq,
+    F: FnOnce() -> Result<(), EngineError>,
+{
+    let rollback_outcome = outcome.clone();
+    retained.insert(key, outcome);
+    let delivery = deliver_marker();
+    if delivery.is_err() {
+        // Only remove the value inserted by this delivery. A concurrent retry
+        // may already have replaced it with the outcome paired with its marker.
+        retained.remove_if(&key, |_, current| current == &rollback_outcome);
+    }
+    delivery
+}
+
 /// Resolve the pid an unmatched outbox completion/failure should be delivered
 /// to, enforcing run scoping when a `run_id` is supplied.
 ///
@@ -746,7 +789,10 @@ async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
 mod tests {
     use std::sync::Arc;
 
-    use aion_core::{ActivityId, RunId, WorkflowId, WorkflowStatus};
+    use aion_core::{
+        ActivityError, ActivityErrorKind, ActivityId, ContentType, Payload, RunId, WorkflowId,
+        WorkflowStatus,
+    };
     use aion_package::ContentHash;
 
     use crate::registry::Registry;
@@ -755,7 +801,7 @@ mod tests {
     };
     use crate::runtime::config::RuntimeConfig;
 
-    use super::RuntimeHandle;
+    use super::{RuntimeHandle, retain_activity_outcome_until_marker_delivery};
 
     fn live_handle(workflow_id: &WorkflowId, run_id: &RunId, pid: u64) -> WorkflowHandle {
         let store = Arc::new(aion_store::InMemoryStore::default());
@@ -920,6 +966,73 @@ mod tests {
         assert!(
             runtime.take_activity_error(pid, ordinal).is_some(),
             "live-run failure must be retained where take_activity_error reads it"
+        );
+
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_marker_enqueue_removes_retained_activity_outcomes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = RuntimeHandle::new(RuntimeConfig::new(None))?;
+
+        let completion_pid = runtime.spawn_test_process()?;
+        let completion_sequence = 7;
+        let completion_key = (completion_pid, completion_sequence);
+        let completion = retain_activity_outcome_until_marker_delivery(
+            &runtime.activity_results,
+            completion_key,
+            Payload::new(ContentType::Json, br#"{"ok":true}"#.to_vec()),
+            || {
+                runtime.cancel_pid(completion_pid)?;
+                runtime.enqueue_activity_marker(
+                    completion_pid,
+                    runtime.activity_complete_atom(),
+                    "activity:7",
+                )
+            },
+        );
+        assert!(
+            completion.is_err(),
+            "enqueueing a marker after workflow death must fail"
+        );
+        assert!(
+            runtime
+                .activity_result(completion_pid, completion_sequence)
+                .is_none(),
+            "failed completion delivery must roll back its retained payload"
+        );
+
+        let failure_pid = runtime.spawn_test_process()?;
+        let failure_sequence = 9;
+        let failure_key = (failure_pid, failure_sequence);
+        let failure = retain_activity_outcome_until_marker_delivery(
+            &runtime.activity_errors,
+            failure_key,
+            ActivityError {
+                kind: ActivityErrorKind::Terminal,
+                message: "failed".to_owned(),
+                details: None,
+            },
+            || {
+                runtime.cancel_pid(failure_pid)?;
+                runtime.enqueue_activity_marker(
+                    failure_pid,
+                    runtime.activity_failed_atom(),
+                    "activity:9",
+                )
+            },
+        );
+        assert!(
+            failure.is_err(),
+            "enqueueing a failure marker after workflow death must fail"
+        );
+        assert!(
+            runtime
+                .activity_error(failure_pid, failure_sequence)
+                .is_none(),
+            "failed activity failure delivery must roll back its retained error"
         );
 
         runtime.shutdown()?;
