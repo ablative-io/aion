@@ -137,11 +137,35 @@ of these is individually common; owning all four is rare, and it is where the
 7. **Kind-aware tooling for free**: namespaced word-sets make autocomplete,
    diagnostics, and the canvas all smarter with zero heuristics.
 
-A research lane (norn, dispatched 2026-07-17) is surveying prior art for each of
-these — Ballerina/choreographic programming/session types for §4, Unison/Elm/
-Darklang/Erlang-OTP for §6 — plus the negative cases (CI YAML, markdown-for-LLM
-procedures). Its findings fold back into this doc; the ranked shortlist it
-returns seeds the next design conversation.
+**The research landed** (2026-07-17, same day): the full evidence-backed map is
+[AWL-OPPORTUNITY-RESEARCH-2026-07-17.md](AWL-OPPORTUNITY-RESEARCH-2026-07-17.md)
+— Ballerina/Choral/session types/Temporal-Restate-Inngest for the contract
+question, Nushell/YSH/systemd/Ansible/Erlang-behaviours for command-running,
+OTP-ports/erlexec/systemd/Nomad/K8s-Jobs for supervision, Elm/Unison/OTP/
+Durable-Objects/Darklang/Smalltalk for whole-stack affordances, every claim
+cited. Its verdict: **no cited system combines** a small checked orchestration
+language + same-language workers + generated polyglot contracts + durable
+replay + content-addressed deploys + a registration door that can refuse
+incompatible workers — that combination is the AWL opportunity. The ranked
+shortlist (details and risks in the research doc):
+
+1. **Close the workflow↔worker contract** at compile, deploy, AND registration
+   (one content-addressed action contract; registration refuses mismatches).
+2. **Make unsafe command retries unwritable**: required retry posture
+   (safe/never/keyed) on the action contract; call sites choose timing only.
+3. **First-class typed direct-command worker** with real kill-tree hygiene
+   (argv-only default, typed stdout decoder, stderr as evidence, process-group
+   containment — needs the OS-process driver tier to be honest).
+4. **Source-mapped time-travel debugging**: scrub durable history through the
+   .awl source; fork-from-history later (never mutate canonical history).
+5. **Content-addressed pin-and-drain rollout** as a checked operation (route
+   new starts to new hash, pin in-flight, drain, refuse incompatible purges).
+
+Named traps, kept on the record: claiming exactly-once external effects,
+implicit shell, stderr as typed output by default, callers upgrading `never` to
+retriable, OTP-style in-place state migration as the default meaning of "hot
+upgrade", hostile-code claims on BEAM isolation, and putting whole-program AOT
+ahead of beamr correctness.
 
 ## 7. Anti-goals (the discipline that got us here)
 

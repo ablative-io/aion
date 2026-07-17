@@ -9,6 +9,7 @@ AWL-FLOW-VOCABULARY.md**. Everything else is build history or specialist depth.
 |---|---|
 | [AWL-BIG-PICTURE.md](AWL-BIG-PICTURE.md) | Direction map (2026-07-17): identity ("Aion **Work** Language"), thesis, cross-boundary type checking, supervised work, whole-stack opportunities. Deliberately not a spec. |
 | [AWL-2-SPEC.md](AWL-2-SPEC.md) | **The language spec of record** — grammar, types, semantics as built. |
+| [AWL-OPPORTUNITY-RESEARCH-2026-07-17.md](AWL-OPPORTUNITY-RESEARCH-2026-07-17.md) | Evidence-backed prior-art map (cross-boundary checking, command-running vocabulary, supervised execution, whole-stack affordances) + the ranked top-5 shortlist. Feeds BIG-PICTURE §6. |
 | [AWL-FLOW-VOCABULARY.md](AWL-FLOW-VOCABULARY.md) | The flow vocabulary (distribute/collect, visits, child, on failure, substeps) as designed and shipped (landings 1–6, all live). |
 | [AWL-BC-IR.md](AWL-BC-IR.md) | The MIR / bytecode-path intermediate representation — the direct MIR→BEAM emitter's ground truth. |
 | [AWL-EDITOR-TOOLING-SPEC.md](AWL-EDITOR-TOOLING-SPEC.md) | Editor tooling surface (LSP, grammar). Built: hover, goto-def, formatting, tree-sitter grammar. Not built: autocomplete. |
