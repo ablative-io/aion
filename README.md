@@ -1,20 +1,26 @@
 # Aion
 
-**A durable workflow engine for Gleam, Rust, and the BEAM.**
+**A durable workflow engine for AWL, Gleam, Rust, and the BEAM.**
 
 Aion gives you Temporal-class durable execution: workflows that survive
 `kill -9`, replay from event history, sleep durably for months, and resume
-exactly where they were. Workflows are written in type-safe Gleam, compiled
-to BEAM bytecode, and executed on [beamr](https://crates.io/crates/beamr) —
-a Rust implementation of the BEAM VM — with a Rust persistence and transport
-layer around it.
+exactly where they were. Write workflows in
+[AWL](docs/design/aion-authoring/awl/AWL-2-SPEC.md) — a small, checked
+language designed for real work — or in type-safe
+[Gleam](https://gleam.run). Both compile to BEAM bytecode and execute on
+[beamr](https://crates.io/crates/beamr), a Rust implementation of the
+BEAM VM, with durable persistence and transport around it.
 
 ```sh
 cargo install aion-cli --locked   # installs the `aion` binary
 ```
 
-**Start here: [Getting started](docs/GETTING-STARTED.md)** — zero to a
-completed durable workflow, with every file you need inline.
+**Start here:**
+
+- **[AWL quickstart](docs/QUICKSTART-AWL.md)** — write a `.awl` file,
+  deploy it, run it. The fastest path to a working durable workflow.
+- **[Getting started (Gleam)](docs/GETTING-STARTED.md)** — the full Gleam
+  authoring path, with every file inline.
 
 > Aion is the Greek conception of eternal, unbounded time — distinct from
 > Chronos, who is sequential, ticking time. A workflow that sleeps for three
@@ -25,9 +31,10 @@ completed durable workflow, with every file you need inline.
 - **Durable execution** — event-sourced histories with deterministic replay.
   Kill the server mid-run; on restart it replays history and the run resumes
   at the same await, without re-executing completed activities.
-- **Typed workflow authoring** in Gleam ([`aion_flow`](gleam/aion_flow/)):
-  activities, durable timers, signals, timeout races, live queries, child
-  workflows, continue-as-new — all statically typed via codecs.
+- **Two authoring paths** — [AWL](docs/design/aion-authoring/awl/AWL-2-SPEC.md),
+  a purpose-built language where every construct is checked before anything
+  runs (`aion deploy hello.awl`), or Gleam ([`aion_flow`](gleam/aion_flow/))
+  for full language power. Both are statically typed end to end.
 - **Activities on workers you own** — Rust, Python, and TypeScript worker
   SDKs over a gRPC worker protocol with acks, reconnect, heartbeats, and
   cooperative cancellation.
@@ -59,7 +66,9 @@ completed durable workflow, with every file you need inline.
 
 | Document | What it covers |
 |---|---|
-| [Getting started](docs/GETTING-STARTED.md) | Zero to completed workflow on published artifacts |
+| [AWL quickstart](docs/QUICKSTART-AWL.md) | Write an AWL workflow, deploy it, prove it survives a crash |
+| [Getting started (Gleam)](docs/GETTING-STARTED.md) | Zero to completed workflow using the Gleam SDK |
+| [AWL language reference](docs/design/aion-authoring/awl/AWL-2-SPEC.md) | The full AWL spec: types, expressions, flow control, fork/join, loops |
 | [Workflow authoring guide](docs/guides/workflows.md) | The entry contract, determinism rules, timers, signals, queries, children |
 | [Activities & workers guide](docs/guides/activities-and-workers.md) | Worker scaffolding, failure classification, retry semantics |
 | [Schema codegen guide](docs/guides/codegen.md) | Generate Gleam types + JSON codecs from your schemas; `--check` CI gate; supported subset |
@@ -69,11 +78,16 @@ completed durable workflow, with every file you need inline.
 | [Packaging reference](docs/packaging.md) | `workflow.toml` and the `.aion` format |
 | [Order saga walkthrough](docs/examples/order-saga.md) | The flagship example: retries, timeout races, child workflows, compensation |
 
-## Why Gleam + Rust + BEAM
+## Why AWL + Gleam + Rust + BEAM
 
-- **Gleam** — compile-time type safety for workflow definitions. Activity
-  inputs, results, signals, and queries are statically typed; you cannot
-  wire mismatched types together and ship it.
+- **AWL** — the Aion Work Language. A small, checked language purpose-built
+  for defining real work. Every construct is type-checked before anything
+  runs; the compiler catches shape mismatches across the
+  workflow-to-worker boundary. Write a `.awl` file, deploy it in one
+  command.
+- **Gleam** — full language power when AWL's vocabulary isn't enough.
+  Compile-time type safety for workflow definitions; activity inputs,
+  results, signals, and queries are statically typed end to end.
 - **BEAM** (via beamr) — the execution runtime: processes, mailboxes,
   selective receive, supervision, hot code loading. Every workflow is a
   process.
@@ -82,7 +96,7 @@ completed durable workflow, with every file you need inline.
 
 Temporal had to build distributed process management, supervision, and fault
 tolerance from scratch. The BEAM provides them natively; Aion adds the
-durability layer the BEAM traditionally lacks.
+durability the BEAM traditionally lacks.
 
 ## Architecture
 
@@ -113,7 +127,10 @@ The whole-system design lives in
 | `aion-server` | Server library: HTTP/gRPC/WebSocket + worker protocol |
 | `aion-worker` | Rust remote-worker SDK (library — scaffold your own binary) |
 | `aion-client` | Rust caller SDK |
-| `aion-cli` | The `aion` binary: server, packaging, deploy, workflow operations |
+| `aion-awl` | AWL compiler: lexer, parser, typechecker, emitters (Gleam + direct BEAM) |
+| `aion-awl-package` | AWL packaging for one-motion deploy (`aion deploy file.awl`) |
+| `aion-awl-lsp` | Language server for AWL (hover, go-to-definition, formatting) |
+| `aion-cli` | The `aion` binary: server, packaging, deploy, AWL toolchain, workflow operations |
 | `gleam/aion_flow` | The Gleam authoring SDK ([Hex](https://hex.pm/packages/aion_flow)) |
 | `gleam/aion_client` | The Gleam caller SDK |
 | `sdks/python/*`, `sdks/typescript/*` | Worker + client SDKs |
@@ -122,15 +139,16 @@ The whole-system design lives in
 ## Repository layout
 
 ```
-crates/            Rust crates (engine, store, package, proto, server, nif, worker, client, cli)
+crates/            Rust crates (engine, store, AWL compiler, server, worker, client, cli)
 gleam/             Gleam packages (aion_flow authoring SDK, aion_client)
 sdks/python/       Python worker + client SDKs
 sdks/typescript/   TypeScript worker + client SDKs
 apps/              The under-development ops console (React + Vite)
 conformance/       Cross-language conformance suites
-examples/          Working examples (hello-world first, order-fulfillment flagship)
+examples/          Working examples (awl-hello, hello-world, dev-brief, cargo-gates, and more)
+editors/           Editor plugins (nvim-awl, zed-awl)
+tools/             Workspace tooling (scaffold.py, tree-sitter-awl grammar)
 docs/              User documentation; docs/design/ holds the full design
-tools/             Workspace tooling (scaffold.py)
 workspace.json     Machine-readable description of every component
 ```
 
