@@ -81,6 +81,10 @@ pub(crate) struct EngineNifState {
     /// scheduler, and a removed tombstone would make a late ladder re-wake a
     /// dead pid forever.
     wake_observation_epochs: DashMap<u64, u64>,
+    /// Identity-bearing claims that serialize completion-monitor installation
+    /// per workflow process. A committed claim remains until that exact
+    /// monitor completes; failed uncommitted claims remove only themselves.
+    pub(super) monitor_installations: DashMap<u64, Arc<super::monitor::MonitorInstallation>>,
 }
 
 /// Epoch tombstone recorded for an exited workflow pid.

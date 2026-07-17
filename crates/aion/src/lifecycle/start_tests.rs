@@ -17,6 +17,8 @@ use crate::registry::{HandleResidency, Registry};
 use crate::runtime::{RuntimeConfig, RuntimeHandle};
 use crate::supervision::SupervisionTree;
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 fn payload(label: &str) -> Result<Payload, aion_core::PayloadError> {
     Payload::from_json(&json!({ "label": label }))
 }
@@ -298,6 +300,56 @@ async fn successful_start_appends_spawns_places_registers_and_returns_handle()
         }
         other => return Err(format!("expected WorkflowStarted, found {other:?}").into()),
     }
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn normal_start_monitor_failure_retracts_publication_and_observes_abort() -> TestResult {
+    let store = Arc::new(InMemoryStore::default());
+    let catalog = load_without_runtime_registration("monitor-failure");
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    runtime.register_waiting_test_module("monitor-failure__deployed", "run");
+    let supervision = Arc::new(SupervisionTree::new());
+    let registry = Arc::new(Registry::default());
+    let baseline_gates = runtime.activity_delivery_gate_count();
+    runtime.force_next_monitor_spawn_failure_for_test();
+
+    let error = start_workflow(
+        context(
+            store.clone(),
+            store,
+            Arc::clone(&catalog),
+            Arc::clone(&runtime),
+            Arc::clone(&supervision),
+            Arc::clone(&registry),
+        ),
+        "monitor-failure",
+        payload("input")?,
+    )
+    .await
+    .err()
+    .ok_or("forced normal-start monitor failure returned a handle")?;
+
+    let workflow_pids: Vec<_> = supervision
+        .type_supervisors()?
+        .into_iter()
+        .flat_map(|node| {
+            node.workflow_processes()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let pid = workflow_pids
+        .first()
+        .copied()
+        .ok_or("normal start did not reach supervision placement")?;
+    assert!(error.to_string().contains("forced test failure"));
+    assert!(registry.list()?.is_empty());
+    assert!(!runtime.is_live(pid));
+    assert!(runtime.process_cleanup_observed_for_test(pid));
+    assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);
     runtime.shutdown()?;
     Ok(())
 }

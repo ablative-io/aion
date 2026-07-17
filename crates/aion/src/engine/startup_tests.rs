@@ -12,12 +12,12 @@ use serde_json::json;
 
 use super::{
     RecoveredResident, StartupRecoveryContext, register_recovered_resident,
-    sweep_continued_as_new_replacements,
+    register_recovered_resident_with_reconcile, sweep_continued_as_new_replacements,
 };
 use crate::EngineError;
 use crate::loader::WorkflowCatalog;
 use crate::registry::Registry;
-use crate::runtime::{RuntimeConfig, RuntimeHandle};
+use crate::runtime::{RuntimeConfig, RuntimeHandle, RuntimeInput};
 use crate::supervision::SupervisionTree;
 use aion_store::InMemoryStore;
 
@@ -374,6 +374,78 @@ async fn recovered_monitor_spawn_failure_drains_retained_completion() -> TestRes
     assert!(error.to_string().contains("forced test failure"));
     assert!(context.registry.live_pid(&workflow_id)?.is_none());
     assert!(!runtime.is_live(pid));
+    assert_eq!(runtime.retained_activity_completions(), 0);
+    assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
+    assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovered_reconcile_failure_after_publication_runs_observed_abort() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    runtime.register_waiting_test_module("rollback-child", "run");
+    let context = recovery_context(
+        store,
+        Arc::clone(&runtime),
+        Arc::new(WorkflowCatalog::new()),
+    );
+    let workflow_id = WorkflowId::new_v4();
+    let run_id = RunId::new_v4();
+    let history = vec![Event::WorkflowStarted {
+        envelope: EventEnvelope {
+            seq: 1,
+            recorded_at: Utc::now(),
+            workflow_id: workflow_id.clone(),
+        },
+        workflow_type: "reconcile-failure".to_owned(),
+        input: Payload::from_json(&json!({"recovered": true}))?,
+        run_id: run_id.clone(),
+        parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("08".repeat(32)),
+    }];
+    let pid = runtime.spawn_test_process()?;
+    let child_input = RuntimeInput::from_payload(&Payload::from_json(&json!({"child": true}))?)?;
+    let child_pid = runtime.spawn_activity(pid, "rollback-child", "run", child_input)?;
+    let baseline_gates = runtime.activity_delivery_gate_count();
+    let seam_runtime = Arc::clone(&runtime);
+
+    let error = register_recovered_resident_with_reconcile(
+        &context,
+        RecoveredResident {
+            workflow_id: &workflow_id,
+            workflow_type: "reconcile-failure",
+            history: &history,
+            history_head: 1,
+            projected_status: WorkflowStatus::Running,
+            run_id: run_id.clone(),
+            loaded_version: aion_package::ContentHash::from_bytes([8; 32]),
+            pid,
+            recorder: None,
+        },
+        move |registry, published_workflow_id, _, _| {
+            assert_eq!(registry.live_pid(published_workflow_id)?, Some(pid));
+            seam_runtime.deliver_activity_completion_message_with_attempt(
+                pid,
+                "activity:47",
+                String::from(r#"{"recovered":true}"#),
+                Some(5),
+            )?;
+            Err(EngineError::Runtime {
+                reason: "forced reconcile failure after publication".to_owned(),
+            })
+        },
+    )
+    .await
+    .err()
+    .ok_or("forced reconcile failure registered a recovered resident")?;
+
+    assert!(error.to_string().contains("forced reconcile failure"));
+    assert!(context.registry.live_pid(&workflow_id)?.is_none());
+    assert!(!runtime.is_live(pid));
+    assert!(!runtime.is_live(child_pid));
+    assert!(runtime.process_cleanup_observed_for_test(pid));
     assert_eq!(runtime.retained_activity_completions(), 0);
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);

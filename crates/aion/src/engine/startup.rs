@@ -257,6 +257,24 @@ pub(crate) async fn register_recovered_resident(
     context: &StartupRecoveryContext,
     resident: RecoveredResident<'_>,
 ) -> Result<(), EngineError> {
+    register_recovered_resident_with_reconcile(
+        context,
+        resident,
+        |registry, workflow_id, run_id, history| {
+            registry.reconcile(workflow_id, run_id, history).map(|_| ())
+        },
+    )
+    .await
+}
+
+async fn register_recovered_resident_with_reconcile<F>(
+    context: &StartupRecoveryContext,
+    resident: RecoveredResident<'_>,
+    reconcile: F,
+) -> Result<(), EngineError>
+where
+    F: FnOnce(&Registry, &aion_core::WorkflowId, &RunId, &[Event]) -> Result<(), EngineError>,
+{
     let RecoveredResident {
         workflow_id,
         workflow_type,
@@ -268,10 +286,6 @@ pub(crate) async fn register_recovered_resident(
         pid,
         recorder,
     } = resident;
-    // Reuse the externally-held recorder (reopen: the one that appended
-    // WorkflowReopened) or build a fresh one at the history head (startup
-    // recovery). This is the single-writer seam: no second recorder is ever
-    // constructed for a run whose recorder was supplied.
     let recorder = recorder.unwrap_or_else(|| {
         Recorder::resume_at(
             workflow_id.clone(),
@@ -297,36 +311,44 @@ pub(crate) async fn register_recovered_resident(
     if let Err(error) = context
         .registry
         .insert((workflow_id.clone(), run_id.clone()), handle.clone())
-        .and_then(|_| context.registry.reconcile(workflow_id, &run_id, history))
-        .and_then(|_| {
-            context
-                .supervision
-                .place_workflow(workflow_type.to_owned(), pid)
-                .map(|_| ())
-        })
-        .and_then(|()| {
-            install_recovered_completion_monitor(
-                RecoveredMonitorParts {
-                    store: Arc::clone(&context.store),
-                    visibility_store: Arc::clone(&context.visibility_store),
-                    runtime: Arc::clone(&context.runtime),
-                    registry: Arc::clone(&context.registry),
-                    catalog: Arc::clone(&context.catalog),
-                    supervision: Arc::clone(&context.supervision),
-                    search_attribute_schema: Arc::clone(&context.search_attribute_schema),
-                },
-                &handle,
-            )
-        })
+        .map(|_| ())
     {
-        rollback_recovered_resident(
-            &context.runtime,
-            &context.registry,
+        return Err(rollback_unmonitored_recovered_resident(
+            context,
             workflow_id,
             &run_id,
             pid,
-            &error,
-        );
+            error,
+        ));
+    }
+    let registration = reconcile(&context.registry, workflow_id, &run_id, history).and_then(|()| {
+        context
+            .supervision
+            .place_workflow(workflow_type.to_owned(), pid)
+            .map(|_| ())
+    });
+    if let Err(error) = registration {
+        return Err(rollback_unmonitored_recovered_resident(
+            context,
+            workflow_id,
+            &run_id,
+            pid,
+            error,
+        ));
+    }
+    if let Err(error) = install_recovered_completion_monitor(
+        RecoveredMonitorParts {
+            store: Arc::clone(&context.store),
+            visibility_store: Arc::clone(&context.visibility_store),
+            runtime: Arc::clone(&context.runtime),
+            registry: Arc::clone(&context.registry),
+            catalog: Arc::clone(&context.catalog),
+            supervision: Arc::clone(&context.supervision),
+            search_attribute_schema: Arc::clone(&context.search_attribute_schema),
+        },
+        &handle,
+    ) {
+        rollback_recovered_registry_entry(&context.registry, workflow_id, &run_id, &error);
         return Err(error);
     }
     sweep_recorded_children(context, workflow_id, &run_id, history).await
@@ -367,19 +389,31 @@ fn install_recovered_completion_monitor(
     Ok(())
 }
 
-fn rollback_recovered_resident(
-    runtime: &RuntimeHandle,
-    registry: &Registry,
+fn rollback_unmonitored_recovered_resident(
+    context: &StartupRecoveryContext,
     workflow_id: &aion_core::WorkflowId,
     run_id: &RunId,
     pid: crate::Pid,
+    cause: EngineError,
+) -> EngineError {
+    rollback_recovered_registry_entry(&context.registry, workflow_id, run_id, &cause);
+    match context.runtime.abort_unmonitored_process(pid) {
+        Ok(()) => cause,
+        Err(abort_error) => {
+            tracing::error!(workflow_id = %workflow_id, pid, error = %abort_error, cause = %cause, "bounded recovered workflow abort failed after registration error");
+            abort_error.into_engine_error()
+        }
+    }
+}
+
+fn rollback_recovered_registry_entry(
+    registry: &Registry,
+    workflow_id: &aion_core::WorkflowId,
+    run_id: &RunId,
     cause: &EngineError,
 ) {
     if let Err(error) = registry.remove(workflow_id, run_id) {
-        tracing::warn!(workflow_id = %workflow_id, error = %error, "failed to roll back recovered workflow registry entry");
-    }
-    if let Err(error) = runtime.cancel_pid(pid) {
-        tracing::warn!(workflow_id = %workflow_id, pid, error = %error, cause = %cause, "failed to cancel recovered workflow process after startup registration failed");
+        tracing::warn!(workflow_id = %workflow_id, error = %error, cause = %cause, "failed to roll back recovered workflow registry entry");
     }
 }
 
