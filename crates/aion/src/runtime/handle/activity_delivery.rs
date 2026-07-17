@@ -116,6 +116,7 @@ pub(super) struct ActivityDeliveryGate {
 #[derive(Default)]
 pub(super) struct ActivityDeliveryTestSeams {
     marker_refusals: dashmap::DashMap<(Pid, Pid), u32>,
+    fail_next_monitor_spawn: AtomicBool,
 }
 
 enum ActivityDeliveryLock<'a> {
@@ -243,6 +244,20 @@ impl RuntimeHandle {
         self.activity_delivery_test_seams
             .marker_refusals
             .insert((workflow_pid, activity_sequence), refusals.max(1));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_next_monitor_spawn_failure_for_test(&self) {
+        self.activity_delivery_test_seams
+            .fail_next_monitor_spawn
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_monitor_spawn_failure_for_test(&self) -> bool {
+        self.activity_delivery_test_seams
+            .fail_next_monitor_spawn
+            .swap(false, Ordering::AcqRel)
     }
 
     /// Atomically take a retained outcome and its one-based delivery attempt.

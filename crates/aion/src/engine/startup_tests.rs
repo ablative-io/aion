@@ -10,7 +10,10 @@ use aion_store::{EventStore, StoreError};
 use chrono::Utc;
 use serde_json::json;
 
-use super::{StartupRecoveryContext, sweep_continued_as_new_replacements};
+use super::{
+    RecoveredResident, StartupRecoveryContext, register_recovered_resident,
+    sweep_continued_as_new_replacements,
+};
 use crate::EngineError;
 use crate::loader::WorkflowCatalog;
 use crate::registry::Registry;
@@ -307,6 +310,73 @@ async fn sweep_start_failure_without_a_successor_still_fails() -> TestResult {
         matches!(result, Err(EngineError::WorkflowNotFound { .. })),
         "a start failure without a durable successor must propagate: {result:?}"
     );
+    runtime.shutdown()?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recovered_monitor_spawn_failure_drains_retained_completion() -> TestResult {
+    let store: Arc<dyn EventStore> = Arc::new(InMemoryStore::default());
+    let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+    let context = recovery_context(
+        store,
+        Arc::clone(&runtime),
+        Arc::new(WorkflowCatalog::new()),
+    );
+    context
+        .supervision
+        .ensure_type_supervisor("recovered-monitor-failure")?;
+    let workflow_id = WorkflowId::new_v4();
+    let run_id = RunId::new_v4();
+    let history = vec![Event::WorkflowStarted {
+        envelope: EventEnvelope {
+            seq: 1,
+            recorded_at: Utc::now(),
+            workflow_id: workflow_id.clone(),
+        },
+        workflow_type: "recovered-monitor-failure".to_owned(),
+        input: Payload::from_json(&json!({"recovered": true}))?,
+        run_id: run_id.clone(),
+        parent_run_id: None,
+        package_version: aion_core::PackageVersion::new("07".repeat(32)),
+    }];
+    let pid = runtime.spawn_test_process()?;
+    let baseline_gates = runtime.activity_delivery_gate_count();
+    runtime.deliver_activity_completion_message_with_attempt(
+        pid,
+        "activity:43",
+        String::from(r#"{"recovered":true}"#),
+        Some(4),
+    )?;
+    assert_eq!(runtime.retained_activity_completions(), 1);
+    assert_eq!(runtime.retained_activity_attempt_count_for_test(), 1);
+    assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates + 1);
+
+    runtime.force_next_monitor_spawn_failure_for_test();
+    let error = register_recovered_resident(
+        &context,
+        RecoveredResident {
+            workflow_id: &workflow_id,
+            workflow_type: "recovered-monitor-failure",
+            history: &history,
+            history_head: 1,
+            projected_status: WorkflowStatus::Running,
+            run_id,
+            loaded_version: aion_package::ContentHash::from_bytes([7; 32]),
+            pid,
+            recorder: None,
+        },
+    )
+    .await
+    .err()
+    .ok_or("forced recovered monitor spawn failure registered a resident")?;
+
+    assert!(error.to_string().contains("forced test failure"));
+    assert!(context.registry.live_pid(&workflow_id)?.is_none());
+    assert!(!runtime.is_live(pid));
+    assert_eq!(runtime.retained_activity_completions(), 0);
+    assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
+    assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);
     runtime.shutdown()?;
     Ok(())
 }

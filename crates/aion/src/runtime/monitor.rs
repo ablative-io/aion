@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use beamr::process::ExitReason;
+
 use crate::{EngineError, Pid, RuntimeHandle};
 
 use super::outcome::{self, WorkflowProcessOutcome};
@@ -52,41 +54,76 @@ impl RuntimeHandle {
     {
         self.ensure_monitorable_pid(pid)?;
         let runtime = Arc::clone(self);
+        let monitor = move || {
+            let process_outcome =
+                outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
+            let monitored_outcome = match runtime.finish_process_monitor_cleanup(pid) {
+                Ok(()) => process_outcome,
+                Err(error) => {
+                    tracing::error!(%error, pid, "workflow activity cleanup failed");
+                    Err(error)
+                }
+            };
+            callback(monitored_outcome);
+        };
+        #[cfg(test)]
+        let force_monitor_spawn_failure = self.take_monitor_spawn_failure_for_test();
+        #[cfg(not(test))]
+        let force_monitor_spawn_failure = false;
+        let monitor_spawn = if force_monitor_spawn_failure {
+            Err(EngineError::Runtime {
+                reason: format!(
+                    "failed to spawn workflow monitor for process {pid}: forced test failure"
+                ),
+            })
+        } else {
+            Self::spawn_monitor_thread(pid, monitor)
+        };
+        if let Err(error) = monitor_spawn {
+            self.rollback_failed_monitor_installation(pid);
+            return Err(error);
+        }
+        Ok(ProcessMonitorHandle::installed())
+    }
+
+    fn rollback_failed_monitor_installation(&self, pid: Pid) {
+        if self.is_live(pid) {
+            self.scheduler.terminate_process(pid, ExitReason::Kill);
+        }
+        if let Err(error) =
+            outcome::workflow_process_outcome(&self.scheduler, &self.atom_table, pid)
+        {
+            tracing::warn!(%error, pid, "failed to decode terminated unmonitored workflow outcome");
+        }
+        if let Err(error) = self.finish_process_monitor_cleanup(pid) {
+            tracing::error!(%error, pid, "unmonitored workflow activity cleanup failed");
+        }
+    }
+
+    fn finish_process_monitor_cleanup(&self, pid: Pid) -> Result<(), EngineError> {
+        self.release_spawn_heaps(pid);
+        self.nif_state().cleanup_process(pid);
+        // A Normal workflow exit does not propagate through BEAM links, so
+        // any in-VM activity child still running must be torn down here.
+        self.kill_in_vm_children(pid);
+        // Retained completions racing process death are dropped transactionally
+        // before the exact per-pid gate is reaped after process-table removal.
+        let activity_cleanup = self.drain_activity_completions(pid);
+        self.finish_activity_delivery_cleanup(pid);
+        activity_cleanup
+    }
+
+    fn spawn_monitor_thread<F>(pid: Pid, monitor: F) -> Result<(), EngineError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
         std::thread::Builder::new()
             .name(format!("aion-workflow-monitor-{pid}"))
-            .spawn(move || {
-                let process_outcome =
-                    outcome::workflow_process_outcome(&runtime.scheduler, &runtime.atom_table, pid);
-                runtime.release_spawn_heaps(pid);
-                runtime.nif_state().cleanup_process(pid);
-                // A Normal workflow exit does not propagate through BEAM
-                // links, so any in-VM activity child still running (e.g.
-                // abandoned by a with_timeout expiry) must be torn down
-                // here — the exit side of the "side effects die with the
-                // run" contract, and what unblocks the child's exit watcher.
-                runtime.kill_in_vm_children(pid);
-                // D5: completions delivered after the workflow stopped
-                // awaiting them (race losers, post-exit deliveries) are
-                // never taken; drop them with the process. A poisoned scoped
-                // gate is a typed monitor failure, never silent continuation.
-                let activity_cleanup = runtime.drain_activity_completions(pid);
-                // beamr publishes the exit tombstone before process-table
-                // removal. This monitor is the per-pid removal notification:
-                // it waits without holding the gate, then reaps that exact gate.
-                runtime.finish_activity_delivery_cleanup(pid);
-                let monitored_outcome = match activity_cleanup {
-                    Ok(()) => process_outcome,
-                    Err(error) => {
-                        tracing::error!(%error, pid, "workflow activity cleanup failed");
-                        Err(error)
-                    }
-                };
-                callback(monitored_outcome);
-            })
+            .spawn(monitor)
             .map_err(|error| EngineError::Runtime {
                 reason: format!("failed to spawn workflow monitor for process {pid}: {error}"),
             })?;
-        Ok(ProcessMonitorHandle::installed())
+        Ok(())
     }
 
     /// Test-only monitor installation status probe.
@@ -114,6 +151,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::runtime::{RuntimeConfig, RuntimeHandle};
+    use aion_core::{ContentType, Payload};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -154,6 +192,48 @@ mod tests {
             .ok_or("monitor accepted a pid this runtime never spawned")?;
 
         assert!(error.to_string().contains("never spawned"));
+        runtime.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn monitor_spawn_failure_drains_retained_completion_transaction() -> TestResult {
+        let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
+        let baseline_gates = runtime.activity_delivery_gate_count();
+        let pid = runtime.spawn_test_process()?;
+        runtime.deliver_activity_completion_message_with_attempt(
+            pid,
+            "activity:41",
+            String::from(r#"{"completed":true}"#),
+            Some(3),
+        )?;
+        assert_eq!(
+            runtime.activity_result(pid, 41),
+            Some(Payload::new(
+                ContentType::Json,
+                br#"{"completed":true}"#.to_vec()
+            ))
+        );
+        assert_eq!(runtime.retained_activity_attempt_count_for_test(), 1);
+        assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates + 1);
+
+        runtime.force_next_monitor_spawn_failure_for_test();
+        let error = runtime
+            .monitor_process_for_test(pid, |_| {})
+            .err()
+            .ok_or("forced monitor spawn failure installed a monitor")?;
+
+        assert!(
+            error.to_string().contains("forced test failure"),
+            "typed monitor installation error must remain visible"
+        );
+        assert!(
+            !runtime.is_live(pid),
+            "failed monitor installation must synchronously terminate the process"
+        );
+        assert_eq!(runtime.retained_activity_completions(), 0);
+        assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
+        assert_eq!(runtime.activity_delivery_gate_count(), baseline_gates);
         runtime.shutdown()?;
         Ok(())
     }
