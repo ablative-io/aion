@@ -83,6 +83,7 @@ fn monitor_drain_overlaps_completion_before_enqueue_and_rolls_it_back() -> TestR
                 delivery_runtime.enqueue_activity_marker(
                     workflow_pid,
                     delivery_runtime.activity_complete_atom(),
+                    7,
                     "activity:7",
                 )
             },
@@ -157,6 +158,7 @@ fn monitor_drain_overlaps_failure_before_enqueue_and_rolls_it_back() -> TestResu
                 delivery_runtime.enqueue_activity_marker(
                     workflow_pid,
                     delivery_runtime.activity_failed_atom(),
+                    9,
                     "activity:9",
                 )
             },
@@ -221,6 +223,7 @@ fn monitor_drains_outcome_when_death_follows_successful_enqueue() -> TestResult 
                 delivery_runtime.enqueue_activity_marker(
                     workflow_pid,
                     delivery_runtime.activity_complete_atom(),
+                    11,
                     "activity:11",
                 )?;
                 enqueued_sender

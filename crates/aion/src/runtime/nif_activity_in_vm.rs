@@ -190,34 +190,34 @@ fn dispatch_in_vm_with_context(
                         correlation.clone(),
                     );
                 }
-                Err(error) => {
-                    // Scheduled/Started are already recorded: surfacing this
-                    // as an FFI error would let live code take a branch replay
-                    // cannot re-derive (replay re-resolves to ResumeLive and
-                    // returns Ok). Instead the failure is retained on the SAME
-                    // correlation, so the await records the terminal
-                    // `ActivityFailed` durably — deterministic on both sides.
-                    let reason = format!("terminal:in-vm activity child spawn failed: {error}");
-                    if let Err(delivery_error) = runtime.deliver_activity_failure_message(
-                        context.pid(),
-                        &correlation,
-                        reason,
-                    ) {
-                        // The failure entry is retained before the wake marker
-                        // is attempted; a marker refusal (we ARE the executing
-                        // process) is expected and harmless — the await's
-                        // first pass reads the retained entry directly.
-                        tracing::debug!(
-                            %delivery_error,
-                            workflow_pid = context.pid(),
-                            correlation_id = %correlation,
-                            "in-vm spawn-failure marker not queued; retained entry settles the await"
-                        );
-                    }
-                }
+                Err(error) => retain_spawn_failure(runtime, context.pid(), &correlation, &error),
             }
             Ok(ok_result_term(ctx, correlation.as_bytes()).unwrap_or(Term::NIL))
         }
+    }
+}
+
+/// Retain the deterministic terminal for a child spawn that failed after the
+/// activity was recorded as started. The workflow is executing this NIF, so a
+/// marker refusal is expected; the next await reads the retained keyed error.
+pub(super) fn retain_spawn_failure(
+    runtime: &crate::RuntimeHandle,
+    workflow_pid: u64,
+    correlation: &str,
+    error: &impl std::fmt::Display,
+) {
+    let reason = format!("terminal:in-vm activity child spawn failed: {error}");
+    if let Err(delivery_error) =
+        runtime.deliver_activity_failure_message(workflow_pid, correlation, reason)
+    {
+        // The failure entry is retained before the wake marker is attempted;
+        // the await's first pass therefore settles without requiring the wake.
+        tracing::debug!(
+            %delivery_error,
+            workflow_pid,
+            correlation_id = correlation,
+            "in-vm spawn-failure marker not queued; retained entry settles the await"
+        );
     }
 }
 

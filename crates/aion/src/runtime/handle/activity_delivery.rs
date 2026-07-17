@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use beamr::atom::Atom;
 use dashmap::mapref::entry::Entry;
 
 use crate::error::EngineError;
@@ -111,6 +112,12 @@ pub(super) struct ActivityDeliveryGate {
     cleanup_started: AtomicBool,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct ActivityDeliveryTestSeams {
+    marker_refusals: dashmap::DashMap<(Pid, Pid), u32>,
+}
+
 enum ActivityDeliveryLock<'a> {
     Clean(MutexGuard<'a, ActivityDeliveryState>),
     Poisoned(MutexGuard<'a, ActivityDeliveryState>),
@@ -119,10 +126,11 @@ enum ActivityDeliveryLock<'a> {
 impl RuntimeHandle {
     /// Retain an outcome and deliver its wake marker under the workflow gate.
     ///
-    /// After successful marker delivery, the outcome remains retained until the
-    /// awaiting NIF takes it or workflow-death cleanup drains it. A failed marker
-    /// delivery restores any outcome and attempt metadata that this delivery
-    /// replaced, and removes only state introduced by this delivery.
+    /// The outcome remains retained until the awaiting NIF takes it or the
+    /// workflow monitor confirms death and drains it. A live marker refusal
+    /// preserves a first publication because an executing workflow reads that
+    /// keyed state on its next await; a failed duplicate publication restores
+    /// the outcome and attempt metadata it replaced.
     pub(super) fn retain_activity_outcome_and_deliver_marker<V, F>(
         &self,
         workflow_pid: Pid,
@@ -150,16 +158,14 @@ impl RuntimeHandle {
             });
             let marker_delivery = deliver_marker();
             if marker_delivery.is_err() {
+                let replaced_outcome = previous_outcome.is_some();
                 if let Some(previous) = previous_outcome {
                     retained.insert(key, previous);
-                } else {
-                    retained.remove(&key);
-                    state.release_outcome(key.1, kind);
                 }
                 if let Some(previous) = previous_attempt {
                     if let Some(previous) = previous {
                         self.activity_delivery_attempts.insert(key, previous);
-                    } else {
+                    } else if replaced_outcome {
                         self.activity_delivery_attempts.remove(&key);
                         state.release_attempt(key.1);
                     }
@@ -167,6 +173,76 @@ impl RuntimeHandle {
             }
             marker_delivery
         })
+    }
+
+    pub(super) fn enqueue_activity_marker(
+        &self,
+        workflow_pid: Pid,
+        marker: Atom,
+        activity_sequence: Pid,
+        description: &str,
+    ) -> Result<(), EngineError> {
+        let attempts = self.signal_delivery.max_enqueue_attempts.max(1);
+        let mut backoff = self.signal_delivery.initial_backoff;
+        for attempt in 1..=attempts {
+            #[cfg(test)]
+            let refused_for_test =
+                self.refuse_activity_marker_for_test(workflow_pid, activity_sequence);
+            #[cfg(not(test))]
+            let refused_for_test = false;
+            if !refused_for_test && self.scheduler.enqueue_atom_message(workflow_pid, marker) {
+                self.confirm_marker_wake(workflow_pid);
+                return Ok(());
+            }
+            if self.scheduler.process_table().get(workflow_pid).is_none() {
+                return Err(runtime_error(format!(
+                    "failed to deliver activity marker {description} (sequence {activity_sequence}) to {workflow_pid}: process is not live"
+                )));
+            }
+            if attempt < attempts {
+                super::delivery::sleep_signal_delivery_backoff(backoff);
+                backoff = super::delivery::next_signal_delivery_backoff(
+                    backoff,
+                    self.signal_delivery.max_backoff,
+                );
+            }
+        }
+        Err(runtime_error(format!(
+            "failed to deliver activity marker {description} (sequence {activity_sequence}) to {workflow_pid} after {attempts} attempts"
+        )))
+    }
+
+    #[cfg(test)]
+    fn refuse_activity_marker_for_test(&self, workflow_pid: Pid, activity_sequence: Pid) -> bool {
+        let key = (workflow_pid, activity_sequence);
+        let Some(mut remaining) = self
+            .activity_delivery_test_seams
+            .marker_refusals
+            .get_mut(&key)
+        else {
+            return false;
+        };
+        *remaining = remaining.saturating_sub(1);
+        let exhausted = *remaining == 0;
+        drop(remaining);
+        if exhausted {
+            self.activity_delivery_test_seams
+                .marker_refusals
+                .remove(&key);
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_activity_marker_refusals_for_test(
+        &self,
+        workflow_pid: Pid,
+        activity_sequence: Pid,
+        refusals: u32,
+    ) {
+        self.activity_delivery_test_seams
+            .marker_refusals
+            .insert((workflow_pid, activity_sequence), refusals.max(1));
     }
 
     /// Atomically take a retained outcome and its one-based delivery attempt.

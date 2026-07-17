@@ -93,6 +93,8 @@ pub struct RuntimeHandle {
     /// genuine attempt. Absence means the first delivery (paths that never
     /// retry — outbox re-delivery and in-VM execution — retain nothing).
     activity_delivery_attempts: Arc<dashmap::DashMap<(Pid, Pid), u32>>,
+    #[cfg(test)]
+    activity_delivery_test_seams: activity_delivery::ActivityDeliveryTestSeams,
     /// Live in-VM activity children per workflow pid.
     ///
     /// A BEAM link tears a child down when its workflow dies ABNORMALLY, but
@@ -161,6 +163,8 @@ impl RuntimeHandle {
             activity_errors: Arc::new(dashmap::DashMap::new()),
             activity_delivery_gates: dashmap::DashMap::new(),
             activity_delivery_attempts: Arc::new(dashmap::DashMap::new()),
+            #[cfg(test)]
+            activity_delivery_test_seams: activity_delivery::ActivityDeliveryTestSeams::default(),
             in_vm_children: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
             spawn_heaps: Arc::new(dashmap::DashMap::new()),

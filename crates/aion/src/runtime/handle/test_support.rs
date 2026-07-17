@@ -5,7 +5,21 @@ use beamr::loader::decode::compact::Operand;
 use beamr::module::{Module, ResolvedImport, ResolvedImportTarget};
 use beamr::term::Term;
 
-use super::{EngineError, Mfa, NifRegistration, RuntimeHandle};
+use super::{EngineError, Mfa, NifRegistration, RuntimeHandle, RuntimeInput};
+
+impl RuntimeInput {
+    pub(crate) fn from_payloads_for_test(
+        payloads: &[aion_core::Payload],
+    ) -> Result<Self, EngineError> {
+        let mut combined = Self::default();
+        for payload in payloads {
+            let input = Self::from_payload(payload)?;
+            combined.terms.extend(input.terms);
+            combined.heaps.extend(input.heaps);
+        }
+        Ok(combined)
+    }
+}
 
 impl RuntimeHandle {
     pub(crate) fn install_test_activity_nif(
@@ -81,7 +95,7 @@ impl RuntimeHandle {
 
 fn test_activity_answer(
     args: &[Term],
-    _context: &mut beamr::native::ProcessContext,
+    _: &mut beamr::native::ProcessContext,
 ) -> Result<Term, Term> {
     if args.len() > 255 {
         return Err(Term::small_int(0));
@@ -89,10 +103,7 @@ fn test_activity_answer(
     Ok(Term::small_int(42))
 }
 
-fn test_activity_fail(
-    args: &[Term],
-    _context: &mut beamr::native::ProcessContext,
-) -> Result<Term, Term> {
+fn test_activity_fail(args: &[Term], _: &mut beamr::native::ProcessContext) -> Result<Term, Term> {
     if args.len() > 255 {
         return Ok(Term::NIL);
     }

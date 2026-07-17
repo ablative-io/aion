@@ -220,7 +220,7 @@ impl RuntimeHandle {
                 kind: ActivityOutcomeKind::Result,
                 attempt,
             },
-            || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
+            || self.enqueue_activity_marker(workflow_pid, marker, activity_id, correlation_id),
         )
     }
 
@@ -264,7 +264,7 @@ impl RuntimeHandle {
                 kind: ActivityOutcomeKind::Error,
                 attempt,
             },
-            || self.enqueue_activity_marker(workflow_pid, marker, correlation_id),
+            || self.enqueue_activity_marker(workflow_pid, marker, activity_id, correlation_id),
         )
     }
 
@@ -365,14 +365,12 @@ impl RuntimeHandle {
                 attempt: None,
             },
             || {
-                if self.scheduler.enqueue_atom_message(parent_pid, marker) {
-                    self.confirm_marker_wake(parent_pid);
-                    Ok(())
-                } else {
-                    Err(runtime_error(format!(
-                        "failed to deliver activity result from {activity_pid} to {parent_pid}"
-                    )))
-                }
+                self.enqueue_activity_marker(
+                    parent_pid,
+                    marker,
+                    activity_pid,
+                    &format!("activity process {activity_pid}"),
+                )
             },
         )
     }
@@ -392,27 +390,6 @@ impl RuntimeHandle {
         // beamr's enqueue declines; a recovery-re-armed timer can fire
         // before the recovered process slot is fully materialized.
         self.enqueue_signal_marker_with_retry(workflow_pid, marker)
-    }
-
-    fn enqueue_activity_marker(
-        &self,
-        workflow_pid: Pid,
-        marker: Atom,
-        correlation_id: &str,
-    ) -> Result<(), EngineError> {
-        if self.scheduler.enqueue_atom_message(workflow_pid, marker) {
-            self.confirm_marker_wake(workflow_pid);
-            tracing::debug!(
-                workflow_pid,
-                correlation_id,
-                "delivered activity completion marker to workflow mailbox via scheduler queue"
-            );
-            Ok(())
-        } else {
-            Err(runtime_error(format!(
-                "failed to deliver activity completion marker {correlation_id} to {workflow_pid}"
-            )))
-        }
     }
 
     /// Store a typed activity error for a trapped activity EXIT signal.
@@ -635,7 +612,7 @@ impl RuntimeHandle {
     /// NOTE: this workaround was written against beamr 0.4.9. The crate is now
     /// pinned to beamr 0.6.4; the `Wait`-arm gap may have been fixed upstream,
     /// so this ladder needs re-validation against 0.6.4 and may now be stale.
-    fn confirm_marker_wake(&self, workflow_pid: Pid) {
+    pub(super) fn confirm_marker_wake(&self, workflow_pid: Pid) {
         let state = std::sync::Arc::clone(self.nif_state());
         let snapshot = state.wake_observation_epoch(workflow_pid);
         self.wake_confirmer
@@ -746,7 +723,7 @@ fn correlation_to_activity_pid(correlation_id: &str) -> Result<Pid, EngineError>
     })
 }
 
-fn next_signal_delivery_backoff(
+pub(super) fn next_signal_delivery_backoff(
     current: std::time::Duration,
     max: std::time::Duration,
 ) -> std::time::Duration {
@@ -754,7 +731,7 @@ fn next_signal_delivery_backoff(
     if doubled > max { max } else { doubled }
 }
 
-fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
+pub(super) fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
     if duration.is_zero() {
         std::thread::yield_now();
     } else {
