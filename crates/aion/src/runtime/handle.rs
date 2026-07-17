@@ -75,6 +75,12 @@ pub struct RuntimeHandle {
     nif_state: Arc<super::nif_state::EngineNifState>,
     activity_results: Arc<dashmap::DashMap<(Pid, Pid), Payload>>,
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
+    /// Serializes retained activity delivery with workflow-death draining.
+    ///
+    /// beamr publishes an exit tombstone before removing the process from its
+    /// live/enqueueable tables, so the monitor holds this barrier through that
+    /// removal while delivery holds it across liveness, retention, and enqueue.
+    activity_delivery_barrier: Mutex<()>,
     /// One-based delivery attempt that produced a retained two-phase activity
     /// outcome, keyed like [`Self::activity_results`] / [`Self::activity_errors`]
     /// (#197). Noted by the completion task's retry loop when it delivers a
@@ -111,6 +117,10 @@ pub struct RuntimeHandle {
     /// the live table. Monitor installation uses this to accept processes
     /// that exited between spawn and monitor setup.
     spawned_pid_watermark: AtomicU64,
+    #[cfg(test)]
+    activity_drain_observed: AtomicU64,
+    #[cfg(test)]
+    activity_delivery_waiting: AtomicU64,
 }
 
 impl RuntimeHandle {
@@ -148,6 +158,7 @@ impl RuntimeHandle {
             nif_state,
             activity_results: Arc::new(dashmap::DashMap::new()),
             activity_errors: Arc::new(dashmap::DashMap::new()),
+            activity_delivery_barrier: Mutex::new(()),
             activity_delivery_attempts: Arc::new(dashmap::DashMap::new()),
             in_vm_children: Arc::new(dashmap::DashMap::new()),
             registered_nif_modules: Arc::new(dashmap::DashSet::new()),
@@ -156,6 +167,10 @@ impl RuntimeHandle {
             outbox_enabled: config.outbox_enabled,
             wake_confirmer: super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?,
             spawned_pid_watermark: AtomicU64::new(0),
+            #[cfg(test)]
+            activity_drain_observed: AtomicU64::new(0),
+            #[cfg(test)]
+            activity_delivery_waiting: AtomicU64::new(0),
         })
     }
 
@@ -776,6 +791,7 @@ fn register_all_bifs(
     Ok(())
 }
 
+mod activity_delivery;
 mod delivery;
 
 pub(crate) use delivery::InVmChildOutcome;
