@@ -82,7 +82,7 @@ hostname = "0.4"
 # fixes DOWN reservation arithmetic (heap-full fix for the 2026-07-14 live AWL
 # child failure); 0.14.0 added `loader/encode` (the `.beam` container writer
 # behind the `encode` feature) consumed by aion-awl's BC-3 bytecode emitter.
-beamr = { version = "0.15.2", features = ["json", "encode"] }
+beamr = { version = "0.15.3", features = ["json", "encode"] }
 haematite = "0.4.1"
 # 0.2.4 carries the park-flip (idle connections park on fd readiness — retires
 # the embedded front door's per-connection busy-spin measured 2026-07-13) and
