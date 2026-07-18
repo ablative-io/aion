@@ -240,6 +240,36 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0244e6b7f0decb2c29949fa6d0fcf64874661014e6b293d9b329c6218db7bcc4"
 dependencies = [
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
+ "cranelift-native",
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-queue",
+ "dashmap",
+ "flate2",
+ "getrandom 0.4.3",
+ "gleam-types",
+ "io-uring",
+ "libc",
+ "md5",
+ "num_cpus",
+ "rand",
+ "rustix",
+ "tokio",
+ "unicode-segmentation",
+ "web-time",
+ "zstd",
+]
+
+[[package]]
+name = "beamr"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee5686169aebff64e53c85a6b4ffb8a6cf4ac07a0d293d780a41cda0d21b1e12"
+dependencies = [
  "base64",
  "cranelift-codegen",
  "cranelift-frontend",
@@ -256,6 +286,7 @@ dependencies = [
  "io-uring",
  "libc",
  "md5",
+ "mio",
  "num_cpus",
  "rand",
  "rustix",
@@ -950,7 +981,7 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22d88ed035a72046294d2cdeb6ccc59ea14548e5e00f8ad1e954f8ca412a80f7"
 dependencies = [
- "beamr",
+ "beamr 0.13.0",
  "blake3",
  "crc32fast",
  "dashmap",
@@ -1360,17 +1391,18 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "liminal-rs"
-version = "0.2.3"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f9b7c3808a3f6c9f45aaf12fbc2fdc5cddc7ec76dadd3ada6cf3faedc31a904"
+checksum = "708e4f2100764a0a0239b7baa40fc2bd82b047fe54f8a4c1f2a88b897c2ff451"
 dependencies = [
  "async-trait",
- "beamr",
+ "beamr 0.15.2",
  "chrono",
  "haematite",
  "jsonschema",
  "rand",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "uuid",
@@ -1378,9 +1410,9 @@ dependencies = [
 
 [[package]]
 name = "liminal-sdk"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a4a337de01640733141b41f41cd858af36e8f9cd3ee23350a416cf3cb62187"
+checksum = "62c1a8ccec19b90dddfba31cf2a6535775dd37484f76318ad96a2c2fa86283b4"
 dependencies = [
  "futures-core",
  "liminal-rs",
@@ -1491,6 +1523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02bd0af71c67b473010cbbc60715ee815645a4dc942899111f494b4b737d6fda"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
