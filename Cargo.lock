@@ -57,7 +57,7 @@ dependencies = [
 name = "aion-awl"
 version = "0.8.0"
 dependencies = [
- "beamr 0.15.3",
+ "beamr 0.15.4",
  "flate2",
  "gleam-types",
  "serde_json",
@@ -84,7 +84,7 @@ version = "0.8.0"
 dependencies = [
  "aion-awl",
  "aion-package",
- "beamr 0.15.3",
+ "beamr 0.15.4",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
@@ -214,7 +214,7 @@ name = "aion-nif"
 version = "0.8.0"
 dependencies = [
  "aion-core",
- "beamr 0.15.3",
+ "beamr 0.15.4",
  "serde",
  "serde_json",
 ]
@@ -276,7 +276,7 @@ dependencies = [
  "aion-store-haematite",
  "aion-store-libsql",
  "async-trait",
- "beamr 0.15.3",
+ "beamr 0.15.4",
  "chrono",
  "dashmap",
  "fs4",
@@ -745,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "beamr"
-version = "0.15.3"
+version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9822893a8d33197a9e232021972e7f8cf6ea073959d317f7168a0218220d9bb1"
+checksum = "4ac506fe245e0beb231077ab74edeaca999db06b56c43e2a206b9dc103e736a8"
 dependencies = [
  "base64 0.22.1",
  "cranelift-codegen",
@@ -2925,7 +2925,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "708e4f2100764a0a0239b7baa40fc2bd82b047fe54f8a4c1f2a88b897c2ff451"
 dependencies = [
  "async-trait",
- "beamr 0.15.3",
+ "beamr 0.15.4",
  "chrono",
  "haematite",
  "jsonschema",
@@ -2958,7 +2958,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e7c0ace714c74fa07fbeeafaf2b6f43f753cbd076a6788b9533335d38f2e621"
 dependencies = [
  "anyhow",
- "beamr 0.15.3",
+ "beamr 0.15.4",
  "clap",
  "haematite",
  "liminal-rs",
