@@ -351,8 +351,8 @@ fn withheld_removal_does_not_block_reregistered_workflow_delivery() -> TestResul
     let cancel_thread = std::thread::spawn(move || cancel_runtime.cancel_pid(old_pid));
 
     wait_until(
-        || runtime.scheduler.peek_exit_reason(old_pid).is_some(),
-        "old workflow never published an exit tombstone",
+        || matches!(runtime.process_exits.has_terminal(old_pid), Ok(true)),
+        "old workflow exit was not cached by the runtime drainer",
     )?;
     assert!(
         runtime.is_live(old_pid),

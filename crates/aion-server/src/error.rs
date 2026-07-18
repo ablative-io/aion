@@ -8,6 +8,11 @@ use aion_proto::WireError;
 use aion_store::StoreError;
 use thiserror::Error;
 
+#[path = "error_engine.rs"]
+mod engine;
+#[path = "error_process_exit.rs"]
+mod process_exit;
+
 /// Server-library error taxonomy.
 #[derive(Debug, Error)]
 pub enum ServerError {
@@ -389,13 +394,33 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
             simple_engine_fields("ProcessExitOwnershipPoisoned", source)
         }
         EngineError::ProcessExitStatePoisoned { .. } => {
-            simple_engine_fields("ProcessExitStatePoisoned", source)
+            process_exit::trace("ProcessExitStatePoisoned", source)
         }
-        EngineError::ProcessExitObserverPoisoned { .. } => {
-            simple_engine_fields("ProcessExitObserverPoisoned", source)
+        EngineError::ProcessExitSubscriptionUnavailable => {
+            process_exit::trace("ProcessExitSubscriptionUnavailable", source)
         }
-        EngineError::ProcessExitUnavailable { .. } => {
-            simple_engine_fields("ProcessExitUnavailable", source)
+        EngineError::ProcessExitDrainerSpawn { .. } => {
+            process_exit::trace("ProcessExitDrainerSpawn", source)
+        }
+        EngineError::ProcessExitDrainerPoisoned => {
+            process_exit::trace("ProcessExitDrainerPoisoned", source)
+        }
+        EngineError::ProcessExitOutcomeMissingAfterEvent { .. } => {
+            process_exit::trace("ProcessExitOutcomeMissingAfterEvent", source)
+        }
+        EngineError::ProcessExitEventStreamDisconnected => {
+            process_exit::trace("ProcessExitEventStreamDisconnected", source)
+        }
+        EngineError::ProcessExitDrainerShutdownTimedOut { .. } => {
+            process_exit::trace("ProcessExitDrainerShutdownTimedOut", source)
+        }
+        EngineError::ProcessExitDrainerPanicked => {
+            process_exit::trace("ProcessExitDrainerPanicked", source)
+        }
+        EngineError::ProcessExitCallbackDispatcherPoisoned
+        | EngineError::ProcessExitCallbackDispatcherUnavailable
+        | EngineError::ProcessExitCallbackDispatcherShutdownTimedOut { .. } => {
+            process_exit::callback_trace(source)
         }
         EngineError::ProcessExitAlreadyTerminal { .. } => {
             simple_engine_fields("ProcessExitAlreadyTerminal", source)
@@ -407,20 +432,7 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::CatalogPoisoned => simple_engine_fields("CatalogPoisoned", source),
         EngineError::NifRegistration { .. } => simple_engine_fields("NifRegistration", source),
         EngineError::SignalRouter(_) => simple_engine_fields("SignalRouter", source),
-        EngineError::Query(query) => simple_engine_fields(query_error_type(query), source),
-    }
-}
-
-/// Trace discriminator for live-query dispatch failures.
-fn query_error_type(source: &aion::QueryError) -> &'static str {
-    match source {
-        aion::QueryError::UnknownQuery(_) => "UnknownQuery",
-        aion::QueryError::Timeout => "QueryTimeout",
-        aion::QueryError::NotRunning(_) => "QueryNotRunning",
-        aion::QueryError::Unknown(_) => "QueryUnknownWorkflow",
-        aion::QueryError::ReplyDropped => "QueryReplyDropped",
-        aion::QueryError::HandlerFailed { .. } => "QueryFailed",
-        aion::QueryError::Engine(_) => "QueryEngine",
+        EngineError::Query(query) => simple_engine_fields(engine::query_error_type(query), source),
     }
 }
 
@@ -461,9 +473,7 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         // Reopen precondition failure (AD-012): the run is not a reopenable
         // terminal. Carried on the dedicated `invalid_state` wire code (gRPC
         // FailedPrecondition / HTTP 409), distinct from NotFound and Backend.
-        EngineError::InvalidState { reason } => {
-            WireError::invalid_state_with_type("InvalidState", reason.clone())
-        }
+        EngineError::InvalidState { reason } => engine::invalid_state_wire(reason),
         EngineError::ScheduleNotFound { .. } => {
             WireError::not_found_with_type("ScheduleNotFound", source.to_string())
         }
@@ -471,26 +481,15 @@ fn wire_from_engine(source: &EngineError) -> WireError {
             WireError::not_running_with_type("ShuttingDown", source.to_string())
         }
         EngineError::Store(store) => wire_from_store(store),
-        EngineError::Durability(durability) => match durability {
-            aion::durability::DurabilityError::Store(store) => wire_from_store(store),
-            aion::durability::DurabilityError::NonDeterminism(_)
-            | aion::durability::DurabilityError::HistoryShape { .. }
-            | aion::durability::DurabilityError::SearchAttribute(_) => {
-                WireError::backend_with_type("Durability", source.to_string())
-            }
-        },
-        EngineError::MissingStore => {
-            WireError::backend_with_type("MissingStore", source.to_string())
-        }
+        EngineError::Durability(durability) => engine::durability_wire(durability, source),
+        EngineError::MissingStore => engine::backend_wire("MissingStore", source),
         EngineError::MissingVisibilityStore => {
-            WireError::backend_with_type("MissingVisibilityStore", source.to_string())
+            engine::backend_wire("MissingVisibilityStore", source)
         }
         EngineError::ConflictingEventPublisher => {
-            WireError::backend_with_type("ConflictingEventPublisher", source.to_string())
+            engine::backend_wire("ConflictingEventPublisher", source)
         }
-        EngineError::EventStreaming(_) => {
-            WireError::backend_with_type("EventStreaming", source.to_string())
-        }
+        EngineError::EventStreaming(_) => engine::backend_wire("EventStreaming", source),
         EngineError::Load { .. } => WireError::backend_with_type("Load", source.to_string()),
         // Deploy-surface refusals (the §2.4 mapping table): unknown
         // `(type, version)` is not-found; route-active and pinned versions
@@ -526,13 +525,33 @@ fn wire_from_engine(source: &EngineError) -> WireError {
             WireError::backend_with_type("ProcessExitOwnershipPoisoned", source.to_string())
         }
         EngineError::ProcessExitStatePoisoned { .. } => {
-            WireError::backend_with_type("ProcessExitStatePoisoned", source.to_string())
+            process_exit::wire("ProcessExitStatePoisoned", source)
         }
-        EngineError::ProcessExitObserverPoisoned { .. } => {
-            WireError::backend_with_type("ProcessExitObserverPoisoned", source.to_string())
+        EngineError::ProcessExitSubscriptionUnavailable => {
+            process_exit::wire("ProcessExitSubscriptionUnavailable", source)
         }
-        EngineError::ProcessExitUnavailable { .. } => {
-            WireError::backend_with_type("ProcessExitUnavailable", source.to_string())
+        EngineError::ProcessExitDrainerSpawn { .. } => {
+            process_exit::wire("ProcessExitDrainerSpawn", source)
+        }
+        EngineError::ProcessExitDrainerPoisoned => {
+            process_exit::wire("ProcessExitDrainerPoisoned", source)
+        }
+        EngineError::ProcessExitOutcomeMissingAfterEvent { .. } => {
+            process_exit::wire("ProcessExitOutcomeMissingAfterEvent", source)
+        }
+        EngineError::ProcessExitEventStreamDisconnected => {
+            process_exit::wire("ProcessExitEventStreamDisconnected", source)
+        }
+        EngineError::ProcessExitDrainerShutdownTimedOut { .. } => {
+            process_exit::wire("ProcessExitDrainerShutdownTimedOut", source)
+        }
+        EngineError::ProcessExitDrainerPanicked => {
+            process_exit::wire("ProcessExitDrainerPanicked", source)
+        }
+        EngineError::ProcessExitCallbackDispatcherPoisoned
+        | EngineError::ProcessExitCallbackDispatcherUnavailable
+        | EngineError::ProcessExitCallbackDispatcherShutdownTimedOut { .. } => {
+            process_exit::callback_wire(source)
         }
         EngineError::ProcessExitAlreadyTerminal { .. } => {
             WireError::backend_with_type("ProcessExitAlreadyTerminal", source.to_string())
@@ -552,31 +571,7 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         EngineError::SignalRouter(_) => {
             WireError::backend_with_type("SignalRouter", source.to_string())
         }
-        EngineError::Query(query) => wire_from_query(query, source),
-    }
-}
-
-/// Wire mapping for live-query dispatch failures (per the #45 brief).
-///
-/// `ReplyDropped` maps to `not_running` per decision Q3: the workflow ended
-/// before answering. `HandlerFailed` maps to the dedicated `query_failed`
-/// code per decision Q1(b).
-fn wire_from_query(query: &aion::QueryError, source: &EngineError) -> WireError {
-    match query {
-        aion::QueryError::UnknownQuery(_) => WireError::unknown_query(source.to_string()),
-        aion::QueryError::Timeout => WireError::query_timeout(source.to_string()),
-        aion::QueryError::NotRunning(_) | aion::QueryError::ReplyDropped => {
-            WireError::not_running_with_type(query_error_type(query), source.to_string())
-        }
-        aion::QueryError::Unknown(_) => {
-            WireError::not_found_with_type(query_error_type(query), source.to_string())
-        }
-        aion::QueryError::HandlerFailed { .. } => {
-            WireError::query_failed(source.to_string()).with_error_type(query_error_type(query))
-        }
-        aion::QueryError::Engine(_) => {
-            WireError::backend_with_type(query_error_type(query), source.to_string())
-        }
+        EngineError::Query(query) => engine::query_wire(query, source),
     }
 }
 

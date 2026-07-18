@@ -26,9 +26,16 @@ fn wait_for_process_cleanup(runtime: &RuntimeHandle, pid: u64) -> TestResult {
 }
 
 #[test]
-fn monitor_installs_for_process_that_already_exited() -> TestResult {
+fn event_driven_exit_runs_delivery_cleanup_to_true_terminal_state() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let pid = runtime.spawn_test_process()?;
+    runtime.deliver_activity_completion_message_with_attempt(
+        pid,
+        "activity:9",
+        String::from(r#"{"completed":true}"#),
+        Some(2),
+    )?;
+    assert_eq!(runtime.retained_activity_completions(), 1);
     runtime.cancel_pid(pid)?;
     assert!(
         !runtime.is_live(pid),
@@ -42,7 +49,10 @@ fn monitor_installs_for_process_that_already_exited() -> TestResult {
 
     assert!(handle.is_installed());
     let callback_fired = receiver.recv_timeout(Duration::from_secs(10))?;
-    let _ = callback_fired;
+    assert!(callback_fired);
+    wait_for_process_cleanup(&runtime, pid)?;
+    assert_eq!(runtime.retained_activity_completions(), 0);
+    assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     runtime.shutdown()?;
     Ok(())
 }
@@ -200,11 +210,12 @@ fn duplicate_installation_after_retirement_is_typed_terminal() -> TestResult {
 }
 
 #[test]
-fn dead_and_unavailable_outcome_is_typed_and_runs_full_cleanup() -> TestResult {
+fn delayed_exit_observation_survives_heavy_churn_and_runs_full_cleanup() -> TestResult {
+    const CHURN: usize = 256;
+
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-    runtime.pause_next_exit_observer_for_test();
+    runtime.process_exits.pause_for_test();
     let pid = runtime.spawn_test_process()?;
-    runtime.wait_for_exit_observer_pause_for_test(pid)?;
     runtime.deliver_activity_completion_message_with_attempt(
         pid,
         "activity:71",
@@ -213,22 +224,39 @@ fn dead_and_unavailable_outcome_is_typed_and_runs_full_cleanup() -> TestResult {
     )?;
     assert!(!runtime.process_cleanup_complete_for_test(pid));
     runtime.cancel_pid(pid)?;
+    runtime
+        .process_exits
+        .wait_for_pause_for_test(Duration::from_secs(10))?;
 
+    let mut pids = Vec::with_capacity(CHURN + 1);
+    pids.push(pid);
+    for _ in 0..CHURN {
+        let churn_pid = runtime.spawn_test_process()?;
+        runtime.cancel_pid(churn_pid)?;
+        pids.push(churn_pid);
+    }
     let (sender, receiver) = mpsc::channel();
-    runtime.monitor_process_for_test(pid, move |outcome| {
-        let _ = sender.send(outcome);
-    })?;
-    runtime.force_exit_outcome_unavailable_for_test(pid)?;
+    for process_id in &pids {
+        let callback_sender = sender.clone();
+        let callback_pid = *process_id;
+        runtime.monitor_process_for_test(*process_id, move |outcome| {
+            let _ = callback_sender.send((callback_pid, outcome.is_ok()));
+        })?;
+    }
+    drop(sender);
+    runtime.process_exits.release_for_test();
 
-    let error = receiver
-        .recv_timeout(Duration::from_secs(10))?
-        .err()
-        .ok_or("evicted exit outcome was not reported as a typed error")?;
-    assert!(matches!(
-        error,
-        crate::EngineError::ProcessExitUnavailable { process_id } if process_id == pid
-    ));
-    wait_for_process_cleanup(&runtime, pid)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for _ in 0..pids.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let (callback_pid, outcome_available) = receiver.recv_timeout(remaining)?;
+        if !outcome_available {
+            return Err(format!("process {callback_pid} lost its durable exit outcome").into());
+        }
+    }
+    for process_id in pids {
+        wait_for_process_cleanup(&runtime, process_id)?;
+    }
     assert_eq!(runtime.retained_activity_completions(), 0);
     assert_eq!(runtime.retained_activity_attempt_count_for_test(), 0);
     runtime.shutdown()?;
@@ -345,7 +373,7 @@ fn bounded_cleanup_queue_exhaustion_is_typed() -> TestResult {
 }
 
 #[test]
-fn absent_process_without_tombstone_aborts_without_waiting_for_outcome() -> TestResult {
+fn unregistered_absent_process_aborts_without_waiting_for_outcome() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
     let started = Instant::now();
 
@@ -358,10 +386,12 @@ fn absent_process_without_tombstone_aborts_without_waiting_for_outcome() -> Test
 }
 
 #[test]
-fn shutdown_force_unblocks_process_exit_jobs_before_executor_join() -> TestResult {
+fn shutdown_drains_in_flight_exits_before_bounded_drainer_join() -> TestResult {
     let runtime = Arc::new(RuntimeHandle::new(RuntimeConfig::new(Some(1)))?);
-    let pid = runtime.spawn_test_process()?;
-    let record = runtime.process_exits.get(pid)?;
+    let waiting_pid = runtime.spawn_test_process()?;
+    let exited_pid = runtime.spawn_test_process()?;
+    let live_pid = runtime.spawn_test_process()?;
+    let record = runtime.process_exits.get(waiting_pid)?;
     runtime
         .cleanup_executor
         .submit(Box::new(move || {
@@ -370,10 +400,14 @@ fn shutdown_force_unblocks_process_exit_jobs_before_executor_join() -> TestResul
             }
         }))
         .map_err(|error| format!("cleanup wait job was refused: {error:?}"))?;
+    runtime.cancel_pid(exited_pid)?;
 
     runtime.shutdown()?;
 
-    assert!(!runtime.is_live(pid));
+    assert!(!runtime.is_live(waiting_pid));
+    assert!(!runtime.is_live(exited_pid));
+    assert!(!runtime.is_live(live_pid));
+    assert!(runtime.process_exits.drainer_joined_for_test()?);
     Ok(())
 }
 

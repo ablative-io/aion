@@ -382,7 +382,9 @@ impl RuntimeHandle {
             }
         };
         let result = operation(&mut state);
-        if result.is_err() && self.scheduler.peek_exit_reason(workflow_pid).is_some() {
+        if result.is_err()
+            && (self.process_exits.has_terminal(workflow_pid)? || !self.is_live(workflow_pid))
+        {
             state.dead = true;
         }
         let remove_failed_creation = created && state.dead && state.retained.is_empty();
@@ -398,7 +400,10 @@ impl RuntimeHandle {
         workflow_pid: Pid,
         state: &mut ActivityDeliveryState,
     ) -> Result<(), EngineError> {
-        if state.dead || self.scheduler.peek_exit_reason(workflow_pid).is_some() {
+        if state.dead
+            || self.process_exits.has_terminal(workflow_pid)?
+            || !self.is_live(workflow_pid)
+        {
             state.dead = true;
             return Err(runtime_error(format!("process {workflow_pid} is not live")));
         }
@@ -412,7 +417,7 @@ impl RuntimeHandle {
         match self.activity_delivery_gates.entry(workflow_pid) {
             Entry::Occupied(entry) => Ok((Arc::clone(entry.get()), false)),
             Entry::Vacant(entry) => {
-                if self.scheduler.peek_exit_reason(workflow_pid).is_some() {
+                if self.process_exits.has_terminal(workflow_pid)? {
                     return Err(runtime_error(format!("process {workflow_pid} is not live")));
                 }
                 self.ensure_live_pid(workflow_pid)?;

@@ -80,8 +80,8 @@ pub struct RuntimeHandle {
     activity_errors: Arc<dashmap::DashMap<(Pid, Pid), ActivityError>>,
     /// Per-workflow synchronization for retained activity delivery and death draining.
     ///
-    /// Each workflow has an independent gate, so a tombstoned process that
-    /// remains in beamr's process table cannot block unrelated workflows. A
+    /// Each workflow has an independent gate, so an exited process that remains
+    /// in beamr's process table cannot block unrelated workflows. A
     /// dead gate remains until process-table removal is observed, preventing
     /// delivery from inserting behind that workflow's death sweep.
     activity_delivery_gates: dashmap::DashMap<Pid, Arc<activity_delivery::ActivityDeliveryGate>>,
@@ -100,11 +100,10 @@ pub struct RuntimeHandle {
     /// a `Normal` exit never propagates through links (classic BEAM
     /// semantics), so a workflow that completes while an in-VM runner is
     /// still executing — e.g. after a `with_timeout` expiry abandoned the
-    /// await — would orphan the child forever, pinning its exit watcher's
-    /// blocking thread. The workflow process monitor kills any children
-    /// still registered here when the workflow exits (for any reason), and
-    /// [`Self::shutdown`] kills every remaining child so no watcher outlives
-    /// the scheduler.
+    /// await — would orphan the child and its completion waiter forever. The
+    /// workflow process monitor kills children still registered here when the
+    /// workflow exits (for any reason), and [`Self::shutdown`] kills every
+    /// remaining child so no waiter outlives the scheduler.
     in_vm_children: Arc<dashmap::DashMap<Pid, std::collections::HashSet<Pid>>>,
     registered_nif_modules: Arc<dashmap::DashSet<String>>,
     spawn_heaps: RetainedSpawnHeaps,
@@ -152,9 +151,16 @@ impl RuntimeHandle {
             .map_err(runtime_error_from_display)?,
         );
         let wake_confirmer = super::wake_confirm::WakeConfirmer::new(config.signal_delivery)?;
+        let shutdown_timeout = config.signal_delivery.cleanup_shutdown_timeout();
         let cleanup_executor = super::cleanup_executor::CleanupExecutor::new(
             config.signal_delivery.max_enqueue_attempts as usize,
-            config.signal_delivery.cleanup_shutdown_timeout(),
+            shutdown_timeout,
+        )?;
+        // Claim beamr's singleton stream before this scheduler can publish a pid
+        // through any RuntimeHandle spawn API.
+        let process_exits = super::process_exit::ProcessExitRegistry::new(
+            Arc::clone(&scheduler),
+            shutdown_timeout,
         )?;
 
         Ok(Self {
@@ -175,7 +181,7 @@ impl RuntimeHandle {
             signal_delivery: config.signal_delivery,
             outbox_enabled: config.outbox_enabled,
             wake_confirmer,
-            process_exits: Arc::new(super::process_exit::ProcessExitRegistry::new()),
+            process_exits,
             cleanup_executor,
             abort_jobs: dashmap::DashMap::new(),
         })
@@ -385,7 +391,7 @@ impl RuntimeHandle {
     }
 
     /// Drop a finished in-VM child from its workflow's teardown set (called
-    /// by the exit watcher once the child's outcome is decoded).
+    /// by the completion waiter once the child's cached outcome is decoded).
     pub(crate) fn deregister_in_vm_child(&self, parent_pid: Pid, child_pid: Pid) {
         if let Some(mut children) = self.in_vm_children.get_mut(&parent_pid) {
             children.remove(&child_pid);
@@ -398,10 +404,9 @@ impl RuntimeHandle {
     ///
     /// Invoked by the workflow process monitor on workflow exit: a `Normal`
     /// exit does not propagate through BEAM links, so a completed workflow
-    /// would otherwise orphan a still-running runner (and pin its exit
-    /// watcher's blocking thread forever). Killing writes the child's exit
-    /// tombstone, which unblocks the watcher; its delivery to the dead
-    /// workflow is refused and nothing is retained.
+    /// would otherwise orphan a still-running runner and its completion waiter.
+    /// Killing publishes the child's durable outcome, which wakes that waiter;
+    /// delivery to the dead workflow is refused and nothing is retained.
     pub(crate) fn kill_in_vm_children(&self, workflow_pid: Pid) {
         let Some((_, children)) = self.in_vm_children.remove(&workflow_pid) else {
             return;
@@ -493,11 +498,8 @@ impl RuntimeHandle {
     ///
     /// Currently infallible; reserved for typed runtime shutdown failures.
     pub fn shutdown(&self) -> Result<(), EngineError> {
-        // Kill every still-live in-VM activity child BEFORE stopping the
-        // scheduler: the kill writes each child's exit tombstone while the
-        // scheduler can still process it, releasing the exit watchers'
-        // blocking threads (`run_until_exit` polls tombstones forever and
-        // would otherwise pin its thread past this shutdown).
+        // Kill every still-live in-VM activity child before stopping the
+        // scheduler so the singleton drainer can capture each durable outcome.
         let workflow_pids: Vec<Pid> = self
             .in_vm_children
             .iter()
@@ -577,44 +579,6 @@ impl RuntimeHandle {
         } else {
             Err(runtime_error(format!("process {pid} is not live")))
         }
-    }
-
-    /// Register a test module whose exported function waits indefinitely.
-    ///
-    /// This keeps lifecycle tests at the runtime boundary while still exercising
-    /// real module lookup and trap-exit workflow spawning.
-    #[cfg(test)]
-    pub fn register_waiting_test_module(&self, deployed_name: &str, function: &str) {
-        use std::collections::HashMap;
-
-        use beamr::loader::Instruction;
-        use beamr::loader::decode::compact::Operand;
-        use beamr::module::Module;
-
-        let module = self.atom_table.intern(deployed_name);
-        let function = self.atom_table.intern(function);
-        let label = 10;
-        self.module_registry.insert(Module {
-            name: module,
-            generation: 0,
-            origin: beamr::module::ModuleOrigin::Preloaded,
-            exports: HashMap::from([((function, 1), label)]),
-            label_index: HashMap::from([(label, 0)]),
-            code: vec![
-                Instruction::Label { label },
-                Instruction::Wait {
-                    fail: Operand::Label(label),
-                },
-            ],
-            function_table: Vec::new(),
-            line_table: Vec::new(),
-            literals: Vec::new(),
-            constant_pool: beamr::constant_pool::ConstantPool::new(),
-            resolved_imports: Vec::new(),
-            lambdas: Vec::new(),
-            string_table: Vec::new(),
-            line_info: Vec::new(),
-        });
     }
 
     /// Spawn an inert test process without module code.

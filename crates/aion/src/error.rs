@@ -138,18 +138,56 @@ pub enum EngineError {
         process_id: u64,
     },
 
-    /// A process exit record's observer handle was poisoned.
-    #[error("process exit observer state for process {process_id} was poisoned")]
-    ProcessExitObserverPoisoned {
-        /// Process whose tracked observer could not be accessed.
+    /// The scheduler's one exit-event subscription was already claimed.
+    #[error("beamr process exit-event subscription is already owned")]
+    ProcessExitSubscriptionUnavailable,
+
+    /// The singleton process-exit drainer could not be spawned.
+    #[error("process exit drainer could not start: {reason}")]
+    ProcessExitDrainerSpawn {
+        /// Operating-system thread creation failure.
+        reason: String,
+    },
+
+    /// The singleton process-exit drainer's ownership lock was poisoned.
+    #[error("process exit drainer state was poisoned")]
+    ProcessExitDrainerPoisoned,
+
+    /// beamr published an exit event without the promised durable outcome.
+    #[error("process {process_id} exit event had no takeable outcome")]
+    ProcessExitOutcomeMissingAfterEvent {
+        /// Process named by the contract-breaking event.
         process_id: u64,
     },
 
-    /// A spawned process was dead after beamr had evicted its exit tombstone.
-    #[error("process {process_id} exited before its outcome could be captured")]
-    ProcessExitUnavailable {
-        /// Process whose beamr outcome was no longer available.
-        process_id: u64,
+    /// beamr disconnected its event publisher while the runtime still owned it.
+    #[error("beamr process exit-event publisher disconnected")]
+    ProcessExitEventStreamDisconnected,
+
+    /// The process-exit drainer did not stop within the configured bound.
+    #[error("process exit drainer did not stop within {timeout_millis}ms")]
+    ProcessExitDrainerShutdownTimedOut {
+        /// Configured shutdown observation bound in milliseconds.
+        timeout_millis: u128,
+    },
+
+    /// The process-exit drainer thread panicked.
+    #[error("process exit drainer terminated unexpectedly")]
+    ProcessExitDrainerPanicked,
+
+    /// The late exit-callback dispatcher's ownership state was poisoned.
+    #[error("late process exit callback dispatcher state was poisoned")]
+    ProcessExitCallbackDispatcherPoisoned,
+
+    /// The late exit-callback dispatcher had already stopped.
+    #[error("late process exit callback dispatcher is unavailable")]
+    ProcessExitCallbackDispatcherUnavailable,
+
+    /// The late exit-callback dispatcher did not stop within its configured bound.
+    #[error("late process exit callback dispatcher did not stop within {timeout_millis}ms")]
+    ProcessExitCallbackDispatcherShutdownTimedOut {
+        /// Configured shutdown observation bound in milliseconds.
+        timeout_millis: u128,
     },
 
     /// A retired process generation cannot accept another outcome consumer.

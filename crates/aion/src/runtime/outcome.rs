@@ -25,24 +25,23 @@ pub(super) fn workflow_outcome(
     pid: Pid,
     owned: &OwnedProcessExitOutcome,
 ) -> Result<Result<Payload, WorkflowError>, EngineError> {
-    match workflow_process_outcome(atoms, pid, owned)? {
+    match workflow_outcome_from_owned_exit(atoms, pid, owned)? {
         WorkflowProcessOutcome::Completed(payload) => Ok(Ok(payload)),
         WorkflowProcessOutcome::Failed(error) => Ok(Err(error)),
     }
 }
 
-pub(super) fn workflow_process_outcome(
+pub(super) fn workflow_outcome_from_owned_exit(
     atoms: &AtomTable,
     pid: Pid,
     owned: &OwnedProcessExitOutcome,
 ) -> Result<WorkflowProcessOutcome, EngineError> {
     let observed = match owned {
         OwnedProcessExitOutcome::Observed(observed) => observed,
-        OwnedProcessExitOutcome::DeadAndUnavailable { process_id } => {
-            return Err(EngineError::ProcessExitUnavailable {
-                process_id: *process_id,
-            });
-        }
+        OwnedProcessExitOutcome::ObservationFailed {
+            process_id,
+            failure,
+        } => return Err(failure.into_engine_error(*process_id)),
     };
     if observed.reason != ExitReason::Normal {
         // The VM execution error, when present, is the authoritative exit

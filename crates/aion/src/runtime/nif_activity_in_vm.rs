@@ -26,10 +26,9 @@
 //! Scheduling note: the child is a preemptively-scheduled bytecode process, so
 //! pure-Gleam runners cannot starve the schedulers; only a blocking NIF called
 //! INSIDE a runner can occupy a scheduler thread (beamr's dirty pool is still
-//! scaffolded — `spawn_link_dirty` aliases `spawn_link`). Each in-flight in-VM
-//! activity also parks one Tokio blocking-pool thread in its exit watcher
-//! (`run_until_exit`); wide fan-outs of slow in-VM activities are bounded by
-//! that pool, exactly like slow synchronous remote dispatchers.
+//! scaffolded — `spawn_link_dirty` aliases `spawn_link`). A runtime-wide
+//! drainer consumes beamr exits; in-VM completion tasks wait on its cached
+//! per-process fan-out records without consuming scheduler outcomes.
 
 use std::sync::Arc;
 
@@ -129,7 +128,7 @@ fn decode_in_vm_args(args: &[Term]) -> Result<(String, String, String), String> 
 }
 
 /// The recorded-resolution branch shared with the remote wire, then the in-VM
-/// live branch: record, spawn the linked thunk child, arm the exit watcher.
+/// live branch: record, spawn the linked thunk child, arm its completion waiter.
 ///
 /// GC-ordering contract: the thunk closure lives on the CALLER's heap, and
 /// result-term allocation through `ctx` may collect (moving it), so the child
@@ -221,14 +220,14 @@ pub(super) fn retain_spawn_failure(
     }
 }
 
-/// Arm the exit watcher for one in-VM activity child (the in-VM mirror of
+/// Arm the completion waiter for one in-VM activity child (the in-VM mirror of
 /// `spawn_completion_task`): block until the linked child exits, decode its
 /// outcome at the exit boundary, and deliver it on the SAME correlation the
 /// await resolves — `take_runtime_completion` then records
 /// `ActivityCompleted`/`ActivityFailed` exactly as for remote.
 ///
 /// Runs on the Tokio blocking pool: the runtime-owned exit record parks this
-/// reader until the child observer caches its terminal. Delivery to a workflow
+/// reader until the singleton drainer caches the terminal. Delivery to a workflow
 /// that died meanwhile fails with a warn and the retained entry is
 /// drained by the workflow process monitor (D5).
 fn spawn_in_vm_completion_watcher(
@@ -240,7 +239,7 @@ fn spawn_in_vm_completion_watcher(
 ) {
     tokio_handle.spawn_blocking(move || {
         let outcome = runtime.in_vm_child_outcome(child_pid);
-        // The child has an exit tombstone now: drop it from the workflow's
+        // The child has a cached terminal now: drop it from the workflow's
         // teardown set so a later workflow exit does not re-kill a dead pid.
         runtime.deregister_in_vm_child(workflow_pid, child_pid);
         let delivered = match outcome {

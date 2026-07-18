@@ -91,6 +91,34 @@ impl RuntimeHandle {
         }
         self.module_registry.insert(module_data);
     }
+
+    /// Register a test module whose exported function waits indefinitely.
+    pub fn register_waiting_test_module(&self, deployed_name: &str, function: &str) {
+        let module = self.atom_table.intern(deployed_name);
+        let function = self.atom_table.intern(function);
+        let label = 10;
+        self.module_registry.insert(Module {
+            name: module,
+            generation: 0,
+            origin: beamr::module::ModuleOrigin::Preloaded,
+            exports: std::collections::HashMap::from([((function, 1), label)]),
+            label_index: std::collections::HashMap::from([(label, 0)]),
+            code: vec![
+                Instruction::Label { label },
+                Instruction::Wait {
+                    fail: Operand::Label(label),
+                },
+            ],
+            function_table: Vec::new(),
+            line_table: Vec::new(),
+            literals: Vec::new(),
+            constant_pool: beamr::constant_pool::ConstantPool::new(),
+            resolved_imports: Vec::new(),
+            lambdas: Vec::new(),
+            string_table: Vec::new(),
+            line_info: Vec::new(),
+        });
+    }
 }
 
 fn test_activity_answer(

@@ -1,17 +1,12 @@
 //! Process-spawn exit ownership helpers for [`RuntimeHandle`].
 
-use std::sync::Arc;
-
 use beamr::process::ExitReason;
 
 use super::{EngineError, Pid, RuntimeHandle};
 
 impl RuntimeHandle {
     pub(super) fn establish_process_exit_ownership(&self, pid: Pid) -> Result<(), EngineError> {
-        if let Err(error) = self
-            .process_exits
-            .register(Arc::clone(&self.scheduler), pid)
-        {
+        if let Err(error) = self.process_exits.register(pid) {
             self.scheduler.terminate_process(pid, ExitReason::Kill);
             if let Err(cleanup_error) = self.finish_process_monitor_cleanup(pid) {
                 tracing::error!(pid, %cleanup_error, cause = %error, "spawn rollback cleanup failed after exit ownership setup failed");
@@ -40,7 +35,7 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn run_until_exit_for_test(
+    pub(crate) fn process_exit_for_test(
         &self,
         pid: Pid,
     ) -> Result<(ExitReason, beamr::term::Term), EngineError> {

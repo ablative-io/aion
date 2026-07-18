@@ -293,7 +293,7 @@ impl RuntimeHandle {
         let callback_installation = Arc::clone(&installation);
         let completion = Box::new(move |owned| {
             let process_outcome =
-                outcome::workflow_process_outcome(&runtime.atom_table, pid, &owned);
+                outcome::workflow_outcome_from_owned_exit(&runtime.atom_table, pid, &owned);
             let monitored_outcome = match runtime.finish_process_monitor_cleanup(pid) {
                 Ok(()) => process_outcome,
                 Err(error) => {
@@ -318,10 +318,18 @@ impl RuntimeHandle {
                 std::panic::resume_unwind(panic);
             }
         });
-        if let Err(error) = record.attach_callback(&installation, completion) {
-            drop(ownership);
-            self.rollback_failed_monitor_installation(pid, &installation)?;
-            return Err(error);
+        let deferred_dispatch = match record.attach_callback(&installation, completion) {
+            Ok(deferred_dispatch) => deferred_dispatch,
+            Err(error) => {
+                drop(ownership);
+                self.rollback_failed_monitor_installation(pid, &installation)?;
+                return Err(error);
+            }
+        };
+        drop(ownership);
+        if let Some((callback, terminal)) = deferred_dispatch {
+            self.process_exits
+                .dispatch_deferred_callback(callback, terminal)?;
         }
         Ok(ProcessMonitorHandle::installed())
     }
@@ -478,9 +486,10 @@ impl RuntimeHandle {
     ) -> Result<Arc<ObservedProcessExit>, EngineError> {
         match self.process_exits.get(pid)?.wait()? {
             OwnedProcessExitOutcome::Observed(observed) => Ok(observed),
-            OwnedProcessExitOutcome::DeadAndUnavailable { process_id } => {
-                Err(EngineError::ProcessExitUnavailable { process_id })
-            }
+            OwnedProcessExitOutcome::ObservationFailed {
+                process_id,
+                failure,
+            } => Err(failure.into_engine_error(process_id)),
         }
     }
 
@@ -491,9 +500,10 @@ impl RuntimeHandle {
         let record = self.process_exits.get(pid)?;
         let outcome = match record.wait()? {
             OwnedProcessExitOutcome::Observed(observed) => Ok(observed),
-            OwnedProcessExitOutcome::DeadAndUnavailable { process_id } => {
-                Err(EngineError::ProcessExitUnavailable { process_id })
-            }
+            OwnedProcessExitOutcome::ObservationFailed {
+                process_id,
+                failure,
+            } => Err(failure.into_engine_error(process_id)),
         };
         record.close_without_monitor()?;
         let retirement = record.lock_ownership()?;

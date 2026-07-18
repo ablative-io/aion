@@ -20,15 +20,21 @@ fn lagged_stream_maps_to_wire_lagged() {
 }
 
 #[test]
-fn unavailable_process_outcome_maps_to_typed_backend() {
+fn missing_event_outcome_invariant_maps_to_typed_backend() {
     let error = ServerError::EngineCall {
-        source: EngineError::ProcessExitUnavailable { process_id: 23 },
+        source: EngineError::ProcessExitOutcomeMissingAfterEvent { process_id: 23 },
     };
 
     let wire = error.to_wire_error();
     assert_eq!(wire.code, WireErrorCode::Backend);
-    assert_eq!(wire.error_type.as_deref(), Some("ProcessExitUnavailable"));
-    assert_eq!(error.trace_fields().error_type, "ProcessExitUnavailable");
+    assert_eq!(
+        wire.error_type.as_deref(),
+        Some("ProcessExitOutcomeMissingAfterEvent")
+    );
+    assert_eq!(
+        error.trace_fields().error_type,
+        "ProcessExitOutcomeMissingAfterEvent"
+    );
 }
 
 #[test]
