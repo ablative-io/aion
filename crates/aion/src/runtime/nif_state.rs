@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use aion_core::TimerId;
 use beamr::native::ProcessContext;
@@ -85,6 +85,8 @@ pub(crate) struct EngineNifState {
     /// per workflow process. A committed claim remains until that exact
     /// monitor completes; failed uncommitted claims remove only themselves.
     pub(super) monitor_installations: DashMap<u64, Arc<super::monitor::MonitorInstallation>>,
+    /// Weak access used by wrapped local spawn BIFs to reserve outcome classification.
+    process_exits: OnceLock<Weak<super::process_exit::ProcessExitRegistry>>,
 }
 
 /// Epoch tombstone recorded at the start of exited-workflow cleanup.
@@ -152,6 +154,23 @@ pub(crate) enum CollectKind {
 }
 
 impl EngineNifState {
+    pub(super) fn set_process_exit_registry(
+        &self,
+        registry: &Arc<super::process_exit::ProcessExitRegistry>,
+    ) -> Result<(), crate::EngineError> {
+        self.process_exits
+            .set(Arc::downgrade(registry))
+            .map_err(|_| crate::EngineError::Runtime {
+                reason: String::from("process exit registry was already installed in NIF state"),
+            })
+    }
+
+    pub(super) fn process_exit_registry(
+        &self,
+    ) -> Option<Arc<super::process_exit::ProcessExitRegistry>> {
+        self.process_exits.get().and_then(Weak::upgrade)
+    }
+
     /// Install the activity dispatcher executing this engine's activities.
     pub(crate) fn set_activity_dispatcher(&self, dispatcher: Arc<dyn ActivityDispatcher>) {
         match self.activity_dispatcher.write() {

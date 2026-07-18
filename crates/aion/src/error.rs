@@ -175,16 +175,16 @@ pub enum EngineError {
     #[error("process exit drainer terminated unexpectedly")]
     ProcessExitDrainerPanicked,
 
-    /// The late exit-callback dispatcher's ownership state was poisoned.
-    #[error("late process exit callback dispatcher state was poisoned")]
+    /// The process-exit callback dispatcher's ownership state was poisoned.
+    #[error("process exit callback dispatcher state was poisoned")]
     ProcessExitCallbackDispatcherPoisoned,
 
-    /// The late exit-callback dispatcher had already stopped.
-    #[error("late process exit callback dispatcher is unavailable")]
+    /// The process-exit callback dispatcher had already stopped.
+    #[error("process exit callback dispatcher is unavailable")]
     ProcessExitCallbackDispatcherUnavailable,
 
-    /// The late exit-callback dispatcher did not stop within its configured bound.
-    #[error("late process exit callback dispatcher did not stop within {timeout_millis}ms")]
+    /// The process-exit callback dispatcher did not stop within its configured bound.
+    #[error("process exit callback dispatcher did not stop within {timeout_millis}ms")]
     ProcessExitCallbackDispatcherShutdownTimedOut {
         /// Configured shutdown observation bound in milliseconds.
         timeout_millis: u128,

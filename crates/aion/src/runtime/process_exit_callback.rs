@@ -1,4 +1,4 @@
-//! Constant-cardinality dispatcher for callbacks attached after exit publication.
+//! Constant-cardinality dispatcher for every process-exit callback.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, MutexGuard};
@@ -9,29 +9,35 @@ use crate::EngineError;
 
 use super::{OwnedProcessExitOutcome, ProcessExitCallback};
 
-type DeferredCallbackJob = Box<dyn FnOnce() + Send + 'static>;
+struct ProcessExitCallbackJob {
+    callback: ProcessExitCallback,
+    terminal: OwnedProcessExitOutcome,
+}
 
-pub(super) struct DeferredCallbackDispatcher {
-    sender: Mutex<Option<Sender<DeferredCallbackJob>>>,
+pub(super) struct CallbackDispatchFailure {
+    pub(super) callback: ProcessExitCallback,
+    pub(super) error: EngineError,
+}
+
+pub(super) struct ProcessExitCallbackDispatcher {
+    sender: Mutex<Option<Sender<ProcessExitCallbackJob>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     stopped: Mutex<Receiver<()>>,
     shutdown_timeout: Duration,
 }
 
-impl DeferredCallbackDispatcher {
+impl ProcessExitCallbackDispatcher {
     pub(super) fn new(shutdown_timeout: Duration) -> Result<Self, EngineError> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let (stopped_sender, stopped) = std::sync::mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
-            .name(String::from("aion-late-exit-callback"))
+            .name(String::from("aion-process-exit-callback"))
             .spawn(move || {
                 run_worker(&receiver);
                 let _ = stopped_sender.send(());
             })
             .map_err(|error| EngineError::Runtime {
-                reason: format!(
-                    "failed to provision late process exit callback dispatcher: {error}"
-                ),
+                reason: format!("failed to provision process exit callback dispatcher: {error}"),
             })?;
         Ok(Self {
             sender: Mutex::new(Some(sender)),
@@ -45,14 +51,24 @@ impl DeferredCallbackDispatcher {
         &self,
         callback: ProcessExitCallback,
         terminal: OwnedProcessExitOutcome,
-    ) -> Result<(), EngineError> {
-        let sender = Self::lock(&self.sender)?;
-        let sender = sender
-            .as_ref()
-            .ok_or(EngineError::ProcessExitCallbackDispatcherUnavailable)?;
-        sender
-            .send(Box::new(move || callback(terminal)))
-            .map_err(|_| EngineError::ProcessExitCallbackDispatcherUnavailable)
+    ) -> Result<(), Box<CallbackDispatchFailure>> {
+        let sender = match Self::lock(&self.sender) {
+            Ok(sender) => sender,
+            Err(error) => return Err(Box::new(CallbackDispatchFailure { callback, error })),
+        };
+        let Some(sender) = sender.as_ref() else {
+            return Err(Box::new(CallbackDispatchFailure {
+                callback,
+                error: EngineError::ProcessExitCallbackDispatcherUnavailable,
+            }));
+        };
+        let job = ProcessExitCallbackJob { callback, terminal };
+        sender.send(job).map_err(|failure| {
+            Box::new(CallbackDispatchFailure {
+                callback: failure.0.callback,
+                error: EngineError::ProcessExitCallbackDispatcherUnavailable,
+            })
+        })
     }
 
     pub(super) fn shutdown(&self) -> Result<(), EngineError> {
@@ -70,9 +86,7 @@ impl DeferredCallbackDispatcher {
         }
         if let Some(worker) = Self::lock(&self.worker)?.take() {
             worker.join().map_err(|_| EngineError::Runtime {
-                reason: String::from(
-                    "late process exit callback dispatcher terminated unexpectedly",
-                ),
+                reason: String::from("process exit callback dispatcher terminated unexpectedly"),
             })?;
         }
         Ok(())
@@ -85,10 +99,11 @@ impl DeferredCallbackDispatcher {
     }
 }
 
-fn run_worker(receiver: &Receiver<DeferredCallbackJob>) {
+fn run_worker(receiver: &Receiver<ProcessExitCallbackJob>) {
     while let Ok(job) = receiver.recv() {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
-            tracing::error!("late process exit callback terminated unexpectedly");
+        let invoke = move || (job.callback)(job.terminal);
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(invoke)).is_err() {
+            tracing::error!("process exit callback terminated unexpectedly");
         }
     }
 }

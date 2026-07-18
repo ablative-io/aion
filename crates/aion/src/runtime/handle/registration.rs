@@ -23,12 +23,13 @@ pub(super) fn register_all_bifs(
     use beamr::native::{
         bifs::register_gate1_bifs, gate3_bifs::register_gate3_bifs,
         gleam_ffi::register_gleam_ffi_bifs, otp_stubs::init_otp_atoms,
-        otp_stubs::register_otp_stubs, process_bifs::register_gate2_bifs,
-        selector_ffi::register_selector_bifs, stdlib_stubs::register_stdlib_stubs,
+        otp_stubs::register_otp_stubs, selector_ffi::register_selector_bifs,
+        stdlib_stubs::register_stdlib_stubs,
     };
 
     register_gate1_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
-    register_gate2_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
+    super::spawn_bifs::register_process_bifs(registry, atom_table)
+        .map_err(runtime_error_from_display)?;
     register_gate3_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
     register_stdlib_stubs(registry, atom_table).map_err(runtime_error_from_display)?;
     register_selector_bifs(registry, atom_table).map_err(runtime_error_from_display)?;

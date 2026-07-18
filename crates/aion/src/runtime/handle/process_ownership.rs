@@ -5,8 +5,13 @@ use beamr::process::ExitReason;
 use super::{EngineError, Pid, RuntimeHandle};
 
 impl RuntimeHandle {
-    pub(super) fn establish_process_exit_ownership(&self, pid: Pid) -> Result<(), EngineError> {
-        if let Err(error) = self.process_exits.register(pid) {
+    pub(super) fn spawn_with_exit_ownership(
+        &self,
+        spawn: impl FnOnce() -> Result<Pid, EngineError>,
+    ) -> Result<Pid, EngineError> {
+        let reservation = self.process_exits.reserve_spawn()?;
+        let pid = spawn()?;
+        if let Err(error) = reservation.register(pid) {
             self.scheduler.terminate_process(pid, ExitReason::Kill);
             if let Err(cleanup_error) = self.finish_process_monitor_cleanup(pid) {
                 tracing::error!(pid, %cleanup_error, cause = %error, "spawn rollback cleanup failed after exit ownership setup failed");
@@ -14,7 +19,7 @@ impl RuntimeHandle {
             }
             return Err(error);
         }
-        Ok(())
+        Ok(pid)
     }
 
     /// Ensure `pid` has a runtime-owned, non-consuming exit outcome record.

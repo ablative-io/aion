@@ -1,208 +1,51 @@
 //! Runtime-owned, non-consuming fan-out records for beamr process exits.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use beamr::error::ExecError;
 use beamr::ets::OwnedTerm;
 use beamr::process::ExitReason;
-use beamr::scheduler::{ExitEvent, OwnedException, Scheduler};
+use beamr::scheduler::{ExitEvent, Scheduler};
 use dashmap::DashMap;
 
 use crate::{EngineError, Pid};
-
-use super::monitor::MonitorInstallation;
 
 #[path = "process_exit_callback.rs"]
 mod callback;
 #[path = "process_exit_drainer.rs"]
 mod drainer;
+#[path = "process_exit_record.rs"]
+mod record;
 
-pub(super) type ProcessExitCallback = Box<dyn FnOnce(OwnedProcessExitOutcome) + Send + 'static>;
-
-/// The single captured result of beamr's consuming exit-outcome API.
-pub(super) struct ObservedProcessExit {
-    pub(super) reason: ExitReason,
-    pub(super) result: OwnedTerm,
-    pub(super) execution_error: Option<ExecError>,
-    pub(super) exception: Option<OwnedException>,
-}
-
-/// A defensive failure from the runtime's exclusive exit-event consumer.
-#[derive(Clone, Copy)]
-pub(super) enum ProcessExitObservationFailure {
-    /// An `Exited` event had no takeable outcome and was not a stale post-resync event.
-    OutcomeMissingAfterEvent,
-    /// beamr disconnected its publisher while the runtime still owned the scheduler.
-    EventStreamDisconnected,
-}
-
-impl ProcessExitObservationFailure {
-    pub(super) fn into_engine_error(self, process_id: Pid) -> EngineError {
-        match self {
-            Self::OutcomeMissingAfterEvent => {
-                EngineError::ProcessExitOutcomeMissingAfterEvent { process_id }
-            }
-            Self::EventStreamDisconnected => EngineError::ProcessExitEventStreamDisconnected,
-        }
-    }
-}
-
-/// Terminal state cached independently of beamr's legacy tombstone FIFO.
-#[derive(Clone)]
-pub(super) enum OwnedProcessExitOutcome {
-    /// The durable beamr outcome was captured exactly once by the drainer.
-    Observed(Arc<ObservedProcessExit>),
-    /// Observation failed on a defensive path that the beamr event contract makes unreachable.
-    ObservationFailed {
-        process_id: Pid,
-        failure: ProcessExitObservationFailure,
-    },
-}
-
-struct ProcessExitState {
-    terminal: Option<OwnedProcessExitOutcome>,
-    callback: Option<ProcessExitCallback>,
-    closed: bool,
-}
-
-/// One `pid` generation's cached exit record.
-pub(super) struct ProcessExitRecord {
-    pid: Pid,
-    ownership: Mutex<()>,
-    state: Mutex<ProcessExitState>,
-    ready: Condvar,
-    #[cfg(test)]
-    pause_publication: AtomicBool,
-    #[cfg(test)]
-    publication_reached: AtomicBool,
-    #[cfg(test)]
-    publication_released: AtomicBool,
-}
-
-impl ProcessExitRecord {
-    fn new(pid: Pid, #[cfg(test)] pause_publication: bool) -> Self {
-        Self {
-            pid,
-            ownership: Mutex::new(()),
-            state: Mutex::new(ProcessExitState {
-                terminal: None,
-                callback: None,
-                closed: false,
-            }),
-            ready: Condvar::new(),
-            #[cfg(test)]
-            pause_publication: AtomicBool::new(pause_publication),
-            #[cfg(test)]
-            publication_reached: AtomicBool::new(false),
-            #[cfg(test)]
-            publication_released: AtomicBool::new(false),
-        }
-    }
-
-    pub(super) fn lock_ownership(&self) -> Result<MutexGuard<'_, ()>, EngineError> {
-        self.ownership
-            .lock()
-            .map_err(|_| EngineError::ProcessExitOwnershipPoisoned {
-                process_id: self.pid,
-            })
-    }
-
-    pub(super) fn attach_callback(
-        &self,
-        installation: &Arc<MonitorInstallation>,
-        callback: ProcessExitCallback,
-    ) -> Result<Option<(ProcessExitCallback, OwnedProcessExitOutcome)>, EngineError> {
-        let mut callback = Some(callback);
-        let terminal = {
-            let mut state = self.lock_state()?;
-            if state.closed {
-                return Err(EngineError::Runtime {
-                    reason: format!("process {} exit record is already closed", self.pid),
-                });
-            }
-            installation.commit();
-            if let Some(terminal) = state.terminal.clone() {
-                Some(terminal)
-            } else {
-                state.callback = callback.take();
-                None
-            }
-        };
-        Ok(callback.zip(terminal))
-    }
-
-    pub(super) fn wait(&self) -> Result<OwnedProcessExitOutcome, EngineError> {
-        let mut state = self.lock_state()?;
-        loop {
-            if let Some(terminal) = state.terminal.clone() {
-                return Ok(terminal);
-            }
-            state = self
-                .ready
-                .wait(state)
-                .map_err(|_| EngineError::ProcessExitStatePoisoned {
-                    process_id: self.pid,
-                })?;
-        }
-    }
-
-    pub(super) fn close_without_monitor(&self) -> Result<(), EngineError> {
-        let mut state = self.lock_state()?;
-        state.closed = true;
-        drop(state.callback.take());
-        self.ready.notify_all();
-        Ok(())
-    }
-
-    fn is_terminal(&self) -> Result<bool, EngineError> {
-        Ok(self.lock_state()?.terminal.is_some())
-    }
-
-    fn publish_and_dispatch(&self, terminal: OwnedProcessExitOutcome) -> Result<(), EngineError> {
-        let callback = {
-            let mut state = self.lock_state()?;
-            if state.terminal.is_some() {
-                return Ok(());
-            }
-            state.terminal = Some(terminal.clone());
-            self.ready.notify_all();
-            state.callback.take()
-        };
-        if let Some(callback) = callback {
-            callback(terminal);
-        }
-        Ok(())
-    }
-
-    fn lock_state(&self) -> Result<MutexGuard<'_, ProcessExitState>, EngineError> {
-        self.state
-            .lock()
-            .map_err(|_| EngineError::ProcessExitStatePoisoned {
-                process_id: self.pid,
-            })
-    }
-
-    #[cfg(test)]
-    fn pause_at_publication(&self) {
-        if !self.pause_publication.load(Ordering::Acquire) {
-            return;
-        }
-        self.publication_reached.store(true, Ordering::Release);
-        while !self.publication_released.load(Ordering::Acquire) {
-            std::thread::yield_now();
-        }
-    }
-}
+pub(super) use record::{
+    ObservedProcessExit, OwnedProcessExitOutcome, ProcessExitCallback,
+    ProcessExitObservationFailure, ProcessExitRecord,
+};
 
 struct RegistryLifecycle {
     closed: bool,
-    /// Outcomes can beat registration because beamr may run a process immediately after spawn.
-    pending_registration: HashMap<Pid, OwnedProcessExitOutcome>,
+    /// Local children created by wrapped BEAM spawn BIFs and awaiting outcome release.
+    unobserved_children: HashSet<Pid>,
+}
+
+/// Exclusive gate held from immediately before a scheduler spawn through pid classification.
+pub(super) struct ProcessSpawnReservation<'a> {
+    registry: &'a ProcessExitRegistry,
+    lifecycle: MutexGuard<'a, RegistryLifecycle>,
+}
+
+impl ProcessSpawnReservation<'_> {
+    pub(super) fn register(mut self, pid: Pid) -> Result<(), EngineError> {
+        self.registry.register_locked(pid, &mut self.lifecycle)
+    }
+
+    pub(super) fn track_unobserved(mut self, pid: Pid) {
+        self.lifecycle.unobserved_children.insert(pid);
+    }
 }
 
 struct ExitDrainer {
@@ -218,9 +61,15 @@ pub(super) struct ProcessExitRegistry {
     lifecycle: Mutex<RegistryLifecycle>,
     stop_drainer: AtomicBool,
     drainer: Mutex<ExitDrainer>,
-    deferred_callbacks: callback::DeferredCallbackDispatcher,
+    callbacks: callback::ProcessExitCallbackDispatcher,
     park_bound: Duration,
     shutdown_timeout: Duration,
+    #[cfg(test)]
+    pause_next_registration: AtomicBool,
+    #[cfg(test)]
+    registration_reached: AtomicU64,
+    #[cfg(test)]
+    registration_released: AtomicBool,
     #[cfg(test)]
     pause_next_publication: AtomicBool,
     #[cfg(test)]
@@ -239,7 +88,7 @@ impl ProcessExitRegistry {
         let subscription = scheduler
             .subscribe_exit_events()
             .ok_or(EngineError::ProcessExitSubscriptionUnavailable)?;
-        let deferred_callbacks = callback::DeferredCallbackDispatcher::new(shutdown_timeout)?;
+        let callbacks = callback::ProcessExitCallbackDispatcher::new(shutdown_timeout)?;
         let (stopped_sender, stopped) = mpsc::sync_channel(1);
         let registry = Arc::new(Self {
             records: DashMap::new(),
@@ -247,16 +96,22 @@ impl ProcessExitRegistry {
             has_registered: AtomicBool::new(false),
             lifecycle: Mutex::new(RegistryLifecycle {
                 closed: false,
-                pending_registration: HashMap::new(),
+                unobserved_children: HashSet::new(),
             }),
             stop_drainer: AtomicBool::new(false),
             drainer: Mutex::new(ExitDrainer {
                 handle: None,
                 stopped,
             }),
-            deferred_callbacks,
+            callbacks,
             park_bound: shutdown_timeout / 2,
             shutdown_timeout,
+            #[cfg(test)]
+            pause_next_registration: AtomicBool::new(false),
+            #[cfg(test)]
+            registration_reached: AtomicU64::new(0),
+            #[cfg(test)]
+            registration_released: AtomicBool::new(false),
             #[cfg(test)]
             pause_next_publication: AtomicBool::new(false),
             #[cfg(test)]
@@ -281,7 +136,25 @@ impl ProcessExitRegistry {
         Ok(registry)
     }
 
-    pub(super) fn register(&self, pid: Pid) -> Result<(), EngineError> {
+    pub(super) fn reserve_spawn(&self) -> Result<ProcessSpawnReservation<'_>, EngineError> {
+        let lifecycle = self.lock_lifecycle()?;
+        if lifecycle.closed {
+            return Err(EngineError::ShuttingDown);
+        }
+        Ok(ProcessSpawnReservation {
+            registry: self,
+            lifecycle,
+        })
+    }
+
+    fn register_locked(
+        &self,
+        pid: Pid,
+        lifecycle: &mut RegistryLifecycle,
+    ) -> Result<(), EngineError> {
+        lifecycle.unobserved_children.remove(&pid);
+        #[cfg(test)]
+        self.pause_registration_if_requested(pid);
         #[cfg(test)]
         let pause_publication = self.pause_next_publication.swap(false, Ordering::AcqRel);
         let record = Arc::new(ProcessExitRecord::new(
@@ -289,28 +162,18 @@ impl ProcessExitRegistry {
             #[cfg(test)]
             pause_publication,
         ));
-        let pending = {
-            let mut lifecycle = self.lock_lifecycle()?;
-            if lifecycle.closed {
-                return Err(EngineError::ShuttingDown);
+        match self.records.entry(pid) {
+            dashmap::mapref::entry::Entry::Occupied(_) => {
+                return Err(EngineError::Runtime {
+                    reason: format!("process {pid} already has a runtime-owned exit record"),
+                });
             }
-            match self.records.entry(pid) {
-                dashmap::mapref::entry::Entry::Occupied(_) => {
-                    return Err(EngineError::Runtime {
-                        reason: format!("process {pid} already has a runtime-owned exit record"),
-                    });
-                }
-                dashmap::mapref::entry::Entry::Vacant(entry) => {
-                    entry.insert(Arc::clone(&record));
-                }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(record);
             }
-            self.registered_through.fetch_max(pid, Ordering::AcqRel);
-            self.has_registered.store(true, Ordering::Release);
-            lifecycle.pending_registration.remove(&pid)
-        };
-        if let Some(pending) = pending {
-            record.publish_and_dispatch(pending)?;
         }
+        self.registered_through.fetch_max(pid, Ordering::AcqRel);
+        self.has_registered.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -406,31 +269,42 @@ impl ProcessExitRegistry {
                     .map_err(|_| EngineError::ProcessExitDrainerPanicked)??;
             }
         }
-        self.deferred_callbacks.shutdown()
+        self.callbacks.shutdown()
     }
 
-    pub(super) fn dispatch_deferred_callback(
+    pub(super) fn dispatch_callback(
         &self,
+        record: &Arc<ProcessExitRecord>,
         callback: ProcessExitCallback,
         terminal: OwnedProcessExitOutcome,
     ) -> Result<(), EngineError> {
-        self.deferred_callbacks.dispatch(callback, terminal)
+        match self.callbacks.dispatch(callback, terminal) {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                let callback::CallbackDispatchFailure { callback, error } = *failure;
+                record.restore_callback(callback)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn publish_record(
+        &self,
+        record: &Arc<ProcessExitRecord>,
+        outcome: OwnedProcessExitOutcome,
+    ) -> Result<(), EngineError> {
+        if let Some(callback) = record.publish(outcome.clone())? {
+            self.dispatch_callback(record, callback, outcome)?;
+        }
+        Ok(())
     }
 
     fn process_event(&self, scheduler: &Scheduler, event: ExitEvent) -> Result<(), EngineError> {
         match event {
             ExitEvent::Exited { pid, .. } => match scheduler.take_exit_outcome(pid) {
                 Some((reason, result)) => self.publish_taken(scheduler, pid, reason, result),
-                None => {
-                    // A lag resync can take a concurrently published outcome
-                    // immediately before its event reaches the reset stream.
-                    // Only that already-cached case is a legal empty take.
-                    if self.has_terminal(pid)? {
-                        Ok(())
-                    } else {
-                        Err(EngineError::ProcessExitOutcomeMissingAfterEvent { process_id: pid })
-                    }
-                }
+                None if self.has_terminal(pid)? || !self.is_known(pid)? => Ok(()),
+                None => Err(EngineError::ProcessExitOutcomeMissingAfterEvent { process_id: pid }),
             },
             ExitEvent::Lagged => {
                 #[cfg(test)]
@@ -441,11 +315,32 @@ impl ProcessExitRegistry {
         }
     }
 
+    /// Recover every pid classified before the reset while excluding concurrent spawns.
+    ///
+    /// Wrapped local BEAM spawn BIFs classify children under the same reservation gate,
+    /// so lag recovery can take and discard their outcomes. Truly foreign scheduler pids
+    /// are consumed on ordinary events but cannot be recovered after an overflow because
+    /// beamr exposes no outcome-key enumeration API.
     fn resynchronize(&self, scheduler: &Scheduler) -> Result<(), EngineError> {
-        let pids: Vec<_> = self.records.iter().map(|record| *record.key()).collect();
-        for pid in pids {
-            if let Some((reason, result)) = scheduler.take_exit_outcome(pid) {
-                self.publish_taken(scheduler, pid, reason, result)?;
+        let mut lifecycle = self.lock_lifecycle()?;
+        let records: Vec<_> = self
+            .records
+            .iter()
+            .map(|record| Arc::clone(record.value()))
+            .collect();
+        for record in records {
+            if let Some((reason, result)) = scheduler.take_exit_outcome(record.pid) {
+                self.publish_record(
+                    &record,
+                    Self::owned_outcome(scheduler, record.pid, reason, result),
+                )?;
+            }
+        }
+        let children: Vec<_> = lifecycle.unobserved_children.iter().copied().collect();
+        for pid in children {
+            if scheduler.take_exit_outcome(pid).is_some() {
+                Self::discard_diagnostics(scheduler, pid);
+                lifecycle.unobserved_children.remove(&pid);
             }
         }
         Ok(())
@@ -458,34 +353,40 @@ impl ProcessExitRegistry {
         reason: ExitReason,
         result: OwnedTerm,
     ) -> Result<(), EngineError> {
-        let outcome = OwnedProcessExitOutcome::Observed(Arc::new(ObservedProcessExit {
-            reason,
-            result,
-            // beamr documents both diagnostics as independent of the durable outcome token.
-            execution_error: scheduler.take_exit_error(pid),
-            exception: scheduler.take_exit_exception(pid),
-        }));
-        self.publish_or_defer(pid, outcome)
+        let mut lifecycle = self.lock_lifecycle()?;
+        if let Some(record) = self.find(pid) {
+            let outcome = Self::owned_outcome(scheduler, pid, reason, result);
+            drop(lifecycle);
+            self.publish_record(&record, outcome)
+        } else {
+            lifecycle.unobserved_children.remove(&pid);
+            Self::discard_diagnostics(scheduler, pid);
+            drop(result);
+            Ok(())
+        }
     }
 
-    fn publish_or_defer(
-        &self,
+    fn owned_outcome(
+        scheduler: &Scheduler,
         pid: Pid,
-        outcome: OwnedProcessExitOutcome,
-    ) -> Result<(), EngineError> {
-        let record = {
-            let mut lifecycle = self.lock_lifecycle()?;
-            if let Some(record) = self.find(pid) {
-                Some(record)
-            } else {
-                lifecycle.pending_registration.insert(pid, outcome.clone());
-                None
-            }
-        };
-        if let Some(record) = record {
-            record.publish_and_dispatch(outcome)?;
-        }
-        Ok(())
+        reason: ExitReason,
+        result: OwnedTerm,
+    ) -> OwnedProcessExitOutcome {
+        OwnedProcessExitOutcome::Observed(Arc::new(ObservedProcessExit {
+            reason,
+            result,
+            execution_error: scheduler.take_exit_error(pid),
+            exception: scheduler.take_exit_exception(pid),
+        }))
+    }
+
+    fn discard_diagnostics(scheduler: &Scheduler, pid: Pid) {
+        drop(scheduler.take_exit_error(pid));
+        drop(scheduler.take_exit_exception(pid));
+    }
+
+    fn is_known(&self, pid: Pid) -> Result<bool, EngineError> {
+        Ok(self.contains(pid) || self.lock_lifecycle()?.unobserved_children.contains(&pid))
     }
 
     fn fail_unobserved(&self, failure: ProcessExitObservationFailure) {
@@ -499,7 +400,7 @@ impl ProcessExitRegistry {
                 process_id: record.pid,
                 failure,
             };
-            if let Err(error) = record.publish_and_dispatch(outcome) {
+            if let Err(error) = self.publish_record(&record, outcome) {
                 tracing::error!(pid = record.pid, %error, "failed to publish exit observation failure");
             }
         }
@@ -527,6 +428,17 @@ impl ProcessExitRegistry {
     }
 
     #[cfg(test)]
+    fn pause_registration_if_requested(&self, pid: Pid) {
+        if !self.pause_next_registration.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        self.registration_reached.store(pid, Ordering::Release);
+        while !self.registration_released.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(test)]
     fn pause_if_requested(&self) {
         if !self.pause_drainer.load(Ordering::Acquire) {
             return;
@@ -545,3 +457,7 @@ mod test_support;
 #[cfg(test)]
 #[path = "process_exit_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "process_exit_round12_tests.rs"]
+mod round12_tests;

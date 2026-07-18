@@ -8,6 +8,37 @@ use crate::{EngineError, Pid, RuntimeHandle};
 use super::{AtomicBool, ProcessExitRegistry};
 
 impl ProcessExitRegistry {
+    pub(super) fn pause_next_registration(&self) {
+        self.registration_released.store(false, Ordering::Release);
+        self.registration_reached.store(0, Ordering::Release);
+        self.pause_next_registration.store(true, Ordering::Release);
+    }
+
+    pub(super) fn wait_for_registration_pause(
+        &self,
+        timeout: Duration,
+    ) -> Result<Pid, EngineError> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let pid = self.registration_reached.load(Ordering::Acquire);
+            if pid != 0 {
+                return Ok(pid);
+            }
+            std::thread::yield_now();
+        }
+        Err(EngineError::Runtime {
+            reason: String::from("spawn did not reach the exit-record registration pause"),
+        })
+    }
+
+    pub(super) fn release_registration(&self) {
+        self.registration_released.store(true, Ordering::Release);
+    }
+
+    pub(super) fn unobserved_children_for_test(&self) -> Result<usize, EngineError> {
+        Ok(self.lock_lifecycle()?.unobserved_children.len())
+    }
+
     pub(super) fn pause_next_publication(&self) {
         self.pause_next_publication.store(true, Ordering::Release);
     }

@@ -162,6 +162,7 @@ impl RuntimeHandle {
             Arc::clone(&scheduler),
             shutdown_timeout,
         )?;
+        nif_state.set_process_exit_registry(&process_exits)?;
 
         Ok(Self {
             scheduler,
@@ -290,11 +291,11 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_module);
         let function = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
-        let pid = self
-            .scheduler
-            .spawn_trap_exit(module, function, terms)
-            .map_err(runtime_error_from_display)?;
-        self.establish_process_exit_ownership(pid)?;
+        let pid = self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn_trap_exit(module, function, terms)
+                .map_err(runtime_error_from_display)
+        })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -320,16 +321,17 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_module);
         let function_atom = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
-        let pid = if self.is_dirty_with_arity(deployed_module, function, arity) {
-            self.scheduler
-                .spawn_link_dirty(parent_pid, module, function_atom, terms)
-                .map_err(runtime_error_from_display)?
-        } else {
-            self.scheduler
-                .spawn_link(parent_pid, module, function_atom, terms)
-                .map_err(runtime_error_from_display)?
-        };
-        self.establish_process_exit_ownership(pid)?;
+        let pid = self.spawn_with_exit_ownership(|| {
+            if self.is_dirty_with_arity(deployed_module, function, arity) {
+                self.scheduler
+                    .spawn_link_dirty(parent_pid, module, function_atom, terms)
+                    .map_err(runtime_error_from_display)
+            } else {
+                self.scheduler
+                    .spawn_link(parent_pid, module, function_atom, terms)
+                    .map_err(runtime_error_from_display)
+            }
+        })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -360,11 +362,11 @@ impl RuntimeHandle {
     ) -> Result<Pid, EngineError> {
         self.release_dead_spawn_heaps();
         self.ensure_live_pid(parent_pid)?;
-        let pid = self
-            .scheduler
-            .spawn_link_closure(parent_pid, closure_term)
-            .map_err(runtime_error_from_display)?;
-        self.establish_process_exit_ownership(pid)?;
+        let pid = self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn_link_closure(parent_pid, closure_term)
+                .map_err(runtime_error_from_display)
+        })?;
         self.in_vm_children
             .entry(parent_pid)
             .or_default()
@@ -535,11 +537,11 @@ impl RuntimeHandle {
         let module = self.atom_table.intern(deployed_module);
         let function = self.atom_table.intern(function);
         let (terms, heaps) = input.into_spawn_parts();
-        let pid = self
-            .scheduler
-            .spawn(module, function, terms)
-            .map_err(runtime_error_from_display)?;
-        self.establish_process_exit_ownership(pid)?;
+        let pid = self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn(module, function, terms)
+                .map_err(runtime_error_from_display)
+        })?;
         self.retain_spawn_heaps(pid, heaps);
         Ok(pid)
     }
@@ -588,9 +590,7 @@ impl RuntimeHandle {
     /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
     #[cfg(test)]
     pub fn spawn_test_process(&self) -> Result<Pid, EngineError> {
-        let pid = self.scheduler.spawn_test_process(false);
-        self.establish_process_exit_ownership(pid)?;
-        Ok(pid)
+        self.spawn_with_exit_ownership(|| Ok(self.scheduler.spawn_test_process(false)))
     }
 
     /// Spawn an inert test process with explicit trap-exit state.
@@ -600,9 +600,7 @@ impl RuntimeHandle {
     /// Returns [`EngineError::Runtime`] when beamr rejects the test spawn.
     #[cfg(test)]
     pub fn spawn_test_process_with_trap_exit(&self, trap_exit: bool) -> Result<Pid, EngineError> {
-        let pid = self.scheduler.spawn_test_process(trap_exit);
-        self.establish_process_exit_ownership(pid)?;
-        Ok(pid)
+        self.spawn_with_exit_ownership(|| Ok(self.scheduler.spawn_test_process(trap_exit)))
     }
 
     /// Spawn an inert linked test child without enabling trap-exit on the child.
@@ -614,12 +612,11 @@ impl RuntimeHandle {
     #[cfg(test)]
     pub fn spawn_linked_test_process(&self, parent_pid: Pid) -> Result<Pid, EngineError> {
         self.ensure_live_pid(parent_pid)?;
-        let pid = self
-            .scheduler
-            .spawn_linked_test_process(parent_pid)
-            .map_err(runtime_error_from_display)?;
-        self.establish_process_exit_ownership(pid)?;
-        Ok(pid)
+        self.spawn_with_exit_ownership(|| {
+            self.scheduler
+                .spawn_linked_test_process(parent_pid)
+                .map_err(runtime_error_from_display)
+        })
     }
 
     /// Return true when a live process has a trapped EXIT message from `source_pid`.
@@ -713,6 +710,7 @@ mod activity_delivery;
 mod delivery;
 mod process_ownership;
 mod registration;
+mod spawn_bifs;
 
 pub(crate) use delivery::InVmChildOutcome;
 

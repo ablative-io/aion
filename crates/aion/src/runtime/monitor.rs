@@ -329,7 +329,7 @@ impl RuntimeHandle {
         drop(ownership);
         if let Some((callback, terminal)) = deferred_dispatch {
             self.process_exits
-                .dispatch_deferred_callback(callback, terminal)?;
+                .dispatch_callback(&record, callback, terminal)?;
         }
         Ok(ProcessMonitorHandle::installed())
     }
