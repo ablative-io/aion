@@ -6,6 +6,7 @@ use beamr::native::{BifRegistryImpl, NativeRegistrationError};
 use crate::error::EngineError;
 
 use super::super::nif::Mfa;
+use super::super::nif_state::EngineNifState;
 use super::runtime_error_from_display;
 
 pub(super) fn nif_registration_error(mfa: &Mfa, error: NativeRegistrationError) -> EngineError {
@@ -19,6 +20,7 @@ pub(super) fn nif_registration_error(mfa: &Mfa, error: NativeRegistrationError) 
 pub(super) fn register_all_bifs(
     registry: &BifRegistryImpl,
     atom_table: &AtomTable,
+    nif_state: &EngineNifState,
 ) -> Result<(), EngineError> {
     use beamr::native::{
         bifs::register_gate1_bifs, gate3_bifs::register_gate3_bifs,
@@ -31,6 +33,7 @@ pub(super) fn register_all_bifs(
     super::spawn_bifs::register_process_bifs(registry, atom_table)
         .map_err(runtime_error_from_display)?;
     register_gate3_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
+    super::spawn_bifs::replace_gate3_fun_spawn_bifs(registry, atom_table, nif_state)?;
     register_stdlib_stubs(registry, atom_table).map_err(runtime_error_from_display)?;
     register_selector_bifs(registry, atom_table).map_err(runtime_error_from_display)?;
     register_gleam_ffi_bifs(registry, atom_table).map_err(runtime_error_from_display)?;

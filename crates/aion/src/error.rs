@@ -109,6 +109,17 @@ pub enum EngineError {
         reason: String,
     },
 
+    /// A Gate-3 BIF required for tracked local fun spawns was not registered.
+    #[error("required Gate-3 BIF `{module}:{function}/{arity}` was missing during runtime startup")]
+    Gate3BifReplacementMissing {
+        /// Native module containing the required function.
+        module: String,
+        /// Required native function.
+        function: String,
+        /// Required native function arity.
+        arity: u8,
+    },
+
     /// The runtime-owned cleanup executor's ownership state was poisoned.
     #[error("process cleanup executor state was poisoned")]
     CleanupExecutorPoisoned,

@@ -381,6 +381,9 @@ fn engine_trace_fields(source: &EngineError) -> ErrorTraceFields<'_> {
         EngineError::Package(_) => simple_engine_fields("Package", source),
         EngineError::Schedule { .. } => simple_engine_fields("Schedule", source),
         EngineError::Runtime { .. } => simple_engine_fields("Runtime", source),
+        EngineError::Gate3BifReplacementMissing { .. } => {
+            simple_engine_fields("Gate3BifReplacementMissing", source)
+        }
         EngineError::CleanupExecutorPoisoned => {
             simple_engine_fields("CleanupExecutorPoisoned", source)
         }
@@ -466,6 +469,9 @@ fn store_error_type(source: &StoreError) -> &'static str {
 }
 
 fn wire_from_engine(source: &EngineError) -> WireError {
+    use EngineError as E;
+    use engine::backend_wire as backend;
+
     match source {
         EngineError::WorkflowNotFound { .. } => {
             WireError::not_found_with_type("WorkflowNotFound", source.to_string())
@@ -483,12 +489,8 @@ fn wire_from_engine(source: &EngineError) -> WireError {
         EngineError::Store(store) => wire_from_store(store),
         EngineError::Durability(durability) => engine::durability_wire(durability, source),
         EngineError::MissingStore => engine::backend_wire("MissingStore", source),
-        EngineError::MissingVisibilityStore => {
-            engine::backend_wire("MissingVisibilityStore", source)
-        }
-        EngineError::ConflictingEventPublisher => {
-            engine::backend_wire("ConflictingEventPublisher", source)
-        }
+        E::MissingVisibilityStore => backend("MissingVisibilityStore", source),
+        E::ConflictingEventPublisher => backend("ConflictingEventPublisher", source),
         EngineError::EventStreaming(_) => engine::backend_wire("EventStreaming", source),
         EngineError::Load { .. } => WireError::backend_with_type("Load", source.to_string()),
         // Deploy-surface refusals (the §2.4 mapping table): unknown
@@ -512,6 +514,7 @@ fn wire_from_engine(source: &EngineError) -> WireError {
             WireError::backend_with_type("Schedule", source.to_string())
         }
         EngineError::Runtime { .. } => WireError::backend_with_type("Runtime", source.to_string()),
+        E::Gate3BifReplacementMissing { .. } => backend("Gate3BifReplacementMissing", source),
         EngineError::CleanupExecutorPoisoned => {
             WireError::backend_with_type("CleanupExecutorPoisoned", source.to_string())
         }

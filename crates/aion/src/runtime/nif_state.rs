@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use aion_core::TimerId;
-use beamr::native::ProcessContext;
+use beamr::native::{NativeEntry, ProcessContext};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
@@ -85,8 +85,16 @@ pub(crate) struct EngineNifState {
     /// per workflow process. A committed claim remains until that exact
     /// monitor completes; failed uncommitted claims remove only themselves.
     pub(super) monitor_installations: DashMap<u64, Arc<super::monitor::MonitorInstallation>>,
+    /// Original Gate-3 fun-spawn entries retained for tracked wrapper delegation.
+    gate3_fun_spawn_delegates: OnceLock<Gate3FunSpawnDelegates>,
     /// Weak access used by wrapped local spawn BIFs to reserve outcome classification.
     process_exits: OnceLock<Weak<super::process_exit::ProcessExitRegistry>>,
+}
+
+#[derive(Copy, Clone)]
+struct Gate3FunSpawnDelegates {
+    spawn: NativeEntry,
+    spawn_link: NativeEntry,
 }
 
 /// Epoch tombstone recorded at the start of exited-workflow cleanup.
@@ -154,6 +162,30 @@ pub(crate) enum CollectKind {
 }
 
 impl EngineNifState {
+    pub(super) fn set_gate3_fun_spawn_delegates(
+        &self,
+        spawn: NativeEntry,
+        spawn_link: NativeEntry,
+    ) -> Result<(), crate::EngineError> {
+        self.gate3_fun_spawn_delegates
+            .set(Gate3FunSpawnDelegates { spawn, spawn_link })
+            .map_err(|_| crate::EngineError::Runtime {
+                reason: String::from("Gate-3 fun-spawn delegates were already installed"),
+            })
+    }
+
+    pub(super) fn gate3_spawn_delegate(&self) -> Option<NativeEntry> {
+        self.gate3_fun_spawn_delegates
+            .get()
+            .map(|delegates| delegates.spawn)
+    }
+
+    pub(super) fn gate3_spawn_link_delegate(&self) -> Option<NativeEntry> {
+        self.gate3_fun_spawn_delegates
+            .get()
+            .map(|delegates| delegates.spawn_link)
+    }
+
     pub(super) fn set_process_exit_registry(
         &self,
         registry: &Arc<super::process_exit::ProcessExitRegistry>,

@@ -128,6 +128,8 @@ impl RuntimeHandle {
     /// # Errors
     ///
     /// Returns [`EngineError::Runtime`] when beamr cannot start its scheduler.
+    /// Returns [`EngineError::Gate3BifReplacementMissing`] if beamr's complete
+    /// Gate-3 table no longer contains a required tracked fun-spawn BIF.
     pub fn new(config: RuntimeConfig) -> Result<Self, EngineError> {
         let atom_table = Arc::new(AtomTable::with_common_atoms());
         let module_registry = Arc::new(ModuleRegistry::new());
@@ -140,7 +142,7 @@ impl RuntimeHandle {
             ..Default::default()
         };
         let native_registry = Arc::new(BifRegistryImpl::new());
-        register_all_bifs(&native_registry, &atom_table)?;
+        register_all_bifs(&native_registry, &atom_table, &nif_state)?;
         let scheduler = Arc::new(
             Scheduler::with_code_server(
                 scheduler_config,
