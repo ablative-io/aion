@@ -499,38 +499,6 @@ impl RuntimeHandle {
         self.atom_table.intern("aion_child_terminal")
     }
 
-    pub(crate) fn wait_for_process_ready(&self, pid: Pid) -> Result<(), EngineError> {
-        let deadline = std::time::Instant::now() + self.signal_delivery.ready_timeout;
-        while std::time::Instant::now() < deadline {
-            if self.scheduler.trap_exit(pid).is_some() {
-                return Ok(());
-            }
-            sleep_signal_delivery_backoff(self.signal_delivery.initial_backoff);
-        }
-        self.scheduler
-            .trap_exit(pid)
-            .map(|_| ())
-            .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
-    }
-
-    /// Async twin of [`Self::wait_for_process_ready`]: identical readiness
-    /// semantics, but the waits yield to the executor (`tokio::time::sleep`)
-    /// so one slow-to-materialize process never parks a worker thread other
-    /// deliveries share.
-    pub(crate) async fn wait_for_process_ready_async(&self, pid: Pid) -> Result<(), EngineError> {
-        let deadline = std::time::Instant::now() + self.signal_delivery.ready_timeout;
-        while std::time::Instant::now() < deadline {
-            if self.scheduler.trap_exit(pid).is_some() {
-                return Ok(());
-            }
-            yield_signal_delivery_backoff(self.signal_delivery.initial_backoff).await;
-        }
-        self.scheduler
-            .trap_exit(pid)
-            .map(|_| ())
-            .ok_or_else(|| runtime_error(format!("process {pid} is not ready")))
-    }
-
     fn enqueue_signal_marker_with_retry(
         &self,
         workflow_pid: Pid,
@@ -743,7 +711,7 @@ pub(super) fn sleep_signal_delivery_backoff(duration: std::time::Duration) {
     }
 }
 
-async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
+pub(super) async fn yield_signal_delivery_backoff(duration: std::time::Duration) {
     if duration.is_zero() {
         tokio::task::yield_now().await;
     } else {

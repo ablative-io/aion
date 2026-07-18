@@ -291,6 +291,6 @@ pub async fn resume(
     let reopen_context = context.reopen_context();
     let history = context.store.read_history(id).await?;
     let handle = reopen::respawn_and_register(&reopen_context, id, run, &history, recorder).await?;
-    reopen::rearm_reopened_timers(&reopen_context, id, &rearm).await?;
+    reopen::rearm_reopened_timers(&reopen_context, id, handle.pid(), &rearm).await?;
     Ok(handle)
 }

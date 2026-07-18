@@ -318,19 +318,15 @@ impl RuntimeHandle {
                 std::panic::resume_unwind(panic);
             }
         });
-        let deferred_dispatch = match record.attach_callback(&installation, completion) {
-            Ok(deferred_dispatch) => deferred_dispatch,
-            Err(error) => {
-                drop(ownership);
-                self.rollback_failed_monitor_installation(pid, &installation)?;
-                return Err(error);
-            }
-        };
-        drop(ownership);
-        if let Some((callback, terminal)) = deferred_dispatch {
-            self.process_exits
-                .dispatch_callback(&record, callback, terminal)?;
+        if let Err(error) = self
+            .process_exits
+            .attach_callback(&record, &installation, completion)
+        {
+            drop(ownership);
+            self.rollback_failed_monitor_installation(pid, &installation)?;
+            return Err(error);
         }
+        drop(ownership);
         Ok(ProcessMonitorHandle::installed())
     }
 

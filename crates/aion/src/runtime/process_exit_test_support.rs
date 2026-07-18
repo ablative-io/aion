@@ -8,6 +8,50 @@ use crate::{EngineError, Pid, RuntimeHandle};
 use super::{AtomicBool, ProcessExitRegistry};
 
 impl ProcessExitRegistry {
+    pub(super) fn pause_registration_if_requested(&self, pid: Pid) {
+        if !self.pause_next_registration.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        self.registration_reached.store(pid, Ordering::Release);
+        while !self.registration_released.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+
+    pub(super) fn pause_if_requested(&self) {
+        if !self.pause_drainer.load(Ordering::Acquire) {
+            return;
+        }
+        self.drainer_paused.store(true, Ordering::Release);
+        while self.pause_drainer.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+
+    pub(super) fn pause_callback_admission_if_requested(&self) {
+        if !self
+            .pause_next_callback_admission
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+        self.callback_admission_reached
+            .store(true, Ordering::Release);
+        while !self.callback_admission_released.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+
+    pub(super) fn callback_queue_usage_for_test(&self) -> (usize, usize) {
+        self.callbacks.queue_usage()
+    }
+
+    pub(super) fn pending_callbacks_for_test(&self) -> Result<usize, EngineError> {
+        self.records.iter().try_fold(0, |count, record| {
+            Ok(count + usize::from(record.has_terminal_callback()?))
+        })
+    }
+
     pub(super) fn pause_next_registration(&self) {
         self.registration_released.store(false, Ordering::Release);
         self.registration_reached.store(0, Ordering::Release);
@@ -90,6 +134,31 @@ impl ProcessExitRegistry {
 
     pub(super) fn lag_recoveries_for_test(&self) -> u64 {
         self.lag_recoveries.load(Ordering::Acquire)
+    }
+
+    pub(super) fn pause_next_callback_admission(&self) {
+        self.callback_admission_released
+            .store(false, Ordering::Release);
+        self.callback_admission_reached
+            .store(false, Ordering::Release);
+        self.pause_next_callback_admission
+            .store(true, Ordering::Release);
+    }
+
+    pub(super) fn wait_for_callback_admission_pause(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), EngineError> {
+        wait_for_flag(
+            &self.callback_admission_reached,
+            timeout,
+            String::from("callback admission did not reach its committed test pause"),
+        )
+    }
+
+    pub(super) fn release_callback_admission(&self) {
+        self.callback_admission_released
+            .store(true, Ordering::Release);
     }
 
     pub(in crate::runtime) fn drainer_joined_for_test(&self) -> Result<bool, EngineError> {

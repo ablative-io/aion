@@ -12,6 +12,7 @@ use beamr::process::ExitReason;
 use beamr::scheduler::{ExitEvent, Scheduler};
 use dashmap::DashMap;
 
+use crate::runtime::monitor::MonitorInstallation;
 use crate::{EngineError, Pid};
 
 #[path = "process_exit_callback.rs"]
@@ -25,6 +26,8 @@ pub(super) use record::{
     ObservedProcessExit, OwnedProcessExitOutcome, ProcessExitCallback,
     ProcessExitObservationFailure, ProcessExitRecord,
 };
+
+type ProcessExitRecords = DashMap<Pid, Arc<ProcessExitRecord>>;
 
 struct RegistryLifecycle {
     closed: bool,
@@ -55,7 +58,7 @@ struct ExitDrainer {
 
 /// Index of active owned exit records and owner of the one beamr event drainer.
 pub(super) struct ProcessExitRegistry {
-    records: DashMap<Pid, Arc<ProcessExitRecord>>,
+    records: Arc<ProcessExitRecords>,
     registered_through: AtomicU64,
     has_registered: AtomicBool,
     lifecycle: Mutex<RegistryLifecycle>,
@@ -78,20 +81,32 @@ pub(super) struct ProcessExitRegistry {
     drainer_paused: AtomicBool,
     #[cfg(test)]
     lag_recoveries: AtomicU64,
+    #[cfg(test)]
+    pause_next_callback_admission: AtomicBool,
+    #[cfg(test)]
+    callback_admission_reached: AtomicBool,
+    #[cfg(test)]
+    callback_admission_released: AtomicBool,
 }
 
 impl ProcessExitRegistry {
     pub(super) fn new(
         scheduler: Arc<Scheduler>,
         shutdown_timeout: Duration,
+        callback_queue_capacity: usize,
     ) -> Result<Arc<Self>, EngineError> {
         let subscription = scheduler
             .subscribe_exit_events()
             .ok_or(EngineError::ProcessExitSubscriptionUnavailable)?;
-        let callbacks = callback::ProcessExitCallbackDispatcher::new(shutdown_timeout)?;
+        let records = Arc::new(DashMap::new());
+        let callbacks = callback::ProcessExitCallbackDispatcher::new(
+            shutdown_timeout,
+            callback_queue_capacity,
+            Arc::downgrade(&records),
+        )?;
         let (stopped_sender, stopped) = mpsc::sync_channel(1);
         let registry = Arc::new(Self {
-            records: DashMap::new(),
+            records,
             registered_through: AtomicU64::new(0),
             has_registered: AtomicBool::new(false),
             lifecycle: Mutex::new(RegistryLifecycle {
@@ -120,6 +135,12 @@ impl ProcessExitRegistry {
             drainer_paused: AtomicBool::new(false),
             #[cfg(test)]
             lag_recoveries: AtomicU64::new(0),
+            #[cfg(test)]
+            pause_next_callback_admission: AtomicBool::new(false),
+            #[cfg(test)]
+            callback_admission_reached: AtomicBool::new(false),
+            #[cfg(test)]
+            callback_admission_released: AtomicBool::new(false),
         });
         let weak_registry = Arc::downgrade(&registry);
         let handle = std::thread::Builder::new()
@@ -232,6 +253,7 @@ impl ProcessExitRegistry {
         self.records.len()
     }
 
+    /// Close spawn and callback admission, then snapshot every owned live pid.
     pub(super) fn begin_shutdown(&self) -> Result<Vec<Pid>, EngineError> {
         let mut lifecycle = self.lock_lifecycle()?;
         lifecycle.closed = true;
@@ -243,7 +265,9 @@ impl ProcessExitRegistry {
         for record in &records {
             record.close_without_monitor()?;
         }
-        Ok(records.iter().map(|record| record.pid).collect())
+        let mut pids = lifecycle.unobserved_children.clone();
+        pids.extend(records.iter().map(|record| record.pid));
+        Ok(pids.into_iter().collect())
     }
 
     pub(super) fn close_and_join_all(&self) -> Result<(), EngineError> {
@@ -272,14 +296,35 @@ impl ProcessExitRegistry {
         self.callbacks.shutdown()
     }
 
-    pub(super) fn dispatch_callback(
+    pub(super) fn attach_callback(
+        &self,
+        record: &Arc<ProcessExitRecord>,
+        installation: &Arc<MonitorInstallation>,
+        callback: ProcessExitCallback,
+    ) -> Result<(), EngineError> {
+        let lifecycle = self.lock_lifecycle()?;
+        if lifecycle.closed {
+            return Err(EngineError::ShuttingDown);
+        }
+        let deferred = record.attach_callback(installation, callback)?;
+        #[cfg(test)]
+        self.pause_callback_admission_if_requested();
+        if let Some((callback, terminal)) = deferred {
+            self.dispatch_callback(record, callback, terminal)?;
+        }
+        drop(lifecycle);
+        Ok(())
+    }
+
+    fn dispatch_callback(
         &self,
         record: &Arc<ProcessExitRecord>,
         callback: ProcessExitCallback,
         terminal: OwnedProcessExitOutcome,
     ) -> Result<(), EngineError> {
         match self.callbacks.dispatch(callback, terminal) {
-            Ok(()) => Ok(()),
+            Ok(callback::CallbackDispatch::Submitted) => Ok(()),
+            Ok(callback::CallbackDispatch::Deferred(callback)) => record.restore_callback(callback),
             Err(failure) => {
                 let callback::CallbackDispatchFailure { callback, error } = *failure;
                 record.restore_callback(callback)?;
@@ -406,13 +451,13 @@ impl ProcessExitRegistry {
         }
     }
 
-    fn all_records_terminal(&self) -> Result<bool, EngineError> {
-        for record in &self.records {
+    fn all_owned_processes_terminal(&self) -> Result<bool, EngineError> {
+        for record in self.records.iter() {
             if !record.is_terminal()? {
                 return Ok(false);
             }
         }
-        Ok(true)
+        Ok(self.lock_lifecycle()?.unobserved_children.is_empty())
     }
 
     fn lock_lifecycle(&self) -> Result<MutexGuard<'_, RegistryLifecycle>, EngineError> {
@@ -425,28 +470,6 @@ impl ProcessExitRegistry {
         self.drainer
             .lock()
             .map_err(|_| EngineError::ProcessExitDrainerPoisoned)
-    }
-
-    #[cfg(test)]
-    fn pause_registration_if_requested(&self, pid: Pid) {
-        if !self.pause_next_registration.swap(false, Ordering::AcqRel) {
-            return;
-        }
-        self.registration_reached.store(pid, Ordering::Release);
-        while !self.registration_released.load(Ordering::Acquire) {
-            std::thread::yield_now();
-        }
-    }
-
-    #[cfg(test)]
-    fn pause_if_requested(&self) {
-        if !self.pause_drainer.load(Ordering::Acquire) {
-            return;
-        }
-        self.drainer_paused.store(true, Ordering::Release);
-        while self.pause_drainer.load(Ordering::Acquire) {
-            std::thread::yield_now();
-        }
     }
 }
 
@@ -461,3 +484,7 @@ mod tests;
 #[cfg(test)]
 #[path = "process_exit_round12_tests.rs"]
 mod round12_tests;
+
+#[cfg(test)]
+#[path = "process_exit_round13_tests.rs"]
+mod round13_tests;

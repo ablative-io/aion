@@ -6,7 +6,8 @@
     wait/1,
     activity/1,
     spawn_children/0,
-    overflow_children/0
+    overflow_children/0,
+    parked_children/0
 ]).
 
 complete() ->
@@ -36,8 +37,17 @@ spawn_children() ->
 overflow_children() ->
     spawn_children(1100).
 
+parked_children() ->
+    parked_children(64).
+
 spawn_children(0) ->
     ok;
 spawn_children(Count) ->
     _ = erlang:spawn(?MODULE, complete, []),
     spawn_children(Count - 1).
+
+parked_children(0) ->
+    ok;
+parked_children(Count) ->
+    _ = erlang:spawn(?MODULE, wait, []),
+    parked_children(Count - 1).

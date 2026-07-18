@@ -24,14 +24,14 @@ pub(super) fn run(
                 registry.resynchronize(scheduler)?;
                 shutdown_resynchronized = true;
             }
-            if registry.all_records_terminal()? {
+            if registry.all_owned_processes_terminal()? {
                 return Ok(());
             }
         }
+        #[cfg(test)]
+        registry.pause_if_requested();
         match subscription.recv_timeout(registry.park_bound) {
             Ok(event) => {
-                #[cfg(test)]
-                registry.pause_if_requested();
                 if let Err(error) = registry.process_event(scheduler, event) {
                     tracing::error!(%error, "process exit drainer invariant failed");
                     registry

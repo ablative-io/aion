@@ -147,7 +147,9 @@ impl ProcessExitRecord {
     pub(in crate::runtime) fn close_without_monitor(&self) -> Result<(), EngineError> {
         let mut state = self.lock_state()?;
         state.closed = true;
-        drop(state.callback.take());
+        if state.terminal.is_none() {
+            drop(state.callback.take());
+        }
         self.ready.notify_all();
         Ok(())
     }
@@ -169,6 +171,16 @@ impl ProcessExitRecord {
         Ok(state.callback.take())
     }
 
+    pub(in crate::runtime) fn take_terminal_callback(
+        &self,
+    ) -> Result<Option<(ProcessExitCallback, OwnedProcessExitOutcome)>, EngineError> {
+        let mut state = self.lock_state()?;
+        let Some(terminal) = state.terminal.clone() else {
+            return Ok(None);
+        };
+        Ok(state.callback.take().map(|callback| (callback, terminal)))
+    }
+
     pub(in crate::runtime) fn restore_callback(
         &self,
         callback: ProcessExitCallback,
@@ -184,6 +196,12 @@ impl ProcessExitRecord {
         }
         state.callback = Some(callback);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) fn has_terminal_callback(&self) -> Result<bool, EngineError> {
+        let state = self.lock_state()?;
+        Ok(state.terminal.is_some() && state.callback.is_some())
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, ProcessExitState>, EngineError> {

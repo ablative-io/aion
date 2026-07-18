@@ -217,6 +217,11 @@ impl EngineNifState {
         }
     }
 
+    /// Whether `pid` has completed a suspending await's park decision.
+    pub(crate) fn has_pending_await(&self, pid: u64) -> bool {
+        self.pending_awaits.contains_key(&pid)
+    }
+
     /// Record one suspending-native entry for `pid`.
     ///
     /// Called on every suspending-await invocation (fresh entry and wake

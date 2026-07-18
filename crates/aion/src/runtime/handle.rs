@@ -161,6 +161,7 @@ impl RuntimeHandle {
         let process_exits = super::process_exit::ProcessExitRegistry::new(
             Arc::clone(&scheduler),
             shutdown_timeout,
+            config.signal_delivery.max_enqueue_attempts as usize,
         )?;
         nif_state.set_process_exit_registry(&process_exits)?;
 
@@ -583,6 +584,11 @@ impl RuntimeHandle {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn live_processes_for_test(&self) -> usize {
+        self.scheduler.process_table().len()
+    }
+
     /// Spawn an inert test process without module code.
     ///
     /// # Errors
@@ -709,6 +715,7 @@ fn runtime_error_from_display(reason: impl std::fmt::Display) -> EngineError {
 mod activity_delivery;
 mod delivery;
 mod process_ownership;
+mod readiness;
 mod registration;
 mod spawn_bifs;
 

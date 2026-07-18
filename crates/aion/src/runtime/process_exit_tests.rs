@@ -20,6 +20,7 @@ fn runtime_claims_the_only_exit_event_subscription_with_typed_duplicate_failure(
     let duplicate = ProcessExitRegistry::new(
         Arc::clone(&runtime.scheduler),
         runtime.signal_delivery().cleanup_shutdown_timeout(),
+        runtime.signal_delivery().max_enqueue_attempts as usize,
     )
     .err()
     .ok_or("a second process-exit registry claimed the scheduler subscription")?;

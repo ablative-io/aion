@@ -46,7 +46,14 @@ fn lag_recovery_waits_for_spawn_reservation_before_snapshot() -> TestResult {
         .process_exits
         .wait_for_registration_pause(Duration::from_secs(10))?;
     runtime.cancel_pid(fast_pid)?;
+    let lag_recoveries = runtime.process_exits.lag_recoveries_for_test();
     runtime.process_exits.release_for_test();
+    wait_until(Instant::now() + Duration::from_secs(10), || {
+        runtime.process_exits.lag_recoveries_for_test() > lag_recoveries
+    })
+    .map_err(
+        |_| "exit drainer did not enter lag resynchronization while the spawn reservation was held",
+    )?;
     runtime.process_exits.release_registration();
     let registered_pid = spawn
         .join()
